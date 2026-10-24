@@ -53,22 +53,23 @@ def test_chimew_and_fixed_binding_entry_remain_available():
 
 
 @pytest.mark.parametrize("entry", ["phase3", "compile", "native-request"])
-def test_v11_is_rejected_before_any_frontend_or_graph_loading(tmp_path, entry):
+@pytest.mark.parametrize("version", [6, 7, 8, 9, 10, 11])
+def test_retired_patron_version_is_rejected_before_any_frontend_or_graph_loading(tmp_path, entry, version):
     from emuflow.native_compile import _request
     with patch("emuflow.phase3.load_partition_ir", side_effect=AssertionError("graph loaded")), patch(
         "emuflow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend entered")
-    ), pytest.raises(EmuFlowError, match="version|v11"):
+    ), pytest.raises(EmuFlowError, match="version|only PATRON"):
         if entry == "phase3":
             run_phase3(tmp_path / "missing.ir", tmp_path / "missing.platform",
-                       tmp_path / "partition", patron_algorithm_version=11)
+                       tmp_path / "partition", patron_algorithm_version=version)
         elif entry == "compile":
-            run_multi_fpga_flow(output_dir=tmp_path / "flow", patron_algorithm_version=11)
+            run_multi_fpga_flow(output_dir=tmp_path / "flow", patron_algorithm_version=version)
         else:
-            _request((), {"output_dir": tmp_path / "flow", "patron_algorithm_version": 11})
+            _request((), {"output_dir": tmp_path / "flow", "patron_algorithm_version": version})
     assert not (tmp_path / "flow").exists()
 
 
-@pytest.mark.parametrize("version,flags,message", [(11, 7, "flow version"), (14, 7, "flags")])
+@pytest.mark.parametrize("version,flags,message", [(6, 1, "flow version"), (7, 3, "flow version"), (8, 3, "flow version"), (9, 3, "flow version"), (10, 3, "flow version"), (11, 7, "flow version"), (14, 7, "flags")])
 def test_native_rejects_feedback_protocol_before_reading_a_graph(tmp_path, version, flags, message):
     import struct
     import subprocess

@@ -1242,8 +1242,12 @@ class _CompileContext:
         return measure_stage(self.output_dir, stage, function, *args, **kwargs)
 
 def _compile_preflight(ctx: _CompileContext):
-    if ctx.patron_algorithm_version == 11:
-        raise EmuFlowError("PATRON v11 is retired")
+    if (
+        isinstance(ctx.patron_algorithm_version, bool)
+        or not isinstance(ctx.patron_algorithm_version, int)
+        or ctx.patron_algorithm_version != 14
+    ):
+        raise EmuFlowError("only PATRON v14 is supported")
     if ctx.partition_provider not in {"patron", "tritonpart"}:
         raise EmuFlowError(f"unsupported Phase 3 provider {ctx.partition_provider!r}")
     if ctx._native_mode and (

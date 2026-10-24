@@ -124,7 +124,6 @@ struct Model {
   int ejection_critical_limit = 0;
   int ejection_donor_limit = 0;
   int max_ejections = 0;
-  bool flow_refinement = false;
   int flow_max_clusters = 0;
   int flow_corridor_distance = 0;
   int flow_piercing_strategy = 0;
@@ -132,12 +131,10 @@ struct Model {
   int flow_max_polish_moves = 0;
   int flow_max_frontier_paths = 0;
   int flow_max_tail_moves = 0;
-  int flow_version = 0;
   double positive_scale = 1.0;
   double negative_scale = 1.0;
   double max_period = 1.0;
   double boundary_fanout_penalty_scale_ns = 0.0;
-  double physical_hop_guard_scale_ns = 0.0;
   std::vector<std::vector<double>> hard_capacity;
   std::vector<std::vector<double>> balance_capacity;
   std::vector<Cluster> cluster;

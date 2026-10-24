@@ -160,7 +160,6 @@ from .packed_netlist import (
     validate_packed_netlist_file,
 )
 from .packed_placement import run_packed_openparf_placement
-from .partition_pressure import run_partition_pressure_reference
 from .physical_pins import (
     SERIAL_TRANSCEIVER_PROVIDER,
     run_phase6b,
@@ -888,7 +887,7 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--patron-algorithm-version",
         type=int,
-        choices=(6, 9, 10, 14),
+        choices=(14,),
         default=DEFAULT_PATRON_ALGORITHM_VERSION,
     )
     multi_fpga_compile.add_argument(
@@ -1830,7 +1829,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument(
         "--patron-algorithm-version",
         type=int,
-        choices=(6, 9, 10, 14),
+        choices=(14,),
         default=DEFAULT_PATRON_ALGORITHM_VERSION,
     )
     phase3.add_argument("--patron-initial-assignment", type=Path)
@@ -2036,25 +2035,6 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    partition_pressure = subparsers.add_parser(
-        "partition-pressure-reference",
-        help="run the compact exhaustive path/TDM-aware partition oracle",
-    )
-    partition_pressure.add_argument("--ir", type=Path, required=True)
-    partition_pressure.add_argument("--platform", type=Path, required=True)
-    partition_pressure.add_argument("--clusters", type=Path, required=True)
-    partition_pressure.add_argument("--constraints", type=Path, required=True)
-    partition_pressure.add_argument(
-        "--timing-database", type=Path, required=True
-    )
-    partition_pressure.add_argument(
-        "--route-constraints", type=Path, required=True
-    )
-    partition_pressure.add_argument(
-        "--initial-assignment", type=Path, required=True
-    )
-    partition_pressure.add_argument("--out", type=Path, required=True)
-    partition_pressure.add_argument("--max-moves", type=int)
 
     pin_plan_parser = subparsers.add_parser(
         "pin-plan",
@@ -3474,20 +3454,6 @@ def _dispatch(args: argparse.Namespace) -> int:
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
 
-    if args.command == "partition-pressure-reference":
-        report = run_partition_pressure_reference(
-            args.ir,
-            args.platform,
-            args.clusters,
-            args.constraints,
-            args.timing_database,
-            args.route_constraints,
-            args.initial_assignment,
-            args.out,
-            max_moves=args.max_moves,
-        )
-        _print_json(report)
-        return 0
 
     if args.command == "pin-plan":
         if args.pin_plan_command == "chimew-materialize-ratios":

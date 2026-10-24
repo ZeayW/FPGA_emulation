@@ -680,8 +680,7 @@ double predicted_route_delay(const Model& model,
   for (const Arc& arc : route.arcs) {
     delay += arc.delay_ns
              + std::max(0, ratios[arc.domain] - 1)
-                   * model.domain[arc.domain].ratio_delay_slope_ns
-             + model.physical_hop_guard_scale_ns;
+                   * model.domain[arc.domain].ratio_delay_slope_ns;
   }
   return delay;
 }
@@ -819,13 +818,10 @@ Model read_typed_model(const std::string& path) {
           "invalid PATRON typed input header");
   const int flow_version =
       typed_count(reader.u32("flow version"), "flow version", true);
-  require(flow_version == 6 || flow_version == 9 || flow_version == 10 ||
-              flow_version == 14,
+  require(flow_version == 14,
           "invalid PATRON typed input flow version");
   const std::uint32_t flags = reader.u32("flags");
-  const bool flow_refinement = flow_version != 6;
-  const std::uint32_t expected_flags =
-      1U | (flow_refinement ? 2U : 0U);
+  constexpr std::uint32_t expected_flags = 3U;
   require(flags == expected_flags, "invalid PATRON typed input flags");
 
   Model model;
@@ -853,8 +849,8 @@ Model read_typed_model(const std::string& path) {
   model.max_period = reader.finite_double("maximum period");
   model.boundary_fanout_penalty_scale_ns =
       reader.finite_double("boundary fanout penalty");
-  model.physical_hop_guard_scale_ns =
-      reader.finite_double("physical hop guard");
+  const double reserved_hop_guard_scale =
+      reader.finite_double("reserved hop guard");
   model.flow_max_clusters = reader.i32("flow maximum clusters");
   model.flow_corridor_distance = reader.i32("flow corridor distance");
   model.flow_piercing_strategy = reader.i32("flow piercing strategy");
@@ -872,33 +868,19 @@ Model read_typed_model(const std::string& path) {
               model.min_ratio > 0 && model.positive_scale > 0.0 &&
               model.negative_scale > 0.0 && model.max_period > 0.0 &&
               model.boundary_fanout_penalty_scale_ns >= 0.0 &&
-              model.physical_hop_guard_scale_ns >= 0.0,
+              reserved_hop_guard_scale == 0.0,
           "invalid PATRON typed input parameters");
-  if (flow_refinement) {
-    require(model.flow_max_clusters > 0 &&
-                model.flow_max_clusters <= model.clusters &&
-                model.flow_corridor_distance >= 0 &&
-                model.flow_corridor_distance <= model.clusters &&
-                model.flow_piercing_strategy >= 0 &&
-                model.flow_piercing_strategy <= 3 &&
-                model.flow_max_legal_candidates > 0 &&
-                model.flow_max_polish_moves >= 0 &&
-                model.flow_max_frontier_paths > 0 &&
-                model.flow_max_tail_moves >= 0,
-            "invalid PATRON typed input flow configuration");
-    model.flow_refinement = true;
-    model.flow_version = flow_version;
-  } else {
-    require(model.flow_max_clusters == 0 &&
-                model.flow_corridor_distance == 0 &&
-                model.flow_piercing_strategy == 0 &&
-                model.flow_max_legal_candidates == 0 &&
-                model.flow_max_polish_moves == 0 &&
-                model.flow_max_frontier_paths == 0 &&
-                model.flow_max_tail_moves == 0 &&
-                model.physical_hop_guard_scale_ns == 0.0,
-            "invalid PATRON typed input reference configuration");
-  }
+  require(model.flow_max_clusters > 0 &&
+              model.flow_max_clusters <= model.clusters &&
+              model.flow_corridor_distance >= 0 &&
+              model.flow_corridor_distance <= model.clusters &&
+              model.flow_piercing_strategy >= 0 &&
+              model.flow_piercing_strategy <= 3 &&
+              model.flow_max_legal_candidates > 0 &&
+              model.flow_max_polish_moves >= 0 &&
+              model.flow_max_frontier_paths > 0 &&
+              model.flow_max_tail_moves >= 0,
+          "invalid PATRON typed input flow configuration");
 
   model.hard_capacity.assign(
       model.parts, std::vector<double>(model.dimensions, 0.0));
@@ -1082,232 +1064,6 @@ Model read_typed_model(const std::string& path) {
           "trailing PATRON typed input bytes");
   bind_packed_members(model);
   return model;
-}
-
-Evaluation evaluate(const Model& model, const std::vector<int>& assignment) {
-  Evaluation result;
-  std::vector<std::vector<double>> load(
-      model.parts, std::vector<double>(model.dimensions, 0.0));
-  std::vector<int> part_counts(model.parts, 0);
-  for (int cluster = 0; cluster < model.clusters; ++cluster) {
-    const int part = assignment[cluster];
-    if (part < 0 || part >= model.parts
-        || (model.cluster[cluster].fixed >= 0
-            && model.cluster[cluster].fixed != part)) {
-      return result;
-    }
-    ++part_counts[part];
-    for (int dim = 0; dim < model.dimensions; ++dim) {
-      load[part][dim] += cluster_weight(model, cluster, dim);
-    }
-  }
-  if (std::count_if(part_counts.begin(), part_counts.end(),
-                    [](int count) { return count > 0; })
-      < model.min_used_parts) {
-    return result;
-  }
-  for (int part = 0; part < model.parts; ++part) {
-    for (int dim = 0; dim < model.dimensions; ++dim) {
-      if (load[part][dim] > model.hard_capacity[part][dim] + 1.0e-9
-          || load[part][dim]
-                 > model.balance_capacity[part][dim] + 1.0e-9) {
-        return result;
-      }
-    }
-  }
-
-  std::vector<int> domain_load(model.domains, 0);
-  std::vector<std::vector<Transition>> transitions(model.nets);
-  for (int net_index = 0; net_index < model.nets; ++net_index) {
-    std::set<int> sources;
-    std::map<int, int> sink_counts;
-    for (int cluster : model.net[net_index].drivers) {
-      sources.insert(assignment[cluster]);
-    }
-    for (int cluster : model.net[net_index].sinks) {
-      ++sink_counts[assignment[cluster]];
-    }
-    for (int source : sources) {
-      for (const auto& sink_item : sink_counts) {
-        const int sink = sink_item.first;
-        if (source == sink) {
-          continue;
-        }
-        const Route& route = model.route[source][sink];
-        if (!route.reachable
-            || (model.max_hops >= 0
-                && static_cast<int>(route.arcs.size()) > model.max_hops)) {
-          return result;
-        }
-        transitions[net_index].push_back(
-            Transition{source, sink, sink_item.second});
-        for (const Arc& arc : route.arcs) {
-          ++domain_load[arc.domain];
-        }
-      }
-    }
-  }
-  std::vector<int> ratios = paired_domain_ratios(model, domain_load);
-  int maximum_ratio = 1;
-  int maximum_load = 0;
-  for (int domain = 0; domain < model.domains; ++domain) {
-    maximum_ratio = std::max(maximum_ratio, ratios[domain]);
-    maximum_load = std::max(maximum_load, domain_load[domain]);
-  }
-
-  std::vector<double> net_delay(model.nets, 0.0);
-  std::vector<std::pair<int, int>> worst_transition(
-      model.nets, std::make_pair(-1, -1));
-  long long total_hops = 0;
-  long long cut_bits = 0;
-  for (int net_index = 0; net_index < model.nets; ++net_index) {
-    for (const auto& transition : transitions[net_index]) {
-      const Route& route = model.route[transition.source][transition.sink];
-      const double delay = predicted_transition_delay(
-          model, route, ratios, transition.sink_clusters);
-      const std::pair<int, int> identity = {
-          transition.source, transition.sink};
-      if (delay > net_delay[net_index]
-          || (std::abs(delay - net_delay[net_index]) <= 1.0e-12
-              && (worst_transition[net_index].first < 0
-                  || identity < worst_transition[net_index]))) {
-        net_delay[net_index] = delay;
-        worst_transition[net_index] = identity;
-      }
-      total_hops += static_cast<long long>(route.arcs.size());
-      ++cut_bits;
-    }
-  }
-
-  double worst_slack = std::numeric_limits<double>::infinity();
-  double total_negative = 0.0;
-  long long negative_paths = 0;
-  long long total_snaking = 0;
-  long long maximum_path_hops = 0;
-  long long maximum_path_ratio_sum = 0;
-  for (const Path& path : model.path) {
-    double transport = 0.0;
-    long long path_hops = 0;
-    long long path_ratio_sum = 0;
-    std::vector<int> sequence;
-    if (path.start_cluster >= 0) {
-      int target = assignment[path.end_cluster];
-      std::vector<std::pair<int, int>> reverse_transitions;
-      for (auto item = path.nets.rbegin(); item != path.nets.rend(); ++item) {
-        const Net& net = model.net[*item];
-        if (net.drivers.size() != 1) {
-          return result;
-        }
-        const int source = assignment[net.drivers.front()];
-        bool reaches_target = false;
-        for (int sink : net.sinks) {
-          reaches_target = reaches_target || assignment[sink] == target;
-        }
-        if (!reaches_target) {
-          return result;
-        }
-        if (source == target) {
-          continue;
-        }
-        const int sink_clusters = static_cast<int>(std::count_if(
-            net.sinks.begin(), net.sinks.end(), [&](int sink) {
-              return assignment[sink] == target;
-            }));
-        const Route& route = model.route[source][target];
-        if (!route.reachable
-            || (model.max_hops >= 0
-                && static_cast<int>(route.arcs.size()) > model.max_hops)) {
-          return result;
-        }
-        transport += predicted_transition_delay(
-            model, route, ratios, sink_clusters);
-        path_hops += static_cast<long long>(route.arcs.size());
-        int net_ratio = 1;
-        for (const Arc& arc : route.arcs) {
-          net_ratio = std::max(net_ratio, ratios[arc.domain]);
-        }
-        path_ratio_sum += net_ratio;
-        reverse_transitions.emplace_back(source, target);
-        target = source;
-      }
-      if (assignment[path.start_cluster] != target) {
-        return result;
-      }
-      for (auto item = reverse_transitions.rbegin();
-           item != reverse_transitions.rend(); ++item) {
-        for (int part : {item->first, item->second}) {
-          if (sequence.empty() || sequence.back() != part) {
-            sequence.push_back(part);
-          }
-        }
-      }
-    } else {
-      for (int net : path.nets) {
-        transport += net_delay[net];
-        const auto transition = worst_transition[net];
-        if (transition.first < 0) {
-          continue;
-        }
-        const Route& route = model.route[transition.first][transition.second];
-        path_hops += static_cast<long long>(route.arcs.size());
-        int net_ratio = 1;
-        for (const Arc& arc : route.arcs) {
-          net_ratio = std::max(net_ratio, ratios[arc.domain]);
-        }
-        path_ratio_sum += net_ratio;
-        for (int part : {transition.first, transition.second}) {
-          if (sequence.empty() || sequence.back() != part) {
-            sequence.push_back(part);
-          }
-        }
-      }
-    }
-    std::set<int> seen;
-    for (int part : sequence) {
-      if (seen.count(part)) {
-        ++total_snaking;
-      }
-      seen.insert(part);
-    }
-    const double predicted = path.slack_ns - transport;
-    const double normalized = normalized_slack(
-        model, path.period_ns, predicted);
-    worst_slack = std::min(worst_slack, normalized);
-    total_negative += std::min(0.0, normalized);
-    if (normalized < 0.0) {
-      ++negative_paths;
-    }
-    maximum_path_hops = std::max(maximum_path_hops, path_hops);
-    maximum_path_ratio_sum = std::max(
-        maximum_path_ratio_sum, path_ratio_sum);
-  }
-  result.feasible = true;
-  result.objective = {
-      -worst_slack,
-      -total_negative,
-      static_cast<double>(negative_paths),
-      static_cast<double>(maximum_ratio),
-      static_cast<double>(maximum_load),
-      static_cast<double>(total_snaking),
-      static_cast<double>(total_hops),
-      static_cast<double>(cut_bits),
-  };
-  const auto pressure = transport_capacity_pressure(model, domain_load);
-  result.ranked = {
-      maximum_path_hops,
-      maximum_path_ratio_sum,
-      rank_float(result.objective[0]),
-      rank_float(result.objective[1]),
-      negative_paths,
-      maximum_ratio,
-      maximum_load,
-      total_snaking,
-      total_hops,
-      cut_bits,
-  };
-  result.capacity_violations = pressure.first;
-  result.capacity_excess_bits = pressure.second;
-  return result;
 }
 
 ProxyNetState build_proxy_net(const Model& model,
@@ -1553,7 +1309,7 @@ ProxyState build_proxy_state(
     const Model& model,
     const std::vector<int>* assignment_override = nullptr) {
   ProxyState state;
-  state.transition_objective = model.flow_version == 14;
+  state.transition_objective = true;
   state.assignment.resize(model.clusters);
   state.resource_load.assign(
       model.parts, std::vector<double>(model.dimensions, 0.0));
@@ -1788,16 +1544,13 @@ std::vector<int> diagnose_flow_corridors(
           }
         };
 
-  const int maximum_corridor_clusters
-      = model.flow_refinement
-            ? model.flow_max_clusters
-            : std::min(50000, model.clusters);
+  const int maximum_corridor_clusters = model.flow_max_clusters;
   const int corridor_distance
-      = model.flow_refinement ? model.flow_corridor_distance : 2;
+      = model.flow_corridor_distance;
   const int maximum_legal_candidates
-      = model.flow_refinement ? model.flow_max_legal_candidates : 8;
+      = model.flow_max_legal_candidates;
   const int maximum_polish_moves
-      = model.flow_refinement ? model.flow_max_polish_moves : 512;
+      = model.flow_max_polish_moves;
   // Keep the already resource-legal assignment as the deterministic
   // secondary objective.  A zero-cost side preference lets an otherwise
   // equivalent net cut move millions of clusters onto one topology side;
@@ -3109,9 +2862,7 @@ std::vector<int> diagnose_flow_corridors(
                 && sink_excess <= 1.0e-12) {
               piercing_attempted = true;
               const int piercing_strategy
-                  = model.flow_refinement
-                        ? model.flow_piercing_strategy
-                        : 0;
+                  = model.flow_piercing_strategy;
               std::vector<bool> pierced(model.clusters, false);
               constexpr int kPiercingBatch = 1;
               std::vector<std::vector<double>> current_piercing_load
@@ -3989,16 +3740,14 @@ void write_typed_output(const std::string& output_path,
                         const Evaluation& final,
                         const std::vector<NativeMove>& moves,
                         const std::vector<int>& assignment,
-                        const std::vector<NativeBatch>& batches,
-                        int flow_output_version) {
+                        const std::vector<NativeBatch>& batches) {
   require(initial.objective.size() == 8 && final.objective.size() == 8,
           "PATRON typed output objective is incomplete");
   require(initial.ranked.size() == 10 && final.ranked.size() == 10,
           "PATRON typed output rank is incomplete");
   require(mode.size() <= std::numeric_limits<std::uint32_t>::max(),
           "PATRON typed output mode is too large");
-  const auto output_version = static_cast<std::uint32_t>(
-      flow_output_version == 0 ? 6 : flow_output_version);
+  constexpr std::uint32_t output_version = 14;
   std::uint64_t changes = 0;
   for (const NativeBatch& batch : batches) {
     changes += static_cast<std::uint64_t>(batch.changes.size());
@@ -4052,30 +3801,18 @@ void write_output(const std::string& output_path,
                   const std::vector<NativeMove>& moves,
                   const std::vector<int>& assignment,
                   const std::vector<NativeBatch>& batches = {},
-                  int flow_output_version = 0,
                   bool emit_trace = true,
                   bool typed_output = false) {
   if (typed_output) {
     require(!emit_trace,
             "PATRON typed output supports summary-only publication");
     write_typed_output(output_path, mode, initial, final, moves, assignment,
-                       batches, flow_output_version);
+                       batches);
     return;
   }
   std::ofstream output(output_path);
   require(output.good(), "cannot open output");
-  const char* header = "EMUFLOW_PATRON_OUTPUT_V6\n";
-  if (flow_output_version == 14) {
-    header = "EMUFLOW_PATRON_OUTPUT_V14\n";
-  } else if (flow_output_version == 10) {
-    header = "EMUFLOW_PATRON_OUTPUT_V10\n";
-  } else if (flow_output_version == 9) {
-    header = "EMUFLOW_PATRON_OUTPUT_V9\n";
-  } else if (flow_output_version == 8) {
-    header = "EMUFLOW_PATRON_OUTPUT_V8\n";
-  } else if (flow_output_version == 7) {
-    header = "EMUFLOW_PATRON_OUTPUT_V7\n";
-  }
+  const char* header = "EMUFLOW_PATRON_OUTPUT_V14\n";
   output << header;
   output << "MODE " << mode << '\n';
   output << "INITIAL";
@@ -4132,156 +3869,6 @@ void write_output(const std::string& output_path,
   output << "END\n";
 }
 
-void run_exact(const Model& model,
-               const std::string& output_path,
-               bool emit_trace,
-               bool typed_output) {
-  std::vector<int> assignment(model.clusters);
-  for (int cluster = 0; cluster < model.clusters; ++cluster) {
-    assignment[cluster] = model.cluster[cluster].part;
-  }
-  Evaluation current = evaluate(model, assignment);
-  require(current.feasible, "initial assignment is infeasible");
-
-  const Evaluation initial = current;
-  std::vector<NativeMove> moves;
-  while (static_cast<int>(moves.size()) < model.max_moves) {
-    bool found = false;
-    int best_phase = -1;
-    int best_cluster = -1;
-    int best_target = -1;
-    int best_partner = -1;
-    int best_partner_source = -1;
-    int best_partner_target = -1;
-    Evaluation best;
-    for (int cluster = 0; cluster < model.clusters; ++cluster) {
-      if (model.cluster[cluster].fixed >= 0) {
-        continue;
-      }
-      const int source = assignment[cluster];
-      for (int target = 0; target < model.parts; ++target) {
-        if (target == source) {
-          continue;
-        }
-        assignment[cluster] = target;
-        Evaluation candidate = evaluate(model, assignment);
-        assignment[cluster] = source;
-        if (!candidate.feasible
-            || !less_ranked(candidate.ranked, current.ranked)) {
-          continue;
-        }
-        const auto identity = std::make_tuple(0, cluster, target, -1, -1);
-        const auto best_identity = std::make_tuple(
-            best_phase,
-            best_cluster,
-            best_target,
-            best_partner,
-            best_partner_target);
-        if (!found || less_ranked(candidate.ranked, best.ranked)
-            || (candidate.ranked == best.ranked
-                && identity < best_identity)) {
-          found = true;
-          best_phase = 0;
-          best_cluster = cluster;
-          best_target = target;
-          best_partner = -1;
-          best_partner_source = -1;
-          best_partner_target = -1;
-          best = std::move(candidate);
-        }
-      }
-    }
-    for (int cluster = 0; cluster < model.clusters; ++cluster) {
-      if (model.cluster[cluster].fixed >= 0) {
-        continue;
-      }
-      const int source = assignment[cluster];
-      for (int target = 0; target < model.parts; ++target) {
-        if (target == source) {
-          continue;
-        }
-        for (int partner = 0; partner < model.clusters; ++partner) {
-          if (partner == cluster || model.cluster[partner].fixed >= 0
-              || assignment[partner] != target) {
-            continue;
-          }
-          const int partner_source = assignment[partner];
-          for (int partner_target = 0;
-               partner_target < model.parts;
-               ++partner_target) {
-            if (partner_target == partner_source) {
-              continue;
-            }
-            assignment[cluster] = target;
-            assignment[partner] = partner_target;
-            Evaluation candidate = evaluate(model, assignment);
-            assignment[cluster] = source;
-            assignment[partner] = partner_source;
-            if (!candidate.feasible
-                || !less_ranked(candidate.ranked, current.ranked)) {
-              continue;
-            }
-            const auto identity = std::make_tuple(
-                1, cluster, target, partner, partner_target);
-            const auto best_identity = std::make_tuple(
-                best_phase,
-                best_cluster,
-                best_target,
-                best_partner,
-                best_partner_target);
-            if (!found || less_ranked(candidate.ranked, best.ranked)
-                || (candidate.ranked == best.ranked
-                    && identity < best_identity)) {
-              found = true;
-              best_phase = 1;
-              best_cluster = cluster;
-              best_target = target;
-              best_partner = partner;
-              best_partner_source = partner_source;
-              best_partner_target = partner_target;
-              best = std::move(candidate);
-            }
-          }
-        }
-      }
-    }
-    if (!found) {
-      break;
-    }
-    const int source = assignment[best_cluster];
-    moves.push_back(NativeMove{
-        static_cast<int>(moves.size()),
-        best_phase,
-        0,
-        best_cluster,
-        source,
-        best_target,
-        best_partner,
-        best_partner_source,
-        best_partner_target,
-        current,
-        best});
-    assignment[best_cluster] = best_target;
-    if (best_partner >= 0) {
-      assignment[best_partner] = best_partner_target;
-    }
-    current = best;
-  }
-
-  require(current.ranked.size() == 10,
-          "final assignment objective rank is invalid");
-  write_output(output_path,
-               "endpoint-exact-global-best-v6",
-               initial,
-               current,
-               moves,
-               assignment,
-               {},
-               0,
-               emit_trace,
-               typed_output);
-}
-
 void run_scalable(const Model& model,
                   const std::string& output_path,
                   bool emit_trace,
@@ -4334,7 +3921,7 @@ void run_scalable(const Model& model,
   // primary objectives (maximum path hops, then maximum path TDM-ratio sum).
   //
   // Keep the historical multi-sweep behavior for qualification-sized models
-  // and older algorithms. For large v14 models, use the already-configured
+  // models. For large v14 models, use the already-configured
   // critical-cluster budget for the local seed sweep, then proceed to the
   // ejection/comove and exact frontier-flow phases. The order is ranked by
   // maximum path hops, maximum path ratio sum, and timing exposure, so this
@@ -4343,8 +3930,7 @@ void run_scalable(const Model& model,
   // predicate are unchanged.
   constexpr int large_v14_cluster_threshold = 500000;
   const bool bounded_large_flow =
-      model.flow_version >= 8
-      && model.clusters >= large_v14_cluster_threshold;
+      model.clusters >= large_v14_cluster_threshold;
   const int local_sweep_limit =
       bounded_large_flow ? 1 : model.max_sweeps;
   const int local_cluster_limit =
@@ -4696,7 +4282,7 @@ void run_scalable(const Model& model,
       = std::getenv("EMUFLOW_PATRON_COVER_DIAGNOSTIC");
   const bool cover_diagnostic = cover_diagnostic_value != nullptr
                                 && std::string(cover_diagnostic_value) == "1";
-  const bool flow_apply = model.flow_refinement;
+  constexpr bool flow_apply = true;
   if (cover_diagnostic && model.parts <= 8) {
     std::vector<int> permutation(model.parts);
     std::iota(permutation.begin(), permutation.end(), 0);
@@ -4857,8 +4443,7 @@ void run_scalable(const Model& model,
         long long selected_tail_clusters = 0;
         int accepted_tail_moves = 0;
         for (int iteration = 0;
-             model.flow_version >= 8
-                 && iteration < model.flow_max_tail_moves;
+             iteration < model.flow_max_tail_moves;
              ++iteration) {
           require(!refined.objective_path_order.empty(),
                   "flow tail repair has no objective paths");
@@ -4974,7 +4559,7 @@ void run_scalable(const Model& model,
             }
           };
           evaluate_candidates();
-          if (!found && model.flow_version >= 9) {
+          if (!found) {
             // Expand from the union of the independent maximum-hop and
             // maximum-ratio-sum frontiers only after that union stalls.
             candidate_clusters.clear();
@@ -5560,18 +5145,7 @@ void run_scalable(const Model& model,
           "final scalable assignment is infeasible");
   require(endpoint.evaluation.ranked.size() == 10,
           "final scalable assignment objective rank is invalid");
-  std::string mode = "endpoint-exact-critical-ejection-v6";
-  if (model.flow_version == 14) {
-    mode = "endpoint-exact-critical-flow-v14";
-  } else if (model.flow_version == 10) {
-    mode = "endpoint-exact-critical-flow-v10";
-  } else if (model.flow_version == 9) {
-    mode = "endpoint-exact-critical-flow-v9";
-  } else if (model.flow_version == 8) {
-    mode = "endpoint-exact-critical-flow-v8";
-  } else if (model.flow_version == 7) {
-    mode = "endpoint-exact-critical-flow-v7";
-  }
+  const std::string mode = "endpoint-exact-critical-flow-v14";
   write_output(output_path,
                mode,
                initial,
@@ -5579,7 +5153,6 @@ void run_scalable(const Model& model,
                moves,
                state.assignment,
                batches,
-               model.flow_version,
                emit_trace,
                typed_output);
 }
@@ -5588,12 +5161,7 @@ void run(const Model& model,
          const std::string& output_path,
          bool emit_trace,
          bool typed_output) {
-  require(model.flow_version != 11, "PATRON v11 is retired");
-  if (model.clusters <= 256 && !model.flow_refinement) {
-    run_exact(model, output_path, emit_trace, typed_output);
-  } else {
-    run_scalable(model, output_path, emit_trace, typed_output);
-  }
+  run_scalable(model, output_path, emit_trace, typed_output);
 }
 
 }  // namespace

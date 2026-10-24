@@ -77,9 +77,9 @@ and migration contracts. Native operations now share a typed C++ request/result
 API, registered artifact envelopes, file-generation checks, and a structured
 `--report` error/metrics contract. Phase 3 analysis consumes the shared compact
 EmuIR view with artifact-scoped record IDs and ordered connectivity traversal.
-PATRON v11 and its measured physical-residual feedback producer, input records
-and certificates are retired. Current v14 retains its predictive objective and
-independent structural/objective validation.
+PATRON production supports only v14. Earlier search versions, their native
+execution/protocol/certificate branches and the old reference-search CLI are
+retired; independent current-model and objective validation remain.
 PATRON search uses this unified entry; its separate executable and legacy text
 input are retired. Explicit input copies use the same checked typed binary
 protocol as streamed input.
@@ -347,22 +347,13 @@ path TDM-ratio sum, and timing exposure. The same order and the configured
 legal-candidate budget bound frontier tail repair when high-fanout nets expose
 very large endpoint sets. These limits prevent whole-design candidate scans
 from consuming the native timeout before the two primary objectives are
-reached. Small qualification models and older PATRON versions retain the
-configured exhaustive behavior; all capacity and lexicographic acceptance
+reached. Small qualification models retain the
+configured full search budgets; all capacity and lexicographic acceptance
 checks remain unchanged.
 
-Thin versioned runtime deployments rebuild the native Static Exact analyzer
-alongside the partition, routing, TDM ratio, timing-DAG,
-concrete-slot, and balance tools. Large-design Phase 3
-therefore uses native semantic validation from the same exact source revision
-as the refiner. Deployment selects the native compiler only after compiling and
-running a C++17 `<filesystem>` probe with the same statically linked C++ runtime
-used by the deployed tools; an explicit `CXX` override fails closed when it
-cannot satisfy that probe. This prevents launcher environment defaults such as
-GCC 7, or an older compute-node `libstdc++`, from producing a partial runtime.
-The compact bridge also derives dense native endpoint coordinates from stored
-endpoint order, so filtered legacy artifacts with sparse endpoint ordinals keep
-the same logical EmuIR semantics without rewriting the SQLite database.
+Thin versioned runtime deployments rebuild the unified native core and required
+Phase 3 analyzer/hop refiner from the same source revision. Installed runtime
+checks bind current executables, modules and data to that source.
 
 - State the period of every analyzed clock explicitly.
 - Mapping profiles must match the physical device model; generic soft mapping

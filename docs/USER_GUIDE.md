@@ -299,8 +299,11 @@ emuflow phase7c --help
 `--partition-provider` selects the optimizer. `--cut-mode` separately selects
 boundary semantics; `static-exact-combinational` requires the supported
 single-virtual-clock contract. Selecting `sequential-only` does not select an
-older PATRON version: v14 rejects that combination. Explicit reference reruns
-must name both their algorithm version and noncurrent boundary policy. The
+older PATRON version: v14 rejects that combination. Only v14 is supported;
+`--patron-algorithm-version` may explicitly seal 14 but cannot select a retired
+search. The `partition-pressure-reference` runner is removed; current independent
+model/objective and assignment validation remain. Old experiments use their
+matching Git revision. The
 redundant `--patron-flow-refinement` flag, Python argument and experiment-config
 key are retired; an explicit algorithm version determines its own refinement
 behavior. Published reports retain the derived field for validation and must

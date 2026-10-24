@@ -19,10 +19,10 @@ std::array<unsigned char,32> Signature(const Model& m) {
   FIELD(parts); FIELD(clusters); FIELD(dimensions); FIELD(domains); FIELD(nets); FIELD(paths);
   FIELD(max_hops); FIELD(max_ratio); FIELD(ratio_quantum); FIELD(min_ratio); FIELD(min_used_parts);
   FIELD(max_moves); FIELD(max_sweeps); FIELD(ejection_critical_limit); FIELD(ejection_donor_limit); FIELD(max_ejections);
-  FIELD(flow_refinement); FIELD(flow_max_clusters); FIELD(flow_corridor_distance); FIELD(flow_piercing_strategy);
+  put(true); FIELD(flow_max_clusters); FIELD(flow_corridor_distance); FIELD(flow_piercing_strategy);
   FIELD(flow_max_legal_candidates); FIELD(flow_max_polish_moves); FIELD(flow_max_frontier_paths); FIELD(flow_max_tail_moves);
-  FIELD(flow_version); FIELD(positive_scale); FIELD(negative_scale); FIELD(max_period);
-  FIELD(boundary_fanout_penalty_scale_ns); FIELD(physical_hop_guard_scale_ns);
+  put(14); FIELD(positive_scale); FIELD(negative_scale); FIELD(max_period);
+  FIELD(boundary_fanout_penalty_scale_ns); put(0.0);
 #undef FIELD
   for (const auto& row:m.hard_capacity) for (auto value:row) put(value);
   for (const auto& row:m.balance_capacity) for (auto value:row) put(value);

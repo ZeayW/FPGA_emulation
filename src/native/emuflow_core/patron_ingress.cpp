@@ -100,14 +100,14 @@ patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBui
   const std::set<std::string> classes={"clock","reset","primary_input","register_output","register_input","combinational","multi_driver","undriven"};
   for (const auto& value:transported) Check(classes.count(value),"unknown PATRON cut class");
   const auto expected_paths=request.get<std::uint64_t>();
-  patron::Model model; model.parts=parts.size(); model.flow_version=14; model.flow_refinement=true;
+  patron::Model model; model.parts=parts.size();
   model.max_hops=request.get<std::int32_t>(); model.max_ratio=request.get<std::int32_t>();
   model.ratio_quantum=request.get<std::int32_t>(); model.min_used_parts=request.get<std::int32_t>();
   model.max_moves=request.get<std::int32_t>(); model.max_sweeps=request.get<std::int32_t>();
   model.ejection_critical_limit=request.get<std::int32_t>(); model.ejection_donor_limit=request.get<std::int32_t>();
   model.max_ejections=request.get<std::int32_t>(); model.min_ratio=request.get<std::int32_t>();
   model.positive_scale=request.number(); model.negative_scale=request.number(); model.max_period=request.number();
-  model.boundary_fanout_penalty_scale_ns=request.number(); model.physical_hop_guard_scale_ns=request.number();
+  model.boundary_fanout_penalty_scale_ns=request.number(); const double reserved_hop_guard_scale=request.number();
   model.flow_corridor_distance=request.get<std::int32_t>(); model.flow_piercing_strategy=request.get<std::int32_t>();
   model.flow_max_legal_candidates=request.get<std::int32_t>(); model.flow_max_polish_moves=request.get<std::int32_t>();
   model.flow_max_frontier_paths=request.get<std::int32_t>(); model.flow_max_tail_moves=request.get<std::int32_t>();
@@ -115,7 +115,7 @@ patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBui
         model.min_used_parts>0 && model.min_used_parts<=model.parts && model.max_moves>=0 && model.max_sweeps>0 &&
         model.ejection_critical_limit>=0 && model.ejection_donor_limit>=0 && model.max_ejections>=0 &&
         model.positive_scale>0 && model.negative_scale>0 && model.max_period>0 && model.boundary_fanout_penalty_scale_ns>=0 &&
-        model.physical_hop_guard_scale_ns==0 && model.flow_corridor_distance>=0 && model.flow_piercing_strategy>=0 &&
+        reserved_hop_guard_scale==0 && model.flow_corridor_distance>=0 && model.flow_piercing_strategy>=0 &&
         model.flow_piercing_strategy<=3 && model.flow_max_legal_candidates>0 && model.flow_max_polish_moves>=0 &&
         model.flow_max_frontier_paths>0 && model.flow_max_tail_moves>=0,"invalid PATRON model configuration");
   std::array<bool,13> balanced{}; std::array<double,13> tolerance{};

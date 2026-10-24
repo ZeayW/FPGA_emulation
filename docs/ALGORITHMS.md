@@ -59,11 +59,19 @@ There is no external balance legalizer. EmuFlow checks
 and repairs configured hop constraints before handing the initial assignment
 to PATRON. See the [TritonPart project and publication](https://github.com/ABKGroup/TritonPart).
 
-The v11 physical-residual feedback route is retired with its source owner,
-CLI/API inputs, typed path extensions and feedback certificates. Old v11 results
-require their matching Git revision; the current v14 predictive objective does
-not consume measured physical residuals. This removal does not qualify a new
-partition algorithm or replace complete physical/global timing acceptance.
+Only PATRON v14 is supported in production. The older native global-best and
+critical-flow variants, v10 hop-guard scoring, v11 measured-residual feedback,
+legacy trace/provider dispatch and full reference-search runner are retired.
+Old results require their matching Git revision. The shared model's v6 schema
+is still current: its storage version is independent of the search algorithm.
+The v14 typed wire contract, min-cut/ejection kernels and independent complete
+model/objective/assignment validation remain. Detailed qualification merges
+moves and flow batches as ordered subsequences using independently checked,
+strictly improving objective ranks. Sweep labels describe a local pass rather
+than a global event order. Each source/target/fixed/resource transition and the
+complete initial/final objectives are reconstructed; production still publishes
+summary-only typed results. A bounded fixture comparison is
+not a replacement for real-design physical/global timing acceptance.
 
 **PATRON is EmuFlow's communication-aware post-processing algorithm.** Its
 native C++ local search starts from that assignment and considers single

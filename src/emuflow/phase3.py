@@ -393,15 +393,13 @@ def run_phase3(
     if (
         isinstance(patron_algorithm_version, bool)
         or not isinstance(patron_algorithm_version, int)
-        or patron_algorithm_version not in {6, 9, 10, 14}
+        or patron_algorithm_version not in {14}
     ):
         raise ValidationError("PATRON algorithm version is invalid")
-    patron_flow_refinement = provider == "patron" and patron_algorithm_version != 6
+    patron_flow_refinement = provider == "patron"
 
     if (
-        provider == "patron"
-        and patron_algorithm_version == 14
-        and cut_mode != CUT_MODE_STATIC_EXACT
+        (provider == "patron" and cut_mode != CUT_MODE_STATIC_EXACT)
     ):
         raise ValidationError(
             "PATRON v14 requires generalized Static Exact mode"
@@ -596,7 +594,7 @@ def run_phase3(
                 clusters,
                 constraints,
                 read_json(patron_initial_assignment_path),
-                include_semantic_contract=(patron_algorithm_version != 14),
+                include_semantic_contract=False,
             )
         phase3_runtime_observe(
             patron_initial_derived_records_deferred=int(
@@ -635,8 +633,8 @@ def run_phase3(
         )
         from .phase3_pressure_native import supports_native_pressure_model
         native_store_model = (
-            not retain_diagnostics and patron_initial_clusters_path is None
-            and patron_algorithm_version == 14
+            not retain_diagnostics
+            and patron_initial_clusters_path is None
             and (patron_refiner is None or is_unified_native_executable(patron_refiner))
             and not os.environ.get("EMUFLOW_PATRON_INPUT_COPY")
             and supports_native_pressure_model(ir, clusters, timing_database)
@@ -828,15 +826,14 @@ def run_phase3(
             if native_store_model:
                 patron_validation["model_implementation_id"] = patron_trace["model_implementation_id"]
                 patron_validation["native_model_metrics"] = patron_trace["native_model_metrics"]
-        if patron_algorithm_version == 14:
-            assignment, candidate_selection = phase3_runtime_call(
-                "patron.select_candidate",
-                _select_patron_timing_assignment,
-                initial,
-                assignment,
-                patron_trace,
-            )
-            patron_validation["candidate_selection"] = candidate_selection
+        assignment, candidate_selection = phase3_runtime_call(
+            "patron.select_candidate",
+            _select_patron_timing_assignment,
+            initial,
+            assignment,
+            patron_trace,
+        )
+        patron_validation["candidate_selection"] = candidate_selection
         if not retain_diagnostics:
             # The pressure graph, timing source and native trace are no longer
             # inputs after online validation and v14 candidate selection.  In
@@ -1060,7 +1057,7 @@ def run_phase3(
                 "storage": "not-persisted",
                 "reason": "production-hot-path",
                 "offline_qualification": (
-                    "available-via-partition-pressure-reference"
+                    "independent-current-model-validator"
                 ),
             }
         if patron_initial_assignment_path is None and retain_diagnostics:

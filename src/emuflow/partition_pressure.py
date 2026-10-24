@@ -68,61 +68,22 @@ from .sta import (
 
 
 PARTITION_PRESSURE_MODEL_SCHEMA = "emuflow.partition-pressure-model/v6"
-PARTITION_PRESSURE_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v6"
-PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V7 = (
-    "emuflow.partition-pressure-trace/v7"
-)
-PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V8 = (
-    "emuflow.partition-pressure-trace/v8"
-)
-PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V9 = (
-    "emuflow.partition-pressure-trace/v9"
-)
-PARTITION_PRESSURE_FLOW_TRACE_SCHEMA = "emuflow.partition-pressure-trace/v10"
 PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14 = (
     "emuflow.partition-pressure-trace/v14"
 )
 _PATRON_TYPED_OUTPUT_MAGIC = 0x3154554F54415045
 _PATRON_TYPED_OUTPUT_VERSION = 1
 
-PATRON_FLOW_REFINEMENT_ALGORITHM_V1 = (
-    "flowcutter-bidirectional-piercing-v1"
-)
-PATRON_FLOW_REFINEMENT_ALGORITHM_V2 = (
-    "flowcutter-bidirectional-piercing-frontier-closure-v2"
-)
-PATRON_FLOW_REFINEMENT_ALGORITHM = (
-    "flowcutter-bidirectional-piercing-physical-hop-guard-v4"
-)
 PATRON_FLOW_REFINEMENT_ALGORITHM_V8 = (
     "flowcutter-ranked-frontier-predictive-timing-v8"
-)
-PATRON_FLOW_REFINEMENT_ALGORITHM_V3 = (
-    "flowcutter-bidirectional-piercing-ranked-frontier-closure-v3"
 )
 PATRON_FLOW_CORRIDOR_DISTANCE = 4
 PATRON_FLOW_PIERCING_STRATEGY = 0
 PATRON_FLOW_MAX_LEGAL_CANDIDATES = 8
 PATRON_FLOW_MAX_POLISH_MOVES = 512
 PATRON_FLOW_MAX_FRONTIER_PATHS = 256
-PATRON_FLOW_MAX_TAIL_MOVES_V2 = 16
 PATRON_FLOW_MAX_TAIL_MOVES = 256
-PATRON_FLOW_PHYSICAL_HOP_GUARD_SCALE_NS = 5.0
-PARTITION_PRESSURE_REPORT_SCHEMA = "emuflow.partition-pressure-report/v6"
 PARTITION_PRESSURE_PROVIDER = "patron-endpoint-exact-reference-v6"
-PARTITION_PRESSURE_NATIVE_PROVIDER = "patron-endpoint-exact-native-v6"
-PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V7 = (
-    "patron-endpoint-exact-flow-native-v7"
-)
-PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V8 = (
-    "patron-endpoint-exact-flow-native-v8"
-)
-PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V9 = (
-    "patron-endpoint-exact-flow-native-v9"
-)
-PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER = (
-    "patron-endpoint-exact-flow-native-v10"
-)
 PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14 = (
     "patron-predictive-timing-flow-native-v14"
 )
@@ -920,11 +881,9 @@ class _NativeBinaryPipeWriter:
         scalars: Tuple[float, float, float, float, float],
         flow_configuration: Tuple[int, int, int, int, int, int, int],
     ) -> None:
-        if flow_version not in {6, 9, 10, 14}:
+        if flow_version not in {14}:
             raise ValidationError("native PATRON algorithm version is invalid")
-        flags = 1
-        if flow_version != 6:
-            flags |= 2
+        flags = 3
         self._emit(
             "<8sIIII6Q10i5d7i",
             _PATRON_TYPED_INPUT_MAGIC,
@@ -1222,86 +1181,27 @@ def _pressure_ir_source_digest(ir: Any) -> str:
 
 
 def _flow_refinement_configuration(
-    enabled: bool,
-    cluster_count: int,
-    *,
-    version: int = 4,
+    enabled: bool, cluster_count: int, *, version: int = 8,
 ) -> Dict[str, Any]:
-    if version not in (1, 2, 3, 4, 8):
+    if enabled is not True or isinstance(version, bool) or version != 8:
         raise ValidationError("native PATRON flow version is invalid")
-    result = {
-        "enabled": enabled,
-        "algorithm": (
-            PATRON_FLOW_REFINEMENT_ALGORITHM_V8
-            if version == 8
-            else (
-                PATRON_FLOW_REFINEMENT_ALGORITHM
-                if version == 4
-                else (
-                    PATRON_FLOW_REFINEMENT_ALGORITHM_V3
-                    if version == 3
-                    else (
-                        PATRON_FLOW_REFINEMENT_ALGORITHM_V2
-                        if version == 2
-                        else PATRON_FLOW_REFINEMENT_ALGORITHM_V1
-                    )
-                )
-            )
-        ),
-        "maximum_corridor_clusters": cluster_count if enabled else 0,
-        "corridor_distance": (
-            PATRON_FLOW_CORRIDOR_DISTANCE if enabled else 0
-        ),
-        "piercing_strategy": (
-            PATRON_FLOW_PIERCING_STRATEGY if enabled else 0
-        ),
-        "maximum_legal_candidates": (
-            PATRON_FLOW_MAX_LEGAL_CANDIDATES if enabled else 0
-        ),
-        "maximum_polish_moves": (
-            PATRON_FLOW_MAX_POLISH_MOVES if enabled else 0
-        ),
+    return {
+        "enabled": True,
+        "algorithm": PATRON_FLOW_REFINEMENT_ALGORITHM_V8,
+        "maximum_corridor_clusters": cluster_count,
+        "corridor_distance": PATRON_FLOW_CORRIDOR_DISTANCE,
+        "piercing_strategy": PATRON_FLOW_PIERCING_STRATEGY,
+        "maximum_legal_candidates": PATRON_FLOW_MAX_LEGAL_CANDIDATES,
+        "maximum_polish_moves": PATRON_FLOW_MAX_POLISH_MOVES,
+        "maximum_frontier_paths": PATRON_FLOW_MAX_FRONTIER_PATHS,
+        "maximum_tail_moves": PATRON_FLOW_MAX_TAIL_MOVES,
+        "frontier_selection": "ranked-worst-path-window-v1",
+        "physical_hop_guard": "disabled",
+        "physical_hop_guard_scale_ns": 0.0,
+        "path_transition_objective": "timing-path-partition-transitions-v1",
+        "selection_contract": "provider-neutral-predictive-timing-v1",
     }
-    if version >= 2:
-        result.update(
-            {
-                "maximum_frontier_paths": (
-                    PATRON_FLOW_MAX_FRONTIER_PATHS if enabled else 0
-                ),
-                "maximum_tail_moves": (
-                    (
-                        PATRON_FLOW_MAX_TAIL_MOVES
-                        if version >= 3
-                        else PATRON_FLOW_MAX_TAIL_MOVES_V2
-                    )
-                    if enabled
-                    else 0
-                ),
-            }
-        )
-    if version >= 3:
-        result["frontier_selection"] = "ranked-worst-path-window-v1"
-    if version == 4:
-        result.update(
-            {
-                "physical_hop_guard": "scale_ns*route_hops",
-                "physical_hop_guard_scale_ns": (
-                    PATRON_FLOW_PHYSICAL_HOP_GUARD_SCALE_NS
-                    if enabled
-                    else 0.0
-                ),
-            }
-        )
-    if version == 8:
-        result.update(
-            {
-                "physical_hop_guard": "disabled",
-                "physical_hop_guard_scale_ns": 0.0,
-                "path_transition_objective": "timing-path-partition-transitions-v1",
-                "selection_contract": "provider-neutral-predictive-timing-v1",
-            }
-        )
-    return result
+
 
 
 def _require_finite(value: Any, context: str) -> float:
@@ -2469,7 +2369,6 @@ def _predicted_route_delay(
     route: Iterable[Mapping[str, Any]],
     *,
     include_tdm_wait: bool,
-    physical_hop_guard_scale_ns: float = 0.0,
 ) -> float:
     delay = 0.0
     for arc in route:
@@ -2484,7 +2383,6 @@ def _predicted_route_delay(
                 platform, arc["link"], arc["from"], arc["to"],
                 route_constraints,
             )
-        delay += physical_hop_guard_scale_ns
     return delay
 
 
@@ -2516,7 +2414,6 @@ def _endpoint_exact_path_transport(
     domain_ratios: Mapping[str, int],
     *,
     include_tdm_wait: bool,
-    physical_hop_guard_scale_ns: float = 0.0,
 ) -> Tuple[float, List[str], int, int, int]:
     """Recover the concrete fanout branch used by one timing path."""
 
@@ -2563,7 +2460,6 @@ def _endpoint_exact_path_transport(
             domain_ratios,
             route,
             include_tdm_wait=include_tdm_wait,
-            physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
         )
         transport += _boundary_fanout_penalty(
             model, remote_sink_clusters
@@ -2606,7 +2502,6 @@ def evaluate_partition_pressure(
     cluster_assignment: Mapping[str, str],
     *,
     include_tdm_wait: bool = True,
-    physical_hop_guard_scale_ns: float = 0.0,
     path_transition_objective: bool = False,
 ) -> Dict[str, Any]:
     """Fully recompute the PATRON objective for one compact assignment."""
@@ -2626,14 +2521,6 @@ def evaluate_partition_pressure(
         seed=0,
     )
     validate_partition_artifacts(ir, platform, clusters_artifact, assignment)
-    physical_hop_guard_scale_ns = _require_finite(
-        physical_hop_guard_scale_ns,
-        "partition pressure physical hop guard scale",
-    )
-    if physical_hop_guard_scale_ns < 0.0:
-        raise ValidationError(
-            "partition pressure physical hop guard scale must be non-negative"
-        )
     cluster_parts = dict(cluster_assignment)
     domain_by_arc = _capacity_key_by_arc(model)
     capacity_by_key = {record["key"]: record for record in model["capacities"]}
@@ -2733,7 +2620,6 @@ def evaluate_partition_pressure(
                 domain_ratios,
                 route["arcs"],
                 include_tdm_wait=include_tdm_wait,
-                physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
             )
             delay += _boundary_fanout_penalty(
                 model, route["remote_sink_clusters"]
@@ -2777,9 +2663,6 @@ def evaluate_partition_pressure(
                     domain_by_arc,
                     domain_ratios,
                     include_tdm_wait=include_tdm_wait,
-                    physical_hop_guard_scale_ns=(
-                        physical_hop_guard_scale_ns
-                    ),
                 )
             )
         else:
@@ -2895,6 +2778,14 @@ def evaluate_partition_pressure(
     }
 
 
+
+
+
+
+
+
+
+
 def _ranked_key(evaluation: Mapping[str, Any]) -> Tuple[int, ...]:
     metrics = evaluation["metrics"]
     objective = metrics["objective_key"]
@@ -2910,312 +2801,6 @@ def _ranked_key(evaluation: Mapping[str, Any]) -> Tuple[int, ...]:
         int(objective[6]),
         int(objective[7]),
     )
-
-
-def refine_partition_pressure_exhaustive(
-    ir: EmuIR,
-    platform: Platform,
-    clusters_artifact: Mapping[str, Any],
-    constraints: Mapping[str, Any],
-    route_constraints: Mapping[str, Any],
-    model: Mapping[str, Any],
-    initial_assignment: Mapping[str, Any],
-    *,
-    max_moves: Optional[int] = None,
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Reference global-best direct/ejection refinement for compact graphs."""
-
-    current = dict(initial_assignment["cluster_assignment"])
-    initial = evaluate_partition_pressure(
-        ir,
-        platform,
-        clusters_artifact,
-        constraints,
-        route_constraints,
-        model,
-        current,
-    )
-    current_evaluation = initial
-    moves = []
-    fixed = {
-        cluster["cluster"]: cluster["fixed_fpga"]
-        for cluster in model["clusters"]
-    }
-    fpga_ids = sorted(record["fpga"] for record in model["fpgas"])
-    limit = len(current) if max_moves is None else max_moves
-    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
-        raise ValidationError("partition pressure max_moves is invalid")
-
-    while len(moves) < limit:
-        incumbent_key = _ranked_key(current_evaluation)
-        candidates = []
-        for cluster in sorted(current):
-            if fixed[cluster] is not None:
-                continue
-            source = current[cluster]
-            for target in fpga_ids:
-                if target == source:
-                    continue
-                trial = dict(current)
-                trial[cluster] = target
-                try:
-                    evaluation = evaluate_partition_pressure(
-                        ir,
-                        platform,
-                        clusters_artifact,
-                        constraints,
-                        route_constraints,
-                        model,
-                        trial,
-                    )
-                except ValidationError:
-                    continue
-                ranked = _ranked_key(evaluation)
-                if ranked >= incumbent_key:
-                    continue
-                candidates.append(
-                    (ranked, 0, cluster, target, None, None, evaluation)
-                )
-        movable = [
-            cluster for cluster in sorted(current) if fixed[cluster] is None
-        ]
-        for cluster in movable:
-            source = current[cluster]
-            for target in fpga_ids:
-                if target == source:
-                    continue
-                for partner in movable:
-                    if partner == cluster or current[partner] != target:
-                        continue
-                    for partner_target in fpga_ids:
-                        if partner_target == target:
-                            continue
-                        trial = dict(current)
-                        trial[cluster] = target
-                        trial[partner] = partner_target
-                        try:
-                            evaluation = evaluate_partition_pressure(
-                                ir,
-                                platform,
-                                clusters_artifact,
-                                constraints,
-                                route_constraints,
-                                model,
-                                trial,
-                            )
-                        except ValidationError:
-                            continue
-                        ranked = _ranked_key(evaluation)
-                        if ranked >= incumbent_key:
-                            continue
-                        candidates.append(
-                            (
-                                ranked,
-                                1,
-                                cluster,
-                                target,
-                                partner,
-                                partner_target,
-                                evaluation,
-                            )
-                        )
-        if not candidates:
-            break
-        (
-            ranked,
-            phase,
-            cluster,
-            target,
-            partner,
-            partner_target,
-            selected,
-        ) = min(
-            candidates,
-            key=lambda item: (
-                item[0],
-                item[1],
-                item[2],
-                item[3],
-                "" if item[4] is None else item[4],
-                "" if item[5] is None else item[5],
-            ),
-        )
-        source = current[cluster]
-        partner_source = None if partner is None else current[partner]
-        moves.append(
-            {
-                "index": len(moves),
-                "kind": "move" if phase == 0 else "ejection",
-                "phase": phase,
-                "sweep": 0,
-                "cluster": cluster,
-                "source": source,
-                "target": target,
-                "partner": partner,
-                "partner_source": partner_source,
-                "partner_target": partner_target,
-                "before_objective_key": current_evaluation["metrics"][
-                    "objective_key"
-                ],
-                "after_objective_key": selected["metrics"]["objective_key"],
-                "ranked_objective_key": list(ranked),
-            }
-        )
-        current[cluster] = target
-        if partner is not None:
-            current[partner] = partner_target
-        current_evaluation = selected
-
-    final_assignment = build_partition_assignment(
-        ir,
-        platform,
-        clusters_artifact,
-        constraints,
-        current,
-        provider=PARTITION_PRESSURE_PROVIDER,
-        seed=initial_assignment.get("seed", 0),
-        provider_metadata={
-            "initial_provider": initial_assignment.get("provider"),
-            "model_sha256": _canonical_digest(model),
-        },
-    )
-    trace = {
-        "schema": PARTITION_PRESSURE_TRACE_SCHEMA,
-        "design": model["design"],
-        "platform": model["platform"],
-        "provider": PARTITION_PRESSURE_PROVIDER,
-        "model_sha256": _canonical_digest(model),
-        "initial_assignment_sha256": _canonical_digest(initial_assignment),
-        "initial_metrics": initial["metrics"],
-        "moves": moves,
-        "final_metrics": current_evaluation["metrics"],
-        "final_cluster_assignment_sha256": _canonical_digest(current),
-    }
-    return final_assignment, trace
-
-
-def validate_partition_pressure_trace(
-    ir: EmuIR,
-    platform: Platform,
-    clusters_artifact: Mapping[str, Any],
-    constraints: Mapping[str, Any],
-    route_constraints: Mapping[str, Any],
-    model: Mapping[str, Any],
-    initial_assignment: Mapping[str, Any],
-    final_assignment: Mapping[str, Any],
-    trace: Mapping[str, Any],
-) -> Dict[str, Any]:
-    if trace.get("schema") != PARTITION_PRESSURE_TRACE_SCHEMA:
-        raise ValidationError("partition pressure trace schema is invalid")
-    expected_assignment, expected_trace = refine_partition_pressure_exhaustive(
-        ir,
-        platform,
-        clusters_artifact,
-        constraints,
-        route_constraints,
-        model,
-        initial_assignment,
-        max_moves=len(trace.get("moves", [])),
-    )
-    if trace != expected_trace:
-        raise ValidationError("partition pressure trace reconstruction mismatch")
-    if final_assignment != expected_assignment:
-        raise ValidationError("partition pressure final assignment mismatch")
-    return {
-        "status": "pass",
-        "moves": len(expected_trace["moves"]),
-        "initial_objective_key": expected_trace["initial_metrics"][
-            "objective_key"
-        ],
-        "final_objective_key": expected_trace["final_metrics"][
-            "objective_key"
-        ],
-    }
-
-
-def run_partition_pressure_reference(
-    ir_path: Path,
-    platform_path: Path,
-    clusters_path: Path,
-    constraints_path: Path,
-    timing_database_path: Path,
-    route_constraints_path: Path,
-    initial_assignment_path: Path,
-    output_dir: Path,
-    *,
-    max_moves: Optional[int] = None,
-) -> Dict[str, Any]:
-    """Run the compact exhaustive reference and write a checked bundle."""
-
-    ir = EmuIR.load(ir_path)
-    platform = Platform.load(platform_path)
-    clusters = read_json(clusters_path)
-    constraints = read_json(constraints_path)
-    timing = read_json(timing_database_path)
-    route_constraints = normalize_route_constraints(
-        read_json(route_constraints_path), platform
-    )
-    initial = read_json(initial_assignment_path)
-    validate_partition_artifacts(ir, platform, clusters, initial)
-    model = build_partition_pressure_model(
-        ir,
-        platform,
-        clusters,
-        constraints,
-        timing,
-        route_constraints,
-        timing_database_path=timing_database_path,
-    )
-    final, trace = refine_partition_pressure_exhaustive(
-        ir,
-        platform,
-        clusters,
-        constraints,
-        route_constraints,
-        model,
-        initial,
-        max_moves=max_moves,
-    )
-    validation = validate_partition_pressure_trace(
-        ir,
-        platform,
-        clusters,
-        constraints,
-        route_constraints,
-        model,
-        initial,
-        final,
-        trace,
-    )
-    report = {
-        "schema": PARTITION_PRESSURE_REPORT_SCHEMA,
-        "status": "pass",
-        "design": model["design"],
-        "platform": model["platform"],
-        "provider": PARTITION_PRESSURE_PROVIDER,
-        "qualification": "compact-exhaustive-reference",
-        "validation": validation,
-        "source_sha256": {
-            "ir": _canonical_digest(ir.value),
-            "platform": _canonical_digest(platform.to_dict()),
-            "clusters": _canonical_digest(clusters),
-            "constraints": _canonical_digest(constraints),
-            "timing_database": _canonical_digest(timing),
-            "route_constraints": _canonical_digest(route_constraints),
-            "initial_assignment": _canonical_digest(initial),
-        },
-        "artifacts": {
-            "model": "partition_pressure_model.json",
-            "trace": "partition_pressure_trace.json",
-            "assignment": "assignment.json",
-            "report": "partition_pressure_report.json",
-        },
-    }
-    write_json(output_dir / "partition_pressure_model.json", model)
-    write_json(output_dir / "partition_pressure_trace.json", trace)
-    write_json(output_dir / "assignment.json", final)
-    write_json(output_dir / "partition_pressure_report.json", report)
-    return report
 
 
 def _native_dimensions(
@@ -3253,13 +2838,11 @@ def _write_patron_native_input(
     flow_version: int,
     _writer: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    if flow_version not in {6, 9, 10, 14}:
+    if flow_version not in {14}:
         raise ValidationError("native PATRON algorithm version is invalid")
-    flow_refinement = flow_version != 6
-    if flow_version == 14 and (
-        clusters_artifact.get("policy", {}).get("cut_mode")
-        != CUT_MODE_STATIC_EXACT
-    ):
+    flow_refinement = True
+    if (clusters_artifact.get("policy", {}).get("cut_mode")
+        != CUT_MODE_STATIC_EXACT):
         raise ValidationError(
             "native PATRON v14 requires generalized Static Exact clusters"
         )
@@ -3328,11 +2911,7 @@ def _write_patron_native_input(
         lines = _writer
     published = False
     try:
-        physical_hop_guard_scale_ns = (
-            PATRON_FLOW_PHYSICAL_HOP_GUARD_SCALE_NS
-            if flow_version == 10
-            else 0.0
-        )
+        reserved_hop_guard_scale = 0.0
         flow_configuration = (
             (
                 len(clusters),
@@ -3343,8 +2922,6 @@ def _write_patron_native_input(
                 PATRON_FLOW_MAX_FRONTIER_PATHS,
                 PATRON_FLOW_MAX_TAIL_MOVES,
             )
-            if flow_refinement
-            else (0, 0, 0, 0, 0, 0, 0)
         )
         lines.header(
             flow_version=flow_version,
@@ -3379,7 +2956,7 @@ def _write_patron_native_input(
                 model["configuration"][
                     "boundary_fanout_penalty_scale_ns"
                 ],
-                physical_hop_guard_scale_ns,
+                reserved_hop_guard_scale,
             ),
             flow_configuration=flow_configuration,
         )
@@ -3632,7 +3209,7 @@ def _parse_patron_typed_output(
             if (
                 magic != _PATRON_TYPED_OUTPUT_MAGIC
                 or version != _PATRON_TYPED_OUTPUT_VERSION
-                or output_version not in {6, 7, 8, 9, 10, 14}
+                or output_version not in {14}
                 or mode_size > 256
                 or offset + mode_size > len(data)
             ):
@@ -3641,18 +3218,15 @@ def _parse_patron_typed_output(
                 )
             try:
                 mode = bytes(data[offset : offset + mode_size]).decode("ascii")
+                if mode != "endpoint-exact-critical-flow-v14":
+                    raise ValidationError("native PATRON output mode is invalid")
             except UnicodeDecodeError as error:
                 raise ValidationError(
                     "native PATRON typed output mode is invalid"
                 ) from error
             offset += mode_size
             expected_modes = (
-                {
-                    "endpoint-exact-global-best-v6",
-                    "endpoint-exact-critical-ejection-v6",
-                }
-                if output_version == 6
-                else {f"endpoint-exact-critical-flow-v{output_version}"}
+                {f"endpoint-exact-critical-flow-v{output_version}"}
             )
             if mode not in expected_modes:
                 raise ValidationError(
@@ -3743,11 +3317,11 @@ def _parse_patron_typed_output(
             )
             initial_metrics = _metrics_from_objective(
                 initial_values,
-                path_transition_objective=output_version == 14,
+                path_transition_objective=True,
             )
             final_metrics = _metrics_from_objective(
                 final_values,
-                path_transition_objective=output_version == 14,
+                path_transition_objective=True,
             )
             initial_metrics.update(
                 {
@@ -3802,20 +3376,13 @@ def _parse_patron_native_output_text(
     str,
     Dict[str, Any],
 ]:
-    allowed_headers = (
-        "EMUFLOW_PATRON_OUTPUT_V6",
-        "EMUFLOW_PATRON_OUTPUT_V7",
-        "EMUFLOW_PATRON_OUTPUT_V8",
-        "EMUFLOW_PATRON_OUTPUT_V9",
-        "EMUFLOW_PATRON_OUTPUT_V10",
-        "EMUFLOW_PATRON_OUTPUT_V14",
-    )
+    allowed_headers = ("EMUFLOW_PATRON_OUTPUT_V14",)
     stream = path.open("r", encoding="utf-8")
     output_version = stream.readline().rstrip("\r\n")
     if output_version not in allowed_headers:
         stream.close()
         raise ValidationError("native PATRON output header is invalid")
-    path_transition_objective = output_version == "EMUFLOW_PATRON_OUTPUT_V14"
+    path_transition_objective = True
     def indexed(label: str, values: List[str], index: int) -> str:
         if index < 0 or index >= len(values):
             raise ValidationError(
@@ -3858,6 +3425,8 @@ def _parse_patron_native_output_text(
                         "native PATRON returned duplicate MODE"
                     )
                 mode = fields[1]
+                if mode != "endpoint-exact-critical-flow-v14":
+                    raise ValidationError("native PATRON output mode is invalid")
             elif fields[0] == "INITIAL" and len(fields) == 9:
                 if initial_metrics is not None:
                     raise ValidationError(
@@ -3867,7 +3436,7 @@ def _parse_patron_native_output_text(
                     [float(item) for item in fields[1:]],
                     path_transition_objective=path_transition_objective,
                 )
-            elif fields[0] == "STEP" and len(fields) in (34, 36):
+            elif fields[0] == "STEP" and len(fields) == 36:
                 (
                     index,
                     phase,
@@ -3937,17 +3506,7 @@ def _parse_patron_native_output_text(
                         "ranked_objective_key": ranked,
                     }
                 )
-            elif fields[0] == "BATCH" and len(fields) in (27, 29):
-                if output_version not in (
-                    "EMUFLOW_PATRON_OUTPUT_V7",
-                    "EMUFLOW_PATRON_OUTPUT_V8",
-                    "EMUFLOW_PATRON_OUTPUT_V9",
-                    "EMUFLOW_PATRON_OUTPUT_V10",
-                    "EMUFLOW_PATRON_OUTPUT_V14",
-                ):
-                    raise ValidationError(
-                        "native PATRON v6 returned a BATCH"
-                    )
+            elif fields[0] == "BATCH" and len(fields) == 29:
                 index, change_count = map(int, fields[1:3])
                 if index != len(batches) or change_count <= 0:
                     raise ValidationError(
@@ -3970,16 +3529,6 @@ def _parse_patron_native_output_text(
                     }
                 )
             elif fields[0] == "CHANGE" and len(fields) == 5:
-                if output_version not in (
-                    "EMUFLOW_PATRON_OUTPUT_V7",
-                    "EMUFLOW_PATRON_OUTPUT_V8",
-                    "EMUFLOW_PATRON_OUTPUT_V9",
-                    "EMUFLOW_PATRON_OUTPUT_V10",
-                    "EMUFLOW_PATRON_OUTPUT_V14",
-                ):
-                    raise ValidationError(
-                        "native PATRON v6 returned a CHANGE"
-                    )
                 batch, cluster, source, target = map(int, fields[1:])
                 if batch < 0 or batch >= len(batches):
                     raise ValidationError(
@@ -4292,13 +3841,21 @@ def run_partition_pressure_native(
     if (
         isinstance(algorithm_version, bool)
         or not isinstance(algorithm_version, int)
-        or algorithm_version not in {6, 9, 10, 14}
+        or algorithm_version not in {14}
     ):
         raise ValidationError("native PATRON algorithm version is invalid")
-    flow_refinement = algorithm_version != 6
-    if store_model and (algorithm_version != 14 or retain_trace_seals
-                        or (executable is not None and not is_unified_native_executable(executable))
-                        or not stream_semantic_records):
+    flow_refinement = True
+    if (
+        store_model
+        and (
+            retain_trace_seals
+            or (
+                executable is not None
+                and not is_unified_native_executable(executable)
+            )
+            or not stream_semantic_records
+        )
+    ):
         raise ValidationError("native store model requires unified v14 summary production")
     native_command = ([] if store_model else resolve_native_stage_command(
         "phase3", "refine-patron", executable
@@ -4456,17 +4013,16 @@ def run_partition_pressure_native(
     provider_metadata = {
         "initial_provider": initial_assignment.get("provider"),
     }
-    if algorithm_version == 14:
-        provider_metadata.update(
-            {
-                "partition_search_space": (
-                    "native-provider-neutral-generalized-v1"
-                ),
-                "candidate_selection": (
-                    "structural-legality-and-predictive-timing-v1"
-                ),
-            }
-        )
+    provider_metadata.update(
+        {
+            "partition_search_space": (
+                "native-provider-neutral-generalized-v1"
+            ),
+            "candidate_selection": (
+                "structural-legality-and-predictive-timing-v1"
+            ),
+        }
+    )
     model_sha256 = None
     if retain_trace_seals:
         model_sha256 = _canonical_digest(model)
@@ -4487,12 +4043,7 @@ def run_partition_pressure_native(
         constraints,
         cluster_assignment,
         provider=(
-            {
-                6: PARTITION_PRESSURE_NATIVE_PROVIDER,
-                9: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V9,
-                10: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER,
-                14: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14,
-            }[algorithm_version]
+            PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14
         ),
         seed=initial_assignment.get("seed", 0),
         provider_metadata=provider_metadata,
@@ -4506,22 +4057,12 @@ def run_partition_pressure_native(
         validate_partition_artifacts_online(platform, clusters_artifact, final)
     trace = {
         "schema": (
-            {
-                6: PARTITION_PRESSURE_TRACE_SCHEMA,
-                9: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V9,
-                10: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA,
-                14: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14,
-            }[algorithm_version]
+            PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14
         ),
         "design": trace_model["design"],
         "platform": trace_model["platform"],
         "provider": (
-            {
-                6: PARTITION_PRESSURE_NATIVE_PROVIDER,
-                9: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V9,
-                10: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER,
-                14: PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14,
-            }[algorithm_version]
+            PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14
         ),
         "mode": mode,
         "configuration": {
@@ -4543,9 +4084,7 @@ def run_partition_pressure_native(
                 flow_refinement,
                 trace_model["clusters"],
                 version=(
-                    {6: 1, 9: 3, 10: 4, 14: 8}[
-                        algorithm_version
-                    ]
+                    8
                 ),
             ),
         },
@@ -4588,76 +4127,6 @@ def run_partition_pressure_native(
     return final, trace
 
 
-def validate_partition_pressure_native_against_exhaustive(
-    ir: EmuIR,
-    platform: Platform,
-    clusters_artifact: Mapping[str, Any],
-    constraints: Mapping[str, Any],
-    route_constraints: Mapping[str, Any],
-    model: Mapping[str, Any],
-    initial_assignment: Mapping[str, Any],
-    native_assignment: Mapping[str, Any],
-    native_trace: Mapping[str, Any],
-) -> Dict[str, Any]:
-    expected_assignment, expected_trace = refine_partition_pressure_exhaustive(
-        ir,
-        platform,
-        clusters_artifact,
-        constraints,
-        route_constraints,
-        model,
-        initial_assignment,
-        max_moves=len(native_trace.get("moves", [])),
-    )
-    if (
-        native_assignment.get("cluster_assignment")
-        != expected_assignment.get("cluster_assignment")
-    ):
-        raise ValidationError("native PATRON assignment differs from exhaustive")
-    if len(native_trace["moves"]) != len(expected_trace["moves"]):
-        raise ValidationError("native PATRON move count differs from exhaustive")
-    maximum_error = 0.0
-    for native, expected in zip(
-        native_trace["moves"], expected_trace["moves"]
-    ):
-        for field in (
-            "index",
-            "kind",
-            "phase",
-            "sweep",
-            "cluster",
-            "source",
-            "target",
-            "partner",
-            "partner_source",
-            "partner_target",
-        ):
-            if native[field] != expected[field]:
-                raise ValidationError(
-                    f"native PATRON move {native['index']} {field} mismatch"
-                )
-        if native["ranked_objective_key"] != expected["ranked_objective_key"]:
-            raise ValidationError(
-                f"native PATRON move {native['index']} rank mismatch"
-            )
-        for native_key, expected_key in (
-            (native["before_objective_key"], expected["before_objective_key"]),
-            (native["after_objective_key"], expected["after_objective_key"]),
-        ):
-            maximum_error = max(
-                maximum_error,
-                max(
-                    abs(float(left) - float(right))
-                    for left, right in zip(native_key, expected_key)
-                ),
-            )
-    if maximum_error > 1.0e-10:
-        raise ValidationError("native PATRON raw objective mismatch")
-    return {
-        "status": "pass",
-        "moves": len(expected_trace["moves"]),
-        "maximum_raw_objective_error": maximum_error,
-    }
 
 
 def validate_partition_pressure_native_bundle(
@@ -4676,13 +4145,16 @@ def validate_partition_pressure_native_bundle(
 ) -> Dict[str, Any]:
     """Validate a production PATRON bundle without rerunning its heuristic.
 
-    Compact exact mode is reconstructed move-for-move.  Scalable mode is a
-    deterministic heuristic rather than a global-optimality claim; its gate
-    independently rebuilds the immutable model, complete initial/final
-    objectives, legal assignment, critical multipass order, and every recorded
-    assignment transition in linear or near-linear work.
+    This explicit qualification gate independently rebuilds the immutable model,
+    initial/final objectives, legal assignments, and each recorded transition in
+    objective order. Local sweep counters may restart during v14 repair. It does
+    not rerun the heuristic or claim global optimality.
     """
 
+    if (native_trace.get("schema") != PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14
+            or native_trace.get("provider") != PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14
+            or native_trace.get("mode") != "endpoint-exact-critical-flow-v14"):
+        raise ValidationError("native PATRON trace version is invalid")
     model_validation = validate_partition_pressure_model(
         ir,
         platform,
@@ -4696,23 +4168,9 @@ def validate_partition_pressure_native_bundle(
     trace_schema = native_trace.get("schema")
     if (
         trace_schema
-        not in (
-            PARTITION_PRESSURE_TRACE_SCHEMA,
-            PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14,
-            PARTITION_PRESSURE_FLOW_TRACE_SCHEMA,
-            PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V9,
-            PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V8,
-            PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V7,
-        )
+        not in (PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14,)
         or native_trace.get("provider")
-        not in (
-            PARTITION_PRESSURE_NATIVE_PROVIDER,
-            PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14,
-            PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER,
-            PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V9,
-            PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V8,
-            PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V7,
-        )
+        not in (PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14,)
         or native_trace.get("model_sha256") != _canonical_digest(model)
         or native_trace.get("initial_assignment_sha256")
         != _canonical_digest(initial_assignment)
@@ -4729,72 +4187,16 @@ def validate_partition_pressure_native_bundle(
     ):
         raise ValidationError("native PATRON final assignment seal is invalid")
     mode = native_trace.get("mode")
-    if mode == "endpoint-exact-global-best-v6":
-        if (
-            trace_schema != PARTITION_PRESSURE_TRACE_SCHEMA
-            or native_trace.get("provider")
-            != PARTITION_PRESSURE_NATIVE_PROVIDER
-        ):
-            raise ValidationError("native PATRON exact trace schema is invalid")
-        exact = validate_partition_pressure_native_against_exhaustive(
-            ir,
-            platform,
-            clusters_artifact,
-            constraints,
-            route_constraints,
-            model,
-            initial_assignment,
-            native_assignment,
-            native_trace,
-        )
-        return {
-            "status": "pass",
-            "mode": mode,
-            "qualification": "move-for-move-exhaustive",
-            "model_validation": model_validation,
-            **exact,
-        }
-    if mode not in (
-        "endpoint-exact-critical-ejection-v6",
-        "endpoint-exact-critical-flow-v7",
-        "endpoint-exact-critical-flow-v8",
-        "endpoint-exact-critical-flow-v9",
-        "endpoint-exact-critical-flow-v10",
-        "endpoint-exact-critical-flow-v14",
-    ):
+    if mode not in ("endpoint-exact-critical-flow-v14",):
         raise ValidationError("native PATRON trace mode is invalid")
     expected_provider = (
-        {
-            "endpoint-exact-critical-flow-v7": (
-                PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V7
-            ),
-            "endpoint-exact-critical-flow-v8": (
-                PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V8
-            ),
-            "endpoint-exact-critical-flow-v9": (
-                PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V9
-            ),
-            "endpoint-exact-critical-flow-v10": (
-                PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER
-            ),
-            "endpoint-exact-critical-flow-v14": (
-                PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14
-            ),
-        }[mode]
-        if mode in (
-            "endpoint-exact-critical-flow-v7",
-            "endpoint-exact-critical-flow-v8",
-            "endpoint-exact-critical-flow-v9",
-            "endpoint-exact-critical-flow-v10",
-            "endpoint-exact-critical-flow-v14",
-        )
-        else PARTITION_PRESSURE_NATIVE_PROVIDER
+        PARTITION_PRESSURE_FLOW_NATIVE_PROVIDER_V14
     )
     if native_trace.get("provider") != expected_provider:
         raise ValidationError("native PATRON trace provider is invalid")
 
     moves = native_trace.get("moves")
-    batches = native_trace.get("batches", [])
+    batches = native_trace.get("batches")
     max_moves = native_trace.get("configuration", {}).get("max_moves")
     max_sweeps = native_trace.get("configuration", {}).get(
         "max_scalable_sweeps"
@@ -4811,35 +4213,19 @@ def validate_partition_pressure_native_bundle(
     flow_configuration = native_trace.get("configuration", {}).get(
         "flow_refinement"
     )
-    flow_enabled = mode in (
-        "endpoint-exact-critical-flow-v7",
-        "endpoint-exact-critical-flow-v8",
-        "endpoint-exact-critical-flow-v9",
-        "endpoint-exact-critical-flow-v10",
-        "endpoint-exact-critical-flow-v14",
-    )
-    flow_version = {
-        "endpoint-exact-critical-flow-v7": 1,
-        "endpoint-exact-critical-flow-v8": 2,
-        "endpoint-exact-critical-flow-v9": 3,
-        "endpoint-exact-critical-flow-v10": 4,
-        "endpoint-exact-critical-flow-v14": 8,
-    }.get(mode, 1)
+    flow_enabled = True
+    flow_version = 8
     expected_algorithm_version = (
-        {
-            1: 7,
-            2: 8,
-            3: 9,
-            4: 10,
-            8: 14,
-        }[flow_version]
-        if flow_enabled
-        else 6
+        14
     )
     recorded_algorithm_version = native_trace.get(
         "configuration", {}
-    ).get("algorithm_version", expected_algorithm_version)
-    if recorded_algorithm_version != expected_algorithm_version:
+    ).get("algorithm_version")
+    if (
+        isinstance(recorded_algorithm_version, bool)
+        or not isinstance(recorded_algorithm_version, int)
+        or recorded_algorithm_version != expected_algorithm_version
+    ):
         raise ValidationError(
             "native PATRON algorithm-version certificate is invalid"
         )
@@ -4848,41 +4234,10 @@ def validate_partition_pressure_native_bundle(
         len(model["clusters"]),
         version=flow_version,
     )
-    if flow_configuration is None and not flow_enabled:
-        # V6 artifacts predate the explicit disabled-flow certificate.
-        flow_configuration = expected_flow_configuration
     if (
         not isinstance(moves, list)
         or not isinstance(batches, list)
-        or (
-            mode
-            in (
-                "endpoint-exact-critical-flow-v7",
-                "endpoint-exact-critical-flow-v8",
-                "endpoint-exact-critical-flow-v9",
-                "endpoint-exact-critical-flow-v10",
-                "endpoint-exact-critical-flow-v14",
-            )
-            and (
-                trace_schema
-                != (
-                    {
-                        1: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V7,
-                        2: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V8,
-                        3: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V9,
-                        4: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA,
-                        8: PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14,
-                    }[flow_version]
-                )
-            )
-        )
-        or (
-            mode == "endpoint-exact-critical-ejection-v6"
-            and (
-                trace_schema != PARTITION_PRESSURE_TRACE_SCHEMA
-                or batches
-            )
-        )
+        or trace_schema != PARTITION_PRESSURE_FLOW_TRACE_SCHEMA_V14
         or isinstance(max_moves, bool)
         or not isinstance(max_moves, int)
         or max_moves < 0
@@ -4890,705 +4245,174 @@ def validate_partition_pressure_native_bundle(
         or isinstance(max_sweeps, bool)
         or not isinstance(max_sweeps, int)
         or max_sweeps <= 0
-        or max_sweeps
-        != model["configuration"].get("max_scalable_sweeps")
+        or max_sweeps != model['configuration'].get('max_scalable_sweeps')
         or isinstance(ejection_critical_limit, bool)
         or not isinstance(ejection_critical_limit, int)
         or ejection_critical_limit < 0
-        or ejection_critical_limit
-        != model["configuration"].get("scalable_ejection_critical_limit")
+        or ejection_critical_limit != model['configuration'].get('scalable_ejection_critical_limit')
         or isinstance(ejection_donor_limit, bool)
         or not isinstance(ejection_donor_limit, int)
         or ejection_donor_limit < 0
-        or ejection_donor_limit
-        != model["configuration"].get("scalable_ejection_donor_limit")
+        or ejection_donor_limit != model['configuration'].get('scalable_ejection_donor_limit')
         or isinstance(max_ejections, bool)
         or not isinstance(max_ejections, int)
         or max_ejections < 0
-        or max_ejections
-        != model["configuration"].get("max_scalable_ejections")
+        or max_ejections != model['configuration'].get('max_scalable_ejections')
         or flow_configuration != expected_flow_configuration
     ):
         raise ValidationError("native PATRON scalable trace bounds are invalid")
-    physical_hop_guard_scale_ns = float(
-        expected_flow_configuration.get("physical_hop_guard_scale_ns", 0.0)
-    )
-    cluster_ids = {
-        record["cluster"] for record in model["clusters"]
-    }
+    cluster_ids = {record["cluster"] for record in model["clusters"]}
     fpga_ids = {record["fpga"] for record in model["fpgas"]}
-    fixed = {
-        record["cluster"]: record["fixed_fpga"]
-        for record in model["clusters"]
-    }
-    exposure = {cluster: 0.0 for cluster in cluster_ids}
-    net_by_id = {record["net"]: record for record in model["nets"]}
-    for path in model["paths"]:
-        criticality = max(
-            0.0,
-            min(
-                1.0,
-                1.0
-                - path["base_slack_ns"] / path["clock_period_ns"],
-            ),
-        )
-        weight = 1.0 + 9.0 * criticality * criticality
-        for cluster in {
-            cluster
-            for net in path["path_nets"]
-            if net in net_by_id
-            for cluster in (
-                net_by_id[net]["drivers"] + net_by_id[net]["sinks"]
-            )
-        }:
-            exposure[cluster] += weight
-    sweep_order = sorted(
-        cluster_ids, key=lambda cluster: (-exposure[cluster], cluster)
-    )
-    sweep_index = {cluster: index for index, cluster in enumerate(sweep_order)}
+    fixed = {record["cluster"]: record["fixed_fpga"] for record in model["clusters"]}
     current = dict(initial_assignment["cluster_assignment"])
-    initial_evaluation = evaluate_partition_pressure(
-        ir,
-        platform,
-        clusters_artifact,
-        constraints,
-        route_constraints,
-        model,
-        current,
-        include_tdm_wait=True,
-        physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
-        path_transition_objective=(flow_version == 8),
-    )
-    previous_rank = _ranked_key(initial_evaluation)
-    previous_sweep = -1
-    previous_sweep_index = -1
-    previous_phase = 0
-    previous_ejection_index = -1
-    ejection_count = 0
-    previous_after = None
-    maximum_chain_error = 0.0
-    for index, move in enumerate(moves):
-        if not isinstance(move, dict) or move.get("index") != index:
-            raise ValidationError("native PATRON move index is invalid")
-        cluster = move.get("cluster")
-        phase = move.get("phase")
-        kind = move.get("kind")
-        sweep = move.get("sweep")
-        source = move.get("source")
-        target = move.get("target")
-        partner = move.get("partner")
-        partner_source = move.get("partner_source")
-        partner_target = move.get("partner_target")
-        common_invalid = (
-            isinstance(phase, bool)
-            or not isinstance(phase, int)
-            or phase not in (0, 1)
-            or kind != ("move" if phase == 0 else "ejection")
-            or isinstance(sweep, bool)
-            or not isinstance(sweep, int)
-            or cluster not in cluster_ids
-            or source not in fpga_ids
-            or target not in fpga_ids
-            or source == target
-            or fixed[cluster] is not None
-            or current.get(cluster) != source
-            or phase < previous_phase
-        )
-        direct_invalid = phase == 0 and not common_invalid and (
-            sweep < 0
-            or sweep >= max_sweeps
-            or sweep > previous_sweep + 1
-            or (previous_sweep < 0 and sweep != 0)
-            or (
-                sweep == previous_sweep
-                and sweep_index.get(cluster, -1) <= previous_sweep_index
-            )
-            or partner is not None
-            or partner_source is not None
-            or partner_target is not None
-        )
-        ejection_invalid = phase == 1 and not common_invalid and (
-            sweep != 0
-            or partner not in cluster_ids
-            or partner == cluster
-            or partner_source not in fpga_ids
-            or partner_target not in fpga_ids
-            or fixed.get(partner) is not None
-            or current.get(partner) != partner_source
-            or target != partner_source
-            or partner_target == partner_source
-            or sweep_index.get(cluster, ejection_critical_limit)
-            >= ejection_critical_limit
-            or sweep_index.get(cluster, -1) <= previous_ejection_index
-            or ejection_count >= max_ejections
-        )
-        if common_invalid or direct_invalid or ejection_invalid:
-            raise ValidationError(
-                f"native PATRON move {index} transition is invalid"
-            )
-        before = move.get("before_objective_key")
-        after = move.get("after_objective_key")
-        ranked = move.get("ranked_objective_key")
-        if (
-            not isinstance(before, list)
-            or not isinstance(after, list)
-            or not isinstance(ranked, list)
-            or len(before) != 8
-            or len(after) != 8
-            or len(ranked) != 10
-            or not all(
-                isinstance(value, (int, float))
-                and not isinstance(value, bool)
-                and math.isfinite(float(value))
-                for value in before + after
-            )
-            or not all(
-                isinstance(value, int) and not isinstance(value, bool)
-                for value in ranked
-            )
-            or ranked[0] < 0
-            or ranked[1] < 0
-            or tuple(ranked) >= previous_rank
-        ):
-            raise ValidationError(
-                f"native PATRON move {index} objective is invalid"
-            )
-        expected_objective_rank = [
-            round(float(value) / GAIN_QUANTUM)
-            if objective_index < 2
-            else round(float(value))
-            for objective_index, value in enumerate(after)
-        ]
-        if ranked[2:] != expected_objective_rank:
-            raise ValidationError(
-                f"native PATRON move {index} ranked objective is invalid"
-            )
-        if previous_after is not None:
-            maximum_chain_error = max(
-                maximum_chain_error,
-                max(
-                    abs(float(left) - float(right))
-                    for left, right in zip(before, previous_after)
-                ),
-            )
-        current[cluster] = target
-        if phase == 1:
-            current[partner] = partner_target
-            previous_ejection_index = sweep_index[cluster]
-            ejection_count += 1
-        previous_after = after
-        previous_rank = tuple(ranked)
-        if phase == 0:
-            if sweep != previous_sweep:
-                previous_sweep_index = -1
-            previous_sweep = sweep
-            previous_sweep_index = sweep_index[cluster]
-        previous_phase = phase
-    for batch_index, batch in enumerate(batches):
-        if (
-            not isinstance(batch, dict)
-            or batch.get("index") != batch_index
-            or not isinstance(batch.get("changes"), list)
-            or not batch["changes"]
-        ):
-            raise ValidationError("native PATRON batch record is invalid")
-        before_evaluation = evaluate_partition_pressure(
-            ir,
-            platform,
-            clusters_artifact,
-            constraints,
-            route_constraints,
-            model,
-            current,
-            include_tdm_wait=True,
-            physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
-            path_transition_objective=(flow_version == 8),
-        )
-        before_expected = before_evaluation["metrics"]["objective_key"]
-        trial = dict(current)
-        changed = set()
-        previous_cluster = None
-        for change in batch["changes"]:
-            if not isinstance(change, dict):
-                raise ValidationError("native PATRON batch change is invalid")
-            cluster = change.get("cluster")
-            source = change.get("source")
-            target = change.get("target")
-            if (
-                cluster not in cluster_ids
-                or source not in fpga_ids
-                or target not in fpga_ids
-                or source == target
-                or fixed.get(cluster) is not None
-                or current.get(cluster) != source
-                or cluster in changed
-                or (
-                    previous_cluster is not None
-                    and cluster <= previous_cluster
-                )
-            ):
-                raise ValidationError(
-                    "native PATRON batch transition is invalid"
-                )
-            changed.add(cluster)
-            previous_cluster = cluster
-            trial[cluster] = target
-        after_evaluation = evaluate_partition_pressure(
-            ir,
-            platform,
-            clusters_artifact,
-            constraints,
-            route_constraints,
-            model,
-            trial,
-            include_tdm_wait=True,
-            physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
-            path_transition_objective=(flow_version == 8),
-        )
-        after_expected = after_evaluation["metrics"]["objective_key"]
-        before = batch.get("before_objective_key")
-        after = batch.get("after_objective_key")
-        ranked = batch.get("ranked_objective_key")
-        if (
-            not isinstance(before, list)
-            or not isinstance(after, list)
-            or not isinstance(ranked, list)
-            or len(before) != 8
-            or len(after) != 8
-            or len(ranked) != 10
-            or not all(
-                isinstance(value, (int, float))
-                and not isinstance(value, bool)
-                and math.isfinite(float(value))
-                for value in before + after
-            )
-            or not all(
-                isinstance(value, int) and not isinstance(value, bool)
-                for value in ranked
-            )
-        ):
-            raise ValidationError("native PATRON batch objective is invalid")
-        for label, actual, expected in (
-            ("before", before, before_expected),
-            ("after", after, after_expected),
-        ):
-            for objective_index, (left, right) in enumerate(
-                zip(actual, expected)
-            ):
-                matches = (
-                    math.isclose(
-                        float(left),
-                        float(right),
-                        rel_tol=1.0e-12,
-                        abs_tol=1.0e-9,
-                    )
-                    if objective_index < 2
-                    else float(left) == float(right)
-                )
-                if not matches:
-                    raise ValidationError(
-                        f"native PATRON batch {label} objective mismatch"
-                    )
-        expected_rank = list(_ranked_key(after_evaluation))
-        before_rank = _ranked_key(before_evaluation)
-        if (
-            ranked != expected_rank
-            or tuple(ranked) >= before_rank
-        ):
-            raise ValidationError(
-                "native PATRON batch is not lexicographically improving"
-            )
-        if previous_after is not None:
-            maximum_chain_error = max(
-                maximum_chain_error,
-                max(
-                    abs(float(left) - float(right))
-                    for left, right in zip(before, previous_after)
-                ),
-            )
-        previous_after = after
-        current = trial
-    if current != native_assignment["cluster_assignment"]:
-        raise ValidationError("native PATRON move chain assignment mismatch")
-    if maximum_chain_error > 1.0e-9:
-        raise ValidationError("native PATRON objective chain is discontinuous")
 
-    final_evaluation = evaluate_partition_pressure(
-        ir,
-        platform,
-        clusters_artifact,
-        constraints,
-        route_constraints,
-        model,
-        native_assignment["cluster_assignment"],
-        include_tdm_wait=True,
-        physical_hop_guard_scale_ns=physical_hop_guard_scale_ns,
-        path_transition_objective=(flow_version == 8),
-    )
+    def evaluate(assignment):
+        return evaluate_partition_pressure(
+            ir, platform, clusters_artifact, constraints, route_constraints,
+            model, assignment, include_tdm_wait=True,
+            path_transition_objective=True,
+        )
+
+    initial_evaluation = evaluate(current)
+    current_evaluation = initial_evaluation
+    previous_rank = _ranked_key(current_evaluation)
+    maximum_chain_error = 0.0
     maximum_endpoint_error = 0.0
     maximum_endpoint_relative_error = 0.0
-    for actual, expected in (
-        (
-            native_trace.get("initial_metrics", {}).get("objective_key"),
-            initial_evaluation["metrics"]["objective_key"],
-        ),
-        (
-            native_trace.get("final_metrics", {}).get("objective_key"),
-            final_evaluation["metrics"]["objective_key"],
-        ),
-    ):
-        if not isinstance(actual, list) or len(actual) != len(expected):
-            raise ValidationError(
-                "native PATRON endpoint objective is invalid"
-            )
-        for objective_index, (left, right) in enumerate(
-            zip(actual, expected)
-        ):
-            left_value = float(left)
-            right_value = float(right)
-            error = abs(left_value - right_value)
-            maximum_endpoint_error = max(maximum_endpoint_error, error)
-            maximum_endpoint_relative_error = max(
-                maximum_endpoint_relative_error,
-                error / max(1.0, abs(right_value)),
-            )
-            if objective_index < 2:
-                matches = math.isclose(
-                    left_value,
-                    right_value,
-                    rel_tol=1.0e-12,
-                    abs_tol=1.0e-9,
-                )
+
+    def compare_vector(actual, expected, label):
+        if (not isinstance(actual, list) or len(actual) != len(expected)
+                or any(isinstance(x, bool) or not isinstance(x, (int, float))
+                       or not math.isfinite(float(x)) for x in actual)):
+            raise ValidationError(f"native PATRON {label} objective is invalid")
+        error = relative = 0.0
+        for left, right in zip(actual, expected):
+            delta = abs(float(left) - float(right))
+            error = max(error, delta)
+            relative = max(relative, delta / max(1.0, abs(float(left)), abs(float(right))))
+        if error > 1.0e-9 and relative > 1.0e-9:
+            raise ValidationError(f"native PATRON {label} objective reconstruction failed")
+        return error, relative
+
+    def records(values, kind):
+        last_rank = None
+        for index, record in enumerate(values):
+            if (not isinstance(record, dict) or isinstance(record.get("index"), bool)
+                    or not isinstance(record.get("index"), int) or record.get("index") != index):
+                raise ValidationError(f"native PATRON {kind} index is invalid")
+            rank = record.get("ranked_objective_key")
+            if (not isinstance(rank, list) or len(rank) != 10
+                    or any(isinstance(x, bool) or not isinstance(x, int) for x in rank)):
+                raise ValidationError(f"native PATRON {kind} rank is invalid")
+            rank = tuple(rank)
+            if last_rank is not None and not rank < last_rank:
+                raise ValidationError(f"native PATRON {kind} record order is invalid")
+            last_rank = rank
+            yield kind, record, rank
+
+    move_stream = records(moves, "move")
+    batch_stream = records(batches, "batch")
+    move = next(move_stream, None)
+    batch = next(batch_stream, None)
+    ejection_count = change_count = 0
+    # v14 records moves and flow batches as two chronological subsequences.
+    # Their strictly improving, independently checked ranks define one ordered
+    # history. A local sweep number may restart during frontier/tail repair.
+    while move is not None or batch is not None:
+        if move is not None and batch is not None and move[2] == batch[2]:
+            raise ValidationError("native PATRON event objective chain is ambiguous")
+        use_move = batch is None or (move is not None and move[2] > batch[2])
+        kind, record, rank = move if use_move else batch
+        if not rank < previous_rank:
+            raise ValidationError("native PATRON event objective chain does not improve")
+        error, _relative = compare_vector(
+            record.get("before_objective_key"),
+            current_evaluation["metrics"]["objective_key"], "before",
+        )
+        maximum_chain_error = max(maximum_chain_error, error)
+        trial = dict(current)
+        if kind == "move":
+            phase, sweep = record.get("phase"), record.get("sweep")
+            if (isinstance(phase, bool) or not isinstance(phase, int)
+                    or phase not in (0, 1)
+                    or record.get("kind") != ("move" if phase == 0 else "ejection")
+                    or isinstance(sweep, bool) or not isinstance(sweep, int)
+                    or sweep < 0 or (phase == 0 and sweep >= max_sweeps)
+                    or (phase == 1 and (sweep != 0 or ejection_count >= max_ejections
+                                       or ejection_critical_limit == 0 or ejection_donor_limit == 0))):
+                raise ValidationError("native PATRON move transition/sweep is invalid")
+            changes = [{"cluster": record.get("cluster"), "source": record.get("source"),
+                        "target": record.get("target")}]
+            partner = record.get("partner")
+            if phase == 0:
+                if any(record.get(key) is not None for key in ("partner", "partner_source", "partner_target")):
+                    raise ValidationError("native PATRON direct move has an ejection partner")
             else:
-                matches = left_value == right_value
-            if not matches:
-                raise ValidationError(
-                    "native PATRON endpoint objective mismatch: "
-                    f"field={objective_index}, native={left_value}, "
-                    f"independent={right_value}, error={error}"
-                )
+                if partner == record.get("cluster") or record.get("target") != record.get("partner_source"):
+                    raise ValidationError("native PATRON ejection transition is invalid")
+                changes.append({"cluster": partner, "source": record.get("partner_source"),
+                                "target": record.get("partner_target")})
+                ejection_count += 1
+        else:
+            changes = record.get("changes")
+            if (not isinstance(changes, list) or not changes
+                    or len(changes) > flow_configuration["maximum_corridor_clusters"]):
+                raise ValidationError("native PATRON batch change coverage is invalid")
+            change_count += len(changes)
+        seen = set()
+        for change in changes:
+            if not isinstance(change, dict):
+                raise ValidationError("native PATRON event change is invalid")
+            cluster, source, target = (change.get(key) for key in ("cluster", "source", "target"))
+            if (not isinstance(cluster, str) or not isinstance(source, str) or not isinstance(target, str)
+                    or cluster not in cluster_ids or cluster in seen or fixed[cluster] is not None
+                    or source not in fpga_ids or target not in fpga_ids or source == target
+                    or current.get(cluster) != source):
+                raise ValidationError("native PATRON event source/fixed/target transition is invalid")
+            seen.add(cluster)
+            trial[cluster] = target
+        # This reconstructs capacity, topology and every original timing path
+        # from the immutable model; reported after-ranks are never an oracle.
+        trial_evaluation = evaluate(trial)
+        if _ranked_key(trial_evaluation) != rank:
+            raise ValidationError("native PATRON event rank reconstruction failed")
+        error, _relative = compare_vector(
+            record.get("after_objective_key"),
+            trial_evaluation["metrics"]["objective_key"], "after",
+        )
+        maximum_chain_error = max(maximum_chain_error, error)
+        current, current_evaluation, previous_rank = trial, trial_evaluation, rank
+        if use_move:
+            move = next(move_stream, None)
+        else:
+            batch = next(batch_stream, None)
+    if current != native_assignment["cluster_assignment"]:
+        raise ValidationError("native PATRON event chain final assignment mismatch")
+    for key, count in (("move_count", len(moves)), ("batch_count", len(batches)),
+                       ("change_count", change_count)):
+        value = native_trace.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value != count:
+            raise ValidationError("native PATRON trace record coverage is invalid")
+    for label, evaluation in (("initial_metrics", initial_evaluation),
+                              ("final_metrics", current_evaluation)):
+        reported = native_trace.get(label)
+        if not isinstance(reported, dict):
+            raise ValidationError("native PATRON endpoint metrics are missing")
+        error, relative = compare_vector(reported.get("objective_key"),
+                                         evaluation["metrics"]["objective_key"], "endpoint")
+        maximum_endpoint_error = max(maximum_endpoint_error, error)
+        maximum_endpoint_relative_error = max(maximum_endpoint_relative_error, relative)
+        for field in ("maximum_path_hops", "maximum_path_tdm_ratio_sum",
+                      "transport_capacity_violations", "transport_capacity_excess_bits"):
+            actual, expected = reported.get(field), evaluation["metrics"][field]
+            if isinstance(actual, bool) or not isinstance(actual, int) or actual != expected:
+                raise ValidationError(f"native PATRON endpoint {field} is invalid")
     return {
-        "status": "pass",
-        "mode": mode,
-        "qualification": "linear-transition-and-endpoint-reconstruction",
+        "status": "pass", "mode": mode,
+        "qualification": "ordered-v14-transition-and-endpoint-reconstruction",
         "model_validation": model_validation,
-        "moves": len(moves),
-        "batches": len(batches),
+        "moves": len(moves), "batches": len(batches),
         "maximum_objective_chain_error": maximum_chain_error,
         "maximum_endpoint_objective_error": maximum_endpoint_error,
-        "maximum_endpoint_relative_objective_error": (
-            maximum_endpoint_relative_error
-        ),
-    }
-
-
-def validate_partition_pressure_scalable_trace(
-    ir: EmuIR,
-    platform: Platform,
-    clusters_artifact: Mapping[str, Any],
-    constraints: Mapping[str, Any],
-    route_constraints: Mapping[str, Any],
-    model: Mapping[str, Any],
-    initial_assignment: Mapping[str, Any],
-    native_assignment: Mapping[str, Any],
-    native_trace: Mapping[str, Any],
-) -> Dict[str, Any]:
-    """Independently replay the scalable criticality-ordered sweep.
-
-    This exhaustive reconstruction is intended for compact/scaled-down
-    instances.  Large production bundles use the indexed certificate checker.
-    """
-
-    if native_trace.get("mode") != "endpoint-exact-critical-ejection-v6":
-        raise ValidationError("native PATRON scalable trace mode is invalid")
-    max_moves = native_trace.get("configuration", {}).get("max_moves")
-    if isinstance(max_moves, bool) or not isinstance(max_moves, int) or max_moves < 0:
-        raise ValidationError("native PATRON scalable max_moves is invalid")
-    max_sweeps = native_trace.get("configuration", {}).get(
-        "max_scalable_sweeps"
-    )
-    ejection_critical_limit = native_trace.get("configuration", {}).get(
-        "scalable_ejection_critical_limit"
-    )
-    ejection_donor_limit = native_trace.get("configuration", {}).get(
-        "scalable_ejection_donor_limit"
-    )
-    max_ejections = native_trace.get("configuration", {}).get(
-        "max_scalable_ejections"
-    )
-    if (
-        isinstance(max_sweeps, bool)
-        or not isinstance(max_sweeps, int)
-        or max_sweeps <= 0
-        or max_sweeps
-        != model["configuration"].get("max_scalable_sweeps")
-        or isinstance(ejection_critical_limit, bool)
-        or not isinstance(ejection_critical_limit, int)
-        or ejection_critical_limit < 0
-        or ejection_critical_limit
-        != model["configuration"].get("scalable_ejection_critical_limit")
-        or isinstance(ejection_donor_limit, bool)
-        or not isinstance(ejection_donor_limit, int)
-        or ejection_donor_limit < 0
-        or ejection_donor_limit
-        != model["configuration"].get("scalable_ejection_donor_limit")
-        or isinstance(max_ejections, bool)
-        or not isinstance(max_ejections, int)
-        or max_ejections < 0
-        or max_ejections
-        != model["configuration"].get("max_scalable_ejections")
-    ):
-        raise ValidationError("native PATRON scalable sweep limit is invalid")
-    clusters = sorted(record["cluster"] for record in model["clusters"])
-    parts = sorted(record["fpga"] for record in model["fpgas"])
-    exposure = {cluster: 0.0 for cluster in clusters}
-    net_by_id = {record["net"]: record for record in model["nets"]}
-    for path in model["paths"]:
-        criticality = max(
-            0.0,
-            min(
-                1.0,
-                1.0
-                - path["base_slack_ns"] / path["clock_period_ns"],
-            ),
-        )
-        weight = 1.0 + 9.0 * criticality * criticality
-        touched = {
-            cluster
-            for net in path["path_nets"]
-            if net in net_by_id
-            for cluster in (
-                net_by_id[net]["drivers"] + net_by_id[net]["sinks"]
-            )
-        }
-        for cluster in touched:
-            exposure[cluster] += weight
-    order = sorted(clusters, key=lambda cluster: (-exposure[cluster], cluster))
-    fixed = {
-        record["cluster"]: record["fixed_fpga"]
-        for record in model["clusters"]
-    }
-    current = dict(initial_assignment["cluster_assignment"])
-    current_evaluation = evaluate_partition_pressure(
-        ir,
-        platform,
-        clusters_artifact,
-        constraints,
-        route_constraints,
-        model,
-        current,
-        include_tdm_wait=True,
-    )
-    moves = native_trace.get("moves")
-    if not isinstance(moves, list):
-        raise ValidationError("native PATRON scalable moves are invalid")
-    move_index = 0
-    maximum_error = 0.0
-    for _sweep in range(max_sweeps):
-        sweep_start = move_index
-        for cluster in order:
-            if move_index >= max_moves:
-                break
-            candidates = []
-            source = current[cluster]
-            for target in parts:
-                if target == source:
-                    continue
-                trial = dict(current)
-                trial[cluster] = target
-                try:
-                    evaluation = evaluate_partition_pressure(
-                        ir,
-                        platform,
-                        clusters_artifact,
-                        constraints,
-                        route_constraints,
-                        model,
-                        trial,
-                        include_tdm_wait=True,
-                    )
-                except ValidationError:
-                    continue
-                ranked = _ranked_key(evaluation)
-                if ranked < _ranked_key(current_evaluation):
-                    candidates.append((ranked, target, evaluation))
-            if not candidates:
-                continue
-            ranked, target, selected = min(
-                candidates, key=lambda item: (item[0], item[1])
-            )
-            if move_index >= len(moves):
-                raise ValidationError(
-                    "native PATRON scalable trace omitted a move"
-                )
-            actual = moves[move_index]
-            expected_identity = {
-                "index": move_index,
-                "kind": "move",
-                "phase": 0,
-                "sweep": _sweep,
-                "cluster": cluster,
-                "source": source,
-                "target": target,
-                "partner": None,
-                "partner_source": None,
-                "partner_target": None,
-            }
-            for field, expected in expected_identity.items():
-                if actual.get(field) != expected:
-                    raise ValidationError(
-                        f"native PATRON scalable move {move_index} "
-                        f"{field} mismatch"
-                    )
-            if actual.get("ranked_objective_key") != list(ranked):
-                raise ValidationError(
-                    f"native PATRON scalable move {move_index} rank mismatch"
-                )
-            for actual_key, expected_key in (
-                (
-                    actual["before_objective_key"],
-                    current_evaluation["metrics"]["objective_key"],
-                ),
-                (
-                    actual["after_objective_key"],
-                    selected["metrics"]["objective_key"],
-                ),
-            ):
-                maximum_error = max(
-                    maximum_error,
-                    max(
-                        abs(float(left) - float(right))
-                        for left, right in zip(actual_key, expected_key)
-                    ),
-                )
-            current[cluster] = target
-            current_evaluation = selected
-            move_index += 1
-        if move_index >= max_moves or move_index == sweep_start:
-            break
-
-    donors = {part: [] for part in parts}
-    for cluster in sorted(clusters, key=lambda item: (exposure[item], item)):
-        if fixed[cluster] is None:
-            donors[current[cluster]].append(cluster)
-    accepted_ejections = 0
-    for cluster in order[:ejection_critical_limit]:
-        if (
-            accepted_ejections >= max_ejections
-            or move_index >= max_moves
-        ):
-            break
-        if fixed[cluster] is not None:
-            continue
-        source = current[cluster]
-        candidates = []
-        for target in parts:
-            if target == source:
-                continue
-            considered = 0
-            for partner in donors[target]:
-                if considered >= ejection_donor_limit:
-                    break
-                if (
-                    partner == cluster
-                    or current[partner] != target
-                    or fixed[partner] is not None
-                ):
-                    continue
-                considered += 1
-                for partner_target in parts:
-                    if partner_target == target:
-                        continue
-                    trial = dict(current)
-                    trial[cluster] = target
-                    trial[partner] = partner_target
-                    try:
-                        evaluation = evaluate_partition_pressure(
-                            ir,
-                            platform,
-                            clusters_artifact,
-                            constraints,
-                            route_constraints,
-                            model,
-                            trial,
-                            include_tdm_wait=True,
-                        )
-                    except ValidationError:
-                        continue
-                    ranked = _ranked_key(evaluation)
-                    if ranked < _ranked_key(current_evaluation):
-                        candidates.append(
-                            (
-                                ranked,
-                                target,
-                                partner,
-                                partner_target,
-                                evaluation,
-                            )
-                        )
-        if not candidates:
-            continue
-        ranked, target, partner, partner_target, selected = min(
-            candidates,
-            key=lambda item: (item[0], item[1], item[2], item[3]),
-        )
-        if move_index >= len(moves):
-            raise ValidationError(
-                "native PATRON scalable trace omitted an ejection"
-            )
-        actual = moves[move_index]
-        expected_identity = {
-            "index": move_index,
-            "kind": "ejection",
-            "phase": 1,
-            "sweep": 0,
-            "cluster": cluster,
-            "source": source,
-            "target": target,
-            "partner": partner,
-            "partner_source": target,
-            "partner_target": partner_target,
-        }
-        for field, expected in expected_identity.items():
-            if actual.get(field) != expected:
-                raise ValidationError(
-                    f"native PATRON scalable ejection {move_index} "
-                    f"{field} mismatch"
-                )
-        if actual.get("ranked_objective_key") != list(ranked):
-            raise ValidationError(
-                f"native PATRON scalable ejection {move_index} rank mismatch"
-            )
-        for actual_key, expected_key in (
-            (
-                actual["before_objective_key"],
-                current_evaluation["metrics"]["objective_key"],
-            ),
-            (
-                actual["after_objective_key"],
-                selected["metrics"]["objective_key"],
-            ),
-        ):
-            maximum_error = max(
-                maximum_error,
-                max(
-                    abs(float(left) - float(right))
-                    for left, right in zip(actual_key, expected_key)
-                ),
-            )
-        current[cluster] = target
-        current[partner] = partner_target
-        current_evaluation = selected
-        move_index += 1
-        accepted_ejections += 1
-    if move_index != len(moves):
-        raise ValidationError("native PATRON scalable trace has extra moves")
-    if current != native_assignment.get("cluster_assignment"):
-        raise ValidationError("native PATRON scalable final assignment mismatch")
-    if maximum_error > 1.0e-9:
-        raise ValidationError("native PATRON scalable raw objective mismatch")
-    return {
-        "status": "pass",
-        "moves": move_index,
-        "maximum_raw_objective_error": maximum_error,
+        "maximum_endpoint_relative_objective_error": maximum_endpoint_relative_error,
     }
