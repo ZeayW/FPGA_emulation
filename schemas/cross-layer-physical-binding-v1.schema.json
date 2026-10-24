@@ -4,57 +4,123 @@
   "title": "EmuFlow Provider-Neutral Cross-Layer Physical Binding v1",
   "type": "object",
   "required": [
-    "schema", "provider", "status", "design", "platform",
-    "transport_semantics", "cross_layer_timing_sha256", "physical_source",
-    "endpoint_bindings", "logic_segment_bindings", "board_bindings",
-    "missing", "metrics"
+    "schema",
+    "provider",
+    "status",
+    "design",
+    "platform",
+    "transport_semantics",
+    "cross_layer_timing_sha256",
+    "physical_source",
+    "endpoint_bindings",
+    "logic_segment_bindings",
+    "board_bindings",
+    "missing",
+    "metrics"
   ],
   "properties": {
-    "schema": {"const": "emuflow.cross-layer-physical-binding/v1"},
-    "provider": {"const": "provider-neutral-routed-physical-evidence-v1"},
-    "status": {"enum": ["pass", "incomplete"]},
-    "design": {"type": "string", "minLength": 1},
-    "platform": {"type": "string", "minLength": 1},
+    "schema": {
+      "const": "emuflow.cross-layer-physical-binding/v1"
+    },
+    "provider": {
+      "const": "provider-neutral-routed-physical-evidence-v1"
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "incomplete"
+      ]
+    },
+    "design": {
+      "type": "string",
+      "minLength": 1
+    },
+    "platform": {
+      "type": "string",
+      "minLength": 1
+    },
     "transport_semantics": {
-      "enum": ["registered-boundary", "sampled-virtual-wire"]
+      "enum": [
+        "registered-boundary",
+        "sampled-virtual-wire"
+      ]
     },
     "cross_layer_timing_sha256": {
-      "type": "string", "pattern": "^[0-9a-f]{64}$"
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     },
     "physical_source": {
       "type": "object",
-      "required": ["provider", "qualification"],
+      "required": [
+        "provider",
+        "qualification"
+      ],
       "properties": {
-        "provider": {"type": ["string", "null"]},
-        "qualification": {"type": ["string", "null"]}
+        "provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "qualification": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       },
       "additionalProperties": false
     },
     "endpoint_bindings": {
       "type": "array",
-      "items": {"$ref": "#/$defs/measuredEndpoint"}
+      "items": {
+        "$ref": "#/$defs/measuredEndpoint"
+      }
     },
     "logic_segment_bindings": {
       "type": "array",
-      "items": {"$ref": "#/$defs/measuredSegment"}
+      "items": {
+        "$ref": "#/$defs/measuredSegment"
+      }
     },
     "board_bindings": {
       "type": "array",
       "items": {
         "type": "object",
         "required": [
-          "schedule_entry", "link", "from", "to", "delay_bound_ns",
+          "schedule_entry",
+          "link",
+          "from",
+          "to",
+          "delay_bound_ns",
           "measurement"
         ],
         "properties": {
-          "schedule_entry": {"type": "string", "minLength": 1},
-          "link": {"type": "string", "minLength": 1},
-          "from": {"type": "string", "minLength": 1},
-          "to": {"type": "string", "minLength": 1},
-          "delay_bound_ns": {"type": "number", "minimum": 0},
+          "schedule_entry": {
+            "type": "string",
+            "minLength": 1
+          },
+          "link": {
+            "type": "string",
+            "minLength": 1
+          },
+          "from": {
+            "type": "string",
+            "minLength": 1
+          },
+          "to": {
+            "type": "string",
+            "minLength": 1
+          },
+          "delay_bound_ns": {
+            "type": "number",
+            "minimum": 0
+          },
           "measurement": {
             "enum": [
-              "model-only", "characterized-upper-bound", "measured-upper-bound"
+              "model-only",
+              "characterized-upper-bound",
+              "measured-upper-bound"
             ]
           }
         },
@@ -63,15 +129,26 @@
     },
     "missing": {
       "type": "object",
-      "required": ["endpoints", "logic_segments"],
+      "required": [
+        "endpoints",
+        "logic_segments"
+      ],
       "properties": {
         "endpoints": {
-          "type": "array", "uniqueItems": true,
-          "items": {"type": "string", "minLength": 1}
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "logic_segments": {
-          "type": "array", "uniqueItems": true,
-          "items": {"type": "string", "minLength": 1}
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         }
       },
       "additionalProperties": false
@@ -79,21 +156,60 @@
     "metrics": {
       "type": "object",
       "required": [
-        "required_endpoints", "measured_endpoints", "required_logic_segments",
-        "measured_logic_segments", "routed_board_hops",
-        "model_only_board_hops", "characterized_board_hops",
-        "measured_board_hops", "final_board_link_timing_signoff"
+        "required_endpoints",
+        "measured_endpoints",
+        "required_logic_segments",
+        "measured_logic_segments",
+        "routed_board_hops",
+        "model_only_board_hops",
+        "characterized_board_hops",
+        "measured_board_hops",
+        "final_board_link_timing_signoff"
       ],
       "properties": {
-        "required_endpoints": {"type": "integer", "minimum": 0},
-        "measured_endpoints": {"type": "integer", "minimum": 0},
-        "required_logic_segments": {"type": "integer", "minimum": 0},
-        "measured_logic_segments": {"type": "integer", "minimum": 0},
-        "routed_board_hops": {"type": "integer", "minimum": 0},
-        "model_only_board_hops": {"type": "integer", "minimum": 0},
-        "characterized_board_hops": {"type": "integer", "minimum": 0},
-        "measured_board_hops": {"type": "integer", "minimum": 0},
-        "final_board_link_timing_signoff": {"type": "boolean"}
+        "required_endpoints": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "measured_endpoints": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "required_logic_segments": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "measured_logic_segments": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "routed_board_hops": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "model_only_board_hops": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "characterized_board_hops": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "measured_board_hops": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "final_board_link_timing_signoff": {
+          "type": "boolean"
+        },
+        "optimized_away_endpoints": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "optimized_away_logic_segments": {
+          "type": "integer",
+          "minimum": 0
+        }
       },
       "additionalProperties": false
     }
@@ -102,34 +218,183 @@
     "measuredEndpoint": {
       "type": "object",
       "required": [
-        "endpoint", "kind", "schedule_entry", "fpga",
-        "measured_min_delay_ns", "measured_max_delay_ns", "measurement"
+        "endpoint",
+        "kind",
+        "schedule_entry",
+        "fpga",
+        "measured_min_delay_ns",
+        "measured_max_delay_ns",
+        "measurement"
       ],
       "properties": {
-        "endpoint": {"type": "string", "minLength": 1},
-        "kind": {"enum": ["tx", "rx"]},
-        "schedule_entry": {"type": "string", "minLength": 1},
-        "fpga": {"type": "string", "minLength": 1},
-        "measured_min_delay_ns": {"type": "number", "minimum": 0},
-        "measured_max_delay_ns": {"type": "number", "minimum": 0},
-        "measurement": {"type": ["string", "null"]}
+        "endpoint": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": [
+            "tx",
+            "rx"
+          ]
+        },
+        "schedule_entry": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fpga": {
+          "type": "string",
+          "minLength": 1
+        },
+        "measured_min_delay_ns": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "measured_max_delay_ns": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "measurement": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "optimization_source": {
+          "type": "string",
+          "pattern": "^(?:s(?:0|[1-9][0-9]*)|p(?:[0-9a-f]{2})+:(?:0|[1-9][0-9]*))$"
+        }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "measurement": {
+                "const": "optimized-away"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "measured_min_delay_ns": {
+                "type": "null"
+              },
+              "measured_max_delay_ns": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "optimization_source"
+            ]
+          },
+          "else": {
+            "properties": {
+              "measured_min_delay_ns": {
+                "type": "number",
+                "minimum": 0
+              },
+              "measured_max_delay_ns": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "not": {
+              "required": [
+                "optimization_source"
+              ]
+            }
+          }
+        }
+      ]
     },
     "measuredSegment": {
       "type": "object",
       "required": [
-        "segment", "fpga", "measured_min_delay_ns",
-        "measured_max_delay_ns", "measurement"
+        "segment",
+        "fpga",
+        "measured_min_delay_ns",
+        "measured_max_delay_ns",
+        "measurement"
       ],
       "properties": {
-        "segment": {"type": "string", "minLength": 1},
-        "fpga": {"type": ["string", "null"]},
-        "measured_min_delay_ns": {"type": "number", "minimum": 0},
-        "measured_max_delay_ns": {"type": "number", "minimum": 0},
-        "measurement": {"type": ["string", "null"]}
+        "segment": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fpga": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "measured_min_delay_ns": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "measured_max_delay_ns": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "measurement": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "optimized_away_records": {
+          "type": "integer",
+          "minimum": 1
+        }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "measurement": {
+                "const": "optimized-away"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "measured_min_delay_ns": {
+                "type": "null"
+              },
+              "measured_max_delay_ns": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "optimized_away_records"
+            ]
+          },
+          "else": {
+            "properties": {
+              "measured_min_delay_ns": {
+                "type": "number",
+                "minimum": 0
+              },
+              "measured_max_delay_ns": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      ]
     }
   },
   "additionalProperties": false

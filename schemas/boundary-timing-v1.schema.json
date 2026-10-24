@@ -3,22 +3,64 @@
   "$id": "https://emuflow.dev/schemas/boundary-timing-v1.schema.json",
   "title": "EmuFlow endpoint-keyed physical boundary timing database v1",
   "type": "object",
-  "required": ["schema", "status", "design", "platform", "fpga", "provider", "qualification", "coverage", "endpoints"],
+  "required": [
+    "schema",
+    "status",
+    "design",
+    "platform",
+    "fpga",
+    "provider",
+    "qualification",
+    "coverage",
+    "endpoints"
+  ],
   "properties": {
-    "schema": {"const": "emuflow.boundary-timing/v1"},
-    "status": {"const": "pass"},
-    "design": {"type": "string", "minLength": 1},
-    "platform": {"type": "string", "minLength": 1},
-    "fpga": {"type": "string", "minLength": 1},
-    "provider": {"type": "string", "minLength": 1},
-    "qualification": {"type": "string", "minLength": 1},
+    "schema": {
+      "const": "emuflow.boundary-timing/v1"
+    },
+    "status": {
+      "const": "pass"
+    },
+    "design": {
+      "type": "string",
+      "minLength": 1
+    },
+    "platform": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fpga": {
+      "type": "string",
+      "minLength": 1
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1
+    },
+    "qualification": {
+      "type": "string",
+      "minLength": 1
+    },
     "coverage": {
       "type": "object",
-      "required": ["endpoints", "tx", "rx"],
+      "required": [
+        "endpoints",
+        "tx",
+        "rx"
+      ],
       "properties": {
-        "endpoints": {"type": "integer", "minimum": 0},
-        "tx": {"type": "integer", "minimum": 0},
-        "rx": {"type": "integer", "minimum": 0}
+        "endpoints": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tx": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rx": {
+          "type": "integer",
+          "minimum": 0
+        }
       },
       "additionalProperties": false
     },
@@ -26,18 +68,121 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "kind", "schedule_entry", "delay_ns", "start_object", "end_object", "measurement"],
+        "required": [
+          "id",
+          "kind",
+          "schedule_entry",
+          "delay_ns",
+          "start_object",
+          "end_object",
+          "measurement"
+        ],
         "properties": {
-          "id": {"type": "string", "minLength": 1},
-          "kind": {"enum": ["tx", "rx"]},
-          "schedule_entry": {"type": "string", "minLength": 1},
-          "delay_ns": {"type": "number", "minimum": 0},
-          "start_object": {"type": "string", "minLength": 1},
-          "end_object": {"type": "string", "minLength": 1},
-          "measurement": {"enum": ["logical-source-to-tx-port", "rx-port-to-shadow-capture"]}
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "tx",
+              "rx"
+            ]
+          },
+          "schedule_entry": {
+            "type": "string",
+            "minLength": 1
+          },
+          "delay_ns": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "start_object": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "end_object": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "measurement": {
+            "enum": [
+              "logical-source-to-tx-port",
+              "rx-port-to-shadow-capture",
+              "routed-launch-through-tx-boundary-to-interface-endpoint",
+              "interface-startpoint-through-rx-boundary-to-shadow-capture",
+              "optimized-away"
+            ]
+          },
+          "optimization_source": {
+            "type": "string",
+            "pattern": "^(?:s(?:0|[1-9][0-9]*)|p(?:[0-9a-f]{2})+:(?:0|[1-9][0-9]*))$"
+          }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "measurement": {
+                  "const": "optimized-away"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "optimization_source"
+              ],
+              "properties": {
+                "delay_ns": {
+                  "type": "null"
+                },
+                "start_object": {
+                  "type": "null"
+                },
+                "end_object": {
+                  "type": "null"
+                }
+              }
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "optimization_source"
+                ]
+              },
+              "properties": {
+                "delay_ns": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "start_object": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "end_object": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        ]
       }
+    },
+    "measurement_scope": {
+      "enum": [
+        "partition-boundary",
+        "board-integrated-interface"
+      ]
     }
   },
   "additionalProperties": false

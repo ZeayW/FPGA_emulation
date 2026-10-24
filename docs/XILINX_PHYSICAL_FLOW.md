@@ -222,6 +222,8 @@ not invent a physical endpoint trace. Version 1 measured-only generations remain
 readable. The query resolver, Tcl export, and importer preserve the disposition;
 the physical summary references one compact proof database per FPGA. Unknown
 initialization candidates remain unresolved until the vendor choice is confirmed.
+The boundary-timing and cross-layer physical-binding JSON schemas also encode
+null-only elimination records and reject fabricated numerical delays.
 Logic-segment and boundary timing storage version 2 provide the same nullable
 disposition contract and retain measured-only version 1 readers. A removed shadow
 interface must reference its canonical Phase6 boundary register; a different
