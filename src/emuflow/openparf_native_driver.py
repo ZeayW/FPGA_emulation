@@ -773,7 +773,7 @@ def validate_openparf_native_metrics(
             isinstance(threshold, bool)
             or not isinstance(threshold, (int, float))
             or not math.isfinite(float(threshold))
-            or not 0.1 < float(threshold) <= 0.25
+            or not 0.1 < float(threshold) < 1.0
             or isinstance(patience, bool)
             or not isinstance(patience, int)
             or patience < 0

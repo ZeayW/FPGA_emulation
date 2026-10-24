@@ -448,6 +448,9 @@ class OpenparfNativeDriverTest(unittest.TestCase):
                 )
 
     def test_accepts_post_adjustment_feedback_legalization_evidence(self):
+        policy = _policy()
+        policy["diagnostic_handoff_overflow"] = 0.65
+        policy["routability_adjustment_overflow_threshold"] = 0.65
         value = {
             "schema": OPENPARF_NATIVE_CONVERGENCE_SCHEMA,
             "status": "diagnostic",
@@ -461,14 +464,14 @@ class OpenparfNativeDriverTest(unittest.TestCase):
             "last_area_adjustment_iteration": 10,
             "post_adjustment_samples": 8,
             "best_diagnostic_hpwl": 10.0,
-            "best_diagnostic_logic_overflow": {"LUT": 0.35, "FF": 0.20},
+            "best_diagnostic_logic_overflow": {"LUT": 0.69, "FF": 0.53},
             "final_legal_hpwl": 11.0,
             "diagnostic_legalization_displacement": {
                 "instances": 10,
                 "mean": 1.5,
                 "maximum": 7.0,
             },
-            "policy": _policy(),
+            "policy": policy,
         }
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "metrics.json"

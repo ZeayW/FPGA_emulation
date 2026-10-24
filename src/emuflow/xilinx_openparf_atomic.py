@@ -129,13 +129,14 @@ _TARGET_DENSITY_HEADROOM = 0.025
 _QUALIFIED_LUTS_PER_SLICE = 8
 _CLOCK_REGION_SITE_UTILIZATION_LIMIT = 0.75
 _GLOBAL_PLACEMENT_STOP_OVERFLOW = 0.10
-_DIAGNOSTIC_HANDOFF_OVERFLOW = 0.25
+_DIAGNOSTIC_HANDOFF_OVERFLOW = 0.65
 _DIAGNOSTIC_HANDOFF_PATIENCE = 64
 # A diagnostic candidate must first see the same RUDY/pin-density feedback
-# that the diagnostic handoff is intended to qualify.  Keeping this at 0.15
-# while permitting a 0.25 handoff allowed placement to stop before the first
-# routability adjustment; the resulting legal NVDLA placement occupied only
-# two SLRs and plateaued with 84k overused routing nodes.
+# that the diagnostic handoff is intended to qualify.  The exact legalizer is
+# the authority for physical occupancy, so the representative path hands off
+# before the analytical density multiplier destroys HPWL.  NVDLA reaches its
+# useful 0.40-density window near overflow 0.65; requiring 0.25 drove HPWL from
+# 6.3M beyond 36M without reaching DirectLG.
 _ROUTABILITY_ADJUSTMENT_OVERFLOW_THRESHOLD = _DIAGNOSTIC_HANDOFF_OVERFLOW
 _ROUTABILITY_ADJUSTMENT_ITERATIONS = 6
 _ROUTE_AREA_ADJUSTMENT_EXPONENT = 2.0
@@ -4603,7 +4604,7 @@ def export_xilinx_openparf_atomic(
         "emuflow_convergence_patience": 64,
         "emuflow_relative_hpwl_improvement": 1.0e-4,
         # Overflow 0.10 is a routability target rather than a physical
-        # legality theorem.  Preserve a bounded 0.25 candidate so DirectLG
+        # legality theorem.  Preserve a bounded 0.65 candidate so DirectLG
         # can provide exact displacement and legality evidence on one
         # representative FPGA without weakening the normal pass criterion.
         "emuflow_diagnostic_handoff_overflow": (
@@ -5179,7 +5180,7 @@ def export_xilinx_openparf_atomic(
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "routability_contract": {
-            "provider": "openparf-rudy-pin-feedback-handoff-v10",
+            "provider": "openparf-rudy-pin-feedback-handoff-v11",
             "area_types": ["LUT", "FF"],
             "target_density": {
                 "value": target_density,

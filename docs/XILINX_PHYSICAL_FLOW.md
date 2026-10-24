@@ -74,7 +74,7 @@ for physical legality.
 
 Global-placement overflow is an analytical quality signal, not a site/BEL
 legality rule. The normal pass target is `0.10`. The representative diagnostic
-path reaches the `0.25` RUDY/pin-area trigger, then records eight metrics after
+path reaches the `0.65` RUDY/pin-area trigger, then records eight metrics after
 the inflation event and restores the candidate with the smallest inflated LUT
 or FF overflow, breaking ties by HPWL. The fixed window prevents global
 placement from withholding DirectLG and RWRoute while it repeatedly optimizes
@@ -95,8 +95,8 @@ their HPWL and congestion results decide whether the wider placement helped.
 
 Area adjustment changes the analytical cell areas and resets the nonlinear
 optimizer. Its new overflow values therefore are not comparable to the
-pre-adjustment `0.25` trigger as a physical legality test. Waiting for the
-inflated metric to fall below `0.25` again caused long global-placement loops
+pre-adjustment `0.65` trigger as a physical legality test. Waiting for the
+inflated metric to approach the normal target caused long global-placement loops
 and could favor wirelength or density proxies that did not improve routing.
 Any later inflation resets the saved window. The handoff always contains a
 metric newer than the last inflation event, so congestion feedback is present
