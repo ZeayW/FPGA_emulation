@@ -412,6 +412,7 @@ def _validate_certificate(
         if not isinstance(assignments, list) or not assignments:
             raise ValidationError(f"{context}: assignments are invalid")
         used_bels = set()
+        cluster_cells: Dict[str, Mapping[str, Any]] = {}
         slice_assignments = []
         hard_assignments = []
         for assignment_index, assignment in enumerate(assignments):
@@ -423,6 +424,7 @@ def _validate_certificate(
             cell_type = assignment.get("cell_type")
             if not isinstance(cell, Mapping) or cell.get("type") != cell_type:
                 raise ValidationError(f"{assignment_context}: mapped cell identity is invalid")
+            cluster_cells[name] = cell
             if owners is not None and name in owners:
                 raise ValidationError(f"cell {name!r} is assigned more than once")
             if owners is not None:
@@ -579,7 +581,7 @@ def _validate_certificate(
             ]
             if len(ff_names) > 16:
                 raise ValidationError(f"{context}: exceeds physical FF capacity")
-            control_sets = _slice_ff_control_sets(cells, slice_assignments)
+            control_sets = _slice_ff_control_sets(cluster_cells, slice_assignments)
             carry_counts = Counter(
                 item["cell_type"] for item in slice_assignments
                 if item["cell_type"] in {"CARRY8", DUAL_OUTPUT_LUT_TYPE}
@@ -896,6 +898,10 @@ def _validate_streamed_physical_handoff(
             if not isinstance(assignments, list) or not isinstance(actual_assignments, list):
                 raise ValidationError(f"{context}: assignments are invalid")
             instances: list[str] = []
+            # Reuse only this site's independently loaded cell records. Each
+            # indexed lookup reconstructs all typed pins; the working set must
+            # stay bounded by a physical cluster rather than the design.
+            cluster_cells: Dict[str, Mapping[str, Any]] = {}
             used_bels: set[str] = set()
             for assignment in assignments:
                 name = assignment.get("instance") if isinstance(assignment, Mapping) else None
@@ -903,6 +909,7 @@ def _validate_streamed_physical_handoff(
                 cell = cells.get(name)
                 if not isinstance(cell, Mapping) or cell.get("type") != cell_type:
                     raise ValidationError("PackedSiteNetlist assignment does not match source")
+                cluster_cells[name] = cell
                 bel = assignment.get("bel")
                 if not isinstance(bel, str) or not bel or bel in used_bels:
                     raise ValidationError("PackedSiteNetlist reuses a BEL")
@@ -913,21 +920,21 @@ def _validate_streamed_physical_handoff(
             kind = cluster.get("kind")
             if kind == "slice":
                 if (
-                    sum(cells[name].get("type") in LUT_TYPES for name in instances)
+                    sum(cluster_cells[name].get("type") in LUT_TYPES for name in instances)
                     > len(SLICE_LUT_BELS)
-                    or sum(cells[name].get("type") in FF_TYPES for name in instances)
+                    or sum(cluster_cells[name].get("type") in FF_TYPES for name in instances)
                     > len(SLICE_FF_BELS)
                 ):
                     raise ValidationError("slice cluster exceeds physical capacity")
-                control_sets = _slice_ff_control_sets(cells, assignments)
+                control_sets = _slice_ff_control_sets(cluster_cells, assignments)
                 _validate_declared_slice_control_sets(cluster, control_sets)
             elif kind == "carry":
-                carry = [name for name in instances if cells[name].get("type") == "CARRY8"]
-                adapters = [name for name in instances if cells[name].get("type") == DUAL_OUTPUT_LUT_TYPE]
+                carry = [name for name in instances if cluster_cells[name].get("type") == "CARRY8"]
+                adapters = [name for name in instances if cluster_cells[name].get("type") == DUAL_OUTPUT_LUT_TYPE]
                 if len(carry) != 1 or len(adapters) != 8 or len(instances) != 9:
                     raise ValidationError("carry cluster is invalid")
             elif kind == "hard":
-                cell_types = [cells[name].get("type") for name in instances]
+                cell_types = [cluster_cells[name].get("type") for name in instances]
                 if set(cell_types) == {"RAMB18E2"}:
                     if (
                         not 1 <= len(instances) <= 2

@@ -1,6 +1,7 @@
 import json
 import hashlib
 import copy
+from collections import Counter
 import tempfile
 import unittest
 from pathlib import Path
@@ -108,6 +109,34 @@ def _native_certificate(
 
 
 class XilinxOpenparfBridgeTest(unittest.TestCase):
+    def test_indexed_handoff_reuses_cell_pins_within_each_physical_site(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            mapped,architecture,certificate=_native_certificate(root,include_hard=False)
+            ir=root/'mapped.emuir.sqlite'
+            import_yosys_json(mapped).save(ir)
+            index=root/'mapped.sqlite'
+            emit_xilinx_mapped_index(ir,index)
+            _rewrite_typed_certificate(certificate,lambda value:value['source'].update(mapped_sha256=file_sha256(index)))
+            reads=Counter()
+            with open_xilinx_mapped_index(index) as indexed:
+                cells=indexed['modules']['top']['cells']
+                original_get=type(cells).__getitem__
+                def counted_get(instance,key):
+                    reads[key]+=1
+                    return original_get(instance,key)
+                with mock.patch.object(type(cells),'__getitem__',counted_get):
+                    result=materialize_xilinx_openparf_atomic_contract(
+                        index,architecture,certificate,root/'packed.json',root/'placement.json',
+                        mapped_value=indexed,physical_handoff_path=root/'handoff.sqlite',
+                    )
+            self.assertEqual(result['placed_cells'],128)
+            self.assertEqual(len(reads),128)
+            # Certificate validation and independent handoff validation each
+            # load a cell once. Type counts and control-set checks reuse the
+            # bounded site's records instead of re-reading all of its pins.
+            self.assertEqual(set(reads.values()),{2})
+
     def test_bridge_cluster_random_access_does_not_expand_all_clusters(self):
         class IndexedOnly(list):
             def __iter__(self):

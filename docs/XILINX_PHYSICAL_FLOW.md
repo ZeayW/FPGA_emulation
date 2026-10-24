@@ -54,6 +54,12 @@ change later validation. Closing the reader releases this derived state. A new
 reader, a different mapped file/top, or a mutable JSON input derives its own
 facts; no persistent analysis artifact or cross-run cache is introduced.
 
+The physical bridge reuses a site's loaded mapped-cell pin records for its
+capacity and FF control-set checks. This working set is bounded by one physical
+cluster and is discarded before the next site. Certificate validation and the
+independent handoff validator still load and check their own source records;
+driver uniqueness and dedicated topology checks retain their full scope.
+
 The native SLL multiplier keeps OpenPARF's `[0,1000)` acceptance policy and
 uses the fixed `t_psi=0.002` Adam step from LEAPS Equation (23). This is the
 incremental component of the former `1.002` exponential growth rate, rather
