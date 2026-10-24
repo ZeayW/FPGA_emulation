@@ -89,6 +89,9 @@ placement capacity; the driver checks the parsed native density area before
 solving. Logic filler sampling preserves its
 exact total area and limits each LUT/FF sample to half a density bin so the
 density field retains enough spatial resolution before exact legalization.
+Clock-region/site-type occupancy may use the complete nonoverlapping physical
+site capacity; routing headroom is measured by RWRoute instead of enforced by
+an additional placement cap.
 The native certificate records the effective count, geometry, and span.
 The `0.10` global-placement overflow target remains the normal analytical
 criterion. A representative placement triggers RUDY/pin feedback at `0.65`,

@@ -133,6 +133,11 @@ per-FPGA utilization limit is a whole-device capacity contract and does not
 implicitly create a pblock. Using the whole device lets the placer trade
 wirelength for lower local density and better routability.
 
+Clock-region/site-type buckets likewise expose their complete nonoverlapping
+site capacity. They are reported as diagnostics, not capped below the physical
+capacity. Exact site/BEL validation establishes placement legality and RWRoute
+establishes whether the resulting placement is routable.
+
 ## Detailed routing and validation
 
 The validated placement is passed to RWRoute. Routing is complete only when

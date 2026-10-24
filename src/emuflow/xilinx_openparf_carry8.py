@@ -51,7 +51,6 @@ OPENPARF_CARRY8_MANIFEST_SCHEMA = "emuflow.openparf-carry8-manifest/v1"
 OPENPARF_CARRY8_NAME_MAP_SCHEMA = "emuflow.openparf-carry8-name-map/v2"
 OPENPARF_CARRY8_PLACEMENT_SCHEMA = "emuflow.openparf-carry8-placement/v1"
 OPENPARF_CARRY8_PROVIDER = "openparf-native-carry8-full-slice-v1"
-_TARGET_DENSITY = 0.75
 _SLICE_LUT_TYPES = LUT_TYPES | {DUAL_OUTPUT_LUT_TYPE}
 
 
@@ -263,8 +262,8 @@ def export_xilinx_openparf_carry8(
     selected_top, cells, atoms, macros = _collect(mapped, packed, top)
     sites = _slice_sites(architecture)
     placement_region = _validate_native_placement_region(sites)
-    per_site_capacity, density_contract = _validate_native_density_contract(
-        sites, atoms
+    per_site_capacity, density_contract, target_density = (
+        _validate_native_density_contract(sites, atoms)
     )
     demand = Counter(atom["resource"] for atom in atoms)
     physical_capacity = {
@@ -323,7 +322,7 @@ def export_xilinx_openparf_carry8(
         "aux_input": str((output_dir / "design.aux").resolve()),
         "gpu": 0,
         "dtype": "float64",
-        "target_density": _TARGET_DENSITY,
+        "target_density": target_density,
         "random_seed": 1000,
         "max_global_place_iters": 2000,
         "global_place_flag": 1,

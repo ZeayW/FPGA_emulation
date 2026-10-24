@@ -34,7 +34,7 @@ XILINX_OPENPARF_CARRY8_BRIDGE_PROVIDER = (
 XILINX_AMF_NATIVE_BRIDGE_PROVIDER = (
     "amf-placer-public-basic-2.0-native-bridge-v1"
 )
-XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT = 0.75
+XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT = 1.0
 _SITE_XY_RE = re.compile(r"^(?P<kind>[A-Z0-9_]+)_X(?P<x>\d+)Y(?P<y>\d+)$")
 
 

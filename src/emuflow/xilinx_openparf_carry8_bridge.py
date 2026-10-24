@@ -203,9 +203,16 @@ def materialize_xilinx_openparf_carry8_contract(
         key = _region_key(site)
         if key is not None:
             usage[key] += 1
-            limit = max(1, math.ceil(capacity[key] * 0.75))
+            limit = max(
+                1,
+                math.ceil(
+                    capacity[key] * XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT
+                ),
+            )
             if usage[key] > limit:
-                raise ValidationError("OpenPARF CARRY8 clock-region utilization exceeds 75%")
+                raise ValidationError(
+                    "OpenPARF CARRY8 clock-region utilization exceeds capacity"
+                )
         placements.append({
             "cluster": cluster_id,
             "site": site_name,
@@ -223,7 +230,15 @@ def materialize_xilinx_openparf_carry8_contract(
             (usage[key] / count for key, count in capacity.items()), default=None
         ),
         "maximum_clock_region_site_reservation": max(
-            (usage[key] / max(1, math.ceil(count * 0.75)) for key, count in capacity.items()),
+            (
+                usage[key] / max(
+                    1,
+                    math.ceil(
+                        count * XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT
+                    ),
+                )
+                for key, count in capacity.items()
+            ),
             default=None,
         ),
     }
