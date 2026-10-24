@@ -85,7 +85,10 @@ the exact validator and negotiated router remain authoritative.
 
 The native atomic route chooses one density target from the largest exported
 resource utilization plus 2.5 percentage points of analytical headroom, bounded
-to `0.40..0.75`.  The lower bound prevents a partition whose whole-device LUT
+to `0.40..0.75`. The target is applied to the complete qualified site domain;
+the exporter does not pre-reserve a second fraction of sites by clock region or
+site type. This avoids multiplying two whitespace factors and lets the density
+optimizer decide its spatial distribution. The lower bound prevents a partition whose whole-device LUT
 utilization is about 25% from collapsing into two central SLRs merely to reduce
 HPWL: two SLRs would be about 50% full and therefore legal under the former
 fixed `0.75` target, despite creating a severe local-routing bottleneck.  The
@@ -113,7 +116,7 @@ This leaves the configured target density and final site/BEL checks intact.
 
 Bookshelf's column grammar stretches each site to the next entry. The exporter
 therefore inserts zero-resource entries after a logic site when physical gaps
-or reserved rows follow it. LUT/FF sites occupy one native grid row; hard-block
+follow it. LUT/FF sites occupy one native grid row; hard-block
 spans keep their qualified heights. These unavailable entries are not physical
 sites and never appear in the atom-to-site database. The driver compares the
 already constructed native density tensors with the exported LUT/FF site-area

@@ -82,8 +82,11 @@ legalization and negotiated routing. An utilization-adaptive `0.40..0.75`
 density target prevents low whole-device utilization from collapsing into the
 central SLRs. Analytical LUT density uses the eight qualified LUT BELs per
 slice, independently of the native sixteen-slot encoding.
-Empty and reserved rows retain zero placement capacity; the driver checks the
-parsed native density area before solving. Logic filler sampling preserves its
+OpenPARF and DirectLG receive every qualified physical site. The density target
+is the sole analytical whitespace control, so site filtering cannot compound
+it or predetermine where whitespace appears. Empty physical rows retain zero
+placement capacity; the driver checks the parsed native density area before
+solving. Logic filler sampling preserves its
 exact total area and limits each LUT/FF sample to half a density bin so the
 density field retains enough spatial resolution before exact legalization.
 The native certificate records the effective count, geometry, and span.
