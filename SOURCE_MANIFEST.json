@@ -237,13 +237,12 @@
     },
     {
       "id": "fpga-placement",
-      "stage": "Phase 2 / Phase 7",
+      "stage": "Phase 7 / shared OpenPARF runtime",
       "source_paths": [
         "engines/openparf/openparf/placement",
         "engines/openparf/openparf/ops",
         "engines/openparf/openparf/pybind",
         "src/emuflow/openparf.py",
-        "src/emuflow/placement.py",
         "src/emuflow/packed_placement.py"
       ],
       "build_targets": [

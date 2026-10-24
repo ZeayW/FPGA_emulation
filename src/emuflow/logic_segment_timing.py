@@ -34,7 +34,7 @@ from .phase3_exact_binary import (
     iter_phase3_exact_segments,
 )
 from .phase3_storage import read_phase3_assignment_view
-from .placement import _vivado_mapped_name
+from .vivado_backend import _vivado_mapped_name
 from .platform import Platform
 from .routing import static_exact_contract_from_assignment, system_route_timing_paths
 from .system_route_storage import pretty_system_routes_sha256, read_system_routes

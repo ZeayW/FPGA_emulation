@@ -320,3 +320,9 @@ class VivadoBackendTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_mapped_name_preserves_vivado_backslash_identity():
+    from emuflow.vivado_backend import _vivado_mapped_name
+    assert _vivado_mapped_name("$flatten\\cpu") == "$flatten\\\\cpu"
+    assert _vivado_mapped_name("dut/路径[0]") == "dut/路径[0]"

@@ -9,7 +9,6 @@ from typing import Any, Dict, Mapping, Optional
 from .errors import EmuFlowError, ValidationError
 from .boundary_timing import BOUNDARY_IDENTITY_SCHEMA
 from .boundary_identity_storage import read_boundary_identity_storage
-from .placement import _vivado_mapped_name
 from .ir import EmuIR
 
 
@@ -22,6 +21,11 @@ _BOUNDARY_QUERY_HEADER = (
     "endpoint_hex\tkind\texternal_port_hex\tbit\tlogical_net_hex\t"
     "boundary_cell_hex"
 )
+
+
+def _vivado_mapped_name(value: str) -> str:
+    """Return the exact NAME property Vivado exposes for a Yosys identifier."""
+    return value.replace("\\", "\\\\")
 
 
 def _hex(value: str) -> str:

@@ -385,6 +385,16 @@ Vivado export and implementation require current indexed EmuIR; a whole-graph
 JSON input is rejected before tool execution. See the [provider contract](XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider)
 for current qualification and optimization limits.
 
+The old `phase2` placement spike, generic `placement` commands and single-FPGA
+`vpr fpga-open`/`full-open` flow are retired together with their whole-graph
+Bookshelf exporter, greedy placement and generic placement schema.
+The dependent `phase7d`/`phase8a` release/BSP-requirements chain is also retired;
+its reports do not qualify either current physical backend. Current multi-FPGA
+BSP materialization, fixed-pin/electrical checks and terminal flow validation
+remain. OpenSTA Phase 2 is unaffected. Use the multi-FPGA compile/physical
+interface for the maintained implementations; Chimew still consumes the shared VTR/OpenPARF
+lookahead kernels. Historical artifacts require their matching Git revision.
+
 Standalone `multi-fpga physical` uses `--backend` for the same selection and
 also defaults to RapidWright. The integrated Chimew lookahead path currently
 requires explicit `--physical-backend open --mapping-profile vtr-hard-blocks`.

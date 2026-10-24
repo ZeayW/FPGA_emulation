@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from emuflow.bsp import build_bsp_requirements
 from emuflow.chimew_phase6 import (
     CHIMEW_PHASE6_BINDING_PROVIDER, CHIMEW_PHASE6_BINDING_SCHEMA_V1,
     _canonical_sha256, validate_chimew_phase6_binding,
@@ -232,14 +231,3 @@ def test_indexed_chimew_electrical_validator_preserves_bank_budget(tmp_path):
         validate_chimew_phase6_binding(
             indexed_schedule, platform, indexed_plan, binding
         )
-
-
-def test_phase8a_refuses_independent_direction_pin_requirements_for_shared_banks():
-    from tests.test_phase8a import Phase8ATest
-    platform, release, phase6, anchors = Phase8ATest()._inputs()
-    value = platform.to_dict()
-    value["links"][0].update(bank_count=2, wires_per_bank=1,
-                             capacity_sharing="shared_bidirectional")
-    platform = Platform.from_dict(value)
-    with pytest.raises(ValidationError, match="schedule-aware physical BSP"):
-        build_bsp_requirements(release, "b" * 64, phase6, platform, anchors)

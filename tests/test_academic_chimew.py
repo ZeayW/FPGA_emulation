@@ -28,9 +28,10 @@ from emuflow.multi_fpga_flow import (
     validate_phase6_ab_comparison,
 )
 from emuflow.phase1 import run_phase1
-from emuflow.phase3 import run_phase3
+from tests.partition_fixture import run_phase3_fixture as run_phase3
 from emuflow.phase4 import run_phase4
 from emuflow.phase5 import run_phase5
+from emuflow.tdm_schedule_storage import read_tdm_schedule
 from emuflow.pin_plan_storage import read_pin_plan
 from tests.native_build import tlr_router
 
@@ -88,8 +89,8 @@ class AcademicChimewTest(unittest.TestCase):
             phase1 / "design.emuir.sqlite",
             PLATFORM,
             phase3,
-            provider="greedy",
-            cut_mode="sequential-only",
+            provider="tritonpart",
+            cut_mode="static-exact-combinational",
         )
         run_phase4(
             phase3 / "assignment.json",
@@ -97,8 +98,12 @@ class AcademicChimewTest(unittest.TestCase):
             phase4,
             frame_slots=32,
             router=str(tlr_router()),
+            timing_driven=False,
         )
-        run_phase5(phase4 / "routes.json", PLATFORM, phase5)
+        run_phase5(
+            phase4 / "routes.json", PLATFORM, phase5,
+            assignment_path=phase3 / "assignment.json",
+        )
         return (
             phase1 / "design.emuir.sqlite",
             phase3 / "assignment.json",
@@ -248,12 +253,16 @@ class AcademicChimewTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             ir, assignment, routes, schedule = self._upstream(root)
-            schedule_document = read_json(schedule)
+            schedule_document = read_tdm_schedule(schedule, materialize=True)
             critical_entry = schedule_document["entries"][0]
             duplicate = dict(critical_entry)
             duplicate["id"] = critical_entry["id"] + "-other-slot"
-            duplicate["slot"] = 1
-            duplicate["arrival_slot"] = 3
+            duplicate["slot"] = max(
+                entry["slot"] for entry in schedule_document["entries"]
+            ) + 1
+            duplicate["arrival_slot"] = duplicate["slot"] + (
+                critical_entry["arrival_slot"] - critical_entry["slot"]
+            )
             schedule_document["entries"].append(duplicate)
             write_json(schedule, schedule_document)
             timing = root / "timing.json"
@@ -364,8 +373,8 @@ class AcademicChimewTest(unittest.TestCase):
                 lookahead["metrics"]["placement_endpoint_fallbacks"], 0
             )
             artifacts = lookahead["artifacts"]
-            materialized_schedule = read_json(
-                Path(artifacts["schedule"]["path"])
+            materialized_schedule = read_tdm_schedule(
+                Path(artifacts["schedule"]["path"]), materialize=True,
             )
             self.assertTrue(
                 all(
@@ -641,7 +650,7 @@ class AcademicChimewTest(unittest.TestCase):
             ] = "shared_bidirectional"
             shared_platform = root / "shared-platform.json"
             write_json(shared_platform, platform_document)
-            schedule_document = read_json(schedule)
+            schedule_document = read_tdm_schedule(schedule, materialize=True)
             forward = next(
                 entry
                 for entry in schedule_document["entries"]
@@ -691,8 +700,9 @@ class AcademicChimewTest(unittest.TestCase):
                 grouper=self.executables["grouper"],
                 refiner=self.executables["refiner"],
             )
-            materialized_schedule = read_json(
-                Path(lookahead["artifacts"]["schedule"]["path"])
+            materialized_schedule = read_tdm_schedule(
+                Path(lookahead["artifacts"]["schedule"]["path"]),
+                materialize=True,
             )
             timing_guard = materialized_schedule["chimew_timing_guard"]
             self.assertEqual(
@@ -735,7 +745,7 @@ class AcademicChimewTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             ir, assignment, routes, schedule = self._upstream(root)
-            schedule_document = read_json(schedule)
+            schedule_document = read_tdm_schedule(schedule, materialize=True)
             critical_entry = schedule_document["entries"][0]
             timing = root / "cut-timing-paths.json"
             write_json(
@@ -798,8 +808,9 @@ class AcademicChimewTest(unittest.TestCase):
                     if entry != critical_entry["id"]
                 )
             )
-            materialized_schedule = read_json(
-                Path(lookahead["artifacts"]["schedule"]["path"])
+            materialized_schedule = read_tdm_schedule(
+                Path(lookahead["artifacts"]["schedule"]["path"]),
+                materialize=True,
             )
             self.assertEqual(
                 materialized_schedule["chimew_timing_guard"][
@@ -911,7 +922,7 @@ class AcademicChimewTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             ir, assignment, routes, schedule = self._upstream(root)
-            schedule_document = read_json(schedule)
+            schedule_document = read_tdm_schedule(schedule, materialize=True)
             critical_entry = schedule_document["entries"][0]
             duplicate = dict(critical_entry)
             duplicate["id"] = critical_entry["id"] + "-next-hop"

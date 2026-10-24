@@ -122,7 +122,12 @@ OpenPARF/RWRoute and Vivado; VTR/open remains while Chimew lookahead depends on
 it. Shared site/BEL and handoff validation remain. See the
 [backend contract](docs/XILINX_PHYSICAL_FLOW.md#backend-contract).
 RapidWright uses only native OpenPARF placement. The legacy placer selector,
-packed-cluster guidance flow and single-SLR planner are removed.
+packed-cluster guidance flow and single-SLR planner are removed. The early
+`phase2` placement spike, generic `placement` commands and standalone
+`vpr fpga-open/full-open` flows are also removed; current OpenSTA Phase 2,
+native OpenPARF placement and Chimew lookahead retain their shared kernels.
+The obsolete `phase7d`/`phase8a` release chain that required the placement spike
+is retired; current multi-FPGA BSP and fixed-I/O validation remain.
 The multi-FPGA upstream uses OpenSTA for Phase 2. The independent Vivado timing
 producer and old whole-EmuIR physical flow are retired; Vivado implementation
 consumes the current indexed Xilinx input and complete timing queries. Old

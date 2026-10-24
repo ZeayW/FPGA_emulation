@@ -51,7 +51,6 @@ from .default_platform import (
     DEFAULT_WIRES_PER_BANK,
     materialize_research_platform,
 )
-from .bsp import run_phase8a
 from .chimew_phase6 import run_chimew_phase6_adapter
 from .chimew_bank_channel_storage import read_chimew_bank_channel_input
 from .chimew_bank_channel_report_storage import (
@@ -222,9 +221,7 @@ from .opensta import (
     parse_clock_definitions,
     run_opensta_path_database,
 )
-from .open_physical_flow import run_open_physical_flow
 from .phase1 import run_phase1
-from .phase2 import run_phase2
 from .phase3 import run_phase3, validate_phase3
 from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
@@ -247,14 +244,12 @@ from .physical_regions import (
     run_physical_region_rebind,
     validate_fpga_interchange_architecture_regions,
 )
-from .placement import Placement
 from .platform import Platform
 from .pin_planning import (
     validate_pin_plan,
 )
 from .pin_plan_storage import read_pin_plan
 from .position_hints_storage import read_position_hints
-from .release import run_phase7d
 from .route_artifact import validate_vpr_route_artifacts
 
 from .runtime_sync import (
@@ -1646,42 +1641,6 @@ def _build_parser() -> argparse.ArgumentParser:
             "architecture modes"
         ),
     )
-    vpr_full_open = vpr_subparsers.add_parser(
-        "fpga-open",
-        aliases=["full-open"],
-        help=(
-            "run one FPGA's checked RTL-to-routed open physical backend "
-            "('full-open' is a deprecated alias)"
-        ),
-    )
-    vpr_full_open.add_argument("sources", nargs="+", type=Path)
-    vpr_full_open.add_argument("--top", required=True)
-    vpr_full_open.add_argument("--out", type=Path, required=True)
-    vpr_full_open.add_argument(
-        "--architecture",
-        type=Path,
-        help="optional VTR XML; otherwise fetch the pinned flagship model",
-    )
-    vpr_full_open.add_argument(
-        "--architecture-id", default="vtr-flagship-k6-n10-40nm"
-    )
-    vpr_full_open.add_argument(
-        "--logic-only",
-        action="store_true",
-        help="disable the default flagship multiplier/RAM hard-block mapping",
-    )
-    vpr_full_open.add_argument("--yosys")
-    vpr_full_open.add_argument("--vpr")
-    vpr_full_open.add_argument("--architecture-importer")
-    vpr_full_open.add_argument("--packed-importer")
-    vpr_full_open.add_argument("--route-checker")
-    vpr_full_open.add_argument("--openparf-install", type=Path)
-    vpr_full_open.add_argument("--openparf-python", type=Path)
-    vpr_full_open.add_argument("--seed", type=int, default=1)
-    vpr_full_open.add_argument(
-        "--route-channel-width", type=int, default=300
-    )
-
     multi_fpga = subparsers.add_parser(
         "multi-fpga",
         help="board-independent multi-FPGA compilation",
@@ -2658,81 +2617,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     arch_validate_regions.add_argument("path", type=Path)
 
-    placement_parser = subparsers.add_parser(
-        "placement", help="physical placement operations"
-    )
-    placement_subparsers = placement_parser.add_subparsers(
-        dest="placement_command", required=True
-    )
-    placement_validate = placement_subparsers.add_parser(
-        "validate", help="validate a placement against ArchitectureDB and EmuIR"
-    )
-    placement_validate.add_argument("path", type=Path)
-    placement_validate.add_argument("--arch", type=Path, required=True)
-    placement_validate.add_argument("--ir", type=Path)
-    placement_import = placement_subparsers.add_parser(
-        "import-openparf", help="convert OpenPARF .pl to legal Site/BEL placement"
-    )
-    placement_import.add_argument("input", type=Path)
-    placement_import.add_argument("--arch", type=Path, required=True)
-    placement_import.add_argument("--ir", type=Path, required=True)
-    placement_import.add_argument("--output", "-o", type=Path, required=True)
-    placement_import.add_argument("--xdc", type=Path)
-
-    phase2 = subparsers.add_parser(
-        "phase2", help="run the UltraScale+ physical-backend risk spike"
-    )
-    phase2.add_argument("--ir", type=Path, required=True)
-    phase2.add_argument("--arch", type=Path, required=True)
-    phase2.add_argument("--out", type=Path, required=True)
-    phase2.add_argument(
-        "--openparf-result",
-        type=Path,
-        help="explicit comparison/import .pl; default runs root-built OpenPARF",
-    )
-    phase2.add_argument(
-        "--openparf-global-result",
-        action="store_true",
-        help=(
-            "treat --openparf-result as global coordinates and legalize them "
-            "onto exact ArchitectureDB Site/BEL slots"
-        ),
-    )
-    phase2.add_argument(
-        "--site-utilization-limit",
-        type=float,
-        default=0.75,
-        help="maximum fraction of compatible slots exposed per site",
-    )
-    phase2.add_argument(
-        "--site-y-range",
-        type=int,
-        nargs=2,
-        metavar=("MIN_Y", "MAX_Y"),
-        help=(
-            "affinely map OpenPARF y coordinates into this inclusive "
-            "ArchitectureDB region (for example, one SLR)"
-        ),
-    )
-    phase2.add_argument(
-        "--openparf-install",
-        type=Path,
-        help="explicit comparison override for an OpenPARF install root",
-    )
-    phase2.add_argument(
-        "--openparf-python",
-        type=Path,
-        help=(
-            "Python used to load root-built OpenPARF; defaults to the "
-            "interpreter recorded by the root CMake build"
-        ),
-    )
-    phase2.add_argument(
-        "--reference-placement",
-        action="store_true",
-        help="use the deterministic greedy adapter reference in tests only",
-    )
-
     partition_parser = subparsers.add_parser(
         "partition", help="multi-FPGA partition artifact operations"
     )
@@ -3385,46 +3269,6 @@ def _build_parser() -> argparse.ArgumentParser:
                         default="opensta", help="global physical timing engine (default: opensta)")
     phase7c.add_argument("--out", type=Path, required=True)
 
-    phase7d = subparsers.add_parser(
-        "phase7d",
-        help="audit and hash a complete board-independent G0-G9 release",
-    )
-    phase7d.add_argument("--benchmark-report", type=Path, required=True)
-    phase7d.add_argument("--phase3-report", type=Path, required=True)
-    phase7d.add_argument("--phase4-report", type=Path, required=True)
-    phase7d.add_argument("--phase5-report", type=Path, required=True)
-    phase7d.add_argument("--phase6-report", type=Path, required=True)
-    phase7d.add_argument("--phase7c-report", type=Path, required=True)
-    phase7d.add_argument("--runtime-contract", type=Path, required=True)
-    phase7d.add_argument("--qor-report", type=Path, required=True)
-    phase7d.add_argument("--physical-summary", type=Path, required=True)
-    phase7d.add_argument("--platform", type=Path, required=True)
-    phase7d.add_argument(
-        "--lowering-report", action="append", default=[], metavar="FPGA=PATH"
-    )
-    phase7d.add_argument(
-        "--placement-report", action="append", default=[], metavar="FPGA=PATH"
-    )
-    phase7d.add_argument(
-        "--emission-report", action="append", default=[], metavar="FPGA=PATH"
-    )
-    phase7d.add_argument(
-        "--artifact", action="append", default=[], metavar="LABEL=PATH"
-    )
-    phase7d.add_argument("--source-commit", required=True)
-    phase7d.add_argument("--out", type=Path, required=True)
-
-    phase8a = subparsers.add_parser(
-        "phase8a",
-        help="seal the hardware-BSP requirements for a G0-G9 release",
-    )
-    phase8a.add_argument("--release-manifest", type=Path, required=True)
-    phase8a.add_argument("--phase6-report", type=Path, required=True)
-    phase8a.add_argument("--platform", type=Path, required=True)
-    phase8a.add_argument(
-        "--anchor", action="append", default=[], metavar="FPGA=PATH"
-    )
-    phase8a.add_argument("--out", type=Path, required=True)
     return parser
 
 def _dispatch(args: argparse.Namespace) -> int:
@@ -4384,25 +4228,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "vpr":
-        if args.vpr_command in {"fpga-open", "full-open"}:
-            report = run_open_physical_flow(
-                sources=args.sources,
-                top=args.top,
-                output_dir=args.out,
-                architecture=args.architecture,
-                architecture_id=args.architecture_id,
-                hard_blocks=not args.logic_only,
-                yosys=args.yosys,
-                vpr=args.vpr,
-                architecture_importer=args.architecture_importer,
-                packed_importer=args.packed_importer,
-                route_checker=args.route_checker,
-                openparf_install=args.openparf_install,
-                openparf_python=args.openparf_python,
-                seed=args.seed,
-                route_channel_width=args.route_channel_width,
-            )
-        elif args.vpr_command == "synth":
+        if args.vpr_command == "synth":
             report = run_vtr_yosys(
                 sources=args.sources,
                 top=args.top,
@@ -4675,43 +4501,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             report = architecture.summary()
         _print_json(report)
         return 0 if report.get("status", "pass") == "pass" else 2
-
-    if args.command == "placement":
-        architecture = ArchitectureDB.load(args.arch)
-        ir = EmuIR.load(args.ir) if args.ir is not None else None
-        if args.placement_command == "import-openparf":
-            assert ir is not None
-            placement = Placement.from_openparf_pl(
-                args.input, architecture, ir
-            )
-            write_json(args.output, placement.to_dict())
-            if args.xdc is not None:
-                args.xdc.parent.mkdir(parents=True, exist_ok=True)
-                args.xdc.write_text(placement.to_xdc(), encoding="utf-8")
-        else:
-            placement = Placement.load(args.path, architecture, ir)
-        _print_json(placement.summary())
-        return 0
-
-    if args.command == "phase2":
-        report = run_phase2(
-            ir_path=args.ir,
-            architecture_path=args.arch,
-            output_dir=args.out,
-            openparf_result=args.openparf_result,
-            openparf_global_result=args.openparf_global_result,
-            site_utilization_limit=args.site_utilization_limit,
-            site_y_range=(
-                tuple(args.site_y_range)
-                if args.site_y_range is not None
-                else None
-            ),
-            openparf_install=args.openparf_install,
-            openparf_python=args.openparf_python,
-            reference_placement=args.reference_placement,
-        )
-        _print_json(report)
-        return 0
 
     if args.command == "multi-fpga":
         if args.multi_fpga_command == "validate":
@@ -5482,45 +5271,6 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         _print_json(report)
         return 0 if report["status"] in {"generated", "pass"} else 2
-
-    if args.command == "phase7d":
-        report = run_phase7d(
-            benchmark_report_path=args.benchmark_report,
-            phase3_report_path=args.phase3_report,
-            phase4_report_path=args.phase4_report,
-            phase5_report_path=args.phase5_report,
-            phase6_report_path=args.phase6_report,
-            phase7c_report_path=args.phase7c_report,
-            runtime_contract_path=args.runtime_contract,
-            qor_report_path=args.qor_report,
-            physical_summary_path=args.physical_summary,
-            platform_path=args.platform,
-            lowering_report_paths=_keyed_paths(
-                args.lowering_report, "--lowering-report"
-            ),
-            placement_report_paths=_keyed_paths(
-                args.placement_report, "--placement-report"
-            ),
-            emission_report_paths=_keyed_paths(
-                args.emission_report, "--emission-report"
-            ),
-            artifact_paths=_keyed_paths(args.artifact, "--artifact"),
-            source_commit=args.source_commit,
-            output_dir=args.out,
-        )
-        _print_json(report)
-        return 0
-
-    if args.command == "phase8a":
-        report = run_phase8a(
-            release_manifest_path=args.release_manifest,
-            phase6_report_path=args.phase6_report,
-            platform_path=args.platform,
-            anchor_paths=_keyed_paths(args.anchor, "--anchor"),
-            output_dir=args.out,
-        )
-        _print_json(report)
-        return 0
 
     raise AssertionError(f"unhandled command {args.command!r}")
 
