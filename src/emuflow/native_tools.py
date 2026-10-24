@@ -48,7 +48,7 @@ def resolve_native_executable(
     """
 
     if explicit is not None:
-        # Backends such as VPR intentionally execute in an artifact directory.
+        # External engines execute in an artifact directory.
         # Bind a caller-supplied relative path to the invocation directory now,
         # before any backend changes its subprocess working directory.
         return str(Path(explicit).expanduser().resolve())

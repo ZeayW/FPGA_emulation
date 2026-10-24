@@ -18,6 +18,14 @@ include(GNUInstallDirs)
 find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
 find_program(EMUFLOW_MAKE_EXECUTABLE NAMES gmake make REQUIRED)
 
+foreach(EMUFLOW_RETIRED_BUILD_OPTION IN ITEMS
+    EMUFLOW_BUILD_VTR_ARCHITECTURE EMUFLOW_BUILD_VPR
+    EMUFLOW_BUILD_VPR_PACKED_NETLIST EMUFLOW_BUILD_VPR_ROUTE_CHECKER)
+  if(${EMUFLOW_RETIRED_BUILD_OPTION})
+    message(FATAL_ERROR "${EMUFLOW_RETIRED_BUILD_OPTION} is retired; only the Xilinx physical backends are maintained")
+  endif()
+endforeach()
+
 option(EMUFLOW_BUILD_YOSYS "Build the in-tree Yosys and ABC source" ON)
 option(
   EMUFLOW_BUILD_CUDD
@@ -64,26 +72,6 @@ option(
 option(
   EMUFLOW_BUILD_FPGA_INTERCHANGE
   "Build the in-tree FPGA Interchange DeviceResources importer"
-  ON
-)
-option(
-  EMUFLOW_BUILD_VTR_ARCHITECTURE
-  "Build the in-tree VTR academic architecture XML importer"
-  ON
-)
-option(
-  EMUFLOW_BUILD_VPR
-  "Build the in-tree VTR/VPR exact pack, place, and route engine"
-  ON
-)
-option(
-  EMUFLOW_BUILD_VPR_PACKED_NETLIST
-  "Build the VPR packed-netlist contract importer"
-  ON
-)
-option(
-  EMUFLOW_BUILD_VPR_ROUTE_CHECKER
-  "Build the independent VPR route/RR-graph checker"
   ON
 )
 option(EMUFLOW_BUILD_OPENPARF "Build the in-tree OpenPARF source" ON)
@@ -362,7 +350,6 @@ file(
   GLOB_RECURSE EMUFLOW_RUNTIME_DATA
   CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/resources/timing/*"
-  "${CMAKE_SOURCE_DIR}/resources/architectures/*"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/platforms/*.json"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/io/*.json"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/rapidwright/*.json"
@@ -446,8 +433,7 @@ add_custom_command(
     "${CMAKE_SOURCE_DIR}/resources/timing"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/resources/timing"
   COMMAND
-    "${CMAKE_COMMAND}" -E copy_directory
-    "${CMAKE_SOURCE_DIR}/resources/architectures"
+    "${CMAKE_COMMAND}" -E rm -rf
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/resources/architectures"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
@@ -509,6 +495,10 @@ add_custom_command(
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/contest_validation_matrix.json"
   COMMAND
     "${CMAKE_COMMAND}" -E rm -f
+    "${EMUFLOW_INSTALL_BINDIR}/vpr"
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow_vtr_arch_importer"
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow_vpr_packed_netlist_importer"
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow_vpr_route_checker"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/end_to_end_validation_matrix.json"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/experiment_dag.schema.example.json"
   COMMAND
@@ -585,63 +575,8 @@ if(EMUFLOW_BUILD_FPGA_INTERCHANGE)
   )
 endif()
 
-if(EMUFLOW_BUILD_VTR_ARCHITECTURE)
-  add_executable(
-    emuflow_vtr_arch_importer
-    "${CMAKE_SOURCE_DIR}/src/native/vtr_architecture_importer.cpp"
-    "${CMAKE_SOURCE_DIR}/engines/vtr/libs/EXTERNAL/libpugixml/src/pugixml.cpp"
-  )
-  target_compile_features(emuflow_vtr_arch_importer PRIVATE cxx_std_17)
-  target_compile_options(emuflow_vtr_arch_importer PRIVATE -O3)
-  target_include_directories(
-    emuflow_vtr_arch_importer
-    PRIVATE
-      "${CMAKE_SOURCE_DIR}/engines/vtr/libs/EXTERNAL/libpugixml/src"
-  )
-  set_target_properties(
-    emuflow_vtr_arch_importer
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
 
-if(EMUFLOW_BUILD_VPR_PACKED_NETLIST)
-  add_executable(
-    emuflow_vpr_packed_netlist_importer
-    "${CMAKE_SOURCE_DIR}/src/native/vpr_packed_netlist_importer.cpp"
-    "${CMAKE_SOURCE_DIR}/engines/vtr/libs/EXTERNAL/libpugixml/src/pugixml.cpp"
-  )
-  target_compile_features(
-    emuflow_vpr_packed_netlist_importer PRIVATE cxx_std_17
-  )
-  target_compile_options(
-    emuflow_vpr_packed_netlist_importer PRIVATE -O3
-  )
-  target_include_directories(
-    emuflow_vpr_packed_netlist_importer
-    PRIVATE
-      "${CMAKE_SOURCE_DIR}/engines/vtr/libs/EXTERNAL/libpugixml/src"
-  )
-  set_target_properties(
-    emuflow_vpr_packed_netlist_importer
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
 
-if(EMUFLOW_BUILD_VPR_ROUTE_CHECKER)
-  add_executable(
-    emuflow_vpr_route_checker
-    "${CMAKE_SOURCE_DIR}/src/native/vpr_route_checker.cpp"
-  )
-  target_compile_features(emuflow_vpr_route_checker PRIVATE cxx_std_17)
-  target_compile_options(emuflow_vpr_route_checker PRIVATE -O3)
-  set_target_properties(
-    emuflow_vpr_route_checker
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
 
 
 if(EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER)
@@ -998,62 +933,6 @@ if(EMUFLOW_BUILD_OPENSTA)
   )
 endif()
 
-if(EMUFLOW_BUILD_VPR)
-  set(
-    EMUFLOW_VPR_CMAKE_ARGS
-    "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
-    "-DCMAKE_PREFIX_PATH=${EMUFLOW_EXTERNAL_CMAKE_PREFIX_PATH}"
-    "-DBUILD_TESTING=OFF"
-    "-DVTR_IPO_BUILD=off"
-    "-DVTR_VCS_REVISION_OVERRIDE=a3e60c31bb4384373d2d1a43c38c7569723733b6"
-    "-DWITH_ABC=OFF"
-    "-DWITH_ODIN=OFF"
-    "-DWITH_PARMYS=OFF"
-    "-DSLANG_SYSTEMVERILOG=OFF"
-    "-DVTR_ENABLE_CAPNPROTO=OFF"
-    "-DVPR_ENABLE_INTERCHANGE=OFF"
-    "-DVPR_ENABLE_NOC_SAT_ROUTING=OFF"
-    "-DVPR_USE_SERVER=OFF"
-    "-DVPR_USE_EZGL=off"
-    "-DVPR_EXECUTION_ENGINE=serial"
-    "-DVPR_ENABLE_OPEN_MP=off"
-    ${EMUFLOW_PARSER_CMAKE_ARGS}
-  )
-  if(EMUFLOW_SWIG_EXECUTABLE)
-    list(
-      APPEND EMUFLOW_VPR_CMAKE_ARGS
-      "-DSWIG_EXECUTABLE=${EMUFLOW_SWIG_EXECUTABLE}"
-    )
-  endif()
-  if(EMUFLOW_SWIG_DIR)
-    list(
-      APPEND EMUFLOW_VPR_CMAKE_ARGS
-      "-DSWIG_DIR=${EMUFLOW_SWIG_DIR}"
-    )
-  endif()
-
-  ExternalProject_Add(
-    vpr_native
-    SOURCE_DIR "${CMAKE_SOURCE_DIR}/engines/vtr"
-    BINARY_DIR "${CMAKE_BINARY_DIR}/vtr"
-    DOWNLOAD_COMMAND ""
-    UPDATE_COMMAND ""
-    PATCH_COMMAND ""
-    LIST_SEPARATOR "|"
-    CMAKE_ARGS ${EMUFLOW_VPR_CMAKE_ARGS}
-    BUILD_COMMAND
-      "${CMAKE_COMMAND}" -E env
-      ${EMUFLOW_EXTERNAL_BUILD_ENV}
-      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
-      --target vpr
-      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
-    INSTALL_COMMAND
-      "${CMAKE_COMMAND}" -E copy
-      "<BINARY_DIR>/vpr/vpr"
-      "${EMUFLOW_INSTALL_BINDIR}/vpr"
-    BUILD_BYPRODUCTS "${EMUFLOW_INSTALL_BINDIR}/vpr"
-  )
-endif()
 
 if(EMUFLOW_BUILD_OPENPARF)
   ExternalProject_Add(
@@ -1111,17 +990,8 @@ endif()
 if(EMUFLOW_BUILD_CUDD AND EMUFLOW_BUILD_OPENSTA)
   add_dependencies(opensta_native cudd_native)
 endif()
-if(EMUFLOW_BUILD_VPR)
-  if(EMUFLOW_BUILD_OPENROAD)
-    add_dependencies(vpr_native openroad_native)
-  elseif(EMUFLOW_BUILD_YOSYS)
-    add_dependencies(vpr_native yosys_native)
-  endif()
-endif()
 if(EMUFLOW_BUILD_OPENPARF)
-  if(EMUFLOW_BUILD_VPR)
-    add_dependencies(openparf_native vpr_native)
-  elseif(EMUFLOW_BUILD_OPENROAD)
+  if(EMUFLOW_BUILD_OPENROAD)
     add_dependencies(openparf_native openroad_native)
   elseif(EMUFLOW_BUILD_YOSYS)
     add_dependencies(openparf_native yosys_native)
@@ -1226,52 +1096,8 @@ if(BUILD_TESTING)
     )
   endif()
 
-  if(EMUFLOW_BUILD_VTR_ARCHITECTURE)
-    add_test(
-      NAME emuflow_vtr_arch_importer_fixture
-      COMMAND
-        "$<TARGET_FILE:emuflow_vtr_arch_importer>"
-        "${CMAKE_SOURCE_DIR}/examples/architecture/vtr_k6_heterogeneous_fixture.xml"
-    )
-    set_tests_properties(
-      emuflow_vtr_arch_importer_fixture
-      PROPERTIES
-        PASS_REGULAR_EXPRESSION
-          "EMUFLOW_VTR_ARCHITECTURE_EXTRACT_V1"
-    )
-  endif()
 
-  if(EMUFLOW_BUILD_VPR_PACKED_NETLIST)
-    add_test(
-      NAME emuflow_vpr_packed_netlist_importer_fixture
-      COMMAND
-        "$<TARGET_FILE:emuflow_vpr_packed_netlist_importer>"
-        "${CMAKE_SOURCE_DIR}/examples/physical/vpr_packed_fixture.net"
-    )
-    set_tests_properties(
-      emuflow_vpr_packed_netlist_importer_fixture
-      PROPERTIES
-        PASS_REGULAR_EXPRESSION
-          "EMUFLOW_VPR_PACKED_NETLIST_EXTRACT_V1"
-    )
-  endif()
 
-  if(EMUFLOW_BUILD_VPR_ROUTE_CHECKER)
-    add_test(
-      NAME emuflow_vpr_route_checker_fixture
-      COMMAND
-        "$<TARGET_FILE:emuflow_vpr_route_checker>"
-        "${CMAKE_SOURCE_DIR}/examples/physical/vpr_route_fixture.route"
-        "${CMAKE_SOURCE_DIR}/examples/physical/vpr_rr_graph_fixture.xml"
-        "${CMAKE_BINARY_DIR}/vpr-route-fixture-report.json"
-    )
-    set_tests_properties(
-      emuflow_vpr_route_checker_fixture
-      PROPERTIES
-        PASS_REGULAR_EXPRESSION
-          "EMUFLOW_VPR_ROUTE_CORE_CHECK_V1"
-    )
-  endif()
 
   if(EMUFLOW_BUILD_YOSYS)
     add_test(
@@ -1294,12 +1120,6 @@ if(BUILD_TESTING)
     )
   endif()
 
-  if(EMUFLOW_BUILD_VPR)
-    add_test(
-      NAME vpr_version
-      COMMAND "${EMUFLOW_INSTALL_BINDIR}/vpr" --version
-    )
-  endif()
 
   if(EMUFLOW_BUILD_OPENPARF)
     add_test(

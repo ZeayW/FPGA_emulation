@@ -154,11 +154,6 @@ from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
 from .phase6 import run_phase6, validate_phase6
 from .phase7c import run_phase7c
-from .packed_netlist import (
-    run_packed_netlist_import,
-    validate_packed_netlist_file,
-)
-from .packed_placement import run_packed_openparf_placement
 from .physical_pins import (
     SERIAL_TRANSCEIVER_PROVIDER,
     run_phase6b,
@@ -176,7 +171,6 @@ from .pin_planning import (
 )
 from .pin_plan_storage import read_pin_plan
 from .position_hints_storage import read_position_hints
-from .route_artifact import validate_vpr_route_artifacts
 
 from .runtime_sync import (
     run_runtime_sync_materialization,
@@ -203,14 +197,6 @@ from .tdm_schedule_storage import read_tdm_schedule
 from .timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from .yosys import import_yosys_json
 from .verilog import emit_mapped_verilog
-from .vtr_architecture import (
-    fetch_pinned_vtr_architecture,
-    read_vpr_placement_dimensions,
-    run_vtr_architecture_import,
-    validate_vtr_architecture_db,
-    validate_vtr_timing_db_file,
-)
-from .vpr import run_vpr, run_vpr_route_packed
 from .vivado_board_flow import (
     run_vivado_board_flow,
     validate_vivado_board_flow_bundle,
@@ -723,13 +709,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="enable the fail-closed Route A UltraScale+ primitive contract",
     )
 
-    vpr_parser = subparsers.add_parser(
-        "vpr", help="open VTR/VPR per-FPGA physical backend"
-    )
-    vpr_subparsers = vpr_parser.add_subparsers(
-        dest="vpr_command", required=True
-    )
-
     multi_fpga = subparsers.add_parser(
         "multi-fpga",
         help="board-independent multi-FPGA compilation",
@@ -1050,24 +1029,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument(
         "--physical-backend",
-        choices=("open", "rapidwright", "vivado"),
+        choices=("rapidwright", "vivado"),
         default="rapidwright",
         help="physical/timing provider (default: rapidwright)",
     )
     multi_fpga_compile.add_argument("--physical-architecture", type=Path)
-    multi_fpga_compile.add_argument(
-        "--physical-architecture-id", default="vtr-flagship-k6-n10-40nm"
-    )
-    multi_fpga_compile.add_argument("--physical-vpr")
-    multi_fpga_compile.add_argument("--physical-architecture-importer")
-    multi_fpga_compile.add_argument("--physical-packed-importer")
-    multi_fpga_compile.add_argument("--physical-route-checker")
     multi_fpga_compile.add_argument("--physical-openparf-install", type=Path)
     multi_fpga_compile.add_argument("--physical-openparf-python", type=Path)
     multi_fpga_compile.add_argument("--physical-seed", type=int, default=1)
-    multi_fpga_compile.add_argument(
-        "--physical-route-channel-width", type=int, default=300
-    )
     multi_fpga_compile.add_argument("--physical-vivado")
 
     multi_fpga_compile.add_argument(
@@ -1176,23 +1145,13 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     multi_fpga_physical.add_argument(
-        "--backend", choices=("open", "rapidwright", "vivado"), default="rapidwright"
+        "--backend", choices=("rapidwright", "vivado"), default="rapidwright"
     )
     multi_fpga_physical.add_argument("--architecture", type=Path)
-    multi_fpga_physical.add_argument(
-        "--architecture-id", default="vtr-flagship-k6-n10-40nm"
-    )
     multi_fpga_physical.add_argument("--yosys")
-    multi_fpga_physical.add_argument("--vpr")
-    multi_fpga_physical.add_argument("--architecture-importer")
-    multi_fpga_physical.add_argument("--packed-importer")
-    multi_fpga_physical.add_argument("--route-checker")
     multi_fpga_physical.add_argument("--openparf-install", type=Path)
     multi_fpga_physical.add_argument("--openparf-python", type=Path)
     multi_fpga_physical.add_argument("--seed", type=int, default=1)
-    multi_fpga_physical.add_argument(
-        "--route-channel-width", type=int, default=300
-    )
     multi_fpga_physical.add_argument("--vivado")
 
     multi_fpga_physical.add_argument(
@@ -1225,7 +1184,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--resume",
         action="store_true",
         help=(
-            "reuse only independently hash-validated VPR pack/place "
+            "reuse only independently validated physical "
             "checkpoints before continuing OpenPARF and detailed routing"
         ),
     )
@@ -1290,83 +1249,6 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_board_timing.add_argument("--resume", action="store_true")
     multi_fpga_board_timing.add_argument("--link-timing-db", type=Path)
     multi_fpga_board_timing.add_argument("--out", type=Path, required=True)
-    vpr_run = vpr_subparsers.add_parser(
-        "run",
-        help="run exact VPR pack, baseline place, route, and analysis",
-    )
-    vpr_run.add_argument("--architecture", type=Path, required=True)
-    vpr_run.add_argument("--circuit", type=Path, required=True)
-    vpr_run.add_argument("--out", type=Path, required=True)
-    vpr_run.add_argument(
-        "--vpr",
-        help="explicit comparison override; defaults to the in-tree build",
-    )
-    vpr_run.add_argument("--seed", type=int, default=1)
-    vpr_run.add_argument("--route-channel-width", type=int, default=300)
-    vpr_import_packed = vpr_subparsers.add_parser(
-        "import-packed",
-        help="import VPR .net packing decisions into the versioned contract",
-    )
-    vpr_import_packed.add_argument("--input", type=Path, required=True)
-    vpr_import_packed.add_argument("--output", "-o", type=Path, required=True)
-    vpr_import_packed.add_argument("--architecture", type=Path)
-    vpr_import_packed.add_argument("--circuit", type=Path)
-    vpr_import_packed.add_argument(
-        "--importer",
-        help="explicit comparison override; defaults to the in-tree build",
-    )
-    vpr_validate_packed = vpr_subparsers.add_parser(
-        "validate-packed",
-        help="independently validate a VPR packed-netlist contract",
-    )
-    vpr_validate_packed.add_argument("--input", type=Path, required=True)
-    vpr_validate_packed.add_argument("--architecture", type=Path)
-    vpr_validate_packed.add_argument("--circuit", type=Path)
-    vpr_place_openparf = vpr_subparsers.add_parser(
-        "place-openparf",
-        help="place VPR packed clusters with root-built OpenPARF",
-    )
-    vpr_place_openparf.add_argument("--packed", type=Path, required=True)
-    vpr_place_openparf.add_argument(
-        "--architecture-db", type=Path, required=True
-    )
-    vpr_place_openparf.add_argument("--seed-placement", type=Path)
-    vpr_place_openparf.add_argument("--out", type=Path, required=True)
-    vpr_place_openparf.add_argument("--openparf-install", type=Path)
-    vpr_place_openparf.add_argument("--openparf-python", type=Path)
-    vpr_route_packed = vpr_subparsers.add_parser(
-        "route-packed",
-        help="route a packed netlist and OpenPARF VPR placement",
-    )
-    vpr_route_packed.add_argument("--architecture", type=Path, required=True)
-    vpr_route_packed.add_argument("--circuit", type=Path, required=True)
-    vpr_route_packed.add_argument("--packed-netlist", type=Path, required=True)
-    vpr_route_packed.add_argument(
-        "--packed-contract", type=Path, required=True
-    )
-    vpr_route_packed.add_argument("--placement", type=Path, required=True)
-    vpr_route_packed.add_argument("--out", type=Path, required=True)
-    vpr_route_packed.add_argument(
-        "--vpr",
-        help="explicit comparison override; defaults to the in-tree build",
-    )
-    vpr_route_packed.add_argument(
-        "--route-channel-width", type=int, default=300
-    )
-    vpr_route_packed.add_argument("--route-checker")
-    vpr_validate_route = vpr_subparsers.add_parser(
-        "validate-route",
-        help="independently check VPR route and RR-graph artifacts",
-    )
-    vpr_validate_route.add_argument("--route", type=Path, required=True)
-    vpr_validate_route.add_argument("--rr-graph", type=Path, required=True)
-    vpr_validate_route.add_argument(
-        "--packed-contract", type=Path, required=True
-    )
-    vpr_validate_route.add_argument("--placement", type=Path, required=True)
-    vpr_validate_route.add_argument("--output", "-o", type=Path, required=True)
-    vpr_validate_route.add_argument("--checker")
-
     benchmark = subparsers.add_parser(
         "benchmark", help="run a pinned RTL benchmark through Phase 1"
     )
@@ -1444,45 +1326,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="explicit comparison override; defaults to the in-tree build",
     )
     arch_import_rapidwright.add_argument("--log", type=Path)
-    arch_import_vtr = arch_subparsers.add_parser(
-        "import-vtr",
-        help="import an open VTR academic architecture XML",
-    )
-    arch_import_vtr.add_argument("input", type=Path)
-    arch_import_vtr.add_argument("--architecture-id", required=True)
-    arch_import_vtr.add_argument("--width", type=int)
-    arch_import_vtr.add_argument("--height", type=int)
-    arch_import_vtr.add_argument(
-        "--reference-placement",
-        type=Path,
-        help="derive exact auto-layout dimensions from a VPR .place file",
-    )
-    arch_import_vtr.add_argument(
-        "--architecture-output", type=Path, required=True
-    )
-    arch_import_vtr.add_argument(
-        "--timing-output", type=Path, required=True
-    )
-    arch_import_vtr.add_argument("--source-url")
-    arch_import_vtr.add_argument(
-        "--native",
-        help="explicit comparison override; defaults to the in-tree build",
-    )
-    arch_fetch_vtr = arch_subparsers.add_parser(
-        "fetch-default-vtr",
-        help="fetch and verify the pinned open VTR flagship architecture",
-    )
-    arch_fetch_vtr.add_argument("--output", "-o", type=Path, required=True)
-    arch_validate_vtr = arch_subparsers.add_parser(
-        "validate-vtr",
-        help="validate a VTR-sourced ArchitectureDB",
-    )
-    arch_validate_vtr.add_argument("path", type=Path)
-    arch_validate_vtr_timing = arch_subparsers.add_parser(
-        "validate-vtr-timing",
-        help="validate a VTR academic TimingDB",
-    )
-    arch_validate_vtr_timing.add_argument("path", type=Path)
     arch_build_xilinx_preplacement_timing = arch_subparsers.add_parser(
         "build-xilinx-preplacement-timing",
         help=(
@@ -2686,63 +2529,6 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         return 0
 
-    if args.command == "vpr":
-        if args.vpr_command == "run":
-            report = run_vpr(
-                architecture=args.architecture,
-                circuit=args.circuit,
-                output_dir=args.out,
-                executable=args.vpr,
-                seed=args.seed,
-                route_channel_width=args.route_channel_width,
-            )
-        elif args.vpr_command == "import-packed":
-            report = run_packed_netlist_import(
-                packed_netlist_path=args.input,
-                output_path=args.output,
-                architecture_path=args.architecture,
-                circuit_path=args.circuit,
-                executable=args.importer,
-            )
-        elif args.vpr_command == "validate-packed":
-            report = validate_packed_netlist_file(
-                args.input,
-                architecture_path=args.architecture,
-                circuit_path=args.circuit,
-            )
-        elif args.vpr_command == "place-openparf":
-            report = run_packed_openparf_placement(
-                args.packed,
-                args.architecture_db,
-                args.out,
-                seed_placement_path=args.seed_placement,
-                openparf_install=args.openparf_install,
-                openparf_python=args.openparf_python,
-            )
-        elif args.vpr_command == "route-packed":
-            report = run_vpr_route_packed(
-                architecture=args.architecture,
-                circuit=args.circuit,
-                packed_netlist=args.packed_netlist,
-                packed_contract=args.packed_contract,
-                placement=args.placement,
-                output_dir=args.out,
-                executable=args.vpr,
-                route_checker=args.route_checker,
-                route_channel_width=args.route_channel_width,
-            )
-        else:
-            report = validate_vpr_route_artifacts(
-                args.route,
-                args.rr_graph,
-                args.packed_contract,
-                args.placement,
-                args.output,
-                executable=args.checker,
-            )
-        _print_json(report)
-        return 0 if report["status"] == "pass" else 2
-
     if args.command == "benchmark":
         report = run_benchmark(
             spec_path=args.spec,
@@ -2788,41 +2574,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 executable=args.native,
                 log_path=args.log,
             )
-        elif args.arch_command == "import-vtr":
-            if args.reference_placement is not None:
-                if args.width is not None or args.height is not None:
-                    raise EmuFlowError(
-                        "--reference-placement cannot be combined with "
-                        "--width or --height"
-                    )
-                width, height = read_vpr_placement_dimensions(
-                    args.reference_placement
-                )
-            elif args.width is None or args.height is None:
-                raise EmuFlowError(
-                    "import-vtr requires either --reference-placement or "
-                    "both --width and --height"
-                )
-            else:
-                width, height = args.width, args.height
-            report = run_vtr_architecture_import(
-                input_path=args.input,
-                architecture_output_path=args.architecture_output,
-                timing_output_path=args.timing_output,
-                architecture_id=args.architecture_id,
-                width=width,
-                height=height,
-                source_url=args.source_url,
-                executable=args.native,
-            )
-        elif args.arch_command == "fetch-default-vtr":
-            report = fetch_pinned_vtr_architecture(args.output)
-        elif args.arch_command == "validate-vtr":
-            report = validate_vtr_architecture_db(
-                ArchitectureDB.load(args.path)
-            )
-        elif args.arch_command == "validate-vtr-timing":
-            report = validate_vtr_timing_db_file(args.path)
         elif args.arch_command == "validate-fpga-interchange":
             architecture = ArchitectureDB.load(args.path)
             report = validate_fpga_interchange_architecture(architecture)
@@ -3017,16 +2768,10 @@ def _dispatch(args: argparse.Namespace) -> int:
                 output_dir=args.out,
                 backend=args.backend,
                 architecture=args.architecture,
-                architecture_id=args.architecture_id,
                 yosys=args.yosys,
-                vpr=args.vpr,
-                architecture_importer=args.architecture_importer,
-                packed_importer=args.packed_importer,
-                route_checker=args.route_checker,
                 openparf_install=args.openparf_install,
                 openparf_python=args.openparf_python,
                 seed=args.seed,
-                route_channel_width=args.route_channel_width,
                 vivado=args.vivado,
                 vivado_place_directive=args.vivado_place_directive,
                 vivado_route_directive=args.vivado_route_directive,
@@ -3197,19 +2942,9 @@ def _dispatch(args: argparse.Namespace) -> int:
             physical=args.physical,
             physical_backend=args.physical_backend,
             physical_architecture=args.physical_architecture,
-            physical_architecture_id=args.physical_architecture_id,
-            physical_vpr=args.physical_vpr,
-            physical_architecture_importer=(
-                args.physical_architecture_importer
-            ),
-            physical_packed_importer=args.physical_packed_importer,
-            physical_route_checker=args.physical_route_checker,
             physical_openparf_install=args.physical_openparf_install,
             physical_openparf_python=args.physical_openparf_python,
             physical_seed=args.physical_seed,
-            physical_route_channel_width=(
-                args.physical_route_channel_width
-            ),
             physical_vivado=args.physical_vivado,
             physical_vivado_place_directive=(
                 args.physical_vivado_place_directive

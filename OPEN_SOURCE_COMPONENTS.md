@@ -52,10 +52,6 @@ their own licenses.
 | `engines/openparf/thirdparty/yaml-cpp/test/gtest-1.11.0` | [GoogleTest](https://github.com/google/googletest/tree/release-1.11.0) | 1.11.0 upstream test snapshot | BSD-3-Clause | yaml-cpp upstream tests; disabled |
 | `engines/openparf/thirdparty/lemon` | [LEMON graph library](https://github.com/The-OpenROAD-Project/lemon-graph) | 1.3.1 | BSL-1.0 | Graph algorithms |
 | `engines/openparf/thirdparty/rapidcsv` | [rapidcsv](https://github.com/d99kris/rapidcsv) | 8.65 | BSD-3-Clause | CSV parsing |
-| `engines/vtr` | [Verilog-to-Routing / VPR](https://github.com/verilog-to-routing/vtr-verilog-to-routing) | `a3e60c31bb4384373d2d1a43c38c7569723733b6` | MIT | Exact architecture packing, routing-resource graph construction, baseline placement, and detailed routing |
-| `engines/vtr/libs/EXTERNAL/libpugixml` | [pugixml](https://github.com/zeux/pugixml) | 1.7 | MIT | VPR and EmuFlow packed-netlist XML parsing |
-| `engines/vtr/libs/EXTERNAL/libsdcparse` | [libsdcparse](https://github.com/verilog-to-routing/libsdcparse) | `7a49e2c9ad469d314aa7ec07d3e893ecabd7d9dc` | MIT | VPR SDC parsing |
-| `engines/vtr/libs/EXTERNAL/yaml-cpp` | [yaml-cpp](https://github.com/jbeder/yaml-cpp) | `2decf96e915d2b0c26c68c1659665789dfef2633` | MIT | VPR YAML report/configuration parsing |
 
 Yosys ABC and OpenROAD ABC each carry additional SAT solver, compression, and
 BDD code. Those copies originate in their respective pinned ABC repositories;
@@ -95,8 +91,8 @@ an EmuFlow optimization engine.
 | Boost | [boostorg/boost](https://github.com/boostorg/boost) | OpenROAD, OpenPARF |
 | Bison | [GNU Bison](https://git.savannah.gnu.org/cgit/bison.git) | Yosys, OpenROAD, OpenPARF parsers |
 | Flex | [westes/flex](https://github.com/westes/flex) | Yosys, OpenROAD, OpenPARF parsers |
-| Tcl | [tcltk/tcl](https://github.com/tcltk/tcl) | OpenROAD command interface and VPR SDC parsing |
-| SWIG | [swig/swig](https://github.com/swig/swig) | OpenROAD/OpenSTA bindings and VPR SDC parser generation |
+| Tcl | [tcltk/tcl](https://github.com/tcltk/tcl) | OpenROAD command interface |
+| SWIG | [swig/swig](https://github.com/swig/swig) | OpenROAD/OpenSTA bindings |
 | Eigen | [libeigen/eigen](https://gitlab.com/libeigen/eigen) | OpenROAD/OpenSTA |
 | zlib | [madler/zlib](https://github.com/madler/zlib) | Yosys/OpenROAD |
 | spdlog | [gabime/spdlog](https://github.com/gabime/spdlog) | OpenROAD logging |
@@ -124,12 +120,10 @@ without copying it into the repository or ArchitectureDB.
 
 ## Fetchable architecture sources
 
-The default academic device model is not an opaque binary or commercial
-database. `resources/architectures/vtr/flagship-k6-n10-40nm.json` pins VTR's
-[flagship heterogeneous architecture XML](https://github.com/verilog-to-routing/vtr-verilog-to-routing/blob/a3e60c31bb4384373d2d1a43c38c7569723733b6/vtr_flow/arch/timing/k6_frac_N10_frac_chain_mem32K_40nm.xml)
-at commit `a3e60c31bb4384373d2d1a43c38c7569723733b6`, records its MIT
-license and SHA-256, and is verified before use. The C++ importer and its XML
-regression fixture are first-party source in this repository.
+The maintained physical integrations use the source-sealed Xilinx provider
+manifest and its declared external device-data boundary. The independent VTR
+engine, pinned academic architecture, and standalone XML/packed/route adapters
+are retired. OpenPARF's own upstream utility sources and their notices remain.
 
 ## RTL benchmark sources
 

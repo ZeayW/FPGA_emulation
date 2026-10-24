@@ -11,7 +11,6 @@ different device models and implementation engines:
 | Backend | Device model and implementation |
 | --- | --- |
 | RapidWright | Supported Xilinx device resources and site/BEL connectivity, native OpenPARF placement, validated site/BEL binding, and RWRoute detailed routing |
-| VTR | VTR architecture XML, VPR packing and routing-resource graph, and either OpenPARF or VPR placement |
 | Vivado | Optional vendor synthesis and implementation integration for supported inputs |
 
 The maintained Xilinx implementation routes are OpenPARF/RWRoute and Vivado.
@@ -20,8 +19,9 @@ AMF certificate policy and unused multi-candidate comparator are removed.
 Retired placer certificates are not
 accepted by Xilinx placement validation. Common packing, capability reporting,
 site/BEL ownership, cascade and typed physical-handoff validation remain part
-of the retained routes. The Chimew lookahead no longer uses VTR/open. Remaining
-legacy VTR backend/build code is a separate retirement boundary.
+of the retained routes. VTR/open execution, its standalone architecture/packing/
+routing/timing adapters and engine build/install dependencies are retired.
+Chimew consumes only the maintained Xilinx physical owners.
 
 The RapidWright backend has one placement chain: native OpenPARF atomic
 placement, independent site/BEL and macro checks, typed physical handoff, then

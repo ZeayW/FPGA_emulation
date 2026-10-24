@@ -20,7 +20,7 @@
       "type": "object",
       "required": ["backend", "fpga", "part"],
       "properties": {
-        "backend": {"enum": ["open", "rapidwright", "vivado"]},
+        "backend": {"enum": ["rapidwright", "vivado"]},
         "fpga": {"type": "string", "minLength": 1},
         "part": {"type": "string", "minLength": 1}
       },
@@ -50,9 +50,6 @@
     "hard_resources": {
       "type": "object",
       "properties": {
-        "vtr_multiply_macros": {"type": "integer", "minimum": 0},
-        "vtr_ram_macros": {"type": "integer", "minimum": 0},
-        "vtr_ram_bits": {"type": "integer", "minimum": 0},
         "dsp48_cells": {"type": "integer", "minimum": 0},
         "ramb18_cells": {"type": "integer", "minimum": 0},
         "ramb36_cells": {"type": "integer", "minimum": 0},

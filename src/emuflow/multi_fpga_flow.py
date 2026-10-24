@@ -1206,6 +1206,8 @@ def _compile_preflight(ctx: _CompileContext):
         raise EmuFlowError("only the OpenSTA global timing engine is supported")
     if ctx.global_sta_executable is not None and not ctx.physical:
         raise EmuFlowError("global OpenSTA qualification requires --physical")
+    if ctx.physical_backend not in {"rapidwright", "vivado"}:
+        raise EmuFlowError(f"unsupported physical backend {ctx.physical_backend!r}")
     if ctx.mapping_profile not in MULTI_FPGA_MAPPING_PROFILES:
         raise EmuFlowError(
             "unsupported multi-FPGA mapping profile "
@@ -1356,7 +1358,7 @@ def _compile_preflight(ctx: _CompileContext):
     # interpreter inside the physical-flow helper is much too late for a
     # one-shot Phase 1--7 invocation.  Reject an unusable OpenPARF/PyTorch
     # binding before creating any frontend artifact or doing synthesis.
-    physical_uses_openparf = ctx.physical and ctx.physical_backend in {"open", "rapidwright"}
+    physical_uses_openparf = ctx.physical and ctx.physical_backend == "rapidwright"
     if physical_uses_openparf:
         validate_openparf_runtime(
             install_root=ctx.physical_openparf_install,
@@ -1828,16 +1830,10 @@ def _run_selected_physical(ctx, split_root, schedule_path, output_dir):
         output_dir,
         backend=ctx.physical_backend,
         architecture=ctx.effective_physical_architecture,
-        architecture_id=ctx.physical_architecture_id,
         yosys=ctx.yosys,
-        vpr=ctx.physical_vpr,
-        architecture_importer=ctx.physical_architecture_importer,
-        packed_importer=ctx.physical_packed_importer,
-        route_checker=ctx.physical_route_checker,
         openparf_install=ctx.physical_openparf_install,
         openparf_python=ctx.physical_openparf_python,
         seed=ctx.physical_seed,
-        route_channel_width=ctx.physical_route_channel_width,
         vivado=ctx.physical_vivado,
         vivado_place_directive=ctx.physical_vivado_place_directive,
         vivado_route_directive=ctx.physical_vivado_route_directive,
@@ -2513,15 +2509,9 @@ def run_multi_fpga_flow(
     physical: bool = False,
     physical_backend: str = "rapidwright",
     physical_architecture: Optional[Path] = None,
-    physical_architecture_id: str = "vtr-flagship-k6-n10-40nm",
-    physical_vpr: Optional[str] = None,
-    physical_architecture_importer: Optional[str] = None,
-    physical_packed_importer: Optional[str] = None,
-    physical_route_checker: Optional[str] = None,
     physical_openparf_install: Optional[Path] = None,
     physical_openparf_python: Optional[Path] = None,
     physical_seed: int = 1,
-    physical_route_channel_width: int = 300,
     physical_vivado: Optional[str] = None,
     physical_vivado_place_directive: str = "Default",
     physical_vivado_route_directive: str = "Default",

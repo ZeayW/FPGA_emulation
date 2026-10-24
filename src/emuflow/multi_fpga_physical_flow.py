@@ -31,20 +31,16 @@ from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .logic_segment_timing import (
     LOGIC_SEGMENT_TIMING_SCHEMA,
-    import_vpr_logic_segment_timing,
     prepare_logic_segment_query_inputs,
     validate_logic_segment_timing,
     write_vivado_logic_segment_query,
     write_xilinx_logic_segment_query,
-    write_vpr_logic_segment_query,
 )
 from .local_path_timing import (
     local_path_timing_header,
-    import_vpr_local_path_timing,
-    prepare_vpr_local_path_query_inputs,
+    prepare_local_path_query_inputs,
     read_local_path_identity,
     validate_local_path_timing,
-    write_vpr_local_path_query,
     write_xilinx_local_path_query,
 )
 from .local_path_timing_storage import (
@@ -60,8 +56,6 @@ from .lowering import (
 )
 from .split_netlist_storage import SplitNetlistView
 from .netlist import SPLIT_MANIFEST_SCHEMA
-from .packed_netlist import run_packed_netlist_import
-from .packed_placement import run_packed_openparf_placement
 from .openparf import validate_openparf_runtime
 from .physical_backend import (
     PHYSICAL_PARTITION_RESULT_SCHEMA,
@@ -95,17 +89,6 @@ from .tdm_schedule_storage import (
     read_tdm_schedule,
 )
 from .transport_storage import read_lane_map, read_transport, read_virtual_binding
-from .vpr import VTR_HARD_BLOCK_PROFILE, run_vpr_pack_place, run_vpr_route_packed
-from .vpr_boundary_timing import (
-    import_vpr_boundary_timing,
-    write_vpr_boundary_timing_query,
-)
-from .vtr_architecture import (
-    fetch_pinned_vtr_architecture,
-    read_vpr_placement_dimensions,
-    run_vtr_architecture_import,
-)
-from .vtr_eblif import emit_vtr_eblif
 from .virtual_board import (
     build_virtual_io_physical_contract,
     validate_virtual_binding,
@@ -123,11 +106,6 @@ MULTI_FPGA_PHYSICAL_SCHEMA = "emuflow.multi-fpga-physical-flow/v1"
 _TRANSPORT_MODULE = re.compile(r"^module\s+([A-Za-z_][A-Za-z0-9_$]*)", re.M)
 _INACTIVE_PARTITION_PROVIDER = "inactive-empty-partition-v1"
 
-# VPR stores SDC times in signed 32-bit picoseconds. Leave a deliberate
-# margin below INT_MAX so a rounded parser value cannot overflow. This only
-# affects VPR's local implementation constraint; system timing continues to
-# use the exact virtual-runtime period recorded upstream.
-_VPR_SDC_MAX_TIME_NS = 2_000_000.0
 
 
 @contextmanager
@@ -184,13 +162,12 @@ def _implementation_stage(
     item: Mapping[str, Any], backend: str, stage: str
 ) -> Mapping[str, Any]:
     """Return one physical stage from its backend-specific report owner."""
+    if backend not in {"rapidwright", "vivado"}:
+        raise ValidationError(f"unsupported physical backend {backend!r}")
     if item.get("active") is False:
         return item["stages"][stage]
-    if backend == "vivado":
-        return item["stages"]["vivado_implementation"][stage]
-    if backend == "rapidwright":
-        return item["stages"]["rapidwright_implementation"][stage]
-    return item["stages"][stage]
+    owner = "vivado_implementation" if backend == "vivado" else "rapidwright_implementation"
+    return item["stages"][owner][stage]
 
 
 def _indexed_emuir_counts(path: Path) -> tuple[int, int]:
@@ -424,193 +401,10 @@ def _record_chimew_fixed_io_target(
         raise ValidationError("Chimew packed I/O cluster has conflicting anchors")
 
 
-def _write_vpr_runtime_sdc(
-    path: Path,
-    eblif_report: Mapping[str, Any],
-    *,
-    fabric_period_ns: float,
-    dut_periods_ns: Mapping[str, float],
-    cross_period_ns: float,
-    dut_clock_required: bool = True,
-) -> Dict[str, Any]:
-    """Write VPR constraints matching the provider-neutral runtime contract."""
-    for name, value in (
-        ("fabric_period_ns", fabric_period_ns),
-        ("cross_period_ns", cross_period_ns),
-    ):
-        if not math.isfinite(value) or value <= 0.0:
-            raise ValidationError(f"{name} must be finite and positive")
-    if not isinstance(dut_periods_ns, Mapping) or not dut_periods_ns:
-        raise ValidationError("dut_periods_ns must declare every DUT clock")
-    for clock, value in dut_periods_ns.items():
-        if (
-            not isinstance(clock, str)
-            or not clock
-            or isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
-            or float(value) <= 0.0
-        ):
-            raise ValidationError("dut_periods_ns contains an invalid clock")
-    # The virtual DUT period can be much longer than a physical FPGA clock.
-    # VPR cannot represent those long SDC values (its parser scales to signed
-    # 32-bit picoseconds), while the physical implementation only needs a
-    # non-binding local relation between fabric and DUT clocks. Preserve the
-    # original slack after capping the DUT period, rather than silently
-    # changing the relation to a zero-slack constraint.
-    clock_nets = eblif_report.get("clock_nets")
-    if not isinstance(clock_nets, dict) or not clock_nets:
-        raise ValidationError("VTR eBLIF report has no physical clock nets")
-    fabric_net = clock_nets.get("fabric_clk")
-    if not isinstance(fabric_net, str) or not fabric_net:
-        raise ValidationError("VTR eBLIF report has no fabric clock net")
-    dut_nets = {
-        clock_id: net
-        for clock_id, net in sorted(clock_nets.items())
-        if clock_id not in {"fabric_clk", "virtual_clock_enable"}
-        and isinstance(net, str)
-        and net
-    }
-    if not dut_nets and dut_clock_required:
-        raise ValidationError("VTR eBLIF report has no DUT clock net")
-    unknown_clocks = sorted(set(dut_nets) - set(dut_periods_ns))
-    if unknown_clocks:
-        raise ValidationError(
-            "VTR eBLIF report contains undeclared DUT clocks: "
-            + ", ".join(unknown_clocks)
-        )
-    lines = [
-        "# EmuFlow endpoint-complete Phase 7 timing contract.",
-        f"create_clock -name emuflow_fabric_clk -period {fabric_period_ns:.9f} [get_ports {{{fabric_net}}}]",
-    ]
-    dut_clocks = []
-    effective_periods = {}
-    effective_cross_periods = {}
-    for index, (clock_id, net) in enumerate(dut_nets.items()):
-        dut_period_ns = float(dut_periods_ns[clock_id])
-        vpr_dut_period_ns = min(dut_period_ns, _VPR_SDC_MAX_TIME_NS)
-        dut_to_cross_slack_ns = max(0.0, dut_period_ns - cross_period_ns)
-        vpr_cross_period_ns = min(
-            cross_period_ns,
-            max(0.0, vpr_dut_period_ns - dut_to_cross_slack_ns),
-        )
-        # set_max_delay 0 is legal SDC but would make the implementation
-        # artificially infeasible. Retain a positive, bounded relation instead.
-        vpr_cross_period_ns = max(vpr_cross_period_ns, 1.0e-6)
-        clock_name = f"emuflow_dut_clk_{index}"
-        dut_clocks.append(
-            {"clock_id": clock_id, "constraint": clock_name, "net": net}
-        )
-        effective_periods[clock_id] = vpr_dut_period_ns
-        effective_cross_periods[clock_id] = vpr_cross_period_ns
-        lines.append(
-            f"create_clock -name {clock_name} -period {vpr_dut_period_ns:.9f} [get_ports {{{net}}}]"
-        )
-        lines.extend(
-            (
-                f"set_max_delay {vpr_cross_period_ns:.9f} -from [get_clocks {{emuflow_fabric_clk}}] -to [get_clocks {{{clock_name}}}]",
-                f"set_max_delay {vpr_cross_period_ns:.9f} -from [get_clocks {{{clock_name}}}] -to [get_clocks {{emuflow_fabric_clk}}]",
-            )
-        )
-    path.write_text("\n".join((*lines, "")), encoding="utf-8")
-    return {
-        "status": "pass",
-        "provider": "emuflow-vpr-runtime-sdc-v1",
-        "path": str(path),
-        "sha256": _sha256(path),
-        "fabric_clock": "emuflow_fabric_clk",
-        "dut_clocks": dut_clocks,
-        "dut_clock_required": dut_clock_required,
-        "dut_clock_present": bool(dut_clocks),
-        "requested_periods_ns": {
-            "fabric": fabric_period_ns,
-            "dut": dict(sorted(dut_periods_ns.items())),
-            "cross": cross_period_ns,
-        },
-        "effective_vpr_periods_ns": {
-            "fabric": fabric_period_ns,
-            "dut": effective_periods,
-            "cross": effective_cross_periods,
-        },
-        "vpr_sdc_time_capped": any(
-            effective_periods[clock] != float(dut_periods_ns[clock])
-            or effective_cross_periods[clock] != cross_period_ns
-            for clock in dut_nets
-        ),
-    }
 
 
-def _partition_declares_dut_clock(netlist: Mapping[str, Any]) -> bool:
-    """Return whether the original split partition exposes a DUT clock."""
-    ports = netlist.get("ports")
-    if not isinstance(ports, list) or any(
-        not isinstance(port, dict) for port in ports
-    ):
-        raise ValidationError("per-FPGA netlist ports are invalid")
-    return any(port.get("clock") is True for port in ports)
 
 
-def _physical_clock_delays(
-    route_report: Mapping[str, Any],
-    eblif_report: Mapping[str, Any],
-) -> Tuple[Dict[str, float], Dict[str, bool]]:
-    metrics = route_report.get("metrics", {})
-    overall = metrics.get("critical_path_ns")
-    if not isinstance(overall, (int, float)) or overall < 0:
-        raise ValidationError("VPR route lacks a valid critical path")
-    domains = metrics.get("clock_domain_cpd_ns", {})
-    clock_nets = eblif_report.get("clock_nets", {})
-    fabric = clock_nets.get("fabric_clk")
-    dut_nets = {
-        net
-        for clock_id, net in clock_nets.items()
-        if clock_id not in {"fabric_clk", "virtual_clock_enable"}
-        and isinstance(net, str)
-        and net
-    }
-    fabric_delays = []
-    dut_delays = []
-    cross_delays = []
-    if isinstance(domains, dict):
-        for pair, delay in domains.items():
-            if not isinstance(pair, str) or not isinstance(delay, (int, float)):
-                continue
-            launch, separator, capture = pair.partition("->")
-            if not separator:
-                continue
-            if fabric is not None and launch == fabric and capture == fabric:
-                fabric_delays.append(float(delay))
-            elif launch in dut_nets and capture in dut_nets:
-                dut_delays.append(float(delay))
-            elif fabric is not None and (
-                (launch == fabric and capture in dut_nets)
-                or (capture == fabric and launch in dut_nets)
-            ):
-                cross_delays.append(float(delay))
-    # VPR reports per-clock CPDs for multi-clock circuits. The fallback to the
-    # overall CPD is conservative for old VPR logs that lack that table.
-    dut_present = bool(dut_nets)
-    return (
-        {
-            "overall": float(overall),
-            "fabric": max(fabric_delays, default=float(overall)),
-            # A partition containing no original sequential DUT logic has no
-            # local DUT or fabric/DUT clock-domain path.  Its combinational
-            # contribution is certified separately by routed logic-segment
-            # timing and must not be invented from an unrelated fabric CPD.
-            "dut": max(dut_delays, default=float(overall)) if dut_present else 0.0,
-            "cross": (
-                max(cross_delays, default=float(overall))
-                if dut_present
-                else 0.0
-            ),
-        },
-        {
-            "fabric": fabric is not None,
-            "dut": dut_present,
-            "cross": dut_present and fabric is not None,
-        },
-    )
 
 
 def validate_multi_fpga_physical_report(
@@ -637,7 +431,6 @@ def validate_multi_fpga_physical_report(
         raise ValidationError("multi-FPGA physical FPGA coverage is incomplete")
     original_cells = 0
     transport_cells = 0
-    emitted_atoms = 0
     worst_critical_path = 0.0
     active_fpgas = 0
     for fpga_id in expected:
@@ -696,7 +489,6 @@ def validate_multi_fpga_physical_report(
                 or any(
                     name in stages
                     for name in (
-                        "vpr_pack_place",
                         "rapidwright_implementation",
                         "vivado_implementation",
                     )
@@ -709,77 +501,6 @@ def validate_multi_fpga_physical_report(
             raise ValidationError(
                 f"active physical partition {fpga_id} is marked inactive"
             )
-        elif backend_id == "open":
-            open_required = (
-                "eblif",
-                "vpr_pack_place",
-                "architecture_import",
-                "packed_contract",
-                "openparf_placement",
-                "vpr_route",
-                "runtime_sdc",
-                "boundary_timing",
-            )
-            if any(name not in stages for name in open_required):
-                raise ValidationError(
-                    f"open physical stages for {fpga_id} are incomplete"
-                )
-            eblif = stages["eblif"]
-            pack = stages["vpr_pack_place"]
-            route = stages["vpr_route"]
-            runtime_sdc = stages["runtime_sdc"]
-            if eblif.get("source_instances") != lowering.get("instances"):
-                raise ValidationError(
-                    f"eBLIF source coverage for {fpga_id} disagrees"
-                )
-            if pack.get("circuit", {}).get("sha256") != eblif.get(
-                "output_sha256"
-            ):
-                raise ValidationError(
-                    f"VPR packing for {fpga_id} used another circuit"
-                )
-            if route.get("circuit", {}).get("sha256") != eblif.get(
-                "output_sha256"
-            ):
-                raise ValidationError(
-                    f"VPR routing for {fpga_id} used another circuit"
-                )
-            if route.get("route_check", {}).get("status") != "pass":
-                raise ValidationError(
-                    f"independent route check for {fpga_id} failed"
-                )
-            if route.get("sdc_file", {}).get("sha256") != runtime_sdc.get(
-                "sha256"
-            ):
-                raise ValidationError(
-                    f"VPR routing for {fpga_id} used another timing contract"
-                )
-            timing_summary = route.get("timing_summary")
-            if (
-                not isinstance(timing_summary, dict)
-                or timing_summary.get("status") != "pass"
-            ):
-                raise ValidationError(
-                    f"endpoint-complete timing summary for {fpga_id} failed"
-                )
-            route_metrics = route.get("metrics", {})
-            result_timing = result["timing"]
-            for route_metric, result_metric in (
-                ("setup_worst_slack_ns", "wns_ns"),
-                ("setup_tns_ns", "tns_ns"),
-                ("setup_failing_endpoints", "failing_endpoints"),
-                (
-                    "setup_failing_endpoint_constraints",
-                    "failing_endpoint_constraints",
-                ),
-            ):
-                if route_metrics.get(route_metric) != result_timing.get(
-                    result_metric
-                ):
-                    raise ValidationError(
-                        f"physical timing for {fpga_id} disagrees with VPR"
-                    )
-            emitted_atoms += eblif["emitted_atoms"]
         elif backend_id == "rapidwright":
             implementation = stages.get("rapidwright_implementation")
             rapidwright_required = {
@@ -848,7 +569,6 @@ def validate_multi_fpga_physical_report(
         "original_cells": original_cells,
         "transport_cells": transport_cells,
         "merged_cells": original_cells + transport_cells,
-        **({"emitted_atoms": emitted_atoms} if backend_id == "open" else {}),
         "backend": backend_id,
         "worst_critical_path_ns": worst_critical_path,
     }
@@ -862,16 +582,10 @@ def run_multi_fpga_physical_flow(
     *,
     backend: str = "rapidwright",
     architecture: Optional[Path] = None,
-    architecture_id: str = VTR_HARD_BLOCK_PROFILE,
     yosys: Optional[str] = None,
-    vpr: Optional[str] = None,
-    architecture_importer: Optional[str] = None,
-    packed_importer: Optional[str] = None,
-    route_checker: Optional[str] = None,
     openparf_install: Optional[Path] = None,
     openparf_python: Optional[Path] = None,
     seed: int = 1,
-    route_channel_width: int = 300,
     vivado: Optional[str] = None,
     vivado_place_directive: str = "Default",
     vivado_route_directive: str = "Default",
@@ -893,6 +607,7 @@ def run_multi_fpga_physical_flow(
     resume: bool = False,
     fpga_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
+    validate_physical_backend_descriptor(physical_backend_descriptor(backend))
     if workers < 1:
         raise ValidationError("physical workers must be at least one")
     if (rapidwright_native_constraints is None) != (
@@ -1040,7 +755,7 @@ def run_multi_fpga_physical_flow(
         raise EmuFlowError(
             f"multi-FPGA physical output must be an empty directory: {output_dir}"
         )
-    if backend in {"open", "rapidwright"}:
+    if backend == "rapidwright":
         # Validate the compiled OpenPARF/PyTorch runtime before reading the
         # graph-sized EmuIR and timing databases.  A loader mismatch must fail
         # in seconds, not after minutes of deterministic input preparation.
@@ -1091,8 +806,8 @@ def run_multi_fpga_physical_flow(
                 "split manifest resource reservations disagree with the "
                 "Phase 3 assignment"
             )
-        if backend in {"open", "rapidwright", "vivado"}:
-            prepared_local_inputs = prepare_vpr_local_path_query_inputs(
+        if backend in {"rapidwright", "vivado"}:
+            prepared_local_inputs = prepare_local_path_query_inputs(
                 original_ir_path,
                 assignment_path,
                 path_database_path,
@@ -1106,9 +821,6 @@ def run_multi_fpga_physical_flow(
                     else None
                 ),
                 routes=prepared_logic_inputs.routes,
-                object_provider=(
-                    "vpr" if backend == "open" else "xilinx"
-                ),
             )
     manifest_fpgas = [item.get("fpga") for item in manifest.get("fpgas", [])]
     if set(manifest_fpgas) != set(expected_fpgas):
@@ -1116,33 +828,7 @@ def run_multi_fpga_physical_flow(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     architecture_path = None
-    if backend == "open":
-        # Import the exact analytical-placement dependency chain before any
-        # expensive per-FPGA synthesis or VPR work.  A wrong Python environment
-        # must fail fast rather than after all pack/place checkpoints finish.
-        architecture_root = output_dir / "architecture"
-        architecture_root.mkdir(parents=True, exist_ok=True)
-        if architecture is None:
-            architecture_path = architecture_root / "vtr-flagship.xml"
-            architecture_source = fetch_pinned_vtr_architecture(
-                architecture_path
-            )
-        else:
-            architecture_input = architecture.resolve()
-            if not architecture_input.is_file():
-                raise EmuFlowError(
-                    f"VTR architecture does not exist: {architecture_input}"
-                )
-            architecture_path = architecture_root / "vtr-flagship.xml"
-            shutil.copy2(architecture_input, architecture_path)
-            architecture_source = {
-                "status": "pass",
-                "mode": "provided",
-                "path": str(architecture_path),
-                "sha256": _sha256(architecture_path),
-                "input_path": str(architecture_input),
-            }
-    elif backend == "rapidwright":
+    if backend == "rapidwright":
         if architecture is None:
             raise ValidationError(
                 "RapidWright backend requires --physical-architecture with "
@@ -1224,8 +910,7 @@ def run_multi_fpga_physical_flow(
     else:
         if architecture is not None:
             raise ValidationError(
-                "--physical-architecture applies only to backend=open or "
-                "backend=rapidwright"
+                "--physical-architecture applies only to backend=rapidwright"
             )
         architecture_source = {
             "status": "pass",
@@ -1388,9 +1073,7 @@ def run_multi_fpga_physical_flow(
                 logic_identity_path = fpga_root / "logic-segment-identity.json"
                 logic_query_path = fpga_root / "logic-segment-query.tsv"
                 logic_writer = (
-                    write_vpr_logic_segment_query
-                    if backend == "open"
-                    else write_xilinx_logic_segment_query
+                    write_xilinx_logic_segment_query
                     if backend == "rapidwright"
                     else write_vivado_logic_segment_query
                 )
@@ -1424,13 +1107,11 @@ def run_multi_fpga_physical_flow(
                         "logic_timing": logic_timing_path,
                     }
                 )
-                if backend in {"open", "rapidwright", "vivado"}:
+                if backend in {"rapidwright", "vivado"}:
                     local_identity_path = fpga_root / "local-path-identity.json"
                     local_query_path = fpga_root / "local-path-query.tsv"
                     local_writer = (
-                        write_vpr_local_path_query
-                        if backend == "open"
-                        else write_xilinx_local_path_query
+                        write_xilinx_local_path_query
                     )
                     local_query_report = local_writer(
                         original_ir_path,
@@ -1597,366 +1278,7 @@ def run_multi_fpga_physical_flow(
                 )
             )
         provider_fields: Dict[str, Any] = {}
-        if backend == "open":
-            if architecture_path is None:
-                raise ValidationError("open backend architecture is missing")
-            circuit = fpga_root / "partition.eblif"
-            eblif_report = emit_vtr_eblif(
-                merged_ir, circuit, fpga_root / "vtr-eblif-report.json"
-            )
-            runtime_sdc = fpga_root / "runtime.sdc"
-            runtime_sdc_report = _write_vpr_runtime_sdc(
-                runtime_sdc,
-                eblif_report,
-                fabric_period_ns=fabric_period,
-                dut_periods_ns=dut_periods,
-                cross_period_ns=cross_period,
-                dut_clock_required=_partition_declares_dut_clock(netlist),
-            )
-            pack_report = run_vpr_pack_place(
-                architecture_path,
-                circuit,
-                fpga_root / "vpr-pack-place",
-                executable=vpr,
-                seed=seed,
-                resume=resume,
-            )
-            packed_netlist = Path(
-                pack_report["artifacts"]["packed_netlist"]["path"]
-            )
-            baseline_placement = Path(
-                pack_report["artifacts"]["placement"]["path"]
-            )
-            width, height = read_vpr_placement_dimensions(
-                baseline_placement
-            )
-            architecture_db = fpga_root / "architecture.json"
-            timing_db = fpga_root / "timing.json"
-            architecture_report = run_vtr_architecture_import(
-                input_path=architecture_path,
-                architecture_output_path=architecture_db,
-                timing_output_path=timing_db,
-                architecture_id=architecture_id,
-                width=width,
-                height=height,
-                source_url=architecture_source.get("source"),
-                executable=architecture_importer,
-            )
-            packed_contract = fpga_root / "packed-contract.json"
-            packed_report = run_packed_netlist_import(
-                packed_netlist,
-                packed_contract,
-                architecture_path=architecture_path,
-                circuit_path=circuit,
-                executable=packed_importer,
-            )
-            boundary_identity_path = Path(
-                lowering_report["boundary_identity"]["output"]
-            )
-            fixed_io_targets = None
-            if position_hints is not None and electrical_binding is not None:
-                packed = read_json(packed_contract)
-                packed_io_names = {
-                    cluster["name"]
-                    for cluster in packed["clusters"]
-                    if cluster["block_type"] == "io"
-                }
-                fixed_io_targets = {}
-                port_map = {
-                    (item["port"], item["bit"]): item["packed_block"]
-                    for item in eblif_report.get("top_ports", [])
-                }
-                boundary_document = read_boundary_identity_storage(
-                    boundary_identity_path, allow_legacy=True
-                )
-                boundary_endpoints = boundary_document["endpoints"]
-                packed_groups: Dict[str, str] = {}
-                group_packed_blocks: Dict[str, str] = {}
-                binding_schema = electrical_binding.get("schema", "")
-                bounds_by_fpga = {
-                    item["fpga"]: (item["y_min"], item["y_max"])
-                    for item in electrical_binding.get("fpga_y_bounds", [])
-                }
-                links_by_id = {item.id: item for item in platform.links}
-                with (
-                    _open_position_hint_lookup(position_hints) as has_hint,
-                    open_chimew_binding_schedule_entry_lookup(
-                        electrical_binding
-                    ) as lookup_binding,
-                ):
-                    for endpoint in boundary_endpoints:
-                        entry_id = endpoint["schedule_entry"]
-                        binding = lookup_binding(entry_id)
-                        if not has_hint(entry_id) or binding is None:
-                            raise ValidationError(
-                                "Chimew physical bindings do not cover every boundary endpoint"
-                            )
-                        if not binding.get("placement_anchor", True):
-                            continue
-                        # Bind the selected Chimew channel's actual physical site
-                        # coordinate.  A lane number is only an electrical
-                        # identity and cannot be used as a placement coordinate.
-                        if binding_schema.endswith(("/v2", "/v3")):
-                            endpoint_key = (
-                                "pin_a_point"
-                                if fpga_id == binding["fpga_a"]
-                                else "pin_b_point"
-                            )
-                            point = binding.get(endpoint_key)
-                            bounds = bounds_by_fpga.get(fpga_id)
-                            if not isinstance(point, dict) or bounds is None:
-                                raise ValidationError(
-                                    "Chimew physical channel coordinates are missing"
-                                )
-                            low, high = bounds
-                            target_y = (float(point["y"]) - low) / (high - low)
-                        else:
-                            link = links_by_id.get(binding["link"])
-                            if link is None:
-                                raise ValidationError(
-                                    "Chimew physical binding names an unknown link"
-                                )
-                            lane_limit = (
-                                link.transport_bits_per_cycle_per_direction - 1
-                            )
-                            target_y = (
-                                0.5 if lane_limit == 0 else
-                                float(binding["physical_lane"]) / float(lane_limit)
-                            )
-                        merged = endpoint["merged_ir"]
-                        packed_name = port_map.get(
-                            (merged["external_port"], merged["external_port_bit"])
-                        )
-                        if packed_name not in packed_io_names:
-                            raise ValidationError(
-                                f"Chimew boundary {endpoint['id']!r} has no packed I/O cluster"
-                            )
-                        _record_chimew_fixed_io_target(
-                            fixed_io_targets,
-                            packed_groups,
-                            group_packed_blocks,
-                            packed_name=packed_name,
-                            group=binding["group"],
-                            target_y=target_y,
-                        )
-                close_boundary = getattr(boundary_document, "close", None)
-                if callable(close_boundary):
-                    close_boundary()
-            placement_report = run_packed_openparf_placement(
-                packed_contract,
-                architecture_db,
-                fpga_root / "openparf-placement",
-                seed_placement_path=baseline_placement,
-                fixed_io_targets=fixed_io_targets,
-                openparf_install=openparf_install,
-                openparf_python=openparf_python,
-            )
-            boundary_query_path = fpga_root / "vpr-boundary-query.tsv"
-            boundary_query_report = write_vpr_boundary_timing_query(
-                merged_ir,
-                boundary_identity_path,
-                boundary_query_path,
-                eblif_report=eblif_report,
-            )
-            boundary_raw_path = (
-                fpga_root / "vpr-route" / "boundary-timing.tsv"
-            )
-            logic_query_report = None
-            logic_identity_path = None
-            logic_query_path = None
-            logic_raw_path = None
-            local_query_report = None
-            local_identity_path = None
-            local_query_path = None
-            local_raw_path = None
-            if all(path is not None for path in logic_context):
-                logic_identity_path = fpga_root / "logic-segment-identity.json"
-                logic_query_path = fpga_root / "vpr-logic-segment-query.tsv"
-                logic_query_report = write_vpr_logic_segment_query(
-                    original_ir_path,
-                    assignment_path,
-                    effective_logic_path_database_path,
-                    routes_path,
-                    schedule_path,
-                    platform,
-                    merged_ir,
-                    boundary_identity_path,
-                    fpga_id,
-                    logic_query_path,
-                    logic_identity_path,
-                    eblif_report=eblif_report,
-                    prepared_inputs=prepared_logic_inputs,
-                )
-                logic_raw_path = (
-                    fpga_root / "vpr-route" / "logic-segment-timing.tsv"
-                )
-                local_identity_path = fpga_root / "local-path-identity.json"
-                local_query_path = fpga_root / "vpr-local-path-query.tsv"
-                local_query_report = write_vpr_local_path_query(
-                    original_ir_path,
-                    assignment_path,
-                    path_database_path,
-                    routes_path,
-                    merged_ir,
-                    fpga_id,
-                    local_query_path,
-                    local_identity_path,
-                    prepared_inputs=prepared_local_inputs,
-                )
-                local_raw_path = (
-                    fpga_root / "vpr-route" / "local-path-timing.tsv"
-                )
-            route_report = run_vpr_route_packed(
-                architecture_path,
-                circuit,
-                packed_netlist,
-                packed_contract,
-                Path(placement_report["artifacts"]["vpr_placement"]),
-                fpga_root / "vpr-route",
-                executable=vpr,
-                route_checker=route_checker,
-                route_channel_width=route_channel_width,
-                boundary_query=boundary_query_path,
-                boundary_output=boundary_raw_path,
-                logic_query=logic_query_path,
-                logic_output=logic_raw_path,
-                local_path_query=local_query_path,
-                local_path_output=local_raw_path,
-                sdc_file=runtime_sdc,
-                resume=resume,
-            )
-            boundary_timing_path = fpga_root / "boundary-timing.json"
-            boundary_import_report = import_vpr_boundary_timing(
-                boundary_raw_path,
-                boundary_identity_path,
-                boundary_query_path,
-                boundary_timing_path,
-            )
-            logic_timing_stage = None
-            if (
-                logic_query_report is not None
-                and logic_identity_path is not None
-                and logic_raw_path is not None
-            ):
-                logic_timing_path = fpga_root / "logic-segment-timing.json"
-                logic_import_report = import_vpr_logic_segment_timing(
-                    logic_raw_path,
-                    logic_identity_path,
-                    logic_timing_path,
-                )
-                logic_timing_stage = {
-                    "status": "pass",
-                    "query": logic_query_report,
-                    "import": logic_import_report,
-                }
-            local_timing_stage = None
-            if (
-                local_query_report is not None
-                and local_identity_path is not None
-                and local_raw_path is not None
-            ):
-                local_timing_path = fpga_root / "local-path-timing.json"
-                local_import_report = import_vpr_local_path_timing(
-                    local_raw_path,
-                    local_identity_path,
-                    local_timing_path,
-                )
-                local_timing_stage = {
-                    "status": "pass",
-                    "query": local_query_report,
-                    "import": local_import_report,
-                }
-            physical_delays, clock_domain_presence = _physical_clock_delays(
-                route_report, eblif_report
-            )
-            timing = {
-                "dut_wns_ns": dut_period - physical_delays["dut"],
-                "fabric_wns_ns": fabric_period - physical_delays["fabric"],
-                "fabric_to_dut_wns_ns": (
-                    cross_period - physical_delays["cross"]
-                ),
-            }
-            endpoint_metrics = route_report["metrics"]
-            endpoint_wns = float(endpoint_metrics["setup_worst_slack_ns"])
-            endpoint_tns = float(endpoint_metrics["setup_tns_ns"])
-            physical_result = {
-                "schema": PHYSICAL_PARTITION_RESULT_SCHEMA,
-                "status": "pass",
-                "identity": {
-                    "backend": "open",
-                    "fpga": fpga_id,
-                    "part": fpga_part,
-                },
-                "cell_accounting": {
-                    "original_cells": original_cells,
-                    "transport_cells": transport_cells,
-                    "routed_cells": original_cells + transport_cells,
-                    "physical_cells": original_cells + transport_cells,
-                    "infrastructure_cells": 0,
-                    "optimization_cells": 0,
-                },
-                "closure": {"unrouted_nets": 0, "drc_violations": 0},
-                "clocks": {
-                    "fabric_period_ns": fabric_period,
-                    "dut_period_ns": dut_period,
-                },
-                "timing": {
-                    "wns_ns": endpoint_wns,
-                    "tns_ns": endpoint_tns,
-                    "failing_endpoints": int(
-                        endpoint_metrics["setup_failing_endpoints"]
-                    ),
-                    "failing_endpoint_constraints": int(
-                        endpoint_metrics[
-                            "setup_failing_endpoint_constraints"
-                        ]
-                    ),
-                    "timing_met": endpoint_wns >= 0,
-                    **timing,
-                    "critical_path_ns": physical_delays["overall"],
-                    "clock_domain_delays_ns": physical_delays,
-                    "clock_domain_presence": clock_domain_presence,
-                },
-                "artifacts": {
-                    "eblif": {
-                        "path": str(circuit),
-                        "sha256": eblif_report["output_sha256"],
-                    },
-                    "packed_netlist": pack_report["artifacts"][
-                        "packed_netlist"
-                    ],
-                    "placement": placement_report["artifacts"],
-                    "route": route_report.get("artifacts", {}),
-                },
-            }
-            stages.update(
-                {
-                    "eblif": eblif_report,
-                    "vpr_pack_place": pack_report,
-                    "architecture_import": architecture_report,
-                    "packed_contract": packed_report,
-                    "openparf_placement": placement_report,
-                    "vpr_route": route_report,
-                    "runtime_sdc": runtime_sdc_report,
-                    "boundary_timing": {
-                        "status": "pass",
-                        "query": boundary_query_report,
-                        "import": boundary_import_report,
-                    },
-                    **(
-                        {"logic_segment_timing": logic_timing_stage}
-                        if logic_timing_stage is not None
-                        else {}
-                    ),
-                    **(
-                        {"local_path_timing": local_timing_stage}
-                        if local_timing_stage is not None
-                        else {}
-                    ),
-                }
-            )
-            provider_fields["array"] = {"width": width, "height": height}
-        elif backend == "rapidwright":
+        if backend == "rapidwright":
             if architecture_path is None:
                 raise ValidationError("RapidWright architecture is missing")
             boundary_identity_path = Path(
@@ -2428,7 +1750,7 @@ def _assemble_multi_fpga_physical_results(
             physical_summary[
                 "logic_segment_semantic_contract_sha256"
             ] = logic_semantic_seal
-        if backend in {"open", "rapidwright", "vivado"}:
+        if backend in {"rapidwright", "vivado"}:
             physical_summary["local_path_timing"] = {}
             for item in records:
                 path = Path(

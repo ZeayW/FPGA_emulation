@@ -25,7 +25,6 @@ from .indexed_timing import IndexedTimingView
 from .logic_segment_timing import (
     LOGIC_SEGMENT_TIMING_HEADER,
     _instance_pin_inventory,
-    _vpr_atom_pin,
     _xilinx_object,
 )
 from .local_path_timing_storage import (
@@ -258,13 +257,6 @@ class _PreparedLocalPathSequence(Sequence[Mapping[str, Any]]):
                 "bit": int(row[12]),
             },
         }
-        if row[13] is not None:
-            nets = json.loads(row[13])
-            if not isinstance(nets, list):
-                raise ValidationError(
-                    "prepared local path net sequence is invalid"
-                )
-            record["path_nets"] = nets
         return record
 
     def __len__(self) -> int:
@@ -277,7 +269,7 @@ class _PreparedLocalPathSequence(Sequence[Mapping[str, Any]]):
             for row in connection.execute(
                 """SELECT path_id,clock_domain,clock_period_ns,slack_ns,
                 fixed_delay_ns,start_object,start_instance,start_port,start_bit,
-                end_object,end_instance,end_port,end_bit,path_nets_json
+                end_object,end_instance,end_port,end_bit
                 FROM local_paths WHERE fpga=? ORDER BY path_id""",
                 (self.fpga,),
             ):
@@ -302,7 +294,7 @@ class _PreparedLocalPathSequence(Sequence[Mapping[str, Any]]):
             row = connection.execute(
                 """SELECT path_id,clock_domain,clock_period_ns,slack_ns,
                 fixed_delay_ns,start_object,start_instance,start_port,start_bit,
-                end_object,end_instance,end_port,end_bit,path_nets_json
+                end_object,end_instance,end_port,end_bit
                 FROM local_paths WHERE fpga=? ORDER BY path_id LIMIT 1 OFFSET ?""",
                 (self.fpga, index),
             ).fetchone()
@@ -407,12 +399,7 @@ class _LocalPathPreparationWriter:
               end_instance TEXT,
               end_port TEXT,
               end_bit INTEGER NOT NULL,
-              path_nets_json TEXT,
               PRIMARY KEY(fpga,path_id)
-            ) WITHOUT ROWID;
-            CREATE TABLE original_nets(
-              net_id TEXT PRIMARY KEY,
-              record_json TEXT NOT NULL
             ) WITHOUT ROWID;
             """
         )
@@ -457,7 +444,6 @@ class _LocalPathPreparationWriter:
     ) -> None:
         start = record["startpoint"]
         end = record["endpoint"]
-        path_nets = record.get("path_nets")
         self._local_batch.append(
             (
                 fpga,
@@ -474,45 +460,18 @@ class _LocalPathPreparationWriter:
                 end.get("instance"),
                 end.get("port"),
                 int(end["bit"]),
-                (
-                    None
-                    if path_nets is None
-                    else json.dumps(
-                        path_nets,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                ),
             )
         )
         if len(self._local_batch) >= 1024:
             self._flush_local()
 
-    def add_original_nets(
-        self, records: Mapping[str, Mapping[str, Any]]
-    ) -> None:
-        self.connection.executemany(
-            "INSERT OR IGNORE INTO original_nets VALUES (?,?)",
-            (
-                (
-                    identity,
-                    json.dumps(
-                        record,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
-                )
-                for identity, record in records.items()
-            ),
-        )
 
     def _flush_local(self) -> None:
         if not self._local_batch:
             return
         try:
             self.connection.executemany(
-                "INSERT INTO local_paths VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO local_paths VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 self._local_batch,
             )
         except sqlite3.IntegrityError as error:
@@ -566,93 +525,6 @@ class _LocalPathPreparationWriter:
             ),
             (path_count, digest.hexdigest()),
         )
-
-
-class _PreparedOriginalNetMapping(Mapping[str, Mapping[str, Any]]):
-    """Lazy selected-net view owned by the prepared local-path store."""
-
-    def __init__(self, lifetime: _PreparedStoreLifetime) -> None:
-        self._lifetime = lifetime
-
-    def __len__(self) -> int:
-        connection = _open_prepared_store(self._lifetime.path)
-        try:
-            return int(connection.execute(
-                "SELECT count(*) FROM original_nets"
-            ).fetchone()[0])
-        finally:
-            connection.close()
-
-    def __iter__(self) -> Iterator[str]:
-        connection = _open_prepared_store(self._lifetime.path)
-        try:
-            for row in connection.execute(
-                "SELECT net_id FROM original_nets ORDER BY net_id"
-            ):
-                yield str(row[0])
-        finally:
-            connection.close()
-
-    def __getitem__(self, identity: str) -> Mapping[str, Any]:
-        connection = _open_prepared_store(self._lifetime.path)
-        try:
-            row = connection.execute(
-                "SELECT record_json FROM original_nets WHERE net_id=?",
-                (identity,),
-            ).fetchone()
-        finally:
-            connection.close()
-        if row is None:
-            raise KeyError(identity)
-        record = json.loads(row[0])
-        if not isinstance(record, dict):
-            raise ValidationError("prepared original net is invalid")
-        return record
-
-    def bounded(self) -> "_BoundedPreparedOriginalNetMapping":
-        return _BoundedPreparedOriginalNetMapping(self._lifetime)
-
-
-class _BoundedPreparedOriginalNetMapping(
-    Mapping[str, Mapping[str, Any]]
-):
-    def __init__(self, lifetime: _PreparedStoreLifetime) -> None:
-        self.connection = _open_prepared_store(lifetime.path)
-        self.cache: OrderedDict[str, Mapping[str, Any]] = OrderedDict()
-
-    def __len__(self) -> int:
-        return int(self.connection.execute(
-            "SELECT count(*) FROM original_nets"
-        ).fetchone()[0])
-
-    def __iter__(self) -> Iterator[str]:
-        return (
-            str(row[0])
-            for row in self.connection.execute(
-                "SELECT net_id FROM original_nets ORDER BY net_id"
-            )
-        )
-
-    def __getitem__(self, identity: str) -> Mapping[str, Any]:
-        if identity in self.cache:
-            self.cache.move_to_end(identity)
-            return self.cache[identity]
-        row = self.connection.execute(
-            "SELECT record_json FROM original_nets WHERE net_id=?",
-            (identity,),
-        ).fetchone()
-        if row is None:
-            raise KeyError(identity)
-        record = json.loads(row[0])
-        if not isinstance(record, dict):
-            raise ValidationError("prepared original net is invalid")
-        self.cache[identity] = record
-        if len(self.cache) > 8192:
-            self.cache.popitem(last=False)
-        return record
-
-    def close(self) -> None:
-        self.connection.close()
 
 
 def _source_manifest(
@@ -892,91 +764,6 @@ def _resolve_local_path_fpga(
     return next(iter(assigned_fpgas))
 
 
-def _explicit_vpr_path_pins(
-    path: Mapping[str, Any],
-    original_nets: Mapping[str, Mapping[str, Any]],
-    merged_ir: EmuIR,
-    merged_index: Mapping[str, int],
-    merged_instances: Mapping[str, Mapping[str, Any]],
-    start: Mapping[str, Any],
-    end: Mapping[str, Any],
-) -> list[str]:
-    """Recover one unambiguous selected STA path as adjacent VPR atom pins.
-
-    ``path_nets`` names the ordered OpenSTA path, but a net may feed several
-    pins of the same cell.  In that case the net sequence does not identify a
-    unique primitive arc, so return an empty chain and retain the conservative
-    endpoint-longest-path fallback. Never guess a pin or silently shorten a
-    path.
-    """
-
-    path_nets = path.get("path_nets")
-    if not isinstance(path_nets, list) or not path_nets:
-        return []
-    try:
-        selected = [original_nets[net_id] for net_id in path_nets]
-    except KeyError:
-        return []
-
-    pins = [
-        _vpr_atom_pin(
-            merged_ir, merged_index, start, merged_instances
-        )
-    ]
-    expected_driver: Mapping[str, Any] = start
-    for index, net in enumerate(selected):
-        drivers = [
-            driver for driver in net["drivers"]
-            if _same_endpoint(driver, expected_driver)
-        ]
-        if len(drivers) != 1:
-            return []
-        if index + 1 == len(selected):
-            candidates = [
-                sink for sink in net["sinks"]
-                if _same_endpoint(sink, end)
-            ]
-            next_driver = None
-        else:
-            next_net = selected[index + 1]
-            pairs = [
-                (sink, driver)
-                for sink in net["sinks"]
-                for driver in next_net["drivers"]
-                if sink.get("instance") is not None
-                and sink.get("instance") == driver.get("instance")
-            ]
-            if len(pairs) != 1:
-                return []
-            candidates = [pairs[0][0]]
-            next_driver = pairs[0][1]
-        if len(candidates) != 1:
-            return []
-        try:
-            pins.append(
-                _vpr_atom_pin(
-                    merged_ir, merged_index, candidates[0], merged_instances
-                )
-            )
-            if next_driver is not None:
-                pins.append(
-                    _vpr_atom_pin(
-                        merged_ir,
-                        merged_index,
-                        next_driver,
-                        merged_instances,
-                    )
-                )
-        except ValidationError:
-            return []
-        expected_driver = next_driver if next_driver is not None else end
-    if pins[-1] != _vpr_atom_pin(
-        merged_ir, merged_index, end, merged_instances
-    ):
-        return []
-    return pins
-
-
 @dataclass(frozen=True)
 class LocalPathQueryInputs:
     """Immutable original-design timing state shared by FPGA workers."""
@@ -987,7 +774,6 @@ class LocalPathQueryInputs:
     routes: Mapping[str, Any]
     original_ir_path: Path
     local_paths_by_fpga: Mapping[str, Sequence[Mapping[str, Any]]]
-    original_nets: Mapping[str, Mapping[str, Any]]
     cross_path_ids: Set[str]
     source_manifest: Mapping[str, Any]
 
@@ -1003,7 +789,7 @@ class LocalPathQueryInputs:
         }
 
 
-def prepare_vpr_local_path_query_inputs(
+def prepare_local_path_query_inputs(
     original_ir_path: Path,
     assignment_path: Path,
     path_database_path: Path,
@@ -1013,7 +799,6 @@ def prepare_vpr_local_path_query_inputs(
     assignment: Mapping[str, Any] | None = None,
     database: Mapping[str, Any] | None = None,
     routes: Mapping[str, Any] | None = None,
-    object_provider: str = "vpr",
 ) -> LocalPathQueryInputs:
     """Partition TimingPathDB into bounded per-FPGA local-path records.
 
@@ -1024,8 +809,6 @@ def prepare_vpr_local_path_query_inputs(
     paths in bounded batches, resolves ownership once, and retains only the
     lightweight records that each FPGA worker will consume.
     """
-    if object_provider not in {"vpr", "xilinx"}:
-        raise ValidationError("local path object provider is invalid")
     if assignment is None:
         assignment = read_phase3_assignment_view(
             assignment_path,
@@ -1118,8 +901,6 @@ def prepare_vpr_local_path_query_inputs(
                 original_nets = selected_net_records(
                     view.connection, selected_ids
                 )
-                if object_provider == "vpr":
-                    writer.add_original_nets(original_nets)
                 for path in candidates:
                     try:
                         start, end = sta_path_endpoints(path, object_index)
@@ -1147,8 +928,6 @@ def prepare_vpr_local_path_query_inputs(
                         "startpoint": start,
                         "endpoint": end,
                     }
-                    if object_provider == "vpr":
-                        record["path_nets"] = list(path["path_nets"])
                     writer.add_local_path(path_fpga, record)
                 if len(batch) < 1024:
                     break
@@ -1189,8 +968,7 @@ def prepare_vpr_local_path_query_inputs(
                 "startpoint": start,
                 "endpoint": end,
             }
-            if object_provider != "vpr":
-                record.pop("path_nets", None)
+            record.pop("path_nets", None)
             writer.add_local_path(path_fpga, record)
     if unresolved_count:
         writer.connection.close()
@@ -1207,13 +985,6 @@ def prepare_vpr_local_path_query_inputs(
         routes=routes,
         original_ir_path=original_ir_path,
         local_paths_by_fpga=local_paths_by_fpga,
-        original_nets=(
-            _PreparedOriginalNetMapping(lifetime)
-            if indexed and object_provider == "vpr"
-            else original_nets
-            if not indexed and object_provider == "vpr"
-            else {}
-        ),
         cross_path_ids=cross_path_ids,
         source_manifest=_source_manifest(
             database,
@@ -1236,13 +1007,10 @@ def _write_local_path_query(
     query_path: Path,
     identity_path: Path,
     *,
-    object_provider: str,
     prepared_inputs: LocalPathQueryInputs | None = None,
 ) -> Dict[str, Any]:
     """Materialize every original same-partition path for one backend."""
-    if object_provider not in {"vpr", "xilinx"}:
-        raise ValidationError("local path object provider is invalid")
-    prepared = prepared_inputs or prepare_vpr_local_path_query_inputs(
+    prepared = prepared_inputs or prepare_local_path_query_inputs(
         original_ir_path,
         assignment_path,
         path_database_path,
@@ -1259,14 +1027,6 @@ def _write_local_path_query(
     assignment = prepared.assignment
     if merged_ir.value["design"]["name"] != f"{assignment['design']}__{fpga}":
         raise ValidationError("local path merged IR target is invalid")
-    merged_index = (
-        merged_ir.instance_indices
-        if indexed_merged
-        else {
-            item["id"]: index
-            for index, item in enumerate(merged_ir.value["instances"])
-        }
-    )
     merged_instances = (
         merged_ir.instances
         if indexed_merged
@@ -1276,47 +1036,12 @@ def _write_local_path_query(
     )
     merged_pins = _instance_pin_inventory(merged_ir)
     local_paths = prepared.local_paths_by_fpga.get(fpga, ())
-    original_nets: Mapping[str, Mapping[str, Any]] = {}
-    bounded_original_nets: _BoundedPreparedOriginalNetMapping | None = None
-    if object_provider == "vpr":
-        if isinstance(prepared.original_nets, _PreparedOriginalNetMapping):
-            bounded_original_nets = prepared.original_nets.bounded()
-            original_nets = bounded_original_nets
-        elif prepared.original_nets:
-            original_nets = prepared.original_nets
-        elif prepared.original_ir is not None:
-            original_nets = {
-                item["id"]: item
-                for item in prepared.original_ir.value["nets"]
-            }
-        else:
-            view = IndexedTimingView(prepared.original_ir_path)
-            try:
-                original_nets = selected_net_records(
-                    view.connection,
-                    {
-                        net_id
-                        for path in local_paths
-                        for net_id in path.get("path_nets", [])
-                    },
-                )
-            finally:
-                view.close()
-
     def endpoint_pin(endpoint: Mapping[str, Any]) -> str:
-        if object_provider == "vpr":
-            return _vpr_atom_pin(
-                merged_ir, merged_index, endpoint, merged_instances
-            )
         return _xilinx_object(
             merged_ir, endpoint, merged_pins, merged_instances
         )[1]
 
-    identity_provider = (
-        "original-timing-pathdb-to-vpr-selected-chain-v2"
-        if object_provider == "vpr"
-        else "original-timing-pathdb-to-xilinx-endpoint-bound-v1"
-    )
+    identity_provider = "original-timing-pathdb-to-xilinx-endpoint-bound-v1"
     local_path_count = len(local_paths)
     identity_header = {
         "schema": LOCAL_PATH_IDENTITY_SCHEMA_V2,
@@ -1364,24 +1089,8 @@ def _write_local_path_query(
                 "start_pin": endpoint_pin(start),
                 "end_pin": endpoint_pin(end),
             }
-            path_pins = (
-                _explicit_vpr_path_pins(
-                    path,
-                    original_nets,
-                    merged_ir,
-                    merged_index,
-                    merged_instances,
-                    start,
-                    end,
-                )
-                if object_provider == "vpr"
-                else []
-            )
-            measurement = (
-                "explicit-routed-path-chain"
-                if path_pins
-                else "endpoint-longest-path-fallback"
-            )
+            path_pins = []
+            measurement = "endpoint-longest-path-fallback"
             record.update({"measurement": measurement, "path_pins": path_pins})
             measurement_counts[measurement] += 1
             query_stream.write(
@@ -1424,8 +1133,6 @@ def _write_local_path_query(
         if not query_stream.closed:
             query_stream.close()
         query_temporary.unlink(missing_ok=True)
-        if bounded_original_nets is not None:
-            bounded_original_nets.close()
         if indexed_merged:
             merged_ir.close()
     return {
@@ -1436,33 +1143,6 @@ def _write_local_path_query(
         "query": str(query_path),
         "identity": str(identity_path),
     }
-
-
-def write_vpr_local_path_query(
-    original_ir_path: Path,
-    assignment_path: Path,
-    path_database_path: Path,
-    routes_path: Path,
-    merged_ir_path: Path,
-    fpga: str,
-    query_path: Path,
-    identity_path: Path,
-    *,
-    prepared_inputs: LocalPathQueryInputs | None = None,
-) -> Dict[str, Any]:
-    """Materialize every original same-partition path as a routed VPR query."""
-    return _write_local_path_query(
-        original_ir_path,
-        assignment_path,
-        path_database_path,
-        routes_path,
-        merged_ir_path,
-        fpga,
-        query_path,
-        identity_path,
-        object_provider="vpr",
-        prepared_inputs=prepared_inputs,
-    )
 
 
 def write_xilinx_local_path_query(
@@ -1487,151 +1167,8 @@ def write_xilinx_local_path_query(
         fpga,
         query_path,
         identity_path,
-        object_provider="xilinx",
         prepared_inputs=prepared_inputs,
     )
-
-
-def import_vpr_local_path_timing(
-    input_path: Path,
-    identity_path: Path,
-    output_path: Path,
-) -> Dict[str, Any]:
-    identity = read_local_path_identity(identity_path)
-    try:
-        validate_local_path_identity(identity)
-        header = local_path_timing_header(
-            identity,
-            provider="vpr-tatum-selected-local-setup-path-delay-v2",
-            qualification=(
-                "source-bound-routed-selected-path-delay-with-exact-fallback-"
-                "launch-clock-to-q-and-capture-setup"
-            ),
-        )
-        with tempfile.TemporaryDirectory(
-            prefix="emuflow-vpr-local-timing-"
-        ) as temporary:
-            measured_path = Path(temporary) / "measurements.sqlite"
-            connection = sqlite3.connect(measured_path)
-            connection.row_factory = sqlite3.Row
-            connection.executescript(
-                """
-                PRAGMA journal_mode=OFF;
-                PRAGMA synchronous=OFF;
-                CREATE TABLE measurements(
-                  id TEXT PRIMARY KEY NOT NULL,
-                  kind TEXT NOT NULL,
-                  delay_ns REAL NOT NULL,
-                  start_pin TEXT NOT NULL,
-                  end_pin TEXT NOT NULL
-                ) WITHOUT ROWID;
-                """
-            )
-            batch: list[tuple[str, str, float, str, str]] = []
-            try:
-                with input_path.open("r", encoding="utf-8", newline="") as stream:
-                    if stream.readline().rstrip("\r\n") != LOGIC_SEGMENT_TIMING_HEADER:
-                        raise ValidationError(
-                            "VPR local path timing header is invalid"
-                        )
-                    for line_number, line in enumerate(stream, start=2):
-                        line = line.rstrip("\r\n")
-                        if not line:
-                            continue
-                        fields = line.split("\t")
-                        try:
-                            delay = float(fields[2])
-                        except (IndexError, ValueError) as error:
-                            raise ValidationError(
-                                f"VPR local path timing line {line_number} is invalid"
-                            ) from error
-                        if (
-                            len(fields) != 5
-                            or not fields[0]
-                            or fields[1] != "local"
-                            or not fields[3]
-                            or not fields[4]
-                            or not math.isfinite(delay)
-                            or delay < 0.0
-                        ):
-                            raise ValidationError(
-                                f"VPR local path timing line {line_number} is invalid"
-                            )
-                        batch.append(
-                            (fields[0], fields[1], delay, fields[3], fields[4])
-                        )
-                        if len(batch) >= 8192:
-                            try:
-                                connection.executemany(
-                                    "INSERT INTO measurements VALUES (?,?,?,?,?)",
-                                    batch,
-                                )
-                            except sqlite3.IntegrityError as error:
-                                raise ValidationError(
-                                    "VPR local path timing contains duplicate identities"
-                                ) from error
-                            batch.clear()
-                if batch:
-                    try:
-                        connection.executemany(
-                            "INSERT INTO measurements VALUES (?,?,?,?,?)", batch
-                        )
-                    except sqlite3.IntegrityError as error:
-                        raise ValidationError(
-                            "VPR local path timing contains duplicate identities"
-                        ) from error
-                    batch.clear()
-                connection.commit()
-
-                paths = identity["paths"]
-                expected_paths = (
-                    paths
-                    if isinstance(identity, _StoredLocalPathIdentity)
-                    else sorted(paths, key=lambda item: item["id"])
-                )
-
-                def timing_records() -> Iterator[Mapping[str, Any]]:
-                    sentinel = object()
-                    measurements = connection.execute(
-                        "SELECT * FROM measurements ORDER BY id"
-                    )
-                    for expected, measured in zip_longest(
-                        expected_paths, measurements, fillvalue=sentinel
-                    ):
-                        if expected is sentinel:
-                            assert measured is not sentinel
-                            raise ValidationError(
-                                "VPR local path timing contains unexpected identity: "
-                                f"{measured['id']}"
-                            )
-                        if measured is sentinel:
-                            raise ValidationError(
-                                "VPR local path timing coverage is incomplete: "
-                                f"{expected['id']}"
-                            )
-                        if (
-                            expected["id"] != measured["id"]
-                            or measured["kind"] != "local"
-                            or measured["start_pin"] != expected["start_pin"]
-                            or measured["end_pin"] != expected["end_pin"]
-                        ):
-                            raise ValidationError(
-                                "VPR local path timing identity disagrees: "
-                                f"expected {expected['id']}, observed {measured['id']}"
-                            )
-                        yield {**expected, "delay_ns": float(measured["delay_ns"])}
-
-                with write_local_path_timing_storage(
-                    output_path, header, timing_records()
-                ) as database:
-                    validation = validate_local_path_timing(database)
-            finally:
-                connection.close()
-        return {**validation, "output": str(output_path)}
-    finally:
-        close = getattr(identity, "close", None)
-        if callable(close):
-            close()
 
 
 def validate_local_path_timing(database: Mapping[str, Any]) -> Dict[str, Any]:

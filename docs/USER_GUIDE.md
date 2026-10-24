@@ -205,8 +205,7 @@ A partial developer build can disable imported engines:
 ```bash
 cmake -S . -B build/core -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
   -DEMUFLOW_BUILD_YOSYS=OFF -DEMUFLOW_BUILD_CUDD=OFF \
-  -DEMUFLOW_BUILD_REPART=OFF -DEMUFLOW_BUILD_OPENROAD=OFF \
-  -DEMUFLOW_BUILD_OPENSTA=OFF -DEMUFLOW_BUILD_VPR=OFF \
+  -DEMUFLOW_BUILD_OPENROAD=OFF -DEMUFLOW_BUILD_OPENSTA=OFF \
   -DEMUFLOW_BUILD_OPENPARF=OFF
 cmake --build build/core --parallel 2
 ctest --test-dir build/core --output-on-failure
@@ -308,7 +307,11 @@ consistently.
 
 The CLI and Python API default to RapidWright with
 `xilinx-ultrascaleplus-open-v1` mapping, including the standalone physical and
-frontend-stage entry points. Backend selection never silently falls back to VTR.
+frontend-stage entry points. Only `rapidwright` and `vivado` physical backends
+are supported. VTR/open, its standalone architecture/packing/routing commands,
+VTR TimingDB translation and its CMake build targets are retired. Historical
+VTR artifacts require the corresponding historical Git revision; current
+commands reject the retired backend and options.
 RapidWright always uses native OpenPARF placement; the old placer-selection
 options and packed-cluster pack/guide/place commands are removed. Independent
 `arch validate-xilinx-packing` and `arch validate-xilinx-placement` remain.
@@ -318,11 +321,7 @@ options and packed-cluster pack/guide/place commands are removed. Independent
   Supply the compatible provider/device, native
   constraints, architecture/timing data, and runtime paths listed by
   `multi-fpga compile --help`. This path has external RapidWright API/device
-  licensing conditions; it is not the fully open VTR route.
-The standalone `multi-fpga physical --backend open` adapter remains pending
-retirement for explicit pre-existing VTR inputs. It is not a supported compile
-upstream and cannot regenerate a retired VTR mapped design.
-
+  licensing conditions.
 - `--physical-backend vivado`: optional proprietary device implementation.
   It requires the matching Vivado installation, device support, and licenses.
 

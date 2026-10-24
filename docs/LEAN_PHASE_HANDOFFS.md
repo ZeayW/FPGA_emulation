@@ -59,8 +59,8 @@ Storage and adapter measurements alone do not qualify that endpoint.
   timing library from the same first-occurrence representatives and resolves
   path endpoint identities lazily. It does not construct a full Python EmuIR,
   global pin map or global endpoint-object dictionary. This is not a change to
-  library delays, clocks or STA algorithms. Legacy, VTR specialization and
-  directed-through-net qualification retain their existing reader route.
+  library delays, clocks or STA algorithms. Directed-through-net qualification
+  retains its reader route; VTR specialization is retired.
 - Escaped instance names no longer reconstruct all pins through indexed
   endpoint lookups once per emitted pin. An indexed owner-alias join identifies
   possible collisions; only candidate pairs need pin inventories. Small

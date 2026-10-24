@@ -24,11 +24,6 @@
       "id": "open-fpga-architecture-import",
       "stage": "R0 / Phase 2 architecture database",
       "source_paths": [
-        "src/native/vtr_architecture_importer.cpp",
-        "src/emuflow/vtr_architecture.py",
-        "schemas/architecture-timing-db-v1.schema.json",
-        "resources/architectures/vtr/flagship-k6-n10-40nm.json",
-        "examples/architecture/vtr_k6_heterogeneous_fixture.xml",
         "engines/openparf/thirdparty/pugixml",
         "engines/capnproto",
         "engines/fpga-interchange-schema",
@@ -51,12 +46,10 @@
         "scripts/rapidwright/export_route_resource_certificate.py"
       ],
       "build_targets": [
-        "emuflow_vtr_arch_importer",
         "emuflow_fpgaif_arch_importer",
         "emuflow_python"
       ],
       "runtime_products": [
-        "emuflow_vtr_arch_importer",
         "emuflow_fpgaif_arch_importer",
         "emuflow"
       ],
@@ -242,8 +235,7 @@
         "engines/openparf/openparf/placement",
         "engines/openparf/openparf/ops",
         "engines/openparf/openparf/pybind",
-        "src/emuflow/openparf.py",
-        "src/emuflow/packed_placement.py"
+        "src/emuflow/openparf.py"
       ],
       "build_targets": [
         "openparf_native"
@@ -255,36 +247,19 @@
       "integration": "default-in-tree-build"
     },
     {
-      "id": "open-fpga-pack-place-route",
-      "stage": "R1 / per-FPGA physical backend",
+      "id": "xilinx-physical-orchestration",
+      "stage": "Phase 7 / two Xilinx physical backends",
       "source_paths": [
-        "src/emuflow/vpr.py",
-        "src/emuflow/packed_netlist.py",
-        "src/emuflow/packed_placement.py",
-        "src/emuflow/route_artifact.py",
-        "src/native/vpr_packed_netlist_importer.cpp",
-        "src/native/vpr_route_checker.cpp",
         "src/emuflow/physical_backend.py",
         "src/emuflow/multi_fpga_physical_flow.py",
         "schemas/physical-backend-v1.schema.json",
-        "schemas/physical-partition-result-v1.schema.json",
-        "schemas/vpr-packed-netlist-v1.schema.json",
-        "schemas/vpr-route-check-v1.schema.json",
-        "engines/vtr/vpr",
-        "engines/vtr/libs/libarchfpga",
-        "engines/vtr/libs/librrgraph",
-        "engines/vtr/libs/EXTERNAL/libsdcparse",
-        "engines/vtr/libs/EXTERNAL/yaml-cpp"
+        "schemas/physical-partition-result-v1.schema.json"
       ],
       "build_targets": [
-        "vpr_native",
-        "emuflow_vpr_packed_netlist_importer",
-        "emuflow_vpr_route_checker"
+        "emuflow_python"
       ],
       "runtime_products": [
-        "vpr",
-        "emuflow_vpr_packed_netlist_importer",
-        "emuflow_vpr_route_checker"
+        "emuflow"
       ],
       "integration": "default-in-tree-build"
     },
@@ -362,11 +337,6 @@
     }
   ],
   "open_path_blockers": [
-    {
-      "id": "default-open-packing-and-timing",
-      "status": "partial",
-      "reason": "The source-built VTR importer and pinned public flagship model provide open heterogeneous layout and timing data; exact VPR packing and the checked packed-netlist contract are present in the root build. Architecture-neutral hard-block mapping and Architecture TimingDB-to-OpenSTA translation remain pending."
-    },
     {
       "id": "open-ultrascale-plus-bitstream",
       "status": "out-of-scope-until-viable",

@@ -226,149 +226,6 @@ def _scalar_pin(port: str, bit: int, pins: set[tuple[str, int]]) -> str:
     return port if width <= 1 else f"{port}__{bit}"
 
 
-def _top_pin(
-    ir: EmuIR,
-    endpoint: Mapping[str, Any],
-    eblif_top_ports: Optional[
-        Mapping[tuple[str, int], Mapping[str, Any]]
-    ] = None,
-) -> str:
-    if isinstance(ir, IndexedPhysicalIR):
-        try:
-            net_index, role = ir.top_binding(
-                endpoint["port"], endpoint["bit"]
-            )
-        except KeyError as error:
-            raise ValidationError(
-                f"physical top endpoint {endpoint!r} does not bind one net"
-            ) from error
-        collection = ("drivers", "sinks")[role]
-        if eblif_top_ports is not None:
-            record = eblif_top_ports.get(
-                (endpoint["port"], endpoint["bit"])
-            )
-            direction = "input" if collection == "drivers" else "output"
-            if (
-                record is None
-                or record.get("direction") != direction
-                or record.get("source_net", record.get("net"))
-                != f"n{net_index}"
-                or not isinstance(record.get("packed_block"), str)
-            ):
-                raise ValidationError(
-                    f"physical top endpoint {endpoint!r} disagrees with "
-                    "the eBLIF top-port map"
-                )
-            suffix = "inpad[0]" if direction == "input" else "outpad[0]"
-            return f"{record['packed_block']}.{suffix}"
-        return (
-            f"n{net_index}.inpad[0]"
-            if collection == "drivers"
-            else f"out:n{net_index}.outpad[0]"
-        )
-    matches = []
-    for index, net in enumerate(ir.value["nets"]):
-        for collection in ("drivers", "sinks"):
-            if any(
-                item["instance"] is None
-                and item["port"] == endpoint["port"]
-                and item["bit"] == endpoint["bit"]
-                for item in net[collection]
-            ):
-                matches.append((index, collection))
-    if len(matches) != 1:
-        raise ValidationError(
-            f"physical top endpoint {endpoint!r} does not bind one net"
-        )
-    net_index, collection = matches[0]
-    if eblif_top_ports is not None:
-        record = eblif_top_ports.get((endpoint["port"], endpoint["bit"]))
-        direction = "input" if collection == "drivers" else "output"
-        if (
-            record is None
-            or record.get("direction") != direction
-            or record.get("source_net", record.get("net")) != f"n{net_index}"
-            or not isinstance(record.get("packed_block"), str)
-        ):
-            raise ValidationError(
-                f"physical top endpoint {endpoint!r} disagrees with "
-                "the eBLIF top-port map"
-            )
-        suffix = "inpad[0]" if direction == "input" else "outpad[0]"
-        return f"{record['packed_block']}.{suffix}"
-    return (
-        f"n{net_index}.inpad[0]"
-        if collection == "drivers"
-        else f"out:n{net_index}.outpad[0]"
-    )
-
-
-def _vpr_atom_pin(
-    ir: EmuIR,
-    instance_index: Mapping[str, int],
-    endpoint: Mapping[str, Any],
-    instances: Optional[Mapping[str, Mapping[str, Any]]] = None,
-    eblif_top_ports: Optional[
-        Mapping[tuple[str, int], Mapping[str, Any]]
-    ] = None,
-) -> str:
-    instance_id = endpoint["instance"]
-    if instance_id is None:
-        return _top_pin(ir, endpoint, eblif_top_ports)
-    if instances is None:
-        instances = {
-            instance["id"]: instance for instance in ir.value["instances"]
-        }
-    if instance_id not in instances or instance_id not in instance_index:
-        raise ValidationError(
-            f"physical logic endpoint instance {instance_id!r} is absent"
-        )
-    instance = instances[instance_id]
-    cell_type = instance["type"]
-    port = endpoint["port"]
-    bit = endpoint["bit"]
-    atom = f"i{instance_index[instance_id]}"
-    if cell_type.startswith("LUT"):
-        if port == "O":
-            return f"{atom}.out[0]"
-        match = re.fullmatch(r"I(\d+)", port)
-        if match is not None and bit == 0:
-            return f"{atom}.in[{int(match.group(1))}]"
-    if cell_type in {"$lut", "$_LUT_"}:
-        if port in {"Y", "O"}:
-            return f"{atom}.out[0]"
-        if port in {"A", "I"}:
-            return f"{atom}.in[{bit}]"
-    if cell_type in _FF_TYPES or cell_type.startswith("$_DFF_"):
-        if port in {"D", "Q"} and bit == 0:
-            return f"{atom}.{port}[0]"
-    if cell_type == "VTR_MULTIPLY" and port in {"a", "b", "out"}:
-        return f"{atom}.{port}[{bit}]"
-    if cell_type == "VTR_SP_RAM":
-        if port not in {"addr", "data", "we", "out", "clk"}:
-            raise ValidationError(
-                f"unsupported VTR SP-RAM pin {instance_id}.{port}[{bit}]"
-            )
-        atom_bit = bit if port in {"data", "out"} else 0
-        pin_bit = bit if port == "addr" else 0
-        return f"{atom}__bit{atom_bit}.{port}[{pin_bit}]"
-    if cell_type == "VTR_DP_RAM":
-        if port not in {
-            "addr1", "addr2", "data1", "data2", "we1", "we2",
-            "out1", "out2", "clk",
-        }:
-            raise ValidationError(
-                f"unsupported VTR DP-RAM pin {instance_id}.{port}[{bit}]"
-            )
-        atom_bit = bit if port in {"data1", "data2", "out1", "out2"} else 0
-        pin_bit = bit if port in {"addr1", "addr2"} else 0
-        return f"{atom}__bit{atom_bit}.{port}[{pin_bit}]"
-    raise ValidationError(
-        f"unsupported physical logic pin {instance_id}.{port}[{bit}] "
-        f"on {cell_type}"
-    )
-
-
 @lru_cache(maxsize=1)
 def _vivado_native_cell_types() -> frozenset[str]:
     from .xilinx_primitives import load_xilinx_primitive_library
@@ -440,7 +297,7 @@ def _vivado_object(
             raise ValidationError(
                 f"unsupported Vivado FF pin {instance_id}.{port}[{bit}]"
             )
-    elif cell_type not in {"VTR_MULTIPLY", "VTR_SP_RAM", "VTR_DP_RAM"}:
+    else:
         if cell_type not in _vivado_native_cell_types():
             raise ValidationError(
                 f"unsupported Vivado physical logic cell {cell_type}"
@@ -557,67 +414,6 @@ def _boundary_maps(
     return endpoints, {
         item["schedule_entry"]: item for item in identity["endpoints"]
     }
-
-
-def _boundary_tx_port(
-    ir: EmuIR,
-    instance_index: Mapping[str, int],
-    endpoints: Mapping[str, Mapping[str, Any]],
-    endpoint_id: str,
-    net_index: Optional[Mapping[str, int]] = None,
-    eblif_top_ports: Optional[
-        Mapping[tuple[str, int], Mapping[str, Any]]
-    ] = None,
-) -> str:
-    endpoint = endpoints.get(endpoint_id)
-    if endpoint is None or endpoint.get("kind") != "tx":
-        raise ValidationError(f"logic segment TX {endpoint_id!r} is absent")
-    external_net = endpoint["merged_ir"]["external_net"]
-    if net_index is None:
-        net_index = {
-            net["id"]: index for index, net in enumerate(ir.value["nets"])
-        }
-    if external_net not in net_index:
-        raise ValidationError("logic segment TX external net is absent")
-    if eblif_top_ports is not None:
-        merged = endpoint["merged_ir"]
-        record = eblif_top_ports.get(
-            (merged.get("external_port"), merged.get("external_port_bit"))
-        )
-        if (
-            record is None
-            or record.get("direction") != "output"
-            or record.get("source_net", record.get("net"))
-            != f"n{net_index[external_net]}"
-            or not isinstance(record.get("packed_block"), str)
-        ):
-            raise ValidationError(
-                f"logic segment TX {endpoint_id!r} disagrees with "
-                "the eBLIF top-port map"
-            )
-        return f"{record['packed_block']}.outpad[0]"
-    return f"out:n{net_index[external_net]}.outpad[0]"
-
-
-def _boundary_rx_q(
-    ir: EmuIR,
-    instance_index: Mapping[str, int],
-    endpoints: Mapping[str, Mapping[str, Any]],
-    endpoint_id: str,
-    instances: Optional[Mapping[str, Mapping[str, Any]]] = None,
-) -> str:
-    endpoint = endpoints.get(endpoint_id)
-    if endpoint is None or endpoint.get("kind") != "rx":
-        raise ValidationError(f"logic segment RX {endpoint_id!r} is absent")
-    registers = endpoint["merged_ir"]["boundary_register_instances"]
-    if not isinstance(registers, list) or len(registers) != 1:
-        raise ValidationError(f"logic segment RX {endpoint_id!r} is ambiguous")
-    return _vpr_atom_pin(
-        ir,
-        instance_index,
-        {"instance": registers[0], "port": "Q", "bit": 0},
-        instances,
-    )
 
 
 def _segment_id(member: str, cut_index: int, role: str) -> str:
@@ -1054,7 +850,6 @@ def _write_logic_segment_query_impl(
     segments: Any,
     *,
     object_provider: str,
-    eblif_report: Optional[Mapping[str, Any]] = None,
     prepared_inputs: Optional[LogicSegmentQueryInputs] = None,
     allow_legacy_schedule: bool = False,
     allow_legacy_exact_contract: bool = False,
@@ -1231,46 +1026,10 @@ def _write_logic_segment_query_impl(
                         incoming=incoming_nets_by_instance,
                     )
         merged_pins = _instance_pin_inventory(merged_ir)
-        eblif_top_ports = None
-        if object_provider == "vpr" and eblif_report is not None:
-            top_port_records = eblif_report.get("top_ports")
-            if not isinstance(top_port_records, list):
-                raise ValidationError("logic segment eBLIF top-port map is invalid")
-            eblif_top_ports = {}
-            for top_port_record in top_port_records:
-                if not isinstance(top_port_record, Mapping):
-                    raise ValidationError(
-                        "logic segment eBLIF top-port record is invalid"
-                    )
-                identity = (
-                    top_port_record.get("port"),
-                    top_port_record.get("bit"),
-                )
-                if (
-                    not isinstance(identity[0], str)
-                    or isinstance(identity[1], bool)
-                    or not isinstance(identity[1], int)
-                    or identity in eblif_top_ports
-                ):
-                    raise ValidationError(
-                        "logic segment eBLIF top-port map is inconsistent"
-                    )
-                eblif_top_ports[identity] = top_port_record
-        if object_provider not in {"vpr", "vivado", "xilinx"}:
+        if object_provider not in {"vivado", "xilinx"}:
             raise ValidationError("logic segment object provider is invalid")
 
         def endpoint_object(endpoint: Mapping[str, Any]) -> tuple[str, str]:
-            if object_provider == "vpr":
-                return (
-                    "pin",
-                    _vpr_atom_pin(
-                        merged_ir,
-                        instance_index,
-                        endpoint,
-                        merged_instances,
-                        eblif_top_ports,
-                    ),
-                )
             if object_provider == "vivado":
                 return _vivado_object(
                     merged_ir, endpoint, merged_pins, merged_instances
@@ -1280,18 +1039,6 @@ def _write_logic_segment_query_impl(
             )
 
         def tx_object(endpoint_id: str) -> tuple[str, str]:
-            if object_provider == "vpr":
-                return (
-                    "pin",
-                    _boundary_tx_port(
-                        merged_ir,
-                        instance_index,
-                        endpoints,
-                        endpoint_id,
-                        merged_net_index,
-                        eblif_top_ports,
-                    ),
-                )
             endpoint = endpoints.get(endpoint_id)
             if endpoint is None or endpoint.get("kind") != "tx":
                 raise ValidationError(f"logic segment TX {endpoint_id!r} is absent")
@@ -1310,17 +1057,6 @@ def _write_logic_segment_query_impl(
             )
 
         def rx_object(endpoint_id: str) -> tuple[str, str]:
-            if object_provider == "vpr":
-                return (
-                    "pin",
-                    _boundary_rx_q(
-                        merged_ir,
-                        instance_index,
-                        endpoints,
-                        endpoint_id,
-                        merged_instances,
-                    ),
-                )
             endpoint = endpoints.get(endpoint_id)
             if endpoint is None or endpoint.get("kind") != "rx":
                 raise ValidationError(f"logic segment RX {endpoint_id!r} is absent")
@@ -1763,12 +1499,12 @@ def _write_logic_segment_query_impl(
                 descriptor = -1
                 stream.write(
                     LOGIC_SEGMENT_QUERY_HEADER
-                    if object_provider in {"vpr", "xilinx"}
+                    if object_provider == "xilinx"
                     else VIVADO_LOGIC_SEGMENT_QUERY_HEADER
                 )
                 stream.write("\n")
                 for item in segments:
-                    if object_provider in {"vpr", "xilinx"}:
+                    if object_provider == "xilinx":
                         fields = (
                             item["id"], item["kind"], item["start_pin"],
                             item["end_pin"],
@@ -1834,7 +1570,6 @@ def _write_logic_segment_query(
     identity_path: Path,
     *,
     object_provider: str,
-    eblif_report: Optional[Mapping[str, Any]] = None,
     prepared_inputs: Optional[LogicSegmentQueryInputs] = None,
     allow_legacy_schedule: bool = False,
     allow_legacy_exact_contract: bool = False,
@@ -1856,50 +1591,10 @@ def _write_logic_segment_query(
             identity_path,
             segments,
             object_provider=object_provider,
-            eblif_report=eblif_report,
             prepared_inputs=prepared_inputs,
             allow_legacy_schedule=allow_legacy_schedule,
             allow_legacy_exact_contract=allow_legacy_exact_contract,
         )
-
-
-
-def write_vpr_logic_segment_query(
-    original_ir_path: Path,
-    assignment_path: Path,
-    path_database_path: Path,
-    routes_path: Path,
-    schedule_path: Path,
-    platform: Platform,
-    merged_ir_path: Path,
-    boundary_identity_path: Path,
-    fpga: str,
-    query_path: Path,
-    identity_path: Path,
-    *,
-    eblif_report: Optional[Mapping[str, Any]] = None,
-    prepared_inputs: Optional[LogicSegmentQueryInputs] = None,
-    allow_legacy_schedule: bool = False,
-    allow_legacy_exact_contract: bool = False,
-) -> Dict[str, Any]:
-    return _write_logic_segment_query(
-        original_ir_path,
-        assignment_path,
-        path_database_path,
-        routes_path,
-        schedule_path,
-        platform,
-        merged_ir_path,
-        boundary_identity_path,
-        fpga,
-        query_path,
-        identity_path,
-        object_provider="vpr",
-        eblif_report=eblif_report,
-        prepared_inputs=prepared_inputs,
-        allow_legacy_schedule=allow_legacy_schedule,
-        allow_legacy_exact_contract=allow_legacy_exact_contract,
-    )
 
 
 def write_vivado_logic_segment_query(
@@ -2076,7 +1771,6 @@ def _indexed_logic_measurement_import(
     identity: Any,
     output_path: Path,
     *,
-    vivado: bool,
     provider: str,
     qualification: str,
     allow_missing: bool,
@@ -2110,27 +1804,20 @@ def _indexed_logic_measurement_import(
         try:
             with input_path.open("r", encoding="utf-8") as stream:
                 header = next(stream, "").rstrip("\n")
-                if vivado:
-                    if header not in {
-                        VIVADO_LOGIC_SEGMENT_TIMING_HEADER,
-                        _LEGACY_VIVADO_LOGIC_SEGMENT_TIMING_HEADER,
-                    }:
-                        raise ValidationError(
-                            "Vivado logic segment timing header is invalid"
-                        )
-                    extended_format = (
-                        header == VIVADO_LOGIC_SEGMENT_TIMING_HEADER
+                if header not in {
+                    VIVADO_LOGIC_SEGMENT_TIMING_HEADER,
+                    _LEGACY_VIVADO_LOGIC_SEGMENT_TIMING_HEADER,
+                }:
+                    raise ValidationError(
+                        "Vivado logic segment timing header is invalid"
                     )
-                    if not extended_format and not allow_legacy_timing_format:
-                        raise ValidationError(
-                            "legacy Vivado logic timing format requires explicit compatibility"
-                        )
-                else:
-                    if header != LOGIC_SEGMENT_TIMING_HEADER:
-                        raise ValidationError(
-                            "VPR logic segment timing header is invalid"
-                        )
-                    extended_format = False
+                extended_format = (
+                    header == VIVADO_LOGIC_SEGMENT_TIMING_HEADER
+                )
+                if not extended_format and not allow_legacy_timing_format:
+                    raise ValidationError(
+                        "legacy Vivado logic timing format requires explicit compatibility"
+                    )
                 batch = []
                 for line_number, line in enumerate(stream, start=2):
                     line = line.rstrip("\n")
@@ -2138,34 +1825,25 @@ def _indexed_logic_measurement_import(
                         continue
                     fields = line.split("\t")
                     try:
-                        if vivado:
-                            segment_id = bytes.fromhex(fields[0]).decode("utf-8")
-                            start_object = bytes.fromhex(fields[3]).decode("utf-8")
-                            end_object = bytes.fromhex(fields[4]).decode("utf-8")
-                            measurement = (
-                                fields[5]
-                                if extended_format else "endpoint-exact"
-                            )
-                            actual_start = (
-                                bytes.fromhex(fields[6]).decode("utf-8")
-                                if extended_format else start_object
-                            )
-                            actual_end = (
-                                bytes.fromhex(fields[7]).decode("utf-8")
-                                if extended_format else end_object
-                            )
-                            expected_fields = 8 if extended_format else 5
-                        else:
-                            segment_id = fields[0]
-                            start_object = fields[3]
-                            end_object = fields[4]
-                            measurement = "endpoint-exact"
-                            actual_start = None
-                            actual_end = None
-                            expected_fields = 5
+                        segment_id = bytes.fromhex(fields[0]).decode("utf-8")
+                        start_object = bytes.fromhex(fields[3]).decode("utf-8")
+                        end_object = bytes.fromhex(fields[4]).decode("utf-8")
+                        measurement = (
+                            fields[5]
+                            if extended_format else "endpoint-exact"
+                        )
+                        actual_start = (
+                            bytes.fromhex(fields[6]).decode("utf-8")
+                            if extended_format else start_object
+                        )
+                        actual_end = (
+                            bytes.fromhex(fields[7]).decode("utf-8")
+                            if extended_format else end_object
+                        )
+                        expected_fields = 8 if extended_format else 5
                         delay = float(fields[2])
                     except (IndexError, ValueError, UnicodeDecodeError) as error:
-                        label = "Vivado" if vivado else "VPR"
+                        label = "Vivado"
                         raise ValidationError(
                             f"{label} logic segment timing line {line_number} is invalid"
                         ) from error
@@ -2176,12 +1854,12 @@ def _indexed_logic_measurement_import(
                         and measurement in {
                             "endpoint-exact", "cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"
                         }
-                        and (not vivado or bool(actual_start and actual_end))
+                        and bool(actual_start and actual_end)
                         and math.isfinite(delay)
                         and delay >= 0.0
                     )
                     if not valid:
-                        label = "Vivado" if vivado else "VPR"
+                        label = "Vivado"
                         raise ValidationError(
                             f"{label} logic segment timing line {line_number} is invalid"
                         )
@@ -2252,7 +1930,7 @@ def _indexed_logic_measurement_import(
                         "WHERE m.segment_id IS NULL ORDER BY i.seq LIMIT 10"
                     )
                 ]
-                label = "Vivado" if vivado else "VPR"
+                label = "Vivado"
                 raise ValidationError(
                     f"{label} logic segment timing coverage is incomplete: {missing}"
                 )
@@ -2345,116 +2023,11 @@ def _indexed_logic_measurement_import(
                 view.close()
             return {
                 **validation,
-                **({"missing_segments": missing_count} if vivado else {}),
+                **({"missing_segments": missing_count}),
                 "output": str(output_path),
             }
         finally:
             connection.close()
-
-
-def import_vpr_logic_segment_timing(
-    input_path: Path,
-    identity_path: Path,
-    output_path: Path,
-    *,
-    allow_legacy_identity: bool = False,
-) -> Dict[str, Any]:
-    from .logic_segment_identity_storage import (
-        LogicSegmentIdentityView,
-        read_logic_segment_identity_storage,
-    )
-
-    identity = read_logic_segment_identity_storage(
-        identity_path, allow_legacy=allow_legacy_identity
-    )
-    if isinstance(identity, LogicSegmentIdentityView):
-        try:
-            return _indexed_logic_measurement_import(
-                input_path,
-                identity,
-                output_path,
-                vivado=False,
-                provider="vpr-tatum-logic-segment-longest-path-v1",
-                qualification="routed-academic-architecture-endpoint-chain",
-                allow_missing=False,
-                allow_legacy_timing_format=False,
-            )
-        finally:
-            identity.close()
-    validate_logic_segment_identity(identity)
-    expected = {item["id"]: item for item in identity["segments"]}
-    lines = input_path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != LOGIC_SEGMENT_TIMING_HEADER:
-        raise ValidationError("VPR logic segment timing header is invalid")
-    measurements = {}
-    for line_number, line in enumerate(lines[1:], start=2):
-        if not line:
-            continue
-        fields = line.split("\t")
-        segment = expected.get(fields[0]) if len(fields) == 5 else None
-        if (
-            segment is None
-            or fields[0] in measurements
-            or fields[1] != segment["kind"]
-            or fields[3] != segment["start_pin"]
-            or fields[4] != segment["end_pin"]
-        ):
-            raise ValidationError(
-                f"VPR logic segment timing line {line_number} is invalid"
-            )
-        try:
-            delay = float(fields[2])
-        except ValueError as error:
-            raise ValidationError(
-                f"VPR logic segment timing line {line_number} delay is invalid"
-            ) from error
-        if not math.isfinite(delay) or delay < 0.0:
-            raise ValidationError(
-                f"VPR logic segment timing line {line_number} delay is invalid"
-            )
-        measurements[fields[0]] = delay
-    if set(measurements) != set(expected):
-        missing = sorted(set(expected) - set(measurements))
-        raise ValidationError(
-            f"VPR logic segment timing coverage is incomplete: {missing[:10]}"
-        )
-    header = {
-        "schema": LOGIC_SEGMENT_TIMING_SCHEMA,
-        "status": "pass",
-        "design": identity["design"],
-        "platform": identity["platform"],
-        "fpga": identity["fpga"],
-        "provider": "vpr-tatum-logic-segment-longest-path-v1",
-        "qualification": "routed-academic-architecture-endpoint-chain",
-        "coverage": identity["coverage"],
-        "system_routes_sha256": identity["system_routes_sha256"],
-        "tdm_schedule_sha256": identity["tdm_schedule_sha256"],
-        **(
-            {
-                "semantic_contract_sha256": identity[
-                    "semantic_contract_sha256"
-                ]
-            }
-            if "semantic_contract_sha256" in identity
-            else {}
-        ),
-    }
-    from .logic_segment_timing_storage import write_logic_segment_timing_storage
-
-    view = write_logic_segment_timing_storage(
-        output_path,
-        header=header,
-        segments=(
-            {**segment, "delay_ns": measurements[segment["id"]]}
-            for segment in identity["segments"]
-        ),
-        unsupported_member_paths=identity["unsupported_member_paths"],
-    )
-    try:
-        validation = view.validate_timing()
-    finally:
-        view.close()
-    return {**validation, "output": str(output_path)}
 
 
 def import_vivado_logic_segment_timing(
@@ -2482,7 +2055,6 @@ def import_vivado_logic_segment_timing(
                 input_path,
                 identity,
                 output_path,
-                vivado=True,
                 provider=provider,
                 qualification=qualification,
                 allow_missing=allow_missing,

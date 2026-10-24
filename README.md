@@ -6,8 +6,8 @@ fabric, with explicit interfaces between synthesis, partitioning, system
 routing, TDM assignment, physical implementation, and global timing analysis.
 
 The default research route uses RapidWright device resources, native OpenPARF
-placement, and RWRoute routing for supported Xilinx FPGAs. VTR/VPR remains an
-alternative academic backend, and Vivado is an optional proprietary backend.
+placement, and RWRoute routing for supported Xilinx FPGAs. Vivado is the other
+maintained physical backend and requires an external proprietary installation.
 Optional container launchers support native-tool ABI and Tcl script bindings,
 with runtime selection separate from algorithm settings. See the
 [build instructions](docs/USER_GUIDE.md#complete-build).
@@ -126,9 +126,9 @@ entry. Retired routing providers, their standalone executable and dedicated
 comparison commands are removed; candidate-generation kernels remain shared.
 AMF and DREAMPlaceFPGA feasibility adapters, native runners and the unused
 candidate comparator are retired. The maintained Xilinx implementations are
-OpenPARF/RWRoute and Vivado. Chimew consumes their indexed Xilinx owners;
-VTR/open is no longer its dependency. Remaining legacy VTR backend/build entries
-are not yet retired. Shared site/BEL and handoff validation remain. See the
+OpenPARF/RWRoute and Vivado. Chimew consumes their indexed Xilinx owners.
+The VTR/open execution route, engine source, standalone adapters and build
+options are retired. Shared site/BEL and handoff validation remain. See the
 [backend contract](docs/XILINX_PHYSICAL_FLOW.md#backend-contract).
 RapidWright uses only native OpenPARF placement. The legacy placer selector,
 packed-cluster guidance flow and single-SLR planner are removed. The early
@@ -188,13 +188,13 @@ execution and handoff validation; published artifacts remain in the flow directo
 
 | Phase | Responsibility | Algorithms and tools |
 | --- | --- | --- |
-| 1 | Synthesize and map RTL; preserve connectivity, primitive parameters, and resource demand in EmuIR | [Yosys/ABC](https://github.com/YosysHQ/yosys); EmuFlow mapping profiles for VTR hard blocks, generic soft logic, and Xilinx UltraScale+ |
+| 1 | Synthesize and map RTL; preserve connectivity, primitive parameters, and resource demand in EmuIR | [Yosys/ABC](https://github.com/YosysHQ/yosys); EmuFlow Xilinx UltraScale+ mapping and indexed EmuIR import |
 | 2 | Extract timing paths and derive optimization weights | [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA); EmuFlow TimingPathDB export |
 | 3 | Cluster and partition against resource and topology constraints | [TritonPart](https://github.com/ABKGroup/TritonPart) initialization → [PATRON](docs/ALGORITHMS.md#phase-3-initial-partitioning-and-post-processing) post-processing |
 | 4 | Route cross-FPGA multicast communication | EmuFlow global-candidate C++ router, informed by the [DAC 2025 synergistic router](https://yibolin.com/publications/papers/ROUTE_DAC2025_Wang.pdf) and [ASP-DAC 2026 timing-aware routing](https://numbda.cs.tsinghua.edu.cn/papers/aspdac262.pdf) |
 | 5 | Assign concrete TDM lanes, slots, and dependency events | EmuFlow [Static Exact dependency scheduler](docs/ALGORITHMS.md#phase-5-tdm-ratio-lane-and-slot-assignment), integrated with [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA) path identities and platform bank/ratio constraints |
 | 6 | Plan pins/lanes, split the netlist, and generate transport RTL | EmuFlow baseline pin/transport flow; optional [Chimew, FPGA 2026](https://doi.org/10.1145/3748173.3779199) provider; static transport, shadow registers, and frame-barrier synchronization |
-| 7 | Implement each FPGA and analyze whole-design timing | [RapidWright](https://github.com/Xilinx/RapidWright), [OpenPARF](https://github.com/PKU-IDEA/OpenPARF), and [RWRoute](https://www.rapidwright.io/docs/RWRoute_timing_driven_routing.html); alternative [VTR/VPR](https://github.com/verilog-to-routing/vtr-verilog-to-routing) or Vivado backends; [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA) global timing |
+| 7 | Implement each FPGA and analyze whole-design timing | [RapidWright](https://github.com/Xilinx/RapidWright), [OpenPARF](https://github.com/PKU-IDEA/OpenPARF), and [RWRoute](https://www.rapidwright.io/docs/RWRoute_timing_driven_routing.html); optional Vivado implementation; [OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA) global timing |
 
 Each stage has versioned artifacts and independent structural, legality,
 coverage, or equivalence checks. Passing an intermediate stage does not
@@ -262,7 +262,7 @@ engines. Python packaging alone does not build a complete flow.
 
 Required tools include CMake 3.20+, GNU Make, a C++17 compiler, Python 3.9+,
 Boost, and the SQLite 3.22+ development library. The complete build also needs the
-development dependencies for OpenROAD, OpenSTA, OpenPARF, and VPR: Bison, Flex,
+development dependencies for OpenROAD, OpenSTA, and OpenPARF: Bison, Flex,
 Tcl 8.6+ (including the OpenSTA runtime), SWIG, Eigen3, zlib,
 spdlog, LEMON, OR-Tools, OpenMP, and the appropriate Python/PyTorch packages.
 CUDA is optional and disabled by default. The OpenPARF Python/PyTorch ABI must
@@ -328,9 +328,10 @@ Add `--physical` to execute placement and routing.
 
 The compile upstream supports only Xilinx UltraScale+ mapping; the independent
 `generic-soft` and `vtr-hard-blocks` profiles and VTR synthesis entry are retired.
-Standalone `multi-fpga physical` also defaults to RapidWright. The separate
-VTR/open physical adapter remains pending retirement; it is not another
-supported compile upstream. Missing inputs never select another toolchain.
+Both compile and standalone physical entries accept only `rapidwright` and
+`vivado`. The VTR/open backend, architecture importer and timing conversion,
+packed-placement/route adapters, and build/install targets are retired. Missing
+inputs never select another toolchain.
 
 Other CLI defaults are TritonPart initial partitioning followed by
 timing-driven PATRON v14 post-processing, `static-exact-combinational` cuts,
@@ -381,9 +382,8 @@ checks bind current executables, modules and data to that source.
 - Bitstream generation and board bring-up require a supported concrete device,
   board support package, clock/reset configuration, and transport interface.
 - RapidWright device/API dependencies have their own licensing conditions.
-  Vivado is proprietary and is not bundled. The alternative VTR backend does
-  not require Vivado. Native installations include the primitive contracts,
-  fixed wiring tables, and Tcl adapters required by the indexed Vivado route.
+  Vivado is proprietary and is not bundled. Native installations include the
+  primitive contracts, fixed wiring tables, and Tcl adapters required by the indexed Vivado route.
   Separate optional container launchers support Yosys and OpenSTA on older HPC
   hosts; see the [user guide](docs/USER_GUIDE.md#physical-implementation).
 - WNS/TNS are scoped to the declared source TimingPathDB population.
@@ -445,9 +445,8 @@ Included upstream components retain their own licenses and notices.
 
 The source inventory includes [Yosys](https://github.com/YosysHQ/yosys),
 [OpenROAD/TritonPart](https://github.com/The-OpenROAD-Project/OpenROAD),
-[OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA),
-[OpenPARF](https://github.com/PKU-IDEA/OpenPARF), and
-[VTR/VPR](https://github.com/verilog-to-routing/vtr-verilog-to-routing).
+[OpenSTA](https://github.com/The-OpenROAD-Project/OpenSTA), and
+[OpenPARF](https://github.com/PKU-IDEA/OpenPARF).
 See [the complete component and license inventory](OPEN_SOURCE_COMPONENTS.md),
 [its machine-readable form](OPEN_SOURCE_COMPONENTS.json), and
 [the implementation source manifest](SOURCE_MANIFEST.json).

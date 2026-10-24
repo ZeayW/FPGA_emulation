@@ -300,7 +300,9 @@ Accounting counts four package pins per point-to-point channel. Opposite directi
 when their TDM slots differ. The Phase 5 direction-bank allocation is checked
 again after channel selection. Single-ended maps cannot stand in for this
 fixed-board contract. The contract does not itself qualify the lookahead's
-placement coordinates or remove its VTR dependency.
+placement coordinates. The maintained lookahead obtains coordinates from the
+selected Xilinx backend and its sealed package geometry, independently of this
+electrical contract.
 
 The board assumes HP-bank `LVDS` at 1.8 V VCCO and internal 100-ohm receiver
 termination (`IBUFDS.DIFF_TERM=TRUE`), enabled only at the receiving end

@@ -99,7 +99,9 @@ ownership of route and schedule fields.
 
 ## Physical providers
 
-- The open academic route uses VPR packing/routing and OpenPARF placement.
+Only the following two physical routes are maintained. VTR/open and its
+standalone execution, artifact adapters and build dependencies are retired.
+
 - The RapidWright route uses device facts and RWRoute, with native OpenPARF
   responsible for placement and legalization.
 - The optional Vivado route uses the proprietary device implementation tools.

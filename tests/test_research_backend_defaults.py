@@ -61,6 +61,45 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
             tool.assert_not_called()
             self.assertFalse(out.exists())
 
+    def test_retired_physical_routes_fail_before_any_artifact_or_tool(self):
+        from contextlib import redirect_stderr
+        import io
+        commands = (
+            ["multi-fpga", "compile", "rtl.v", "--out", "unused", "--physical-backend", "open"],
+            ["multi-fpga", "physical", "--split", "unused", "--platform", "unused",
+             "--schedule", "unused", "--out", "unused", "--backend", "open"],
+            ["multi-fpga", "compile", "rtl.v", "--out", "unused", "--physical-vpr", "vpr"],
+            ["vpr", "run"],
+            ["arch", "import-vtr"], ["arch", "fetch-default-vtr"],
+            ["arch", "validate-vtr"], ["arch", "validate-vtr-timing"],
+        )
+        for command in commands:
+            with self.subTest(command=command), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                _build_parser().parse_args(command)
+        with tempfile.TemporaryDirectory() as temporary, patch(
+            "emuflow.multi_fpga_flow.resolve_native_executable",
+            side_effect=AssertionError("tool resolution before backend rejection"),
+        ), patch(
+            "emuflow.multi_fpga_physical_flow.read_json",
+            side_effect=AssertionError("artifact read before backend rejection"),
+        ):
+            root = Path(temporary)
+            with self.assertRaisesRegex(EmuFlowError, "unsupported physical backend"):
+                run_multi_fpga_flow(output_dir=root / "compile", physical_backend="open")
+            with self.assertRaisesRegex(ValidationError, "physical backend"):
+                run_multi_fpga_physical_flow(root / "split", root / "board", root / "schedule",
+                    root / "physical", backend="open")
+            with self.assertRaisesRegex(TypeError, "vpr"):
+                run_multi_fpga_physical_flow(root / "split", root / "board", root / "schedule",
+                    root / "physical", vpr="retired")
+            self.assertEqual(list(root.iterdir()), [])
+        import json
+        from emuflow.physical_backend import PHYSICAL_BACKENDS
+        descriptor = json.loads((ROOT / "schemas/physical-backend-v1.schema.json").read_text())
+        result = json.loads((ROOT / "schemas/physical-partition-result-v1.schema.json").read_text())
+        self.assertEqual(set(descriptor["properties"]["id"]["enum"]), set(PHYSICAL_BACKENDS))
+        self.assertEqual(set(result["properties"]["identity"]["properties"]["backend"]["enum"]), set(PHYSICAL_BACKENDS))
+
     def test_explicit_physical_worker_selection_reaches_dispatch(self):
         args = _build_parser().parse_args([
             "multi-fpga", "physical", "--split", "split", "--platform", "board.json",
@@ -128,7 +167,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
 
     def test_default_physical_requires_rapidwright_inputs_without_fallback(self):
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.multi_fpga_physical_flow.run_vpr_route_packed"
+            "emuflow.multi_fpga_physical_flow.run_indexed_vivado_partition"
         ) as vpr:
             root = Path(temporary)
             with self.assertRaisesRegex(ValidationError, "openparf-native requires source-sealed"):

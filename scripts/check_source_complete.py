@@ -46,12 +46,6 @@ REQUIRED_SOURCE_FILES = {
     ),
     "openroad": (
         "CMakeLists.txt",
-        "src/par/src/TritonPart.cpp",
-        "src/sta/CMakeLists.txt",
-        "src/gui/resources/resource.qrc",
-        "src/gui/resources/icon.png",
-        "src/gui/resources/google_icons/LICENSE",
-        "src/gui/resources/google_icons/round_zoom_in_black_36dp.png",
         "third-party/abc/CMakeLists.txt",
         "LICENSE",
         "EMUFLOW_PROVENANCE.md",
@@ -91,31 +85,10 @@ REQUIRED_SOURCE_FILES = {
         "LICENSE",
         "EMUFLOW_PROVENANCE.md",
     ),
-    "vtr": (
-        "CMakeLists.txt",
-        "vpr/src/main.cpp",
-        "vpr/src/pack/pack.cpp",
-        "vpr/src/route/route.cpp",
-        "libs/libarchfpga/src/read_xml_arch_file.cpp",
-        "libs/librrgraph/src/base/rr_graph_builder.cpp",
-        "libs/EXTERNAL/libsdcparse/CMakeLists.txt",
-        "libs/EXTERNAL/yaml-cpp/CMakeLists.txt",
-        "LICENSE.md",
-        "EMUFLOW_PROVENANCE.md",
-    ),
+
 }
 
 REQUIRED_FIRST_PARTY_NATIVE_FILES = (
-    "src/native/vtr_architecture_importer.cpp",
-    "src/emuflow/vtr_architecture.py",
-    "src/emuflow/vpr.py",
-    "src/native/vpr_packed_netlist_importer.cpp",
-    "src/emuflow/packed_netlist.py",
-    "schemas/architecture-timing-db-v1.schema.json",
-    "schemas/vpr-packed-netlist-v1.schema.json",
-    "resources/architectures/vtr/flagship-k6-n10-40nm.json",
-    "examples/architecture/vtr_k6_heterogeneous_fixture.xml",
-    "examples/physical/vpr_packed_fixture.net",
     "src/native/fpga_interchange_arch_importer.cpp",
     "src/emuflow/fpga_interchange.py",
     "src/emuflow/rapidwright_provider.py",
@@ -261,7 +234,6 @@ SOURCE_MANIFEST = "SOURCE_MANIFEST.json"
 OPEN_SOURCE_COMPONENTS = "OPEN_SOURCE_COMPONENTS.json"
 OPEN_SOURCE_COMPONENTS_DOCUMENT = "OPEN_SOURCE_COMPONENTS.md"
 PINNED_ARCHITECTURE_SOURCES = (
-    "resources/architectures/vtr/flagship-k6-n10-40nm.json",
     "resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json",
 )
 RTL_CATALOG = "benchmarks/rtl_catalog.json"

@@ -571,7 +571,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     "schema": "emuflow.multi-fpga-physical-flow/v1",
                     "status": "pass",
                     "provider": "phase6-emuir+physical-backend-v1",
-                    "backend": {"id": "open"},
+                    "backend": {"id": "vivado"},
                     "design": "counter",
                     "platform": platform_name,
                     "execution": {"requested_workers": 1},
@@ -644,7 +644,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     physical=True,
                     equivalence_cycles=2,
                     mapping_profile="xilinx-ultrascaleplus-open-v1",
-                    physical_backend="open",
+                    physical_backend="vivado",
                 )
             self.assertFalse(report["timing"]["optimization_enabled"])
             self.assertNotIn("fpgas", report["physical"])
@@ -665,7 +665,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 (root / "flow/timing/partition-net-weights.json").exists()
             )
 
-    def test_open_physical_runtime_preflight_precedes_frontend(self) -> None:
+    def test_rapidwright_runtime_preflight_precedes_frontend(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory) / "multi"
             with patch(
@@ -690,7 +690,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                         frame_slots=32,
                         physical=True,
                         mapping_profile="xilinx-ultrascaleplus-open-v1",
-                        physical_backend="open",
+                        physical_backend="rapidwright",
                     )
             self.assertFalse(root.exists())
 

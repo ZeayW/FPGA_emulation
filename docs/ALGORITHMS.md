@@ -17,8 +17,8 @@ with the physical backend.
 
 EmuFlow's contribution is the frontend integration and EmuIR representation:
 stable cell/net identities, connectivity, primitive parameters, and resource
-demand shared by the later stages. The VTR and Xilinx profiles describe
-different target models, not interchangeable LUT-capacity units.
+demand shared by the later stages. Production mapping targets the supported
+Xilinx UltraScale+ primitive namespace; alternative compile profiles are retired.
 
 ## Phase 2: timing extraction
 
@@ -244,8 +244,9 @@ equivalence checks are project implementations, not part of Chimew.
 The physical backends share a result contract while using different device
 models and implementation engines. The default Xilinx research route combines
 RapidWright device data, native OpenPARF placement, validated site/BEL binding,
-and RWRoute detailed routing. VTR is the alternative academic backend, and
-Vivado is an optional proprietary integration.
+and RWRoute detailed routing. Vivado is the other maintained implementation.
+The VTR/open engine and its architecture, packing, routing and timing adapters
+are retired; shared source identity, coverage and physical validators remain.
 
 AMF and DREAMPlaceFPGA feasibility routes are retired, including their native
 runners and adapter-specific validation. Shared physical contracts continue to
@@ -290,7 +291,7 @@ adapter.
 | Chimew bank/channel assignment | Paper Section 3.4 two-stage min-cost-flow kernel | [chimew_bank_channel_assigner.cpp](../src/native/chimew_bank_channel_assigner.cpp) |
 | Chimew integration | EmuFlow electrical and slot binding around the paper-derived output | [chimew_phase6.py](../src/emuflow/chimew_phase6.py) |
 | Split netlists and transport | EmuFlow runtime implementation and validation | [phase6.py](../src/emuflow/phase6.py) |
-| VPR / OpenPARF / Vivado | Physical-tool integrations selected by backend and device contract | [physical_backend.py](../src/emuflow/physical_backend.py) |
+| OpenPARF/RWRoute / Vivado | Physical-tool integrations selected by backend and device contract | [physical_backend.py](../src/emuflow/physical_backend.py) |
 | RapidWright / RWRoute | Device-resource, site/BEL, and native routing integration | [rapidwright_provider.py](../src/emuflow/rapidwright_provider.py) |
 | Global OpenSTA | EmuFlow timing-model exporter and upstream STA execution | [global_sta.py](../src/emuflow/global_sta.py) |
 

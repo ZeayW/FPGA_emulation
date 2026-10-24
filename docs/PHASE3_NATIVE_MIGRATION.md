@@ -590,6 +590,6 @@ contains owner references only. Timing guards reside in the crossing input;
 the Phase 5 schedule is not cloned. Native paper kernels remain unchanged.
 
 Python still builds hop/group inputs and timing weights, and the shared core
-and full native production data plane are not complete. Remaining VTR execution
-entries/build dependencies require separate deletion; this adapter replacement
-does not declare that cleanup or full NVDLA acceptance complete.
+and full native production data plane are not complete. VTR/open execution
+entries, standalone artifact adapters and engine/build dependencies are retired.
+This scope reduction does not establish full NVDLA acceptance.
