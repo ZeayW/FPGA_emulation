@@ -265,3 +265,12 @@ An explicit checkpoint I/O diagnostic is available as
 `scripts/vivado/inspect_checkpoint_io.tcl INPUT_DCP OUTPUT_DIRECTORY EXPECTED_PART`.
 It opens and writes a temporary checkpoint and checks its part; this is an I/O
 check and does not qualify placement, routing, or numerical timing.
+
+`scripts/vivado/inspect_constant_frontiers.tcl INPUT_DCP QUERY_TSV OUTPUT_TSV`
+exports selected LUT INIT values and every input driver with its source tag.
+The query has `source_origin` and `native_cell_hex` columns. The bounded
+`require_equal_frontier_functions` checker exhausts the union of input variables
+for one source/native LUT pair, allowing pin permutations and reduced LUTs only
+when their complete functions agree. Matching a pin name or observing a GND pin
+alone is insufficient. These diagnostic facts do not automatically promote an
+unknown-initialization candidate to a routed elimination proof.
