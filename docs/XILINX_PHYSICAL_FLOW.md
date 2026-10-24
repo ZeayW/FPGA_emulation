@@ -283,6 +283,26 @@ replicate, or change cells. Indexed inventories record observed source lineage
 and unretained source tags; this census does not certify functional equivalence.
 The explicit `vivado-optimized-source-lineage-v1` policy separates this source
 census from actual routed physical components and inserted infrastructure.
+
+The current census protocol explicitly records native primitive level and,
+for physical leaf/internal objects, site, BEL, tile column and tile row. Macro
+wrappers remain lineage observations but do not occupy a second BEL. Tile
+coordinates use [the shared RapidWright/Vivado column/row definition](https://www.rapidwright.io/javadoc/com/xilinx/rapidwright/device/Tile.html),
+not the numbers embedded in site names or OpenPARF's site-stride x encoding.
+The native importer validates unique site/BEL occupancy and complete placement
+for routed physical objects, checks source origins against the mapped owner,
+and atomically publishes logical `emuflow.vivado-cell-lineage/v2`. The retained
+SQLite owner contains both observed provenance and placement facts. Objects
+reference integer site IDs; each site's native coordinates are stored once,
+rather than repeated for every packed cell. There is no separate full placement
+JSON. Tcl caches geometry only for sites reached in the frozen census. Its placed-object count must agree with the
+independent physical mapped-cell census. Consumed raw pre/post-route TSV
+snapshots are removed after import; their byte hashes remain in the owner.
+These are placement/provenance checks, not a device-geometry or functional
+proof. Source tags that disappear remain explicitly unretained; no zero-delay
+or fabricated-location fallback is introduced. Automatic Chimew still needs its
+indexed cross-backend consumer and complete fixed-I/O geometry.
+
 Timing queries resolve the original source's typed descendants first, without
 broadening a retained source to other equivalent cells. A removed object may
 alias another source only when the primitive, parameters, pin interfaces and

@@ -95,3 +95,17 @@ def native_file_generation(path: Path) -> tuple[int, ...]:
         status.st_dev, status.st_ino, status.st_size, modified_seconds,
         modified_ns, changed_seconds, changed_ns,
     )
+
+
+def require_native_schema(schema: str) -> None:
+    """Reject an incomplete native installation before launching an EDA engine."""
+    import subprocess
+    executable = resolve_native_executable("emuflow-native")
+    try:
+        result = subprocess.run([executable, "check-runtime", schema],
+                                capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise EmuFlowError(f"native runtime cannot qualify required schema {schema!r}") from error
+    if result.returncode:
+        raise EmuFlowError(f"native runtime does not support required schema {schema!r}: "
+                           + result.stderr.strip())

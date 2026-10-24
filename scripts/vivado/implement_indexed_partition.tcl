@@ -62,7 +62,7 @@ if {[catch {
   write_checkpoint -force "$out/placed.dcp"
   route_design -directive $route_directive
   write_checkpoint -force "$out/routed.dcp"
-  emuflow_inventory "$out/routed_mapped_cells.tsv" $prefix
+  emuflow_inventory "$out/routed_mapped_cells.tsv" $prefix 1
   report_route_status -file "$out/route_status.rpt"
   report_drc -file "$out/drc.rpt"
   report_timing_summary -file "$out/timing_summary.rpt"

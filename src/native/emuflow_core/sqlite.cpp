@@ -179,6 +179,8 @@ std::string SqliteImmutableUri(const std::string& path) {
 }
 
 SqliteDatabase::SqliteDatabase(const std::string& path, Mode mode) {
+  if (mode == Mode::kCreateExclusive && path.rfind("file:",0)==0)
+    throw StageError(ErrorCode::kInvalidRequest,"SQLite create targets require filesystem paths, not URIs");
   if (mode == Mode::kCreateExclusive && std::filesystem::exists(path)) {
     throw StageError(ErrorCode::kPublicationFailed,"refusing to replace an existing SQLite artifact");
   }
@@ -186,6 +188,9 @@ SqliteDatabase::SqliteDatabase(const std::string& path, Mode mode) {
                         ? SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE |
                               SQLITE_OPEN_NOMUTEX
                         : SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX;
+  // ATTACH URI handling is a connection property, including on write stores.
+  // Never depend on the SQLite build's process-wide URI default.
+  flags |= SQLITE_OPEN_URI;
   std::string filename = path;
   if (mode == Mode::kImmutableReadOnly) {
     filename = SqliteImmutableUri(path);

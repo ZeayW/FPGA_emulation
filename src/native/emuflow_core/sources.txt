@@ -28,3 +28,4 @@ emuflow_core/exact_captures.cpp
 emuflow_core/candidate_ids.cpp
 emuflow_core/resource_view.cpp
 emuflow_core/assignment_publish.cpp
+emuflow_core/vivado_lineage.cpp

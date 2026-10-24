@@ -284,6 +284,63 @@ int main() {
     unknown.stage = static_cast<Stage>(999);
     if (emuflow::native::ExecuteStage(unknown).error != ErrorCode::kInvalidRequest)
       throw std::runtime_error("unknown native stage did not fail closed");
+    {
+      using emuflow::core::SqliteDatabase;
+      const auto mapped=(root/"lineage mapped ?#%.sqlite").string();
+      const auto functions=(root/"lineage functions.sqlite").string();
+      const auto inventory=(root/"lineage census.tsv").string();
+      const auto configuration=(root/"lineage-request.json").string();
+      const auto target=(root/"lineage.sqlite").string();
+      const auto summary=(root/"lineage-summary.json").string();
+      const std::string digest(64,'a');
+      {
+        SqliteDatabase source(mapped,SqliteDatabase::Mode::kCreateExclusive);
+        source.Execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);"
+          "INSERT INTO metadata VALUES('schema','emuflow.xilinx-mapped-index/v2');"
+          "CREATE TABLE cells(seq INTEGER PRIMARY KEY,id TEXT,type TEXT);"
+          "INSERT INTO cells VALUES(0,'kept','FDRE'),(1,'unretained','FDRE');");
+        SqliteDatabase signatures(functions,SqliteDatabase::Mode::kCreateExclusive);
+        signatures.Execute("PRAGMA application_id=0x454d5646;PRAGMA user_version=1;"
+          "CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);"
+          "INSERT INTO metadata VALUES('schema','emuflow.vivado-source-functions/v1');"
+          "CREATE TABLE signatures(seq INTEGER PRIMARY KEY,signature TEXT);"
+          "INSERT INTO signatures VALUES(0,'same'),(1,'same');");
+        auto owner=signatures.Prepare("INSERT INTO metadata VALUES('mapped_index_sha256',?)");
+        owner.BindText(1,digest);owner.Execute();
+      }
+      bool rejected_uri_create=false;
+      try {SqliteDatabase wrong("file:"+mapped+"?mode=rw",SqliteDatabase::Mode::kCreateExclusive);}
+      catch(const emuflow::core::StageError& error) {rejected_uri_create=error.code()==ErrorCode::kInvalidRequest;}
+      if(!rejected_uri_create) throw std::runtime_error("SQLite URI bypassed exclusive-create ownership");
+      {
+        std::ofstream data(inventory);
+        data<<"name\tref_name\tsource_origin\ttransformations_hex\tsite\tbel\ttile_column\ttile_row\tprimitive_level\n"
+               "observed\tFDRE\ts0\t\tSLICE_X9Y8\tAFF\t7\t11\tLEAF\n";
+        std::ofstream config(configuration);
+        config<<"{\"schema\":\"emuflow.vivado-lineage-import/v1\",\"mapped_sha256\":\""<<digest
+              <<"\",\"retain_stage\":\"routed\",\"stages\":[\"routed\"]}";
+      }
+      StageRequest import{Stage::kImportVivadoLineage,{},target};
+      import.auxiliary_output_path=summary;
+      import.input_artifacts={ArtifactRef::Bind(mapped,"xilinx-mapped-index-v2"),
+        ArtifactRef::Bind(functions,"vivado-source-functions-v1"),
+        ArtifactRef::Bind(configuration,"vivado-lineage-import-request-v1"),
+        ArtifactRef::Bind(inventory,"vivado-lineage-inventory-v2")};
+      const auto result=emuflow::native::ExecuteStage(import);
+      if(!result.ok() || result.inputs.size()!=4 || result.outputs.size()!=2 ||
+         result.outputs[0].schema()!="vivado-lineage-store-v2")
+        throw std::runtime_error("native lineage operation failed: "+result.message);
+      {
+        SqliteDatabase data(target,SqliteDatabase::Mode::kImmutableReadOnly);
+        auto row=data.Prepare("SELECT origin,tile_column,tile_row FROM objects JOIN sites ON sites.seq=objects.site_seq");
+        if(!row.Step() || row.Integer(0)!=0 || row.Integer(1)!=7 || row.Integer(2)!=11 || row.Step())
+          throw std::runtime_error("native lineage changed source identity or tile coordinates");
+      }
+      auto aliases=import;aliases.auxiliary_output_path=inventory;
+      if(emuflow::native::ExecuteStage(aliases).error!=ErrorCode::kInvalidRequest)
+        throw std::runtime_error("lineage summary overwrote an input");
+      result.outputs[0].RequireUnchanged();result.outputs[1].RequireUnchanged();
+    }
   } catch (...) { fs::remove_all(root); throw; }
   fs::remove_all(root);
 }

@@ -33,8 +33,10 @@ def emit_indexed_vivado_verilog(
     functions_path = output_path.with_suffix(".functions.sqlite")
     functions_temporary = temporary.with_suffix(".sqlite")
     functions = sqlite3.connect(functions_temporary)
+    functions.executescript("PRAGMA application_id=0x454D5646; PRAGMA user_version=1;")
     functions.execute("CREATE TABLE signatures(seq INTEGER PRIMARY KEY,signature TEXT NOT NULL)")
     functions.execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+    functions.execute("INSERT INTO metadata VALUES ('schema','emuflow.vivado-source-functions/v1')")
     functions.execute("INSERT INTO metadata VALUES ('mapped_index_sha256',?)", (mapped_report["index_sha256"],))
 
     def bit(value: Any) -> str:

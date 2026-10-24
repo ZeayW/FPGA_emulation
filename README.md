@@ -21,6 +21,9 @@ the common physical-result contract. Real-device qualification is in progress. I
 does not establish board clock/skew signoff. Used undriven source nets are
 rejected before mapping or vendor implementation. Physical capacity accounting
 handles native macro expansion and shared LUT halves.
+Vivado tool censuses are imported by the shared native core into one sealed
+lineage/placement store. Python passes file references; imported raw snapshots
+are retired. Source lineage still does not prove functional equivalence.
 Indexed mapped primitives carry provenance tags without global KEEP/DONT_TOUCH
 constraints; source-bound coverage is checked after optimization. The timing
 contract requires an explicit measured or proven optimized-away disposition for

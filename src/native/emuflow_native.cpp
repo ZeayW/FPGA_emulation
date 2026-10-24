@@ -13,7 +13,7 @@ using emuflow::native::Stage;
 using emuflow::native::StageRequest;
 constexpr const char* kUsage =
     "usage: emuflow-native [--report RESULT_JSON] PHASE OPERATION ...\n"
-    "  check-runtime\n"
+    "  check-runtime [SCHEMA]\n"
     "  compile REQUEST_JSON\n"
     "  run-tool REQUEST RESULT_JSON\n"
     "  phase3 analyze INPUT OUTPUT\n"
@@ -40,7 +40,8 @@ constexpr const char* kUsage =
     "  phase6 refine-groups --legacy-text INPUT OUTPUT\n"
     "  phase6 rudy INPUT OUTPUT\n"
     "  phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL\n"
-    "  phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY\n";
+    "  phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY\n"
+    "  phase7 import-vivado-lineage MAPPED FUNCTIONS REQUEST STORE SUMMARY INVENTORY...\n";
 
 int Finish(emuflow::core::StageResult result, const std::string& report) {
   // Invalid requests may name a report which aliases an input/output. Never
@@ -105,8 +106,10 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << kUsage; return 0;
   }
-  if (argc == 2 && std::string(argv[1]) == "check-runtime")
+  if ((argc == 2 || argc == 3) && std::string(argv[1]) == "check-runtime") {
+    if (argc == 3) (void)emuflow::core::FindSchema(argv[2]);
     return Finish(emuflow::core::CheckNativeRuntime(),report);
+  }
   if (argc == 4 && std::string(argv[1]) == "run-tool" && report.empty())
     return RunTool(argv[2],argv[3]);
   if (argc == 3 && std::string(argv[1]) == "compile" && report.empty()) {
@@ -127,6 +130,12 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     request.expected_sha256 = sha;
     return Execute(std::move(request), report);
   };
+  if (phase == "phase7" && operation == "import-vivado-lineage" && argc >= 9) {
+    StageRequest request{Stage::kImportVivadoLineage,{argv[3],argv[4],argv[5]},argv[6]};
+    request.auxiliary_output_path=argv[7];
+    for(int index=8;index<argc;++index) request.input_paths.emplace_back(argv[index]);
+    return Execute(std::move(request),report);
+  }
   if (phase == "phase7" && operation == "export-rwroute" && argc == 8) {
     StageRequest request{Stage::kExportRwroute,{argv[3],argv[4],argv[5]},argv[6]};
     request.auxiliary_output_path=argv[7];

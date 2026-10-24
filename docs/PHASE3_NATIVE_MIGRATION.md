@@ -40,6 +40,19 @@ The [W0 contract](FLOW_PLAN.md#shared-native-core-w0) specifies shared interface
 compatibility and acceptance separately from the later phase algorithm migrations.
 An integer identity is meaningful only with its owning artifact;
 equal integers in different stores are not interchangeable.
+
+`phase7 import-vivado-lineage MAPPED FUNCTIONS REQUEST STORE SUMMARY INVENTORY...`
+is a shared-core operation exposed through the same typed API. Mapped input,
+versioned source-function signatures, the small request and every inventory are
+bound `ArtifactRef`s. The importer uses the common SQLite RAII, registry, error,
+metric and atomic-publication contracts. It streams census records into the
+canonical source/placement owner without Python per-cell parsing. Only the
+selected stage is retained. `check-runtime SCHEMA` verifies an explicitly
+registered version; Vivado compile/standalone preflight requires the lineage
+schema before synthesis or vendor implementation. Write-store connections explicitly enable URI
+handling before attaching immutable source stores. This operation does not
+complete the remaining Vivado RTL exporter or W7 data-plane migration.
+
 Python SQLite adapter scopes close their connection explicitly as well as
 commit or roll back their transaction. The SQLite connection context manager
 alone does not close the handle. Prepared timing readers, native ScheduleStore

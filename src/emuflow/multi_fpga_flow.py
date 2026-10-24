@@ -1370,6 +1370,9 @@ def _compile_preflight(ctx: _CompileContext):
             install_root=ctx.physical_openparf_install,
             python_executable=ctx.physical_openparf_python,
         )
+    if ctx.physical and ctx.physical_backend == "vivado":
+        from .native_tools import require_native_schema
+        require_native_schema("vivado-lineage-store-v2")
     if ctx.internal_timing_database:
         ctx.opensta = resolve_native_executable("sta", ctx.opensta)
         check_opensta_engine_version(ctx.opensta)

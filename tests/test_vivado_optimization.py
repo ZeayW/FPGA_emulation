@@ -68,7 +68,7 @@ class VivadoOptimizationTests(unittest.TestCase):
             writer = csv.writer(stream, delimiter="\t",lineterminator="\n")
             writer.writerow(INVENTORY_HEADER)
             if not empty:
-                writer.writerow(["partition/kept", "FDRE", f"s{origins['kept']}", ""])
+                writer.writerow(["partition/kept", "FDRE", f"s{origins['kept']}", "", "SLICE_X0Y0", "AFF", "0", "0", "LEAF"])
         lineage = root / "lineage.sqlite"
         import_cell_lineage(mapped, functions, {stage:inventory}, lineage,
                             mapped_sha256=report["mapped_index"]["sha256"], retain_stage=stage)

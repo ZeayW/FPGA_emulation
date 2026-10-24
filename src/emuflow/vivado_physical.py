@@ -111,6 +111,8 @@ def run_indexed_vivado_partition(
                                   ("local", local_identity_path, local_query_path)):
         if (identity is None) != (query is None):
             raise ValidationError(f"Vivado {kind} timing requires identity and query together")
+    from .native_tools import require_native_schema
+    require_native_schema("vivado-lineage-store-v2")
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     executable = _resolve_vivado(executable)
@@ -168,6 +170,12 @@ def run_indexed_vivado_partition(
     coverage = import_cell_lineage(index_path, functions_path, {
         "synthesized": output_dir / "mapped_cells.tsv", "routed": output_dir / "routed_mapped_cells.tsv"},
         lineage_path, mapped_sha256=mapped_report["mapped_index"]["sha256"])
+    if coverage["stages"]["routed"]["placed_objects"] != _integer(metrics, "routed_cells"):
+        raise ValidationError("Vivado lineage placement coverage differs from physical mapped cells")
+    # These tool snapshots have been hashed during import. The indexed lineage
+    # owns all retained observations; later stages consume that owner directly.
+    for inventory in ("mapped_cells.tsv", "routed_mapped_cells.tsv"):
+        (output_dir / inventory).unlink()
     aggregate = parse_timing_summary(output_dir / "timing_summary.rpt")
     if abs(aggregate["wns_ns"] - _number(metrics, "wns_ns")) > 0.002:
         raise ValidationError("Vivado timing aggregate and worst path disagree")
