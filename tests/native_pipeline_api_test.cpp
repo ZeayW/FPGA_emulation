@@ -43,8 +43,12 @@ int main() {
         INSERT INTO cell_records VALUES(0,0),(1,1);
         CREATE TABLE net_records(seq INTEGER PRIMARY KEY,id TEXT NOT NULL);
         INSERT INTO net_records VALUES(0,'data'),(1,'empty');
-        CREATE TABLE endpoint_records(net_seq INTEGER,role INTEGER,ordinal INTEGER,instance_seq INTEGER);
-        INSERT INTO endpoint_records VALUES(0,0,0,0),(0,1,7,1),(0,1,12,NULL);
+        CREATE TABLE port_records(seq INTEGER PRIMARY KEY,record_json TEXT);
+        INSERT INTO port_records VALUES(0,'{"id":"out"}');
+        CREATE TABLE pin_names(seq INTEGER PRIMARY KEY,name TEXT);
+        INSERT INTO pin_names VALUES(1,'O'),(2,'D'),(3,'out');
+        CREATE TABLE endpoint_records(net_seq INTEGER,role INTEGER,ordinal INTEGER,instance_seq INTEGER,port_seq INTEGER,bit INTEGER);
+        INSERT INTO endpoint_records VALUES(0,0,0,0,1,2),(0,1,7,1,2,3),(0,1,12,NULL,3,9);
       )SQL");
     }
     const auto other_emuir_path = (root / "other.sqlite").string();
@@ -66,6 +70,15 @@ int main() {
     });
     if (cells != 2 || nets != 2 || endpoints != 3 || top != 1 || emuir.NetName(emuir.Net(0)) != "data")
       throw std::runtime_error("native EmuIR ordered coverage changed");
+    unsigned validated=0;
+    emuir.VisitConnectivity([&](const auto& endpoint) {
+      const char* names[]={"O","D","out"};const unsigned bits[]={2,3,9};
+      if (validated>=3 || endpoint.port!=names[validated] || endpoint.bit!=bits[validated] ||
+          !endpoint.pin || endpoint.pin->sequence()!=validated+1)
+        throw std::runtime_error("compact endpoint fields changed during validation/emission");
+      ++validated;
+    },[](auto) {},true);
+    if (validated!=3) throw std::runtime_error("compact validated pin coverage is incomplete");
 
     const auto legacy_path=(root/"legacy-emuir.sqlite").string();
     {
@@ -80,7 +93,7 @@ int main() {
         CREATE TABLE nets(seq INTEGER PRIMARY KEY,id TEXT UNIQUE);INSERT INTO nets VALUES(0,'data'),(1,'empty');
         CREATE TABLE ports(seq INTEGER PRIMARY KEY,id TEXT);INSERT INTO ports VALUES(0,'out');
         CREATE TABLE endpoints(net_seq INTEGER,role INTEGER,ordinal INTEGER,instance_id TEXT,port TEXT,bit INTEGER);
-        INSERT INTO endpoints VALUES(0,0,0,'lut','O',0),(0,1,7,'ff','D',0),(0,1,12,NULL,'out',0);
+        INSERT INTO endpoints VALUES(0,0,0,'lut','O',2),(0,1,7,'ff','D',3),(0,1,12,NULL,'out',9);
       )SQL");
     }
     {
@@ -95,7 +108,8 @@ int main() {
       });
       legacy.VisitConnectivity([&](const auto& endpoint) {
         const std::string ports[]={"O","D","out"};
-        if (endpoint.port!=ports[pin_count] || endpoint.bit || endpoint.pin || endpoint.net.sequence()!=0 ||
+        const unsigned bits[]={2,3,9};
+        if (endpoint.port!=ports[pin_count] || endpoint.bit!=bits[pin_count] || endpoint.pin || endpoint.net.sequence()!=0 ||
             (pin_count==2 ? endpoint.cell.has_value() : !endpoint.cell.has_value()))
           throw std::runtime_error("v1 endpoint semantics changed");
         ++pin_count;

@@ -118,20 +118,29 @@ void EmuirView::VisitConnectivity(
           role < previous_role || (role == previous_role && ordinal <= previous_ordinal) ||
           owner < -1 || (owner >= 0 && static_cast<std::uint64_t>(owner) >= counts_.cells))
         Invalid("native compact EmuIR endpoint is invalid");
-      if (validate_pins && (endpoints.IsNull(5) || endpoints.TypedText(5).empty() ||
-          !endpoints.Integer(7) || endpoints.TypedInteger(6) < 0 ||
-          (owner < 0 && !top_ports.count(endpoints.Text(5)))))
-        Invalid("native compact EmuIR endpoint pin is invalid");
+      std::string port;
+      std::uint64_t pin_bit=0;
+      if (validate_pins) {
+        // The validated row is also the returned record. Decode once rather
+        // than repeat SQLite conversions/copies for every emitted endpoint.
+        port=endpoints.TypedText(5);
+        const auto value=endpoints.TypedInteger(6);
+        if (port.empty() || !endpoints.Integer(7) || value<0 ||
+            (owner<0 && !top_ports.count(port)))
+          Invalid("native compact EmuIR endpoint pin is invalid");
+        pin_bit=static_cast<std::uint64_t>(value);
+      }
       std::optional<EmuirCellId> cell;
       if (owner >= 0) cell = store_.Id<EmuirCellTag>(static_cast<std::uint64_t>(owner));
       std::optional<EmuirPinId> pin;
       if (validate_pins && compact_) {
-        if (endpoints.TypedInteger(8)<1) Invalid("native compact EmuIR pin identity is invalid");
-        pin=store_.Id<EmuirPinTag>(static_cast<std::uint64_t>(endpoints.TypedInteger(8)));
+        const auto sequence=endpoints.TypedInteger(8);
+        if (sequence<1) Invalid("native compact EmuIR pin identity is invalid");
+        pin=store_.Id<EmuirPinTag>(static_cast<std::uint64_t>(sequence));
       }
       endpoint({net, role == 0 ? EndpointRole::kDriver : EndpointRole::kSink,
                 static_cast<std::uint64_t>(ordinal), std::move(cell), std::move(pin),
-                validate_pins ? endpoints.Text(5) : "",validate_pins ? static_cast<std::uint64_t>(endpoints.TypedInteger(6)) : 0});
+                std::move(port),pin_bit});
       ++observed_endpoints;
       previous_role = role; previous_ordinal = ordinal;
       have_endpoint = endpoints.Step();
