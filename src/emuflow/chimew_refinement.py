@@ -117,6 +117,7 @@ def _validate_initial_groups(
     schedule: Mapping[str, Any],
     initial: Mapping[str, Any],
     encodings: Mapping[str, int],
+    *, crossing_document: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, int]:
     if initial.get("schema") != CHIMEW_GROUPING_SCHEMA:
         raise ValidationError("Chimew initial grouping schema is invalid")
@@ -146,6 +147,17 @@ def _validate_initial_groups(
     entries = {entry["id"]: entry for entry in schedule.get("entries", [])}
     if set(groups) != set(entries):
         raise ValidationError("Chimew initial groups must cover schedule exactly")
+    if crossing_document is not None:
+        from .chimew_grouping import _crossing_timing_guard
+        protected = _crossing_timing_guard(schedule, crossing_document)
+        if protected is not None:
+            lane_key = lambda entry: (entry["link"],entry["from"],entry["to"],entry["lane"])
+            guarded_lanes = {lane_key(entry) for entry in entries.values() if entry["id"] in protected}
+            for record in raw_entries:
+                lane = lane_key(entries[record["schedule_entry"]])
+                expected = list(lane) if lane in guarded_lanes else None
+                if record.get("timing_guard_lane") != expected:
+                    raise ValidationError("Chimew initial groups do not preserve declared lookahead guards")
     grouped: Dict[int, list[str]] = defaultdict(list)
     for entry_id, group in groups.items():
         grouped[group].append(entry_id)
@@ -686,7 +698,7 @@ def refine_chimew_groups(
 
     encodings = validate_chimew_crossings(schedule, crossing_document)
     positions = validate_chimew_positions(schedule, position_document)
-    initial = _validate_initial_groups(schedule, initial_grouping, encodings)
+    initial = _validate_initial_groups(schedule, initial_grouping, encodings, crossing_document=crossing_document)
     guards = _timing_guards(schedule, initial_grouping)
     entries = sorted(schedule["entries"], key=lambda entry: entry["id"])
     native = _run_native(entries, encodings, positions, initial, guards, executable)

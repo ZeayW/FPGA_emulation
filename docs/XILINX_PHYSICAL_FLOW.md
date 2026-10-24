@@ -20,8 +20,8 @@ AMF certificate policy and unused multi-candidate comparator are removed.
 Retired placer certificates are not
 accepted by Xilinx placement validation. Common packing, capability reporting,
 site/BEL ownership, cascade and typed physical-handoff validation remain part
-of the retained routes. The VTR/open backend is still needed by the current
-Chimew lookahead integration; this retirement does not remove that dependency.
+of the retained routes. The Chimew lookahead no longer uses VTR/open. Remaining
+legacy VTR backend/build code is a separate retirement boundary.
 
 The RapidWright backend has one placement chain: native OpenPARF atomic
 placement, independent site/BEL and macro checks, typed physical handoff, then
@@ -300,8 +300,9 @@ independent physical mapped-cell census. Consumed raw pre/post-route TSV
 snapshots are removed after import; their byte hashes remain in the owner.
 These are placement/provenance checks, not a device-geometry or functional
 proof. Source tags that disappear remain explicitly unretained; no zero-delay
-or fabricated-location fallback is introduced. Automatic Chimew still needs its
-indexed cross-backend consumer and complete fixed-I/O geometry.
+or fabricated-location fallback is introduced. The Chimew lookahead queries
+this same owner by source identity; missing active source/boundary placement
+remains an error.
 
 Timing queries resolve the original source's typed descendants first, without
 broadening a retained source to other equivalent cells. A removed object may
@@ -357,3 +358,27 @@ four-differential-pair implementation on XCVU19P. Its default `Quick` placement
 directive is specific to this smoke test; the production provider remains
 `Default`. Its result explicitly covers
 synthetic physical/provider qualification only.
+
+## Indexed Xilinx Chimew lookahead
+
+Chimew's optional prepass uses the same selected backend and physical options
+as the candidate. Vivado locations come from mapped source origins and the
+normalized lineage/site tables. OpenPARF/RWRoute locations come from the typed
+physical handoff and `site-map.sqlite3`, whose native tile coordinates and
+architecture seal are explicit. Named-site lookups use the site-name index;
+OpenPARF dense/site-stride coordinates are not substituted for native geometry.
+Original instances are matched by ID, never by equal ordinals in two artifacts.
+Forwarded endpoints use placed boundary registers, with complete register
+coverage. No instance-order alias map or full placement JSON is produced.
+
+Package pin locations come from the ArchitectureDB's source-qualified native
+package catalog. The exporter uses the device package's actual site/tile
+[API](https://www.rapidwright.io/javadoc/com/xilinx/rapidwright/device/PackagePin.html);
+fixed P/N identities are independently checked against the board inventory.
+The device-sized pin catalog is distinct from circuit-sized endpoint data.
+Missing or ambiguous geometry fails before frontend work.
+
+Virtual region encodings and RUDY remain lookahead heuristics. Actual fixed
+wires, whole-bank static direction and electrical constraints remain mandatory.
+This interface does not itself establish real-device Chimew QoR, board signoff
+or complete NVDLA Phase 1–7/7C qualification.

@@ -165,11 +165,12 @@ class ChimewGroupingTest(unittest.TestCase):
         self.assertEqual(groups["s0"], groups["s1"])
         self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
 
-    def test_schedule_seals_timing_guard_for_pipeline_replay(self) -> None:
+    def test_crossings_seal_timing_guard_for_pipeline_replay(self) -> None:
         schedule = copy.deepcopy(self.schedule)
         for index, entry in enumerate(schedule["entries"]):
             entry.update({"lane": index // 2, "slot": index % 2})
-        schedule["chimew_timing_guard"] = {
+        crossings = copy.deepcopy(self.crossings)
+        crossings["timing_guard"] = {
             "provider": CHIMEW_TIMING_GUARD_PROVIDER,
             "scope": "EmuFlow extension, not a Chimew paper claim",
             "source_sha256": "a" * 64,
@@ -177,21 +178,25 @@ class ChimewGroupingTest(unittest.TestCase):
             "protected_entries": ["s0"],
         }
         implicit = build_chimew_initial_groups(
-            schedule, self.crossings, executable=str(self.executable)
+            schedule, crossings, executable=str(self.executable)
         )
         explicit = build_chimew_initial_groups(
             schedule,
-            self.crossings,
+            crossings,
             executable=str(self.executable),
             protected_entries={"s0"},
         )
         self.assertEqual(implicit, explicit)
-        invalid = copy.deepcopy(schedule)
-        invalid["chimew_timing_guard"]["protected_entries"] = ["s0", "s0"]
+        invalid = copy.deepcopy(crossings)
+        invalid["timing_guard"]["protected_entries"] = ["s0", "s0"]
         with self.assertRaisesRegex(ValidationError, "entries are invalid"):
             build_chimew_initial_groups(
-                invalid, self.crossings, executable=str(self.executable)
+                schedule, invalid, executable=str(self.executable)
             )
+
+        schedule["chimew_timing_guard"] = crossings["timing_guard"]
+        with self.assertRaisesRegex(ValidationError, "belong to the crossing input"):
+            build_chimew_initial_groups(schedule,crossings,executable=str(self.executable))
 
     def test_normalized_region_substitute_is_rejected(self) -> None:
         invalid = copy.deepcopy(self.crossings)

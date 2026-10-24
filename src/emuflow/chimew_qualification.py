@@ -631,7 +631,7 @@ def build_chimew_phase6_qualification(
 
     encodings = validate_chimew_crossings(schedule, crossings)
     positions = validate_chimew_positions(schedule, positions_document)
-    initial = _validate_initial_groups(schedule, initial_grouping, encodings)
+    initial = _validate_initial_groups(schedule, initial_grouping, encodings, crossing_document=crossings)
     refined = _validate_refined_grouping(
         schedule, encodings, positions, initial, refined_grouping
     )

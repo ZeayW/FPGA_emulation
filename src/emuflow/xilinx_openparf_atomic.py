@@ -1589,6 +1589,12 @@ def _write_site_database(
             "INSERT INTO metadata(key, value) VALUES (?, ?)",
             ("site_count", str(len(sites))),
         )
+        if coordinate_system.get("coordinate_system") is not None:
+            database.execute("INSERT INTO metadata VALUES ('coordinate_system',?)",
+                             (coordinate_system["coordinate_system"],))
+        if coordinate_system.get("architecture_sha256") is not None:
+            database.execute("INSERT INTO metadata VALUES ('architecture_sha256',?)",
+                             (coordinate_system["architecture_sha256"],))
         database.executemany(
             "INSERT INTO sites VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
@@ -1629,6 +1635,7 @@ def _write_site_database(
                 ON physical_sites (resource, physical_site);
             CREATE INDEX physical_sites_coordinate
                 ON physical_sites (dense_x, dense_y, resource, slot);
+            CREATE INDEX physical_sites_name ON physical_sites(physical_site);
         """)
         database.commit()
         with closing(sqlite3.connect(path)) as destination, destination:
@@ -4160,6 +4167,13 @@ def _render_site_geometry(
     return site_prefix, "\n".join(lines) + "\n", {
         "x_axis": x_axis, "y_axis": y_axis,
         "y_axis_order": y_axis_order, "sites": site_map,
+        "coordinate_system": (
+            "native-device-tile-column-row-v1"
+            if all(isinstance(site.get("tile"), Mapping)
+                   and all(isinstance(site["tile"].get(key), int)
+                           and not isinstance(site["tile"][key], bool)
+                           and site["tile"][key]>=0 for key in ("grid_col", "grid_row"))
+                   for site, _resources in sites) else None),
         "clock_regions": clock_region_contract,
         "super_logic_regions": slr_contract,
     }
@@ -4402,6 +4416,7 @@ def export_xilinx_openparf_atomic(
             or source.get("mapped_sha256") != _sha256(mapped_path)
         ):
             raise ValidationError("OpenPARF atomic source identity is invalid")
+    architecture_digest = _sha256(architecture_path)
     architecture = (
         ArchitectureDB.load(architecture_path)
         if architecture is None else architecture
@@ -5062,6 +5077,7 @@ def export_xilinx_openparf_atomic(
         if covered_hardblocks != expected_hardblocks:
             raise ValidationError("typed hardblock constraints have incomplete ownership")
     site_database_path = output_dir / "site-map.sqlite3"
+    device_static["coordinate_system"]["architecture_sha256"] = architecture_digest
     site_count = _materialize_site_database(site_database_path, device_static)
     site_database_descriptor = {
         "schema": XILINX_OPENPARF_SITE_DATABASE_SCHEMA,
@@ -5073,7 +5089,7 @@ def export_xilinx_openparf_atomic(
         source_identity = {
             "mapped_sha256": _sha256(mapped_path),
             "packed_sha256": _sha256(packed_path),
-            "architecture_sha256": _sha256(architecture_path),
+            "architecture_sha256": architecture_digest,
         }
         if typed_hardblock_mode:
             source_identity.update({
@@ -5132,7 +5148,7 @@ def export_xilinx_openparf_atomic(
         carry_cascade_chains=carry_cascade_chains,
         mapped_sha256=_sha256(mapped_path),
         packed_sha256=_sha256(packed_path),
-        architecture_sha256=_sha256(architecture_path),
+        architecture_sha256=architecture_digest,
     )
     name_map_selector = name_map.selector
     name_map_store_path = name_map.store_path

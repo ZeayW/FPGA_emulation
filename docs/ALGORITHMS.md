@@ -212,8 +212,8 @@ retired; necessary pin-plan, direction, electrical and slot validators remain.
 The optional **Chimew** provider implements methods from *TDM Signal Grouping
 and Package Pin Assignment for 2.5D Multi-FPGA Systems with Lookahead Placement*
 (FPGA 2026): crossing-encoding grouping, position refinement, and two-stage
-bank/channel assignment using min-cost flow. OpenPARF lookahead placement and
-RUDY congestion estimates supply physical guidance. The implementation keeps
+bank/channel assignment using min-cost flow. Indexed placement from the selected
+Xilinx physical backend and RUDY estimates supply physical guidance. The implementation keeps
 paper-derived kernels separate from EmuFlow's electrical, slot, and transport
 adapters. Academic region estimates must be distinguished from actual SLR/SLL
 data, and package binding requires a declared pin/electrical model.
@@ -225,9 +225,14 @@ bank ranges or combine opposite directions in one bank.
 The fixed-board Chimew electrical adapter resolves v3 wire references through
 [the existing HP-bank LVDS inventory](HARDWARE_PLATFORM.md#fixed-virtual-board-wiring),
 including both polarities at both ends. This is an EmuFlow integration contract;
-it does not change the paper-derived grouping or min-cost-flow kernels. Automatic
-lookahead still needs source-bound Xilinx placement geometry before the VTR
-prepass can be retired.
+it does not change the paper-derived grouping or min-cost-flow kernels.
+The integrated producer queries original instance IDs in the source/mapped
+owners and actual placed descendants, with boundary registers for forwarded
+hops. It exposes only fixed wires eligible under the concrete Phase 5 bank
+directions. Former synthetic pins, lane-index geometry and opposite-direction
+TDM bundling are removed from this producer. Timing guards belong to the
+crossing input; the Phase 5 hop store is referenced without cloning it.
+These integration-policy changes require separate physical/QoR qualification.
 
 All providers feed the EmuFlow netlist splitter and transport generator.
 Static TDM communication, shadow state, and frame synchronization implement

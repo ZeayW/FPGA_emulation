@@ -1049,12 +1049,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument(
         "--phase6-provider",
-        choices=("auto", "chimew", "baseline"),
+        choices=("chimew", "baseline"),
         default="baseline",
         help=(
-            "Phase 6 algorithm; baseline is the stable default, while an "
-            "explicit auto selects academic Chimew for an open physical "
-            "run with scheduled crossings"
+            "Phase 6 algorithm; baseline is the stable default; explicit "
+            "Chimew consumes indexed Xilinx placement and fixed LVDS wiring "
+            "from the selected RapidWright or Vivado backend"
         ),
     )
     multi_fpga_compile.add_argument(

@@ -126,8 +126,9 @@ entry. Retired routing providers, their standalone executable and dedicated
 comparison commands are removed; candidate-generation kernels remain shared.
 AMF and DREAMPlaceFPGA feasibility adapters, native runners and the unused
 candidate comparator are retired. The maintained Xilinx implementations are
-OpenPARF/RWRoute and Vivado; VTR/open remains while Chimew lookahead depends on
-it. Shared site/BEL and handoff validation remain. See the
+OpenPARF/RWRoute and Vivado. Chimew consumes their indexed Xilinx owners;
+VTR/open is no longer its dependency. Remaining legacy VTR backend/build entries
+are not yet retired. Shared site/BEL and handoff validation remain. See the
 [backend contract](docs/XILINX_PHYSICAL_FLOW.md#backend-contract).
 RapidWright uses only native OpenPARF placement. The legacy placer selector,
 packed-cluster guidance flow and single-SLR planner are removed. The early
@@ -163,7 +164,7 @@ Phase 6 maintains baseline transport and optional Chimew. The independent
 placement-aware planner, its executable/CLI and its comparison arm are retired;
 shared pin/electrical validation remains. `EMUFLOW_BUILD_CHIMEW` builds the four
 Chimew kernels. Fixed-board adapters support sealed LVDS P/N channels; the
-automatic lookahead still depends on VTR. See the
+lookahead uses the selected Xilinx backend and source-qualified package geometry. See the
 [Phase 6 interface](docs/USER_GUIDE.md#phase-6-providers).
 These production outputs stay compact without requiring a managed-storage flag;
 Python still publishes the compact manifest.
@@ -328,7 +329,7 @@ To use the alternative VTR route, explicitly select
 `multi-fpga physical` also defaults to RapidWright; use `--backend open` for VTR.
 Missing RapidWright inputs do not trigger an automatic VTR fallback.
 The independent `generic-soft` compile profile and file-based generic frontend
-are retired; VTR remains only until the Chimew lookahead dependency is replaced.
+are retired. Remaining VTR/open entries await separate removal.
 
 Other CLI defaults are TritonPart initial partitioning followed by
 timing-driven PATRON v14 post-processing, `static-exact-combinational` cuts,
@@ -341,8 +342,10 @@ CLI, Python phase APIs and experiment configurations share these defaults;
 cut mode never implicitly selects an older PATRON version. The redundant
 `--patron-flow-refinement` selector is retired. Chimew remains an explicit
 Phase 6 option, with its implementation, dependencies and validation retained.
-The integrated Chimew lookahead path currently requires the explicit VTR
-backend/profile combination.
+Its integrated lookahead requires the Xilinx profile, the selected RapidWright
+or Vivado backend, and native package-pin geometry in the ArchitectureDB.
+The implicit `auto` provider and VTR/virtual-pin lookahead adapter are retired.
+This does not establish full-device Chimew QoR qualification.
 Phase 3 supplies exact resource limits to TritonPart, checks feasibility during
 native search, and independently validates its output. PATRON receives a legal
 initial assignment: bounded native ILP establishes coarse resource feasibility

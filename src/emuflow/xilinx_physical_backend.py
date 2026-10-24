@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .architecture import ArchitectureDB
+from .native_tools import native_file_generation
 from .errors import ValidationError
 from .emuir_compact import source_metadata
 from .emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
@@ -877,6 +878,12 @@ def run_rapidwright_openparf_native_candidate_backend(
             "validation": packing_check,
         },
         placement_stage={
+            "site_database": {
+                "schema": "emuflow.openparf-atomic-site-database/v1",
+                "path": str((qualification_root / "site-map.sqlite3").resolve()),
+                "generation": list(native_file_generation(
+                    qualification_root / "site-map.sqlite3")),
+            },
             "region": {
                 "scope": "full-device",
                 "allowed_slrs": list(selected_slrs),

@@ -15,7 +15,7 @@ from .board_link_timing import (
     directed_route_link_delays,
     validate_board_link_timing,
 )
-from .academic_chimew import materialize_academic_chimew_inputs
+from .chimew_lookahead import materialize_xilinx_chimew_inputs
 from .chimew_pipeline import (
     read_chimew_phase6_pipeline,
     run_chimew_phase6_pipeline,
@@ -103,8 +103,8 @@ MULTI_FPGA_MAPPING_PROFILES = (
     "vtr-hard-blocks",
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
 )
-MULTI_FPGA_PHASE6_PROVIDERS = ("auto", "chimew", "baseline")
-PHASE6_AB_COMPARISON_SCHEMA = "emuflow.phase6-ab-comparison/v2"
+MULTI_FPGA_PHASE6_PROVIDERS = ("chimew", "baseline")
+PHASE6_AB_COMPARISON_SCHEMA = "emuflow.phase6-ab-comparison/v3"
 _REQUIRED_STAGES = ("frontend", "partition", "system_route", "tdm", "split")
 
 def _schedule_has_entries(schedule_path: Path) -> bool:
@@ -430,12 +430,8 @@ def finalize_multi_fpga_physical_checkpoint(
     return report
 
 def _phase6_physical_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
-    records = value["fpgas"]
+    records = [record for record in value["fpgas"] if record.get("active",True)]
     return {
-        "total_wirelength": sum(
-            int(record["stages"]["vpr_route"]["metrics"]["wirelength"])
-            for record in records
-        ),
         "worst_critical_path_ns": max(
             float(record["critical_path_ns"]) for record in records
         ),
@@ -505,8 +501,8 @@ def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
         report.get("schema") != PHASE6_AB_COMPARISON_SCHEMA
         or report.get("status") != "pass"
         or report.get("selected_provider") != "chimew"
-        or report.get("baseline_provider") != "historical-default-static-phase6"
-        or report.get("qualification") != "academic-virtual-physical-model"
+        or report.get("baseline_provider") != "baseline"
+        or report.get("qualification") != "xilinx-placed-lookahead+fixed-lvds-wiring"
     ):
         raise ValidationError("Phase 6 A/B comparison identity is invalid")
     upstream = report.get("frozen_upstream")
@@ -537,11 +533,16 @@ def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
         runtime_report = arm.get("runtime")
         if not isinstance(runtime_report, dict):
             raise ValidationError(f"Phase 6 A/B {label} runtime report is missing")
+    lhs, rhs = baseline_arm["physical"], chimew_arm["physical"]
+    backend = lhs.get("backend")
+    if (not isinstance(backend,dict) or backend.get("id") not in {"rapidwright","vivado"}
+            or backend != rhs.get("backend") or lhs.get("architecture") != rhs.get("architecture")
+            or not isinstance(lhs.get("execution"),dict) or lhs["execution"] != rhs.get("execution")):
+        raise ValidationError("Phase 6 A/B backend, device or execution options differ")
     baseline = report.get("baseline_physical")
     chimew = report.get("chimew_physical")
     delta = report.get("physical_delta")
     required_metrics = {
-        "total_wirelength",
         "worst_critical_path_ns",
         "worst_wns_ns",
         "total_tns_ns",
@@ -572,9 +573,6 @@ def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
         if metrics["unrouted_nets"] != 0 or metrics["drc_violations"] != 0:
             raise ValidationError("Phase 6 A/B physical arm did not close")
     expected_delta = {
-        "total_wirelength": (
-            chimew["total_wirelength"] - baseline["total_wirelength"]
-        ),
         "worst_critical_path_ns": (
             chimew["worst_critical_path_ns"]
             - baseline["worst_critical_path_ns"]
@@ -620,7 +618,6 @@ def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
         raise ValidationError("Phase 6 A/B Chimew pin metrics are missing")
     return {
         "status": "pass",
-        "wirelength_delta": expected_delta["total_wirelength"],
         "critical_path_delta_ns": expected_delta["worst_critical_path_ns"],
         "wns_delta_ns": expected_delta["worst_wns_ns"],
         "tns_delta_ns": expected_delta["total_tns_ns"],
@@ -1211,7 +1208,6 @@ def _compile_preflight(ctx: _CompileContext):
     if ctx._native_mode and (
         ctx.optimize_frame_slots or
         ctx.phase6_provider == "chimew" or
-        (ctx.phase6_provider == "auto" and ctx.physical and ctx.physical_backend == "open") or
         ctx.serial_bsp_phy_provider is not None
     ):
         raise EmuFlowError(
@@ -1273,13 +1269,26 @@ def _compile_preflight(ctx: _CompileContext):
         )
     if not 2 <= ctx.phase6_chimew_region_count <= 31:
         raise EmuFlowError("--phase6-chimew-region-count must be in [2, 31]")
-    if ctx.phase6_provider == "chimew" and (
-        not ctx.physical or ctx.physical_backend != "open"
-    ):
-        raise EmuFlowError(
-            "--phase6-provider chimew requires --physical with "
-            "--physical-backend open"
-        )
+    if ctx.phase6_provider == "chimew":
+        if (not ctx.physical or ctx.physical_backend not in {"rapidwright", "vivado"}
+                or ctx.mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE):
+            raise EmuFlowError("Chimew requires --physical and the Xilinx mapping with RapidWright or Vivado")
+        if ctx.physical_architecture is None:
+            raise EmuFlowError("Chimew requires the source-qualified Xilinx ArchitectureDB package geometry")
+        from .xilinx_chimew_geometry import XilinxPackageGeometry
+        from .chimew_fixed_wiring import FixedWiringChannels
+        board = FixedWiringChannels(Platform.load(ctx.platform_path))
+        parts = {fpga.part for fpga in Platform.load(ctx.platform_path).fpgas}
+        if len(parts) != 1:
+            raise EmuFlowError("Chimew requires a single Xilinx device model")
+        ctx.chimew_package_geometry = XilinxPackageGeometry.open(ctx.physical_architecture, next(iter(parts)))
+        pins = ctx.chimew_package_geometry.pins
+        for wire in board.board["wires"]:
+            for end in wire["endpoints"]:
+                for polarity in ("p", "n"):
+                    pin = end[polarity]
+                    if pins.get(pin["package_pin"], (None,))[0] != pin["site"]:
+                        raise ValidationError("Chimew native package geometry does not cover the fixed P/N wiring")
     _validate_mapping_timing_contract(
         ctx.mapping_profile, ctx.architecture_timing_db
     )
@@ -1848,6 +1857,51 @@ def _compile_routing_schedule(ctx: _CompileContext):
         _compile_route(ctx)
         _compile_schedule(ctx)
 
+def _run_selected_physical(ctx, split_root, schedule_path, output_dir):
+    catalog = getattr(ctx,"chimew_package_geometry",None)
+    if catalog is not None:
+        catalog.require_unchanged()
+    return ctx.measured("phase7", run_multi_fpga_physical_flow,
+        split_root,
+        ctx.platform_path,
+        schedule_path,
+        output_dir,
+        backend=ctx.physical_backend,
+        architecture=ctx.effective_physical_architecture,
+        architecture_id=ctx.physical_architecture_id,
+        yosys=ctx.yosys,
+        vpr=ctx.physical_vpr,
+        architecture_importer=ctx.physical_architecture_importer,
+        packed_importer=ctx.physical_packed_importer,
+        route_checker=ctx.physical_route_checker,
+        openparf_install=ctx.physical_openparf_install,
+        openparf_python=ctx.physical_openparf_python,
+        seed=ctx.physical_seed,
+        route_channel_width=ctx.physical_route_channel_width,
+        vivado=ctx.physical_vivado,
+        vivado_place_directive=ctx.physical_vivado_place_directive,
+        vivado_route_directive=ctx.physical_vivado_route_directive,
+        rapidwright_jar=ctx.physical_rapidwright_jar,
+        rapidwright_java=ctx.physical_rapidwright_java,
+        rapidwright_classes=ctx.physical_rapidwright_classes,
+        rapidwright_java_source=ctx.physical_rapidwright_java_source,
+        rapidwright_device_data=ctx.physical_rapidwright_device_data,
+        rapidwright_timing_data=ctx.physical_rapidwright_timing_data,
+        rapidwright_opensta=ctx.physical_rapidwright_opensta,
+        rapidwright_native_constraints=(
+            ctx.physical_rapidwright_native_constraints
+        ),
+        rapidwright_provider_manifest=(
+            ctx.physical_rapidwright_provider_manifest
+        ),
+        original_ir_path=ctx.ir_path,
+        assignment_path=ctx.assignment_path,
+        routes_path=ctx.routes_path,
+        path_database_path=ctx.path_database_path,
+        logic_path_database_path=ctx.path_database_path,
+        workers=ctx.physical_workers,
+    )
+
 def _compile_split(ctx: _CompileContext):
     ctx.routes_path = ctx.phase4_root / "routes.json"
     ctx.schedule_path = ctx.phase5_root / "schedule.json"
@@ -1859,20 +1913,11 @@ def _compile_split(ctx: _CompileContext):
             "--phase6-provider chimew requires at least one scheduled "
             "inter-FPGA signal"
         )
-    use_academic_chimew = (
-        ctx.phase6_provider == "chimew"
-        or (
-            ctx.phase6_provider == "auto"
-            and ctx.physical
-            and ctx.physical_backend == "open"
-            and has_scheduled_signals
-        )
-    )
     ctx.baseline_physical_report = None
     ctx.baseline_runtime_report = None
     ctx.phase6_comparison = None
     ctx.effective_physical_architecture = ctx.physical_architecture
-    if use_academic_chimew:
+    if ctx.phase6_provider == "chimew":
         comparison_root = ctx.output_dir / "phase6-comparison"
         baseline_root = comparison_root / "baseline"
         baseline_split = baseline_root / "split"
@@ -1890,30 +1935,7 @@ def _compile_split(ctx: _CompileContext):
         )
         baseline_phase6_seconds = time.monotonic() - baseline_phase6_started
         baseline_physical_started = time.monotonic()
-        ctx.baseline_physical_report = ctx.measured("phase7", run_multi_fpga_physical_flow,
-            baseline_split,
-            ctx.platform_path,
-            ctx.schedule_path,
-            baseline_root / "physical",
-            backend="open",
-            architecture=ctx.physical_architecture,
-            architecture_id=ctx.physical_architecture_id,
-            yosys=ctx.yosys,
-            vpr=ctx.physical_vpr,
-            architecture_importer=ctx.physical_architecture_importer,
-            packed_importer=ctx.physical_packed_importer,
-            route_checker=ctx.physical_route_checker,
-            openparf_install=ctx.physical_openparf_install,
-            openparf_python=ctx.physical_openparf_python,
-            seed=ctx.physical_seed,
-            route_channel_width=ctx.physical_route_channel_width,
-            original_ir_path=ctx.ir_path,
-            assignment_path=ctx.assignment_path,
-            routes_path=ctx.routes_path,
-            path_database_path=ctx.path_database_path,
-            logic_path_database_path=ctx.path_database_path,
-            workers=ctx.physical_workers,
-        )
+        ctx.baseline_physical_report = _run_selected_physical(ctx, baseline_split, ctx.schedule_path, baseline_root / "physical")
         baseline_physical_seconds = time.monotonic() - baseline_physical_started
         ctx.baseline_runtime_report = ctx.measured("phase7c", run_phase7c,
             ctx.schedule_path,
@@ -1932,18 +1954,10 @@ def _compile_split(ctx: _CompileContext):
             global_sta_executable=ctx.global_sta_executable,
             global_timing_engine=ctx.global_timing_engine,
         )
-        if ctx.effective_physical_architecture is None:
-            fetched_architecture = (
-                baseline_root / "physical/architecture/vtr-flagship.xml"
-            )
-            if not fetched_architecture.is_file():
-                raise ValidationError(
-                    "academic Chimew prepass did not retain its VTR "
-                    "architecture source"
-                )
-            ctx.effective_physical_architecture = fetched_architecture
         lookahead_root = comparison_root / "lookahead"
-        lookahead = materialize_academic_chimew_inputs(
+        lookahead = materialize_xilinx_chimew_inputs(
+            architecture_path=ctx.physical_architecture,
+            package_geometry=ctx.chimew_package_geometry,
             ir_path=ctx.ir_path,
             schedule_path=ctx.schedule_path,
             routes_path=ctx.routes_path,
@@ -2018,8 +2032,8 @@ def _compile_split(ctx: _CompileContext):
             "schema": PHASE6_AB_COMPARISON_SCHEMA,
             "status": "pending-physical-comparison",
             "selected_provider": "chimew",
-            "baseline_provider": "historical-default-static-phase6",
-            "qualification": "academic-virtual-physical-model",
+            "baseline_provider": "baseline",
+            "qualification": "xilinx-placed-lookahead+fixed-lvds-wiring",
             "frozen_upstream": {
                 "emuir_sha256": _sha256(ctx.ir_path),
                 "assignment_sha256": _sha256(ctx.assignment_path),
@@ -2029,11 +2043,11 @@ def _compile_split(ctx: _CompileContext):
             },
             "claim_boundary": {
                 "lookahead": (
-                    "normalized virtual regions from an open physical "
+                    "normalized virtual regions from the selected Xilinx physical "
                     "prepass, not final device SLR/SLL closure"
                 ),
                 "electrical": (
-                    "synthetic academic package-pin inventory, not a BSP"
+                    "fixed source-qualified LVDS P/N wiring; not board electrical signoff"
                 ),
             },
             "baseline": {
@@ -2065,46 +2079,7 @@ def _compile_physical(ctx: _CompileContext):
     ctx.physical_summary_path = None
     if ctx.physical:
         physical_started = time.monotonic()
-        ctx.physical_report = ctx.measured("phase7", run_multi_fpga_physical_flow,
-            ctx.phase6_root,
-            ctx.platform_path,
-            ctx.schedule_path,
-            ctx.output_dir / "physical",
-            backend=ctx.physical_backend,
-            architecture=ctx.effective_physical_architecture,
-            architecture_id=ctx.physical_architecture_id,
-            yosys=ctx.yosys,
-            vpr=ctx.physical_vpr,
-            architecture_importer=ctx.physical_architecture_importer,
-            packed_importer=ctx.physical_packed_importer,
-            route_checker=ctx.physical_route_checker,
-            openparf_install=ctx.physical_openparf_install,
-            openparf_python=ctx.physical_openparf_python,
-            seed=ctx.physical_seed,
-            route_channel_width=ctx.physical_route_channel_width,
-            vivado=ctx.physical_vivado,
-            vivado_place_directive=ctx.physical_vivado_place_directive,
-            vivado_route_directive=ctx.physical_vivado_route_directive,
-            rapidwright_jar=ctx.physical_rapidwright_jar,
-            rapidwright_java=ctx.physical_rapidwright_java,
-            rapidwright_classes=ctx.physical_rapidwright_classes,
-            rapidwright_java_source=ctx.physical_rapidwright_java_source,
-            rapidwright_device_data=ctx.physical_rapidwright_device_data,
-            rapidwright_timing_data=ctx.physical_rapidwright_timing_data,
-            rapidwright_opensta=ctx.physical_rapidwright_opensta,
-            rapidwright_native_constraints=(
-                ctx.physical_rapidwright_native_constraints
-            ),
-            rapidwright_provider_manifest=(
-                ctx.physical_rapidwright_provider_manifest
-            ),
-            original_ir_path=ctx.ir_path,
-            assignment_path=ctx.assignment_path,
-            routes_path=ctx.routes_path,
-            path_database_path=ctx.path_database_path,
-            logic_path_database_path=ctx.path_database_path,
-            workers=ctx.physical_workers,
-        )
+        ctx.physical_report = _run_selected_physical(ctx, ctx.phase6_root, ctx.schedule_path, ctx.output_dir / "physical")
         physical_seconds = time.monotonic() - physical_started
         ctx.physical_summary_path = ctx.output_dir / "physical/physical-summary.json"
         if ctx.phase6_comparison is not None and ctx.baseline_physical_report is not None:
@@ -2127,10 +2102,6 @@ def _compile_physical(ctx: _CompileContext):
                     "baseline_physical": baseline_metrics,
                     "chimew_physical": chimew_metrics,
                     "physical_delta": {
-                        "total_wirelength": (
-                            chimew_metrics["total_wirelength"]
-                            - baseline_metrics["total_wirelength"]
-                        ),
                         "worst_critical_path_ns": (
                             chimew_metrics["worst_critical_path_ns"]
                             - baseline_metrics["worst_critical_path_ns"]

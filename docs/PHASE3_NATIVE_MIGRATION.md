@@ -579,3 +579,17 @@ complete physical accounting, zero unrouted nets and DRC violations, final
 resource budgets, original-path coverage and global OpenSTA WNS/TNS. Prepared
 input continuations and component tests are intermediate evidence; they do not
 establish complete Phase 1–7 qualification or completion of W0/W7.
+
+### Chimew lookahead ownership
+
+The maintained optional Chimew producer queries indexed Xilinx physical owners
+for the selected backend. VTR atom-order reconstruction, full instance-position
+dictionaries, copied placement/architecture/routing JSON sources and synthetic
+package-pin generation are retired from that producer. Its source document
+contains owner references only. Timing guards reside in the crossing input;
+the Phase 5 schedule is not cloned. Native paper kernels remain unchanged.
+
+Python still builds hop/group inputs and timing weights, and the shared core
+and full native production data plane are not complete. Remaining VTR execution
+entries/build dependencies require separate deletion; this adapter replacement
+does not declare that cleanup or full NVDLA acceptance complete.

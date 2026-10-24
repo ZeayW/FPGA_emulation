@@ -44,6 +44,9 @@ shares the typed pin-plan, electrical-binding and transport contracts; shared
 validators and fixed wiring constraints remain authoritative. Retired
 placement-aware planner providers cannot enter either split producer. The
 baseline/Chimew comparison preserves complete physical/global timing gates.
+Its prepass and candidate share the selected Xilinx backend, tools, seed and
+workers. Physical endpoint facts are queried from the existing typed owners;
+the old VTR/virtual-package lookahead and implicit `auto` dispatch are retired.
 
 One owner supplies each large population; reports summarize it rather than
 embedding duplicate netlists, maps, or timing-path trees.

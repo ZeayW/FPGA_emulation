@@ -120,6 +120,11 @@ def main(argv):
                     "package_pin": str(pin.getName()),
                     "site": str(site.getName()),
                     "bel": str(bel.getName()),
+                    "native_tile": {
+                        "coordinate_system": "native-device-tile-column-row-v1",
+                        "column": int(site.getTile().getColumn()),
+                        "row": int(site.getTile().getRow()),
+                    },
                 }
             )
         pins.sort(key=lambda value: value["package_pin"])

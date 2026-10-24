@@ -398,12 +398,16 @@ The dependent `phase7d`/`phase8a` release/BSP-requirements chain is also retired
 its reports do not qualify either current physical backend. Current multi-FPGA
 BSP materialization, fixed-pin/electrical checks and terminal flow validation
 remain. OpenSTA Phase 2 is unaffected. Use the multi-FPGA compile/physical
-interface for the maintained implementations; Chimew still consumes the shared VTR/OpenPARF
-lookahead kernels. Historical artifacts require their matching Git revision.
+interface for the maintained implementations. Chimew reads indexed Xilinx
+placement; the VTR placement/atom-order adapter is removed. Historical artifacts
+require their matching Git revision.
 
 Standalone `multi-fpga physical` uses `--backend` for the same selection and
-also defaults to RapidWright. The integrated Chimew lookahead path currently
-requires explicit `--physical-backend open --mapping-profile vtr-hard-blocks`.
+also defaults to RapidWright. Integrated Chimew uses
+`--phase6-provider chimew --physical` with the Xilinx mapping and either
+`--physical-backend rapidwright` or `--physical-backend vivado`; both require
+`--physical-architecture` with source-qualified native package-pin geometry.
+There is no implicit `auto` selection.
 
 Global physical STA supports only OpenSTA. `--global-sta-executable` overrides
 the executable; the optional `--global-timing-engine opensta` records the same
@@ -444,8 +448,26 @@ and publish v3 fixed-wire bindings resolving both P/N pins from the board owner.
 `build_fixed_wiring_chimew_electrical_map` derives pin identities from the
 existing board inventory; the caller supplies only eligible link/lane/direction
 selections and source-qualified lookahead geometry. Single-ended maps are
-rejected for this BoardDB. The automatic Chimew lookahead still requires VTR;
-accepting fixed differential channels does not qualify a new physical backend.
+rejected for this BoardDB. The lookahead reads the selected backend's typed
+physical owners and preserves the Phase 5 whole-bank direction allocation.
+It never invents package pins or pairs opposite directions on one fixed bank.
+
+The ArchitectureDB package catalog must include `native_tile` on each used
+`physical_regions.io_banks[].pins[]` record: the coordinate system
+`native-device-tile-column-row-v1` and non-negative integer `column`/`row`.
+Regenerate a geometry-free region sidecar using
+`scripts/rapidwright/export_physical_regions.py` and merge it through the
+normal physical-region interface. Missing native geometry is rejected before
+frontend synthesis; site names and lane numbers are not coordinate substitutes.
+Baseline execution still accepts existing geometry-free sidecars.
+
+Lookahead region encodings remain a labelled heuristic, not physical SLR/SLL
+closure. A Phase 6 QoR claim still requires complete baseline/candidate Phase 7
+and original-path global OpenSTA acceptance with identical backend settings.
+The current A/B comparison uses schema v3 and checks matching backend, device
+and execution settings. Its common physical diagnostics use measured timing
+and closure fields; obsolete VPR-only wirelength is not reported as zero or
+substituted with an unrelated vendor metric.
 See the [fixed wiring contract](HARDWARE_PLATFORM.md#fixed-virtual-board-wiring).
 
 Build Chimew's grouping, position-refinement, RUDY and bank/channel kernels
