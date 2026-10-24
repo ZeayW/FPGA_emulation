@@ -22,6 +22,23 @@ Without characterized link timing, BoardDB cycle latency remains a model-only
 input. Timing abstraction files are analysis inputs, not new synthesizable
 transport hardware.
 
+## Current event-stream contract
+
+Checks and imported OpenSTA measurements must contain one contiguous bundle
+per original path, including exactly one target and one runtime observation.
+A path cannot reappear after its bundle ends. Interleaved historical records
+are rejected; the current flow does not regroup them into whole-design maps.
+Export, representative compression, independent validation and result stitching
+all use this contract. Complete numerical bundles remain the unit of
+compression, and expansion preserves every original member.
+
+Timing reconstruction must supply each scheduled hop's concrete
+`fixed_slot_tx_time_ns` and its bound TDM ratio where the link model requires
+one. Global binding consumes those fields directly. It rejects an incomplete
+reconstruction instead of rebuilding a second schedule-entry dictionary.
+Historical artifacts requiring the retired reconstruction or interleaved order
+must be examined with their matching Git version.
+
 ## Metrics and scope
 
 Global WNS is the minimum slack over the declared original-path population.

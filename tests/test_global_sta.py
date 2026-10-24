@@ -358,38 +358,34 @@ def test_indexed_path_metadata_is_sorted_compact_mapping():
         duplicate.finish()
 
 
-def test_canonical_check_validation_does_not_build_interleaved_population(monkeypatch):
-    import emuflow.global_sta as sta
-
-    def forbidden(rows):
-        raise AssertionError("canonical checks used the interleaved compatibility path")
-
-    monkeypatch.setattr(sta, "_validate_interleaved_checks", forbidden)
-    rows = [EventCheck(f"p{i}", role, "capture", 0, (1,), deadline)
-            for i in range(20000)
-            for role, deadline in (("target", 2), ("runtime", 20))]
-    assert sta.validate_checks(rows) == rows
-
-
-def test_interleaved_check_validation_retains_legacy_compatibility(monkeypatch):
-    import emuflow.global_sta as sta
-
-    original = sta._validate_interleaved_checks
-    calls = []
-
-    def recording(rows):
-        calls.append(len(rows))
-        return original(rows)
-
-    monkeypatch.setattr(sta, "_validate_interleaved_checks", recording)
-    rows = [
-        EventCheck("p", "target", "capture", 0, (1,), 2),
-        EventCheck("q", "target", "capture", 0, (1,), 2),
-        EventCheck("p", "runtime", "capture", 0, (1,), 20),
-        EventCheck("q", "runtime", "capture", 0, (1,), 20),
+@pytest.mark.parametrize("indexed", [False, True])
+@pytest.mark.parametrize("incomplete", [False, True])
+def test_check_validation_rejects_interleaved_bundles(indexed, incomplete):
+    canonical = [
+        EventCheck(path, role, "capture", 0, (1,), deadline)
+        for path in ("p", "q")
+        for role, deadline in (("target", 2), ("runtime", 20))
     ]
-    assert sta.validate_checks(rows) == rows
-    assert calls == [4]
+    if indexed:
+        builder = _EventCheckBuilder()
+        for row in canonical:
+            builder.append(row)
+        if not incomplete:
+            for role, deadline in (("target", 2), ("runtime", 20)):
+                builder.append(EventCheck("r", role, "capture", 0, (1,), deadline))
+        rows = builder.finish()
+        # Model a separately supplied typed view; the production builder seals
+        # complete bundles and never emits this order.
+        rows._validated = False
+        if incomplete:
+            rows._path_indices = array("I", [0, 1, 0, 1])
+        else:
+            rows._path_indices = array("I", [0, 0, 1, 1, 0, 0])
+    else:
+        rows = ([canonical[index] for index in (0, 2, 1, 3)]
+                if incomplete else canonical + canonical[:2])
+    with pytest.raises(ValidationError, match="population|contiguous"):
+        validate_checks(rows)
 
 
 def test_exact_compression_uses_complete_path_bundles(tmp_path):
@@ -524,16 +520,15 @@ def test_exact_compression_scales_for_repeated_path_classes():
     assert set(mapping) == {0, 1}
 
 
-def test_exact_compression_preserves_interleaved_compatibility():
-    rows = validate_checks([
+def test_exact_compression_rejects_interleaved_bundles():
+    rows = [
         EventCheck("p", "target", "p-target", 0, (1,), 4),
         EventCheck("q", "target", "q-target", 0, (1,), 4),
         EventCheck("p", "runtime", "p-runtime", 0, (1,), 40),
         EventCheck("q", "runtime", "q-runtime", 0, (1,), 40),
-    ])
-    representatives, mapping = _compress_path_equivalent_checks(rows)
-    assert representatives == rows[:1] + rows[2:3]
-    assert list(mapping) == [0, 0, 1, 1]
+    ]
+    with pytest.raises(ValidationError, match="contiguous"):
+        _compress_path_equivalent_checks(rows)
 
 
 def test_lazy_expansion_is_reiterable_sliceable_and_fail_closed(tmp_path):
@@ -771,7 +766,10 @@ def test_standalone_report_preserves_event_gate_without_comparison(late, monkeyp
         )
 
 
-def test_standalone_report_preserves_interleaved_measurement_compatibility():
+@pytest.mark.parametrize("indexed_metadata", [False, True])
+@pytest.mark.parametrize("repeated_complete_bundle", [False, True])
+def test_standalone_report_rejects_interleaved_measurements(
+        indexed_metadata, repeated_complete_bundle):
     import emuflow.global_sta as sta
 
     rows = [
@@ -784,6 +782,8 @@ def test_standalone_report_preserves_interleaved_measurement_compatibility():
         {"path": "q", "role": "runtime", "event": "capture",
          "arrival_ns": 4.0, "required_ns": 100.0, "slack_ns": 96.0},
     ]
+    if repeated_complete_bundle:
+        rows = [rows[index] for index in (0, 2, 1, 3, 0, 2)]
     metadata = {
         "paths": {
             path: {
@@ -795,17 +795,19 @@ def test_standalone_report_preserves_interleaved_measurement_compatibility():
         "source_binding": None,
         "compressed_representative_paths": 2,
     }
-    report = sta.build_opensta_timing(
-        {
-            "virtual_dut_clocks": {
-                "clk": {"nominal_period_ns": 100}
-            },
-            "virtual_dut_clock": {"nominal_period_ns": 100},
-        },
-        metadata,
-        rows,
-    )
-    assert [path["path"] for path in report["paths"]] == ["p", "q"]
+    if indexed_metadata:
+        builder = _PathMetadataBuilder()
+        for path, info in metadata["paths"].items():
+            builder.append(path, representative_path=path,
+                           clock_domain=None, target_period_ns=10.0, **info)
+        metadata["paths"] = builder.finish()
+    with pytest.raises(ValidationError, match="contiguous"):
+        sta.build_opensta_timing(
+            {"virtual_dut_clocks": {"clk": {"nominal_period_ns": 100}},
+             "virtual_dut_clock": {"nominal_period_ns": 100}},
+            metadata,
+            rows,
+        )
 
 
 def test_engine_defaults_are_uniform_and_python_is_explicit():

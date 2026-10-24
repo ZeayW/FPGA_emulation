@@ -82,11 +82,13 @@ def test_cross_stage_uses_each_hops_ratio_without_another_slot_wait():
         _scheduled_transport_delay_by_net(routes,schedule,platform)
 
 
-def test_physical_path_keeps_local_delays_and_separate_readiness_gate(monkeypatch):
+@pytest.mark.parametrize("missing_tx_time", [False, True])
+def test_physical_path_keeps_local_delays_and_separate_readiness_gate(monkeypatch, missing_tx_time):
     platform, routes, schedule = two_hop_case()
     entries = schedule["entries"]
     hops = [{**{k:e[k] for k in ("demand","link","from","to")},
              "schedule_entry":e["id"],"tdm_slot_ns":4.0,"base_link_delay_ns":30.5,
+             "fixed_slot_tx_time_ns":e["slot"]*4.0,"tdm_ratio":e["tdm_ratio"],
              "tx_endpoint":f"tx{i}","rx_endpoint":f"rx{i}"}
             for i,e in enumerate(entries)]
     record = {"path":"p","cut_nets":["n"],"scheduled_hops":hops,
@@ -120,8 +122,25 @@ def test_physical_path_keeps_local_delays_and_separate_readiness_gate(monkeypatc
         injected_timing_stream,
     )
     schedule.update(transport_semantics="registered-boundary",route_constraints={"frame_slots":41})
-    checks = bind_physical_checks({"virtual_dut_clocks":{"clk":{"nominal_period_ns":164,"target_period_ns":10}}},
-                                  routes,schedule,{},platform)
+    class NoScheduleEntryScan(dict):
+        def __getitem__(self, key):
+            if key == "entries":
+                raise AssertionError("binding rebuilt a complete schedule entry map")
+            return super().__getitem__(key)
+
+    def bind():
+        return bind_physical_checks(
+            {"virtual_dut_clocks": {"clk": {"nominal_period_ns": 164,
+                                            "target_period_ns": 10}}},
+            routes, NoScheduleEntryScan(schedule), {}, platform,
+        )
+
+    if missing_tx_time:
+        del hops[0]["fixed_slot_tx_time_ns"]
+        with pytest.raises(ValidationError, match="concrete scheduled TX time"):
+            bind()
+        return
+    checks = bind()
     assert next(c for c in checks if c.role=="target").arcs_ns == (2,34,.5,.5,38,.5,3,0)
     entries[1]["slot"] = 10 # relay TX at40ns precedes arrival46.5 + relay .5
     late = evaluate()

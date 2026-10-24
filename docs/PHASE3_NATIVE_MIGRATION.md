@@ -16,6 +16,12 @@ unfinished. W0 shared-core
 consolidation and W7 native compilation are the priority architectural delivery;
 stage adapters must converge on those interfaces rather than add independent
 parsers, identity maps, error formats and publication implementations.
+Completion also requires retiring superseded execution chains, unused schemas,
+standalone entry points and installation fallbacks. A disabled compatibility
+switch alone is not a reason to retain a complete implementation. Keep only
+readers with a demonstrated current consumer, and record their exit condition;
+historical replay uses its matching Git version. Independent correctness
+oracles may remain in tests without retaining a second production flow.
 
 See [phase contracts](FLOW_PLAN.md) for the whole-flow architecture,
 [algorithm implementations](ALGORITHMS.md) for providers, and

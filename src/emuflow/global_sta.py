@@ -1289,41 +1289,6 @@ def _validate_check_values(row: EventCheck) -> None:
         raise ValidationError("global STA launch/arc delay must be nonnegative")
 
 
-def _validate_interleaved_checks(rows: Sequence[EventCheck]) -> None:
-    """Compatibility validator for callers that interleave path bundles."""
-    seen = set()
-    observations: dict[str, list[EventCheck | None]] = {}
-    for row in rows:
-        _validate_check_values(row)
-        key = (row.path, row.role, row.event)
-        if key in seen:
-            raise ValidationError("global STA has duplicate/empty check identity")
-        seen.add(key)
-        if row.role in {"target", "runtime"}:
-            pair = observations.setdefault(row.path, [None, None])
-            position = 0 if row.role == "target" else 1
-            if pair[position] is not None:
-                raise ValidationError(
-                    "global STA must observe each original path once"
-                )
-            pair[position] = row
-    if not observations or any(
-        target is None or runtime is None
-        for target, runtime in observations.values()
-    ):
-        raise ValidationError("global STA target/runtime population disagrees")
-    for row in rows:
-        if row.path not in observations:
-            raise ValidationError("global STA event has no original-path observation")
-    for target, runtime in observations.values():
-        assert target is not None and runtime is not None
-        if (target.launch_ns, target.arcs_ns) != (
-            runtime.launch_ns,
-            runtime.arcs_ns,
-        ):
-            raise ValidationError("global STA target/runtime physical chains disagree")
-
-
 def _validate_indexed_checks(rows: _IndexedEventChecks) -> None:
     """Validate canonical typed rows without reconstructing every dataclass."""
 
@@ -1332,27 +1297,27 @@ def _validate_indexed_checks(rows: _IndexedEventChecks) -> None:
     current_identities: set[tuple[int, int]] = set()
     target = None
     runtime = None
-    interleaved = False
 
-    def finish_bundle() -> bool:
+    def finish_bundle() -> None:
         if current_path is None:
-            return True
+            return
+        if target is None and runtime is None:
+            raise ValidationError("global STA event has no original-path observation")
         if target is None or runtime is None:
-            return False
+            raise ValidationError("global STA target/runtime population disagrees")
         if not rows._physical_chain_equal(target, runtime):
             raise ValidationError(
                 "global STA target/runtime physical chains disagree"
             )
         completed_paths.add(current_path)
-        return True
 
     for index in range(len(rows)):
         rows._validate_row(index)
         path = rows._path_indices[index]
         if path != current_path:
-            if not finish_bundle() or path in completed_paths:
-                interleaved = True
-                break
+            finish_bundle()
+            if path in completed_paths:
+                raise ValidationError("global STA requires contiguous original-path bundles")
             current_path = path
             current_identities = set()
             target = None
@@ -1374,10 +1339,7 @@ def _validate_indexed_checks(rows: _IndexedEventChecks) -> None:
                     "global STA must observe each original path once"
                 )
             runtime = index
-    if not interleaved and not finish_bundle():
-        interleaved = True
-    if interleaved:
-        _validate_interleaved_checks(rows)
+    finish_bundle()
 
 
 def validate_checks(checks: Iterable[EventCheck]) -> Sequence[EventCheck]:
@@ -1401,34 +1363,32 @@ def validate_checks(checks: Iterable[EventCheck]) -> Sequence[EventCheck]:
     # Validate that order while retaining only the live bundle's event
     # identities and observation pair.  This removes the check-sized identity
     # set and path-sized observation table from the production data plane.
-    # External callers that interleave bundles retain the original behavior
-    # through the compatibility validator below.
     completed_paths = set()
     current_path = None
     current_identities = set()
     target = None
     runtime = None
-    interleaved = False
 
-    def finish_bundle() -> bool:
+    def finish_bundle() -> None:
         if current_path is None:
-            return True
+            return
+        if target is None and runtime is None:
+            raise ValidationError("global STA event has no original-path observation")
         if target is None or runtime is None:
-            return False
+            raise ValidationError("global STA target/runtime population disagrees")
         if (target.launch_ns, target.arcs_ns) != (
             runtime.launch_ns,
             runtime.arcs_ns,
         ):
             raise ValidationError("global STA target/runtime physical chains disagree")
         completed_paths.add(current_path)
-        return True
 
     for row in rows:
         _validate_check_values(row)
         if row.path != current_path:
-            if not finish_bundle() or row.path in completed_paths:
-                interleaved = True
-                break
+            finish_bundle()
+            if row.path in completed_paths:
+                raise ValidationError("global STA requires contiguous original-path bundles")
             current_path = row.path
             current_identities = set()
             target = None
@@ -1449,10 +1409,7 @@ def validate_checks(checks: Iterable[EventCheck]) -> Sequence[EventCheck]:
                     "global STA must observe each original path once"
                 )
             runtime = row
-    if not interleaved and not finish_bundle():
-        interleaved = True
-    if interleaved:
-        _validate_interleaved_checks(rows)
+    finish_bundle()
     return rows
 
 
@@ -1702,15 +1659,10 @@ def _compress_path_equivalent_checks(
         for offset, index in enumerate(indices):
             original_to_representative[index] = start + offset
 
-    # bind_physical_checks emits one contiguous bundle per original path. Keep
-    # only the active bundle in that production order instead of a dictionary
-    # containing one index list for every path. Preserve the public helper's
-    # historical acceptance of interleaved callers through a compatibility
-    # fallback.
+    # Keep only the active original-path bundle; interleaved input is invalid.
     seen_paths = set()
     current_path = None
     current_indices: list[int] = []
-    interleaved = False
     path_identities = (
         enumerate(rows._path_indices)
         if isinstance(rows, _IndexedEventChecks)
@@ -1719,26 +1671,14 @@ def _compress_path_equivalent_checks(
     for index, path_identity in path_identities:
         if path_identity != current_path:
             if path_identity in seen_paths:
-                interleaved = True
-                break
+                raise ValidationError("global STA requires contiguous original-path bundles")
             if current_indices:
                 add_bundle(current_indices)
             current_path = path_identity
             seen_paths.add(path_identity)
             current_indices = []
         current_indices.append(index)
-    if interleaved:
-        representative_indices = array("I")
-        representative_bundles.clear()
-        original_to_representative = array(
-            "I", (missing_representative for _ in rows)
-        )
-        path_indices: dict[str, list[int]] = {}
-        for index, row in enumerate(rows):
-            path_indices.setdefault(row.path, []).append(index)
-        for indices in path_indices.values():
-            add_bundle(indices)
-    elif current_indices:
+    if current_indices:
         add_bundle(current_indices)
     if any(
         index == missing_representative
@@ -1971,22 +1911,6 @@ the Python event propagator or consume its per-path numerical results.
             {"board_link_timing": build_board_link_timing_model(platform)}, platform)
     if endpoints is None or segments is None or links is None:
         raise ValidationError("global OpenSTA requires physical logic and endpoint measurements")
-    # Timing reconstruction already binds each routed hop to its schedule
-    # entry and carries the concrete TX time/ratio in ``scheduled_hops``.
-    # Keep a compatibility lookup only for older injected reconstruction
-    # records; production must not rebuild a second hop-sized entry map.
-    legacy_entries = None
-
-    def legacy_entry(identity):
-        nonlocal legacy_entries
-        if legacy_entries is None:
-            legacy_entries = {e["id"]: e for e in schedule["entries"]}
-        try:
-            return legacy_entries[identity]
-        except KeyError as exc:
-            raise ValidationError(
-                "global STA references a missing scheduled event"
-            ) from exc
     board_links = {link.id: link for link in platform.links}
     uncertainty = float(physical.get("static_exact_clock_uncertainty_ns", 0.0))
     if uncertainty < 0 or not math.isfinite(uncertainty):
@@ -2069,18 +1993,12 @@ the Python event propagator or consume its per-path numerical results.
                             seen_entries.add(eid)
                             period = float(hop["tdm_slot_ns"])
                             periods.add(period)
-                            if "fixed_slot_tx_time_ns" in hop:
-                                tx = float(hop["fixed_slot_tx_time_ns"])
-                                ratio = hop.get("tdm_ratio")
-                            else:
-                                entry = legacy_entry(eid)
-                                for field in ("link", "from", "to"):
-                                    if entry[field] != hop[field]:
-                                        raise ValidationError(
-                                            "global STA hop/event identity disagrees"
-                                        )
-                                tx = entry["slot"] * period
-                                ratio = entry.get("tdm_ratio")
+                            if "fixed_slot_tx_time_ns" not in hop:
+                                raise ValidationError(
+                                    "global STA timing stream lacks concrete scheduled TX time"
+                                )
+                            tx = float(hop["fixed_slot_tx_time_ns"])
+                            ratio = hop.get("tdm_ratio")
                             if not math.isfinite(tx) or tx < 0.0:
                                 raise ValidationError("global STA TX time is invalid")
                             arcs = trailing + (float(chain[k]["delay_ns"]) if not j else
@@ -2189,9 +2107,6 @@ def build_opensta_timing(runtime, metadata, measurements):
     """
     metadata_paths = metadata["paths"]
 
-    class InterleavedMeasurements(Exception):
-        pass
-
     def ordered_paths():
         # bind_physical_checks emits one contiguous bundle per original path.
         # Validate identities within the live bundle and construct the final
@@ -2214,13 +2129,17 @@ def build_opensta_timing(runtime, metadata, measurements):
             if current_path is None:
                 return
             if set(current_rows) != {"target", "runtime"}:
-                raise InterleavedMeasurements
+                raise ValidationError(
+                    "global STA requires complete, contiguous original-path measurements"
+                )
             info = metadata_paths[current_path]
             target = current_rows["target"]
             runtime_row = current_rows["runtime"]
             if typed_builder is not None:
                 if not typed_builder.append(current_path, target, runtime_row):
-                    raise InterleavedMeasurements
+                    raise ValidationError(
+                        "global STA requires complete, contiguous original-path measurements"
+                    )
             else:
                 assert paths is not None and completed is not None
                 path = {
@@ -2251,7 +2170,9 @@ def build_opensta_timing(runtime, metadata, measurements):
                 )
             if path_id != current_path:
                 if completed is not None and path_id in completed:
-                    raise InterleavedMeasurements
+                    raise ValidationError(
+                        "global STA requires complete, contiguous original-path measurements"
+                    )
                 finish_bundle()
                 current_path = path_id
                 current_rows = {}
@@ -2291,63 +2212,7 @@ def build_opensta_timing(runtime, metadata, measurements):
             paths.sort(key=lambda path: path["path"])
         return paths, failures, checks
 
-    try:
-        paths, failures, measurement_count = ordered_paths()
-    except InterleavedMeasurements:
-        # Preserve compatibility for external callers that do not retain the
-        # canonical path-bundle order. This is outside the production path.
-        observed = {}
-        identities = set()
-        failures = 0
-        for row in measurements:
-            identity = (row.get("path"), row.get("role"), row.get("event"))
-            if (
-                row.get("path") not in metadata_paths
-                or row.get("role") not in {"target", "runtime", "tx", "commit"}
-                or identity in identities
-                or any(
-                    isinstance(row.get(key), bool)
-                    or not isinstance(row.get(key), (int, float))
-                    or not math.isfinite(row[key])
-                    for key in ("arrival_ns", "required_ns", "slack_ns")
-                )
-            ):
-                raise ValidationError(
-                    "global STA invalid standalone measurement population"
-                )
-            identities.add(identity)
-            if row["role"] in {"target", "runtime"}:
-                key = (row["path"], row["role"])
-                if key in observed:
-                    raise ValidationError(
-                        "global STA invalid standalone measurement population"
-                    )
-                observed[key] = row
-            elif row["slack_ns"] < -1e-3:
-                failures += 1
-        expected = {
-            (path_id, role)
-            for path_id in metadata_paths
-            for role in ("target", "runtime")
-        }
-        if set(observed) != expected:
-            raise ValidationError(
-                "global STA invalid standalone measurement population"
-            )
-        paths = []
-        for path_id, info in sorted(metadata_paths.items()):
-            target = observed[path_id, "target"]
-            path = {
-                "path": path_id,
-                **info,
-                "system_delay_bound_ns": target["arrival_ns"],
-            }
-            for role in ("target", "runtime"):
-                row = observed[path_id, role]
-                path[f"{role}_required_time_ns"] = row["required_ns"]
-                path[f"{role}_clock_slack_bound_ns"] = row["slack_ns"]
-            paths.append(path)
-        measurement_count = len(measurements)
+    paths, failures, measurement_count = ordered_paths()
     if not paths:
         raise ValidationError("global STA empty standalone result")
     source = metadata["source_binding"]

@@ -246,7 +246,11 @@ Missing RapidWright inputs do not trigger an automatic VTR fallback.
 
 Other CLI defaults are TritonPart initial partitioning followed by
 timing-driven PATRON post-processing, `sequential-only` cuts, baseline Phase 6,
-and OpenSTA global physical timing. Generalized Static Exact combinational
+and OpenSTA global physical timing. Global timing consumes complete, contiguous
+original-path bundles with concrete scheduled events; historical regrouping and
+schedule reconstruction fallbacks are retired. See the
+[global timing contract](docs/global-opensta-qualification.md#current-event-stream-contract).
+Generalized Static Exact combinational
 cuts and Chimew are explicit options. The integrated Chimew
 lookahead path currently requires the explicit VTR backend/profile combination.
 Phase 3 supplies exact resource limits to TritonPart, checks feasibility during
