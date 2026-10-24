@@ -244,6 +244,7 @@ from .multi_fpga_physical_flow import (
     RAPIDWRIGHT_PLACERS,
     run_multi_fpga_physical_flow,
 )
+from .physical_batch_assembly import assemble_vivado_physical_batches
 from .opensta import (
     DEFAULT_TIMING_MODEL,
     parse_clock_definitions,
@@ -2500,6 +2501,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "reuse only independently hash-validated VPR pack/place "
             "checkpoints before continuing OpenPARF and detailed routing"
         ),
+    )
+    physical_assembly = multi_fpga_subparsers.add_parser(
+        "assemble-vivado-physical",
+        help="validate and join completed Vivado worker batches in an active run",
+    )
+    for option in ("split", "platform", "schedule", "out"):
+        physical_assembly.add_argument(f"--{option}", type=Path, required=True)
+    physical_assembly.add_argument(
+        "--batch", dest="batches", type=Path, action="append", required=True,
+        help="physical-partition-batch.json from a completed worker; repeat for all FPGAs",
     )
     multi_fpga_bsp = multi_fpga_subparsers.add_parser(
         "bsp",
@@ -5755,6 +5766,12 @@ def _dispatch(args: argparse.Namespace) -> int:
                 yosys_executable=args.yosys,
                 runtime_sync_root=args.runtime_sync_root,
                 ready_stable_cycles=args.ready_stable_cycles,
+            )
+            _print_json(report["summary"])
+            return 0
+        if args.multi_fpga_command == "assemble-vivado-physical":
+            report = assemble_vivado_physical_batches(
+                args.split, args.platform, args.schedule, args.batches, args.out,
             )
             _print_json(report["summary"])
             return 0

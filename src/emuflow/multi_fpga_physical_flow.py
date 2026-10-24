@@ -2225,6 +2225,10 @@ def run_multi_fpga_physical_flow(
         "ordering": "boarddb-fpga-order",
         "pack_place_resume": resume,
         "route_resume": resume,
+        **({"vivado_implementation": {
+            "place_directive": vivado_place_directive,
+            "route_directive": vivado_route_directive,
+        }} if backend == "vivado" else {}),
         **(
             {"rapidwright_placer": effective_rapidwright_placer}
             if backend == "rapidwright"

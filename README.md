@@ -23,6 +23,8 @@ handles native macro expansion and shared LUT halves.
 The indexed provider exports routed reports and timing in one native session
 and supports checked continuation within an active run, using native module
 identities and explicit checkpoint diagnostics.
+Completed Vivado worker batches can be checked and joined within the active
+run using [`assemble-vivado-physical`](docs/USER_GUIDE.md#joining-vivado-workers).
 Indexed mapped primitives carry provenance tags without global KEEP/DONT_TOUCH
 constraints; indexed source-bound coverage is checked after optimization. The timing
 contract requires an explicit measured or proven optimized-away disposition for

@@ -308,6 +308,7 @@ def run_indexed_vivado_partition(
     report = {"schema": "emuflow.vivado-partition-report/v1", "status": "pass", "provider": "indexed-phase6-vivado-physical-v2",
         "tool": {"executable": executable, "version": metrics["vivado_version"], "threads": threads},
         "implementation": implementation, "continuation": continuation_validation, "input_identity": input_identity,
+        "implementation_options": {"place_directive": place_directive, "route_directive": route_directive},
         "native_session": {"mode":"current-design-stage-exports-v1",
             "scripts_sha256": {name:file_sha256(_vivado_script(name)) for name in (
                 "native_session.tcl","source_inventory.tcl","resource_inventory.tcl","timing_contract.tcl",

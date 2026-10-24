@@ -240,6 +240,34 @@ Python engine. The OpenSTA route does not implicitly run both engines.
 A missing engine or unsupported physical model is an error, not a silent
 fallback.
 
+### Joining Vivado workers
+
+For the indexed provider in the same active experiment,
+`multi-fpga physical --backend vivado --fpga ID`
+emits a `physical-partition-batch.json` and per-FPGA records. Repeat `--fpga`
+to implement several partitions in one worker. After every BoardDB FPGA has
+completed, join these batches without invoking synthesis, placement or routing:
+
+```bash
+PYTHONPATH=src python -m emuflow multi-fpga assemble-vivado-physical \
+  --split RUN/split --platform PLATFORM.json --schedule RUN/tdm/schedule.json \
+  --batch RUN/worker-a/physical-partition-batch.json \
+  --batch RUN/worker-b/physical-partition-batch.json --out RUN/physical-joined
+```
+
+Supply the actual paths used by the workers and an empty output directory.
+The join checks split/platform/schedule seals, record hashes, complete FPGA
+coverage, matching seed and implementation directives, and each active
+partition's runtime/resource-budget and exact Phase 6 fixed-I/O bindings.
+The common physical validator
+then checks resources, fixed differential I/O and complete boundary, local-path
+and cross-FPGA logic timing. Missing, duplicate, failed or mixed-source records
+are errors. Batches predating recorded implementation directives must be
+rejected rather than assigned inferred defaults. The resulting physical
+summary still requires whole-design Phase 7C analysis; joining workers does
+not produce global WNS/TNS. These records are temporary active-run inputs,
+not a persistent checkpoint library.
+
 For independent terminal validation, require the physical endpoint:
 
 ```bash
