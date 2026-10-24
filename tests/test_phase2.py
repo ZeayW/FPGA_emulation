@@ -121,8 +121,9 @@ class ArchitectureDBTest(unittest.TestCase):
 
             def fake_run(command, **_kwargs):
                 self.assertEqual(
-                    command[1:3], ["-m", "emuflow.openparf_native_driver"]
+                    Path(command[1]).name, "openparf_driver_entry.py"
                 )
+                self.assertEqual(command[2], "openparf_native_driver")
                 result_dir.mkdir(parents=True)
                 (result_dir / "runner.pl").write_text(
                     "i0 0 0 0\n", encoding="utf-8"

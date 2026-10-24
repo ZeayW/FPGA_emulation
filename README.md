@@ -135,6 +135,7 @@ preparation; external native installs must be selected with `EMUFLOW_NATIVE_ROOT
 Its output requires remapping and a new placement/routing validation; see
 [physical optimization](docs/PHASE7_PHYSICAL_OPTIMIZATION.md).
 Physical handoff validation reuses mapped pin records within each site.
+Placement drivers use the selected runtime's dependencies and the calling EmuFlow package.
 
 Phase 3 can seal per-FPGA downstream resource reservations in
 `resource_reservations_by_fpga`. Every partition provider then limits the

@@ -241,14 +241,14 @@ def run_openparf(
     command = (
         [
             str(python.absolute()),
-            "-m",
-            "emuflow.openparf_continuous_driver",
+            str(Path(__file__).with_name("openparf_driver_entry.py")),
+            "openparf_continuous_driver",
         ]
         if continuous_guidance
         else [
             str(python.absolute()),
-            "-m",
-            "emuflow.openparf_native_driver",
+            str(Path(__file__).with_name("openparf_driver_entry.py")),
+            "openparf_native_driver",
         ]
         if stable_native
         else [

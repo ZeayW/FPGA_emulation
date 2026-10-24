@@ -60,6 +60,12 @@ cluster and is discarded before the next site. Certificate validation and the
 independent handoff validator still load and check their own source records;
 driver uniqueness and dedicated topology checks retain their full scope.
 
+Native and continuous OpenPARF drivers load the calling EmuFlow package through
+an explicit package entry point under the selected OpenPARF interpreter. They
+do not require EmuFlow to be separately installed in that interpreter or add
+the coordinator's site-packages directory to its dependency search path. The
+child retains its own OpenPARF/PyTorch environment and compiled ABI.
+
 The native SLL multiplier keeps OpenPARF's `[0,1000)` acceptance policy and
 uses the fixed `t_psi=0.002` Adam step from LEAPS Equation (23). This is the
 incremental component of the former `1.002` exponential growth rate, rather
