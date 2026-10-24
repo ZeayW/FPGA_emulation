@@ -300,6 +300,32 @@ def _add_mux_bels(architecture, primitives):
 
 
 class XilinxOpenparfAtomicTest(unittest.TestCase):
+    def test_missing_typed_exporter_fails_before_preparation(self):
+        from emuflow.errors import EmuFlowError
+        from emuflow.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
+        from tests.test_transport_fanout import _transport_ir
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir = root / "transport.emuir.sqlite"
+            mapped = root / "mapped.sqlite"
+            _transport_ir(2).save(ir)
+            emit_xilinx_mapped_index(ir, mapped)
+            with open_xilinx_mapped_index(mapped) as view, mock.patch.object(
+                atomic_adapter, "resolve_native_executable",
+                side_effect=EmuFlowError("missing native exporter"),
+            ), mock.patch.object(
+                atomic_adapter, "build_xilinx_physical_macro_contract",
+                side_effect=AssertionError("must not construct macros"),
+            ):
+                # Neither packed nor architecture exists: tool preflight must
+                # surface the runtime problem before touching either input.
+                with self.assertRaisesRegex(EmuFlowError, "missing native exporter"):
+                    export_xilinx_openparf_atomic(
+                        mapped, root / "packed.json", root / "architecture.json",
+                        root / "output", mapped_value=view,
+                    )
+
     def test_density_headroom_uses_only_qualified_lut_bels(self):
         # Sixteen z slots encode eight BLEs; paired LUTs are disabled. A
         # seven-LUT region exceeds the maximum 75% density target of eight BELs,

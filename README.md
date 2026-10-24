@@ -108,6 +108,8 @@ An explicit qualification transform can spatially cluster transport buffer
 loads and compute new branch centers from preliminary placement while
 preserving equivalent drivers and branch fanout on the physical slice lattice.
 Independent circuit comparison checks the rewired candidate before publication.
+Typed placement export checks its required C++ exporter before full-design
+preparation; external native installs must be selected with `EMUFLOW_NATIVE_ROOT`.
 Its output requires remapping and a new placement/routing validation; see
 [physical optimization](docs/PHASE7_PHYSICAL_OPTIMIZATION.md).
 

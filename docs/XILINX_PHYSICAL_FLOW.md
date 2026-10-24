@@ -32,7 +32,10 @@ No consumer can observe a partially indexed netlist. This avoids per-pin random
 updates to the net-order index during large physical input generation.
 
 For mapped index v2, `emuflow_xilinx_bookshelf_exporter` reads the typed cell,
-pin, and validated atom relations directly. C++ checks atom ownership and types,
+pin, and validated atom relations directly. Typed export resolves this required
+executable before reconstructing macro facts, atoms, or device geometry. An
+external native install is selected with `EMUFLOW_NATIVE_ROOT`; a missing tool
+fails before full-design preparation. C++ checks atom ownership and types,
 contiguous port bits, pin directions, and multiple drivers, then streams nets in
 numeric net order with drivers first. Constants remain in primitive pin
 signatures but do not become net endpoints; single-endpoint nets are omitted.

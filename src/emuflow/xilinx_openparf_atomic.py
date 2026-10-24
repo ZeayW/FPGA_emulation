@@ -4336,6 +4336,11 @@ def export_xilinx_openparf_atomic(
     """Export the fail-closed native mixed-resource qualification subset."""
 
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
+    # Check the required typed exporter before reconstructing macro facts,
+    # atoms, or device geometry. A missing install is an environment failure
+    # and must not consume a full-design preparation pass before surfacing.
+    if isinstance(getattr(mapped, "cells", None), _IndexedCells):
+        resolve_native_executable("emuflow_xilinx_bookshelf_exporter")
     if packed_value is None:
         candidate = read_json(packed_path)
         packed = (
