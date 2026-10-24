@@ -66,6 +66,109 @@ int main() {
     });
     if (cells != 2 || nets != 2 || endpoints != 3 || top != 1 || emuir.NetName(emuir.Net(0)) != "data")
       throw std::runtime_error("native EmuIR ordered coverage changed");
+
+    const auto legacy_path=(root/"legacy-emuir.sqlite").string();
+    {
+      emuflow::core::SqliteDatabase db(legacy_path,emuflow::core::SqliteDatabase::Mode::kCreateExclusive);
+      db.Execute(R"SQL(
+        PRAGMA application_id=0x454d5549; PRAGMA user_version=1;
+        CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+        INSERT INTO metadata VALUES('storage_schema','emuflow.emuir-sqlite/v1');
+        CREATE TABLE instances(seq INTEGER PRIMARY KEY,id TEXT UNIQUE);INSERT INTO instances VALUES(0,'lut'),(1,'ff');
+        CREATE TABLE instance_resources(instance_seq INTEGER,resource TEXT,amount INTEGER);
+        INSERT INTO instance_resources VALUES(0,'lut',1),(1,'ff',1);
+        CREATE TABLE nets(seq INTEGER PRIMARY KEY,id TEXT UNIQUE);INSERT INTO nets VALUES(0,'data'),(1,'empty');
+        CREATE TABLE ports(seq INTEGER PRIMARY KEY,id TEXT);INSERT INTO ports VALUES(0,'out');
+        CREATE TABLE endpoints(net_seq INTEGER,role INTEGER,ordinal INTEGER,instance_id TEXT,port TEXT,bit INTEGER);
+        INSERT INTO endpoints VALUES(0,0,0,'lut','O',0),(0,1,7,'ff','D',0),(0,1,12,NULL,'out',0);
+      )SQL");
+    }
+    {
+      emuflow::core::EmuirView legacy(ArtifactRef::Bind(legacy_path,"emuir-indexed-v1"));
+      if (legacy.counts().cells!=emuir.counts().cells || legacy.counts().nets!=emuir.counts().nets ||
+          legacy.counts().endpoints!=emuir.counts().endpoints || legacy.NetName(legacy.Net(0))!="data")
+        throw std::runtime_error("v1/v2 EmuIR coverage disagrees");
+      unsigned state_count=0,pin_count=0,net_count=0;
+      legacy.VisitCellStates([&](auto id,bool stateful) {
+        if (id.sequence()!=state_count || stateful!=(state_count==1)) throw std::runtime_error("v1 cell semantics changed");
+        ++state_count;
+      });
+      legacy.VisitConnectivity([&](const auto& endpoint) {
+        const std::string ports[]={"O","D","out"};
+        if (endpoint.port!=ports[pin_count] || endpoint.bit || endpoint.pin || endpoint.net.sequence()!=0 ||
+            (pin_count==2 ? endpoint.cell.has_value() : !endpoint.cell.has_value()))
+          throw std::runtime_error("v1 endpoint semantics changed");
+        ++pin_count;
+      },[&](auto net) { if (net.sequence()!=net_count++) throw std::runtime_error("v1 net order changed"); },true);
+      if (state_count!=2 || pin_count!=3 || net_count!=2) throw std::runtime_error("v1 ordered coverage changed");
+    }
+
+    for (unsigned version=1;version<=4;++version) {
+      const auto schema="assignment-index-v"+std::to_string(version);
+      const auto path=(root/(schema+".sqlite")).string();
+      {
+        emuflow::core::SqliteArtifactWriter writer(path,schema);
+        auto& db=writer.database();
+        db.Execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);"
+            "INSERT INTO metadata VALUES ('schema','\"emuflow.phase3-assignment-sqlite/v"+std::to_string(version)+"\"'),"
+            "('source_instance_count','2');"
+            "CREATE TABLE parts(part_index INTEGER PRIMARY KEY,fpga TEXT UNIQUE);INSERT INTO parts VALUES(0,'fpga0'),(1,'fpga1');"
+            "CREATE TABLE copies(source_instance_seq INTEGER,part_index INTEGER,copy_id TEXT UNIQUE,is_replica INTEGER);"
+            "INSERT INTO copies VALUES (0,0,'lut',0),(0,1,'replica_lut',1),(1,1,'ff',0)");
+        writer.Commit();
+      }
+      emuflow::core::AssignmentView assignment(ArtifactRef::Bind(path,schema));
+      unsigned count=0,replicas=0;
+      assignment.VisitCopies([&](const auto& copy) {
+        const unsigned source[]={0,0,1},part[]={0,1,1};
+        const char* names[]={"lut","replica_lut","ff"};
+        if (count>=3 || copy.source.sequence()!=source[count] || copy.partition.sequence()!=part[count] || copy.identity!=names[count])
+          throw std::runtime_error("versioned assignment cursor changed identity/order");
+        ++count;replicas+=copy.replica;
+      });
+      if (count!=3 || replicas!=1 || assignment.source_cells()!=2 || assignment.partitions()!=2)
+        throw std::runtime_error("versioned assignment coverage disagrees");
+    }
+    const auto split_path=(root/"split.sqlite").string();
+    {
+      emuflow::core::SqliteArtifactWriter writer(split_path,"split-netlists-v2");auto& db=writer.database();
+      db.Execute(R"SQL(
+        CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);INSERT INTO metadata VALUES('schema','"emuflow.split-netlists-sqlite/v2"');
+        CREATE TABLE parts(part_index INTEGER PRIMARY KEY,fpga TEXT);INSERT INTO parts VALUES(0,'fpga0'),(1,'fpga1');
+        CREATE TABLE source_instances(source_instance_seq INTEGER PRIMARY KEY,original_id TEXT);
+        INSERT INTO source_instances VALUES(0,'lut'),(1,'ff');
+        CREATE TABLE instance_copies(part_index INTEGER,source_instance_seq INTEGER,copy_id TEXT,is_replica INTEGER);
+        INSERT INTO instance_copies VALUES(0,0,NULL,0),(1,1,NULL,0),(1,0,'replica_lut',1);
+        CREATE TABLE source_nets(source_net_seq INTEGER PRIMARY KEY);INSERT INTO source_nets VALUES(5);
+        CREATE TABLE pin_names(seq INTEGER PRIMARY KEY,name TEXT);INSERT INTO pin_names VALUES(1,'D'),(2,'shadow_out');
+        CREATE TABLE endpoint_segments(part_index INTEGER,source_net_seq INTEGER,role INTEGER,ordinal INTEGER,
+          source_instance_seq INTEGER,synthetic_instance_id TEXT,port_seq INTEGER,bit INTEGER,synthetic INTEGER);
+        INSERT INTO endpoint_segments VALUES(1,5,0,7,NULL,'shadow0',2,0,1),(1,5,1,9,1,NULL,1,3,0),
+          (1,5,1,12,NULL,NULL,1,0,0);
+      )SQL");
+      writer.Commit();
+    }
+    {
+      emuflow::core::SplitView split(ArtifactRef::Bind(split_path,"split-netlists-v2"));
+      const auto part=split.Partition(1);unsigned copies=0,endpoints=0;
+      split.VisitCopies(part,[&](const auto& copy) {
+        if (copy.partition.sequence()!=1 || copy.source.sequence()!=(copies ? 1 : 0) || copy.replica!=(copies==0))
+          throw std::runtime_error("split ownership changed");
+        ++copies;
+      });
+      split.VisitEndpoints(part,[&](const auto& endpoint) {
+        if (endpoint.net.sequence()!=5 || endpoint.partition.sequence()!=1 || endpoint.sink!=(endpoints!=0) ||
+            endpoint.cell.has_value()!=(endpoints==1) || endpoint.synthetic_cell!=(endpoints==0 ? "shadow0" : ""))
+          throw std::runtime_error("split endpoint coordinates changed");
+        ++endpoints;
+      });
+      if (copies!=2 || endpoints!=3) throw std::runtime_error("split ordered coverage disagrees");
+      emuflow::core::AssignmentView foreign(ArtifactRef::Bind((root/"assignment-index-v4.sqlite").string(),"assignment-index-v4"));
+      bool rejected=false;
+      try { split.VisitEndpoints(foreign.Partition(1),[](const auto&) { throw std::runtime_error("foreign part entered visitor"); }); }
+      catch (const emuflow::core::StageError& error) { rejected=error.code()==ErrorCode::kMixedGeneration; }
+      if (!rejected) throw std::runtime_error("foreign partition entered split view");
+    }
     bool mixed_identity = false;
     try { emuir.NetName(other.Net(0)); }
     catch (const emuflow::core::StageError& e) { mixed_identity = e.code() == ErrorCode::kMixedGeneration; }

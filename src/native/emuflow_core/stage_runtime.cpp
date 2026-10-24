@@ -2,6 +2,7 @@
 
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/sqlite.hpp"
+#include "emuflow_core/store.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -16,7 +17,8 @@
 namespace emuflow::core {
 namespace {
 constexpr RegisteredSchema schemas[] = {
-    {"xilinx-physical-handoff-v1", ArtifactEncoding::kSqlite, 0x454d5550, 1, true},
+    {"xilinx-physical-handoff-v1", ArtifactEncoding::kSqlite, 0x454d5550, 1, true,
+     "SELECT schema FROM manifest WHERE singleton=1","emuflow.xilinx-physical-handoff-sqlite/v1"},
     {"rwroute-export-request-v1", ArtifactEncoding::kBinary, 0x31515752554d5545ULL, 1},
     {"rwroute-input-tsv-v1", ArtifactEncoding::kText, 0, 1},
     {"rwroute-export-summary-v1", ArtifactEncoding::kText, 0, 1},
@@ -29,17 +31,47 @@ constexpr RegisteredSchema schemas[] = {
     {"multi-fpga-flow-report-v2", ArtifactEncoding::kText, 0, 2},
     {"external-tool-request-v1", ArtifactEncoding::kBinary, 0x31514552544c4645ULL, 1},
     {"external-tool-executable-v1", ArtifactEncoding::kText, 0, 1},
-    {"emuir-compact-v2", ArtifactEncoding::kSqlite, 0x454d5549, 2},
+    {"emuir-compact-v2", ArtifactEncoding::kSqlite, 0x454d5549, 2, false,
+     "SELECT value FROM metadata WHERE key='storage_schema'","emuflow.emuir-sqlite/v2"},
+    {"emuir-indexed-v1", ArtifactEncoding::kSqlite, 0x454d5549, 1, true,
+     "SELECT value FROM metadata WHERE key='storage_schema'","emuflow.emuir-sqlite/v1"},
+    {"assignment-index-v1", ArtifactEncoding::kSqlite, 0x454d5541, 1, true,
+     "SELECT json_extract(value,'$') FROM metadata WHERE key='schema'","emuflow.phase3-assignment-sqlite/v1"},
+    {"assignment-index-v2", ArtifactEncoding::kSqlite, 0x454d5541, 2, true,
+     "SELECT json_extract(value,'$') FROM metadata WHERE key='schema'","emuflow.phase3-assignment-sqlite/v2"},
+    {"assignment-index-v3", ArtifactEncoding::kSqlite, 0x454d5541, 3, true,
+     "SELECT json_extract(value,'$') FROM metadata WHERE key='schema'","emuflow.phase3-assignment-sqlite/v3"},
+    {"assignment-index-v4", ArtifactEncoding::kSqlite, 0x454d5541, 4, true,
+     "SELECT json_extract(value,'$') FROM metadata WHERE key='schema'","emuflow.phase3-assignment-sqlite/v4"},
+    {"split-netlists-v2", ArtifactEncoding::kSqlite, 0x454d5553, 2, true,
+     "SELECT json_extract(value,'$') FROM metadata WHERE key='schema'","emuflow.split-netlists-sqlite/v2"},
+    {"boundary-identity-store-v1", ArtifactEncoding::kSqlite, 0x454d5542, 1, true,
+     "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.boundary-identity/v1"},
+    {"boundary-timing-store-v1", ArtifactEncoding::kSqlite, 0x454d5554, 1, true,
+     "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.boundary-timing/v1"},
+    {"logic-segment-identity-store-v1", ArtifactEncoding::kSqlite, 0x454d5549, 1, true,
+     "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.logic-segment-identity/v1"},
+    {"logic-segment-timing-store-v1", ArtifactEncoding::kSqlite, 0x454d5547, 1, true,
+     "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.logic-segment-timing/v1"},
+    {"local-path-timing-store-v1", ArtifactEncoding::kSqlite, 0x454d554c, 1, true,
+     "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.local-path-timing/v1"},
     // Existing physical index relations have zero application/user PRAGMAs.
     // Their stage-owned metadata and complete ordered records remain mandatory.
-    {"xilinx-mapped-index-v2", ArtifactEncoding::kSqlite, 0, 0, true},
-    {"openparf-atom-index-private-v1", ArtifactEncoding::kSqlite, 0, 0, true},
+    {"xilinx-mapped-index-v2", ArtifactEncoding::kSqlite, 0, 0, true,
+     "SELECT value FROM metadata WHERE key='schema'","emuflow.xilinx-mapped-index/v2"},
+    {"openparf-atom-index-private-v1", ArtifactEncoding::kSqlite, 0, 0, true,
+     "SELECT 'openparf-atom-index-private-v1' WHERE (SELECT count(*) FROM pragma_table_info('atoms') "
+     "WHERE name IN ('seq','instance','cell_type'))=3","openparf-atom-index-private-v1"},
     {"openparf-bookshelf-nets-v1", ArtifactEncoding::kText, 0, 1},
     {"openparf-bookshelf-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"partition-cluster-columns-v2", ArtifactEncoding::kBinary, 0x314c4350464d5545ULL, 2},
     {"patron-initial-columns-v1", ArtifactEncoding::kBinary, 0x315450494e415045ULL, 1},
     {"patron-board-request-v2", ArtifactEncoding::kBinary, 0x3151455254415045ULL, 2},
-    {"timing-path-store-v1", ArtifactEncoding::kSqlite, 0, 1, true},
+    {"timing-path-store-v1", ArtifactEncoding::kSqlite, 0, 1, true,
+     "SELECT 'timing-path-store-v1' WHERE (SELECT count(*) FROM pragma_table_info('paths') "
+     "WHERE name IN ('ordinal','path_id','clock_domain','clock_period_ns','slack_ns','start_instance','end_instance'))=7 "
+     "AND (SELECT count(*) FROM pragma_table_info('path_nets') WHERE name IN ('path_ordinal','net_ordinal','net_id'))=3",
+     "timing-path-store-v1"},
     {"patron-cluster-columns-v1", ArtifactEncoding::kBinary, 0x314c4f4354415045ULL, 1},
     {"patron-board-request-v1", ArtifactEncoding::kBinary, 0x3151455254415045ULL, 1},
     {"patron-cluster-order-v1", ArtifactEncoding::kBinary, 0x3152444f54415045ULL, 1},
@@ -51,6 +83,8 @@ constexpr RegisteredSchema schemas[] = {
     {"exact-parts-v1", ArtifactEncoding::kBinary, 0x31504553464d5545ULL, 1},
     {"exact-nodes-v2", ArtifactEncoding::kBinary, 0x314e4553464d5545ULL, 2},
     {"exact-captures-v1", ArtifactEncoding::kBinary, 0x31434553464d5545ULL, 1},
+    {"phase3-exact-data-v1", ArtifactEncoding::kBinary, 0x5443415845554d45ULL, 1},
+    {"phase3-exact-data-v2", ArtifactEncoding::kBinary, 0x5443415845554d45ULL, 2},
     {"exact-hash-request-v1", ArtifactEncoding::kBinary, 0x31484553464d5545ULL, 1},
     {"exact-section-request-v1", ArtifactEncoding::kBinary, 0x31574553464d5545ULL, 1},
     {"exact-schedule-board-request-v1", ArtifactEncoding::kBinary, 0x3142534d44544545ULL, 1},
@@ -75,10 +109,18 @@ constexpr RegisteredSchema schemas[] = {
     {"patron-output-text", ArtifactEncoding::kText, 0, 1},
     {"tlr-output-v1", ArtifactEncoding::kSqlite, 0x45545252, 1},
     {"tlr-output-text", ArtifactEncoding::kText, 0, 1},
-    {"system-route-store-v3", ArtifactEncoding::kSqlite, 0x454d5552, 3},
+    {"system-route-store-v3", ArtifactEncoding::kSqlite, 0x454d5552, 3, false,
+     "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.system-routes/v1"},
     {"exact-schedule-publication-request-v1", ArtifactEncoding::kBinary, 0x3157534d44544545ULL, 1},
     {"exact-schedule-generation-request-v1", ArtifactEncoding::kBinary, 0x3147534d44544545ULL, 1},
-    {"tdm-schedule-store-v4", ArtifactEncoding::kSqlite, 0x454d5554, 3},
+    {"tdm-schedule-store-v1", ArtifactEncoding::kSqlite, 0x454d5554, 1, true,
+     "SELECT json_extract(value,'$') FROM metadata WHERE key='logical_schema'","emuflow.tdm-schedule/v1"},
+    {"tdm-schedule-store-v2", ArtifactEncoding::kSqlite, 0x454d5554, 1, true,
+     "SELECT json_extract(value,'$') FROM metadata WHERE key='logical_schema'","emuflow.tdm-schedule/v1"},
+    {"tdm-schedule-store-v3", ArtifactEncoding::kSqlite, 0x454d5554, 2, true,
+     "SELECT json_extract(value,'$') FROM metadata WHERE key='logical_schema'","emuflow.tdm-schedule/v1"},
+    {"tdm-schedule-store-v4", ArtifactEncoding::kSqlite, 0x454d5554, 3, false,
+     "SELECT json_extract(value,'$') FROM metadata WHERE key='logical_schema'","emuflow.tdm-schedule/v1"},
     {"exact-schedule-output-v2", ArtifactEncoding::kBinary, 0x314f534d44544545ULL, 2},
     {"exact-capture-index-private-v1", ArtifactEncoding::kSqlite, 0x45434150, 1},
     {"exact-sha256-text-v1", ArtifactEncoding::kText, 0, 1},
@@ -183,8 +225,12 @@ const char* ErrorName(ErrorCode code) {
   return "execution-failed";
 }
 const RegisteredSchema& FindSchema(const std::string& name) {
-  for (const auto& schema : schemas) if (schema.name == name) return schema;
+  for (const auto& schema : SchemaRegistry()) if (schema.name == name) return schema;
   throw StageError(ErrorCode::kInvalidRequest, "unknown native artifact schema: " + name);
+}
+const std::vector<RegisteredSchema>& SchemaRegistry() {
+  static const std::vector<RegisteredSchema> registry(std::begin(schemas),std::end(schemas));
+  return registry;
 }
 bool FileGeneration::operator==(const FileGeneration& other) const {
   return device == other.device && inode == other.inode && bytes == other.bytes &&
@@ -210,13 +256,7 @@ ArtifactRef ArtifactRef::Bind(const std::string& path, const std::string& schema
       RequireFinalizedSqlite(result.path_);
       SqliteDatabase database(result.path_, schema.immutable_read_only
           ? SqliteDatabase::Mode::kImmutableReadOnly : SqliteDatabase::Mode::kReadOnly);
-      auto application = database.Prepare("PRAGMA application_id");
-      auto version = database.Prepare("PRAGMA user_version");
-      if (!application.Step() || !version.Step() ||
-          application.Integer(0) != static_cast<std::int64_t>(schema.magic) ||
-          version.Integer(0) != schema.version) {
-        throw StageError(ErrorCode::kInvalidArtifact, "unsupported " + schema_name + " storage envelope");
-      }
+      ValidateSqliteSchema(database,schema);
     }
   } catch (const StageError&) { throw; }
   catch (const std::exception& e) { throw StageError(ErrorCode::kInvalidArtifact, e.what()); }

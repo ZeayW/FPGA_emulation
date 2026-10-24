@@ -1,3 +1,4 @@
+#include "emuflow_core/store.hpp"
 #include "emuflow_core/rwroute_export.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/json_record.hpp"
@@ -422,7 +423,8 @@ void ExportRwroute(const ArtifactRef& mapped_ref, const ArtifactRef& physical_re
     io.bit=bit; io.width=width; ios.push_back(std::move(io));
   }
   request.RequireEnd(); Token(top); Token(part);
-  SqliteDatabase db(mapped_ref.path(),SqliteDatabase::Mode::kImmutableReadOnly);
+  SqliteStore mapped_store(mapped_ref);
+  auto& db=mapped_store.database();
   db.Execute("PRAGMA temp_store=FILE; PRAGMA cache_size=-16384; PRAGMA temp.cache_size=-16384");
   auto attach=db.Prepare("ATTACH DATABASE ? AS physical");
   attach.BindText(1,SqliteImmutableUri(physical_ref.path())); attach.Execute();

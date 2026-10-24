@@ -93,6 +93,17 @@ path timing and complete Phase 1–7/7C qualification remain separate gates.
 
 ## Primary-store handoff differential
 
+W0 reader qualification also builds
+`scripts/validation/native_store_view_probe.cpp` against each compared core's own
+headers and library. Run both binaries over the same immutable NVDLA EmuIR with
+the explicit registered schema. Compare complete ordered cell-state and
+connectivity facts, record counts and SHA-256, including pin identities and sparse
+endpoint ordinals. Hash the shared input once outside both measured intervals;
+record each core/header/source identity and common operation metrics separately.
+The probe performs an explicit offline full scan; it must never be inserted into
+normal phase handoffs. Reader parity and overhead do not establish full Phase
+1–7/7C or physical/timing qualification.
+
 `PYTHONPATH=src python scripts/validation/qualify_primary_store_handoff.py --ir INPUT.sqlite --timing-database TIMING.json --platform BOARD.json --oracle MODEL_ORACLE --out OUTPUT --expected-design TOP`
 compares the v1 snapshot reader with direct primary ownership. `MODEL_ORACLE` is
 the test-only `native_patron_ingress_test` linked against the matching shared

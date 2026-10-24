@@ -102,3 +102,52 @@ Academic physical models and board-link models are not measured silicon or
 board signoff. Bitstream generation and hardware operation require a compatible
 concrete platform. See [timing scope](global-opensta-qualification.md) and
 [validation requirements](VALIDATION.md).
+
+## Shared native core (W0)
+
+W0 provides the common infrastructure used by the phase migrations. Its public
+boundary is `ArtifactRef → Store/View → Writer → Summary`; the internal API is
+C++17. Match headers and library revisions when linking. Versioned artifact and
+request protocols are the inter-process compatibility boundary; STL objects,
+SQLite handles and circuit-sized Python containers do not cross it.
+
+| Contract | Shared owner | Required behavior |
+| --- | --- | --- |
+| Build closure | `libemuflow_core`, `emuflow_core/sources.txt` | CMake, native fixtures and thin runtime deployment consume one checked source manifest; compatibility tools link the same facilities. |
+| Schema and source binding | `SchemaRegistry`, `ArtifactRef`, `SqliteStore` | Explicit versions, registered logical envelopes, immutable generations and mixed-source rejection; bounded metadata checks rather than integrity scans or recounts. |
+| Identity and order | `ArtifactScope`, `ArtifactId`, typed views | Cell/net/path/endpoint/FPGA/link identities retain their artifact namespace. Route source sequence and canonical net order are distinct coordinates. |
+| Storage and publication | SQLite connection/statement leases, `SqliteArtifactWriter`, `AtomicBinaryWriter` | Last borrowers retain connections and private staging. Close connections before retirement; reject active transactions/statements, input aliases and changed sources before atomic publication. |
+| Common data structures | `ResourceView`, integer CSR helpers, source string/payload pools | Deterministic record order, bounded resource decoding and explicit extraction of kernel-local integers; no second persistent graph catalog. |
+| Failure and measurements | `StageError`, `RunStage`, `StageResult` | Shared error codes and bounded reports; wall/CPU/I/O intervals and process lifetime RSS retain their stated scopes. |
+| External engine lifecycle | `RunExternalTool`, `ToolRequest`, `ToolResult` | Literal arguments/environment, bounded diagnostics, limits, deadlines, cancellation and reaping; engines remain separate processes. |
+
+`EmuirView` reads indexed v1 and compact v2 directly. Explicit v1 reads derive
+counts because that historical format has no count manifest; compact production
+v2 construction reads bounded metadata. Both expose the same cell-state and
+connectivity semantics. Interned pin IDs exist only in v2; validated v1 pins
+retain their original port/bit fields without inventing an integer string pool.
+No read silently rewrites or upgrades its input.
+
+`AssignmentView` supports public assignment v1–v4 and checks primary coverage as
+its ordered copy cursor is consumed. `SplitView` supports split v2, with scoped
+partition/cell/net/pin coordinates, replica names, top endpoints and synthetic
+shadow identities. References to upstream source sequences require an explicitly
+paired source artifact; equal integers never prove a cross-store identity.
+`RouteView` and the native ScheduleStore producer use the same ownership and
+publication facilities. The schema registry also names mapped/physical handoffs
+and boundary, logic-segment and local-path timing stores. Their phase-specific
+readers and independent electrical/timing validators retain semantic authority.
+
+W0 closes only after versioned round trips, deterministic ordered records and
+negative cases pass: unknown versions, truncation, duplicate keys, orphan or
+mismatched references, mixed generations, active SQLite sidecars, interrupted
+publication and borrowed cursor lifetime. The same frozen NVDLA input must
+establish equivalent records and measure the pure integration overhead against
+the prior implementation; the permitted regression is at most 5%. Keep hashes
+and measurements outside production handoffs. Fixture/API gates alone cannot
+establish the large-design performance gate.
+
+W0 completion does not mean the remaining phase algorithms, Python data planes,
+advanced compile controls or physical/global timing qualification have migrated.
+Those retain the W1–W7 ownership and acceptance requirements. An infrastructure
+closure must not be reported as completion of the whole native production flow.

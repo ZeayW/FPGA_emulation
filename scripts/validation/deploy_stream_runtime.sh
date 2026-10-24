@@ -94,6 +94,37 @@ if test -n "${SQLITE3_PREFIX:-}"; then
   sqlite_flags=("-I$SQLITE3_PREFIX/include" "-L$SQLITE3_PREFIX/lib"
     "-Wl,-rpath,$SQLITE3_PREFIX/lib")
 fi
+# Production adapters prefer the unified sibling whenever it exists.  A thin
+# runtime must therefore rebuild that entry from the same exact source commit;
+# retaining the native base's older emuflow-native while refreshing only the
+# standalone binaries would silently execute stale stage code.
+unified="$runtime_dir/bin/emuflow-native"
+rm -f "$unified"
+# The unified entry and physical compatibility CLI link the same archive.
+# Compile the native core once rather than embedding an independent parser /
+# SQLite / lifecycle implementation in each executable.
+object_dir="$runtime_dir/tmp/core-objects"
+mkdir -p "$object_dir" "$runtime_dir/lib"
+core_sources=()
+while IFS= read -r source || test -n "$source"; do
+  case "$source" in ''|\#*) continue ;; esac
+  case "$source" in /*|*..*|*[!a-zA-Z0-9_/.-]*) echo "invalid shared native source: $source" >&2; exit 2 ;; esac
+  test -f "$source_dir/src/native/$source"
+  for previous in "${core_sources[@]}"; do
+    test "$source" != "$previous" || { echo "repeated shared native source: $source" >&2; exit 2; }
+  done
+  core_sources+=("$source")
+done < "$source_dir/src/native/emuflow_core/sources.txt"
+objects=()
+for source in "${core_sources[@]}"; do
+  object="$object_dir/${source//\//_}.o"
+  "$selected_cxx" -std=c++17 -O3 -pthread -DEMUFLOW_NATIVE_STAGE_LIBRARY=1 \
+    "${sqlite_flags[@]}" -I"$source_dir/src/native" \
+    -c "$source_dir/src/native/$source" -o "$object"
+  objects+=("$object")
+done
+archive="$runtime_dir/lib/libemuflow_core.a"
+"$("$selected_cxx" -print-prog-name=ar)" rcs "$archive" "${objects[@]}"
 for tool in \
   hop_partition_refiner \
   tlr_router \
@@ -110,50 +141,10 @@ do
     -static-libstdc++ -static-libgcc \
     "${sqlite_flags[@]}" -I"$source_dir/src/native" \
     "$source_dir/src/native/$tool.cpp" \
-    "$source_dir/src/native/emuflow_core/artifact_io.cpp" \
-    "$source_dir/src/native/emuflow_core/schedule_model.cpp" \
-    "$source_dir/src/native/emuflow_core/sqlite.cpp" \
-    "$source_dir/src/native/emuflow_core/stage_runtime.cpp" \
-    "$source_dir/src/native/emuflow_core/emuir_view.cpp" \
+    "$archive" \
     -lsqlite3 -o "$target"
 done
 
-# Production adapters prefer the unified sibling whenever it exists.  A thin
-# runtime must therefore rebuild that entry from the same exact source commit;
-# retaining the native base's older emuflow-native while refreshing only the
-# standalone binaries would silently execute stale stage code.
-unified="$runtime_dir/bin/emuflow-native"
-rm -f "$unified"
-# The unified entry and physical compatibility CLI link the same archive.
-# Compile the native core once rather than embedding an independent parser /
-# SQLite / lifecycle implementation in each executable.
-object_dir="$runtime_dir/tmp/core-objects"
-mkdir -p "$object_dir" "$runtime_dir/lib"
-core_sources=(
-  emuflow_core/native_pipeline.cpp emuflow_core/schedule_store.cpp
-  emuflow_core/route_view.cpp emuflow_core/schedule_model.cpp
-  emuflow_core/schedule_ingress.cpp emuflow_core/tool_runtime.cpp
-  emuflow_core/compile.cpp emuflow_core/bookshelf.cpp emuflow_core/rwroute_export.cpp
-  emuflow_core/patron_ingress.cpp
-  emuflow_core/partition_clusters.cpp emuflow_core/primary_cluster_view.cpp
-  emuflow_core/partition_loads.cpp emuflow_core/exact_captures.cpp
-  emuflow_core/candidate_ids.cpp emuflow_core/resource_view.cpp
-  patron_refiner.cpp static_exact_analyzer.cpp tlr_router.cpp
-  tdm_exact_scheduler.cpp chimew_bank_channel_assigner.cpp chimew_rudy.cpp
-  chimew_signal_grouper.cpp chimew_position_refiner.cpp
-  emuflow_core/artifact_io.cpp emuflow_core/sqlite.cpp
-  emuflow_core/stage_runtime.cpp emuflow_core/emuir_view.cpp
-)
-objects=()
-for source in "${core_sources[@]}"; do
-  object="$object_dir/${source//\//_}.o"
-  "$selected_cxx" -std=c++17 -O3 -pthread -DEMUFLOW_NATIVE_STAGE_LIBRARY=1 \
-    "${sqlite_flags[@]}" -I"$source_dir/src/native" \
-    -c "$source_dir/src/native/$source" -o "$object"
-  objects+=("$object")
-done
-archive="$runtime_dir/lib/libemuflow_core.a"
-"$("$selected_cxx" -print-prog-name=ar)" rcs "$archive" "${objects[@]}"
 for entry in emuflow_native.cpp xilinx_bookshelf_exporter.cpp; do
   if test "$entry" = emuflow_native.cpp; then
     target="$unified"

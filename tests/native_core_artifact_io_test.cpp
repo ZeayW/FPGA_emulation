@@ -15,6 +15,9 @@
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/hash.hpp"
 #include "emuflow_core/sqlite.hpp"
+#include "emuflow_core/store.hpp"
+#include "emuflow_core/json_record.hpp"
+#include <set>
 #include "emuflow_core/stage_runtime.hpp"
 
 namespace {
@@ -179,6 +182,84 @@ int main() {
         throw std::runtime_error("SQLite read-only view disagrees");
       }
     }
+
+    // Every registered public SQLite envelope uses the same reader/writer.
+    using namespace emuflow::core;
+    std::set<std::string> registered_names;
+    std::vector<ArtifactRef> stores;
+    for (const auto& schema:SchemaRegistry()) {
+      if (!registered_names.insert(schema.name).second) throw std::runtime_error("duplicate schema name");
+      if (schema.encoding!=ArtifactEncoding::kSqlite || !schema.sqlite_schema_query) continue;
+      if (std::string(schema.sqlite_schema_query).find("pragma_table_info")!=std::string::npos) continue;
+      auto path=(root/(std::string(schema.name)+".sqlite")).string();
+      SqliteArtifactWriter writer(path,schema.name);
+      {
+        auto& db=writer.database();
+        const std::string query=schema.sqlite_schema_query;
+        if (query.find("FROM manifest")!=std::string::npos) {
+          db.Execute("CREATE TABLE manifest(singleton INTEGER PRIMARY KEY,schema TEXT)");
+          auto put=db.Prepare("INSERT INTO manifest VALUES (1,?)");put.BindText(1,schema.sqlite_schema_value);put.Execute();
+        } else {
+          db.Execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT)");
+          const bool raw=query.find("SELECT value ")==0;
+          const bool header=query.find("'header'")!=std::string::npos;
+          const std::string key=header ? "header" : query.find("'logical_schema'")!=std::string::npos ? "logical_schema" :
+              query.find("'storage_schema'")!=std::string::npos ? "storage_schema" : "schema";
+          const auto value=raw ? std::string(schema.sqlite_schema_value) : header ?
+              "{\"schema\":"+JsonQuote(schema.sqlite_schema_value)+"}" : JsonQuote(schema.sqlite_schema_value);
+          auto put=db.Prepare("INSERT INTO metadata VALUES (?,?)");put.BindText(1,key);put.BindText(2,value);put.Execute();
+        }
+        db.Execute("CREATE TABLE records(seq INTEGER PRIMARY KEY,value TEXT UNIQUE);INSERT INTO records VALUES (0,'one'),(1,'two')");
+      }
+      auto ref=writer.Commit();
+      SqliteStore view(ref);
+      auto rows=view.database().Prepare("SELECT seq,value FROM records ORDER BY seq");
+      for (int i=0;i<2;++i) if (!rows.Step() || rows.TypedInteger(0)!=i || rows.TypedText(1)!=(i ? "two" : "one"))
+        throw std::runtime_error("shared store ordered round trip disagrees");
+      if (rows.Step()) throw std::runtime_error("shared store added rows");
+      stores.push_back(ref);
+    }
+    if (stores.size()<19) throw std::runtime_error("public store registry coverage is incomplete");
+    ArtifactScope a(stores[0]),b(stores[1]);
+    auto first=a.Id<emuflow::core::NetTag>(0); a.Require(first);
+    bool foreign=false;try { b.Require(first); } catch (const StageError& e) { foreign=e.code()==ErrorCode::kMixedGeneration; }
+    if (!foreign) throw std::runtime_error("equal cross-store integers were treated as aliases");
+    // A borrowed statement retains its connection and staging after the writer
+    // is abandoned. Its last release closes SQLite before retiring scratch.
+    SqliteStatement borrowed;std::string borrowed_path;
+    {
+      SqliteArtifactWriter abandoned((root/"borrow.sqlite").string(),"emuir-indexed-v1");
+      auto& db=abandoned.database();
+      db.Execute("CREATE TABLE x(value TEXT);INSERT INTO x VALUES ('retained')");
+      { auto name=db.Prepare("PRAGMA database_list");if (!name.Step()) throw std::runtime_error("missing connection path");borrowed_path=name.TypedText(2); }
+      borrowed=db.Prepare("SELECT value FROM x");
+    }
+    if (!std::filesystem::exists(borrowed_path) || !borrowed.Step() || borrowed.TypedText(0)!="retained")
+      throw std::runtime_error("borrowed statement lost its store owner");
+    borrowed=SqliteStatement{};
+    if (std::filesystem::exists(borrowed_path)) throw std::runtime_error("closed cursor retained private staging");
+    // Rejected publication preserves the old generation, including active
+    // transactions, active statements, tampered headers and logical envelopes.
+    const auto prior=stores.back();
+    for (int invalid=0;invalid<4;++invalid) {
+      bool rejected=false;
+      try {
+        SqliteArtifactWriter writer(prior.path(),prior.schema());auto& db=writer.database();
+        db.Execute("CREATE TABLE metadata(key TEXT,value TEXT);INSERT INTO metadata VALUES ('logical_schema','\"emuflow.tdm-schedule/v1\"')");
+        SqliteStatement held;
+        if (invalid==0) db.Execute("BEGIN");
+        if (invalid==1) held=db.Prepare("SELECT 1");
+        if (invalid==2) db.Execute("PRAGMA user_version=999");
+        if (invalid==3) db.Execute("UPDATE metadata SET value='\"wrong\"'");
+        writer.Commit();
+      } catch (const std::exception&) { rejected=true; }
+      if (!rejected) throw std::runtime_error("invalid SQLite publication succeeded");
+      prior.RequireUnchanged();
+    }
+    bool alias=false;
+    try { SqliteArtifactWriter writer(prior.path(),prior.schema(),{prior}); }
+    catch (const StageError& e) { alias=e.code()==ErrorCode::kInvalidRequest; }
+    if (!alias) throw std::runtime_error("shared writer replaced its source");
     const auto stage_path = (root / "stage.bin").string();
     const auto report_path = (root / "stage-result.json").string();
     {
@@ -244,7 +325,8 @@ int main() {
     const auto sqlite_artifact = (root / "source-artifact.sqlite").string();
     {
       emuflow::core::SqliteDatabase db(sqlite_artifact, emuflow::core::SqliteDatabase::Mode::kCreateExclusive);
-      db.Execute("PRAGMA application_id=0x454d5549; PRAGMA user_version=2; CREATE TABLE records(id INTEGER)");
+      db.Execute("PRAGMA application_id=0x454d5549; PRAGMA user_version=2; CREATE TABLE records(id INTEGER);"
+                 "CREATE TABLE metadata(key TEXT,value TEXT);INSERT INTO metadata VALUES('storage_schema','emuflow.emuir-sqlite/v2')");
     }
     const auto sqlite_ref = ArtifactRef::Bind(sqlite_artifact, "emuir-compact-v2");
     {

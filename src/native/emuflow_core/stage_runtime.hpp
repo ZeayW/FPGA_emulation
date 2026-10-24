@@ -29,10 +29,14 @@ struct RegisteredSchema {
   std::uint64_t magic;
   std::uint32_t version;
   bool immutable_read_only = false;
+  // Bounded logical envelope query. No recount, integrity pass or payload scan.
+  const char* sqlite_schema_query = nullptr;
+  const char* sqlite_schema_value = nullptr;
 };
 // Only explicitly registered versions are accepted. This registry describes
 // envelopes; circuit/record semantics remain independently checked by stages.
 const RegisteredSchema& FindSchema(const std::string& name);
+const std::vector<RegisteredSchema>& SchemaRegistry();
 
 struct FileGeneration {
   std::uint64_t device = 0, inode = 0, bytes = 0;

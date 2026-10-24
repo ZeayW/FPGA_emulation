@@ -3,15 +3,18 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <memory>
 
 struct sqlite3;
 struct sqlite3_stmt;
 
 namespace emuflow::core {
+struct SqliteConnection;
 
 class SqliteStatement {
  public:
-  explicit SqliteStatement(sqlite3_stmt* statement = nullptr);
+  explicit SqliteStatement(sqlite3_stmt* statement = nullptr,
+                          std::shared_ptr<SqliteConnection> connection = {});
   ~SqliteStatement();
 
   SqliteStatement(const SqliteStatement&) = delete;
@@ -38,6 +41,7 @@ class SqliteStatement {
 
  private:
   sqlite3_stmt* statement_ = nullptr;
+  std::shared_ptr<SqliteConnection> connection_;
 };
 
 class SqliteDatabase {
@@ -53,9 +57,13 @@ class SqliteDatabase {
   void Execute(const std::string& sql);
   SqliteStatement Prepare(const std::string& sql);
   void Close();
+  bool InTransaction() const;
+  // The connection closes before the last borrowed cursor releases its guard.
+  void KeepAlive(std::shared_ptr<void> owner);
 
  private:
   sqlite3* database_ = nullptr;
+  std::shared_ptr<SqliteConnection> connection_;
 };
 
 // Compatibility URI normalization uses SQLite's own URI parser, never a

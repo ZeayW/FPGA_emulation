@@ -3,27 +3,26 @@
 
 namespace emuflow::core {
 namespace {
-const std::string& Checked(const ArtifactRef& artifact) {
+const ArtifactRef& Checked(const ArtifactRef& artifact) {
   if (artifact.schema() != "system-route-store-v3" || artifact.is_pipe())
     throw StageError(ErrorCode::kInvalidArtifact,"native RouteView requires typed system-route v3 storage");
   artifact.RequireUnchanged();
-  return artifact.path();
+  return artifact;
 }
 void Require(bool valid, const char* message) {
   if (!valid) throw StageError(ErrorCode::kInvalidArtifact,message);
 }
 }  // namespace
 RouteView::RouteView(const ArtifactRef& artifact)
-    : artifact_(artifact), database_(Checked(artifact),SqliteDatabase::Mode::kReadOnly) {
-  auto header = database_.Prepare("SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'");
+    : artifact_(artifact),store_(Checked(artifact)),database_(store_.database()) {
   auto count = database_.Prepare("SELECT json_extract(value,'$.routes.records'),json_type(value,'$.routes.records') FROM metadata WHERE key='sections'");
-  Require(header.Step() && header.Text(0) == "emuflow.system-routes/v1" && count.Step() &&
+  Require(count.Step() &&
           count.Text(1) == "integer" && count.Integer(0) >= 0,"native RouteView metadata is invalid");
   count_ = static_cast<std::uint64_t>(count.Integer(0));
   database_.Execute("PRAGMA temp_store=FILE; PRAGMA cache_size=-65536;");
   artifact_.RequireUnchanged();
 }
-void RouteView::VisitNetOrder(const std::function<void(std::uint64_t,const RouteIdentity&)>& visitor, bool exact_dependencies) {
+void RouteView::VisitNetOrder(const std::function<void(const RouteCoordinate&,const RouteIdentity&)>& visitor, bool exact_dependencies) {
   artifact_.RequireUnchanged();
   auto routes = database_.Prepare("SELECT seq,demand_id,net_id,source_fpga,typeof(seq)='integer',dependency_level,combinational_dependency_depth,cut_class, "
                                  "typeof(dependency_level),typeof(combinational_dependency_depth) "
@@ -71,7 +70,7 @@ void RouteView::VisitNetOrder(const std::function<void(std::uint64_t,const Route
         route.predecessors.push_back(predecessors.Text(3)); have_predecessor = predecessors.Step();
       }
     }
-    visitor(observed++,route); previous_net = route.net;
+    visitor({store_.Id<RouteTag>(seq),observed++},route); previous_net = route.net;
   }
   Require(observed == count_ && !have_sink && !have_edge && !have_predecessor,"native RouteView record coverage disagrees");
   artifact_.RequireUnchanged();

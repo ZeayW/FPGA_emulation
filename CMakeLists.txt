@@ -281,28 +281,25 @@ if(BUILD_TESTING)
     COMMAND "$<TARGET_FILE:emuflow_xilinx_bookshelf_exporter>" --help)
 endif()
 
-add_library(
-  emuflow_core STATIC
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/artifact_io.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/sqlite.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/stage_runtime.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/emuir_view.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/schedule_store.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/route_view.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/schedule_model.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/schedule_ingress.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/tool_runtime.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/compile.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/bookshelf.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/rwroute_export.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/patron_ingress.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/partition_clusters.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/primary_cluster_view.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/partition_loads.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/exact_captures.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/candidate_ids.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/resource_view.cpp"
-)
+set(EMUFLOW_CORE_MANIFEST "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/sources.txt")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${EMUFLOW_CORE_MANIFEST}")
+file(STRINGS "${EMUFLOW_CORE_MANIFEST}" EMUFLOW_CORE_SOURCE_NAMES)
+set(EMUFLOW_CORE_SOURCE_FILES)
+foreach(source IN LISTS EMUFLOW_CORE_SOURCE_NAMES)
+  if(source STREQUAL "" OR source MATCHES "^#")
+    continue()
+  endif()
+  if(NOT source MATCHES "^([A-Za-z0-9_]+/)*[A-Za-z0-9_]+\\.cpp$" OR
+      NOT EXISTS "${CMAKE_SOURCE_DIR}/src/native/${source}")
+    message(FATAL_ERROR "Invalid shared native source: ${source}")
+  endif()
+  list(FIND EMUFLOW_CORE_SOURCE_FILES "${CMAKE_SOURCE_DIR}/src/native/${source}" duplicate)
+  if(NOT duplicate EQUAL -1)
+    message(FATAL_ERROR "Repeated shared native source: ${source}")
+  endif()
+  list(APPEND EMUFLOW_CORE_SOURCE_FILES "${CMAKE_SOURCE_DIR}/src/native/${source}")
+endforeach()
+add_library(emuflow_core STATIC ${EMUFLOW_CORE_SOURCE_FILES})
 target_compile_features(emuflow_core PUBLIC cxx_std_17)
 target_compile_options(emuflow_core PRIVATE -O3)
 target_include_directories(
@@ -323,17 +320,6 @@ endif()
 
 # One implementation library owns both common contracts and native kernels.
 # Keep the former target spelling as a build-system alias, not a second owner.
-target_sources(emuflow_core PRIVATE
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/native_pipeline.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/patron_refiner.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/static_exact_analyzer.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/tlr_router.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/tdm_exact_scheduler.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/chimew_bank_channel_assigner.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/chimew_rudy.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/chimew_signal_grouper.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/chimew_position_refiner.cpp"
-)
 target_compile_definitions(emuflow_core PRIVATE EMUFLOW_NATIVE_STAGE_LIBRARY=1)
 find_package(Threads REQUIRED)
 target_link_libraries(emuflow_core PUBLIC Threads::Threads)

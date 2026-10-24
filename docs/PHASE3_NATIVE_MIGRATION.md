@@ -26,9 +26,13 @@ See [phase contracts](FLOW_PLAN.md) for the whole-flow architecture,
 The core owns representation-scoped typed IDs, checked artifact I/O, common
 CRC-32/SHA-256, SQLite statement/transaction lifetimes, and atomic publication.
 The linked operations use a versioned schema registry, `ArtifactRef`,
-`StageRequest` and `StageResult`. Complete consolidation still requires shared
-store/view adapters for the remaining public phase artifacts and external
-engines. An integer identity is meaningful only with its owning artifact;
+`StageRequest` and `StageResult`. `SqliteStore`, `EmuirView`, `AssignmentView`,
+`SplitView` and `RouteView` share artifact binding and connection ownership;
+`SqliteArtifactWriter` owns staged SQLite publication, including ScheduleStore.
+EmuIR v1/v2, assignment v1–v4 and split v2 have explicit versioned readers.
+The [W0 contract](FLOW_PLAN.md#shared-native-core-w0) specifies shared interfaces,
+compatibility and acceptance separately from the later phase algorithm migrations.
+An integer identity is meaningful only with its owning artifact;
 equal integers in different stores are not interchangeable.
 Python SQLite adapter scopes close their connection explicitly as well as
 commit or roll back their transaction. The SQLite connection context manager

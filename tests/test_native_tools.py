@@ -137,8 +137,9 @@ class NativeToolsTest(unittest.TestCase):
             'unified="$runtime_dir/bin/emuflow-native"', script
         )
         self.assertIn("-DEMUFLOW_NATIVE_STAGE_LIBRARY=1", script)
+        manifest = (Path(__file__).resolve().parents[1] / "src/native/emuflow_core/sources.txt").read_text()
+        self.assertIn('emuflow_core/sources.txt', script)
         for source in (
-            "emuflow_native.cpp",
             "static_exact_analyzer.cpp",
             "tlr_router.cpp",
             "tdm_exact_scheduler.cpp",
@@ -149,7 +150,21 @@ class NativeToolsTest(unittest.TestCase):
             "emuflow_core/artifact_io.cpp",
             "emuflow_core/sqlite.cpp",
         ):
-            self.assertIn(source, script)
+            self.assertIn(source, manifest)
+        self.assertIn('emuflow_native.cpp', script)
+        self.assertIn('"$archive"', script)
+
+    def test_shared_core_build_owners_use_one_complete_manifest(self) -> None:
+        from tests.native_build import _NATIVE_STAGE_SOURCES
+        root = Path(__file__).resolve().parents[1]
+        expected = {str(path.relative_to(root / "src/native"))
+                    for path in (root / "src/native/emuflow_core").glob("*.cpp")}
+        self.assertTrue(expected.issubset(set(_NATIVE_STAGE_SOURCES)))
+        self.assertEqual(len(_NATIVE_STAGE_SOURCES), len(set(_NATIVE_STAGE_SOURCES)))
+        cmake = (root / "CMakeLists.txt").read_text()
+        self.assertIn('file(STRINGS "${EMUFLOW_CORE_MANIFEST}" EMUFLOW_CORE_SOURCE_NAMES)', cmake)
+        self.assertIn('add_library(emuflow_core STATIC ${EMUFLOW_CORE_SOURCE_FILES})', cmake)
+        self.assertNotIn('target_sources(emuflow_core', cmake)
 
     def test_relative_override_is_bound_before_backend_changes_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -1,3 +1,4 @@
+#include "emuflow_core/store.hpp"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -881,7 +882,8 @@ void emuflow::native::ResolveStaticExactCaptures(
     assignment = request.Read<std::uint32_t>();
     if (assignment >= parts) throw std::runtime_error("native capture assignment is invalid");
   }
-  SqliteDatabase source(source_path, SqliteDatabase::Mode::kReadOnly);
+  emuflow::core::SqliteStore source_store(emuflow::core::ArtifactRef::Bind(source_path,"emuir-compact-v2"));
+  auto& source=source_store.database();
   auto application = source.Prepare("PRAGMA application_id");
   auto version = source.Prepare("PRAGMA user_version");
   auto counts = source.Prepare(

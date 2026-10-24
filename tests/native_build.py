@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -222,6 +223,7 @@ def static_exact_analyzer() -> Path:
             "-std=c++17",
             "-O2",
             str(ROOT / "src/native/static_exact_analyzer.cpp"),
+            str(ROOT / "src/native/emuflow_core/store.cpp"),
             str(ROOT / "src/native/emuflow_core/emuir_view.cpp"),
             str(ROOT / "src/native/emuflow_core/stage_runtime.cpp"),
             str(ROOT / "src/native/emuflow_core/artifact_io.cpp"),
@@ -274,27 +276,14 @@ def tdm_exact_scheduler() -> Path:
     return executable
 
 
-_NATIVE_STAGE_SOURCES = (
-    "emuflow_core/native_pipeline.cpp", "patron_refiner.cpp",
-    "static_exact_analyzer.cpp", "tlr_router.cpp", "tdm_exact_scheduler.cpp",
-    "chimew_bank_channel_assigner.cpp", "chimew_rudy.cpp",
-    "chimew_signal_grouper.cpp", "chimew_position_refiner.cpp",
-    "emuflow_core/artifact_io.cpp", "emuflow_core/sqlite.cpp",
-    "emuflow_core/stage_runtime.cpp", "emuflow_core/emuir_view.cpp",
-    "emuflow_core/schedule_store.cpp", "emuflow_core/route_view.cpp",
-    "emuflow_core/schedule_model.cpp", "emuflow_core/schedule_ingress.cpp",
-    "emuflow_core/tool_runtime.cpp",
-    "emuflow_core/compile.cpp",
-    "emuflow_core/bookshelf.cpp", "emuflow_core/rwroute_export.cpp",
-    "emuflow_core/patron_ingress.cpp",
-    "emuflow_core/partition_clusters.cpp",
-    "emuflow_core/primary_cluster_view.cpp",
-    "emuflow_core/partition_loads.cpp",
-    "emuflow_core/exact_captures.cpp",
-    "emuflow_core/candidate_ids.cpp",
-    "emuflow_core/resource_view.cpp",
+_NATIVE_STAGE_SOURCES = tuple(
+    line.strip() for line in (ROOT / "src/native/emuflow_core/sources.txt").read_text().splitlines()
+    if line.strip() and not line.lstrip().startswith("#")
 )
-
+if (len(set(_NATIVE_STAGE_SOURCES)) != len(_NATIVE_STAGE_SOURCES) or
+        any(not re.fullmatch(r"(?:[A-Za-z0-9_]+/)*[A-Za-z0-9_]+\.cpp", name)
+            or not (ROOT / "src/native" / name).is_file() for name in _NATIVE_STAGE_SOURCES)):
+    raise RuntimeError("invalid shared native source manifest")
 
 def _build_native_stage_program(entry: Path, executable: Path) -> Path:
     compiler = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")

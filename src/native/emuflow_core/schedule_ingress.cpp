@@ -85,7 +85,8 @@ ExactScheduleModel BuildExactScheduleModel(const std::string& route_path,
   std::vector<std::string> demands, nets;
   std::vector<std::vector<std::string>> predecessors;
   std::vector<bool> used_capacity(capacities.size(),false);
-  source.VisitNetOrder([&](std::uint64_t rank, const RouteIdentity& input) {
+  source.VisitNetOrder([&](const RouteCoordinate& coordinate, const RouteIdentity& input) {
+    const auto rank=coordinate.net_order;
     auto& route = model.routes[rank];
     demands.push_back(input.demand); nets.push_back(input.net); predecessors.push_back(input.predecessors);
     route.source = Index(fpga,input.source);

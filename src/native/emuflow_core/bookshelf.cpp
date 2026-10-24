@@ -1,3 +1,4 @@
+#include "emuflow_core/store.hpp"
 // Typed physical export owned by libemuflow_core. The Python adapter consumes
 // only a primitive-library signature and counts, never graph-sized pin data.
 #include "emuflow_core/bookshelf.hpp"
@@ -31,8 +32,10 @@ void ExportBookshelf(const ArtifactRef& mapped_ref, const ArtifactRef& atoms_ref
     throw StageError(ErrorCode::kInvalidArtifact,"Bookshelf input schema mismatch");
   mapped_ref.RequireUnchanged();
   atoms_ref.RequireUnchanged();
-  SqliteDatabase mapped(mapped_ref.path(), SqliteDatabase::Mode::kImmutableReadOnly);
-  SqliteDatabase atoms(atoms_ref.path(), SqliteDatabase::Mode::kImmutableReadOnly);
+  SqliteStore mapped_store(mapped_ref);
+  auto& mapped=mapped_store.database();
+  SqliteStore atoms_store(atoms_ref);
+  auto& atoms=atoms_store.database();
   ScratchRelation scratch{spool_path};
   SqliteDatabase spool(spool_path, SqliteDatabase::Mode::kCreateExclusive);
   scratch.owned = true;

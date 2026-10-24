@@ -1,3 +1,4 @@
+#include "emuflow_core/store.hpp"
 #include "emuflow_core/exact_captures.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/emuir_view.hpp"
@@ -48,7 +49,8 @@ Proof CheckCaptures(const std::vector<ArtifactRef>& inputs,const std::string& sc
     Check(part<parts,"capture validation owner is invalid");
   }
   Check(cuts<=request.remaining()/12 && cuts<=topology.remaining()/5,"capture validation cut coverage is invalid");
-  SqliteDatabase source(inputs[0].path(),SqliteDatabase::Mode::kReadOnly);
+  SqliteStore source_store(inputs[0]);
+  auto& source=source_store.database();
   ResourceView resources(source);
   auto net_name=source.Prepare("SELECT id FROM net_records WHERE seq=?");
   std::vector<std::string> cut_ids;

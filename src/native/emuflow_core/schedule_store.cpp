@@ -1,3 +1,4 @@
+#include "emuflow_core/store.hpp"
 #include "emuflow_core/schedule_store.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/hash.hpp"
@@ -66,15 +67,6 @@ struct Route : ExactScheduleRoute {
   std::vector<std::uint32_t> edge_order;
   std::map<std::tuple<std::uint32_t,std::uint32_t,std::uint32_t,std::uint32_t,std::uint32_t>,std::size_t> hop_index;
 };
-struct TemporaryStore {
-  std::string path;
-  explicit TemporaryStore(const std::string& output) {
-    static std::atomic<std::uint64_t> sequence{0};
-    path = output + ".publishing." + std::to_string(
-        std::chrono::steady_clock::now().time_since_epoch().count()) + "." + std::to_string(sequence++);
-  }
-  ~TemporaryStore() { std::error_code error; std::filesystem::remove(path, error); }
-};
 Encoded ReadEncoded(BinaryReader& reader, SqliteDatabase& db) {
   Encoded result{reader.ReadString32(), reader.ReadString32()};
   auto valid = db.Prepare("SELECT json_valid(?),json_valid(?),json(?)=json(?)");
@@ -95,7 +87,8 @@ void BindRouteData(std::vector<Route>& routes, const ArtifactRef& source,
     Require(found != catalog.end() && *found == name,"schedule publication RouteStore catalog identity is unknown");
     return static_cast<std::uint32_t>(found - catalog.begin());
   };
-  route_store.VisitNetOrder([&](std::uint64_t index, const RouteIdentity& identity) {
+  route_store.VisitNetOrder([&](const RouteCoordinate& coordinate, const RouteIdentity& identity) {
+    const auto index=coordinate.net_order;
     auto& route = routes[index];
     route.demand = identity.demand; route.net = identity.net;
     route.dependency_depth = identity.dependency_depth.value_or(0);
@@ -291,10 +284,10 @@ void PublishScheduleData(const std::vector<Route>& routes, const ExactScheduleSo
             "schedule publication completion identity is invalid");
     completion_indices[completion.route] = i;
   }
-  TemporaryStore temporary(output_path);
+  SqliteArtifactWriter writer(output_path,"tdm-schedule-store-v4",sources);
   std::string summary;
   {
-    SqliteDatabase db(temporary.path, SqliteDatabase::Mode::kCreateExclusive);
+    auto& db=writer.database();
     db.Execute("PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=FILE;"
                "PRAGMA cache_size=-65536; PRAGMA application_id=0x454d5554; PRAGMA user_version=3;");
     db.Execute(kScheduleStoreDDL);
@@ -484,7 +477,7 @@ void PublishScheduleData(const std::vector<Route>& routes, const ExactScheduleSo
     transaction.Commit();
   }
   for (const auto& source : sources) source.RequireUnchanged();
-  PublishTemporaryFile(temporary.path,output_path);
+  (void)writer.Commit();
 }
 }  // namespace
 

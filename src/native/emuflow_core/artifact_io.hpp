@@ -1,5 +1,7 @@
 #pragma once
 
+#include "emuflow_core/stage_runtime.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
@@ -28,11 +30,11 @@ class BinaryReader {
     static_assert(std::is_trivially_copyable<T>::value,
                   "artifact fields must be trivially copyable");
     if (remaining() < sizeof(T)) {
-      throw std::runtime_error("native input is truncated");
+      throw StageError(ErrorCode::kInvalidArtifact,"native input is truncated");
     }
     T value{};
     stream_.read(reinterpret_cast<char*>(&value), sizeof(T));
-    if (!stream_) throw std::runtime_error("cannot read native input");
+    if (!stream_) throw StageError(ErrorCode::kInvalidArtifact,"cannot read native input");
     offset_ += sizeof(T);
     return value;
   }
@@ -110,7 +112,7 @@ class AtomicBinaryWriter {
     static_assert(std::is_trivially_copyable<T>::value,
                   "artifact fields must be trivially copyable");
     stream_.write(reinterpret_cast<const char*>(&value), sizeof(T));
-    if (!stream_) throw std::runtime_error("cannot write native output");
+    if (!stream_) throw StageError(ErrorCode::kPublicationFailed,"cannot write native output");
   }
 
   void WriteBytes(const void* data, std::size_t size);

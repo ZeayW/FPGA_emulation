@@ -1,3 +1,4 @@
+#include "emuflow_core/store.hpp"
 #include "emuflow_core/patron_ingress.hpp"
 #include "emuflow_core/primary_cluster_view.hpp"
 #include "emuflow_core/artifact_io.hpp"
@@ -236,7 +237,8 @@ patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBui
   if (primary_view) primary_view->ReleasePages();
   const auto owner_of=[&](std::uint64_t cell) { return primary ? primary_view->Owner(cell) : owner.at(cell); };
   weights.clear(); weights.shrink_to_fit(); initial.clear(); initial.shrink_to_fit(); observed.clear(); offsets.clear(); fixed.clear();
-  SqliteDatabase source(inputs[0].path(),SqliteDatabase::Mode::kImmutableReadOnly);
+  SqliteStore source_store(inputs[0]);
+  auto& source=source_store.database();
   auto schema=source.Prepare("SELECT value FROM metadata WHERE key='logical_schema'");
   Check(schema.Step() && schema.Text(0)=="emuflow.emuir/v1","PATRON EmuIR logical schema disagrees");
   auto count_shape=source.Prepare("SELECT (SELECT COUNT(*) FROM json_each(m.value)) FROM metadata m WHERE key='record_counts_json'");
@@ -284,7 +286,8 @@ patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBui
   Check(seen_nets==ir.counts().nets,"PATRON net identity count disagrees");
   model.net=std::move(ordered); model.nets=model.net.size();
   Check(model.nets>0,"PATRON pressure graph has no transport nets"); patron::BindMembers(model);
-  SqliteDatabase timing(inputs[1].path(),SqliteDatabase::Mode::kImmutableReadOnly);
+  SqliteStore timing_store(inputs[1]);
+  auto& timing=timing_store.database();
   auto attach=timing.Prepare("ATTACH DATABASE ? AS emuir"); attach.BindText(1,SqliteImmutableUri(inputs[0].path())); attach.Execute();
   auto paths=timing.Prepare("SELECT p.ordinal,p.path_id,p.clock_period_ns,p.slack_ns,l.seq,r.seq,p.clock_domain,"
       "typeof(p.clock_period_ns) IN ('integer','real') AND typeof(p.slack_ns) IN ('integer','real') "
