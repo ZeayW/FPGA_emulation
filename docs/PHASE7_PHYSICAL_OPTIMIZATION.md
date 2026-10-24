@@ -164,6 +164,16 @@ and fixed loads from other resources. Direct site-pin domains must match the
 projected domains of every actual slice sink. This explicit qualification export
 is scratch for the active experiment, not a reusable routing certificate.
 
+`complete_ideal_ff_clock_leaf_loads` can seal a separate derived payload for FF
+clock pins omitted by the existing `ideal-boundary-clock` routing abstraction.
+It traces missing half-slice clock identities to the mapped netlist and accepts
+only nets explicitly excluded with that qualification in the frozen route input.
+Unknown clocks and conflicting identities are errors. These ideal FF loads are
+reserved in local leaf-demand counts, reported separately from physical clock
+nets, and rechecked after candidate export. They do not create physical clock
+sources/routes or change the backend's ideal-boundary-clock contract. Other
+resource loads in this export retain their modeled physical-clock scope.
+
 `repair_clock_leaf_domains` consumes that export, the matching frozen route
 input and a certified native placement. It checks source and payload identities
 before invoking `emuflow_xilinx_clock_leaf_repair`. The C++ repair selects an
