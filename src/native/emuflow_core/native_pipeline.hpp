@@ -6,8 +6,8 @@ namespace emuflow::native {
 enum class Stage {
   kInvalid,
   kAnalyzeExact, kFinalizeExact, kResolveCaptures, kHashSemantics,
-  kWriteExactSections, kRefinePatron, kRoute, kSchedule,
-  kAssignBanks, kGroupSignals, kRefinePositions, kRudy, kPublishSchedule, kScheduleFromStore,
+  kWriteExactSections, kRefinePatron, kRoute,
+  kAssignBanks, kGroupSignals, kRefinePositions, kRudy,
   kBuildSchedule, kExportBookshelf, kRefinePatronFromStore, kBuildPartitionClusters, kBuildCandidateIds, kRefinePatronFromPrimary, kReducePartitionLoads, kBuildCaptures, kValidateCaptures, kExportRwroute
 };
 struct StageRequest {

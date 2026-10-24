@@ -326,8 +326,12 @@ the storage timer's scope, which includes calculation on this path.
 This compact production behavior does not require a managed-storage flag.
 Selection follows the current v3 indexed route/Static Exact contract at every
 route count and requires the unified `emuflow-native` scheduler; a missing unified
-entry does not silently select the reference producer. Reference and standalone
-comparisons remain available through the explicit `build_tdm_schedule` API.
+entry does not silently select the reference producer. The old numeric
+model/result scheduling and separate publication commands are retired, along
+with the standalone Exact scheduler and its build option. Use the complete
+`emuflow-native phase5 build-schedule` operation. The common Python schedule
+builder still serves registered-boundary/ratio providers and small semantic
+differentials; it no longer selects a second native chain by input size.
 Native production does not implicitly emit the reference `schedule.tsv`,
 `transport_manifest.json`, testbench or feedback JSON, or run reference signal
 simulation. Those are explicit qualification/export functions; small reference

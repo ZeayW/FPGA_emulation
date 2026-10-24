@@ -598,8 +598,7 @@ def run_phase5(
             schedule = build_tdm_schedule(routes, platform, ratio_plan)
         native_generation = isinstance(schedule, NativeExactScheduleRequest)
         validation = (
-            None if native_generation or getattr(schedule["entries"], "native_store_publication_source", None)
-            is not None else validate_tdm_schedule(routes, platform, schedule, ratio_plan)
+            None if native_generation else validate_tdm_schedule(routes, platform, schedule, ratio_plan)
         )
         timing_validation = (
             reconstruct_tdm_schedule_timing(
@@ -651,7 +650,7 @@ def _finish_phase5_generation(
     """Build every Phase 5 artifact in staging and commit the report last."""
 
     native_generation = isinstance(schedule, NativeExactScheduleRequest)
-    native_production = native_generation or getattr(schedule["entries"], "native_store_publication_source", None) is not None
+    native_production = native_generation
     emit_compatibility_exports = not managed_storage and not native_production
     output_dir.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(

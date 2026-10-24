@@ -3,10 +3,7 @@
 #include "emuflow_core/native_stages.hpp"
 #include "emuflow_core/route_view.hpp"
 #include <algorithm>
-#include <atomic>
-#include <chrono>
 #include <cmath>
-#include <filesystem>
 #include <limits>
 #include <map>
 #include <numeric>
@@ -49,7 +46,7 @@ using ArcKey = std::tuple<std::uint32_t,std::uint32_t,std::uint32_t>;
 }
 ExactScheduleModel BuildExactScheduleModel(const std::string& route_path,
                                           const std::string& request_path,
-                                          ExactScheduleBuildContext* context) {
+                                          ExactScheduleBuildContext& context) {
   BinaryReader request(request_path);
   ReadAndValidateHeader(request,{0x3142534d44544545ULL,1,"exact schedule board request"});
   const auto expected = ReadGeneration(request);
@@ -59,7 +56,7 @@ ExactScheduleModel BuildExactScheduleModel(const std::string& route_path,
   const auto frame = request.Read<std::uint32_t>(), barrier = request.Read<std::uint32_t>(), settle = request.Read<std::uint32_t>();
   const auto minimum = request.Read<std::uint32_t>(), maximum = request.Read<std::uint32_t>(), quantum = request.Read<std::uint32_t>();
   const auto fpga = ReadCatalog(request), links = ReadCatalog(request), capacities = ReadCatalog(request);
-  if (context) context->catalogs = {fpga,links,capacities};
+  context.catalogs = {fpga,links,capacities};
   Require(frame > barrier && !fpga.empty() && minimum && maximum >= minimum && maximum <= frame && quantum,
           "schedule board request dimensions are invalid");
   const auto arc_count = request.Read<std::uint32_t>();
@@ -78,10 +75,11 @@ ExactScheduleModel BuildExactScheduleModel(const std::string& route_path,
   request.RequireEnd();
   RouteView source(artifact);
   Require(source.count() <= UINT32_MAX,"schedule has too many routes");
+  Require(source.count() <= artifact.generation().bytes,"schedule route count exceeds source bounds");
   ExactScheduleModel model{frame,barrier,settle,static_cast<std::uint32_t>(fpga.size()),
       std::vector<std::uint32_t>(capacities.size(),1),std::vector<ExactScheduleRoute>(source.count())};
   const auto route_count = static_cast<std::uint32_t>(model.routes.size());
-  if (context) context->identities.resize(route_count);
+  context.identities.resize(route_count);
   std::vector<std::string> demands, nets;
   std::vector<std::vector<std::string>> predecessors;
   std::vector<bool> used_capacity(capacities.size(),false);
@@ -106,7 +104,7 @@ ExactScheduleModel BuildExactScheduleModel(const std::string& route_path,
       auto found = arcs.find({Index(links,edge.link),Index(fpga,edge.from),Index(fpga,edge.to)});
       Require(found != arcs.end(),"schedule route uses an illegal directed arc");
       adjacency[found->second.from].push_back(&found->second);
-      if (context) original_arcs.push_back(&found->second);
+      original_arcs.push_back(&found->second);
     }
     for (auto& children : adjacency)
       std::sort(children.begin(),children.end(),[](const Arc* a, const Arc* b) { return std::tie(a->to,a->link) < std::tie(b->to,b->link); });
@@ -123,14 +121,14 @@ ExactScheduleModel BuildExactScheduleModel(const std::string& route_path,
                 "schedule capacity has inconsistent lane budgets");
         used_capacity[arc->capacity] = true; model.capacity_lanes[arc->capacity] = arc->budget;
         route.maximum_depth = std::max(route.maximum_depth,depth);
-        if (context) hop_indices.emplace(arc,static_cast<std::uint32_t>(route.hops.size()));
+        hop_indices.emplace(arc,static_cast<std::uint32_t>(route.hops.size()));
         route.hops.push_back({depth,arc->capacity,arc->link,arc->from,arc->to,arc->offset,arc->budget,UINT32_MAX,1,arc->fixed_latency});
       }
     }
     Require(route.hops.size() == input.edges.size(),"schedule RouteStore route has disconnected tree edges");
     for (auto sink : route.sinks) Require(visited[sink],"schedule route sink is not reached by its tree");
-    if (context) {
-      auto& identity = context->identities[rank];
+    {
+      auto& identity = context.identities[rank];
       identity.dependency_depth = *input.dependency_depth;
       for (const auto* arc : original_arcs) identity.original_hop_order.push_back(hop_indices.at(arc));
     }
@@ -184,30 +182,11 @@ ExactScheduleModel BuildExactScheduleModel(const std::string& route_path,
     }
   }
   artifact.RequireUnchanged();
-  if (context) for (std::uint32_t i = 0; i < route_count; ++i) {
-    context->identities[i].demand = std::move(demands[i]);
-    context->identities[i].net = std::move(nets[i]);
+  for (std::uint32_t i = 0; i < route_count; ++i) {
+    context.identities[i].demand = std::move(demands[i]);
+    context.identities[i].net = std::move(nets[i]);
   }
   return model;
 }
 
-void ScheduleExactFromStore(const std::string& route_path,
-                            const std::string& request_path,
-                            const std::string& output_path) {
-  const auto route_ref = ArtifactRef::Bind(route_path,"system-route-store-v3");
-  const auto request_ref = ArtifactRef::Bind(request_path,"exact-schedule-board-request-v1");
-  const auto model = BuildExactScheduleModel(route_path,request_path);
-  static std::atomic<std::uint64_t> sequence{0};
-  const auto suffix = ".pending." + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "." + std::to_string(sequence++);
-  const auto result_tmp = output_path + suffix, input_tmp = output_path + ".input" + suffix;
-  try {
-    native::ScheduleStaticExactModel(model,result_tmp);
-    WriteExactScheduleModel(model,input_tmp);
-    route_ref.RequireUnchanged(); request_ref.RequireUnchanged();
-    PublishTemporaryFile(input_tmp,output_path + ".input");
-    PublishTemporaryFile(result_tmp,output_path);
-  } catch (...) {
-    std::error_code error; std::filesystem::remove(input_tmp,error); std::filesystem::remove(result_tmp,error); throw;
-  }
-}
 }  // namespace emuflow::core

@@ -32,10 +32,7 @@ constexpr const char* kUsage =
     "  phase3 reduce-loads EMUIR PRIMARY REQUEST OUTPUT\n"
     "  phase3 refine-patron-from-store EMUIR TIMING CLUSTERS REQUEST OUTPUT\n"
     "  phase4 route --typed-output INPUT OUTPUT\n"
-    "  phase5 schedule INPUT OUTPUT\n"
-    "  phase5 schedule-from-store ROUTE_STORE REQUEST OUTPUT\n"
     "  phase5 build-schedule ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST OUTPUT\n"
-    "  phase5 publish-schedule INPUT RESULT ROUTE_STORE REQUEST OUTPUT\n"
     "  phase6 assign-banks (--typed-input|--legacy-text) INPUT OUTPUT\n"
     "  phase6 group-signals --typed-input INPUT OUTPUT EXPECTED_SHA256\n"
     "  phase6 group-signals --legacy-text INPUT OUTPUT\n"
@@ -187,14 +184,8 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if (phase == "phase4" && operation == "route" && argc == 6 && std::string(argv[3]) == "--typed-output")
     return run(Stage::kRoute, {argv[4]}, argv[5]);
-  if (phase == "phase5" && operation == "schedule-from-store" && argc == 6)
-    return run(Stage::kScheduleFromStore, {argv[3],argv[4]}, argv[5]);
   if (phase == "phase5" && operation == "build-schedule" && argc == 7)
     return run(Stage::kBuildSchedule, {argv[3],argv[4],argv[5]}, argv[6]);
-  if (phase == "phase5" && operation == "publish-schedule" && argc == 8)
-    return run(Stage::kPublishSchedule, {argv[3], argv[4], argv[5], argv[6]}, argv[7]);
-  if (phase == "phase5" && operation == "schedule" && argc == 5)
-    return run(Stage::kSchedule, {argv[3]}, argv[4]);
   if (phase == "phase6") {
     if (operation == "rudy" && argc == 5)
       return run(Stage::kRudy, {argv[3]}, argv[4]);

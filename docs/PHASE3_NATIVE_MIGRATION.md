@@ -194,11 +194,12 @@ input/result files are written or reread on this path.
 
 The common model and solver preserve tree traversal/order, predecessor ranks,
 capacity budgets, fixed lane/ratio groups and affine-delay cycle rounding.
-`ComputeStaticExactSchedule` returns typed records directly to its C++ caller;
-the standalone binary-input/output command is a compatibility wrapper around
-the same computation. The legacy `schedule-from-store` and `publish-schedule`
-operations remain available for explicit API/comparison uses. Their publisher
-shares the final record writer with the complete producer.
+`ComputeStaticExactSchedule` returns typed records directly to its C++ caller.
+The numeric model/result readers and writers, Python result import owners,
+standalone Exact scheduler and split scheduling/publication commands have been
+removed. Current native production has one complete producer and no intermediate
+wire-format replay path. Negative tests exercise RouteStore/configuration sources,
+publication ownership and the independent staged-store validator directly.
 
 Canonical and pretty logical hashes are accumulated from typed records during
 publication. Original route edge order, Unicode identities, nullable ratios and
@@ -215,8 +216,9 @@ This production path requires current v3 typed route input and the unified
 native scheduler, regardless of the route count. Indexed production never
 selects Python because a partition happens to have fewer cut routes, and a
 standalone-only installation is rejected for this boundary. Older storage and
-dictionary inputs retain their compatibility path; reference and standalone
-comparisons use the explicit `build_tdm_schedule` API. A native failure never
+dictionary inputs and supported registered-boundary/ratio providers still use
+the common Python schedule builder; it no longer selects native result import
+by a circuit-size threshold. A native failure never
 retries that path. Requests retain the
 source file generations captured by their producer; stale references are rejected
 before computation and rechecked before atomic publication. The Python layer

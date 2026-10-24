@@ -29,9 +29,6 @@ const char* StageName(Stage stage) {
     case Stage::kWriteExactSections: return "phase3.write-exact-sections";
     case Stage::kRefinePatron: return "phase3.refine-patron";
     case Stage::kRoute: return "phase4.route";
-    case Stage::kSchedule: return "phase5.schedule";
-    case Stage::kScheduleFromStore: return "phase5.schedule-from-store";
-    case Stage::kPublishSchedule: return "phase5.publish-schedule";
     case Stage::kBuildSchedule: return "phase5.build-schedule";
     case Stage::kAssignBanks: return "phase6.assign-banks";
     case Stage::kGroupSignals: return "phase6.group-signals";
@@ -66,9 +63,6 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
       return {"exact-nodes-v2", "exact-captures-v1", "exact-section-request-v1"};
     case Stage::kRefinePatron: return {request.typed_input ? "patron-input-v1" : "patron-legacy-text"};
     case Stage::kRoute: return {"tlr-input-text"};
-    case Stage::kSchedule: return {"exact-schedule-input-v1"};
-    case Stage::kScheduleFromStore: return {"system-route-store-v3", "exact-schedule-board-request-v1"};
-    case Stage::kPublishSchedule: return {"exact-schedule-input-v1", "exact-schedule-output-v2", "system-route-store-v3", "exact-schedule-publication-request-v1"};
     case Stage::kBuildSchedule: return {"system-route-store-v3", "exact-schedule-board-request-v1", "exact-schedule-generation-request-v1"};
     case Stage::kAssignBanks: return {request.typed_input ? "chimew-bank-input-v1" : "chimew-bank-legacy-text"};
     case Stage::kGroupSignals: return {request.typed_input ? "chimew-group-input-v1" : "chimew-group-legacy-text"};
@@ -159,14 +153,6 @@ core::StageResult ExecuteStage(const StageRequest& request) {
           throw core::StageError(core::ErrorCode::kInvalidRequest,"PATRON report aliases an auxiliary output");
       }
     }
-    if (request.stage == Stage::kScheduleFromStore) {
-      const auto auxiliary = request.output_path + ".input";
-      for (const auto& path : paths)
-        if (path != "-" && Equivalent(path,auxiliary))
-          throw core::StageError(core::ErrorCode::kInvalidRequest,"native model output aliases an input");
-      if (!request.report_path.empty() && Equivalent(request.report_path,auxiliary))
-        throw core::StageError(core::ErrorCode::kInvalidRequest,"native report aliases the model output");
-    }
     if (request.stage == Stage::kResolveCaptures && !request.report_path.empty() && Equivalent(request.report_path, request.output_path + ".sqlite"))
       throw core::StageError(core::ErrorCode::kInvalidRequest, "native report aliases the capture index");
     for (std::size_t i = 0; i < schemas.size(); ++i) {
@@ -201,9 +187,6 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kWriteExactSections: WriteStaticExactSections(path(0), path(1), path(2), output); break;
       case Stage::kRefinePatron: RefinePatron(path(0), output, request.typed_input, request.summary_output, request.typed_output); break;
       case Stage::kRoute: RouteTlr(path(0), output, request.typed_output); break;
-      case Stage::kSchedule: ScheduleStaticExact(path(0), output); break;
-      case Stage::kScheduleFromStore: core::ScheduleExactFromStore(path(0),path(1),output); break;
-      case Stage::kPublishSchedule: core::PublishExactScheduleStore(path(0), path(1), path(2), path(3), output); break;
       case Stage::kBuildSchedule: core::BuildExactScheduleStore(path(0),path(1),path(2),output); break;
       case Stage::kAssignBanks: AssignChimewBankChannels(path(0), output, request.typed_input); break;
       case Stage::kGroupSignals: GroupChimewSignals(path(0), output, request.typed_input, request.expected_sha256); break;
@@ -236,9 +219,6 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kWriteExactSections: schema = "exact-section-summary-v2"; break;
       case Stage::kRefinePatron: schema = request.typed_output ? "patron-output-v1" : "patron-output-text"; break;
       case Stage::kRoute: schema = request.typed_output ? "tlr-output-v1" : "tlr-output-text"; break;
-      case Stage::kSchedule:
-      case Stage::kScheduleFromStore: schema = "exact-schedule-output-v2"; break;
-      case Stage::kPublishSchedule: schema = "tdm-schedule-store-v4"; break;
       case Stage::kBuildSchedule: schema = "tdm-schedule-store-v4"; break;
       case Stage::kAssignBanks: schema = "chimew-bank-output-text"; break;
       case Stage::kGroupSignals: schema = "chimew-group-output-text"; break;
@@ -254,8 +234,6 @@ core::StageResult ExecuteStage(const StageRequest& request) {
     std::vector<core::ArtifactRef> refs{core::ArtifactRef::Bind(request.output_path, schema, request.output_path == "-")};
     if (request.stage == Stage::kResolveCaptures)
       refs.push_back(core::ArtifactRef::Bind(request.output_path + ".sqlite", "exact-capture-index-private-v1"));
-    if (request.stage == Stage::kScheduleFromStore)
-      refs.push_back(core::ArtifactRef::Bind(request.output_path + ".input", "exact-schedule-input-v1"));
     if (request.stage == Stage::kExportRwroute)
       refs.push_back(core::ArtifactRef::Bind(request.auxiliary_output_path, "rwroute-export-summary-v1"));
     if (request.stage == Stage::kExportBookshelf)

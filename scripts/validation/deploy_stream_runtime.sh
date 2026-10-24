@@ -85,7 +85,7 @@ for binary in "$native_base"/bin/*; do
   test -e "$binary" || continue
   # Retired provider binaries must not leak in through an older native base.
   case "$(basename "$binary")" in
-    emuflow_tritonpart_balance_legalizer|emuflow_xilinx_bookshelf_exporter) continue ;;
+    emuflow_tritonpart_balance_legalizer|emuflow_xilinx_bookshelf_exporter|emuflow_tdm_exact_scheduler) continue ;;
   esac
   ln -s "$binary" "$runtime_dir/bin/$(basename "$binary")"
 done
@@ -132,7 +132,6 @@ for tool in \
   tlr_router \
   patron_refiner \
   static_exact_analyzer \
-  tdm_exact_scheduler \
   tdm_ratio_optimizer \
   tdm_slot_optimizer \
   tdm_timing_dag_optimizer

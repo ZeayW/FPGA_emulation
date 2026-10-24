@@ -11,14 +11,11 @@
 #include <utility>
 #include <vector>
 
-#include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/native_stages.hpp"
 #include "emuflow_core/schedule_model.hpp"
 
 namespace {
 
-constexpr std::uint64_t kOutputMagic = 0x314f534d44544545ULL;
-constexpr std::uint32_t kOutputVersion = 2;
 constexpr std::uint32_t kUnassignedLane =
     std::numeric_limits<std::uint32_t>::max();
 
@@ -246,77 +243,9 @@ emuflow::core::ExactScheduleSolution Compute(const emuflow::core::ExactScheduleM
   return {std::move(order),std::move(entries),std::move(completions)};
 }
 
-void RunModel(const emuflow::core::ExactScheduleModel& model, const std::string& output_path) {
-  const auto solution = Compute(model);
-  const auto& entries = solution.entries;
-  const auto& completions = solution.completions;
-  const auto& order = solution.order;
-  const auto& routes = model.routes;
-  const auto route_count = static_cast<std::uint32_t>(routes.size());
-
-  emuflow::core::AtomicBinaryWriter output(output_path);
-  output.Write(kOutputMagic);
-  output.Write(kOutputVersion);
-  output.Write(static_cast<std::uint64_t>(entries.size()));
-  output.Write(route_count);
-  for (const auto route : order) output.Write(route);
-  for (const auto& entry : entries) {
-    const auto& hop = routes[entry.route].hops[entry.hop];
-    output.Write(entry.route);
-    output.Write(entry.sequence);
-    output.Write(hop.depth);
-    output.Write(hop.capacity);
-    output.Write(hop.link);
-    output.Write(hop.from);
-    output.Write(hop.to);
-    output.Write(entry.slot);
-    output.Write(entry.lane);
-    output.Write(entry.ready);
-    output.Write(entry.arrival);
-    output.Write(hop.assigned_lane == kUnassignedLane ? 0u : hop.ratio);
-  }
-  for (const auto& completion : completions) {
-    output.Write(completion.route);
-    output.Write(completion.ready);
-    output.Write(completion.completion);
-    output.Write(static_cast<std::uint32_t>(completion.sink_arrivals.size()));
-    for (const auto& [sink, arrival] : completion.sink_arrivals) {
-      output.Write(sink);
-      output.Write(arrival);
-    }
-  }
-  output.Commit();
-}
-
 }  // namespace
 
 emuflow::core::ExactScheduleSolution emuflow::native::ComputeStaticExactSchedule(
     const emuflow::core::ExactScheduleModel& model) {
   return Compute(model);
 }
-
-void emuflow::native::ScheduleStaticExact(const std::string& input_path,
-                                          const std::string& output_path) {
-  RunModel(emuflow::core::ReadExactScheduleModel(input_path), output_path);
-}
-
-void emuflow::native::ScheduleStaticExactModel(const emuflow::core::ExactScheduleModel& model,
-                                              const std::string& output_path) {
-  RunModel(model,output_path);
-}
-
-#if !defined(EMUFLOW_NATIVE_STAGE_LIBRARY)
-int main(int argc, char** argv) {
-  try {
-    if (argc != 3) {
-      std::cerr << "usage: emuflow_tdm_exact_scheduler INPUT OUTPUT\n";
-      return 2;
-    }
-    emuflow::native::ScheduleStaticExact(argv[1], argv[2]);
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << error.what() << '\n';
-    return 1;
-  }
-}
-#endif

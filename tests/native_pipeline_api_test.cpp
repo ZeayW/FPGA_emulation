@@ -261,8 +261,8 @@ int main() {
     ambiguous.input_paths = {source};
     if (emuflow::native::ExecuteStage(ambiguous).error != ErrorCode::kInvalidRequest)
       throw std::runtime_error("native API accepted ambiguous ownership");
-    StageRequest unsupported_pipe{Stage::kSchedule, {}, output};
-    unsupported_pipe.input_artifacts = {ArtifactRef::Bind("-", "exact-schedule-input-v1", true)};
+    StageRequest unsupported_pipe{Stage::kAnalyzeExact, {}, output};
+    unsupported_pipe.input_artifacts = {ArtifactRef::Bind("-", "exact-analysis-input-v3", true)};
     if (emuflow::native::ExecuteStage(unsupported_pipe).error != ErrorCode::kInvalidRequest)
       throw std::runtime_error("native API accepted a pipe for a file-only reader");
     const auto original_time = fs::last_write_time(source);

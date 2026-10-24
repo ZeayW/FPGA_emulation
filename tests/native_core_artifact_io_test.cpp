@@ -264,13 +264,13 @@ int main() {
     const auto report_path = (root / "stage-result.json").string();
     {
       emuflow::core::AtomicBinaryWriter writer(stage_path);
-      writer.Write(std::uint64_t{0x3149534d44544545ULL});
+      writer.Write(std::uint64_t{0x3142534d44544545ULL});
       writer.Write(std::uint32_t{1});
       writer.Commit();
     }
     using emuflow::core::ArtifactRef;
     using emuflow::core::ErrorCode;
-    const auto reference = ArtifactRef::Bind(stage_path, "exact-schedule-input-v1");
+    const auto reference = ArtifactRef::Bind(stage_path, "exact-schedule-board-request-v1");
     reference.RequireUnchanged();
     const auto success = emuflow::core::RunStage("test.stage", [&]() {
       return std::vector<ArtifactRef>{reference};
@@ -287,7 +287,7 @@ int main() {
     const auto old_time = std::filesystem::last_write_time(stage_path);
     {
       emuflow::core::AtomicBinaryWriter writer(stage_path);
-      writer.Write(std::uint64_t{0x3149534d44544545ULL});
+      writer.Write(std::uint64_t{0x3142534d44544545ULL});
       writer.Write(std::uint32_t{1}); writer.Commit();
     }
     std::filesystem::last_write_time(stage_path, old_time);
@@ -298,7 +298,7 @@ int main() {
     if (stale.error != ErrorCode::kMixedGeneration || stale_body_ran) {
       throw std::runtime_error("replaced input generation entered a native stage");
     }
-    const auto current_reference = ArtifactRef::Bind(stage_path, "exact-schedule-input-v1");
+    const auto current_reference = ArtifactRef::Bind(stage_path, "exact-schedule-board-request-v1");
     const auto changed = emuflow::core::RunStage("test.changed", [&]() {
       return std::vector<ArtifactRef>{current_reference};
     }, [&](const auto&) {

@@ -33,9 +33,6 @@ void WriteStaticExactSections(const std::string& nodes_path,
 void RouteTlr(const std::string& input_path,
               const std::string& output_path,
               bool typed_output = false);
-void ScheduleStaticExactModel(const core::ExactScheduleModel& model, const std::string& output_path);
-void ScheduleStaticExact(const std::string& input_path,
-                         const std::string& output_path);
 void AssignChimewBankChannels(const std::string& input_path,
                               const std::string& output_path,
                               bool typed_input);

@@ -48,10 +48,7 @@ class NativeStageRuntimeTest(unittest.TestCase):
                 ["phase3", "write-exact-sections", missing, missing, missing],
                 ["phase3", "refine-patron", "--typed-input", missing],
                 ["phase4", "route", "--typed-output", missing],
-                ["phase5", "schedule", missing],
-                ["phase5", "schedule-from-store", missing, missing],
                 ["phase5", "build-schedule", missing, missing, missing],
-                ["phase5", "publish-schedule", missing, missing, missing, missing],
                 ["phase6", "assign-banks", "--typed-input", missing],
                 ["phase6", "group-signals", "--typed-input", missing],
                 ["phase6", "refine-groups", "--typed-input", missing],
@@ -87,7 +84,7 @@ class NativeStageRuntimeTest(unittest.TestCase):
             source, output, report = root / "input.bin", root / "output.bin", root / "result.json"
             source.write_bytes(b"invalid-envelope")
             output.write_bytes(b"previous-output")
-            base = ["phase5", "schedule", str(source), str(output)]
+            base = ["phase3", "analyze", str(source), str(output)]
             alias = subprocess.run([str(binary), "--report", str(source), *base], capture_output=True, text=True)
             self.assertEqual(alias.returncode, 2)
             self.assertEqual(source.read_bytes(), b"invalid-envelope")

@@ -4,9 +4,7 @@ import hashlib
 import heapq
 import json
 import math
-import mmap
 import os
-from bisect import bisect_left
 from pathlib import Path
 import struct
 import subprocess
@@ -49,448 +47,8 @@ TDM_ACADEMIC_SCHEDULE_PROVIDER = (
     "lagrangian-kkt-ratio-aware-path-local-search-v2"
 )
 COMBINATIONAL_SETTLE_SLOTS = 1
-NATIVE_EXACT_SCHEDULE_MIN_ROUTES = 100_000
-_NATIVE_EXACT_SCHEDULE_INPUT_MAGIC = 0x3149534D44544545
-_NATIVE_EXACT_SCHEDULE_OUTPUT_MAGIC = 0x314F534D44544545
-_NATIVE_EXACT_SCHEDULE_INPUT_VERSION = 1
-_NATIVE_EXACT_SCHEDULE_OUTPUT_VERSION = 2
-_NATIVE_UNASSIGNED_LANE = (1 << 32) - 1
+_MISSING_ROUTE_RANK = (1 << 32) - 1
 HopKey = Tuple[str, str, str, str]
-
-
-class _NativeExactEntryRecords(list):
-    """List-compatible lazy view over native Static Exact hop records.
-
-    The public schedule contract historically exposes ``entries`` as a list.
-    Keeping this as a list subclass preserves JSON encoding and compatibility
-    comparisons while avoiding one resident Python dictionary per scheduled
-    hop.  Each traversal decodes one fixed-width native record at a time.
-    """
-
-    _FORMAT = "<12I"
-    _RECORD_SIZE = struct.calcsize(_FORMAT)
-    canonical_record_cursor_schema = (
-        "emuflow.native-exact-schedule-entry-cursor/v1"
-    )
-    typed_record_cursor_schema = (
-        "emuflow.native-exact-schedule-typed-entry-cursor/v1"
-    )
-
-    def __init__(
-        self,
-        *,
-        owner: tempfile.TemporaryDirectory[str],
-        path: Path,
-        offset: int,
-        count: int,
-        routes: Sequence[Mapping[str, Any]],
-        capacity_keys: Sequence[str],
-        link_ids: Sequence[str],
-        fpga_ids: Sequence[str],
-        native_store_source: Optional[Mapping[str, Any]] = None,
-        domain_counts: Optional[Mapping[str, int]] = None,
-    ) -> None:
-        super().__init__()
-        self._owner = owner
-        self._path = path
-        self._offset = offset
-        self._count = count
-        self._routes = routes
-        self._capacity_keys = capacity_keys
-        self._link_ids = link_ids
-        self._fpga_ids = fpga_ids
-        self.native_store_publication_source = native_store_source
-        self.domain_counts = domain_counts
-
-    def __len__(self) -> int:
-        return self._count
-
-    def _route_identity(self, native_route: int) -> Tuple[str, str]:
-        route_ids = getattr(self._routes, "route_ids", None)
-        nets = getattr(self._routes, "nets", None)
-        if route_ids is not None and nets is not None:
-            return route_ids[native_route], nets[native_route]
-        route = self._routes[native_route]
-        return route["id"], route["net"]
-
-    def _decode(self, values: Tuple[int, ...]) -> Dict[str, Any]:
-        (
-            native_route,
-            sequence,
-            depth,
-            native_capacity,
-            native_link,
-            native_from,
-            native_to,
-            slot,
-            lane,
-            ready_slot,
-            arrival_slot,
-            ratio,
-        ) = values
-        route_id, net_id = self._route_identity(native_route)
-        entry = {
-            "id": f"s{sequence:06d}",
-            "demand": route_id,
-            "net": net_id,
-            "hop": depth,
-            "link": self._link_ids[native_link],
-            "from": self._fpga_ids[native_from],
-            "to": self._fpga_ids[native_to],
-            "capacity_key": self._capacity_keys[native_capacity],
-            "slot": slot,
-            "lane": lane,
-            "ready_slot": ready_slot,
-            "arrival_slot": arrival_slot,
-        }
-        if ratio:
-            entry["tdm_ratio"] = ratio
-        return entry
-
-    def __iter__(self) -> Iterator[Dict[str, Any]]:
-        with self._path.open("rb") as stream:
-            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
-                for index in range(self._count):
-                    yield self._decode(
-                        struct.unpack_from(
-                            self._FORMAT,
-                            data,
-                            self._offset + index * self._RECORD_SIZE,
-                        )
-                    )
-
-    def iter_canonical_records(self) -> Iterator[Tuple[str, str]]:
-        """Stream canonical logical rows without retaining hop dictionaries."""
-
-        for identity, values in self.iter_typed_records():
-            (
-                _entry_id,
-                demand,
-                net,
-                depth,
-                link,
-                source,
-                target,
-                capacity,
-                slot,
-                lane,
-                ready_slot,
-                arrival_slot,
-                ratio,
-            ) = values
-            entry = {
-                "id": identity,
-                "demand": demand,
-                "net": net,
-                "hop": depth,
-                "link": link,
-                "from": source,
-                "to": target,
-                "capacity_key": capacity,
-                "slot": slot,
-                "lane": lane,
-                "ready_slot": ready_slot,
-                "arrival_slot": arrival_slot,
-            }
-            if ratio is not None:
-                entry["tdm_ratio"] = ratio
-            yield identity, json.dumps(
-                entry,
-                ensure_ascii=True,
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-
-    def iter_typed_records(
-        self,
-    ) -> Iterator[Tuple[str, Tuple[Any, ...]]]:
-        """Stream the typed ScheduleStore row from native fixed records."""
-
-        with self._path.open("rb") as stream:
-            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
-                for index in range(self._count):
-                    (
-                        native_route,
-                        sequence,
-                        depth,
-                        native_capacity,
-                        native_link,
-                        native_from,
-                        native_to,
-                        slot,
-                        lane,
-                        ready_slot,
-                        arrival_slot,
-                        ratio,
-                    ) = struct.unpack_from(
-                        self._FORMAT,
-                        data,
-                        self._offset + index * self._RECORD_SIZE,
-                    )
-                    route_id, net_id = self._route_identity(native_route)
-                    identity = f"s{sequence:06d}"
-                    capacity_value = self._capacity_keys[native_capacity]
-                    link_value = self._link_ids[native_link]
-                    source_value = self._fpga_ids[native_from]
-                    target_value = self._fpga_ids[native_to]
-                    yield (
-                        identity,
-                        (
-                            identity,
-                            route_id,
-                            net_id,
-                            depth,
-                            link_value,
-                            source_value,
-                            target_value,
-                            capacity_value,
-                            slot,
-                            lane,
-                            ready_slot,
-                            arrival_slot,
-                            ratio or None,
-                        ),
-                    )
-
-    def __getitem__(self, index: int | slice) -> Any:
-        if isinstance(index, slice):
-            return [self[item] for item in range(*index.indices(self._count))]
-        if index < 0:
-            index += self._count
-        if index < 0 or index >= self._count:
-            raise IndexError(index)
-        with self._path.open("rb") as stream:
-            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
-                return self._decode(
-                    struct.unpack_from(
-                        self._FORMAT,
-                        data,
-                        self._offset + index * self._RECORD_SIZE,
-                    )
-                )
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, Sequence) and not isinstance(other, (str, bytes)):
-            return len(self) == len(other) and all(
-                left == right for left, right in zip(self, other)
-            )
-        return False
-
-    def __ne__(self, other: object) -> bool:
-        return not self == other
-
-
-class _PackedExactArrivals(Mapping[Tuple[str, str], int]):
-    """Compact route-rank by FPGA-rank arrival matrix.
-
-    Native Static Exact output already uses integer route and FPGA identities.
-    Rebuilding those rows as a tuple-keyed Python dictionary keeps two Python
-    strings, a tuple and an integer object alive for every routed sink.  The
-    route input is net ordered, so binary search plus one packed uint32 matrix
-    preserves the Mapping contract with bounded per-record storage.
-    """
-
-    _MISSING = (1 << 32) - 1
-
-    def __init__(self, nets: Sequence[str], fpga_ids: Sequence[str]) -> None:
-        self._nets = nets
-        self._fpga_ids = fpga_ids
-        self._fpga_index = {
-            identity: index for index, identity in enumerate(fpga_ids)
-        }
-        self._values = array("I", [self._MISSING]) * (
-            len(nets) * len(fpga_ids)
-        )
-        self._count = 0
-
-    def store(self, route_rank: int, fpga_rank: int, arrival: int) -> None:
-        index = route_rank * len(self._fpga_ids) + fpga_rank
-        if self._values[index] != self._MISSING:
-            raise ValidationError("native Static Exact sink arrival is duplicated")
-        self._values[index] = arrival
-        self._count += 1
-
-    def _index(self, key: Tuple[str, str]) -> int:
-        if not isinstance(key, tuple) or len(key) != 2:
-            raise KeyError(key)
-        net, fpga = key
-        if not isinstance(net, str) or not isinstance(fpga, str):
-            raise KeyError(key)
-        route_rank = bisect_left(self._nets, net)
-        fpga_rank = self._fpga_index.get(fpga)
-        if (
-            route_rank >= len(self._nets)
-            or self._nets[route_rank] != net
-            or fpga_rank is None
-        ):
-            raise KeyError(key)
-        index = route_rank * len(self._fpga_ids) + fpga_rank
-        if self._values[index] == self._MISSING:
-            raise KeyError(key)
-        return index
-
-    def __getitem__(self, key: Tuple[str, str]) -> int:
-        return int(self._values[self._index(key)])
-
-    def __contains__(self, key: object) -> bool:
-        try:
-            self._index(key)  # type: ignore[arg-type]
-        except KeyError:
-            return False
-        return True
-
-    def __iter__(self) -> Iterator[Tuple[str, str]]:
-        width = len(self._fpga_ids)
-        for route_rank, net in enumerate(self._nets):
-            base = route_rank * width
-            for fpga_rank, fpga in enumerate(self._fpga_ids):
-                if self._values[base + fpga_rank] != self._MISSING:
-                    yield net, fpga
-
-    def __len__(self) -> int:
-        return self._count
-
-
-class _NativeExactCompletionRecords(list):
-    """Demand-ordered lazy completion view over native variable records."""
-
-    demand_ordered = True
-    _HEADER_FORMAT = "<4I"
-    _HEADER_SIZE = struct.calcsize(_HEADER_FORMAT)
-    _ARRIVAL_FORMAT = "<2I"
-    _ARRIVAL_SIZE = struct.calcsize(_ARRIVAL_FORMAT)
-
-    def __init__(
-        self,
-        *,
-        owner: tempfile.TemporaryDirectory[str],
-        path: Path,
-        offsets: Sequence[int],
-        demand_order: Sequence[int],
-        route_ids: Sequence[str],
-        nets: Sequence[str],
-        fpga_ids: Sequence[str],
-    ) -> None:
-        super().__init__()
-        self._owner = owner
-        self._path = path
-        self._offsets = offsets
-        self._demand_order = demand_order
-        self._route_ids = route_ids
-        self._nets = nets
-        self._fpga_ids = fpga_ids
-
-    def __len__(self) -> int:
-        return len(self._demand_order)
-
-    def _decode(
-        self, data: mmap.mmap, native_route: int
-    ) -> Dict[str, Any]:
-        offset = self._offsets[native_route]
-        observed_route, source_ready, completion, sink_count = (
-            struct.unpack_from(self._HEADER_FORMAT, data, offset)
-        )
-        if observed_route != native_route:
-            raise ValidationError("native Static Exact completion index disagrees")
-        offset += self._HEADER_SIZE
-        arrivals: Dict[str, int] = {}
-        for _ in range(sink_count):
-            sink_rank, arrival = struct.unpack_from(
-                self._ARRIVAL_FORMAT, data, offset
-            )
-            offset += self._ARRIVAL_SIZE
-            if sink_rank >= len(self._fpga_ids):
-                raise ValidationError("native Static Exact sink arrival is invalid")
-            sink = self._fpga_ids[sink_rank]
-            if sink in arrivals:
-                raise ValidationError("native Static Exact sink arrival is duplicated")
-            arrivals[sink] = arrival
-        return {
-            "demand": self._route_ids[native_route],
-            "net": self._nets[native_route],
-            "source_ready_slot": source_ready,
-            "completion_slot": completion,
-            "sink_arrival_slots": dict(sorted(arrivals.items())),
-        }
-
-    def __iter__(self) -> Iterator[Dict[str, Any]]:
-        with self._path.open("rb") as stream:
-            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
-                for native_route in self._demand_order:
-                    yield self._decode(data, native_route)
-
-    def __getitem__(self, index: int | slice) -> Any:
-        if isinstance(index, slice):
-            return [self[item] for item in range(*index.indices(len(self)))]
-        if index < 0:
-            index += len(self)
-        if index < 0 or index >= len(self):
-            raise IndexError(index)
-        with self._path.open("rb") as stream:
-            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
-                return self._decode(data, self._demand_order[index])
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, Sequence) and not isinstance(other, (str, bytes)):
-            return len(self) == len(other) and all(
-                left == right for left, right in zip(self, other)
-            )
-        return False
-
-    def __ne__(self, other: object) -> bool:
-        return not self == other
-
-
-class _CompactExactRouteOrder(list):
-    """Topological route view retaining columns instead of route dictionaries."""
-
-    def __init__(
-        self,
-        route_ids: Sequence[str],
-        nets: Sequence[str],
-        sources: Sequence[str],
-        sinks: Sequence[Sequence[str]],
-        predecessors: Sequence[Sequence[str]],
-        dependency_levels: Sequence[int],
-        dependency_depths: Sequence[int],
-        order: Sequence[int],
-    ) -> None:
-        super().__init__()
-        self.route_ids = route_ids
-        self.nets = nets
-        self.sources = sources
-        self.sinks = sinks
-        self.predecessors = predecessors
-        self.dependency_levels = dependency_levels
-        self.dependency_depths = dependency_depths
-        self.order = order
-
-    def __len__(self) -> int:
-        return len(self.order)
-
-    def __iter__(self) -> Iterator[Mapping[str, Any]]:
-        for index in self.order:
-            yield self._decode(index)
-
-    def _decode(self, index: int) -> Mapping[str, Any]:
-        return {
-            "id": self.route_ids[index],
-            "net": self.nets[index],
-            "source": self.sources[index],
-            "sinks": list(self.sinks[index]),
-            "predecessor_cut_nets": list(self.predecessors[index]),
-            "dependency_level": self.dependency_levels[index],
-            "combinational_dependency_depth": self.dependency_depths[index],
-        }
-
-    def __getitem__(self, index: int | slice) -> Any:
-        if isinstance(index, slice):
-            return [self[item] for item in range(*index.indices(len(self)))]
-        if index < 0:
-            index += len(self)
-        if index < 0 or index >= len(self):
-            raise IndexError(index)
-        return self._decode(self.order[index])
 
 
 class _ScheduleRouteProjection(list):
@@ -1087,7 +645,7 @@ def _packed_indexed_exact_dependency_order(
     ):
         return None
     route_count = len(routes)
-    if route_count >= _NATIVE_UNASSIGNED_LANE:
+    if route_count >= _MISSING_ROUTE_RANK:
         raise ValidationError(
             "indexed exact route population exceeds packed rank capacity"
         )
@@ -1104,7 +662,7 @@ def _packed_indexed_exact_dependency_order(
         maximum_hop_depth[rank] = max(
             (depth for depth, _edge in hops), default=0
         )
-        if len(predecessor_ranks) >= _NATIVE_UNASSIGNED_LANE:
+        if len(predecessor_ranks) >= _MISSING_ROUTE_RANK:
             raise ValidationError(
                 "indexed exact predecessor population exceeds packed capacity"
             )
@@ -1115,7 +673,7 @@ def _packed_indexed_exact_dependency_order(
                     "indexed exact predecessor rank is invalid"
                 )
             predecessors.append(predecessor)
-            if successor_counts[predecessor] == _NATIVE_UNASSIGNED_LANE:
+            if successor_counts[predecessor] == _MISSING_ROUTE_RANK:
                 raise ValidationError(
                     "indexed exact successor population exceeds packed capacity"
                 )
@@ -1159,7 +717,7 @@ def _packed_indexed_exact_dependency_order(
             predecessor = predecessors[offset]
             candidate = remaining_depth[child] + 1
             if candidate > remaining_depth[predecessor]:
-                if candidate >= _NATIVE_UNASSIGNED_LANE:
+                if candidate >= _MISSING_ROUTE_RANK:
                     raise ValidationError(
                         "indexed exact dependency depth exceeds packed capacity"
                     )
@@ -1605,527 +1163,6 @@ def _run_native_exact_schedule(command: Sequence[str]) -> None:
                               f"{completed.returncode}: {detail}")
 
 
-def _schedule_indexed_exact_native(
-    raw_routes: Sequence[Mapping[str, Any]],
-    platform: Platform,
-    constraints: Mapping[str, Any],
-    arcs: Mapping[Tuple[str, str, str], Mapping[str, Any]],
-    capacity_records: Mapping[str, Mapping[str, Any]],
-    bank_allocations: Mapping[Tuple[str, str, str], Mapping[str, int]],
-    baseline_hops: Mapping[HopKey, Mapping[str, int]],
-    *,
-    executable: Optional[str] = None,
-    resolved_command: Optional[Sequence[str]] = None,
-) -> Tuple[
-    Sequence[Mapping[str, Any]],
-    List[Dict[str, Any]],
-    List[Dict[str, Any]],
-    Mapping[Tuple[str, str], int],
-]:
-    """Run the indexed Static Exact earliest-slot engine in native code.
-
-    Current typed stores use native model construction and computation with a
-    bounded board request. Python retains compact compatibility/certificate
-    metadata and imports fixed-width results; reference inputs keep the explicit
-    numeric protocol. Independent staged-store validation precedes publication.
-    """
-
-    from .native_tools import native_file_generation, resolve_native_stage_command
-
-    typed_record_cursor = getattr(
-        raw_routes, "iter_native_exact_records", None
-    )
-    typed_routes = callable(typed_record_cursor)
-    native_route_store = (
-        getattr(raw_routes, "store_path", None)
-        if getattr(raw_routes, "_user_version", None) == 3 else None
-    )
-    route_generation = (
-        native_file_generation(native_route_store)
-        if native_route_store is not None else None
-    )
-    native_command = list(resolved_command) if resolved_command is not None else resolve_native_stage_command(
-        "phase5",
-        "schedule",
-        explicit=executable,
-    )
-    native_ingress = bool(len(native_command) > 1 and native_route_store is not None
-                          and callable(getattr(raw_routes,"iter_native_exact_metadata",None)))
-    route_count = len(raw_routes)
-    ordered_by_net: Sequence[Mapping[str, Any]]
-    if typed_routes:
-        route_index = None
-        known_route_nets = None
-        demand_rank = None
-        fpga_ids = sorted(fpga.id for fpga in platform.fpgas)
-    else:
-        ordered_by_net = sorted(raw_routes, key=lambda route: route["net"])
-        route_index = {
-            route["net"]: index for index, route in enumerate(ordered_by_net)
-        }
-        if len(route_index) != len(ordered_by_net):
-            raise ValidationError("indexed exact route identities are not unique")
-        known_route_nets = set(route_index)
-        demand_rank = {
-            route["id"]: index
-            for index, route in enumerate(
-                sorted(raw_routes, key=lambda route: route["id"])
-            )
-        }
-        if len(demand_rank) != len(ordered_by_net):
-            raise ValidationError("indexed exact demand identities are not unique")
-        fpga_ids = sorted(
-            {
-                node
-                for route in raw_routes
-                for node in (
-                    [route["source"]]
-                    + list(route["sinks"])
-                    + [
-                        endpoint
-                        for edge in route["tree_edges"]
-                        for endpoint in (edge["from"], edge["to"])
-                    ]
-                )
-            }
-        )
-    fpga_index = {identity: index for index, identity in enumerate(fpga_ids)}
-    capacity_keys = sorted(capacity_records)
-    capacity_index = {
-        identity: index for index, identity in enumerate(capacity_keys)
-    }
-    links = _link_by_id(platform)
-    link_ids = sorted(links)
-    link_index = {identity: index for index, identity in enumerate(link_ids)}
-    capacity_lanes: Dict[str, int] = {}
-    def register_capacity(arc_key: Tuple[str, str, str], context: str) -> None:
-        if arc_key not in arcs:
-            raise ValidationError(f"TDM route {context} uses illegal edge {arc_key}")
-        arc = arcs[arc_key]
-        link = links[arc_key[0]]
-        budget = bank_allocations.get(arc_key)
-        lane_budget = (
-            budget["lanes"]
-            if budget
-            else link.transport_bits_per_cycle_per_direction
-        )
-        capacity_key = arc["capacity_key"]
-        prior_lanes = capacity_lanes.setdefault(capacity_key, lane_budget)
-        if prior_lanes != lane_budget:
-            raise ValidationError(
-                f"capacity {capacity_key!r} has inconsistent lane budgets"
-            )
-
-    arc_count_cursor = getattr(raw_routes, "iter_arc_counts", None)
-    if native_ingress:
-        pass  # C++ checks used capacities while consuming RouteStore edges.
-    elif typed_routes and callable(arc_count_cursor):
-        for link, source, sink, _count in arc_count_cursor():
-            register_capacity((link, source, sink), "store")
-    else:
-        for route in ordered_by_net:
-            for edge in route["tree_edges"]:
-                arc_key = (edge["link"], edge["from"], edge["to"])
-                register_capacity(arc_key, repr(route["id"]))
-
-    with tempfile.TemporaryDirectory(prefix="emuflow-tdm-exact-") as temporary:
-        root = Path(temporary)
-        input_path = root / "schedule.in"
-        output_path = root / "schedule.out"
-        if native_ingress:
-            board_request = root / "schedule.board"
-            _write_native_schedule_board_request(board_request,route_generation,platform,constraints,arcs,
-                bank_allocations,fpga_ids,link_ids,capacity_keys)
-            _run_native_exact_schedule([native_command[0],"phase5","schedule-from-store",
-                                       str(native_route_store),str(board_request),str(output_path)])
-            os.replace(output_path.with_name(output_path.name + ".input"),input_path)
-            compact_route_ids,compact_nets,compact_sources = [],[],[]
-            compact_sinks,compact_predecessors = [],[]
-            compact_dependency_levels,compact_dependency_depths = [],[]
-            compact_demand_ranks = array("I")
-            for route,rank,_predecessor_indices in raw_routes.iter_native_exact_metadata():
-                compact_route_ids.append(route["id"]); compact_nets.append(route["net"])
-                compact_sources.append(route["source"]); compact_sinks.append(tuple(route["sinks"]))
-                compact_predecessors.append(tuple(route["predecessor_cut_nets"]))
-                compact_dependency_levels.append(route["dependency_level"])
-                compact_dependency_depths.append(route["combinational_dependency_depth"])
-                compact_demand_ranks.append(rank)
-            if len(compact_route_ids) != route_count:
-                raise ValidationError("native exact metadata coverage disagrees")
-            demand_order = array("I",[0]) * route_count
-            seen = bytearray(route_count)
-            for index,rank in enumerate(compact_demand_ranks):
-                if rank >= route_count or seen[rank]:
-                    raise ValidationError("native exact demand ranks are invalid")
-                seen[rank] = 1; demand_order[rank] = index
-        else:
-            with input_path.open("wb") as stream:
-                pending = bytearray()
-
-                def emit(format_string: str, *values: Any) -> None:
-                    pending.extend(struct.pack(format_string, *values))
-                    if len(pending) >= 4 * 1024 * 1024:
-                        stream.write(pending)
-                        pending.clear()
-
-                emit(
-                    "<Q7I",
-                    _NATIVE_EXACT_SCHEDULE_INPUT_MAGIC,
-                    _NATIVE_EXACT_SCHEDULE_INPUT_VERSION,
-                    constraints["frame_slots"],
-                    RUNTIME_BARRIER_SLOTS,
-                    COMBINATIONAL_SETTLE_SLOTS,
-                    len(fpga_ids),
-                    len(capacity_keys),
-                    route_count,
-                )
-                for capacity_key in capacity_keys:
-                    emit("<I", capacity_lanes.get(capacity_key, 1))
-                compact_route_ids: List[str] = []
-                compact_nets: List[str] = []
-                compact_sources: List[str] = []
-                compact_sinks: List[Sequence[str]] = []
-                compact_predecessors: List[Sequence[str]] = []
-                compact_dependency_levels: List[int] = []
-                compact_dependency_depths: List[int] = []
-                compact_demand_ranks = array("I")
-                if typed_routes:
-                    route_records = typed_record_cursor()
-                else:
-                    assert route_index is not None
-                    assert known_route_nets is not None
-                    assert demand_rank is not None
-                    route_records = (
-                        (
-                            route,
-                            demand_rank[route["id"]],
-                            [route_index[item] for item in route["predecessor_cut_nets"]],
-                        )
-                        for route in ordered_by_net
-                    )
-                observed_routes = 0
-                for route, route_demand_rank, predecessor_indices in route_records:
-                    observed_routes += 1
-                    hops = _route_hops(route)
-                    predecessors = route["predecessor_cut_nets"]
-                    if not typed_routes:
-                        assert known_route_nets is not None
-                        unknown = sorted(set(predecessors) - known_route_nets)
-                        if unknown:
-                            raise ValidationError(
-                                f"cross-layer timing cut {route['net']!r} has "
-                                f"unknown predecessors {unknown}"
-                            )
-                    compact_route_ids.append(route["id"])
-                    compact_nets.append(route["net"])
-                    compact_sources.append(route["source"])
-                    compact_sinks.append(tuple(route["sinks"]))
-                    compact_predecessors.append(tuple(predecessors))
-                    compact_dependency_levels.append(route["dependency_level"])
-                    compact_dependency_depths.append(
-                        route["combinational_dependency_depth"]
-                    )
-                    compact_demand_ranks.append(route_demand_rank)
-                    emit(
-                        "<7I",
-                        fpga_index[route["source"]],
-                        len(route["sinks"]),
-                        len(predecessors),
-                        len(hops),
-                        route["dependency_level"],
-                        max((hop[0] for hop in hops), default=0),
-                        route_demand_rank,
-                    )
-                    for sink in route["sinks"]:
-                        emit("<I", fpga_index[sink])
-                    for predecessor_index in predecessor_indices:
-                        emit("<I", predecessor_index)
-                    for depth, edge in hops:
-                        arc_key = (edge["link"], edge["from"], edge["to"])
-                        arc = arcs[arc_key]
-                        link = links[edge["link"]]
-                        budget = bank_allocations.get(arc_key)
-                        lane_offset = budget["lane_offset"] if budget else 0
-                        lane_budget = (
-                            budget["lanes"]
-                            if budget
-                            else link.transport_bits_per_cycle_per_direction
-                        )
-                        assigned = baseline_hops.get(
-                            _hop_key(
-                                route["id"],
-                                edge["link"],
-                                edge["from"],
-                                edge["to"],
-                            )
-                        )
-                        ratio = assigned["discrete_ratio"] if assigned else 1
-                        base, _slope = route_link_delay_coefficients_ns(
-                            platform,
-                            edge["link"],
-                            edge["from"],
-                            edge["to"],
-                            constraints,
-                        )
-                        emit(
-                            "<10I",
-                            depth,
-                            capacity_index[arc["capacity_key"]],
-                            link_index[edge["link"]],
-                            fpga_index[edge["from"]],
-                            fpga_index[edge["to"]],
-                            lane_offset,
-                            lane_budget,
-                            (
-                                assigned["lane"]
-                                if assigned
-                                else _NATIVE_UNASSIGNED_LANE
-                            ),
-                            ratio,
-                            tdm_hop_latency_cycles(
-                                link, ratio, base_delay_ns=base
-                            ),
-                        )
-                if pending:
-                    stream.write(pending)
-                if observed_routes != len(raw_routes):
-                    raise ValidationError("indexed exact route cursor is incomplete")
-                demand_order = array("I", [0]) * route_count
-                seen_demand_ranks = bytearray(route_count)
-                for native_route, demand_rank_value in enumerate(
-                    compact_demand_ranks
-                ):
-                    if (
-                        demand_rank_value >= route_count
-                        or seen_demand_ranks[demand_rank_value]
-                    ):
-                        raise ValidationError(
-                            "indexed exact demand ranks are invalid"
-                        )
-                    seen_demand_ranks[demand_rank_value] = 1
-                    demand_order[demand_rank_value] = native_route
-            _run_native_exact_schedule([*native_command,str(input_path),str(output_path)])
-        with output_path.open("rb") as stream:
-            with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as data:
-                offset = 0
-
-                def take(format_string: str) -> Tuple[Any, ...]:
-                    nonlocal offset
-                    size = struct.calcsize(format_string)
-                    if offset + size > len(data):
-                        raise ValidationError(
-                            "native Static Exact schedule output is truncated"
-                        )
-                    values = struct.unpack_from(format_string, data, offset)
-                    offset += size
-                    return values
-
-                magic, version, entry_count, output_route_count = take(
-                    "<QIQI"
-                )
-                if (
-                    magic != _NATIVE_EXACT_SCHEDULE_OUTPUT_MAGIC
-                    or version != _NATIVE_EXACT_SCHEDULE_OUTPUT_VERSION
-                    or output_route_count != route_count
-                ):
-                    raise ValidationError(
-                        "native Static Exact schedule output header is invalid"
-                    )
-                order_indices = [take("<I")[0] for _ in range(route_count)]
-                if len(set(order_indices)) != route_count or any(
-                    index >= route_count for index in order_indices
-                ):
-                    raise ValidationError(
-                        "native Static Exact schedule route order is invalid"
-                    )
-                if typed_routes:
-                    ordered_routes = _CompactExactRouteOrder(
-                        compact_route_ids,
-                        compact_nets,
-                        compact_sources,
-                        compact_sinks,
-                        compact_predecessors,
-                        compact_dependency_levels,
-                        compact_dependency_depths,
-                        order_indices,
-                    )
-                else:
-                    ordered_routes = [
-                        ordered_by_net[index] for index in order_indices
-                    ]
-                entries_offset = offset
-                seen_sequences = bytearray(entry_count)
-                native_capacity_counts = [0] * len(capacity_keys)
-                for _ in range(entry_count):
-                    (
-                        native_route,
-                        sequence,
-                        depth,
-                        native_capacity,
-                        native_link,
-                        native_from,
-                        native_to,
-                        slot,
-                        lane,
-                        ready_slot,
-                        arrival_slot,
-                        ratio,
-                    ) = take(_NativeExactEntryRecords._FORMAT)
-                    if (
-                        native_route >= route_count
-                        or sequence >= entry_count
-                        or seen_sequences[sequence]
-                        or native_capacity >= len(capacity_keys)
-                        or native_link >= len(link_ids)
-                        or native_from >= len(fpga_ids)
-                        or native_to >= len(fpga_ids)
-                    ):
-                        raise ValidationError(
-                            "native Static Exact schedule entry is invalid"
-                        )
-                    seen_sequences[sequence] = 1
-                    native_capacity_counts[native_capacity] += 1
-                    route_id = compact_route_ids[native_route]
-                    edge = {
-                        "link": link_ids[native_link],
-                        "from": fpga_ids[native_from],
-                        "to": fpga_ids[native_to],
-                    }
-                    arc = arcs.get(
-                        (edge["link"], edge["from"], edge["to"])
-                    )
-                    if (
-                        arc is None
-                        or arc["capacity_key"]
-                        != capacity_keys[native_capacity]
-                    ):
-                        raise ValidationError(
-                            "native Static Exact schedule arc is invalid"
-                        )
-                    if native_ingress:
-                        ratio_link = links[edge["link"]]
-                        if (ratio_link.tdm_delay_model is None) != (ratio == 0):
-                            raise ValidationError("native Static Exact schedule ratio model is invalid")
-                    else:
-                        assigned = baseline_hops.get(
-                            _hop_key(
-                                route_id,
-                                edge["link"],
-                                edge["from"],
-                                edge["to"],
-                            )
-                        )
-                        if (assigned is None) != (ratio == 0) or (
-                            assigned is not None
-                            and (
-                                ratio != assigned["discrete_ratio"]
-                                or lane != assigned["lane"]
-                            )
-                        ):
-                            raise ValidationError(
-                                "native Static Exact schedule ratio is invalid"
-                            )
-                completion_offsets = array("Q", [0]) * route_count
-                exact_arrivals = _PackedExactArrivals(
-                    compact_nets, fpga_ids
-                )
-                seen_completions = bytearray(route_count)
-                for _ in range(route_count):
-                    completion_offset = offset
-                    native_route, source_ready, completion, sink_count = take(
-                        "<4I"
-                    )
-                    if (
-                        native_route >= route_count
-                        or seen_completions[native_route]
-                    ):
-                        raise ValidationError(
-                            "native Static Exact schedule completion is invalid"
-                        )
-                    seen_completions[native_route] = 1
-                    completion_offsets[native_route] = completion_offset
-                    sink_ranks = bytearray(len(fpga_ids))
-                    observed_sink_ranks: List[int] = []
-                    for _sink in range(sink_count):
-                        sink_index, arrival = take("<2I")
-                        if (
-                            sink_index >= len(fpga_ids)
-                            or sink_ranks[sink_index]
-                        ):
-                            raise ValidationError(
-                                "native Static Exact sink arrival is invalid"
-                            )
-                        sink_ranks[sink_index] = 1
-                        observed_sink_ranks.append(sink_index)
-                        exact_arrivals.store(
-                            native_route, sink_index, arrival
-                        )
-                    if sorted(observed_sink_ranks) != sorted(
-                        fpga_index[sink]
-                        for sink in compact_sinks[native_route]
-                    ):
-                        raise ValidationError(
-                            "native Static Exact sink coverage is incomplete"
-                        )
-                if offset != len(data):
-                    raise ValidationError(
-                        "native Static Exact schedule output has trailing bytes"
-                    )
-        retained = tempfile.TemporaryDirectory(
-            prefix="emuflow-tdm-exact-records-"
-        )
-        retained_output = Path(retained.name) / output_path.name
-        os.replace(output_path, retained_output)
-        native_store_source = None
-        if len(native_command) > 1 and native_route_store is not None:
-            retained_input = Path(retained.name) / input_path.name
-            os.replace(input_path, retained_input)
-            native_store_source = {
-                "schema": "emuflow.native-exact-schedule-publication-source/v1",
-                "command": [native_command[0], "phase5", "publish-schedule"],
-                "input": retained_input,
-                "result": retained_output,
-                "route_store": native_route_store,
-                "catalogs": (fpga_ids, link_ids, capacity_keys),
-                "generations": [
-                    native_file_generation(retained_input),
-                    native_file_generation(retained_output),
-                    route_generation,
-                ],
-            }
-        entries = _NativeExactEntryRecords(
-            owner=retained,
-            path=retained_output,
-            offset=entries_offset,
-            count=entry_count,
-            routes=_CompactExactRouteOrder(
-                compact_route_ids,
-                compact_nets,
-                compact_sources,
-                compact_sinks,
-                compact_predecessors,
-                compact_dependency_levels,
-                compact_dependency_depths,
-                list(range(len(compact_route_ids))),
-            ),
-            capacity_keys=capacity_keys,
-            link_ids=link_ids,
-            fpga_ids=fpga_ids,
-            native_store_source=native_store_source,
-            domain_counts=dict(zip(capacity_keys, native_capacity_counts)),
-        )
-        completions = _NativeExactCompletionRecords(
-            owner=retained,
-            path=retained_output,
-            offsets=completion_offsets,
-            demand_order=demand_order,
-            route_ids=compact_route_ids,
-            nets=compact_nets,
-            fpga_ids=fpga_ids,
-        )
-    return ordered_routes, entries, completions, exact_arrivals
-
-
 def _entry_ratio_delay(
     link: Any, entry: Mapping[str, Any], base: float, slope: float,
     prior_arrival: float,
@@ -2171,9 +1208,9 @@ def build_native_exact_schedule_request(
 ) -> Optional[NativeExactScheduleRequest]:
     """Select the complete producer without importing routes or hop results.
 
-    Compatibility/reference build_tdm_schedule remains an explicit materialized
-    API. The normal Phase 5 entry sends current indexed production directly to
-    one shared-core stage; failure is fatal, with no compatibility retry.
+    The common builder serves other providers and small differentials. Current
+    indexed production uses one shared-core stage; failure is fatal, with no
+    alternate native replay or materialized-result retry.
     """
 
     raw = routes.get("routes")
@@ -2184,11 +1221,11 @@ def build_native_exact_schedule_request(
         return None
     from .native_tools import native_file_generation, resolve_native_stage_command
 
-    command = resolve_native_stage_command("phase5", "schedule")
-    if len(command) != 3:
+    command = resolve_native_stage_command("phase5", "build-schedule")
+    if len(command) != 3 or command[1:] != ["phase5", "build-schedule"]:
         raise ValidationError(
             "indexed Phase 5 production requires the unified emuflow-native scheduler; "
-            "use build_tdm_schedule explicitly for reference/standalone comparisons"
+            "rebuild the selected native installation"
         )
     constraints = normalize_route_constraints(routes.get("constraints"), platform)
     _, arcs, capacities = build_directed_graph(platform, constraints)
@@ -2213,7 +1250,7 @@ def build_native_exact_schedule_request(
         header["bank_allocations"] = _bank_allocation_records(allocations)
     store = Path(raw.store_path)
     return NativeExactScheduleRequest(
-        (command[0], "phase5", "build-schedule"), store, native_file_generation(store), len(raw),
+        tuple(command), store, native_file_generation(store), len(raw),
         header, tuple(templates), platform, constraints, arcs, allocations,
         (tuple(sorted(fpga.id for fpga in platform.fpgas)), tuple(sorted(links)), tuple(sorted(capacities))),
     )
@@ -2300,62 +1337,23 @@ def build_tdm_schedule(
     indexed_exact = bool(
         exact_contract is not None and exact_contract.get("indexed") is True
     )
-    native_exact_schedule = False
-    use_native_exact_schedule = bool(
-        indexed_exact
-        and ratio_plan is None
-        and len(raw_routes) >= NATIVE_EXACT_SCHEDULE_MIN_ROUTES
-    )
-    native_command = None
-    native_ingress = False
-    if use_native_exact_schedule:
-        from .native_tools import resolve_native_stage_command
-        native_command = resolve_native_stage_command("phase5","schedule")
-        native_ingress = (len(native_command) > 1 and getattr(raw_routes,"_user_version",None) == 3
-                          and callable(getattr(raw_routes,"iter_native_exact_metadata",None)))
-    if ratio_plan is None and not native_ingress:
+    if ratio_plan is None:
         baseline_hops = _baseline_ratio_hops(routes,platform,arcs,bank_allocations,constraints)
     if exact_contract is None:
-        ordered_routes, active_rounds = _round_order(
-            raw_routes, planned_hops
-        )
+        ordered_routes, active_rounds = _round_order(raw_routes, planned_hops)
     else:
         if indexed_exact:
-            if not use_native_exact_schedule:
-                exact_nodes = _indexed_exact_nodes(raw_routes)
+            exact_nodes = _indexed_exact_nodes(raw_routes)
         else:
-            exact_nodes, exact_segments, exact_captures = (
-                _exact_contract_indexes(exact_contract)
-            )
-        if use_native_exact_schedule:
-            (
-                ordered_routes,
-                entries,
-                demand_completions,
-                exact_arrivals,
-            ) = _schedule_indexed_exact_native(
-                raw_routes,
-                platform,
-                constraints,
-                arcs,
-                capacity_records,
-                bank_allocations,
-                baseline_hops,
-                resolved_command=native_command,
-            )
-            native_exact_schedule = True
-        else:
-            ordered_routes = _exact_dependency_order(
-                exact_nodes, raw_routes, planned_hops
-            )
-        # Transport rounds are an implementation detail of registered-boundary
-        # transport.  Sampled virtual wires use their path-local readiness DAG.
+            exact_nodes, exact_segments, exact_captures = _exact_contract_indexes(exact_contract)
+        ordered_routes = _exact_dependency_order(exact_nodes, raw_routes, planned_hops)
+        # Sampled virtual wires use path-local readiness, not transport rounds.
         active_rounds = [0]
     completion_by_round: Dict[int, int] = {}
     prior_round_completion = -1
     active_round = None
     entry_index = 0
-    for route in ([] if native_exact_schedule else ordered_routes):
+    for route in ordered_routes:
         transport_round = route.get("transport_round", 0)
         if transport_round != active_round:
             if active_round is not None:
@@ -2555,15 +1553,7 @@ def build_tdm_schedule(
                 exact_arrivals[(route["net"], sink)] = arrival
         demand_completions.append(completion)
 
-    if not native_exact_schedule:
-        entries.sort(
-            key=lambda entry: (
-                entry["slot"],
-                entry["capacity_key"],
-                entry["lane"],
-                entry["demand"],
-            )
-        )
+    entries.sort(key=lambda entry: (entry["slot"], entry["capacity_key"], entry["lane"], entry["demand"]))
     domain_schedules = _domain_schedule_records(
         platform,
         constraints,
@@ -2750,10 +1740,6 @@ def build_tdm_schedule(
             completion_by_round,
             planned_round_one_ready,
         )
-    native_source = getattr(entries, "native_store_publication_source", None)
-    if native_source is not None:
-        native_source["route_records"] = result["routes"]
-        native_source["completion_records"] = result["demand_completions"]
     return result
 
 

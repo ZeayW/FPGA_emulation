@@ -57,7 +57,4 @@ struct ExactScheduleBuildContext {
   ExactScheduleCatalogs catalogs;
   std::vector<ExactSchedulePublicationIdentity> identities;
 };
-// Shared, checked model boundary; no strings/JSON/FFI graph transport.
-ExactScheduleModel ReadExactScheduleModel(const std::string& path);
-void WriteExactScheduleModel(const ExactScheduleModel& model, const std::string& path);
 }  // namespace emuflow::core

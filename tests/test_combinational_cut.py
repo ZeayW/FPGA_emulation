@@ -114,7 +114,6 @@ from emuflow.system_route_storage import (
 from tests.native_build import (
     emuflow_native,
     static_exact_analyzer,
-    tdm_exact_scheduler,
     tdm_ratio_optimizer,
     tdm_slot_optimizer,
     tlr_router,
@@ -3262,74 +3261,27 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             "qualification": "structural-partition-legality",
             "indexed": True,
         }
-        executable = tdm_exact_scheduler()
+        from tests.native_build import emuflow_native
+        from emuflow.tdm import build_native_exact_schedule_request
 
         def compare(candidate):
             reference = build_tdm_schedule(candidate, self.platform)
-            with (
-                patch.dict(
-                    os.environ,
-                    {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
-                ),
-                patch("emuflow.tdm.NATIVE_EXACT_SCHEDULE_MIN_ROUTES", 0),
-            ):
-                native = build_tdm_schedule(candidate, self.platform)
-            self.assertIsInstance(native["entries"], list)
-            self.assertIsNot(type(native["entries"]), list)
-            self.assertGreater(len(native["entries"]), 0)
-            self.assertEqual(list.__len__(native["entries"]), 0)
-            self.assertIsInstance(native["demand_completions"], list)
-            self.assertIsNot(type(native["demand_completions"]), list)
-            self.assertEqual(
-                list.__len__(native["demand_completions"]), 0
-            )
-            self.assertEqual(native, reference)
-            self.assertEqual(json.loads(json.dumps(native)), reference)
-            self.assertEqual(
-                validate_tdm_schedule(
-                    candidate, self.platform, native
-                )["status"],
-                "pass",
-            )
             with tempfile.TemporaryDirectory() as temporary:
-                path = Path(temporary) / "schedule.json"
-                write_tdm_schedule_storage(path, native)
-                self.assertEqual(
-                    read_tdm_schedule(path, materialize=True), reference
-                )
-                indexed_schedule = read_tdm_schedule(path)
-                if isinstance(candidate, SystemRoutesView):
-                    with (
-                        patch(
-                            "emuflow.tdm._indexed_exact_nodes",
-                            side_effect=AssertionError(
-                                "typed validation rebuilt an R-sized node map"
-                            ),
-                        ),
-                        patch(
-                            "emuflow.tdm._exact_dependency_order",
-                            side_effect=AssertionError(
-                                "typed validation rebuilt an R-sized order"
-                            ),
-                        ),
-                    ):
-                        self.assertEqual(
-                            validate_tdm_schedule(
-                                candidate,
-                                self.platform,
-                                indexed_schedule,
-                            )["status"],
-                            "pass",
-                        )
-                else:
-                    self.assertEqual(
-                        validate_tdm_schedule(
-                            candidate,
-                            self.platform,
-                            indexed_schedule,
-                        )["status"],
-                        "pass",
-                    )
+                root = Path(temporary)
+                route_path = root / "routes.json"
+                write_system_route_storage(route_path, candidate)
+                native_routes = read_system_routes(route_path)
+                with patch("emuflow.native_tools.resolve_native_stage_command",
+                           return_value=[str(emuflow_native()), "phase5", "build-schedule"]):
+                    request = build_native_exact_schedule_request(native_routes, self.platform)
+                self.assertIsNotNone(request)
+                path = root / "schedule.json"
+                write_tdm_schedule_storage(path, request)
+                self.assertEqual(read_tdm_schedule(path, materialize=True), reference)
+                with read_tdm_schedule(path) as schedule, patch(
+                    "emuflow.tdm._indexed_exact_nodes", side_effect=AssertionError("R-sized node map")), patch(
+                    "emuflow.tdm._exact_dependency_order", side_effect=AssertionError("R-sized order")):
+                    self.assertEqual(validate_tdm_schedule(native_routes, self.platform, schedule)["status"], "pass")
 
         compare(routes)
         template = next(

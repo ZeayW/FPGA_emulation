@@ -17,7 +17,7 @@ from emuflow.tdm import build_native_exact_schedule_request, build_tdm_schedule
 from emuflow.tdm_schedule_storage import read_tdm_schedule, write_tdm_schedule_storage
 from emuflow.system_route_storage import read_system_routes, write_system_route_storage
 from tests.native_build import emuflow_native, native_json_record
-from tests.test_native_schedule_ingress import _case
+from tests.native_schedule_case import _case
 
 
 def test_native_json_numbers_match_python_canonical_encoding():
@@ -67,7 +67,6 @@ def test_complete_native_producer_matches_reference_records_certificates_and_has
 
     with patch.object(type(routes["routes"]), "iter_native_exact_metadata", side_effect=AssertionError("Python R metadata")), \
          patch.object(type(routes["routes"]), "iter_native_exact_records", side_effect=AssertionError("Python H metadata")), \
-         patch("emuflow.tdm._schedule_indexed_exact_native", side_effect=AssertionError("Python result import")), \
          patch("emuflow.tdm._indexed_certificate", side_effect=AssertionError("Python readiness certificate")), \
          patch("emuflow.tdm._baseline_ratio_hops", side_effect=AssertionError("Python wire map")), \
          patch("emuflow.tdm_schedule_storage._publish_logical_schedule", side_effect=AssertionError("Python record publisher")), \
