@@ -90,7 +90,7 @@ CREATE TABLE segments(
   end_object_kind TEXT CHECK(end_object_kind IN ('pin','port')),
   cone_anchor_object_kind TEXT CHECK(cone_anchor_object_kind IN ('pin','port')),
   cone_anchor_pin TEXT,
-  measurement TEXT NOT NULL CHECK(measurement IN ('endpoint-exact','cut-net-cone-upper-bound')),
+  measurement TEXT NOT NULL CHECK(measurement IN ('endpoint-exact','cut-net-cone-upper-bound','optimized-endpoint-collection-upper-bound')),
   actual_start_object TEXT,
   actual_end_object TEXT
 );
@@ -338,7 +338,7 @@ def _validate_selector(value: Any) -> dict[str, Any]:
     source = value.get("source")
     if (
         not isinstance(counts, dict)
-        or set(counts) != _COUNT_KEYS
+        or set(counts) not in (_COUNT_KEYS, _COUNT_KEYS | {"endpoint_collection_bound_segments"})
         or any(not _strict_nonnegative_int(item) for item in counts.values())
         or not isinstance(source, dict)
         or set(source) != _SOURCE_KEYS
@@ -443,7 +443,7 @@ def _validate_segment(raw: Mapping[str, Any], header: Mapping[str, Any]) -> dict
         or not isinstance(delay, (int, float))
         or not math.isfinite(float(delay))
         or float(delay) < 0.0
-        or measurement not in {"endpoint-exact", "cut-net-cone-upper-bound"}
+        or measurement not in {"endpoint-exact", "cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"}
     ):
         raise ValidationError("logic segment timing record is malformed")
     replacement = record.get("replace_tx_endpoint")
@@ -770,7 +770,8 @@ class LogicSegmentTimingView(Mapping[str, Any]):
                     "SELECT COUNT(DISTINCT system_path),COUNT(DISTINCT member_path),"
                     "SUM(measurement='endpoint-exact'),"
                     "SUM(measurement='cut-net-cone-upper-bound'),"
-                    "MIN(seq),MAX(seq),COUNT(DISTINCT seq) FROM segments"
+                    "MIN(seq),MAX(seq),COUNT(DISTINCT seq),"
+                    "SUM(measurement='optimized-endpoint-collection-upper-bound') FROM segments"
                 ).fetchone()
         except (sqlite3.DatabaseError, ValueError, TypeError) as error:
             raise ValidationError("logic segment timing store is corrupt") from error
@@ -797,6 +798,8 @@ class LogicSegmentTimingView(Mapping[str, Any]):
             raise ValidationError(
                 "logic segment timing segment sequence is incomplete"
             )
+        if "endpoint_collection_bound_segments" in selector["counts"] or aggregate[7]:
+            actual_counts["endpoint_collection_bound_segments"] = int(aggregate[7] or 0)
         if actual_counts != selector["counts"]:
             raise ValidationError("logic segment timing row counts disagree")
         logical = hashlib.sha256(_canonical({
@@ -821,6 +824,7 @@ class LogicSegmentTimingView(Mapping[str, Any]):
             "segments": counts["segments"],
             "endpoint_exact_segments": counts["endpoint_exact_segments"],
             "cone_bound_segments": counts["cone_bound_segments"],
+            "endpoint_collection_bound_segments": counts.get("endpoint_collection_bound_segments", 0),
             "maximum_delay_ns": float(maximum),
         }
 
@@ -1017,7 +1021,8 @@ def write_logic_segment_timing_storage(
         aggregate = connection.execute(
             "SELECT COUNT(DISTINCT system_path),COUNT(DISTINCT member_path),"
             "SUM(measurement='endpoint-exact'),"
-            "SUM(measurement='cut-net-cone-upper-bound') FROM segments"
+            "SUM(measurement='cut-net-cone-upper-bound'),"
+            "SUM(measurement='optimized-endpoint-collection-upper-bound') FROM segments"
         ).fetchone()
         counts = {
             "segments": segment_count,
@@ -1028,10 +1033,11 @@ def write_logic_segment_timing_storage(
             "endpoint_exact_segments": int(aggregate[2] or 0),
             "cone_bound_segments": int(aggregate[3] or 0),
         }
+        counts["endpoint_collection_bound_segments"] = int(aggregate[4] or 0)
         coverage = dict(normalized_header["coverage"])
         for key in (
             "segments", "system_paths", "member_paths", "unsupported_member_paths",
-            "endpoint_exact_segments", "cone_bound_segments",
+            "endpoint_exact_segments", "cone_bound_segments", "endpoint_collection_bound_segments",
         ):
             coverage[key] = counts[key]
         normalized_header = {**normalized_header, "coverage": coverage}

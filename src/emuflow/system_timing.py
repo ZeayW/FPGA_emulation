@@ -834,7 +834,7 @@ def build_system_timing(
                     )
                     cone_bound_segments = sum(
                         segment.get("measurement", "endpoint-exact")
-                        == "cut-net-cone-upper-bound"
+                        in {"cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"}
                         for segment in segments
                     )
                     composite = unreplaced_interface + segment_delay

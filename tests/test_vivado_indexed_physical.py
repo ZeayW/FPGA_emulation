@@ -13,7 +13,7 @@ from emuflow.errors import ValidationError
 from emuflow.io import file_sha256
 from emuflow.vivado_backend import vivado_runtime_xdc
 from emuflow.vivado_netlist import emit_vivado_mapped_verilog
-from emuflow.vivado_physical import parse_timing_summary, validate_indexed_cell_coverage
+from emuflow.vivado_physical import parse_timing_summary
 from emuflow.vivado_physical_timing import write_vivado_local_query, import_vivado_local_timing
 from emuflow.vivado_physical_top import write_vivado_physical_top
 from emuflow.yosys import import_yosys_json
@@ -50,6 +50,7 @@ set levels {MACRO LEAF LEAF LEAF LEAF MACRO INTERNAL INTERNAL LEAF LEAF LEAF LEA
 foreach c $cells r $refs l $levels {
   dict set props $c REF_NAME $r
   dict set props $c PRIMITIVE_LEVEL $l
+  dict set props $c EMUFLOW_MAPPED yes
   dict set props $c BEL A6LUT
   dict set sites $c "site_$c"
 }
@@ -60,6 +61,8 @@ dict set sites packed5 slice0
 dict set sites packed6 slice0
 dict set props packed5 BEL B5LUT
 dict set props packed6 BEL SLICEL.B6LUT
+dict set props packed5 EMUFLOW_MAPPED ""
+dict set props packed6 EMUFLOW_MAPPED ""
 dict set sites dsp_alu dsp0
 dict set sites dsp_mul dsp0
 proc get_cells {args} {global cells; return $cells}
@@ -69,18 +72,18 @@ proc get_property {property object} {
   if {$property eq "NAME"} {return $object}
   return [dict get $props $object $property]
 }
-set result [emuflow_resource_inventory 9]
-foreach {key expected} {lut 2 dsp48 1 ff 1 carry8 1 ramb18_cells 1 ramb36_cells 1 uram288 1 physical_cells 13 infrastructure_cells 2 optimization_cells 2} {
+set result [emuflow_resource_inventory]
+foreach {key expected} {lut 2 dsp48 1 ff 1 carry8 1 ramb18_cells 1 ramb36_cells 1 uram288 1 physical_cells 13 infrastructure_cells 2 routed_cells 9 optimization_cells 2} {
   if {[dict get $result $key] != $expected} {error "$key: [dict get $result $key] != $expected"}
 }
 dict set props lut5 BEL strange
-if {![catch {emuflow_resource_inventory 9} message] || ![string match "unknown LUT BEL*" $message]} {error "bad LUT BEL accepted"}
+if {![catch {emuflow_resource_inventory} message] || ![string match "unknown LUT BEL*" $message]} {error "bad LUT BEL accepted"}
 dict set props lut5 BEL A5LUT
 dict set sites dsp_mul {}
-if {![catch {emuflow_resource_inventory 9} message] || ![string match "primitive lacks exactly one placed site*" $message]} {error "unplaced DSP accepted"}
+if {![catch {emuflow_resource_inventory} message] || ![string match "primitive lacks exactly one placed site*" $message]} {error "unplaced DSP accepted"}
 dict set sites dsp_mul dsp0
 dict set props dsp_mul PRIMITIVE_LEVEL UNKNOWN
-if {![catch {emuflow_resource_inventory 9} message] || ![string match "unknown primitive level*" $message]} {error "unknown primitive level accepted"}
+if {![catch {emuflow_resource_inventory} message] || ![string match "unknown primitive level*" $message]} {error "unknown primitive level accepted"}
 puts pass
 '''
         result = subprocess.run([shutil.which("tclsh")], input=f"source {{{helper}}}\n" + script,
@@ -279,20 +282,9 @@ puts pass
             self.assertIn("\\FDRE", text)
             self.assertIn("1'b1", text)
             self.assertNotIn("LOC =", text)
-
-    def test_cell_inventory_rejects_missing_duplicate_and_wrong_types(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            report = emit_vivado_mapped_verilog(fixture(root), root / "dut.v")
-            index = Path(report["mapped_index"]["path"])
-            inventory = root / "inventory.tsv"
-            inventory.write_text("name\tref_name\nlaunch\tFDRE\ncapture\tFDRE\n")
-            self.assertEqual(validate_indexed_cell_coverage(index, {"routed": inventory})["logical_cells"], 2)
-            for rows in ("launch\tFDRE\n", "launch\tFDRE\nlaunch\tFDRE\n", "launch\tLUT1\ncapture\tFDRE\n"):
-                with self.subTest(rows=rows):
-                    inventory.write_text("name\tref_name\n" + rows)
-                    with self.assertRaises(ValidationError):
-                        validate_indexed_cell_coverage(index, {"routed": inventory})
+            self.assertNotIn("KEEP =", text)
+            self.assertNotIn("DONT_TOUCH", text)
+            self.assertIn('EMUFLOW_SOURCE = "s', text)
 
     def test_endpoint_aggregate_accepts_negative_slack_and_rejects_bad_counts(self):
         with tempfile.TemporaryDirectory() as directory:

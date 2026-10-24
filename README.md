@@ -12,11 +12,13 @@ Optional container launchers support native-tool ABI and Tcl script bindings,
 with runtime selection separate from algorithm settings. See the
 [build instructions](docs/USER_GUIDE.md#complete-build).
 The indexed Vivado adapter consumes current Phase 6 SQLite contracts with
-preserved net identities, fixed LVDS I/O, native sequential control pins, and
+canonical net identities, fixed LVDS I/O, native sequential control pins, and
 the common physical-result contract. Real-device qualification is in progress. Its OOC implementation retains abstract external clock sources and
 does not establish board clock/skew signoff. Used undriven source nets are
 rejected before mapping or vendor implementation. Physical capacity accounting
-handles native macro expansion and shared LUT halves. See the
+handles native macro expansion and shared LUT halves.
+Indexed mapped primitives carry provenance tags without global KEEP/DONT_TOUCH
+constraints; timing coverage is checked after optimization. See the
 [Xilinx physical flow](docs/XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider) and
 [user guide](docs/USER_GUIDE.md#physical-implementation).
 The virtual BoardDB is a declared academic platform model rather than evidence

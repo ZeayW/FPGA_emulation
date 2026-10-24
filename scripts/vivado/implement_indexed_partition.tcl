@@ -1,6 +1,7 @@
 # Current indexed Phase6 -> native Vivado implementation. No placement is fixed.
 # All tool products are scratch; the Python consumer validates inventories,
 # resource budgets, fixed I/O and complete source-bound timing separately.
+# Source tags never impose KEEP/DONT_TOUCH constraints.
 if {$argc != 15} {
   error "expected PART NETLIST TOP XDC OUT CELLS PREFIX ADAPTER WRAPPER IO_XDC IO_QUERY PLACE ROUTE DUT_CLOCKS THREADS"
 }
@@ -8,21 +9,25 @@ source [file join [file dirname [info script]] resource_inventory.tcl]
 proc emuflow_decode {value} {
   return [encoding convertfrom utf-8 [binary decode hex $value]]
 }
-proc emuflow_inventory {path prefix expected} {
+proc emuflow_inventory {path prefix} {
   set stream [open $path w]
-  puts $stream "name\tref_name"
+  puts $stream "name_hex\trelative_name_hex\tref_name\tsource_origin\ttransformations_hex"
   set count 0
   foreach cell [get_cells -quiet -hier -filter {EMUFLOW_MAPPED == yes}] {
     set name [get_property NAME $cell]
+    set physical_name $name
     if {$prefix ne ""} {
       if {[string first "$prefix/" $name] != 0} {error "mapped cell outside partition: $name"}
       set name [string range $name [expr {[string length $prefix]+1}] end]
     }
-    puts $stream "$name\t[get_property REF_NAME $cell]"
+    set origin [get_property EMUFLOW_SOURCE $cell]
+    if {![regexp {^s[0-9]+$} $origin]} {error "invalid source lineage tag on $cell"}
+    set transformations "[get_property -quiet OPT_MODIFIED $cell] [get_property -quiet PHYS_OPT_MODIFIED $cell]"
+    puts $stream "[binary encode hex [encoding convertto utf-8 $physical_name]]\t[binary encode hex [encoding convertto utf-8 $name]]\t[get_property REF_NAME $cell]\t$origin\t[binary encode hex [encoding convertto utf-8 $transformations]]"
     incr count
   }
   close $stream
-  if {$count != $expected} {error "mapped cell count $count differs from $expected"}
+  return $count
 }
 proc emuflow_domain_metrics {from to} {
   if {[llength $from] == 0 || [llength $to] == 0} {return {0.0 0.0}}
@@ -43,7 +48,7 @@ if {[catch {
   if {$io_xdc ne ""} {read_xdc $io_xdc}
   synth_design -top $top -part $part -flatten_hierarchy none -mode out_of_context
   if {[llength [get_cells -quiet -hier -filter {IS_BLACKBOX == 1}]] != 0} {error "unresolved black boxes"}
-  emuflow_inventory "$out/mapped_cells.tsv" $prefix $expected
+  emuflow_inventory "$out/mapped_cells.tsv" $prefix
   set dut_clocks [get_clocks -quiet emuflow_dut_clk*]
   set fabric [get_clocks -quiet emuflow_fabric_clk]
   if {[llength $dut_clocks] != $dut_count || [llength $fabric] != 1} {
@@ -76,7 +81,7 @@ if {[catch {
   write_checkpoint -force "$out/placed.dcp"
   route_design -directive $route_directive
   write_checkpoint -force "$out/routed.dcp"
-  emuflow_inventory "$out/routed_mapped_cells.tsv" $prefix $expected
+  emuflow_inventory "$out/routed_mapped_cells.tsv" $prefix
   report_route_status -file "$out/route_status.rpt"
   report_drc -file "$out/drc.rpt"
   report_timing_summary -file "$out/timing_summary.rpt"
@@ -128,7 +133,7 @@ if {[catch {
   set cross_metrics [emuflow_domain_metrics $fabric $dut_clocks]
   set paths [get_timing_paths -quiet -max_paths 1 -nworst 1]
   if {[llength $paths] != 1} {error "implemented design has no analyzed timing path"}
-  set resources [emuflow_resource_inventory $expected]
+  set resources [emuflow_resource_inventory]
   set metrics [open "$out/implementation_metrics.tsv" w]
   puts $metrics "metric\tvalue"
   foreach {key value} [list \

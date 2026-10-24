@@ -27,17 +27,18 @@ def main():
     root.mkdir(parents=True, exist_ok=False)
     ports = {name: {"direction": direction, "bits": bits} for name, direction, bits in (
         ("clk", "input", [2]), ("clk2", "input", [3]), ("fabric_clk", "input", [4]),
-        ("d", "input", [5, 6]), ("q", "output", [8, 12]))}
+        ("d", "input", [5, 6]), ("q", "output", [8, 12]), ("alias_q", "output", [13]))}
     cells = {}
     for name, clock, data, output in (("launch", 2, 5, 7), ("capture", 2, 7, 8),
             ("launch2", 3, 6, 9), ("capture2", 3, 9, 10),
-            ("fabric_launch", 4, 10, 11), ("fabric_capture", 4, 11, 12)):
+            ("fabric_launch", 4, 10, 11), ("fabric_capture", 4, 11, 12),
+            ("capture_alias", 2, 7, 13)):
         cells[name] = {"type": "FDRE", "parameters": {"INIT": "0"}, "attributes": {},
             "port_directions": {"C": "input", "D": "input", "Q": "output", "CE": "input", "R": "input"},
             "connections": {"C": [clock], "D": [data], "Q": [output], "CE": ["1"], "R": ["0"]}}
     source = root / "source.json"
     source.write_text(json.dumps({"modules": {"dut": {"attributes": {"top": "1"},
-        "ports": ports, "cells": cells, "netnames": {f"n{n}": {"bits": [n]} for n in range(2, 13)}}}}))
+        "ports": ports, "cells": cells, "netnames": {f"n{n}": {"bits": [n]} for n in range(2, 14)}}}}))
     ir = root / "source.emuir.sqlite"
     import_yosys_json(source).save(ir)
     mapped = root / "dut.v"
@@ -80,7 +81,8 @@ def main():
             (("fabric_launch", "Q", 0), ("fabric_capture", "D", 0), "fabric_clk", 4.0),
             (("capture2", "Q", 0), ("fabric_launch", "D", 0), "fabric_clk", 4.0),
             ((None, "d", 0), ("launch", "D", 0), "clk", 20.0),
-            (("capture", "Q", 0), (None, "q", 0), "clk", 20.0))):
+            (("capture", "Q", 0), (None, "q", 0), "clk", 20.0),
+            (("launch", "Q", 0), ("capture_alias", "D", 0), "clk", 20.0))):
         endpoint = lambda value: dict(zip(("instance", "port", "bit"), value))
         paths.append({"id": f"path{index}", "clock_domain": clock, "clock_period_ns": period,
             "fixed_delay_ns": 2.0, "slack_ns": period - 2.0,
@@ -93,11 +95,14 @@ def main():
         assignment={"design": "dut"}, source_manifest=seals, local_paths_by_fpga={"fpga0": paths}))
     report = run_indexed_vivado_partition(fpga="fpga0", part="xcvu19p-fsva3824-2-e", ir_path=ir,
         mapped_verilog_path=mapped, mapped_report=mapped_report, runtime=runtime,
-        original_cells=6, transport_cells=0, output_dir=root / "physical", executable=args.vivado,
+        original_cells=7, transport_cells=0, output_dir=root / "physical", executable=args.vivado,
         virtual_io_contract=contract, local_identity_path=identity, local_query_path=query,
         place_directive=args.place_directive)
+    if report["result"]["cell_accounting"]["unretained_source_cells"] < 1:
+        raise RuntimeError("qualification did not exercise duplicate-register optimization")
     write_json(root / "qualification.json", {"status": "pass", "scope": "synthetic-indexed-physical-only",
         "tool": report["tool"], "result": report["result"], "fixed_io": report["virtual_io_implementation"],
+        "cell_lineage": report["cell_coverage"],
         "local_timing": report["local_path_timing"]["import"]})
 
 

@@ -7,6 +7,7 @@ created.  Net ordinals deliberately agree with the physical timing queries.
 from __future__ import annotations
 
 import os
+import sqlite3
 import uuid
 from pathlib import Path
 from typing import Any, Mapping
@@ -14,6 +15,7 @@ from typing import Any, Mapping
 from .errors import ValidationError
 from .io import file_sha256, write_json
 from .verilog import _emittable_parameters, _identifier, _parameter
+from .vivado_lineage import LINEAGE_POLICY, primitive_function_signature
 
 
 def emit_indexed_vivado_verilog(
@@ -28,6 +30,12 @@ def emit_indexed_vivado_verilog(
     index_path = output_path.with_suffix(".mapped.sqlite")
     mapped_report = emit_xilinx_mapped_index(ir_path, index_path)
     temporary = output_path.with_name(f".{output_path.name}.{uuid.uuid4().hex}.tmp")
+    functions_path = output_path.with_suffix(".functions.sqlite")
+    functions_temporary = temporary.with_suffix(".sqlite")
+    functions = sqlite3.connect(functions_temporary)
+    functions.execute("CREATE TABLE signatures(seq INTEGER PRIMARY KEY,signature TEXT NOT NULL)")
+    functions.execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+    functions.execute("INSERT INTO metadata VALUES ('mapped_index_sha256',?)", (mapped_report["index_sha256"],))
 
     def bit(value: Any) -> str:
         if isinstance(value, int) and not isinstance(value, bool) and value >= 2:
@@ -73,7 +81,12 @@ def emit_indexed_vivado_verilog(
                         line(f"  assign {target} = {bit(value)};")
                     else:
                         raise ValidationError("Vivado indexed top-level inout is unsupported")
+            source_ordinals = iter(mapped.connection.execute("SELECT id,seq FROM cells ORDER BY seq"))
             for name, cell in mapped.cells.items():
+                source_name, source_seq = next(source_ordinals)
+                if source_name != name:
+                    raise ValidationError("Vivado source ordinal stream disagrees")
+                functions.execute("INSERT INTO signatures VALUES (?,?)", (source_seq, primitive_function_signature(cell)))
                 parameters = _emittable_parameters(cell)
                 parameter_text = ""
                 if parameters:
@@ -81,9 +94,9 @@ def emit_indexed_vivado_verilog(
                         f"    .{_identifier(key)}({_parameter(value)})"
                         for key, value in sorted(parameters.items())
                     ) + "\n  )"
-                # Stable primitive identity is required by source-bound timing
-                # and cell accounting. Added clock/I/O cells are untagged.
-                line('  (* KEEP = "yes", DONT_TOUCH = "yes", EMUFLOW_MAPPED = "yes" *)')
+                # Metadata tracks surviving/replicated objects; it must never
+                # constrain synthesis or physical optimization.
+                line(f'  (* EMUFLOW_MAPPED = "yes", EMUFLOW_SOURCE = "s{source_seq}" *)')
                 line(f"  {_identifier(cell['type'])}{parameter_text} {_identifier(name)}(")
                 connections = []
                 for port, values in sorted(cell["connections"].items()):
@@ -98,8 +111,14 @@ def emit_indexed_vivado_verilog(
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, output_path)
+        functions.execute("CREATE INDEX signatures_function ON signatures(signature,seq)")
+        functions.commit()
+        functions.close()
+        os.replace(functions_temporary, functions_path)
     finally:
+        functions.close()
         temporary.unlink(missing_ok=True)
+        functions_temporary.unlink(missing_ok=True)
     report = {
         "schema": "emuflow.vivado-netlist-report/v1", "status": "pass",
         "provider": "compact-emuir-to-vivado-indexed-primitives-v1",
@@ -109,6 +128,8 @@ def emit_indexed_vivado_verilog(
         "emitted_inventory": mapped_report["audit"]["cell_types"],
         "output": str(output_path), "output_sha256": file_sha256(output_path),
         "mapped_index": {"path": str(index_path), "sha256": mapped_report["index_sha256"]},
+        "source_functions": {"path": str(functions_path), "sha256": file_sha256(functions_path)},
+        "optimization_policy": LINEAGE_POLICY,
         "primitive_audit": mapped_report["audit"],
         "source_validation": source_validation,
     }

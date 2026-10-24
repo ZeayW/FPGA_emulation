@@ -2172,7 +2172,7 @@ def _indexed_logic_measurement_import(
                         and fields[1] in {"launch", "transition", "capture"}
                         and bool(segment_id and start_object and end_object)
                         and measurement in {
-                            "endpoint-exact", "cut-net-cone-upper-bound"
+                            "endpoint-exact", "cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"
                         }
                         and (not vivado or bool(actual_start and actual_end))
                         and math.isfinite(delay)
@@ -2540,6 +2540,7 @@ def import_vivado_logic_segment_timing(
             or measurement not in {
                 "endpoint-exact",
                 "cut-net-cone-upper-bound",
+                "optimized-endpoint-collection-upper-bound",
             }
             or not actual_start
             or not actual_end
@@ -2670,6 +2671,7 @@ def validate_logic_segment_timing(
     maximum = 0.0
     endpoint_exact = 0
     cone_bound = 0
+    collection_bound = 0
     for segment in database["segments"]:
         delay = segment.get("delay_ns")
         if (
@@ -2683,6 +2685,7 @@ def validate_logic_segment_timing(
         if measurement not in {
             "endpoint-exact",
             "cut-net-cone-upper-bound",
+            "optimized-endpoint-collection-upper-bound",
         }:
             raise ValidationError("logic segment timing measurement is invalid")
         if measurement == "cut-net-cone-upper-bound":
@@ -2693,6 +2696,8 @@ def validate_logic_segment_timing(
                     "logic segment cone-bound trace is invalid"
                 )
             cone_bound += 1
+        elif measurement == "optimized-endpoint-collection-upper-bound":
+            collection_bound += 1
         else:
             endpoint_exact += 1
         for field in ("actual_start_object", "actual_end_object"):
@@ -2709,5 +2714,6 @@ def validate_logic_segment_timing(
         "segments": len(database["segments"]),
         "endpoint_exact_segments": endpoint_exact,
         "cone_bound_segments": cone_bound,
+        "endpoint_collection_bound_segments": collection_bound,
         "maximum_delay_ns": maximum,
     }

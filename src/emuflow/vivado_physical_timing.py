@@ -83,7 +83,7 @@ def import_vivado_local_timing(input_path: Path, identity_path: Path, output_pat
                         valid = (len(fields) == 8 and fields[1] == "local" and record is not None
                                  and bytes.fromhex(fields[3]).decode("utf-8") == record["start_pin"]
                                  and bytes.fromhex(fields[4]).decode("utf-8") == record["end_pin"]
-                                 and fields[5] == "endpoint-exact"
+                                 and fields[5] in {"endpoint-exact", "optimized-endpoint-collection-upper-bound"}
                                  and bool(fields[6] and fields[7]) and math.isfinite(delay) and delay >= 0)
                     except (IndexError, ValueError, UnicodeDecodeError) as error:
                         raise ValidationError("Vivado local timing row is invalid") from error

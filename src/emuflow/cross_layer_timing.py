@@ -734,7 +734,7 @@ def _build_physical_binding(
         delays = [float(item["delay_ns"]) for item in measurements]
         cone_bound = any(
             item.get("measurement", "endpoint-exact")
-            == "cut-net-cone-upper-bound"
+            in {"cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"}
             for item in measurements
         )
         logic_records[segment_id] = {

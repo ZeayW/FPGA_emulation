@@ -1503,7 +1503,7 @@ the Python event propagator or consume its per-path numerical results.
                     clock_domain=record.get("clock_domain"),
                     target_period_ns=record["clock_period_ns"],
                     physical_logic_segments_cone_bound=any(
-                        s.get("measurement") == "cut-net-cone-upper-bound"
+                        s.get("measurement") in {"cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"}
                         for s in chain
                     ),
                     interconnect_delay_model=(

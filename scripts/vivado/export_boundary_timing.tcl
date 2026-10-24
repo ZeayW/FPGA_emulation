@@ -21,7 +21,17 @@ proc emuflow_hier_name {prefix name} {
   }
   return "$prefix/$name"
 }
-proc emuflow_resolve_cell {name} {
+proc emuflow_resolve_cell {name {resolved_hex ""}} {
+  if {$resolved_hex ne ""} {
+    set result [list]
+    foreach candidate [split $resolved_hex ,] {
+      set actual [emuflow_hex_decode $candidate]
+      set cell [emuflow_resolve_cell $actual]
+      if {[llength $cell] != 1 || [get_property NAME $cell] ne $actual} {error "lineage cell identity disagrees: $actual"}
+      lappend result $cell
+    }
+    return $result
+  }
   set object [get_cells -quiet -hier [list $name]]
   # get_cells pattern lookup can reject synthesized names containing '$' and
   # ':' after a routed checkpoint is reopened.  Exact NAME filtering retains
@@ -42,7 +52,8 @@ proc emuflow_hex_encode {value} {
 open_checkpoint $input_dcp
 emuflow_use_data_path_constraints
 set input [open $query_path r]
-if {[gets $input header] < 0 || $header ne "endpoint_hex\tkind\texternal_port_hex\tbit\tlogical_net_hex\tboundary_cell_hex"} {
+set legacy_header "endpoint_hex\tkind\texternal_port_hex\tbit\tlogical_net_hex\tboundary_cell_hex"
+if {[gets $input header] < 0 || $header ni [list $legacy_header "$legacy_header\tresolved_boundary_cells_hex"]} {
   error "invalid boundary timing query header"
 }
 
@@ -54,7 +65,7 @@ while {[gets $input line] >= 0} {
     continue
   }
   set fields [split $line "\t"]
-  if {[llength $fields] != 6} {
+  if {[llength $fields] != [llength [split $header "\t"]]} {
     error "malformed boundary timing query row"
   }
   set endpoint_hex [lindex $fields 0]
@@ -63,6 +74,7 @@ while {[gets $input line] >= 0} {
   set bit [lindex $fields 3]
   set logical_net [emuflow_hex_decode [lindex $fields 4]]
   set boundary_cell [emuflow_hex_decode [lindex $fields 5]]
+  set boundary_hint [lindex $fields 6]
   set port_bit [format {%s[%d]} $port $bit]
   if {[dict exists $fixed_io_map $port_bit]} {
     set port_bit [dict get $fixed_io_map $port_bit]
@@ -80,10 +92,10 @@ while {[gets $input line] >= 0} {
   if {$kind eq "tx"} {
     if {$boundary_cell ne ""} {
       set boundary_cell [emuflow_hier_name $hierarchy_prefix $boundary_cell]
-      set cell_object [emuflow_resolve_cell $boundary_cell]
+      set cell_object [emuflow_resolve_cell $boundary_cell $boundary_hint]
       set source_pin [get_pins -quiet -of_objects $cell_object \
         -filter {REF_PIN_NAME == Q}]
-      if {[llength $source_pin] != 1} {
+      if {[llength $source_pin] == 0 || [llength $source_pin] != [llength $cell_object]} {
         error "TX endpoint [emuflow_hex_decode $endpoint_hex] has no unique shadow Q pin"
       }
       set paths [get_timing_paths -quiet -max_paths 1 -nworst 1 \
@@ -142,13 +154,13 @@ while {[gets $input line] >= 0} {
     set end_object $port_bit
   } elseif {$kind eq "rx"} {
     set boundary_cell [emuflow_hier_name $hierarchy_prefix $boundary_cell]
-    set cell_object [emuflow_resolve_cell $boundary_cell]
-    if {[llength $cell_object] != 1} {
+    set cell_object [emuflow_resolve_cell $boundary_cell $boundary_hint]
+    if {[llength $cell_object] == 0} {
       error "RX endpoint [emuflow_hex_decode $endpoint_hex] boundary cell is absent"
     }
     set data_pin [get_pins -quiet -of_objects $cell_object \
       -filter {REF_PIN_NAME == D}]
-    if {[llength $data_pin] != 1} {
+    if {[llength $data_pin] == 0 || [llength $data_pin] != [llength $cell_object]} {
       error "RX endpoint [emuflow_hex_decode $endpoint_hex] has no unique D pin"
     }
     set paths [get_timing_paths -quiet -max_paths 1 -nworst 1 \
@@ -168,6 +180,11 @@ while {[gets $input line] >= 0} {
   set delay [get_property DATAPATH_DELAY [lindex $paths 0]]
   if {$delay eq ""} {
     error "endpoint [emuflow_hex_decode $endpoint_hex] has no datapath delay"
+  }
+  # Candidate replicas are queried together; retain the actual worst endpoints.
+  if {$boundary_hint ne ""} {
+    set start_object [get_property STARTPOINT_PIN [lindex $paths 0]]
+    set end_object [get_property ENDPOINT_PIN [lindex $paths 0]]
   }
   puts $output "$endpoint_hex\t$kind\t$delay\t[emuflow_hex_encode $start_object]\t[emuflow_hex_encode $end_object]"
   incr emitted

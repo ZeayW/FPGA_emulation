@@ -32,7 +32,7 @@ place_design -directive Quick
 route_design
 set incomplete [get_nets -quiet -hier -filter {ROUTE_STATUS == UNROUTED || ROUTE_STATUS == PARTIAL || ROUTE_STATUS == CONFLICTS}]
 if {[llength $incomplete] != 0} {error "resource probe has incomplete routing"}
-set result [emuflow_resource_inventory 3]
+set result [emuflow_resource_inventory]
 foreach {key expected} {lut 1 ff 1 dsp48 1} {
   if {[dict get $result $key] != $expected} {error "unexpected resource count: $key=[dict get $result $key]"}
 }

@@ -75,7 +75,8 @@
         "data_path_delay": {"const": "routed-vendor-device"},
         "external_clock_sources": {"const": "abstract-unbound"},
         "absolute_clock_insertion_and_skew": {"const": "not-qualified"},
-        "board_signoff": {"const": false}
+        "board_signoff": {"const": false},
+        "cell_accounting_policy": {"const": "vivado-optimized-source-lineage-v1"}
       },
       "additionalProperties": false
     },

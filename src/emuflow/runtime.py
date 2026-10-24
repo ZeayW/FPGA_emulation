@@ -694,12 +694,9 @@ def validate_physical_summary(
                 raise ValidationError(
                     f"physical summary {fpga_id}.{field} must be non-negative"
                 )
-        if item["routed_cells"] != (
-            item["original_cells"] + item["transport_cells"]
-        ):
-            raise ValidationError(
-                f"physical summary {fpga_id} cell accounting is inconsistent"
-            )
+        from .physical_backend import validate_source_cell_accounting
+        validate_source_cell_accounting(item, backend=item.get("backend", ""),
+                                        analysis_scope=item.get("analysis_scope", {}))
         optimization_cells = item.get("optimization_cells", 0)
         if (
             isinstance(optimization_cells, bool)

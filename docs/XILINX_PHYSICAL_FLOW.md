@@ -182,11 +182,24 @@ LUT6_2 outputs, and the qualified RAMB18 physical write-enable aliases.
 The provider uses the Phase 6 sealed differential adapter and XDC through a
 physical wrapper. Post-route checks require exact P/N package pins,
 IOSTANDARD, IBUFDS/OBUFDS ownership (including Vivado's native DIFFINBUF/IBUFCTRL
-decomposition), complete mapped-cell identity/type coverage,
-zero unrouted nets, and zero blocking DRC violations. Native mapped primitives
-are initially preserved with KEEP/DONT_TOUCH to retain source-bound timing
-identities. No placement LOC/BEL or implicit pblock is imposed. This identity
-policy limits optimization across primitives and may affect timing quality.
+decomposition), zero unrouted nets, and zero blocking DRC violations.
+Mapped primitives carry source tags, without global KEEP/DONT_TOUCH, LOC/BEL,
+or implicit pblocks. Synthesis and physical optimization may remove, merge,
+replicate, or change cells. Indexed inventories record observed source lineage
+and unretained source tags; this census does not certify functional equivalence.
+The explicit `vivado-optimized-source-lineage-v1` policy separates this source
+census from actual routed physical components and inserted infrastructure.
+Timing queries resolve all matching typed descendants. A removed object may
+alias another source only when the primitive, parameters, pin interfaces and
+original input connections are identical. Queries across descendant collections
+take the worst physical endpoint delay. Unsupported transformations or missing
+associations fail timing coverage; they never trigger blanket endpoint locks,
+silently drop original paths, or qualify incomplete global WNS/TNS. Fixed I/O
+and the complete original TimingPathDB remain independently checked.
+Collections with multiple physical endpoints are labelled
+`optimized-endpoint-collection-upper-bound`, rather than endpoint-exact.
+Sequential transformations whose cycle correspondence is not established
+are rejected by the timing adapter, without disabling the vendor optimization.
 Whole-device resource budgets also apply to the final physical cell population.
 Resource accounting excludes MACRO wrappers while retaining LEAF and INTERNAL
 implementation components. LUT capacity is counted by occupied site/LUT letter

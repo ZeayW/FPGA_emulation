@@ -35,16 +35,18 @@ proc emuflow_load_fixed_io_map {path} {
 proc emuflow_validate_segment_extent {path start end measurement} {
   set actual_start [get_property STARTPOINT_PIN $path]
   set actual_end [get_property ENDPOINT_PIN $path]
-  set requested_start [get_property NAME $start]
-  set requested_end [get_property NAME $end]
-  if {$actual_end ne $requested_end} {
+  set requested_start [list]
+  foreach object $start {lappend requested_start [get_property NAME $object]}
+  set requested_end [list]
+  foreach object $end {lappend requested_end [get_property NAME $object]}
+  if {[lsearch -exact $requested_end $actual_end] < 0} {
     error "timing query includes a suffix beyond requested endpoint $requested_end: $actual_end"
   }
-  if {$measurement eq "cut-net-cone-upper-bound" || $actual_start eq $requested_start} {return}
+  if {$measurement eq "cut-net-cone-upper-bound" || [lsearch -exact $requested_start $actual_start] >= 0} {return}
   # A sequential Q launch includes clock-to-Q, as does the common routed
   # timing model. Vivado names that path's start at the SAME primitive clock.
   # A through query starting in another cell would include an unrelated prefix.
-  if {[get_property CLASS $start] eq "pin"} {
+  if {[lindex [get_property CLASS $start] 0] eq "pin"} {
     set cell [get_cells -quiet -of_objects $start]
     foreach pin [get_pins -quiet -of_objects $cell -filter {IS_CLOCK == 1}] {
       if {[get_property NAME $pin] eq $actual_start} {return}

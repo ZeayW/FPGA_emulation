@@ -37,6 +37,14 @@ Physical bounds remain bounds. Model-only board timing does not become measured
 hardware data. Hold/min-delay, metastability, clock-tree skew, unconstrained CDC,
 and silicon PVT signoff require additional inputs and validation.
 
+An optimized Vivado source endpoint can have several physical descendants.
+Taking their worst routed delay is an
+`optimized-endpoint-collection-upper-bound`, not an exact original path.
+Typed segment stores retain this measurement kind and its separate count.
+The historical `cone_bound_logic_paths` aggregate includes conservative endpoint
+collection bounds, as well as cone and local-path bounds; it is excluded from
+`endpoint_exact_logic_paths`. Complete original-member coverage remains required.
+
 ## Qualification
 
 Use hand-computed and adversarial cases for local paths, slot zero, multi-hop

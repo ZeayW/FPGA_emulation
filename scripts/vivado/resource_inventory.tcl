@@ -5,8 +5,8 @@ proc emuflow_placed_sites {cell} {
   if {[llength $sites] != 1} {error "primitive lacks exactly one placed site: $cell"}
   return [get_property NAME $sites]
 }
-proc emuflow_resource_inventory {expected} {
-  set counts [dict create physical_cells 0 infrastructure_cells 0 lut 0 ff 0 \
+proc emuflow_resource_inventory {} {
+  set counts [dict create physical_cells 0 infrastructure_cells 0 routed_cells 0 optimization_cells 0 lut 0 ff 0 \
     dsp48 0 carry8 0 uram288 0 ramb18_cells 0 ramb36_cells 0]
   set occupied [dict create]
   foreach cell [get_cells -quiet -hier -filter {IS_PRIMITIVE && REF_NAME != GND && REF_NAME != VCC}] {
@@ -18,6 +18,10 @@ proc emuflow_resource_inventory {expected} {
     if {[string match BUFG* $ref] || [string match IBUF* $ref] ||
         [string match OBUF* $ref] || $ref eq "DIFFINBUF"} {
       dict incr counts infrastructure_cells
+    } elseif {[get_property EMUFLOW_MAPPED $cell] eq "yes"} {
+      dict incr counts routed_cells
+    } else {
+      dict incr counts optimization_cells
     }
     if {[string match LUT* $ref]} {
       set site [emuflow_placed_sites $cell]
@@ -42,8 +46,5 @@ proc emuflow_resource_inventory {expected} {
   foreach key {lut dsp48 carry8 uram288} {
     if {[dict exists $occupied $key]} {dict set counts $key [dict size [dict get $occupied $key]]}
   }
-  set optimization [expr {[dict get $counts physical_cells] - $expected - [dict get $counts infrastructure_cells]}]
-  if {$optimization < 0} {error "mapped physical accounting is inconsistent"}
-  dict set counts optimization_cells $optimization
   return $counts
 }

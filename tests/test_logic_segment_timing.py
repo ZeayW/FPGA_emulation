@@ -1340,6 +1340,17 @@ class LogicSegmentTimingTest(unittest.TestCase):
                     database["segments"][0]["actual_start_object"],
                     "real_ff/C",
                 )
+            collection_fields = list(fields)
+            collection_fields[5] = "optimized-endpoint-collection-upper-bound"
+            raw.write_text(raw.read_text().splitlines()[0]+"\n"+"\t".join(collection_fields)+"\n")
+            collection_output = root / "collection.json"
+            collection = import_vivado_logic_segment_timing(raw, identity_path, collection_output, allow_legacy_identity=True)
+            self.assertEqual(collection["endpoint_collection_bound_segments"], 1)
+            self.assertEqual(collection["endpoint_exact_segments"], 0)
+            self.assertEqual(collection["cone_bound_segments"], 0)
+            with read_logic_segment_timing_storage(collection_output) as database:
+                self.assertEqual(database.validate_timing()["endpoint_collection_bound_segments"], 1)
+                self.assertEqual(database["segments"][0]["measurement"], collection_fields[5])
 
     @staticmethod
     def _typed_identity(root, count=3):
