@@ -55,8 +55,8 @@ class PhysicalTransportTest(unittest.TestCase):
             report = rewire_transport_buffers(source, handoff, output)
             changed = EmuIR.load(output).value
             self.assertEqual(report['summary']['moved_sinks'], 4)
-            self.assertEqual(report['summary']['before_manhattan'], 400)
-            self.assertEqual(report['summary']['after_manhattan'], 0)
+            self.assertEqual(report['summary']['before_manhattan'], 408)
+            self.assertEqual(report['summary']['after_manhattan'], 16)
             self.assertEqual(changed['instances'], original['instances'])
             self.assertEqual(changed['nets'][0], original['nets'][0])
             original_pins = sorted((s['instance'], s['port'], s['bit'])

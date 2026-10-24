@@ -78,8 +78,10 @@ heuristic, alternating capacitated assignment with median recentering. Farthest
 point seeding escapes coincident preliminary buffer positions. It retains the
 original assignment unless within-group Manhattan distance strictly decreases,
 measured against optimally recentered original groups. Returned median centers
-are guidance for fresh placement, not legal site assignments. Every branch keeps its original fanout;
-no resource is added and all endpoint fields are preserved. Missing coordinates
+are guidance for fresh placement, not legal site assignments. Every branch keeps
+its original fanout; no resource is added and all endpoint fields are preserved.
+Distances and centers use the physical slice X/Y lattice rather than potentially
+anisotropic architecture coordinates. Non-slice sinks skip their entire group. Missing coordinates
 skip the whole group. Each move is recorded with the original and new net
 ordinals, input identities, and source/output hashes.
 

@@ -10,6 +10,7 @@ from collections import Counter, defaultdict
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import uuid
@@ -110,11 +111,17 @@ def rewire_transport_buffers(source: Path, handoff: Path, output: Path):
         db.execute("ATTACH DATABASE ? AS physical", (
             handoff.resolve().as_uri() + "?mode=ro&immutable=1",
         ))
-        positions = {int(row[0]): (int(row[1]), int(row[2])) for row in db.execute(
-            "SELECT t.seq,c.x,c.y FROM cell_records t "
+        # Handoff x/y are architecture coordinates, whose horizontal scale
+        # may encode resource columns. Use the physical slice lattice for
+        # transport LUT/FF geometry rather than mixing incompatible axes.
+        positions = {}
+        for row in db.execute(
+            "SELECT t.seq,a.physical_site FROM cell_records t "
             "JOIN physical.assignment a ON a.instance='__emuflow_transport__/'||t.id "
-            "JOIN physical.cluster c ON c.ordinal=a.cluster_ordinal"
-        )}
+        ):
+            match = re.fullmatch(r'SLICE_X(\d+)Y(\d+)', row[1])
+            if match:
+                positions[int(row[0])] = tuple(map(int, match.groups()))
         groups = defaultdict(list)
         names = {}
         for row in db.execute(
@@ -205,6 +212,7 @@ def rewire_transport_buffers(source: Path, handoff: Path, output: Path):
         return {'schema': 'emuflow.transport-physical-rewire/v1', 'status': 'candidate',
                 'source_sha256': source_sha, 'placement_handoff_sha256': handoff_sha,
                 'objective': 'capacity-preserving-sink-cluster-median-distance',
+                'coordinate_system': 'physical-slice-xy',
                 'output_sha256': file_sha256(output), 'groups': records,
                 'summary': {'improved_groups': sum(r['status'] == 'improved' for r in records),
                             'moved_sinks': sum(len(r.get('moves', [])) for r in records),
