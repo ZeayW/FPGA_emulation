@@ -237,8 +237,7 @@ patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBui
   if (primary_view) primary_view->ReleasePages();
   const auto owner_of=[&](std::uint64_t cell) { return primary ? primary_view->Owner(cell) : owner.at(cell); };
   weights.clear(); weights.shrink_to_fit(); initial.clear(); initial.shrink_to_fit(); observed.clear(); offsets.clear(); fixed.clear();
-  SqliteStore source_store(inputs[0]);
-  auto& source=source_store.database();
+  auto& source=ir.store().database();
   auto schema=source.Prepare("SELECT value FROM metadata WHERE key='logical_schema'");
   Check(schema.Step() && schema.Text(0)=="emuflow.emuir/v1","PATRON EmuIR logical schema disagrees");
   auto count_shape=source.Prepare("SELECT (SELECT COUNT(*) FROM json_each(m.value)) FROM metadata m WHERE key='record_counts_json'");

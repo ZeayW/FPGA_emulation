@@ -54,8 +54,7 @@ void BuildPartitionClusters(const std::vector<ArtifactRef>& inputs,const std::st
   std::vector<unsigned char> released(bytes); request.ReadBytes(released.data(),released.size());
   if (ir.counts().nets%8 && bytes)
     Check((released.back()>>(ir.counts().nets%8))==0,"invalid primary cluster eligible padding");
-  SqliteStore source_store(inputs[0]);
-  auto& source=source_store.database();
+  auto& source=ir.store().database();
   auto logical=source.Prepare("SELECT value FROM metadata WHERE key='logical_schema'");
   Check(logical.Step() && logical.Text(0)=="emuflow.emuir/v1","invalid primary cluster logical schema");
   std::vector<std::uint32_t> seq_to_ordinal(count,missing);

@@ -39,6 +39,9 @@ struct EmuirEndpoint {
 class EmuirView {
  public:
   explicit EmuirView(const ArtifactRef& artifact);
+  // Phase-specific ordered joins borrow this same owner, not a second source
+  // connection/cache with an independent lifetime or schema interpretation.
+  SqliteStore& store() { store_.RequireUnchanged();return store_; }
   const EmuirCounts& counts() const { return counts_; }
   EmuirNetId Net(std::uint64_t sequence) const;
   std::string NetName(const EmuirNetId& net);

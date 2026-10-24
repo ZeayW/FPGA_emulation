@@ -134,7 +134,9 @@ partition/cell/net/pin coordinates, replica names, top endpoints and synthetic
 shadow identities. References to upstream source sequences require an explicitly
 paired source artifact; equal integers never prove a cross-store identity.
 `RouteView` and the native ScheduleStore producer use the same ownership and
-publication facilities. The schema registry also names mapped/physical handoffs
+publication facilities. Candidate construction, primary clustering and PATRON
+joins borrow the existing `EmuirView` store, sharing its source connection/cache
+and lifetime. The schema registry also names mapped/physical handoffs
 and boundary, logic-segment and local-path timing stores. Their phase-specific
 readers and independent electrical/timing validators retain semantic authority.
 

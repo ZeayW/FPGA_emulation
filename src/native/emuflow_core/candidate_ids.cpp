@@ -91,8 +91,7 @@ void BuildCandidateIds(const std::vector<ArtifactRef>& inputs,const std::string&
   const auto cut_catalog=Catalog(request); const std::set<std::string> cut_classes(cut_catalog.begin(),cut_catalog.end());
   Check(cut_classes.count("combinational") && cut_classes.count("clock") && cut_classes.count("reset"),"incomplete candidate cut policy");
   request.RequireEnd();
-  SqliteStore source_store(inputs[0]);
-  auto& source=source_store.database();
+  auto& source=ir.store().database();
   auto identity=source.Prepare("SELECT (SELECT value FROM metadata WHERE key='logical_schema'),"
       "(SELECT count(*) FROM json_each((SELECT value FROM metadata WHERE key='record_counts_json')))");
   Check(identity.Step() && identity.Text(0)=="emuflow.emuir/v1" && identity.TypedInteger(1)==3,"invalid candidate logical/count schema");
