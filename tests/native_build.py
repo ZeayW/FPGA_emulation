@@ -169,33 +169,6 @@ def tdm_partition_feedback() -> Path:
 
 
 @lru_cache(maxsize=1)
-def patron_refiner() -> Path:
-    compiler = (
-        shutil.which("c++")
-        or shutil.which("g++")
-        or shutil.which("clang++")
-    )
-    if compiler is None:
-        raise RuntimeError("a C++17 compiler is required for PATRON tests")
-    executable = Path(_BUILD_ROOT.name) / "emuflow_patron_refiner"
-    subprocess.run(
-        [
-            compiler,
-            "-std=c++17",
-            "-O2",
-            str(ROOT / "src/native/patron_refiner.cpp"),
-            str(ROOT / "src/native/emuflow_core/artifact_io.cpp"),
-            "-I",
-            str(ROOT / "src/native"),
-            "-o",
-            str(executable),
-        ],
-        check=True,
-    )
-    return executable
-
-
-@lru_cache(maxsize=1)
 def static_exact_analyzer() -> Path:
     compiler = (
         shutil.which("c++")

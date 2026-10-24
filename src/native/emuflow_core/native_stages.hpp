@@ -8,7 +8,7 @@ namespace emuflow::native {
 core::ExactScheduleSolution ComputeStaticExactSchedule(const core::ExactScheduleModel& model);
 
 void RefinePatron(const std::string& input_path, const std::string& output_path,
-                  bool typed_input, bool summary_output, bool typed_output);
+                  bool summary_output, bool typed_output);
 
 void AnalyzeStaticExact(const std::string& input_path,
                         const std::string& output_path,

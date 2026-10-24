@@ -70,7 +70,7 @@ from emuflow.sta import (
     import_sta_path_database_tsv_streaming,
 )
 from tests.test_phase5 import _link, _platform_value
-from tests.native_build import patron_refiner, emuflow_native
+from tests.native_build import emuflow_native
 
 
 def _endpoint(instance: str, port: str) -> dict:
@@ -426,7 +426,7 @@ class PartitionPressureTest(unittest.TestCase):
                 self.route_constraints,
                 compact_model,
                 compact_initial,
-                executable=str(patron_refiner()),
+                executable=str(emuflow_native()),
                 max_moves=0,
                 output_validation="online",
                 retain_trace_seals=False,
@@ -504,7 +504,7 @@ class PartitionPressureTest(unittest.TestCase):
                 self.route_constraints,
                 compact_model,
                 compact_initial,
-                executable=str(patron_refiner()),
+                executable=str(emuflow_native()),
                 max_moves=0,
                 output_validation="caller",
                 retain_trace_seals=False,
@@ -540,7 +540,7 @@ class PartitionPressureTest(unittest.TestCase):
                     self.route_constraints,
                     self.model,
                     self.initial,
-                    executable=str(patron_refiner()),
+                    executable=str(emuflow_native()),
                     max_moves=0,
                 )
 
@@ -549,20 +549,25 @@ class PartitionPressureTest(unittest.TestCase):
                 self.initial["cluster_assignment"],
             )
             self.assertEqual(
-                trace["native_input_transport"], "atomic-text-file"
+                trace["native_input_transport"], "atomic-binary-file"
             )
-            self.assertIsNone(trace["native_input_crc32"])
+            self.assertIsInstance(trace["native_input_crc32"], int)
             self.assertEqual(
                 copy_path.stat().st_size, trace["native_input_bytes"]
             )
             self.assertGreater(trace["native_input_records"], 0)
-            self.assertEqual(
-                copy_path.read_text().splitlines()[0],
-                "EMUFLOW_PATRON_INPUT_V6_BANKS_V1",
+            self.assertEqual(copy_path.read_bytes()[:8], b"EMPATRN1")
+            pipe_path = Path(temporary) / "pipe.bin"
+            _write_patron_native_input(
+                None, self.platform, self.clusters, self.constraints,
+                self.route_constraints, self.model, self.initial, 0, 6,
+                _writer=_NativeBinaryPipeWriter(pipe_path.open("wb")),
             )
+            self.assertEqual(copy_path.read_bytes(), pipe_path.read_bytes())
+            self.assertEqual(trace["native_input_crc32"], zlib.crc32(copy_path.read_bytes()[:-12]))
 
-    def test_unified_patron_core_matches_standalone_and_reports_failures(self):
-        unified, standalone = emuflow_native(), patron_refiner()
+    def test_unified_patron_pipe_file_trace_and_failure_contracts(self):
+        unified = emuflow_native()
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source, actual, reference = root / "patron.bin", root / "actual.bin", root / "reference.bin"
@@ -573,19 +578,26 @@ class PartitionPressureTest(unittest.TestCase):
                 _writer=_NativeBinaryPipeWriter(source.open("wb")),
             )
             args = ["--summary-output", "--typed-output", "--typed-input", str(source)]
-            subprocess.run([str(standalone), *args, str(reference)], check=True, capture_output=True)
             command = [str(unified), "--report", str(report), "phase3", "refine-patron"]
+            subprocess.run([*command, *args, str(reference)], check=True, capture_output=True)
             subprocess.run([*command, *args, str(actual)], check=True, capture_output=True)
             self.assertEqual(actual.read_bytes(), reference.read_bytes())
             reference_assignment, *_, reference_summary = _parse_patron_native_output(reference, indexes)
             self.assertGreater(reference_summary["moves"], 0)
             subprocess.run([*command, "--typed-input", str(source), str(actual)], check=True, capture_output=True)
             self.assertEqual(actual.read_bytes(), reference.read_bytes())
-            text_reference = root / "reference.txt"
             text_actual = root / "actual.txt"
-            subprocess.run([str(standalone), "--typed-input", str(source), str(text_reference)], check=True, capture_output=True)
             subprocess.run([*command, "--trace-output", "--typed-input", str(source), str(text_actual)], check=True, capture_output=True)
-            self.assertEqual(text_actual.read_bytes(), text_reference.read_bytes())
+            traced = _parse_patron_native_output(text_actual, indexes)
+            self.assertEqual(dict(traced[0]), dict(reference_assignment))
+            compact = _parse_patron_native_output(reference, indexes)
+            self.assertEqual(traced[3:6], compact[3:6])
+            self.assertTrue(traced[-1]["detail_retained"])
+            self.assertFalse(compact[-1]["detail_retained"])
+            for retired_flags in (("--legacy-text",), ()):
+                failed = subprocess.run([*command, *retired_flags, str(source), str(actual)], capture_output=True)
+                self.assertEqual(failed.returncode, 2)
+                self.assertEqual(actual.read_bytes(), reference.read_bytes())
             # Restore the compact result report for the following checks.
             subprocess.run([*command, *args, str(actual)], check=True, capture_output=True)
             result = json.loads(report.read_text())
@@ -618,8 +630,7 @@ class PartitionPressureTest(unittest.TestCase):
             alias_input = subprocess.run([str(unified), "--report", str(source), "phase3", "refine-patron", *args, str(actual)], capture_output=True)
             self.assertEqual(alias_input.returncode, 2)
             self.assertEqual(source.read_bytes(), payload)
-            # The production resolver must work with only the unified binary;
-            # the standalone executable is an explicit comparison choice.
+            # The production resolver needs only the unified binary.
             installed = root / "install" / "bin"
             installed.mkdir(parents=True)
             (installed / "emuflow-native").symlink_to(unified)
@@ -679,7 +690,7 @@ class PartitionPressureTest(unittest.TestCase):
                     candidate.write_bytes(payload)
                     completed = subprocess.run(
                         [
-                            str(patron_refiner()),
+                            str(emuflow_native()), "phase3", "refine-patron",
                             "--typed-input",
                             str(candidate),
                             str(output),
@@ -714,8 +725,8 @@ class PartitionPressureTest(unittest.TestCase):
             text_output = root / "patron.out"
             typed_output = root / "patron-output.bin"
             common = [
-                str(patron_refiner()),
-                "--summary-output",
+                str(emuflow_native()), "phase3", "refine-patron",
+                "--trace-output",
                 "--typed-input",
                 str(typed_input),
             ]
@@ -727,7 +738,7 @@ class PartitionPressureTest(unittest.TestCase):
             )
             typed_run = subprocess.run(
                 [
-                    str(patron_refiner()),
+                    str(emuflow_native()), "phase3", "refine-patron",
                     "--summary-output",
                     "--typed-output",
                     "--typed-input",
@@ -753,11 +764,11 @@ class PartitionPressureTest(unittest.TestCase):
             self.assertEqual(
                 {
                     key: typed_result[6][key]
-                    for key in ("moves", "batches", "changes", "detail_retained")
+                    for key in ("moves", "batches", "changes")
                 },
                 {
                     key: text_result[6][key]
-                    for key in ("moves", "batches", "changes", "detail_retained")
+                    for key in ("moves", "batches", "changes")
                 },
             )
             self.assertEqual(
@@ -1017,7 +1028,7 @@ class PartitionPressureTest(unittest.TestCase):
             (
                 "validation",
                 patch(
-                    "emuflow.partition_pressure._NativeLineWriter.append",
+                    "emuflow.partition_pressure._NativeBinaryFileWriter.header",
                     side_effect=ValidationError("synthetic validation fault"),
                 ),
                 ValidationError,
@@ -1073,6 +1084,22 @@ class PartitionPressureTest(unittest.TestCase):
                 self.assertEqual(
                     list(root.glob(f".{target.name}.*.backup")), []
                 )
+
+    def test_native_input_foreign_temporary_collision_is_never_unlinked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "patron.in"
+            target.write_bytes(b"published")
+            foreign = root / ".patron.in.foreign.tmp"
+            foreign.write_bytes(b"another writer")
+            with patch("emuflow.partition_pressure.uuid.uuid4", return_value=SimpleNamespace(hex="foreign")):
+                with self.assertRaises(FileExistsError):
+                    _write_patron_native_input(
+                        target, self.platform, self.clusters, self.constraints,
+                        self.route_constraints, self.model, self.initial, 0, 6,
+                    )
+            self.assertEqual(foreign.read_bytes(), b"another writer")
+            self.assertEqual(target.read_bytes(), b"published")
 
     def test_native_input_foreign_backup_collision_is_never_unlinked(
         self,
@@ -1349,7 +1376,7 @@ class PartitionPressureTest(unittest.TestCase):
             self.route_constraints,
             self.model,
             self.initial,
-            executable=str(patron_refiner()),
+            executable=str(emuflow_native()),
             max_moves=0,
         )
         self.assertEqual(trace["final_metrics"]["maximum_path_hops"], 1)
@@ -1835,7 +1862,7 @@ class PartitionPressureTest(unittest.TestCase):
             routes,
             model,
             initial,
-            executable=str(patron_refiner()),
+            executable=str(emuflow_native()),
             max_moves=0,
         )
         final_evaluation = evaluate_partition_pressure(
@@ -1869,7 +1896,7 @@ class PartitionPressureTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temporary:
             native_input = Path(temporary) / "patron-reserved.in"
-            _write_patron_native_input(
+            indexes = _write_patron_native_input(
                 native_input,
                 self.platform,
                 self.clusters,
@@ -1880,47 +1907,46 @@ class PartitionPressureTest(unittest.TestCase):
                 0,
                 9,
             )
-            cap_lines = [
-                line.split()
-                for line in native_input.read_text(encoding="utf-8").splitlines()
-                if line.startswith("CAP ")
-            ]
-        self.assertEqual(cap_lines[0][0:2], ["CAP", "0"])
-        # Tokens 2/3 are cells; tokens 4/5 are LUT hard/allowed.
-        self.assertEqual(float(cap_lines[0][4]), 93.0)
-        self.assertEqual(float(cap_lines[1][4]), 100.0)
+            payload = native_input.read_bytes()
+            offset = struct.calcsize("<8sIIII6Q10i5d7i")
+            dimension_names = ["cells", "lut"]
+            dimensions = len(dimension_names)
+            self.assertEqual(struct.unpack_from("<8sIIII6Q10i5d7i", payload)[7], dimensions)
+            capacities = []
+            for part in range(2):
+                record = struct.unpack_from(f"<BI{2 * dimensions}d", payload, offset)
+                self.assertEqual(record[:2], (ord("C"), part))
+                capacities.append(dict(zip(dimension_names, record[2::2])))
+                offset += struct.calcsize(f"<BI{2 * dimensions}d")
+        self.assertEqual(capacities[0]["lut"], 93.0)
+        self.assertEqual(capacities[1]["lut"], 100.0)
 
     def test_v9_native_input_and_bundle_remain_valid(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             native_input = Path(temporary) / "patron-v9.in"
             native_output = Path(temporary) / "patron-v9.out"
+            model = copy.deepcopy(self.model)
+            for cluster in model["clusters"]:
+                cluster["fixed_fpga"] = self.initial["cluster_assignment"][cluster["cluster"]]
             indexes = _write_patron_native_input(
                 native_input,
                 self.platform,
                 self.clusters,
                 self.constraints,
                 self.route_constraints,
-                self.model,
+                model,
                 self.initial,
                 0,
                 9,
             )
-            lines = native_input.read_text(encoding="utf-8").splitlines()
-            flow_fields = lines[2].split()
-            self.assertEqual(flow_fields[0], "FLOW")
-            self.assertEqual(len(flow_fields), 9)
-            for index, line in enumerate(lines):
-                fields = line.split()
-                if fields and fields[0] == "CLUSTER":
-                    fields[3] = fields[2]
-                    lines[index] = " ".join(fields)
-            native_input.write_text(
-                "\n".join(lines) + "\n", encoding="utf-8"
-            )
+            header = struct.unpack_from("<8sIIII6Q10i5d7i", native_input.read_bytes())
+            self.assertEqual(header[3], 9)
+            self.assertTrue(header[4] & 2)  # Flow configuration is present.
+            self.assertEqual(header[-7], len(model["clusters"]))
             completed = subprocess.run(
                 [
-                    str(patron_refiner()),
-                    str(native_input),
+                    str(emuflow_native()), "phase3", "refine-patron",
+                    "--trace-output", "--typed-input", str(native_input),
                     str(native_output),
                 ],
                 capture_output=True,
@@ -2179,7 +2205,7 @@ class PartitionPressureTest(unittest.TestCase):
                 route_constraints,
                 model,
                 initial,
-                executable=str(patron_refiner()),
+                executable=str(emuflow_native()),
                 max_moves=0,
                 flow_refinement=True,
             )
@@ -2538,7 +2564,7 @@ class PartitionPressureTest(unittest.TestCase):
             self.route_constraints,
             self.model,
             self.initial,
-            executable=str(patron_refiner()),
+            executable=str(emuflow_native()),
         )
         checked = validate_partition_pressure_native_against_exhaustive(
             self.ir,
@@ -2580,7 +2606,7 @@ class PartitionPressureTest(unittest.TestCase):
                 self.wait_timeouts.append(timeout)
                 if not self.killed:
                     raise subprocess.TimeoutExpired(
-                        cmd=["emuflow_patron_refiner"], timeout=timeout
+                        cmd=["emuflow-native", "phase3", "refine-patron"], timeout=timeout
                     )
                 return -9
 
@@ -2652,7 +2678,7 @@ class PartitionPressureTest(unittest.TestCase):
             self.route_constraints,
             model,
             self.initial,
-            executable=str(patron_refiner()),
+            executable=str(emuflow_native()),
         )
         checked = validate_partition_pressure_native_against_exhaustive(
             self.ir,
@@ -2714,7 +2740,7 @@ class PartitionPressureTest(unittest.TestCase):
             self.route_constraints,
             model,
             initial,
-            executable=str(patron_refiner()),
+            executable=str(emuflow_native()),
             max_moves=4,
         )
         self.assertEqual(trace["mode"], "endpoint-exact-global-best-v6")
@@ -2776,7 +2802,7 @@ class PartitionPressureTest(unittest.TestCase):
                 tritonpart_solution=solution_path,
                 route_constraints_path=route_path,
                 timing_database_path=timing_path,
-                patron_refiner=str(patron_refiner()),
+                patron_refiner=str(emuflow_native()),
                 retain_diagnostics=True,
             )
             trace = (root / "phase3/patron/refinement_trace.json")
@@ -2802,7 +2828,7 @@ class PartitionPressureTest(unittest.TestCase):
                 tritonpart_solution=solution_path,
                 route_constraints_path=route_path,
                 timing_database_path=timing_path,
-                patron_refiner=str(patron_refiner()),
+                patron_refiner=str(emuflow_native()),
             )
             self.assertEqual(compact_report["status"], "pass")
             compact_runtime = read_json(
@@ -2843,7 +2869,7 @@ class PartitionPressureTest(unittest.TestCase):
                 patron_algorithm_version=6,
                 route_constraints_path=route_path,
                 timing_database_path=timing_path,
-                patron_refiner=str(patron_refiner()),
+                patron_refiner=str(emuflow_native()),
                 patron_initial_assignment_path=frozen_initial_path,
                 retain_diagnostics=True,
             )
@@ -2877,7 +2903,7 @@ class PartitionPressureTest(unittest.TestCase):
                 tritonpart_solution=solution_path,
                 route_constraints_path=route_path,
                 timing_database_path=timing_path,
-                patron_refiner=str(patron_refiner()),
+                patron_refiner=str(emuflow_native()),
                 retain_diagnostics=False,
                 retain_patron_baseline=True,
             )
@@ -2919,7 +2945,7 @@ class PartitionPressureTest(unittest.TestCase):
                 patron_algorithm_version=6,
                 route_constraints_path=route_path,
                 timing_database_path=timing_path,
-                patron_refiner=str(patron_refiner()),
+                patron_refiner=str(emuflow_native()),
                 patron_initial_assignment_path=legacy_path,
                 retain_diagnostics=True,
             )
@@ -2974,7 +3000,7 @@ class PartitionPressureTest(unittest.TestCase):
                     tritonpart_solution=solution_path,
                     route_constraints_path=route_path,
                     timing_database_path=timing_path,
-                    patron_refiner=str(patron_refiner()),
+                    patron_refiner=str(emuflow_native()),
                 )
             self.assertEqual(production["status"], "pass")
             self.assertEqual(
@@ -3095,7 +3121,7 @@ class PartitionPressureTest(unittest.TestCase):
                     provider="patron",
                     route_constraints_path=route_path,
                     timing_database_path=timing_path,
-                    patron_refiner=str(patron_refiner()),
+                    patron_refiner=str(emuflow_native()),
                     patron_algorithm_version=14,
                     patron_initial_assignment_path=initial_path,
                     patron_initial_clusters_path=initial_clusters_path,
@@ -3243,7 +3269,7 @@ class PartitionPressureTest(unittest.TestCase):
                 provider="patron",
                 route_constraints_path=route_path,
                 timing_database_path=timing_path,
-                patron_refiner=str(patron_refiner()),
+                patron_refiner=str(emuflow_native()),
                 patron_algorithm_version=14,
                 cut_mode=CUT_MODE_STATIC_EXACT,
                 retain_diagnostics=False,
@@ -3362,7 +3388,7 @@ class PartitionPressureTest(unittest.TestCase):
                 tritonpart_solution=solution_path,
                 route_constraints_path=route_path,
                 timing_database_path=timing_path,
-                patron_refiner=str(patron_refiner()),
+                patron_refiner=str(emuflow_native()),
                 patron_algorithm_version=14,
                 cut_mode=CUT_MODE_STATIC_EXACT,
                 retain_diagnostics=False,
@@ -3480,7 +3506,7 @@ class PartitionPressureTest(unittest.TestCase):
                 route_constraints,
                 model,
                 initial,
-                executable=str(patron_refiner()),
+                executable=str(emuflow_native()),
                 max_moves=64,
             )
         after = evaluate_partition_pressure(
@@ -3572,7 +3598,7 @@ class PartitionPressureTest(unittest.TestCase):
             route_constraints,
             model,
             initial,
-            executable=str(patron_refiner()),
+            executable=str(emuflow_native()),
             max_moves=0,
             flow_refinement=True,
         )
@@ -3615,7 +3641,7 @@ class PartitionPressureTest(unittest.TestCase):
             route_constraints,
             model,
             initial,
-            executable=str(patron_refiner()),
+            executable=str(emuflow_native()),
             max_moves=0,
             algorithm_version=9,
         )
@@ -3772,7 +3798,7 @@ class PartitionPressureTest(unittest.TestCase):
             route_constraints,
             model,
             initial,
-            executable=str(patron_refiner()),
+            executable=str(emuflow_native()),
             max_moves=8,
         )
         self.assertEqual(
@@ -3913,7 +3939,7 @@ class PartitionPressureTest(unittest.TestCase):
             routes,
             model,
             initial,
-            executable=str(patron_refiner()),
+            executable=str(emuflow_native()),
             max_moves=4,
         )
         self.assertEqual(
@@ -4075,7 +4101,7 @@ class PartitionPressureTest(unittest.TestCase):
             routes,
             model,
             initial,
-            executable=str(patron_refiner()),
+            executable=str(emuflow_native()),
             max_moves=4,
         )
         self.assertEqual(
@@ -4245,7 +4271,7 @@ class PartitionPressureTest(unittest.TestCase):
             routes,
             model,
             initial,
-            executable=str(patron_refiner()),
+            executable=str(emuflow_native()),
             max_moves=4,
             algorithm_version=9,
         )
@@ -4260,7 +4286,7 @@ class PartitionPressureTest(unittest.TestCase):
             routes,
             model,
             initial,
-            executable=str(patron_refiner()),
+            executable=str(emuflow_native()),
             max_moves=4,
             algorithm_version=14,
         )

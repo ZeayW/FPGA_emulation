@@ -96,7 +96,6 @@ constexpr RegisteredSchema schemas[] = {
     {"chimew-refine-input-v1", ArtifactEncoding::kBinary, 0x0032465248434d45ULL, 1},
     // Text compatibility/IPC schemas have stage-owned grammars. Binding does
     // not consume a pipe or duplicate their parser; the body checks the grammar.
-    {"patron-legacy-text", ArtifactEncoding::kText, 0, 1},
     {"tlr-input-text", ArtifactEncoding::kText, 0, 1},
     {"chimew-bank-legacy-text", ArtifactEncoding::kText, 0, 1},
     {"chimew-group-legacy-text", ArtifactEncoding::kText, 0, 1},

@@ -61,11 +61,6 @@ option(
   ON
 )
 option(
-  EMUFLOW_BUILD_PATRON_REFINER
-  "Build the in-tree path/TDM-pressure-aware partition refiner"
-  ON
-)
-option(
   EMUFLOW_BUILD_STATIC_EXACT_ANALYZER
   "Build the native Static Exact dependency and capture analyzer"
   ON
@@ -734,21 +729,6 @@ if(EMUFLOW_BUILD_HOP_PARTITION_REFINER)
   )
 endif()
 
-if(EMUFLOW_BUILD_PATRON_REFINER)
-  add_executable(
-    emuflow_patron_refiner
-    "${CMAKE_SOURCE_DIR}/src/native/patron_refiner.cpp"
-  )
-  target_compile_features(emuflow_patron_refiner PRIVATE cxx_std_17)
-  target_compile_options(emuflow_patron_refiner PRIVATE -O3)
-  target_link_libraries(emuflow_patron_refiner PRIVATE emuflow_core)
-  set_target_properties(
-    emuflow_patron_refiner
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
-
 if(EMUFLOW_BUILD_STATIC_EXACT_ANALYZER)
   add_executable(
     emuflow_static_exact_analyzer
@@ -1401,13 +1381,6 @@ if(BUILD_TESTING)
     add_test(
       NAME emuflow_hop_partition_refiner_cli
       COMMAND "$<TARGET_FILE:emuflow_hop_partition_refiner>" --help
-    )
-  endif()
-
-  if(EMUFLOW_BUILD_PATRON_REFINER)
-    add_test(
-      NAME emuflow_patron_refiner_cli
-      COMMAND "$<TARGET_FILE:emuflow_patron_refiner>" --help
     )
   endif()
 

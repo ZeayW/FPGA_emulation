@@ -217,6 +217,19 @@ class NativeToolsTest(unittest.TestCase):
                     [str(unified.resolve()), "phase6", "assign-banks"],
                 )
 
+    def test_explicit_unified_entry_and_symlink_keep_stage_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            unified = root / "emuflow-native"
+            unified.write_text("#!/bin/sh\n")
+            alias = root / "alias"
+            alias.symlink_to(unified)
+            for explicit in (unified, alias):
+                self.assertEqual(
+                    resolve_native_stage_command("phase3", "refine-patron", str(explicit)),
+                    [str(unified.resolve()), "phase3", "refine-patron"],
+                )
+
     def test_resolved_stage_preserves_explicit_comparison_tool(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

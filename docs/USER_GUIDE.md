@@ -363,3 +363,11 @@ Store run directories, temporary tool products, local assistant configuration,
 logs, and experiment records outside the public source tree. Consult CLI help
 for specialized diagnostics; do not treat an old run directory or a partial
 stage as a newly validated full flow.
+
+### PATRON input diagnostics
+
+PATRON runs through `emuflow-native phase3 refine-patron --typed-input INPUT OUTPUT`
+or the direct primary-store operation. The separate PATRON executable and text
+input format are retired. `EMUFLOW_PATRON_INPUT_COPY` explicitly requests an
+atomically published CRC-checked binary input copy for diagnosis; it is not an
+alternative text protocol. Detailed output traces require `--trace-output`.

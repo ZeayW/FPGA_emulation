@@ -35,7 +35,7 @@ from emuflow.timing_routing import (
     route_system_native,
     validate_native_system_routes,
 )
-from tests.native_build import patron_refiner, tlr_router
+from tests.native_build import emuflow_native, tlr_router
 from tests import test_partition_pressure as pressure_fixture
 from tests.test_phase4 import _assignment, _link, _platform_value
 
@@ -127,7 +127,7 @@ def test_partition_python_and_native_share_bank_delay_model():
     final, trace = run_partition_pressure_native(
         fixture.ir, platform, fixture.clusters, fixture.constraints,
         fixture.route_constraints, model, fixture.initial,
-        executable=str(patron_refiner()),
+        executable=str(emuflow_native()),
     )
     check = validate_partition_pressure_native_against_exhaustive(
         fixture.ir, platform, fixture.clusters, fixture.constraints,
@@ -240,7 +240,7 @@ def test_partition_move_recomputes_opposite_direction_pressure():
     assert sorted(d["predicted_tdm_ratio"] for d in evaluation["capacity_domains"]) == [1, 3]
     final, trace = run_partition_pressure_native(
         ir, platform, clusters, constraints, route_constraints, model, initial,
-        executable=str(patron_refiner()),
+        executable=str(emuflow_native()),
     )
     assert validate_partition_pressure_native_against_exhaustive(
         ir, platform, clusters, constraints, route_constraints, model, initial,

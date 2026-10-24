@@ -66,6 +66,11 @@ def resolve_native_executable(
     )
 
 
+def is_unified_native_executable(path: str) -> bool:
+    """Recognize the unified entry, including an explicit symlink to it."""
+    return Path(path).expanduser().resolve().name == "emuflow-native"
+
+
 def resolve_native_stage_command(
     phase: str,
     operation: str,
@@ -76,9 +81,9 @@ def resolve_native_stage_command(
     Explicit external engines are intentional comparison inputs. They are not
     selected because a production installation is incomplete.
     """
-    if explicit is not None:
+    if explicit is not None and not is_unified_native_executable(explicit):
         return [resolve_native_executable("emuflow-native", explicit)]
-    return [resolve_native_executable("emuflow-native"), phase, operation]
+    return [resolve_native_executable("emuflow-native", explicit), phase, operation]
 
 
 def native_file_generation(path: Path) -> tuple[int, ...]:

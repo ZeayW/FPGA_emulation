@@ -29,7 +29,7 @@ from emuflow.experiment_partition import (
     validate_partition_checkpoint,
 )
 from emuflow.phase3 import run_phase3
-from tests.native_build import hop_partition_refiner, patron_refiner
+from tests.native_build import hop_partition_refiner, emuflow_native
 from tests.test_partition_pressure import _endpoint, _ir
 from tests.test_phase5 import _link, _platform_value
 
@@ -255,7 +255,7 @@ class PartitionPhysicalFeedbackTest(unittest.TestCase):
             self.route_constraints,
             self.model,
             self.assignment,
-            executable=str(patron_refiner()),
+            executable=str(emuflow_native()),
             max_moves=8,
             flow_refinement=True,
             physical_feedback=self.feedback,
@@ -323,7 +323,7 @@ class PartitionPhysicalFeedbackTest(unittest.TestCase):
                 route_constraints_path=routes_path,
                 timing_database_path=timing_path,
                 hop_refiner=str(hop_partition_refiner()),
-                patron_refiner=str(patron_refiner()),
+                patron_refiner=str(emuflow_native()),
                 patron_max_moves=8,
                 patron_flow_refinement=True,
                 patron_initial_assignment_path=initial_path,
@@ -396,7 +396,7 @@ class PartitionPhysicalFeedbackTest(unittest.TestCase):
                     min_used_fpgas=2,
                     balance_tolerance=1.0,
                     hop_refiner=str(hop_partition_refiner()),
-                    patron_refiner=str(patron_refiner()),
+                    patron_refiner=str(emuflow_native()),
                     patron_max_moves=8,
                     patron_flow_refinement=True,
                     patron_initial_assignment_path=initial_path,

@@ -44,7 +44,7 @@ from .partition import (
 )
 from .platform import Platform
 from .bank_allocation import apply_bank_domain_ratios
-from .native_tools import resolve_native_stage_command
+from .native_tools import is_unified_native_executable, resolve_native_stage_command
 from .partition_physical_feedback import (
     PARTITION_PHYSICAL_FEEDBACK_SCHEMA,
     validate_partition_physical_feedback_seal,
@@ -874,150 +874,6 @@ class _PackedPressurePathSequence(list):
         )
 
 
-class _NativeLineWriter:
-    """Write an owner-unique native input and atomically publish it."""
-
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._temporary = path.with_name(
-            f".{path.name}.{uuid.uuid4().hex}.tmp"
-        )
-        self._owned_backup: Optional[Path] = None
-        self._recovery_backup: Optional[Path] = None
-        self._stream = None
-        self._published = False
-        self._bytes = 0
-        self._records = 0
-        self._stream = self._temporary.open(
-            "x", encoding="utf-8", newline="\n"
-        )
-
-    def append(self, line: str) -> None:
-        if self._stream is None or not isinstance(line, str) or "\n" in line:
-            raise ValidationError("native PATRON input record is invalid")
-        self._stream.write(line)
-        self._stream.write("\n")
-        self._bytes += len(line.encode("utf-8")) + 1
-        self._records += 1
-
-    def extend(self, lines: Iterable[str]) -> None:
-        for line in lines:
-            self.append(line)
-
-    def append_fields(self, fields: Iterable[Any]) -> None:
-        if self._stream is None:
-            raise ValidationError("native PATRON input writer is closed")
-        first = True
-        encoded_bytes = 0
-        for raw in fields:
-            token = str(raw)
-            if not token or any(character.isspace() for character in token):
-                raise ValidationError("native PATRON input field is invalid")
-            if not first:
-                self._stream.write(" ")
-                encoded_bytes += 1
-            self._stream.write(token)
-            encoded_bytes += len(token.encode("utf-8"))
-            first = False
-        if first:
-            raise ValidationError("native PATRON input record is empty")
-        self._stream.write("\n")
-        self._bytes += encoded_bytes + 1
-        self._records += 1
-
-    def publish(self) -> None:
-        if self._stream is None or self._published:
-            raise ValidationError("native PATRON input writer is closed")
-        stream = self._stream
-        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-        replaced = False
-        try:
-            stream.flush()
-            os.fsync(stream.fileno())
-            stream.close()
-            self._stream = None
-            if self._path.exists():
-                candidate = self._path.with_name(
-                    f".{self._path.name}.{uuid.uuid4().hex}.backup"
-                )
-                os.link(self._path, candidate)
-                # Ownership begins only after link(2) succeeds.  A collision
-                # belongs to another writer and must never enter cleanup.
-                self._owned_backup = candidate
-            os.replace(self._temporary, self._path)
-            replaced = True
-            directory = os.open(self._path.parent, directory_flags)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-            self._published = True
-        except BaseException:
-            if replaced:
-                try:
-                    if self._owned_backup is None:
-                        self._path.unlink(missing_ok=True)
-                    else:
-                        os.replace(self._owned_backup, self._path)
-                        self._owned_backup = None
-                    directory = os.open(self._path.parent, directory_flags)
-                    try:
-                        os.fsync(directory)
-                    finally:
-                        os.close(directory)
-                except OSError as rollback_error:
-                    if self._owned_backup is not None:
-                        self._recovery_backup = self._owned_backup
-                        self._owned_backup = None
-                        raise ValidationError(
-                            "native PATRON input rollback failed; recovery "
-                            f"backup retained at {self._recovery_backup}"
-                        ) from rollback_error
-                    raise
-            raise
-        finally:
-            if self._published and self._owned_backup is not None:
-                try:
-                    self._owned_backup.unlink(missing_ok=True)
-                    self._owned_backup = None
-                    directory = os.open(self._path.parent, directory_flags)
-                    try:
-                        os.fsync(directory)
-                    finally:
-                        os.close(directory)
-                except OSError:
-                    # The target has already been durably published.  A stale
-                    # owner-unique backup is harmless and never a partial target.
-                    pass
-
-    def abort(self) -> None:
-        try:
-            if self._stream is not None:
-                stream = self._stream
-                self._stream = None
-                stream.close()
-        finally:
-            if not self._published:
-                self._temporary.unlink(missing_ok=True)
-            if self._owned_backup is not None and not self._published:
-                self._owned_backup.unlink(missing_ok=True)
-                self._owned_backup = None
-
-    def __del__(self) -> None:
-        try:
-            self.abort()
-        except BaseException:
-            pass
-
-    @property
-    def summary(self) -> Dict[str, Any]:
-        return {
-            "transport": "atomic-text-file",
-            "bytes": self._bytes,
-            "records": self._records,
-        }
-
-
 _PATRON_TYPED_INPUT_MAGIC = b"EMPATRN1"
 _PATRON_TYPED_INPUT_END_MAGIC = b"EMPEND1\0"
 _PATRON_TYPED_INPUT_VERSION = 1
@@ -1216,7 +1072,7 @@ class _NativeBinaryPipeWriter:
             self._emit("<iid", *feedback)
         self._records += 1
 
-    def publish(self) -> None:
+    def _finish_payload(self) -> None:
         if self._stream is None or self._published:
             raise ValidationError("native PATRON input writer is closed")
         trailer = struct.pack(
@@ -1226,6 +1082,9 @@ class _NativeBinaryPipeWriter:
         self._bytes += len(trailer)
         self._records += 1
         self._flush_pending()
+
+    def publish(self) -> None:
+        self._finish_payload()
         stream = self._stream
         self._stream = None
         stream.flush()
@@ -1249,6 +1108,109 @@ class _NativeBinaryPipeWriter:
             "records": self._records,
             "crc32": self._checksum,
         }
+
+
+class _NativeBinaryFileWriter(_NativeBinaryPipeWriter):
+    """Atomically publish an explicit copy of the checked typed input stream."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        self._owned_backup: Optional[Path] = None
+        self._recovery_backup: Optional[Path] = None
+        super().__init__(None)
+        self._owns_temporary = False
+        self._stream = self._temporary.open("xb")
+        self._owns_temporary = True
+
+    def publish(self) -> None:
+        if self._stream is None or self._published:
+            raise ValidationError("native PATRON input writer is closed")
+        self._finish_payload()
+        stream = self._stream
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        replaced = False
+        try:
+            stream.flush()
+            os.fsync(stream.fileno())
+            stream.close()
+            self._stream = None
+            if self._path.exists():
+                candidate = self._path.with_name(
+                    f".{self._path.name}.{uuid.uuid4().hex}.backup"
+                )
+                os.link(self._path, candidate)
+                # Ownership begins only after link(2) succeeds.  A collision
+                # belongs to another writer and must never enter cleanup.
+                self._owned_backup = candidate
+            os.replace(self._temporary, self._path)
+            replaced = True
+            directory = os.open(self._path.parent, directory_flags)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+            self._published = True
+        except BaseException:
+            if replaced:
+                try:
+                    if self._owned_backup is None:
+                        self._path.unlink(missing_ok=True)
+                    else:
+                        os.replace(self._owned_backup, self._path)
+                        self._owned_backup = None
+                    directory = os.open(self._path.parent, directory_flags)
+                    try:
+                        os.fsync(directory)
+                    finally:
+                        os.close(directory)
+                except OSError as rollback_error:
+                    if self._owned_backup is not None:
+                        self._recovery_backup = self._owned_backup
+                        self._owned_backup = None
+                        raise ValidationError(
+                            "native PATRON input rollback failed; recovery "
+                            f"backup retained at {self._recovery_backup}"
+                        ) from rollback_error
+                    raise
+            raise
+        finally:
+            if self._published and self._owned_backup is not None:
+                try:
+                    self._owned_backup.unlink(missing_ok=True)
+                    self._owned_backup = None
+                    directory = os.open(self._path.parent, directory_flags)
+                    try:
+                        os.fsync(directory)
+                    finally:
+                        os.close(directory)
+                except OSError:
+                    # The target has already been durably published.  A stale
+                    # owner-unique backup is harmless and never a partial target.
+                    pass
+
+    def abort(self) -> None:
+        try:
+            if self._stream is not None:
+                stream = self._stream
+                self._stream = None
+                stream.close()
+        finally:
+            if not self._published and self._owns_temporary:
+                self._temporary.unlink(missing_ok=True)
+            if self._owned_backup is not None and not self._published:
+                self._owned_backup.unlink(missing_ok=True)
+                self._owned_backup = None
+
+    def __del__(self) -> None:
+        try:
+            self.abort()
+        except BaseException:
+            pass
+
+    @property
+    def summary(self) -> Dict[str, Any]:
+        return {**super().summary, "transport": "atomic-binary-file"}
 
 
 def _canonical_digest(value: Any) -> str:
@@ -3496,14 +3458,13 @@ def _write_patron_native_input(
     if _writer is None:
         if path is None:
             raise ValidationError("native PATRON input path is missing")
-        lines = _NativeLineWriter(path)
+        lines = _NativeBinaryFileWriter(path)
     else:
         if path is not None:
             raise ValidationError(
                 "native PATRON input cannot use both a path and a stream"
             )
         lines = _writer
-    typed_input = isinstance(lines, _NativeBinaryPipeWriter)
     published = False
     try:
         physical_hop_guard_scale_ns = (
@@ -3524,84 +3485,44 @@ def _write_patron_native_input(
             if flow_refinement
             else (0, 0, 0, 0, 0, 0, 0)
         )
-        if typed_input:
-            lines.header(
-                flow_version=flow_version,
-                use_physical_feedback=use_physical_feedback,
-                counts=(
-                    len(parts),
-                    len(clusters),
-                    len(dimensions),
-                    len(domains),
-                    len(nets),
-                    len(model["paths"]),
-                ),
-                integers=(
-                    -1 if max_hops is None else max_hops,
-                    model["configuration"]["tdm_max_ratio"],
-                    model["configuration"]["tdm_ratio_quantum"],
-                    constraints["min_used_fpgas"],
-                    max_moves,
-                    model["configuration"]["max_scalable_sweeps"],
-                    model["configuration"][
-                        "scalable_ejection_critical_limit"
-                    ],
-                    model["configuration"][
-                        "scalable_ejection_donor_limit"
-                    ],
-                    model["configuration"]["max_scalable_ejections"],
-                    route_constraints.get("tdm_min_ratio", 1),
-                ),
-                scalars=(
-                    model["normalization"]["positive_slack_scale_ns"],
-                    model["normalization"]["negative_slack_scale_ns"],
-                    model["normalization"]["max_clock_period_ns"],
-                    model["configuration"][
-                        "boundary_fanout_penalty_scale_ns"
-                    ],
-                    physical_hop_guard_scale_ns,
-                ),
-                flow_configuration=flow_configuration,
-            )
-        else:
-            lines.extend([
-                f"EMUFLOW_PATRON_INPUT_V{flow_version}_BANKS_V1",
-                (
-                    f"PARAM {len(parts)} {len(clusters)} "
-                    f"{len(dimensions)} {len(domains)} {len(nets)} "
-                    f"{len(model['paths'])} "
-                    f"{-1 if max_hops is None else max_hops} "
-                    f"{model['configuration']['tdm_max_ratio']} "
-                    f"{model['configuration']['tdm_ratio_quantum']} "
-                    f"{constraints['min_used_fpgas']} {max_moves} "
-                    f"{model['normalization']['positive_slack_scale_ns']:.17g} "
-                    f"{model['normalization']['negative_slack_scale_ns']:.17g} "
-                    f"{model['normalization']['max_clock_period_ns']:.17g} "
-                    f"{model['configuration']['boundary_fanout_penalty_scale_ns']:.17g} "
-                    f"{model['configuration']['max_scalable_sweeps']} "
-                    f"{model['configuration']['scalable_ejection_critical_limit']} "
-                    f"{model['configuration']['scalable_ejection_donor_limit']} "
-                    f"{model['configuration']['max_scalable_ejections']} "
-                    f"{route_constraints.get('tdm_min_ratio', 1)}"
-                ),
-            ])
-        if flow_refinement and not typed_input:
-            fields = [
-                "FLOW",
-                "1",
-                str(len(clusters)),
-                str(PATRON_FLOW_CORRIDOR_DISTANCE),
-                str(PATRON_FLOW_PIERCING_STRATEGY),
-                str(PATRON_FLOW_MAX_LEGAL_CANDIDATES),
-                str(PATRON_FLOW_MAX_POLISH_MOVES),
-                str(PATRON_FLOW_MAX_FRONTIER_PATHS),
-                str(PATRON_FLOW_MAX_TAIL_MOVES),
-            ]
-            if flow_version >= 10:
-                fields.append(
-                    f"{physical_hop_guard_scale_ns:.17g}"
-                )
-            lines.append(" ".join(fields))
+        lines.header(
+            flow_version=flow_version,
+            use_physical_feedback=use_physical_feedback,
+            counts=(
+                len(parts),
+                len(clusters),
+                len(dimensions),
+                len(domains),
+                len(nets),
+                len(model["paths"]),
+            ),
+            integers=(
+                -1 if max_hops is None else max_hops,
+                model["configuration"]["tdm_max_ratio"],
+                model["configuration"]["tdm_ratio_quantum"],
+                constraints["min_used_fpgas"],
+                max_moves,
+                model["configuration"]["max_scalable_sweeps"],
+                model["configuration"][
+                    "scalable_ejection_critical_limit"
+                ],
+                model["configuration"][
+                    "scalable_ejection_donor_limit"
+                ],
+                model["configuration"]["max_scalable_ejections"],
+                route_constraints.get("tdm_min_ratio", 1),
+            ),
+            scalars=(
+                model["normalization"]["positive_slack_scale_ns"],
+                model["normalization"]["negative_slack_scale_ns"],
+                model["normalization"]["max_clock_period_ns"],
+                model["configuration"][
+                    "boundary_fanout_penalty_scale_ns"
+                ],
+                physical_hop_guard_scale_ns,
+            ),
+            flow_configuration=flow_configuration,
+        )
         total_cells = sum(cluster["cells"] for cluster in clusters)
         for part in parts:
             hard = []
@@ -3615,14 +3536,7 @@ def _write_patron_native_input(
                 allowed.append(
                     float(balance["balance_allowed_loads"][part][dimension])
                 )
-            if typed_input:
-                lines.cap(part_index[part], hard, allowed)
-            else:
-                fields = " ".join(
-                    f"{hard_value:.17g} {allowed_value:.17g}"
-                    for hard_value, allowed_value in zip(hard, allowed)
-                )
-                lines.append(f"CAP {part_index[part]} {fields}")
+            lines.cap(part_index[part], hard, allowed)
         for index, cluster in enumerate(clusters):
             current = initial_assignment["cluster_assignment"][cluster["cluster"]]
             fixed = cluster["fixed_fpga"]
@@ -3635,20 +3549,7 @@ def _write_patron_native_input(
             ]
             current_index = part_index[current]
             fixed_index = -1 if fixed is None else part_index[fixed]
-            if typed_input:
-                lines.cluster(index, current_index, fixed_index, weights)
-            else:
-                lines.append(
-                    " ".join(
-                        [
-                            "CLUSTER",
-                            str(index),
-                            str(current_index),
-                            str(fixed_index),
-                            *(str(weight) for weight in weights),
-                        ]
-                    )
-                )
+            lines.cluster(index, current_index, fixed_index, weights)
         for index, domain in enumerate(domains):
             link = link_by_id[domain["link"]]
             is_sll = domain["link"] in set(route_constraints["sll_links"])
@@ -3665,36 +3566,23 @@ def _write_patron_native_input(
             banks = domain.get("bank_count", 0)
             wires = domain.get("wires_per_bank", 0)
             capacity_bits = int(domain["capacity_bits"])
-            if typed_input:
-                lines.domain(
-                    index,
-                    domain["lanes"],
-                    is_sll,
-                    ratio_delay_slope_ns,
-                    opposite,
-                    banks,
-                    wires,
-                    capacity_bits,
-                )
-            else:
-                lines.append(
-                    f"DOMAIN {index} {domain['lanes']} {int(is_sll)} "
-                    f"{ratio_delay_slope_ns:.17g} {opposite} {banks} "
-                    f"{wires} {capacity_bits}"
-                )
+            lines.domain(
+                index,
+                domain["lanes"],
+                is_sll,
+                ratio_delay_slope_ns,
+                opposite,
+                banks,
+                wires,
+                capacity_bits,
+            )
         for source in parts:
             for sink in parts:
                 route = model["shortest_routes"][source][sink]
                 if route is None:
-                    if typed_input:
-                        lines.route(
-                            part_index[source], part_index[sink], None
-                        )
-                    else:
-                        lines.append(
-                            f"ROUTE {part_index[source]} "
-                            f"{part_index[sink]} -1"
-                        )
+                    lines.route(
+                        part_index[source], part_index[sink], None
+                    )
                     continue
                 route_fields = []
                 for arc in route:
@@ -3714,29 +3602,11 @@ def _write_patron_native_input(
                             ),
                         )
                     )
-                if typed_input:
-                    lines.route(
-                        part_index[source],
-                        part_index[sink],
-                        route_fields,
-                    )
-                else:
-                    fields = [
-                        value
-                        for domain, delay_ns in route_fields
-                        for value in (str(domain), f"{delay_ns:.17g}")
-                    ]
-                    lines.append(
-                        " ".join(
-                            [
-                                "ROUTE",
-                                str(part_index[source]),
-                                str(part_index[sink]),
-                                str(len(route)),
-                                *fields,
-                            ]
-                        )
-                    )
+                lines.route(
+                    part_index[source],
+                    part_index[sink],
+                    route_fields,
+                )
         if packed_nets is not None:
             for index in range(len(packed_nets)):
                 drivers, sinks = packed_nets.native_net_members(index)
@@ -3748,44 +3618,24 @@ def _write_patron_native_input(
                     packed_nets.native_cluster_ordinal(item)
                     for item in sinks
                 )
-                if typed_input:
-                    lines.net(
-                        index,
-                        len(drivers),
-                        driver_ordinals,
-                        len(sinks),
-                        sink_ordinals,
-                    )
-                else:
-                    lines.append_fields(
-                        itertools.chain(
-                            ("NET", index, len(drivers)),
-                            driver_ordinals,
-                            (len(sinks),),
-                            sink_ordinals,
-                        )
-                    )
+                lines.net(
+                    index,
+                    len(drivers),
+                    driver_ordinals,
+                    len(sinks),
+                    sink_ordinals,
+                )
         else:
             for index, net in enumerate(nets):
                 drivers = [cluster_index[item] for item in net["drivers"]]
                 sinks = [cluster_index[item] for item in net["sinks"]]
-                if typed_input:
-                    lines.net(
-                        index,
-                        len(drivers),
-                        drivers,
-                        len(sinks),
-                        sinks,
-                    )
-                else:
-                    lines.append_fields(
-                        itertools.chain(
-                            ("NET", index, len(drivers)),
-                            drivers,
-                            (len(sinks),),
-                            sinks,
-                        )
-                    )
+                lines.net(
+                    index,
+                    len(drivers),
+                    drivers,
+                    len(sinks),
+                    sinks,
+                )
         packed_paths = (
             model["paths"]
             if isinstance(model["paths"], _PackedPressurePathSequence)
@@ -3844,40 +3694,15 @@ def _write_patron_native_input(
                         float(feedback_record["positive_residual_ns"])
                         * physical_feedback_scale,
                     )
-            if typed_input:
-                lines.path(
-                    index,
-                    clock_period_ns,
-                    base_slack_ns,
-                    start_cluster_index,
-                    end_cluster_index,
-                    path_nets,
-                    feedback,
-                )
-            else:
-                fields = (
-                    "PATH",
-                    index,
-                    f"{clock_period_ns:.17g}",
-                    f"{base_slack_ns:.17g}",
-                    start_cluster_index,
-                    end_cluster_index,
-                    len(path_nets),
-                )
-                feedback_fields: Sequence[Any] = (
-                    ()
-                    if feedback is None
-                    else (
-                        feedback[0],
-                        feedback[1],
-                        f"{feedback[2]:.17g}",
-                    )
-                )
-                lines.append_fields(
-                    itertools.chain(fields, path_nets, feedback_fields)
-                )
-        if not typed_input:
-            lines.append("END")
+            lines.path(
+                index,
+                clock_period_ns,
+                base_slack_ns,
+                start_cluster_index,
+                end_cluster_index,
+                path_nets,
+                feedback,
+            )
         lines.publish()
         published = True
     finally:
@@ -4646,7 +4471,8 @@ def run_partition_pressure_native(
     flow_refinement = algorithm_version != 6
     use_physical_feedback = physical_feedback is not None
     if store_model and (algorithm_version != 14 or retain_trace_seals or physical_feedback is not None
-                        or executable is not None or not stream_semantic_records):
+                        or (executable is not None and not is_unified_native_executable(executable))
+                        or not stream_semantic_records):
         raise ValidationError("native store model requires unified v14 summary production")
     if use_physical_feedback:
         if algorithm_version != 11:
@@ -4695,7 +4521,7 @@ def run_partition_pressure_native(
             if native_input_copy:
                 raise ValidationError("native store model does not materialize a legacy input copy")
             indexes = phase3_runtime_call("patron.build_and_refine_native_model", model.execute,
-                root, native_output, initial_assignment, limit, timeout_seconds, environment)
+                root, native_output, initial_assignment, limit, timeout_seconds, environment, executable=executable)
             completed = subprocess.CompletedProcess([], 0, "", "")
         elif native_input_copy:
             copy_path = Path(native_input_copy)
@@ -4716,7 +4542,7 @@ def run_partition_pressure_native(
                 physical_feedback_scale,
             )
             command.extend(
-                ("--legacy-text", str(copy_path), str(native_output))
+                ("--typed-input", str(copy_path), str(native_output))
             )
             try:
                 completed = phase3_runtime_call(

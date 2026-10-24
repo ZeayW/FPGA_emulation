@@ -20,14 +20,14 @@ from emuflow.partition_pressure import (build_partition_pressure_model, run_part
 from emuflow.phase3_pressure_native import NativePressureModel
 from emuflow.native_tools import native_file_generation
 from emuflow.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
-from tests.native_build import emuflow_native, patron_ingress_oracle, hop_partition_refiner, patron_refiner
+from tests.native_build import emuflow_native, patron_ingress_oracle, hop_partition_refiner
 from tests import test_partition_pressure as reference_fixture
 
 
 @pytest.fixture(params=['normal','reordered','duplicate-sinks','sparse','balanced'])
 def inputs(tmp_path, monkeypatch,request):
     native=tmp_path/"native"; (native/"bin").mkdir(parents=True)
-    for name,binary in (("emuflow-native",emuflow_native()),("emuflow_patron_refiner",patron_refiner())):
+    for name,binary in (("emuflow-native",emuflow_native()),):
         (native/"bin"/name).symlink_to(binary)
     monkeypatch.setenv("EMUFLOW_NATIVE_ROOT",str(native))
     fixture=reference_fixture.PartitionPressureTest(); fixture.setUp()
@@ -193,7 +193,8 @@ def test_native_model_summary_schema(inputs,tmp_path):
         json.loads(Path(str(output)+'.summary.json').read_text()))
 
 
-def test_phase3_production_selects_native_model_and_keeps_independent_validation(inputs,tmp_path):
+@pytest.mark.parametrize("explicit_unified", [False, True])
+def test_phase3_production_selects_native_model_and_keeps_independent_validation(inputs,tmp_path,explicit_unified):
     from emuflow.phase3 import run_phase3
     args,initial,timing=inputs
     platform=tmp_path/'platform.json'; write_json(platform,args[1].to_dict())
@@ -206,7 +207,8 @@ def test_phase3_production_selects_native_model_and_keeps_independent_validation
         report=run_phase3(args[0].path,platform,tmp_path/'phase3',provider='patron',cut_mode=CUT_MODE_STATIC_EXACT,
                          min_used_fpgas=2,balance_tolerance=1.0,patron_algorithm_version=14,patron_max_moves=0,
                          tritonpart_solution=solution,route_constraints_path=routes,timing_database_path=timing,
-                         hop_refiner=str(hop_partition_refiner()))
+                         hop_refiner=str(hop_partition_refiner()),
+                         patron_refiner=str(emuflow_native()) if explicit_unified else None)
     assert report['status']=='pass'
     assert report['cluster_implementation_id']=='native-primary-clusters-v1'
     assert report['native_cluster_metrics']['wall_seconds']>0

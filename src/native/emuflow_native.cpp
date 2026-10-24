@@ -25,7 +25,7 @@ constexpr const char* kUsage =
     "  phase3 hash-semantics NODES CAPTURES HEADER OUTPUT\n"
     "  phase3 write-exact-sections NODES CAPTURES REQUEST OUTPUT\n"
     "  phase3 refine-patron [--summary-output|--trace-output] [--typed-output] "
-        "(--typed-input|--legacy-text) INPUT OUTPUT\n"
+        "--typed-input INPUT OUTPUT\n"
     "  phase3 refine-patron-from-primary EMUIR TIMING PRIMARY INITIAL REQUEST OUTPUT\n"
     "  phase3 build-candidate-ids EMUIR POLICY OUTPUT\n"
     "  phase3 build-clusters EMUIR REQUEST OUTPUT\n"
@@ -160,18 +160,17 @@ int Dispatch(int argc, char** argv, const std::string& report) {
       StageRequest request{Stage::kRefinePatron, {}, ""};
       request.typed_input = false;  // Require an explicit CLI format flag.
       std::vector<std::string> positional;
-      bool legacy = false, invalid = false, trace = false, summary = false, typed_output = false;
+      bool invalid = false, trace = false, summary = false, typed_output = false;
       for (int i = 3; i < argc; ++i) {
         const std::string arg = argv[i];
         if (arg == "--typed-input") request.typed_input = true;
-        else if (arg == "--legacy-text") legacy = true;
         else if (arg == "--typed-output") typed_output = true;
         else if (arg == "--summary-output") summary = true;
         else if (arg == "--trace-output") trace = true;
         else if (arg.rfind("--", 0) == 0) invalid = true;
         else positional.push_back(arg);
       }
-      if (!invalid && !(trace && (summary || typed_output)) && positional.size() == 2 && legacy != request.typed_input) {
+      if (!invalid && !(trace && (summary || typed_output)) && positional.size() == 2 && request.typed_input) {
         request.summary_output = !trace;
         request.typed_output = !trace;
         request.input_paths = {positional[0]}; request.output_path = positional[1];

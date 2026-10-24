@@ -211,9 +211,9 @@ class NativePressureModel(dict):
                 raise ValidationError("native PATRON source generation changed")
         return columns, board
 
-    def execute(self, root, output, initial, max_moves, timeout_seconds, environment):
+    def execute(self, root, output, initial, max_moves, timeout_seconds, environment, executable=None):
         columns, board = self.write_requests(root, initial, max_moves)
-        executable = resolve_native_executable("emuflow-native")
+        executable = resolve_native_executable("emuflow-native", executable)
         command = [executable, "phase3", "refine-patron-from-primary",
                    str(self.ir.path), str(self.timing_path), str(self.primary_artifact),
                    str(columns), str(board), str(output)]

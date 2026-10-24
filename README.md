@@ -57,7 +57,9 @@ and migration contracts. Native operations now share a typed C++ request/result
 API, registered artifact envelopes, file-generation checks, and a structured
 `--report` error/metrics contract. Phase 3 analysis consumes the shared compact
 EmuIR view with artifact-scoped record IDs and ordered connectivity traversal.
-PATRON search is linked into this entry too.
+PATRON search uses this unified entry; its separate executable and legacy text
+input are retired. Explicit input copies use the same checked typed binary
+protocol as streamed input.
 Compact production clustering uses the shared core for connectivity union,
 canonical membership and resource reduction, with read-only columns borrowed by
 Python consumers; their mapping owner also controls temporary-file retirement.

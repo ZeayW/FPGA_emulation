@@ -261,6 +261,11 @@ int main() {
     ambiguous.input_paths = {source};
     if (emuflow::native::ExecuteStage(ambiguous).error != ErrorCode::kInvalidRequest)
       throw std::runtime_error("native API accepted ambiguous ownership");
+    StageRequest retired_patron{Stage::kRefinePatron, {source}, output};
+    retired_patron.typed_input = false;
+    if (emuflow::native::ExecuteStage(retired_patron).error != ErrorCode::kInvalidRequest)
+      throw std::runtime_error("native API accepted retired PATRON text input");
+    result.outputs[0].RequireUnchanged();
     StageRequest unsupported_pipe{Stage::kAnalyzeExact, {}, output};
     unsupported_pipe.input_artifacts = {ArtifactRef::Bind("-", "exact-analysis-input-v3", true)};
     if (emuflow::native::ExecuteStage(unsupported_pipe).error != ErrorCode::kInvalidRequest)

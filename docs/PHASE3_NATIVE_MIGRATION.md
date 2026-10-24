@@ -156,8 +156,8 @@ weak-reference finalizer: normal release and exception cycles both release views
 unmap, then retire scratch in that order. Explicit close invalidates borrowed
 cursors. Readers of external published inputs unmap without deleting those inputs.
 
-Small/inline and explicitly selected legacy tools, retained diagnostic traces,
-physical-feedback algorithms and explicit legacy input copies keep the reference
+Small/inline and explicitly selected external tools, retained diagnostic traces,
+physical-feedback algorithms and explicit typed input copies keep the reference
 model path. A selected native producer never retries through that path. Its
 `native_input_transport` is `native-primary-store-model-v2` for direct primary
 ownership. Input bytes count only the emitted packed initial/fixed ownership
@@ -282,8 +282,11 @@ capture adapters, mapped physical stores or the other remaining phase views.
 `emuflow_core/native_pipeline.hpp` defines the typed in-process operation
 interface; CLI parsing is a separate adapter. The library executes the native
 implementation directly, with no Python invocation or graph-sized FFI transfer.
-PATRON's default production resolver uses this interface; an explicit standalone
-tool remains an independent comparison choice. A present unified binary that
+PATRON uses the unified entry, including when its path is supplied explicitly.
+The redundant in-tree standalone CLI and legacy text input parser are retired.
+`EMUFLOW_PATRON_INPUT_COPY` publishes the same CRC-checked typed binary stream
+as pipe input, with atomic replacement and rollback on publication failure.
+An explicit external comparison engine remains a separately supplied input. A present unified binary that
 rejects a request is an error, not permission to retry an older implementation.
 The new PATRON operation defaults to compact typed summary output; detailed
 text traces require explicit `--trace-output`. Existing Python qualification

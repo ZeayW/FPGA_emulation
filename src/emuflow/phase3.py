@@ -21,6 +21,7 @@ from .partition import (
     validate_partition_artifacts_online,
 )
 from .errors import ValidationError
+from .native_tools import is_unified_native_executable
 from .partition_hops import refine_partition_hops, validate_assignment_hops
 from .partition_pressure import (
     build_partition_pressure_model,
@@ -537,7 +538,10 @@ def run_phase3(
             ),
             static_exact_candidate_policy=static_exact_candidate_policy,
             _stream_eligible_policy_names=True,
-            _native_compact_clusters=(not retain_diagnostics and patron_refiner is None),
+            _native_compact_clusters=(
+                not retain_diagnostics
+                and (patron_refiner is None or is_unified_native_executable(patron_refiner))
+            ),
         )
     else:
         clusters = phase3_runtime_call(
@@ -774,8 +778,10 @@ def run_phase3(
         )
         from .phase3_pressure_native import supports_native_pressure_model
         native_store_model = (
-            not retain_diagnostics and patron_algorithm_version == 14
-            and patron_physical_system_timing_path is None and patron_refiner is None
+            not retain_diagnostics and patron_initial_clusters_path is None
+            and patron_algorithm_version == 14
+            and patron_physical_system_timing_path is None
+            and (patron_refiner is None or is_unified_native_executable(patron_refiner))
             and not os.environ.get("EMUFLOW_PATRON_INPUT_COPY")
             and supports_native_pressure_model(ir, clusters, timing_database)
         )
@@ -963,7 +969,7 @@ def run_phase3(
                 or not isinstance(change_count, int)
                 or change_count < 0
                 or native_input_transport
-                not in {"typed-binary-pipe", "atomic-text-file", "native-primary-store-model-v2"}
+                not in {"typed-binary-pipe", "atomic-binary-file", "native-primary-store-model-v2"}
                 or isinstance(native_input_bytes, bool)
                 or not isinstance(native_input_bytes, int)
                 or native_input_bytes <= 0
@@ -971,17 +977,13 @@ def run_phase3(
                 or not isinstance(native_input_records, int)
                 or native_input_records <= 0
                 or (
-                    native_input_transport == "typed-binary-pipe"
+                    native_input_transport in {"typed-binary-pipe", "atomic-binary-file"}
                     and (
                         isinstance(native_input_crc32, bool)
                         or not isinstance(native_input_crc32, int)
                         or native_input_crc32 < 0
                         or native_input_crc32 > 0xFFFFFFFF
                     )
-                )
-                or (
-                    native_input_transport == "atomic-text-file"
-                    and native_input_crc32 is not None
                 )
                 or isinstance(native_output_bytes, bool)
                 or not isinstance(native_output_bytes, int)
