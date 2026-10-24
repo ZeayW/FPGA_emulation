@@ -290,6 +290,9 @@ the loaded part/top, clocks and full post-route electrical/coverage gates.
 Continuation runs opt/place/physical optimization/route from that synthesis
 boundary. This interface does not publish a persistent checkpoint cache.
 
+`scripts/vivado/inspect_checkpoint_identity.tcl INPUT_DCP` reports native design
+and fileset identity properties without implementation or checkpoint writes.
+
 An explicit checkpoint I/O diagnostic is available as
 `scripts/vivado/inspect_checkpoint_io.tcl INPUT_DCP OUTPUT_DIRECTORY EXPECTED_PART`.
 It opens and writes a temporary checkpoint and checks its part; this is an I/O
