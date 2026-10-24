@@ -496,11 +496,32 @@ public final class EmuFlowRWRoute {
             for (SitePinInst pin : clk.getPins()) {
                 if (pin.isOutPin()) continue;
                 boolean cascade = isBUFGCEClockInputSink(pin);
-                List<Node> path = availableClockSinkPath(
-                    pin.getConnectedNode(), tree, Node::getAllUphillNodes,
-                    node -> cascade || node.getIntentCode() == IntentCode.NODE_GLOBAL_LEAF,
-                    available, MAX_LCB_SEARCH_DEPTH
-                );
+                List<Node> path;
+                try {
+                    path = availableClockSinkPath(
+                        pin.getConnectedNode(), tree, Node::getAllUphillNodes,
+                        node -> cascade || node.getIntentCode() == IntentCode.NODE_GLOBAL_LEAF,
+                        available, MAX_LCB_SEARCH_DEPTH
+                    );
+                } catch (IllegalStateException error) {
+                    Map<String, Long> frontier = new java.util.TreeMap<>();
+                    Map<String, String> examples = new java.util.TreeMap<>();
+                    for (Node node : tree.keySet()) {
+                        for (Node next : node.getAllDownhillNodes()) {
+                            if (tree.containsKey(next)) continue;
+                            String key = next.getIntentCode().name() + ":" + available.test(next);
+                            frontier.merge(key, 1L, Long::sum);
+                            examples.merge(key, next.toString(), (left, right) ->
+                                left.compareTo(right) <= 0 ? left : right);
+                        }
+                    }
+                    System.out.println("INFO: EmuFlow clock reachability failure: " + new JSONObject()
+                        .put("clock", clk.getName()).put("source", source.toString())
+                        .put("source_node", source.getConnectedNode().toString())
+                        .put("sink", pin.toString()).put("frontier", new JSONObject(frontier))
+                        .put("frontier_examples", new JSONObject(examples)));
+                    throw error;
+                }
                 pips.addAll(extendedClockPathPIPs(path));
                 // All non-cascade last miles are explicitly reconstructed and
                 // independently checked, rather than delegated to an opaque helper.
