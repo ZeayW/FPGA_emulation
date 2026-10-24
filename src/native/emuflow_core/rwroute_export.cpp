@@ -479,7 +479,8 @@ void ExportRwroute(const ArtifactRef& mapped_ref, const ArtifactRef& physical_re
     add_io.BindText(6,io.p_site); add_io.BindInteger(7,i); add_io.Execute();
   }
   const auto binding_seconds=Seconds(started);
-  AtomicBinaryWriter writer(output), summary_writer(summary_path);
+  const std::vector<ArtifactRef> inputs{mapped_ref,physical_ref,request_ref};
+  AtomicBinaryWriter writer(output,inputs), summary_writer(summary_path,inputs);
   auto& out=writer.stream();
   for (const auto& limit:limits) out<<"META\tresource_limit_"<<limit.first<<'\t'<<limit.second<<'\n';
   out<<"META\tpart\t"<<part<<"\nMETA\tmapped_sha256\t"<<digests[0]

@@ -120,7 +120,6 @@ constexpr RegisteredSchema schemas[] = {
      "SELECT json_extract(value,'$') FROM metadata WHERE key='logical_schema'","emuflow.tdm-schedule/v1"},
     {"tdm-schedule-store-v4", ArtifactEncoding::kSqlite, 0x454d5554, 3, false,
      "SELECT json_extract(value,'$') FROM metadata WHERE key='logical_schema'","emuflow.tdm-schedule/v1"},
-    {"exact-capture-index-private-v1", ArtifactEncoding::kSqlite, 0x45434150, 1},
     {"exact-sha256-text-v1", ArtifactEncoding::kText, 0, 1},
     {"exact-section-summary-v2", ArtifactEncoding::kBinary, 0x314f5753464d5545ULL, 2},
     {"chimew-bank-output-text", ArtifactEncoding::kText, 0, 1},

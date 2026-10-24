@@ -75,7 +75,7 @@ ArtifactRef SqliteArtifactWriter::Commit() {
   ValidateSqliteSchema(database_,FindSchema(schema_));
   for (const auto& input:inputs_) input.RequireUnchanged();
   database_.Close();  // Reject live statements before rename, including readers.
-  PublishTemporaryFile(staged_->path()+".sqlite",target_);
+  PublishTemporaryFile(staged_->path()+".sqlite",target_,inputs_);
   committed_=true;
   return ArtifactRef::Bind(target_,schema_);
 }

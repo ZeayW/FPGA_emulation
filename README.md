@@ -111,6 +111,10 @@ Assignment summaries and independent capacity/balance validation also reduce
 the shared primary columns in C++, without decoding cluster member records.
 Compact exact captures are produced and independently checked in the shared
 core before publication, without Python capture replay or per-record lookups.
+The superseded `resolve-captures` entry and persistent capture seq index are
+retired. Shared binary and SQLite writers check bound input generations
+immediately before atomic replacement, including native routing, scheduling
+and physical exporters.
 SQLite adapters and typed record owners release connections and mappings before
 publication or temporary-file retirement, including borrowed native cursors and
 lazy physical and timing-store queries.

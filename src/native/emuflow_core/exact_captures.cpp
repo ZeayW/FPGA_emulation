@@ -166,7 +166,7 @@ Proof CheckCaptures(const std::vector<ArtifactRef>& inputs,const std::string& sc
 void ValidateExactCaptures(const std::vector<ArtifactRef>& inputs,const std::string& output) {
   StagedArtifact scratch(output,{".sqlite"});
   const auto proof=CheckCaptures(inputs,scratch.path()+".sqlite");
-  AtomicBinaryWriter result(output);
+  AtomicBinaryWriter result(output,inputs);
   result.stream()<<"{\"schema\":\"emuflow.exact-capture-validation/v1\",\"status\":\"pass\",\"coordinates\":"
                  <<proof.coordinates<<",\"captures\":"<<proof.captures<<"}\n";
   result.Commit();
@@ -174,14 +174,13 @@ void ValidateExactCaptures(const std::vector<ArtifactRef>& inputs,const std::str
 void BuildExactCaptures(const std::vector<ArtifactRef>& inputs,const std::string& output) {
   Check(inputs.size()==4,"capture producer artifact coverage disagrees");
   StagedArtifact staged(output,{".sqlite",".verify.sqlite"});
-  emuflow::native::ResolveStaticExactCaptures(inputs[0].path(),inputs[1].path(),inputs[2].path(),
-                                           inputs[3].path(),staged.path(),false);
+  emuflow::native::BuildStaticExactCaptureRecords(inputs,staged.path());
   // Producer decisions and its uniqueness spool are not validator evidence.
   std::filesystem::remove(staged.path()+".sqlite");
   auto checked=inputs;
   checked.push_back(ArtifactRef::Bind(staged.path(),"exact-captures-v1"));
   CheckCaptures(checked,staged.path()+".verify.sqlite");
   for (const auto& input:inputs) input.RequireUnchanged();
-  PublishTemporaryFile(staged.path(),output);
+  PublishTemporaryFile(staged.path(),output,inputs);
 }
 }

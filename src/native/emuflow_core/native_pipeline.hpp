@@ -5,7 +5,7 @@
 namespace emuflow::native {
 enum class Stage {
   kInvalid,
-  kAnalyzeExact, kFinalizeExact, kResolveCaptures, kHashSemantics,
+  kAnalyzeExact, kFinalizeExact, kHashSemantics,
   kWriteExactSections, kRefinePatron, kRoute,
   kAssignBanks, kGroupSignals, kRefinePositions, kRudy,
   kBuildSchedule, kExportBookshelf, kBuildPartitionClusters, kBuildCandidateIds, kRefinePatronFromPrimary, kReducePartitionLoads, kPublishAssignmentIndex, kBuildCaptures, kValidateCaptures, kExportRwroute, kImportVivadoLineage

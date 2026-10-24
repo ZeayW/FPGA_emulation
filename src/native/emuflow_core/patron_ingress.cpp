@@ -303,7 +303,7 @@ void RefinePatronFromPrimary(const std::vector<ArtifactRef>& inputs, const std::
   const auto build=RunStage("phase3.model-build",[&]{return inputs;},[&](const auto& refs){model=BuildPatronModel(refs,context);});
   if (!build.ok()) throw StageError(build.error,"PATRON model build: "+build.message);
   const auto search=RunStage("phase3.patron-search",[&]{return inputs;},[&](const auto&){
-    emuflow::native::RefinePatronModel(model,staged.path(),true,true);
+    emuflow::native::RefinePatronModel(model,staged.path(),true,true,inputs);
   });
   if (!search.ok()) throw StageError(search.error,"PATRON search: "+search.message);
   for (const auto& input:inputs) input.RequireUnchanged();
@@ -315,8 +315,8 @@ void RefinePatronFromPrimary(const std::vector<ArtifactRef>& inputs, const std::
   summary+=",\"model_build\":"+StageResultJson(build)+",\"search\":"+StageResultJson(search)+"}";
   AtomicBinaryWriter writer(staged.path()+".summary.json"); writer.WriteBytes(summary.data(),summary.size()); writer.Commit();
   for (const auto& input:inputs) input.RequireUnchanged();
-  PublishTemporaryFile(staged.path()+".order",output+".order");
-  PublishTemporaryFile(staged.path(),output);
-  PublishTemporaryFile(staged.path()+".summary.json",output+".summary.json");
+  PublishTemporaryFile(staged.path()+".order",output+".order",inputs);
+  PublishTemporaryFile(staged.path(),output,inputs);
+  PublishTemporaryFile(staged.path()+".summary.json",output+".summary.json",inputs);
 }
 }  // namespace emuflow::core

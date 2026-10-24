@@ -169,6 +169,25 @@ stream state or changed inputs cannot replace an already published result.
 The stage API and CLI share this policy. Stdout is an uncommitted stream until
 the consumer verifies complete records and successful process termination.
 
+Exact analysis, final semantic nodes, capture records, canonical semantic hashes
+and section summaries pass their bound `ArtifactRef` inputs into the shared
+binary writer. PATRON uses the same writer for typed and diagnostic text output.
+The writer verifies source generations when opened and again after file sync,
+immediately before rename. Source change, disappearance or destination aliasing
+rejects publication and preserves a prior destination; this check reads metadata,
+not the graph or another serialized copy. Primary-store PATRON publication also
+passes source bindings when publishing its order/result/summary files. These are
+separate file commits, not an atomic multi-file transaction. A successful stage
+result remains required before consumers accept the complete output set.
+Native clustering, candidate IDs, partition summaries, Bookshelf/RWRoute
+exports and Vivado lineage use the same source-bound commit. The shared SQLite
+writer checks inputs again after sync; routing publishes through that owner
+rather than creating the final database directly. Routing and ScheduleStore
+construction retain the stage dispatcher's input generations instead of binding
+a later snapshot of those paths.
+Capture production has only `build-captures` plus the independent
+`validate-captures` checker; the older seq-index publisher is retired.
+
 W0 closes only after versioned round trips, deterministic ordered records and
 negative cases pass: unknown versions, truncation, duplicate keys, orphan or
 mismatched references, mixed generations, active SQLite sidecars, interrupted

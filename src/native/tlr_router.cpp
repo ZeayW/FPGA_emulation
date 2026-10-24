@@ -1,6 +1,7 @@
 #include "bank_allocation.hpp"
 #include "emuflow_core/native_stages.hpp"
 #include "emuflow_core/sqlite.hpp"
+#include "emuflow_core/store.hpp"
 // SPDX-License-Identifier: Apache-2.0
 //
 // Timing-aware load-balanced die-level routing for EmuFlow.
@@ -39,8 +40,6 @@ namespace {
 
 constexpr double kInf = std::numeric_limits<double>::infinity();
 constexpr double kEps = 1.0e-12;
-constexpr int kTypedOutputApplicationId = 0x45545252;  // ASCII "ETRR".
-constexpr int kTypedOutputUserVersion = 1;
 
 int CandidateOrdinal(const std::string& generator) {
   static const std::vector<std::string> generators = {
@@ -568,20 +567,17 @@ class Router {
 
 
 
-  void write_typed_output(const std::string& path) const {
-    using emuflow::core::SqliteDatabase;
+  void write_typed_output(const std::string& path,
+                          const std::vector<emuflow::core::ArtifactRef>& inputs) const {
+    emuflow::core::SqliteArtifactWriter writer(path,"tlr-output-v1",inputs);
+    write_typed_rows(writer.database());  // Close every cursor before commit.
+    writer.Commit();
+  }
+
+  void write_typed_rows(emuflow::core::SqliteDatabase& database) const {
     using emuflow::core::SqliteStatement;
     using emuflow::core::SqliteTransaction;
-
-    SqliteDatabase database(path, SqliteDatabase::Mode::kCreateExclusive);
-    database.Execute("PRAGMA journal_mode=OFF");
-    database.Execute("PRAGMA synchronous=OFF");
-    database.Execute("PRAGMA temp_store=FILE");
     database.Execute("PRAGMA locking_mode=EXCLUSIVE");
-    database.Execute("PRAGMA application_id=" +
-                     std::to_string(kTypedOutputApplicationId));
-    database.Execute("PRAGMA user_version=" +
-                     std::to_string(kTypedOutputUserVersion));
     database.Execute(R"SQL(
 CREATE TABLE direction_locks(
   group_index INTEGER PRIMARY KEY,
@@ -2734,9 +2730,9 @@ CREATE TABLE metrics(
 
 }  // namespace
 
-void emuflow::native::RouteTlr(const std::string& input_path,
+void emuflow::native::RouteTlr(const std::vector<emuflow::core::ArtifactRef>& inputs,
                                const std::string& output_path) {
-  Router router(read_input(input_path));
+  Router router(read_input(inputs.at(0).path()));
   router.run();
-  router.write_typed_output(output_path);
+  router.write_typed_output(output_path,inputs);
 }

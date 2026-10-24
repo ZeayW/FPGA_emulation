@@ -147,12 +147,12 @@ void ImportVivadoLineage(const std::vector<ArtifactRef>& inputs,const std::strin
   }
   for(const auto& ref:inputs)ref.RequireUnchanged();
   const auto sha=FileHash(database_path);const auto bytes=std::filesystem::file_size(database_path);
-  AtomicBinaryWriter result(summary);
+  AtomicBinaryWriter result(summary,inputs);
   result.stream()<<JsonRecord(std::map<std::string,JsonRecord>{
     {"schema",kSchema},{"coordinate_system",kCoordinates},{"mapped_index_sha256",mapped_sha},
     {"implementation_id","native-vivado-lineage-v1"},{"status","pass"},{"provider","vivado-optimized-source-lineage-v1"},{"source_cells",source_count},
     {"stages",stage_metrics},{"output",output},{"sha256",sha},{"bytes",bytes},
     {"qualification","observed-source-dispositions; not-an-equivalence-proof"}}).Encode()<<'\n';
-  PublishTemporaryFile(database_path,output);result.Commit();
+  PublishTemporaryFile(database_path,output,inputs);result.Commit();
 }
 }

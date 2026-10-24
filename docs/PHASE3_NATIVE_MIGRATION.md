@@ -162,9 +162,10 @@ section emission. `StagedArtifact` owns exclusive same-directory staging and
 private sidecars for both PATRON and capture operations. A capture result replaces
 an older generation only after independent checking and source-generation checks.
 `phase3 validate-captures EMUIR REQUEST TOPOLOGY PARTS CAPTURES OUTPUT` exposes the
-same independent checker with a bounded JSON proof. Explicit legacy
-`resolve-captures` comparisons retain their seq index; production never falls
-back to that path or to Python when the unified native operation fails.
+same independent checker with a bounded JSON proof. The former `resolve-captures`
+command, persistent seq index and its schema registry entry are retired. Tests
+compare the current owner with an independent source-coordinate oracle; there
+is no second production capture publisher or Python fallback.
 The Phase 3 profiler records a nested `static_exact.native_capture_build_and_validation`
 interval and native capture count. The interval belongs to its enclosing semantic
 operation and must not be added to that enclosing time. Final semantic-node

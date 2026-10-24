@@ -1753,7 +1753,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 _, edges = struct.unpack_from("<BI", raw_topology, offset)
                 offset += 5 + 4 * edges
             def capture_command(output):
-                return [str(emuflow_native()), "phase3", "resolve-captures", str(database),
+                return [str(emuflow_native()), "phase3", "build-captures", str(database),
                         str(indexed_input), str(indexed_output), str(parts_path), str(output)]
             subprocess.run(capture_command(captures_path), check=True, timeout=15)
             from emuflow.combinational_cut import _resolve_compact_native_coordinate_capture_stream

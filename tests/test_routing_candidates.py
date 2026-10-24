@@ -95,6 +95,29 @@ class RouteCandidatePoolTest(unittest.TestCase):
         )
         return platform, assignment, timing, constraints
 
+    def test_native_route_publication_replaces_only_a_complete_result(self) -> None:
+        import subprocess
+        from emuflow.timing_routing import _prepare_native_model, _write_native_input
+
+        platform, assignment, timing, constraints = self._fixture()
+        nodes, model = _prepare_native_model(assignment, platform, constraints, timing)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, output = root / "request", root / "route.sqlite"
+            _write_native_input(source, len(nodes), model, constraints, GLOBAL_CANDIDATE_PROVIDER)
+            output.write_bytes(b"previous-generation")
+            command = [str(tlr_router()), "phase4", "route", "--typed-output", str(source), str(output)]
+            subprocess.run(command, check=True, capture_output=True)
+            published = output.read_bytes()
+            self.assertTrue(published.startswith(b"SQLite format 3"))
+            subprocess.run(command, check=True, capture_output=True)
+            self.assertEqual(output.read_bytes(), published)
+            source.write_text("invalid-input")
+            failed = subprocess.run(command, capture_output=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertEqual(output.read_bytes(), published)
+            self.assertFalse(list(root.glob("*.stage.*")))
+
     def test_pool_is_deterministic_and_contains_exact_small_tree(self) -> None:
         platform, assignment, timing, constraints = self._fixture()
         with tempfile.TemporaryDirectory() as temporary:

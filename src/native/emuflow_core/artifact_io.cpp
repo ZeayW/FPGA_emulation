@@ -157,8 +157,19 @@ StagedArtifact::~StagedArtifact() {
   for (const auto& suffix:suffixes_) std::filesystem::remove(path_+suffix,error);
 }
 
-AtomicBinaryWriter::AtomicBinaryWriter(const std::string& target_path)
-    : target_path_(target_path) {
+AtomicBinaryWriter::AtomicBinaryWriter(const std::string& target_path,
+                                      std::vector<ArtifactRef> inputs)
+    : target_path_(target_path), inputs_(std::move(inputs)) {
+  if (target_path_.empty() || target_path_ == "-")
+    throw StageError(ErrorCode::kInvalidRequest, "binary artifact requires a file destination");
+  for (const auto& input : inputs_) {
+    std::error_code error;
+    if (!input.is_pipe() &&
+        (std::filesystem::equivalent(target_path_,input.path(),error) ||
+         std::filesystem::weakly_canonical(target_path_) == std::filesystem::weakly_canonical(input.path())))
+      throw StageError(ErrorCode::kInvalidRequest, "artifact destination aliases an input");
+    input.RequireUnchanged();
+  }
   const auto sequence = temporary_sequence.fetch_add(1);
   temporary_path_ = target_path_ + ".tmp." + std::to_string(ProcessId()) +
                     "." + std::to_string(sequence);
@@ -187,7 +198,7 @@ void AtomicBinaryWriter::Commit() {
   stream_.flush();
   if (!stream_) throw StageError(ErrorCode::kPublicationFailed,"cannot flush native output");
   stream_.close();
-  PublishTemporaryFile(temporary_path_, target_path_);
+  PublishTemporaryFile(temporary_path_, target_path_, inputs_);
   committed_ = true;
 }
 
@@ -196,25 +207,27 @@ void PublishTextArtifact(const std::string& target,
                          const std::function<void(std::ostream&)>& produce) {
   if (target.empty() || target == "-")
     throw StageError(ErrorCode::kInvalidRequest, "text artifact requires a file destination");
-  for (const auto& input : inputs) {
-    std::error_code error;
-    if (!input.is_pipe() &&
-        (std::filesystem::equivalent(target,input.path(),error) ||
-         std::filesystem::weakly_canonical(target) == std::filesystem::weakly_canonical(input.path())))
-      throw StageError(ErrorCode::kInvalidRequest, "text artifact destination aliases an input");
-    input.RequireUnchanged();
-  }
-  AtomicBinaryWriter writer(target);
+  AtomicBinaryWriter writer(target,inputs);
   produce(writer.stream());
-  for (const auto& input : inputs) input.RequireUnchanged();
   writer.Commit();
 }
 
-void PublishTemporaryFile(const std::string& temporary_path_, const std::string& target_path_) {
+void PublishTemporaryFile(const std::string& temporary_path_, const std::string& target_path_,
+                          const std::vector<ArtifactRef>& inputs) {
   if (std::filesystem::absolute(temporary_path_).parent_path().lexically_normal() !=
       std::filesystem::absolute(target_path_).parent_path().lexically_normal())
     throw StageError(ErrorCode::kPublicationFailed,"native publication requires a same-directory temporary");
   SyncFile(temporary_path_);
+  // Check after synchronization, immediately before replacing the public name.
+  // These are generation metadata checks, never another payload/hash scan.
+  for (const auto& input : inputs) {
+    std::error_code error;
+    if (!input.is_pipe() &&
+        (std::filesystem::equivalent(target_path_,input.path(),error) ||
+         std::filesystem::weakly_canonical(target_path_) == std::filesystem::weakly_canonical(input.path())))
+      throw StageError(ErrorCode::kInvalidRequest,"artifact destination aliases an input");
+    input.RequireUnchanged();
+  }
   std::error_code error;
   std::filesystem::rename(temporary_path_, target_path_, error);
   if (error) {

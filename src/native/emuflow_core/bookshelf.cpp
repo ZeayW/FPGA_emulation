@@ -118,7 +118,8 @@ void ExportBookshelf(const ArtifactRef& mapped_ref, const ArtifactRef& atoms_ref
     throw std::runtime_error("mapped index does not cover every OpenPARF atom/pin");
   spool.Execute("COMMIT; CREATE INDEX endpoints_net_order ON endpoints(net,driver DESC,seq)");
 
-  AtomicBinaryWriter nets_writer(nets_path), summary_writer(report_path);
+  const std::vector<ArtifactRef> inputs{mapped_ref,atoms_ref};
+  AtomicBinaryWriter nets_writer(nets_path,inputs), summary_writer(report_path,inputs);
   auto& nets = nets_writer.stream();
   Integer emitted = 0, dropped = 0;
   // One covering index supports both degree checks and driver-first emission.

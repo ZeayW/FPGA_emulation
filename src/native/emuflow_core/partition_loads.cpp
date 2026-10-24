@@ -64,7 +64,7 @@ void ReducePartitionLoads(const std::vector<ArtifactRef>& inputs,const std::stri
     Check(total==primary.totals()[d],"partition load resource coverage disagrees");
   }
   for (const auto& input:inputs) input.RequireUnchanged();
-  AtomicBinaryWriter result(output);
+  AtomicBinaryWriter result(output,inputs);
   auto& out=result.stream();
   out<<"{\"schema\":\"emuflow.partition-load-summary/v1\",\"clusters\":"<<count
      <<",\"instances\":"<<primary.cells()<<",\"totals\":[";

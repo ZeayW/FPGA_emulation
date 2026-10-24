@@ -358,8 +358,10 @@ bool CutContainsSink(std::uint32_t cut, std::uint32_t part,
                             sink_parts.begin() + offsets[cut + 1], part);
 }
 
-void AnalyzeImpl(const std::string& input_path, const std::string& output_path,
-                 const std::string& indexed_path) {
+void AnalyzeImpl(const std::vector<emuflow::core::ArtifactRef>& inputs,
+                 const std::string& output_path) {
+  const auto& input_path = inputs.at(inputs.size() == 2 ? 1 : 0).path();
+  const auto indexed_path = inputs.size() == 2 ? inputs.at(0).path() : std::string{};
   emuflow::core::BinaryReader reader(input_path);
   const bool indexed = !indexed_path.empty();
   const emuflow::core::ArtifactSchema schema{
@@ -667,7 +669,7 @@ void AnalyzeImpl(const std::string& input_path, const std::string& output_path,
   // against authoritative EmuIR and independently checks endpoint semantics.
   const auto capture_count = captures.Finish();
 
-  emuflow::core::AtomicBinaryWriter output(output_path);
+  emuflow::core::AtomicBinaryWriter output(output_path, inputs);
   output.Write(kOutputMagic);
   output.Write(kVersion);
   output.Write(cut_count);
@@ -688,17 +690,17 @@ void AnalyzeImpl(const std::string& input_path, const std::string& output_path,
 
 }  // namespace
 
-void emuflow::native::AnalyzeStaticExact(const std::string& input_path,
-                                         const std::string& output_path,
-                                         const std::string& indexed_path) {
-  AnalyzeImpl(input_path, output_path, indexed_path);
+void emuflow::native::AnalyzeStaticExact(const std::vector<emuflow::core::ArtifactRef>& inputs,
+                                         const std::string& output_path) {
+  AnalyzeImpl(inputs, output_path);
 }
 
 // Final cut-node records are produced from analyzer topology and final identities.
 // The parent independently checks the topology; no scheduling policy is applied.
 void emuflow::native::FinalizeStaticExact(
-    const std::string& topology_path, const std::string& metadata_path,
-    const std::string& output_path) {
+    const std::vector<emuflow::core::ArtifactRef>& inputs, const std::string& output_path) {
+  const auto& topology_path = inputs.at(0).path();
+  const auto& metadata_path = inputs.at(1).path();
   using emuflow::core::BinaryReader;
   constexpr std::uint64_t metadata_magic = 0x314D4553464D5545ULL;
   constexpr std::uint64_t nodes_magic = 0x314E4553464D5545ULL;
@@ -821,7 +823,7 @@ void emuflow::native::FinalizeStaticExact(
     for (std::uint32_t j = 0; j < cut.captures; ++j) bytes += string_size(segment(capture++));
     positions.push_back(positions.back() + bytes);
   });
-  emuflow::core::AtomicBinaryWriter output(output_path);
+  emuflow::core::AtomicBinaryWriter output(output_path, inputs);
   output.Write(nodes_magic); output.Write(std::uint32_t{2}); output.Write(count);
   output.Write(positions.back());
   for (const auto position : positions) output.Write(position);
@@ -849,10 +851,13 @@ void emuflow::native::FinalizeStaticExact(
   output.Commit();
 }
 
-void emuflow::native::ResolveStaticExactCaptures(
-    const std::string& source_path, const std::string& request_path,
-    const std::string& topology_path, const std::string& parts_path,
-    const std::string& output_path, bool legacy_index) {
+void emuflow::native::BuildStaticExactCaptureRecords(
+    const std::vector<emuflow::core::ArtifactRef>& inputs,
+    const std::string& output_path) {
+  const auto& source_path = inputs.at(0).path();
+  const auto& request_path = inputs.at(1).path();
+  const auto& topology_path = inputs.at(2).path();
+  const auto& parts_path = inputs.at(3).path();
   using emuflow::core::BinaryReader;
   using emuflow::core::SqliteDatabase;
   BinaryReader request(request_path), topology(topology_path), identities(parts_path);
@@ -946,11 +951,11 @@ void emuflow::native::ResolveStaticExactCaptures(
       "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=FILE;"
       "CREATE TABLE capture_relation(cut_net TEXT NOT NULL,fpga TEXT NOT NULL,"
       "kind TEXT NOT NULL,endpoint TEXT NOT NULL,port_key TEXT NOT NULL,"
-      "bit_length INTEGER NOT NULL,bit_key BLOB NOT NULL,seq INTEGER,"
+      "bit_length INTEGER NOT NULL,bit_key BLOB NOT NULL,"
       "PRIMARY KEY(cut_net,fpga,kind,endpoint,port_key,bit_length,bit_key)) WITHOUT ROWID");
   emuflow::core::SqliteTransaction transaction(index);
   auto insert = index.Prepare("INSERT OR IGNORE INTO capture_relation "
-      "VALUES(?,?,?,?,?,?,?,NULL)");
+      "VALUES(?,?,?,?,?,?,?)");
   auto endpoints = source.Prepare(
       "SELECT e.net_seq,e.ordinal,coalesce(e.instance_seq,-1),c.id,p.name,e.bit,"
       "typeof(e.bit),typeof(e.instance_seq),"
@@ -1037,47 +1042,18 @@ void emuflow::native::ResolveStaticExactCaptures(
   }
   rows.Reset();
   if (positions.size() - 1 >= UINT32_MAX) throw std::runtime_error("native capture population is too large");
-  emuflow::core::AtomicBinaryWriter output(output_path);
+  emuflow::core::AtomicBinaryWriter output(output_path, inputs);
   output.Write(std::uint64_t{0x31434553464D5545ULL}); output.Write(std::uint32_t{1});
   output.Write(static_cast<std::uint32_t>(positions.size() - 1)); output.Write(positions.back());
   for (const auto position : positions) output.Write(position);
-  if (!legacy_index) {
-    // The native independent merge validates records directly. No consumer
-    // needs a seq lookup index, so one cursor writes the immutable stream.
-    while (rows.Step()) {
-      output.Write(std::uint8_t(rows.Text(2) == "top-output" ? 0 : 1));
-      const std::array<std::string,5> fields{
-          rows.Text(0),rows.Text(1),rows.Text(3),rows.Text(4),rows.Blob(6)};
-      for (const auto& field:fields) output.Write(static_cast<std::uint32_t>(field.size()));
-      for (const auto& field:fields) output.WriteBytes(field.data(),field.size());
-    }
-    transaction.Commit(); output.Commit(); return;
-  }
-  auto update = index.Prepare("UPDATE capture_relation SET seq=? WHERE cut_net=? AND fpga=? "
-      "AND kind=? AND endpoint=? AND port_key=? AND bit_length=? AND bit_key=?");
-  auto first = index.Prepare("SELECT " + columns + " FROM capture_relation ORDER BY " + columns + " LIMIT 1");
-  auto next = index.Prepare("SELECT " + columns + " FROM capture_relation WHERE (" + columns +
-      ") > (?,?,?,?,?,?,?) ORDER BY " + columns + " LIMIT 1");
-  const auto count = positions.size() - 1;
-  for (std::uint32_t seq = 0; seq < count; ++seq) {
-    auto& row = seq == 0 ? first : next;
-    if (!row.Step()) throw std::runtime_error("native capture ordered coverage disagrees");
-    const auto kind = row.Text(2);
-    const auto bit_length = row.Integer(5);
-    const std::array<std::string,5> keys{row.Text(0),row.Text(1),kind,row.Text(3),row.Text(4)};
-    const auto bit = row.Blob(6);
-    row.Reset();  // No active reader cursor may observe its own table updates.
-    const std::array<std::string,5> fields{keys[0],keys[1],keys[3],keys[4],bit};
-    output.Write(std::uint8_t(kind == "top-output" ? 0 : 1));
-    for (const auto& field : fields) output.Write(static_cast<std::uint32_t>(field.size()));
-    for (const auto& field : fields) output.WriteBytes(field.data(), field.size());
-    update.BindInteger(1, seq);
-    for (int column = 0; column < 5; ++column) {
-      update.BindText(column + 2, keys[column]);
-      next.BindText(column + 1, keys[column]);
-    }
-    update.BindInteger(7, bit_length); update.BindBlob(8, bit.data(), bit.size()); update.Execute();
-    next.BindInteger(6, bit_length); next.BindBlob(7, bit.data(), bit.size());
+  // The independent merge validates records directly. One ordered cursor
+  // emits the immutable owner; no persistent seq lookup index is required.
+  while (rows.Step()) {
+    output.Write(std::uint8_t(rows.Text(2) == "top-output" ? 0 : 1));
+    const std::array<std::string,5> fields{
+        rows.Text(0),rows.Text(1),rows.Text(3),rows.Text(4),rows.Blob(6)};
+    for (const auto& field:fields) output.Write(static_cast<std::uint32_t>(field.size()));
+    for (const auto& field:fields) output.WriteBytes(field.data(),field.size());
   }
   transaction.Commit();
   output.Commit();
@@ -1224,8 +1200,10 @@ class ExactCanonicalHash {
 }  // namespace
 
 void emuflow::native::HashStaticExactSemantics(
-    const std::string& nodes_path, const std::string& captures_path,
-    const std::string& request_path, const std::string& output_path) {
+    const std::vector<emuflow::core::ArtifactRef>& inputs, const std::string& output_path) {
+  const auto& nodes_path = inputs.at(0).path();
+  const auto& captures_path = inputs.at(1).path();
+  const auto& request_path = inputs.at(2).path();
   ExactHashTable nodes(nodes_path, 0x314E4553464D5545ULL, 2);
   ExactHashTable captures(captures_path, 0x31434553464D5545ULL, 1);
   emuflow::core::BinaryReader request(request_path);
@@ -1294,7 +1272,7 @@ void emuflow::native::HashStaticExactSemantics(
   request.RequireEnd(); if (tags != 30) throw std::runtime_error("native canonical relation coverage is incomplete");
   if (fields) hash.Write("\n"); hash.Write("}\n");
   const auto digest = hash.Finish() + "\n";
-  emuflow::core::AtomicBinaryWriter output(output_path); output.WriteBytes(digest.data(), digest.size()); output.Commit();
+  emuflow::core::AtomicBinaryWriter output(output_path, inputs); output.WriteBytes(digest.data(), digest.size()); output.Commit();
 }
 
 namespace {
@@ -1329,8 +1307,10 @@ class ExactOutputSection {
 }  // namespace
 
 void emuflow::native::WriteStaticExactSections(
-    const std::string& nodes_path, const std::string& captures_path,
-    const std::string& request_path, const std::string& output_path) {
+    const std::vector<emuflow::core::ArtifactRef>& inputs, const std::string& output_path) {
+  const auto& nodes_path = inputs.at(0).path();
+  const auto& captures_path = inputs.at(1).path();
+  const auto& request_path = inputs.at(2).path();
   ExactHashTable nodes(nodes_path, 0x314E4553464D5545ULL, 2);
   ExactHashTable captures(captures_path, 0x31434553464D5545ULL, 1);
   emuflow::core::BinaryReader request(request_path);
@@ -1480,7 +1460,7 @@ void emuflow::native::WriteStaticExactSections(
   }
   if (have_capture || capture_number != captures.count) throw std::runtime_error("native exact capture population disagrees");
   if (counts != expected_counts) throw std::runtime_error("native exact section counts disagree");
-  emuflow::core::AtomicBinaryWriter summary(output_path);
+  emuflow::core::AtomicBinaryWriter summary(output_path, inputs);
   summary.Write(std::uint64_t{0x314F5753464D5545ULL}); summary.Write(std::uint32_t{2}); summary.Write(static_cast<std::uint32_t>(section_count));
   for (std::size_t i = 0; i < section_count; ++i) {
     const auto digest = sections[i]->Close();

@@ -135,7 +135,7 @@ void BuildPartitionClusters(const std::vector<ArtifactRef>& inputs,const std::st
   for (auto size:member_counts) offsets.push_back(offsets.back()+size);
   auto next=offsets; std::vector<std::uint32_t> members(count);
   for (std::uint32_t ordinal=0;ordinal<count;++ordinal) members[next[lexical_owner[ordinal]]++]=ordinal;
-  AtomicBinaryWriter writer(output); std::uint32_t crc=0;
+  AtomicBinaryWriter writer(output,inputs); std::uint32_t crc=0;
   auto put=[&](const void* data,std::size_t size) {
     writer.WriteBytes(data,size); UpdateCrc32(crc,static_cast<const unsigned char*>(data),size);
   };

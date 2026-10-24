@@ -77,10 +77,8 @@ def pack_records(rows):
 
 
 def test_native_build_matches_explicit_reference_and_retires_private_index(captures, tmp_path):
-    output, legacy, proof = [tmp_path/name for name in ('captures.bin', 'legacy.bin', 'proof.json')]
-    subprocess.run(command(captures, 'resolve-captures', legacy), check=True)
+    output, proof = [tmp_path/name for name in ('captures.bin', 'proof.json')]
     subprocess.run(command(captures, 'build-captures', output), check=True)
-    assert output.read_bytes() == legacy.read_bytes()
     expected = _resolve_compact_native_coordinate_capture_stream(captures['source'], iter(captures['coordinates']),
         [cut['net'] for cut in captures['cuts']], captures['parts'], captures['cuts'],
         captures['assignment']['instance_assignment'], tmp_path/'reference.sqlite')
@@ -142,3 +140,15 @@ def test_production_capture_bridge_never_replays_python_relation(captures, tmp_p
             captures['parts'], tmp_path)
     assert len(result) <= len(captures['coordinates'])
     assert [path.name for path in result.native_capture_artifact_path.parent.iterdir()] == ['captures.bin']
+
+
+def test_retired_capture_index_entry_and_schema_are_rejected(tmp_path):
+    binary=emuflow_native()
+    output=tmp_path/'old-result'
+    output.write_text('previous')
+    result=subprocess.run([str(binary),'phase3','resolve-captures',
+                           *[str(tmp_path/'missing')]*4,str(output)],capture_output=True)
+    assert result.returncode and output.read_text()=='previous'
+    result=subprocess.run([str(binary),'check-runtime','exact-capture-index-private-v1'],capture_output=True)
+    assert result.returncode
+    assert not list(tmp_path.glob('*.sqlite'))

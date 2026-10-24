@@ -29,7 +29,6 @@ const char* StageName(Stage stage) {
     case Stage::kReducePartitionLoads: return "phase3.reduce-loads";
     case Stage::kAnalyzeExact: return "phase3.analyze";
     case Stage::kFinalizeExact: return "phase3.finalize-semantics";
-    case Stage::kResolveCaptures: return "phase3.resolve-captures";
     case Stage::kHashSemantics: return "phase3.hash-semantics";
     case Stage::kWriteExactSections: return "phase3.write-exact-sections";
     case Stage::kRefinePatron: return "phase3.refine-patron";
@@ -66,8 +65,6 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
           ? std::vector<std::string>{"emuir-compact-v2", "exact-indexed-request-v4"}
           : std::vector<std::string>{"exact-analysis-input-v3"};
     case Stage::kFinalizeExact: return {"exact-topology-v3", "exact-identities-v1"};
-    case Stage::kResolveCaptures:
-      return {"emuir-compact-v2", "exact-indexed-request-v4", "exact-topology-v3", "exact-parts-v1"};
     case Stage::kHashSemantics:
       return {"exact-nodes-v2", "exact-captures-v1", "exact-hash-request-v1"};
     case Stage::kWriteExactSections:
@@ -170,8 +167,6 @@ core::StageResult ExecuteStage(const StageRequest& request) {
           throw core::StageError(core::ErrorCode::kInvalidRequest,"PATRON report aliases an auxiliary output");
       }
     }
-    if (request.stage == Stage::kResolveCaptures && !request.report_path.empty() && Equivalent(request.report_path, request.output_path + ".sqlite"))
-      throw core::StageError(core::ErrorCode::kInvalidRequest, "native report aliases the capture index");
     for (std::size_t i = 0; i < schemas.size(); ++i) {
       auto input = bound ? request.input_artifacts[i] : core::ArtifactRef::Bind(paths[i], schemas[i], pipe_input);
       if (input.is_pipe() && !pipe_input)
@@ -217,16 +212,14 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kBuildCaptures: core::BuildExactCaptures(inputs,output); break;
       case Stage::kValidateCaptures: core::ValidateExactCaptures(inputs,output); break;
       case Stage::kAnalyzeExact:
-        if (request.indexed_input) AnalyzeStaticExact(path(1), output, path(0));
-        else AnalyzeStaticExact(path(0), output);
+        AnalyzeStaticExact(inputs, output);
         break;
-      case Stage::kFinalizeExact: FinalizeStaticExact(path(0), path(1), output); break;
-      case Stage::kResolveCaptures: ResolveStaticExactCaptures(path(0), path(1), path(2), path(3), output); break;
-      case Stage::kHashSemantics: HashStaticExactSemantics(path(0), path(1), path(2), output); break;
-      case Stage::kWriteExactSections: WriteStaticExactSections(path(0), path(1), path(2), output); break;
-      case Stage::kRefinePatron: RefinePatron(path(0), output, request.summary_output, request.typed_output); break;
-      case Stage::kRoute: RouteTlr(path(0), output); break;
-      case Stage::kBuildSchedule: core::BuildExactScheduleStore(path(0),path(1),path(2),output); break;
+      case Stage::kFinalizeExact: FinalizeStaticExact(inputs, output); break;
+      case Stage::kHashSemantics: HashStaticExactSemantics(inputs, output); break;
+      case Stage::kWriteExactSections: WriteStaticExactSections(inputs, output); break;
+      case Stage::kRefinePatron: RefinePatron(inputs, output, request.summary_output, request.typed_output); break;
+      case Stage::kRoute: RouteTlr(inputs, output); break;
+      case Stage::kBuildSchedule: core::BuildExactScheduleStore(inputs,output); break;
       case Stage::kExportBookshelf:
         core::ExportBookshelf(inputs[0],inputs[1],output,request.auxiliary_output_path,request.scratch_path);
         break;
@@ -250,7 +243,6 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kValidateCaptures: schema = "exact-capture-validation-v1"; break;
       case Stage::kAnalyzeExact: schema = "exact-topology-v3"; break;
       case Stage::kFinalizeExact: schema = "exact-nodes-v2"; break;
-      case Stage::kResolveCaptures: schema = "exact-captures-v1"; break;
       case Stage::kHashSemantics: schema = "exact-sha256-text-v1"; break;
       case Stage::kWriteExactSections: schema = "exact-section-summary-v2"; break;
       case Stage::kRefinePatron: schema = request.typed_output ? "patron-output-v1" : "patron-output-text"; break;
@@ -267,8 +259,6 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       default: throw core::StageError(core::ErrorCode::kInvalidRequest, "unknown native stage");
     }
     std::vector<core::ArtifactRef> refs{core::ArtifactRef::Bind(request.output_path, schema, request.output_path == "-")};
-    if (request.stage == Stage::kResolveCaptures)
-      refs.push_back(core::ArtifactRef::Bind(request.output_path + ".sqlite", "exact-capture-index-private-v1"));
     if (request.stage == Stage::kImportVivadoLineage)
       refs.push_back(core::ArtifactRef::Bind(request.auxiliary_output_path,"vivado-lineage-summary-v2"));
     if (request.stage == Stage::kExportRwroute)

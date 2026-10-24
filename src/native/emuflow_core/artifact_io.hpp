@@ -81,7 +81,8 @@ class CheckedRequestReader {
 
 // Publish an already closed same-directory file (including a SQLite store)
 // through the same synchronization/rename boundary as binary artifacts.
-void PublishTemporaryFile(const std::string& temporary, const std::string& target);
+void PublishTemporaryFile(const std::string& temporary, const std::string& target,
+                          const std::vector<ArtifactRef>& inputs = {});
 
 // Same-directory exclusive staging with invocation-owned sidecars. Destruction
 // happens after reader/writer scopes unwind; it never removes published inputs.
@@ -103,7 +104,8 @@ class StagedArtifact {
 // an exception or early exit removes only the unpublished temporary.
 class AtomicBinaryWriter {
  public:
-  explicit AtomicBinaryWriter(const std::string& target_path);
+  explicit AtomicBinaryWriter(const std::string& target_path,
+                              std::vector<ArtifactRef> inputs = {});
   ~AtomicBinaryWriter();
 
   AtomicBinaryWriter(const AtomicBinaryWriter&) = delete;
@@ -127,6 +129,7 @@ class AtomicBinaryWriter {
  private:
   std::string target_path_;
   std::string temporary_path_;
+  std::vector<ArtifactRef> inputs_;
   std::ofstream stream_;
   bool committed_ = false;
 };

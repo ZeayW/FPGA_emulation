@@ -374,6 +374,70 @@ int main() {
         if (file.path().filename().string().find("text-output.tmp.") == 0)
           throw std::runtime_error("failed text publication retained private scratch");
     }
+    // The binary writer checks its bound generation at the actual commit,
+    // including inode replacement with unchanged bytes and timestamp.
+    {
+      const auto source=(root/"binary-source").string();
+      const auto destination=(root/"binary-output").string();
+      const auto read=[](const std::string& path) {
+        std::ifstream input(path,std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(input),{});
+      };
+      { std::ofstream file(source); file<<"source"; }
+      { std::ofstream file(destination); file<<"previous"; }
+      for (int mutation=0;mutation<3;++mutation) {
+        const auto ref=ArtifactRef::Bind(source,"chimew-rudy-input-v1");
+        std::string temporary;
+        bool rejected=false;
+        try {
+          emuflow::core::AtomicBinaryWriter writer(destination,{ref});
+          temporary=writer.temporary_path();
+          writer.stream()<<"untrusted";
+          if (mutation==0) {
+            std::ofstream changed(source,std::ios::app); changed<<"mutation";
+          } else if (mutation==1) {
+            const auto timestamp=std::filesystem::last_write_time(source);
+            std::filesystem::copy_file(source,source+".replacement");
+            std::filesystem::last_write_time(source+".replacement",timestamp);
+            std::filesystem::rename(source+".replacement",source);
+          } else {
+            std::filesystem::remove(source);
+          }
+          writer.Commit();
+        } catch (const emuflow::core::StageError& error) {
+          rejected=error.code()==ErrorCode::kMixedGeneration;
+        }
+        if (!rejected || read(destination)!="previous" || std::filesystem::exists(temporary))
+          throw std::runtime_error("changed binary source replaced its prior result or retained scratch");
+      }
+      { std::ofstream file(source); file<<"fresh"; }
+      const auto alias=source+".alias";
+      std::filesystem::create_hard_link(source,alias);
+      const auto ref=ArtifactRef::Bind(source,"chimew-rudy-input-v1");
+      bool alias_rejected=false;
+      try { emuflow::core::AtomicBinaryWriter writer(alias,{ref}); }
+      catch (const emuflow::core::StageError& error) {
+        alias_rejected=error.code()==ErrorCode::kInvalidRequest;
+      }
+      if (!alias_rejected || read(source)!="fresh")
+        throw std::runtime_error("binary writer accepted a hard-link source alias");
+      {
+        emuflow::core::AtomicBinaryWriter writer(destination,{ref});
+        writer.stream()<<"accepted"; writer.Commit();
+      }
+      if (read(destination)!="accepted") throw std::runtime_error("bound binary commit failed");
+      const auto staged=destination+".private";
+      { std::ofstream file(staged); file<<"untrusted"; }
+      { std::ofstream changed(source,std::ios::app); changed<<"changed"; }
+      bool rejected=false;
+      try { emuflow::core::PublishTemporaryFile(staged,destination,{ref}); }
+      catch (const emuflow::core::StageError& error) {
+        rejected=error.code()==ErrorCode::kMixedGeneration;
+      }
+      if (!rejected || read(destination)!="accepted")
+        throw std::runtime_error("direct publication replaced an artifact from a changed source");
+      std::filesystem::remove(staged);
+    }
     const auto sqlite_artifact = (root / "source-artifact.sqlite").string();
     {
       emuflow::core::SqliteDatabase db(sqlite_artifact, emuflow::core::SqliteDatabase::Mode::kCreateExclusive);

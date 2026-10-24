@@ -380,12 +380,10 @@ void PublishScheduleData(const std::vector<Route>& routes, const ExactScheduleSo
 }
 }  // namespace
 
-void BuildExactScheduleStore(const std::string& route_path, const std::string& board_path,
-                            const std::string& generation_path, const std::string& output_path) {
-  std::vector<ArtifactRef> sources{
-    ArtifactRef::Bind(route_path,"system-route-store-v3"),
-    ArtifactRef::Bind(board_path,"exact-schedule-board-request-v1"),
-    ArtifactRef::Bind(generation_path,"exact-schedule-generation-request-v1")};
+void BuildExactScheduleStore(const std::vector<ArtifactRef>& sources, const std::string& output_path) {
+  const auto& route_path=sources.at(0).path();
+  const auto& board_path=sources.at(1).path();
+  const auto& generation_path=sources.at(2).path();
   BinaryReader request(generation_path);
   Require(request.size() <= 8 * 1024 * 1024,"schedule generation request exceeds bound");
   ReadAndValidateHeader(request,{0x3147534d44544545ULL,1,"exact schedule generation request"});

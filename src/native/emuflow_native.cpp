@@ -19,7 +19,6 @@ constexpr const char* kUsage =
     "  phase3 analyze INPUT OUTPUT\n"
     "  phase3 analyze --indexed-input EMUIR INPUT OUTPUT\n"
     "  phase3 finalize-semantics TOPOLOGY METADATA OUTPUT\n"
-    "  phase3 resolve-captures EMUIR REQUEST TOPOLOGY PARTS OUTPUT\n"
     "  phase3 build-captures EMUIR REQUEST TOPOLOGY PARTS OUTPUT\n"
     "  phase3 validate-captures EMUIR REQUEST TOPOLOGY PARTS CAPTURES OUTPUT\n"
     "  phase3 hash-semantics NODES CAPTURES HEADER OUTPUT\n"
@@ -160,8 +159,6 @@ int Dispatch(int argc, char** argv, const std::string& report) {
       return run(Stage::kAnalyzeExact, {argv[4], argv[5]}, argv[6], false, true);
     if (operation == "finalize-semantics" && argc == 6)
       return run(Stage::kFinalizeExact, {argv[3], argv[4]}, argv[5]);
-    if (operation == "resolve-captures" && argc == 8)
-      return run(Stage::kResolveCaptures, {argv[3], argv[4], argv[5], argv[6]}, argv[7]);
     if (operation == "hash-semantics" && argc == 7)
       return run(Stage::kHashSemantics, {argv[3], argv[4], argv[5]}, argv[6]);
     if (operation == "write-exact-sections" && argc == 7)

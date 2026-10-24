@@ -173,7 +173,7 @@ void BuildCandidateIds(const std::vector<ArtifactRef>& inputs,const std::string&
   std::vector<unsigned char>().swap(classes); std::vector<unsigned char>().swap(input_policy);
   // A single lexical scan streams the name pool. Offsets and its byte length
   // follow it, so no full name pool, spool or second name scan is required.
-  AtomicBinaryWriter writer(output); std::uint32_t crc=0;
+  AtomicBinaryWriter writer(output,inputs); std::uint32_t crc=0;
   auto put=[&](const void* data,std::size_t bytes) { writer.WriteBytes(data,bytes); UpdateCrc32(crc,static_cast<const unsigned char*>(data),bytes); };
   auto scalar=[&](auto value) { put(&value,sizeof value); };
   scalar(UINT64_C(0x31544343464d5545)); scalar(std::uint32_t{1}); scalar(std::uint64_t{nets}); scalar(eligible);

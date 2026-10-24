@@ -1,4 +1,5 @@
 #pragma once
+#include "emuflow_core/stage_runtime.hpp"
 #include <cstdint>
 #include <iterator>
 #include <limits>
@@ -157,5 +158,6 @@ inline void BindMembers(Model& model) {
 namespace emuflow::native {
 emuflow::core::patron::Model ReadTypedPatronModel(const std::string& input);
 void RefinePatronModel(const emuflow::core::patron::Model& model,
-                       const std::string& output, bool summary_output, bool typed_output);
+                       const std::string& output, bool summary_output, bool typed_output,
+                       const std::vector<emuflow::core::ArtifactRef>& inputs);
 }

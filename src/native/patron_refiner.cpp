@@ -3740,7 +3740,8 @@ void write_typed_output(const std::string& output_path,
                         const Evaluation& final,
                         const std::vector<NativeMove>& moves,
                         const std::vector<int>& assignment,
-                        const std::vector<NativeBatch>& batches) {
+                        const std::vector<NativeBatch>& batches,
+                        const std::vector<emuflow::core::ArtifactRef>& inputs) {
   require(initial.objective.size() == 8 && final.objective.size() == 8,
           "PATRON typed output objective is incomplete");
   require(initial.ranked.size() == 10 && final.ranked.size() == 10,
@@ -3753,7 +3754,7 @@ void write_typed_output(const std::string& output_path,
     changes += static_cast<std::uint64_t>(batch.changes.size());
   }
 
-  emuflow::core::AtomicBinaryWriter output(output_path);
+  emuflow::core::AtomicBinaryWriter output(output_path,inputs);
   std::uint32_t checksum = 0;
   const auto write = [&](const auto& value) {
     output.Write(value);
@@ -3800,18 +3801,19 @@ void write_output(const std::string& output_path,
                   const Evaluation& final,
                   const std::vector<NativeMove>& moves,
                   const std::vector<int>& assignment,
-                  const std::vector<NativeBatch>& batches = {},
-                  bool emit_trace = true,
-                  bool typed_output = false) {
+                  const std::vector<NativeBatch>& batches,
+                  bool emit_trace,
+                  bool typed_output,
+                  const std::vector<emuflow::core::ArtifactRef>& inputs) {
   if (typed_output) {
     require(!emit_trace,
             "PATRON typed output supports summary-only publication");
     write_typed_output(output_path, mode, initial, final, moves, assignment,
-                       batches);
+                       batches,inputs);
     return;
   }
-  std::ofstream output(output_path);
-  require(output.good(), "cannot open output");
+  emuflow::core::AtomicBinaryWriter writer(output_path,inputs);
+  auto& output=writer.stream();
   const char* header = "EMUFLOW_PATRON_OUTPUT_V14\n";
   output << header;
   output << "MODE " << mode << '\n';
@@ -3867,12 +3869,14 @@ void write_output(const std::string& output_path,
     output << "ASSIGN " << cluster << ' ' << assignment[cluster] << '\n';
   }
   output << "END\n";
+  writer.Commit();
 }
 
 void run_scalable(const Model& model,
                   const std::string& output_path,
                   bool emit_trace,
-                  bool typed_output) {
+                  bool typed_output,
+                  const std::vector<emuflow::core::ArtifactRef>& inputs) {
   ProxyState state = build_proxy_state(model);
   const Evaluation initial = state.evaluation;
   const auto cluster_nets = build_cluster_nets(model);
@@ -5154,25 +5158,26 @@ void run_scalable(const Model& model,
                state.assignment,
                batches,
                emit_trace,
-               typed_output);
+               typed_output,inputs);
 }
 
 void run(const Model& model,
          const std::string& output_path,
          bool emit_trace,
-         bool typed_output) {
-  run_scalable(model, output_path, emit_trace, typed_output);
+         bool typed_output,
+         const std::vector<emuflow::core::ArtifactRef>& inputs) {
+  run_scalable(model, output_path, emit_trace, typed_output,inputs);
 }
 
 }  // namespace
 
-void emuflow::native::RefinePatron(const std::string& input_path,
+void emuflow::native::RefinePatron(const std::vector<emuflow::core::ArtifactRef>& inputs,
                                  const std::string& output_path,
                                  bool summary_output,
                                  bool typed_output) {
   require(!typed_output || summary_output, "typed PATRON output requires summary mode");
-  Model model = read_typed_model(input_path);
-  RefinePatronModel(model, output_path, summary_output, typed_output);
+  Model model = read_typed_model(inputs.at(0).path());
+  RefinePatronModel(model, output_path, summary_output, typed_output,inputs);
 }
 
 emuflow::core::patron::Model emuflow::native::ReadTypedPatronModel(const std::string& input) {
@@ -5180,7 +5185,8 @@ emuflow::core::patron::Model emuflow::native::ReadTypedPatronModel(const std::st
 }
 
 void emuflow::native::RefinePatronModel(const emuflow::core::patron::Model& model,
-                                       const std::string& output, bool summary_output, bool typed_output) {
+                                       const std::string& output, bool summary_output, bool typed_output,
+                                       const std::vector<emuflow::core::ArtifactRef>& inputs) {
   require(!typed_output || summary_output, "typed PATRON output requires summary mode");
-  run(model, output, !summary_output, typed_output);
+  run(model, output, !summary_output, typed_output,inputs);
 }
