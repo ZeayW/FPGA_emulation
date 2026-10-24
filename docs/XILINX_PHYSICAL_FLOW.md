@@ -189,7 +189,8 @@ replicate, or change cells. Indexed inventories record observed source lineage
 and unretained source tags; this census does not certify functional equivalence.
 The explicit `vivado-optimized-source-lineage-v1` policy separates this source
 census from actual routed physical components and inserted infrastructure.
-Timing queries resolve all matching typed descendants. A removed object may
+Timing queries resolve the original source's typed descendants first, without
+broadening a retained source to other equivalent cells. A removed object may
 alias another source only when the primitive, parameters, pin interfaces and
 original input connections are identical. Queries across descendant collections
 take the worst physical endpoint delay. Unsupported transformations or missing

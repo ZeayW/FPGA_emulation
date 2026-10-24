@@ -143,6 +143,25 @@ proc get_timing_paths {args} {
             with self.assertRaisesRegex(ValidationError, "no proven endpoint association"):
                 resolve_timing_query(mapped,functions,lineage,query,root/"resolved.tsv",boundary=True)
 
+    def test_retained_origin_is_not_broadened_to_other_equivalent_cells(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report,mapped,functions,inventory = self.prepare(root)
+            with sqlite3.connect(mapped) as connection:
+                origin = connection.execute("SELECT seq FROM cells WHERE id='alias'").fetchone()[0]
+            with inventory.open("a") as stream:
+                csv.writer(stream,delimiter="\t",lineterminator="\n").writerow([
+                    "partition/alias".encode().hex(),"alias".encode().hex(),"FDRE",f"s{origin}",""])
+            lineage = root/"lineage.sqlite"
+            import_cell_lineage(mapped,functions,{"routed":inventory},lineage,mapped_sha256=report["mapped_index"]["sha256"])
+            query = root/"query.tsv"
+            query.write_text("endpoint_hex\tkind\texternal_port_hex\tbit\tlogical_net_hex\tboundary_cell_hex\n70\trx\t71\t0\t6e\t"+"alias".encode().hex()+"\n")
+            output = root/"resolved.tsv"
+            resolve_timing_query(mapped,functions,lineage,query,output,boundary=True)
+            with output.open() as stream:
+                rows = list(csv.reader(stream,delimiter="\t"))
+            self.assertEqual(bytes.fromhex(rows[1][-1]).decode(),"partition/alias")
+
     def test_invalid_duplicate_unknown_and_mixed_source_inventories_fail(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

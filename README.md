@@ -18,7 +18,7 @@ does not establish board clock/skew signoff. Used undriven source nets are
 rejected before mapping or vendor implementation. Physical capacity accounting
 handles native macro expansion and shared LUT halves.
 Indexed mapped primitives carry provenance tags without global KEEP/DONT_TOUCH
-constraints; timing coverage is checked after optimization. See the
+constraints; source-bound timing coverage is checked after optimization. See the
 [Xilinx physical flow](docs/XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider) and
 [user guide](docs/USER_GUIDE.md#physical-implementation).
 The virtual BoardDB is a declared academic platform model rather than evidence

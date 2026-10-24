@@ -115,7 +115,9 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
                 JOIN functions.signatures f ON f.seq=c.seq
                 JOIN functions.signatures equivalent ON equivalent.signature=f.signature
                 JOIN objects a ON a.origin=equivalent.seq AND a.stage='routed' AND a.ref=c.type
-                WHERE c.id=? ORDER BY a.name
+                WHERE c.id=? AND (a.origin=c.seq OR NOT EXISTS (
+                    SELECT 1 FROM objects own WHERE own.stage='routed' AND own.origin=c.seq
+                )) ORDER BY a.name
             """, (cell,))
             encoded = []
             for row in rows:
