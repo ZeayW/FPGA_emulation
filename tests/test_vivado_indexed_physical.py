@@ -1,3 +1,4 @@
+from contextlib import closing
 import json
 import shutil
 import sqlite3
@@ -95,7 +96,7 @@ puts pass
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             ir = fixture(root)
-            with sqlite3.connect(ir) as db:
+            with closing(sqlite3.connect(ir)) as db, db:
                 net = db.execute("SELECT seq FROM net_records WHERE id='d'").fetchone()[0]
                 db.execute("DELETE FROM endpoint_records WHERE net_seq=? AND role=0", (net,))
                 db.execute("UPDATE net_records SET cut_class='undriven' WHERE seq=?", (net,))
@@ -115,7 +116,7 @@ puts pass
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             ir = fixture(root)
-            with sqlite3.connect(ir) as db:
+            with closing(sqlite3.connect(ir)) as db, db:
                 net = db.execute("SELECT seq FROM net_records WHERE id='d'").fetchone()[0]
                 db.execute("DELETE FROM endpoint_records WHERE net_seq=?", (net,))
                 db.execute("UPDATE net_records SET cut_class='undriven' WHERE seq=?", (net,))
@@ -128,7 +129,7 @@ puts pass
             with self.subTest(sparse=sparse), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 ir = fixture(root)
-                with sqlite3.connect(ir) as db:
+                with closing(sqlite3.connect(ir)) as db, db:
                     for table, column in (("net_records", "seq"), ("endpoint_records", "net_seq"), ("alias_records", "net_seq")):
                         db.execute(f"UPDATE {table} SET {column}={column}+100")
                         db.execute(f"UPDATE {table} SET {column}=" + (f"({column}-100)*10+10" if sparse else f"{column}-99"))

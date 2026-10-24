@@ -1,3 +1,4 @@
+from contextlib import closing
 import csv
 import json
 import sqlite3
@@ -60,7 +61,7 @@ class VivadoOptimizationTests(unittest.TestCase):
         import_yosys_json(source).save(ir)
         report = emit_vivado_mapped_verilog(ir, root / "dut.v")
         mapped, functions = Path(report["mapped_index"]["path"]), Path(report["source_functions"]["path"])
-        with sqlite3.connect(mapped) as db:
+        with closing(sqlite3.connect(mapped)) as db, db:
             origins = dict(db.execute("SELECT id,seq FROM cells"))
         inventory = root / "inventory.tsv"
         with inventory.open("w") as stream:
@@ -78,7 +79,7 @@ class VivadoOptimizationTests(unittest.TestCase):
         output = root / "proofs.sqlite"
         with patch.object(Path, "read_text", side_effect=AssertionError("whole-document read")):
             report = build_optimization_proofs(mapped, lineage, output, mapped_sha256=digest)
-        with sqlite3.connect(output) as db:
+        with closing(sqlite3.connect(output)) as db, db:
             rows = {name:db.execute("SELECT reason,constant_value,initialization FROM eliminated_sources WHERE origin=?", (origin,)).fetchone()
                     for name,origin in origins.items()}
             report["conditional_candidates"] = {name: db.execute("SELECT constant_value,initialization FROM constant_candidates WHERE origin=?", (origin,)).fetchone()

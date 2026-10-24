@@ -1,3 +1,4 @@
+from contextlib import closing
 import csv
 import json
 import sqlite3
@@ -20,7 +21,7 @@ class VivadoLineageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             report,mapped,functions,inventory = self.prepare(root)
-            with sqlite3.connect(mapped) as connection:
+            with closing(sqlite3.connect(mapped)) as connection, connection:
                 origin = connection.execute("SELECT seq FROM cells WHERE id='capture'").fetchone()[0]
             before = root/"before.tsv"
             with before.open("w") as stream:
@@ -33,7 +34,7 @@ class VivadoLineageTests(unittest.TestCase):
                 summary = import_cell_lineage(mapped,functions,{"synthesized":before,"routed":inventory},output,
                                               mapped_sha256=report["mapped_index"]["sha256"])
             self.assertEqual(summary["stages"]["synthesized"]["observed_objects"],100000)
-            with sqlite3.connect(output) as connection:
+            with closing(sqlite3.connect(output)) as connection, connection:
                 self.assertEqual(connection.execute("SELECT DISTINCT stage FROM objects").fetchall(),[("routed",)])
                 self.assertEqual(connection.execute("SELECT count(*) FROM objects").fetchone()[0],3)
 
@@ -146,7 +147,7 @@ proc get_timing_paths {args} {
         self.assertEqual(report["optimization_policy"], LINEAGE_POLICY)
         self.assertNotIn("DONT_TOUCH", (root/"dut.v").read_text())
         mapped, functions = Path(report["mapped_index"]["path"]), Path(report["source_functions"]["path"])
-        with sqlite3.connect(mapped) as connection:
+        with closing(sqlite3.connect(mapped)) as connection, connection:
             origins = dict(connection.execute("SELECT id,seq FROM cells"))
         inventory = root/"routed.tsv"
         self.write_inventory(inventory, [
@@ -201,7 +202,7 @@ proc get_timing_paths {args} {
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             report,mapped,functions,inventory = self.prepare(root)
-            with sqlite3.connect(mapped) as connection:
+            with closing(sqlite3.connect(mapped)) as connection, connection:
                 origin = connection.execute("SELECT seq FROM cells WHERE id='alias'").fetchone()[0]
             with inventory.open("a") as stream:
                 csv.writer(stream,delimiter="\t",lineterminator="\n").writerow([
