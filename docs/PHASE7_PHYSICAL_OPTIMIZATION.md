@@ -206,6 +206,8 @@ The native rigid-slice mover enforces both leaf and region domains on every
 transaction. Fixed hard-block regional loads prevent a donor-only relocation
 from falsely removing that clock from the region. A candidate is still subject
 to full placement certification, fresh device/domain reconstruction, and routing.
+An unsuccessful domain is retried after another transaction frees destination
+capacity; only a complete pass without a successful repair ends the search.
 Legacy v1 leaf-only payloads retain their explicit semantics.
 
 After global-clock routing, the adapter independently counts distinct clock

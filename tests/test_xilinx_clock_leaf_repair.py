@@ -131,6 +131,30 @@ class NativeClockLeafRepairTest(unittest.TestCase):
             self.assertNotEqual(result.returncode,0)
             self.assertFalse((root/"bad-output").exists())
 
+    def test_stalled_region_is_retried_after_another_region_frees_capacity(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            clocks=["b","a","c","a","d","e"]
+            (root/"sites").write_text("".join(f"{100+i} 10 {i} 0 1\n" for i in range(7)))
+            (root/"atoms").write_text("".join(f"a{i} a{i} FF FDRE\n" for i in range(6)))
+            (root/"placement").write_text("".join(f"a{i} {100+i} 10 0"+(" /FIXED" if i==3 else "")+"\n" for i in range(6)))
+            domains="D 0 16\nD 10 2 region\nD 11 2 region\nD 12 2 region\n"
+            for i in range(7):
+                domains+=f"S SLICE_X{i}Y0 0 0\nR SLICE_X{i}Y0 {10 if i<3 else 11 if i<6 else 12}\n"
+                if i<6:domains+=f"C SLICE_X{i}Y0 CLK1 {clocks[i]}\n"
+            (root/"domains").write_text(domains)
+            result=subprocess.run([str(self.exe),*[str(root/n) for n in ["sites","atoms","placement","output","domains"]],"3"],text=True,capture_output=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            counters=json.loads(result.stdout)
+            self.assertEqual(counters["overfull_clock_regions_before"],2)
+            self.assertEqual(counters["overfull_domains_after"],0)
+            self.assertEqual(counters["moved_slices"],2)
+            self.assertGreater(counters["failed_transactions"],0)
+            rows={v[0]:v[1:] for v in map(str.split,(root/"output").read_text().splitlines())}
+            self.assertEqual(rows["a1"][:2],["104","10"])
+            self.assertEqual(rows["a3"],["103","10","0","/FIXED"])
+            self.assertEqual(rows["a4"][:2],["106","10"])
+
     def test_wrapper_binds_domain_payload_route_input_and_source_certificate(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d)

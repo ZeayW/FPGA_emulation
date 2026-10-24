@@ -222,7 +222,11 @@ int main(int argc, char** argv) {
       }
       if(placed==c.donors.size()) {
         if(banks.at(problem).refs.count(c.clock))throw std::runtime_error("repair retained overloaded clock");
-        repairs++;committed=true;break;
+        // Another domain may have stalled only because this clock still
+        // occupied a destination region. Every committed transaction removes
+        // a clock from an overfull domain without creating a new overload,
+        // so retrying stalled domains still makes bounded strict progress.
+        stalled.clear();repairs++;committed=true;break;
       }
       failedTransactions++;
       for(size_t n=0;n<placed;n++){size_t g=c.donors[n];change(g,groups[g].where,-1);owner[groups[g].where]=-1;}
