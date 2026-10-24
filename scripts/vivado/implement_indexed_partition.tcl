@@ -2,10 +2,12 @@
 # All tool products are scratch; the Python consumer validates inventories,
 # resource budgets, fixed I/O and complete source-bound timing separately.
 # Source tags never impose KEEP/DONT_TOUCH constraints.
-if {$argc != 15} {
-  error "expected PART NETLIST TOP XDC OUT CELLS PREFIX ADAPTER WRAPPER IO_XDC IO_QUERY PLACE ROUTE DUT_CLOCKS THREADS"
+if {$argc != 16} {
+  error "expected PART NETLIST TOP XDC OUT CELLS PREFIX ADAPTER WRAPPER IO_XDC IO_QUERY PLACE ROUTE DUT_CLOCKS THREADS SESSION_CONFIG"
 }
-source [file join [file dirname [info script]] resource_inventory.tcl]
+set emuflow_script_directory [file dirname [info script]]
+source [file join $emuflow_script_directory resource_inventory.tcl]
+source [file join $emuflow_script_directory native_session.tcl]
 proc emuflow_decode {value} {
   return [encoding convertfrom utf-8 [binary decode hex $value]]
 }
@@ -17,17 +19,27 @@ proc emuflow_domain_metrics {from to} {
   return [list [get_property SLACK $paths] [get_property DATAPATH_DELAY $paths]]
 }
 if {[catch {
-  lassign $argv part netlist top timing_xdc out expected prefix adapter wrapper io_xdc io_query place_directive route_directive dut_count threads
+  lassign $argv part netlist top timing_xdc out expected prefix adapter wrapper io_xdc io_query place_directive route_directive dut_count threads session_config
+  source $session_config
   file mkdir $out
   set_param general.maxThreads $threads
   if {[llength [get_parts -quiet $part]] != 1} {error "target part is not installed: $part"}
-  create_project -in_memory -part $part emuflow_indexed_partition
-  read_verilog $netlist
-  if {$adapter ne ""} {read_verilog -sv $adapter}
-  if {$wrapper ne ""} {read_verilog -sv $wrapper}
-  read_xdc $timing_xdc
-  if {$io_xdc ne ""} {read_xdc $io_xdc}
-  synth_design -top $top -part $part -flatten_hierarchy none -mode out_of_context
+  if {$emuflow_start_checkpoint eq ""} {
+    create_project -in_memory -part $part emuflow_indexed_partition
+    read_verilog $netlist
+    if {$adapter ne ""} {read_verilog -sv $adapter}
+    if {$wrapper ne ""} {read_verilog -sv $wrapper}
+    read_xdc $timing_xdc
+    if {$io_xdc ne ""} {read_xdc $io_xdc}
+    synth_design -top $top -part $part -flatten_hierarchy none -mode out_of_context
+  } else {
+    open_checkpoint $emuflow_start_checkpoint
+    if {[get_property PART [current_design]] ne $part || [get_property NAME [current_design]] ne $top} {
+      error "synthesized continuation part/top differs"
+    }
+  }
+  if {[llength [get_pblocks -quiet]] != 0} {error "native implementation contains an undeclared placement region"}
+  emuflow_validate_clock_contract $emuflow_clock_contract
   if {[llength [get_cells -quiet -hier -filter {IS_BLACKBOX == 1}]] != 0} {error "unresolved black boxes"}
   emuflow_inventory "$out/mapped_cells.tsv" $prefix
   set dut_clocks [get_clocks -quiet emuflow_dut_clk*]
@@ -55,13 +67,12 @@ if {[catch {
     }
     close $stream
   }
-  write_checkpoint -force "$out/synthesized.dcp"
+  if {$emuflow_start_checkpoint eq ""} {write_checkpoint -force "$out/synthesized.dcp"}
+  emuflow_session_frontiers $emuflow_script_directory
   opt_design
   place_design -directive $place_directive
   phys_opt_design
-  write_checkpoint -force "$out/placed.dcp"
   route_design -directive $route_directive
-  write_checkpoint -force "$out/routed.dcp"
   emuflow_inventory "$out/routed_mapped_cells.tsv" $prefix
   report_route_status -file "$out/route_status.rpt"
   report_drc -file "$out/drc.rpt"
@@ -132,6 +143,7 @@ if {[catch {
     puts $metrics "$key\t$value"
   }
   close $metrics
+  emuflow_session_timings $emuflow_script_directory $prefix $emuflow_io_timing_map
   puts "EMUFLOW_INDEXED_VIVADO status=pass part=$part fixed_pairs=$pairs"
 } message options]} {
   puts stderr "EMUFLOW_INDEXED_VIVADO status=fail message=$message"

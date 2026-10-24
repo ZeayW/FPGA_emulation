@@ -22,6 +22,7 @@ def main():
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--vivado", required=True)
     parser.add_argument("--place-directive", default="Quick", help="smoke placement directive; production remains Default")
+    parser.add_argument("--exercise-continuation", action="store_true", help="also implement from the checked synthesized snapshot")
     args = parser.parse_args()
     root = args.out.resolve()
     root.mkdir(parents=True, exist_ok=False)
@@ -42,7 +43,8 @@ def main():
     ir = root / "source.emuir.sqlite"
     import_yosys_json(source).save(ir)
     mapped = root / "dut.v"
-    mapped_report = emit_vivado_mapped_verilog(ir, mapped)
+    mapped_report_path = root/"mapped-verilog-report.json"
+    mapped_report = emit_vivado_mapped_verilog(ir, mapped, mapped_report_path)
     # Use real P/N identities from the repository's declared virtual board.
     board = Path(__file__).resolve().parents[2] / "platforms/virtual/rapidwright_xcvu19p_4fpga_mesh.wires.csv"
     with board.open() as stream:
@@ -98,10 +100,21 @@ def main():
         original_cells=7, transport_cells=0, output_dir=root / "physical", executable=args.vivado,
         virtual_io_contract=contract, local_identity_path=identity, local_query_path=query,
         place_directive=args.place_directive)
-    write_json(root / "qualification.json", {"status": "pass", "scope": "synthetic-indexed-physical-only",
+    qualification = {"status": "pass", "scope": "synthetic-indexed-physical-only",
         "tool": report["tool"], "result": report["result"], "fixed_io": report["virtual_io_implementation"],
-        "cell_lineage": report["cell_coverage"],
-        "local_timing": report["local_path_timing"]["import"]})
+        "cell_lineage": report["cell_coverage"], "local_timing": report["local_path_timing"]["import"]}
+    if args.exercise_continuation:
+        checkpoint = root/"physical/synthesized.dcp"
+        continued = run_indexed_vivado_partition(fpga="fpga0",part="xcvu19p-fsva3824-2-e",ir_path=ir,
+            mapped_verilog_path=mapped,mapped_report=mapped_report,runtime=runtime,original_cells=7,transport_cells=0,
+            output_dir=root/"continued",executable=args.vivado,virtual_io_contract=contract,
+            local_identity_path=identity,local_query_path=query,place_directive=args.place_directive,
+            synthesized_checkpoint=checkpoint,synthesized_checkpoint_sha256=file_sha256(checkpoint),
+            continuation_source_report=mapped_report_path)
+        qualification["continuation"] = {"status": "pass", "validation": continued["continuation"],
+            "result": continued["result"], "local_timing": continued["local_path_timing"]["import"]}
+    write_json(root/"qualification.json",qualification)
+
 
 
 if __name__ == "__main__":

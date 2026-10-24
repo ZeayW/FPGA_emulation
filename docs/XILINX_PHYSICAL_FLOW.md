@@ -244,11 +244,11 @@ cross-FPGA logic and interface queries retain the Phase 6 identities. Fixed
 logical transport ports resolve to the declared physical P pad. Query extents
 are checked against actual timing endpoints; a sequential Q launch may start
 at the same primitive's clock to include clock-to-Q, while an unrelated prefix
-or any suffix beyond the requested endpoint is rejected. Fresh timing-export
-sessions apply equal datapath-only requirements across clock pairs so a cone
+or any suffix beyond the requested endpoint is rejected. After implementation
+reports are finalized, the routed snapshot receives equal datapath-only
+requirements across clock pairs so a cone
 query ranks physical delay rather than nominal clock slack. This measurement
-constraint is never written to the routed checkpoint or used for implementation
-WNS/TNS or global event deadlines. The
+constraint is excluded from implementation WNS/TNS and global event deadlines. The
 indexed provider does not use the legacy sampled Vivado TimingPathDB as terminal
 evidence. Per-FPGA vendor WNS/TNS describe vendor endpoint constraints; global
 original-path WNS/TNS still require the separate complete OpenSTA composition.
@@ -261,7 +261,34 @@ belong to the selected output directory and experiment scratch lifecycle.
 four-differential-pair implementation on XCVU19P. Its default `Quick` placement
 directive is specific to this smoke test; the production provider remains
 `Default`. Its result explicitly covers
-synthetic physical/provider qualification only.
+synthetic physical/provider qualification only. `--exercise-continuation` also
+checks implementation from the same synthesized snapshot in a fresh attempt.
+
+The indexed provider `indexed-phase6-vivado-physical-v2` uses one native design
+session. Between stages, short Python children use SQLite indexes to classify
+all required endpoints, plan complete conditional-state frontiers, confirm the
+native facts, and resolve the final routed queries. Source indexes close before
+the next native algorithm or timing export proceeds. Before placement, unknown
+sources without supported associations or checked constant candidates fail.
+After routing, every query still requires a routed association or proof.
+
+The native session finalizes route status, DRC, utilization and vendor timing
+reports before exporting boundary/local/logic delays from its current routed
+design. It validates exact clocks and fixed differential pads and rejects
+undeclared placement regions. Current-design exporters require the matching
+native snapshot stage. A synthesized checkpoint binds constant-selection facts;
+placed and routed checkpoints are not mandatory intermediates. Consumed lineage
+and resolved-query scratch is retired between stages; imported timing records
+and proof stores retain the canonical facts.
+
+Within the same active experiment, `run_indexed_vivado_partition` accepts
+`synthesized_checkpoint`, `synthesized_checkpoint_sha256`, and
+`continuation_source_report` together. Use a fresh native output directory.
+Admission verifies the checkpoint, mapped/function/Verilog identities, frozen
+runtime XDC and fixed-I/O wrapper/query contracts; Vivado additionally checks
+the loaded part/top, clocks and full post-route electrical/coverage gates.
+Continuation runs opt/place/physical optimization/route from that synthesis
+boundary. This interface does not publish a persistent checkpoint cache.
 
 An explicit checkpoint I/O diagnostic is available as
 `scripts/vivado/inspect_checkpoint_io.tcl INPUT_DCP OUTPUT_DIRECTORY EXPECTED_PART`.
@@ -321,8 +348,9 @@ sources can gain `initialization: vendor-confirmed`; other conditional states
 remain unproved. Proof readers verify the document seal, complete frontier
 references, selected values, policy, and counts. A synthesis-only preflight must
 explicitly select the synthesized lineage stage and is never accepted as routed
-proof by a routed consumer. The native producer still needs to connect this
-checked input at its post-implementation import boundary.
+proof by a routed consumer. The native session recreates the checked facts
+from their bound inputs at the routed preparation boundary and imports them
+into the canonical partition proof owner before any timing skip is exported.
 
 Endpoint association uses the indexed source-origin lookup for retained cells.
 Only absent origins enter the indexed identical-input signature lookup. Both

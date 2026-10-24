@@ -226,7 +226,9 @@ when required by its timing contract. `--fpga fpgaN` selects a representative
 partition diagnostic and does not constitute a complete global run. The
 indexed adapter uses complete timing queries; `--vivado-max-timing-paths` is a
 legacy sampled-export option. See the [provider contract](XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider)
-for current qualification and optimization limits.
+for current qualification, optimization limits and the checked active-run
+synthesized continuation API. Indexed implementation exports routed results
+in one native session without mandatory placed/routed checkpoint files.
 
 Standalone `multi-fpga physical` uses `--backend` for the same selection and
 also defaults to RapidWright. The integrated Chimew lookahead path currently

@@ -3,7 +3,7 @@
 if {$argc < 3 || $argc > 5} {
   error "usage: export_logic_segment_timing.tcl INPUT_DCP QUERY_TSV OUTPUT_TSV ?HIERARCHY_PREFIX? ?allow-missing|FIXED_IO_MAP?"
 }
-set input_dcp [file normalize [lindex $argv 0]]
+set input_dcp [lindex $argv 0]
 set query_path [file normalize [lindex $argv 1]]
 set output_path [file normalize [lindex $argv 2]]
 set hierarchy_prefix ""
@@ -89,7 +89,7 @@ proc emuflow_resolve_object {kind name prefix {resolved_hex ""}} {
   return $object
 }
 
-open_checkpoint $input_dcp
+emuflow_open_export_design $input_dcp routed
 emuflow_use_data_path_constraints
 set input [open $query_path r]
 gets $input header

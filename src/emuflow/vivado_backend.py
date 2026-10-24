@@ -570,6 +570,9 @@ def run_vivado_partition_backend(
     virtual_io_contract: Optional[Mapping[str, Any]] = None,
     local_identity_path: Optional[Path] = None,
     local_query_path: Optional[Path] = None,
+    synthesized_checkpoint: Optional[Path] = None,
+    synthesized_checkpoint_sha256: Optional[str] = None,
+    continuation_source_report: Optional[Path] = None,
 ) -> Dict[str, Any]:
     from .emuir_storage import is_emuir_sqlite
     from .emuir_compact import is_compact_emuir
@@ -587,7 +590,11 @@ def run_vivado_partition_backend(
             logic_query_path=logic_query_path, local_identity_path=local_identity_path,
             local_query_path=local_query_path, virtual_io_contract=virtual_io_contract,
             executable=executable, place_directive=place_directive, route_directive=route_directive,
+            synthesized_checkpoint=synthesized_checkpoint, synthesized_checkpoint_sha256=synthesized_checkpoint_sha256,
+            continuation_source_report=continuation_source_report,
         )
+    if any(value is not None for value in (synthesized_checkpoint,synthesized_checkpoint_sha256,continuation_source_report)):
+        raise ValidationError("synthesized continuation requires the current indexed Vivado provider")
     if virtual_io_contract is not None or local_identity_path is not None or local_query_path is not None:
         raise ValidationError("current fixed-I/O/local timing requires compact EmuIR input")
     if not part.startswith("xc"):

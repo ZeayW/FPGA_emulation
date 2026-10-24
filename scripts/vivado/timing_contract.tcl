@@ -1,9 +1,20 @@
 # Shared exact physical boundary resolution for indexed Phase6 timing.
+proc emuflow_open_export_design {selector stage} {
+  if {$selector eq "@current-design"} {
+    if {![info exists ::emuflow_native_export_stage] || $::emuflow_native_export_stage ne $stage ||
+        [llength [current_design -quiet]] != 1} {
+      error "current design is not a checked $stage native export snapshot"
+    }
+  } else {
+    open_checkpoint [file normalize $selector]
+  }
+}
+
 proc emuflow_use_data_path_constraints {} {
-  # These fresh checkpoint readers export physical DELAY, never closure slack.
+  # These snapshot readers export physical DELAY, never closure slack.
   # Equal datapath-only requirements prevent a short-period clock domain from
   # winning a cone query merely through worse slack instead of longer delay.
-  # Nothing is written back to the routed checkpoint or implementation reports.
+  # Implementation reports are finalized before the native-session exports.
   set clocks [get_clocks -quiet]
   foreach launch $clocks {
     foreach capture $clocks {

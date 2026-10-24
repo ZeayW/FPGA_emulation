@@ -4,7 +4,8 @@ if {$argc != 3} {error "expected INPUT_DCP QUERY_TSV OUTPUT_TSV"}
 lassign $argv checkpoint query output
 proc emuflow_frontier_hex {value} {return [binary encode hex [encoding convertto utf-8 $value]]}
 proc emuflow_frontier_decode {value} {return [encoding convertfrom utf-8 [binary decode hex $value]]}
-open_checkpoint $checkpoint
+source [file join [file dirname [info script]] timing_contract.tcl]
+emuflow_open_export_design $checkpoint synthesized
 set input [open $query r]
 if {[gets $input header] < 0 || $header ne "source_origin\tnative_cell_hex"} {
   error "invalid constant-frontier query"
@@ -66,4 +67,4 @@ while {[gets $input row] >= 0} {
 close $input
 close $stream
 puts "EMUFLOW_CONSTANT_FRONTIER_INSPECTION status=pass cells=$count"
-exit 0
+if {$checkpoint ne "@current-design"} {exit 0}
