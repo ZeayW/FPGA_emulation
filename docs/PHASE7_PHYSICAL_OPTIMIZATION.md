@@ -152,9 +152,24 @@ After global-clock routing, the adapter independently counts distinct clock
 nets on each routed PIP endpoint node before starting signal routing. Repeated
 uses by one clock count once. It records shared nodes, maximum distinct users,
 unresolved endpoints, intent counts, and at most eight examples. This census
-does not alter the routes or replace final source-to-sink/resource validation.
-`EmuFlowClockPathProbe --clock-owner-self-test` checks its deduplication and
-shared-owner counters without loading a device.
+does not replace final source-to-sink/resource validation. Shared ownership or
+unresolved endpoints stop execution before signal routing.
+
+The dedicated-clock search checks availability on every source-to-leaf edge,
+including routing and distribution nodes. A sink's bounded uphill search must
+join a leaf reachable from that source; an available but unreachable leaf is
+insufficient. BUFGCE cascade inputs may join another reachable dedicated node.
+Only selected paths are reserved for subsequent clocks, and ownership remains
+separate from endpoint unpreservation. This removes unconstrained helper calls
+from the source/centroid/distribution path. It is a connectivity/resource policy,
+not a clock-skew or timing guarantee. The producer identifies this policy as
+`recovery-available-clock-tree-v1`; historical sealed route strategies remain
+readable by the validator.
+
+`EmuFlowClockPathProbe --clock-owner-self-test` checks distinct-user counters.
+`--clock-tree-self-test` exercises blocked resources, dedicated-graph boundaries,
+cycles, unreachable nearer leaves, occupied sources and bounded sink tails
+without loading a device.
 
 The academic literature reaches the same conclusion through different
 algorithms:

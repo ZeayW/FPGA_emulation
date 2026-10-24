@@ -90,6 +90,46 @@ public final class EmuFlowClockPathProbe {
     }
 
     public static void main(String[] args) throws Exception {
+        if (args.length == 1 && args[0].equals("--clock-tree-self-test")) {
+            Map<String, List<String>> down = Map.of(
+                "source", List.of("blocked", "spine"),
+                "blocked", List.of("unreachable_leaf"),
+                "spine", List.of("source", "leaf"),
+                "leaf", List.of("fabric")
+            );
+            Map<String, String> tree = EmuFlowRWRoute.availableClockTree(
+                "source", n -> down.getOrDefault(n, List.of()),
+                n -> !n.equals("fabric"), n -> !n.equals("blocked")
+            );
+            if (!tree.keySet().equals(Set.of("source", "spine", "leaf"))) {
+                throw new IllegalStateException("clock search crossed occupied/non-dedicated nodes: " + tree);
+            }
+            Map<String, List<String>> up = Map.of(
+                "sink", List.of("unreachable_leaf", "tail"),
+                "tail", List.of("leaf")
+            );
+            List<String> path = EmuFlowRWRoute.availableClockSinkPath(
+                "sink", tree, n -> up.getOrDefault(n, List.of()),
+                n -> n.endsWith("leaf"), n -> true, 2
+            );
+            if (!path.equals(List.of("source", "spine", "leaf", "tail", "sink"))) {
+                throw new IllegalStateException("clock selected an unreachable nearer leaf: " + path);
+            }
+            for (int depth : new int[] {0, 1}) {
+                try {
+                    EmuFlowRWRoute.availableClockSinkPath("sink", tree,
+                        n -> up.getOrDefault(n, List.of()), n -> n.endsWith("leaf"), n -> true, depth);
+                } catch (IllegalStateException expected) { continue; }
+                throw new IllegalStateException("clock tail exceeded depth bound " + depth);
+            }
+            try {
+                EmuFlowRWRoute.availableClockTree("source", n -> List.of(), n -> true, n -> false);
+            } catch (IllegalStateException expected) {
+                System.out.println("PASS: clock search excludes occupied nodes, fabric detours, cycles and unreachable leaves; tail bounds and occupied sources enforced");
+                return;
+            }
+            throw new IllegalStateException("occupied clock source was accepted");
+        }
         if (args.length == 1 && args[0].equals("--clock-owner-self-test")) {
             EmuFlowRWRoute.DistinctClockNodeUsers<String> users = new EmuFlowRWRoute.DistinctClockNodeUsers<>();
             users.add("n0", "a"); users.add("n0", "a"); users.add("n1", "a");

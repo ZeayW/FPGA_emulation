@@ -30,12 +30,8 @@ import com.xilinx.rapidwright.rwroute.NetWrapper;
 import com.xilinx.rapidwright.rwroute.NodeStatus;
 import com.xilinx.rapidwright.rwroute.RouterHelper;
 import com.xilinx.rapidwright.rwroute.RWRouteConfig;
-import com.xilinx.rapidwright.router.RouteNode;
-import com.xilinx.rapidwright.router.UltraScaleClockRouting;
 import com.xilinx.rapidwright.timing.TimingModel;
 import com.xilinx.rapidwright.util.ParallelismTools;
-import com.xilinx.rapidwright.placer.blockplacer.Point;
-import com.xilinx.rapidwright.placer.blockplacer.SmallestEnclosingCircle;
 import java.io.BufferedInputStream;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -60,6 +56,7 @@ import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -67,7 +64,7 @@ public final class EmuFlowRWRoute {
     private static final String SCHEMA = "emuflow.xilinx-route-db/v2";
     private static final String ROUTER_STRATEGY =
         "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-unroutable-"
-        + "recovery-extended-lcb-clock";
+        + "recovery-available-clock-tree-v1";
     private static final double MAX_RECOVERY_ITERATION_SECONDS = 600.0;
     private static final Set<String> EXTENDED_LCB_CLOCK_NETS =
         ConcurrentHashMap.newKeySet();
@@ -133,6 +130,72 @@ public final class EmuFlowRWRoute {
             throw new IllegalStateException("extended clock path has missing PIPs");
         }
         return pips;
+    }
+
+    /** Dedicated-clock reachability, checking every node before inserting an edge. */
+    static <T> Map<T, T> availableClockTree(
+        T source, Function<T, ? extends Iterable<T>> downhill,
+        Predicate<T> dedicated, Predicate<T> available
+    ) {
+        if (source == null || !available.test(source)) {
+            throw new IllegalStateException("global-clock source unavailable: " + source);
+        }
+        Map<T, T> parents = new HashMap<>();
+        ArrayDeque<T> queue = new ArrayDeque<>();
+        parents.put(source, null); queue.add(source);
+        while (!queue.isEmpty()) {
+            T node = queue.removeFirst();
+            for (T next : downhill.apply(node)) {
+                if (parents.containsKey(next) || !dedicated.test(next)
+                    || !available.test(next)) continue;
+                parents.put(next, node); queue.addLast(next);
+            }
+        }
+        return parents;
+    }
+
+    /** Find a bounded, available sink tail that joins the reachable clock tree. */
+    static <T> List<T> availableClockSinkPath(
+        T sink, Map<T, T> parents, Function<T, ? extends Iterable<T>> uphill,
+        Predicate<T> join, Predicate<T> available, int maximumDepth
+    ) {
+        if (sink == null || !available.test(sink)) {
+            throw new IllegalStateException("global-clock sink unavailable: " + sink);
+        }
+        Map<T, T> towardSink = new HashMap<>();
+        ArrayDeque<T> queue = new ArrayDeque<>();
+        towardSink.put(sink, null); queue.add(sink);
+        T selected = null;
+        for (int depth = 0; depth <= maximumDepth && !queue.isEmpty(); depth++) {
+            int count = queue.size();
+            while (count-- > 0) {
+                T node = queue.removeFirst();
+                if (parents.containsKey(node) && join.test(node)) {
+                    selected = node; break;
+                }
+                if (depth == maximumDepth) continue;
+                for (T next : uphill.apply(node)) {
+                    if (towardSink.containsKey(next) || !available.test(next)) continue;
+                    towardSink.put(next, node); queue.addLast(next);
+                }
+            }
+            if (selected != null) break;
+        }
+        if (selected == null) {
+            throw new IllegalStateException("no reachable available clock leaf within "
+                + maximumDepth + " uphill hops of " + sink);
+        }
+        List<T> path = new ArrayList<>();
+        for (T cursor = selected; cursor != null; cursor = parents.get(cursor)) path.add(cursor);
+        Collections.reverse(path);
+        Set<T> pathNodes = new HashSet<>(path);
+        for (T cursor = towardSink.get(selected); cursor != null; cursor = towardSink.get(cursor)) {
+            if (!pathNodes.add(cursor)) {
+                throw new IllegalStateException("clock tail creates a cycle: " + cursor);
+            }
+            path.add(cursor);
+        }
+        return path;
     }
 
     static final class DistinctClockNodeUsers<T> {
@@ -397,256 +460,66 @@ public final class EmuFlowRWRoute {
             System.out.println("INFO: EmuFlow clock route ownership: "+summary);
             List<String> ordered = new ArrayList<>(examples); Collections.sort(ordered);
             for (String example : ordered) System.out.println("INFO: EmuFlow shared clock node: "+example);
-        }
-
-        private static final class NodeDepth {
-            final Node node;
-            final int depth;
-
-            NodeDepth(Node node, int depth) {
-                this.node = node;
-                this.depth = depth;
+            if (!users.sharedOwners.isEmpty() || unresolved != 0) {
+                throw new IllegalStateException("global-clock route ownership is invalid: " + summary);
             }
         }
 
-        private static final class ClockSinkRoutes {
-            final Map<RouteNode, List<SitePinInst>> ordinaryMappings =
-                new HashMap<>();
-            final Map<SitePinInst, List<Node>> extendedPaths = new HashMap<>();
-            final Set<RouteNode> leafTargets = new HashSet<>();
-        }
-
-        private ClockSinkRoutes clockSinkRoutes(Net clk) {
-            ClockSinkRoutes routes = new ClockSinkRoutes();
-            Set<Node> usedLCBs = new HashSet<>();
-            Function<Node, NodeStatus> status =
-                node -> getGlobalRoutingNodeStatus(clk, node);
-            for (SitePinInst pin : clk.getPins()) {
-                if (pin.isOutPin()) continue;
-                Node intNode = RouterHelper.projectInputPinToINTNode(pin);
-                if (intNode == null) {
-                    throw new IllegalStateException(
-                        "unable to project global-clock sink to INT: " + pin
-                    );
-                }
-                Map<Node, Integer> candidates = new HashMap<>();
-                for (Node firstHop : intNode.getAllUphillNodes()) {
-                    if (status.apply(firstHop) == NodeStatus.UNAVAILABLE) continue;
-                    for (Node secondHop : firstHop.getAllUphillNodes()) {
-                        if (secondHop.getIntentCode() == IntentCode.NODE_GLOBAL_LEAF
-                            && status.apply(secondHop) != NodeStatus.UNAVAILABLE) {
-                            candidates.put(secondHop, 2);
-                        }
-                    }
-                }
-                boolean extended = candidates.isEmpty();
-                Map<Node, Node> towardSink = new HashMap<>();
-                Node pathSink = null;
-                if (extended) {
-                    pathSink = pin.getConnectedNode();
-                    if (pathSink == null) {
-                        throw new IllegalStateException(
-                            "global-clock sink has no connected node: " + pin
-                        );
-                    }
-                    ArrayDeque<NodeDepth> queue = new ArrayDeque<>();
-                    Set<Node> visited = new HashSet<>();
-                    queue.add(new NodeDepth(pathSink, 0));
-                    visited.add(pathSink);
-                    int nearestLeafDepth = Integer.MAX_VALUE;
-                    while (!queue.isEmpty()) {
-                        NodeDepth current = queue.removeFirst();
-                        if (current.depth >= MAX_LCB_SEARCH_DEPTH
-                            || current.depth >= nearestLeafDepth) {
-                            continue;
-                        }
-                        for (Node uphill : current.node.getAllUphillNodes()) {
-                            NodeStatus uphillStatus = status.apply(uphill);
-                            if (!visited.add(uphill)
-                                || uphillStatus == NodeStatus.UNAVAILABLE) {
-                                continue;
-                            }
-                            int depth = current.depth + 1;
-                            towardSink.put(uphill, current.node);
-                            if (uphill.getIntentCode()
-                                == IntentCode.NODE_GLOBAL_LEAF) {
-                                candidates.merge(uphill, depth, Math::min);
-                                // Finish this BFS layer, rather than expanding
-                                // the fabric to depth 16 looking for a reusable
-                                // leaf after a legal nearer leaf was found.
-                                nearestLeafDepth = Math.min(nearestLeafDepth, depth);
-                            } else if (depth < nearestLeafDepth) {
-                                queue.addLast(new NodeDepth(uphill, depth));
-                            }
-                        }
-                    }
-                }
-                if (candidates.isEmpty()) {
-                    throw new IllegalStateException(
-                        "no leaf clock buffer within " + MAX_LCB_SEARCH_DEPTH
-                        + " uphill hops of " + pin
-                    );
-                }
-                List<Node> orderedCandidates = new ArrayList<>(candidates.keySet());
-                orderedCandidates.sort(
-                    Comparator
-                        .comparingInt((Node node) -> candidates.get(node))
-                        .thenComparingInt((Node node) ->
-                            usedLCBs.contains(node)
-                            || status.apply(node) == NodeStatus.INUSE ? 0 : 1
-                        )
-                        .thenComparing(Node::toString)
-                );
-                Node selected = orderedCandidates.get(0);
-                RouteNode routeNode = new RouteNode(
-                    selected.getTile(), selected.getWireIndex()
-                );
-                routes.leafTargets.add(routeNode);
-                if (extended) {
-                    List<Node> path = new ArrayList<>();
-                    Node cursor = selected;
-                    while (cursor != null) {
-                        path.add(cursor);
-                        if (cursor.equals(pathSink)) break;
-                        cursor = towardSink.get(cursor);
-                    }
-                    if (path.isEmpty()
-                        || !path.get(path.size() - 1).equals(pathSink)) {
-                        throw new IllegalStateException(
-                            "extended LCB path reconstruction failed for " + pin
-                        );
-                    }
-                    routes.extendedPaths.put(pin, path);
-                    EXTENDED_LCB_CLOCK_NETS.add(clk.getName());
-                } else {
-                    routes.ordinaryMappings.computeIfAbsent(
-                        routeNode, ignored -> new ArrayList<>()
-                    ).add(pin);
-                }
-                usedLCBs.add(selected);
-            }
-            return routes;
-        }
-
-        private ClockRegion clockCentroid(Set<ClockRegion> regions) {
-            HashSet<Point> points = new HashSet<>();
-            for (ClockRegion region : regions) {
-                points.add(new Point(region.getColumn(), region.getRow()));
-            }
-            Point center = SmallestEnclosingCircle.getCenterPoint(points);
-            ClockRegion centroid = design.getDevice().getClockRegion(
-                center.y, center.x
-            );
-            int height = Math.abs(
-                centroid.getLowerLeft().getRow()
-                - centroid.getUpperLeft().getRow()
-            );
-            if (height <= 40) {
-                if (centroid.getRow() == 0) {
-                    centroid = centroid.getNeighborClockRegion(1, 0);
-                } else if (
-                    centroid.getRow()
-                    == design.getDevice().getNumOfClockRegionRows() - 1
-                ) {
-                    centroid = centroid.getNeighborClockRegion(-1, 0);
-                }
-            }
-            return centroid;
-        }
+        // Keep ownership independent of routingGraph.unpreserve(pin): freeing a
+        // current endpoint must never hide another clock's physical reservation.
+        private final Map<Node, String> clockRouteOwners = new HashMap<>();
 
         @Override
         protected void routeGlobalClkNet(
             Net clk, Map<Integer, Set<ClockRegion>> usedRoutingTracks
         ) {
             for (SitePinInst pin : clk.getPins()) {
-                routingGraph.unpreserve(pin.getConnectedNode());
+                Node node = pin.getConnectedNode();
+                if (node != null && !clockRouteOwners.containsKey(node)) routingGraph.unpreserve(node);
             }
-            Function<Node, NodeStatus> status =
-                node -> getGlobalRoutingNodeStatus(clk, node);
-            System.out.println(
-                "INFO: Routing " + clk.getPins().size() + " pins of clock "
-                + clk + " (extended-LCB non timing-driven)"
+            Predicate<Node> available = node -> {
+                String owner = clockRouteOwners.get(node);
+                return (owner == null || owner.equals(clk.getName()))
+                    && getGlobalRoutingNodeStatus(clk, node) != NodeStatus.UNAVAILABLE;
+            };
+            long start = System.nanoTime();
+            SitePinInst source = clk.getSource();
+            if (source == null) throw new IllegalStateException("clock has no source: " + clk.getName());
+            Map<Node, Node> tree = availableClockTree(
+                source.getConnectedNode(), Node::getAllDownhillNodes,
+                node -> node.getIntentCode().name().startsWith("NODE_GLOBAL"), available
             );
-            Set<ClockRegion> regions = new HashSet<>();
+            System.out.println("INFO: EmuFlow available clock tree: net=" + clk.getName()
+                + " reachable_nodes=" + tree.size() + " sinks=" + (clk.getPins().size() - 1)
+                + " seconds=" + ((System.nanoTime()-start)/1e9));
+            Set<PIP> pips = new HashSet<>();
             for (SitePinInst pin : clk.getPins()) {
-                if (!pin.isOutPin()) regions.add(pin.getTile().getClockRegion());
+                if (pin.isOutPin()) continue;
+                boolean cascade = isBUFGCEClockInputSink(pin);
+                List<Node> path = availableClockSinkPath(
+                    pin.getConnectedNode(), tree, Node::getAllUphillNodes,
+                    node -> cascade || node.getIntentCode() == IntentCode.NODE_GLOBAL_LEAF,
+                    available, MAX_LCB_SEARCH_DEPTH
+                );
+                pips.addAll(extendedClockPathPIPs(path));
+                // All non-cascade last miles are explicitly reconstructed and
+                // independently checked, rather than delegated to an opaque helper.
+                if (!cascade) EXTENDED_LCB_CLOCK_NETS.add(clk.getName());
             }
-            // An extended leaf-to-sink path may cross a clock-region boundary.
-            // Build distribution for the selected leaves as well as the sinks.
-            ClockSinkRoutes routes = clockSinkRoutes(clk);
-            int sinkRegionCount = regions.size();
-            for (RouteNode leaf : routes.leafTargets) {
-                ClockRegion region = leaf.getTile().getClockRegion();
-                if (region == null) {
-                    throw new IllegalStateException("clock leaf has no region: " + leaf);
-                }
-                regions.add(region);
-            }
-            if (regions.size() > sinkRegionCount) {
-                System.out.println("INFO: Extended clock leaves add "
-                    + (regions.size() - sinkRegionCount) + " distribution regions for "
-                    + clk.getName());
-            }
-            ClockRegion centroid = clockCentroid(regions);
-            List<ClockRegion> above = new ArrayList<>();
-            List<ClockRegion> below = new ArrayList<>();
-            for (ClockRegion region : regions) {
-                if (region.getInstanceY() > centroid.getInstanceY()) {
-                    above.add(region);
-                } else {
-                    below.add(region);
+            // Commit only after all sinks are reachable. Reserve used paths,
+            // not the whole explored dedicated graph, for subsequent clocks.
+            for (PIP pip : pips) {
+                for (Node node : new Node[] {pip.getStartNode(), pip.getEndNode()}) {
+                    if (node == null || !available.test(node)) {
+                        throw new IllegalStateException("clock path occupies unavailable node: "
+                            + clk.getName() + " " + node);
+                    }
+                    clockRouteOwners.put(node, clk.getName());
                 }
             }
-            RouteNode firstHRoute =
-                UltraScaleClockRouting.routeBUFGToNearestRoutingTrack(clk);
-            RouteNode centroidHRoute = UltraScaleClockRouting.routeToCentroid(
-                clk, firstHRoute, centroid, true, true
-            );
-            List<RouteNode> distributionLines = new ArrayList<>();
-            ClockRegion aboveCentroid = above.isEmpty()
-                ? null : centroid.getNeighborClockRegion(1, 0);
-            if (aboveCentroid != null) {
-                RouteNode vertical = UltraScaleClockRouting.routeToCentroid(
-                    clk, centroidHRoute, aboveCentroid, true, false
-                );
-                List<RouteNode> lines =
-                    UltraScaleClockRouting.routeToHorizontalDistributionLines(
-                        clk, vertical, above, false, status
-                    );
-                if (lines != null) distributionLines.addAll(lines);
-            }
-            RouteNode vertical = UltraScaleClockRouting.routeToCentroid(
-                clk, centroidHRoute,
-                centroid.getNeighborClockRegion(0, 0), true, false
-            );
-            List<RouteNode> lines =
-                UltraScaleClockRouting.routeToHorizontalDistributionLines(
-                    clk, vertical, below, true, status
-                );
-            if (lines != null) distributionLines.addAll(lines);
-            UltraScaleClockRouting.routeDistributionToLCBs(
-                clk, distributionLines, routes.leafTargets
-            );
-            UltraScaleClockRouting.routeLCBsToSinks(
-                clk, routes.ordinaryMappings, status
-            );
-            for (Map.Entry<SitePinInst, List<Node>> entry
-                : routes.extendedPaths.entrySet()) {
-                List<PIP> pathPIPs = extendedClockPathPIPs(
-                    entry.getValue()
-                );
-                if (pathPIPs.isEmpty()) {
-                    throw new IllegalStateException(
-                        "extended LCB path has no programmable PIPs for "
-                        + entry.getKey()
-                    );
-                }
-                clk.getPIPs().addAll(pathPIPs);
-                entry.getKey().setRouted(true);
-            }
-            clk.setPIPs(new HashSet<>(clk.getPIPs()));
+            clk.setPIPs(pips);
             preserveNet(clk, false);
-            if (clk.hasPIPs()) clk.getSource().setRouted(true);
+            for (SitePinInst pin : clk.getPins()) pin.setRouted(true);
         }
 
         @Override

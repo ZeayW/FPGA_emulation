@@ -1336,11 +1336,15 @@ def validate_xilinx_route_db(
         or fabric_prefilter_clock_gates > dedicated_clock_gates
         or physical_cells
         != route_cells + 7 * transformed_dsp48e2 + fabric_prefilter_clock_gates
-        or router
-        != (
+        or not isinstance(router, str)
+        or router not in {
+            # Historical sealed artifacts remain readable; new producers use
+            # the availability-checked dedicated clock tree.
             "CUFR-HUS-non-timing-driven-uturn-enabled-"
-            "parallel-unroutable-recovery-extended-lcb-clock"
-        )
+            "parallel-unroutable-recovery-extended-lcb-clock",
+            "CUFR-HUS-non-timing-driven-uturn-enabled-"
+            "parallel-unroutable-recovery-available-clock-tree-v1",
+        }
     ):
         raise ValidationError("XilinxRouteDB transformed-cell accounting is invalid")
     seen_clock_gate_cells: Set[str] = set()

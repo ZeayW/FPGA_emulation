@@ -387,7 +387,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                 "transformed_dsp48e2_cells": 0,
                 "router": (
                     "CUFR-HUS-non-timing-driven-uturn-enabled-"
-                    "parallel-unroutable-recovery-extended-lcb-clock"
+                    "parallel-unroutable-recovery-available-clock-tree-v1"
                 ),
             },
             "excluded_nets": [],
@@ -490,6 +490,25 @@ class XilinxRWRouteTest(unittest.TestCase):
             path.write_text(json.dumps(broken), encoding="utf-8")
             with self.assertRaises(ValidationError):
                 validate_xilinx_route_db(path)
+
+    def test_checker_reads_sealed_clock_strategies_and_rejects_unknown(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "route.json"
+            for strategy in [
+                "CUFR-HUS-non-timing-driven-uturn-enabled-"
+                "parallel-unroutable-recovery-extended-lcb-clock",
+                self._route()["materialization"]["router"],
+            ]:
+                value = self._route()
+                value["materialization"]["router"] = strategy
+                path.write_text(json.dumps(value), encoding="utf-8")
+                self.assertEqual(validate_xilinx_route_db(path)["nets"], 1)
+            for strategy in ["unknown-clock-router", {}, None]:
+                value = self._route()
+                value["materialization"]["router"] = strategy
+                path.write_text(json.dumps(value), encoding="utf-8")
+                with self.assertRaisesRegex(ValidationError, "accounting is invalid"):
+                    validate_xilinx_route_db(path)
 
     def test_checker_seals_exact_rwroute_input_for_resume(self):
         with tempfile.TemporaryDirectory() as temporary:
