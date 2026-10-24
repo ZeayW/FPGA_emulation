@@ -17,11 +17,20 @@ proc resolve_signal {hints prefix} {
     if {$prefix ne ""} {set physical "$prefix/$name"}
     if {$kind eq "net"} {
       set object [get_nets -quiet [list $physical]]
-      if {[llength $object] == 0} {set object [get_nets -quiet -hier [list $physical]]}
+      if {[llength $object] == 0} {set object [get_nets -quiet -hier -filter "NAME == $physical"]}
     } elseif {$kind eq "port"} {
       set object [get_ports -quiet [list $name]]
     } elseif {$kind eq "pin"} {
       set object [get_pins -quiet [list $physical]]
+      if {[llength $object] == 0} {
+        set separator [string last / $physical]
+        set cell_name [string range $physical 0 [expr {$separator - 1}]]
+        set pin_name [string range $physical [expr {$separator + 1}] end]
+        set cell [get_cells -quiet -hier -filter "NAME == $cell_name"]
+        if {[llength $cell] == 1} {
+          set object [get_pins -quiet -of_objects $cell -filter "REF_PIN_NAME == $pin_name"]
+        }
+      }
     } else {error "invalid signal hint kind"}
     if {[llength $object] == 1} {return $object}
   }

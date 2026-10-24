@@ -107,7 +107,7 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
         connection.execute("ATTACH DATABASE ? AS functions", (f"file:{functions.resolve()}?mode=ro&immutable=1",))
 
         @lru_cache(maxsize=4096)
-        def candidates(name: str, cell_only: bool) -> str:
+        def candidates(name: str, cell_only: bool, required: bool = True) -> str:
             cell, separator, pin = (name, "", "") if cell_only else name.rpartition("/")
             if not cell_only and not separator:
                 raise ValidationError(f"Vivado timing pin has no source cell: {name}")
@@ -130,7 +130,7 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
                     raise ValidationError(f"Vivado timing source has an unsupported sequential transformation: {name}")
                 actual = row[0] if cell_only else row[0]+"/"+pin
                 encoded.append(actual.encode().hex())
-            if not encoded:
+            if not encoded and required:
                 raise ValidationError(f"Vivado optimized timing source has no proven endpoint association: {name}")
             return ",".join(encoded)
 
@@ -152,7 +152,11 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
                 if boundary:
                     hints = [candidates(bytes.fromhex(row[5]).decode(), True) if row[5] else ""]
                 else:
-                    hints = [candidates(bytes.fromhex(row[index+1]).decode(), False) if row[index]=="pin" else "" for index in (2,4,6)]
+                    # A cone anchor is consumed only if the endpoint query has
+                    # no physical path. An optimized-away, unused anchor must
+                    # not reject a valid endpoint measurement. The Tcl exporter
+                    # still requires the actual anchor if it takes that branch.
+                    hints = [candidates(bytes.fromhex(row[index+1]).decode(), False, required=index != 6) if row[index]=="pin" else "" for index in (2,4,6)]
                 writer.writerow(row+hints)
                 count += 1
         return {"status": "pass", "queries": count, "output": str(output), "provider": LINEAGE_POLICY}

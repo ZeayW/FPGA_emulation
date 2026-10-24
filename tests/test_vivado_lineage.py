@@ -75,7 +75,7 @@ dict set props REF_NAME FDRE
             root = Path(directory)
             query, output = root/"query.tsv", root/"timing.tsv"
             query.write_text("endpoint_hex\tkind\tstart_kind\tstart_object_hex\tend_kind\tend_object_hex\tcone_anchor_kind\tcone_anchor_object_hex\tresolved_start_pins_hex\tresolved_end_pins_hex\tresolved_cone_pins_hex\n"+
-                "\t".join(["70","local","pin","source/Q".encode().hex(),"pin","sink/D".encode().hex(),"","",
+                "\t".join(["70","local","pin","source/Q".encode().hex(),"pin","sink/D".encode().hex(),"pin","unused/O".encode().hex(),
                              ",".join(value.encode().hex() for value in ("a with space/Q","b with space/Q")),"y/D".encode().hex(),""])+"\n")
             mock = r'''
 # macOS ships Tcl 8.5; emulate only the codec used by the Vivado 8.6 script.
@@ -92,6 +92,7 @@ proc open_checkpoint {args} {}
 proc get_clocks {args} {return {}}
 proc get_cells {args} {return {a b}}
 proc get_pins {args} {
+  if {[string match *unused/O* $args]} {error "unused cone was queried"}
   if {[lsearch -exact $args -of_objects] >= 0} {return {a/C b/C}}
   return [lindex $args end]
 }
@@ -214,6 +215,33 @@ proc get_timing_paths {args} {
             with output.open() as stream:
                 rows = list(csv.reader(stream,delimiter="\t"))
             self.assertEqual(bytes.fromhex(rows[1][-1]).decode(),"partition/alias")
+
+    def test_unused_missing_cone_does_not_reject_mandatory_endpoints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, mapped, functions, inventory = self.prepare(root)
+            lineage = root / "lineage.sqlite"
+            import_cell_lineage(mapped, functions, {"routed": inventory}, lineage,
+                                mapped_sha256=report["mapped_index"]["sha256"])
+            header = ["endpoint_hex", "kind", "start_kind", "start_object_hex",
+                      "end_kind", "end_object_hex", "cone_anchor_kind", "cone_anchor_object_hex"]
+            row = ["70", "local", "pin", "launch/Q".encode().hex(), "pin",
+                   "capture/D".encode().hex(), "pin", "removed/O".encode().hex()]
+            query, output = root / "query.tsv", root / "resolved.tsv"
+            with query.open("w") as stream:
+                csv.writer(stream, delimiter="\t", lineterminator="\n").writerows([header, row])
+            self.assertEqual(resolve_timing_query(mapped, functions, lineage, query, output)["queries"], 1)
+            with output.open() as stream:
+                resolved = list(csv.reader(stream, delimiter="\t"))
+            self.assertEqual(resolved[1][:8], row)
+            self.assertTrue(resolved[1][8])
+            self.assertTrue(resolved[1][9])
+            self.assertEqual(resolved[1][10], "")
+            row[5] = "removed/D".encode().hex()
+            with query.open("w") as stream:
+                csv.writer(stream, delimiter="\t", lineterminator="\n").writerows([header, row])
+            with self.assertRaisesRegex(ValidationError, "no proven endpoint association"):
+                resolve_timing_query(mapped, functions, lineage, query, output)
 
     def test_invalid_duplicate_unknown_and_mixed_source_inventories_fail(self):
         with tempfile.TemporaryDirectory() as directory:
