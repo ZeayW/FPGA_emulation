@@ -1015,16 +1015,16 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     workers=0,
                 )
 
-    def test_rejects_unknown_rapidwright_placer(self):
+    def test_retired_rapidwright_placer_is_not_a_python_api(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            with self.assertRaisesRegex(ValidationError, "RapidWright placer"):
+            with self.assertRaisesRegex(TypeError, "rapidwright_placer"):
                 run_multi_fpga_physical_flow(
                     root,
                     PLATFORM,
                     root / "schedule.json",
                     root / "physical",
-                    rapidwright_placer="invented",
+                    rapidwright_placer="legacy",
                 )
 
     def test_rapidwright_default_is_openparf_native_and_fail_closed(self):
@@ -1041,20 +1041,31 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     backend="rapidwright",
                 )
 
-    def test_rejects_rapidwright_placer_for_other_backend(self):
+    def test_retired_arch_producers_are_not_cli_commands(self):
+        from contextlib import redirect_stderr
+        from io import StringIO
+        from emuflow.cli import _build_parser
+
+        parser = _build_parser()
+        for command in ("pack-xilinx", "place-xilinx", "guide-xilinx-openparf",
+                        "plan-xilinx-single-slr", "validate-xilinx-single-slr-plan"):
+            with self.subTest(command=command):
+                error = StringIO()
+                with redirect_stderr(error), self.assertRaises(SystemExit):
+                    parser.parse_args(["arch", command])
+                self.assertIn("invalid choice", error.getvalue())
+
+    def test_retired_rapidwright_placer_is_not_a_cli_option(self):
+        from emuflow.cli import _build_parser
+
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            with self.assertRaisesRegex(
-                ValidationError, "applies only to the RapidWright backend"
-            ):
-                run_multi_fpga_physical_flow(
-                    root,
-                    PLATFORM,
-                    root / "schedule.json",
-                    root / "physical",
-                    backend="open",
-                    rapidwright_placer="openparf-native",
-                )
+            with self.assertRaises(SystemExit):
+                _build_parser().parse_args([
+                    "multi-fpga", "physical", "--split", str(root),
+                    "--platform", str(PLATFORM), "--schedule", str(root / "schedule.json"),
+                    "--out", str(root / "physical"), "--rapidwright-placer", "legacy",
+                ])
 
     def test_rejects_partial_chimew_physical_anchor_inputs(self):
         with tempfile.TemporaryDirectory() as temporary:

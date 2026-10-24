@@ -23,6 +23,19 @@ site/BEL ownership, cascade and typed physical-handoff validation remain part
 of the retained routes. The VTR/open backend is still needed by the current
 Chimew lookahead integration; this retirement does not remove that dependency.
 
+The RapidWright backend has one placement chain: native OpenPARF atomic
+placement, independent site/BEL and macro checks, typed physical handoff, then
+RWRoute. There is no `--rapidwright-placer` or
+`--physical-rapidwright-placer` selector. The old packed-cluster guidance and
+greedy legalizer flow, its JSON pack/place producers, native packed-cluster
+smoke runner, and single-SLR planner are retired. Their `arch pack-xilinx`,
+`place-xilinx`, `guide-xilinx-openparf`, `plan-xilinx-single-slr` and
+`validate-xilinx-single-slr-plan` commands are removed. Independent packing,
+site/BEL/cascade validators remain available. Small bounded packing and site
+oracles live only in tests and are not installed; they do not launch a flow.
+The obsolete JSON schema for the original exact-legalizer provider is removed;
+current handoff schemas and semantic validators retain their existing contracts.
+
 RapidWright device data describes a device, not the multi-FPGA board around it.
 Board topology, fixed package-pin connections, link capacity, and inter-FPGA
 latency come from the separate [hardware platform model](HARDWARE_PLATFORM.md).

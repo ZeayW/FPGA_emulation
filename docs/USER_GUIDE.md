@@ -297,6 +297,9 @@ consistently.
 The CLI and Python API default to RapidWright with
 `xilinx-ultrascaleplus-open-v1` mapping, including the standalone physical and
 frontend-stage entry points. Backend selection never silently falls back to VTR.
+RapidWright always uses native OpenPARF placement; the old placer-selection
+options and packed-cluster pack/guide/place commands are removed. Independent
+`arch validate-xilinx-packing` and `arch validate-xilinx-placement` remain.
 
 - `--physical-backend rapidwright`: the default; Xilinx device facts and RWRoute
   with the native OpenPARF placer and `xilinx-ultrascaleplus-open-v1` mapping.

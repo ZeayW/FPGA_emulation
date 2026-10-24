@@ -287,7 +287,7 @@ def write_openparf_ramb18_fixture(root: Path) -> Tuple[Path, Path, Path]:
         })
     architecture_path.write_text(json.dumps(architecture), encoding="utf-8")
 
-    from emuflow.xilinx_packing import pack_xilinx_sites
+    from tests.xilinx_site_reference import pack_xilinx_sites
 
     pack_xilinx_sites(mapped_path, packed_path, top="top")
     return mapped_path, packed_path, architecture_path
@@ -392,7 +392,7 @@ def write_openparf_hardblock_cascade_fixture(
         })
     architecture_path.write_text(json.dumps(architecture), encoding="utf-8")
 
-    from emuflow.xilinx_packing import pack_xilinx_sites
+    from tests.xilinx_site_reference import pack_xilinx_sites
 
     pack_xilinx_sites(mapped_path, packed_path, top="top")
     return mapped_path, packed_path, architecture_path

@@ -1,18 +1,14 @@
-"""Deterministic, fail-closed UltraScale+ site packing for Route A."""
+"""Shared UltraScale+ packing legality and dedicated-macro rules."""
 
 from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .errors import ValidationError
-from .io import file_sha256, read_json, write_json
-from .xilinx_primitives import (
-    XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
-    audit_xilinx_mapped_json,
-)
+from .io import file_sha256, read_json
 
 
 PACKED_SITE_NETLIST_SCHEMA = "emuflow.packed-site-netlist/v1"
@@ -206,30 +202,6 @@ def _validate_declared_slice_control_sets(
         raise ValidationError(
             "slice cluster multi-control-set certificate is invalid"
         )
-
-
-def _slice_cluster(
-    cluster_id: str,
-    lut_names: Sequence[str],
-    ff_names: Sequence[str],
-    cells: Mapping[str, Any],
-    control_set: Optional[str],
-) -> Dict[str, Any]:
-    assignments = [
-        {"instance": name, "cell_type": cells[name]["type"], "bel": bel}
-        for name, bel in zip(lut_names, SLICE_LUT_BELS)
-    ]
-    assignments.extend(
-        {"instance": name, "cell_type": cells[name]["type"], "bel": bel}
-        for name, bel in zip(ff_names, SLICE_FF_BELS)
-    )
-    return {
-        "id": cluster_id,
-        "kind": "slice",
-        "site_templates": ["SLICEL", "SLICEM"],
-        "control_set": control_set,
-        "assignments": assignments,
-    }
 
 
 def _net_drivers(
@@ -688,219 +660,6 @@ def _derive_cascade_chains(
     return chains
 
 
-def pack_xilinx_sites(
-    mapped_json: Path,
-    output: Path,
-    *,
-    top: Optional[str] = None,
-    mapped_value: Optional[Mapping[str, Any]] = None,
-    mapped_sha256: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Pack normalized cells using conservative exact UltraScale+ rules."""
-
-    source = read_json(mapped_json) if mapped_value is None else mapped_value
-    source_sha256 = mapped_sha256 or _sha256(mapped_json)
-    audit = audit_xilinx_mapped_json(
-        mapped_json,
-        top=top,
-        source=source,
-        hash_path=False,
-    )
-    selected_top, module = _select_module(source, top)
-    cells = module.get("cells")
-    if not isinstance(cells, Mapping):
-        raise ValidationError("mapped Yosys JSON cells are invalid")
-    clusters: List[Dict[str, Any]] = []
-    constants = sorted(name for name, cell in cells.items() if cell.get("type") in CONSTANT_TYPES)
-
-    drivers = _net_drivers(cells)
-    muxes = {name for name, cell in cells.items() if cell.get("type") in MUX_TYPES}
-    mux_children = set()
-    for name in muxes:
-        for port in ("I0", "I1"):
-            driver = _mux_input_driver(cells, drivers, name, port)
-            if driver in muxes:
-                mux_children.add(driver)
-    mux_roots = sorted(muxes - mux_children)
-    mux_members = set()
-    for index, root in enumerate(mux_roots):
-        assignments = _pack_mux_cone(root, cells, drivers)
-        members = {item["instance"] for item in assignments}
-        overlap = members.intersection(mux_members)
-        if overlap:
-            raise ValidationError(
-                "mux cones share physical cells: " + ", ".join(sorted(overlap))
-            )
-        mux_members.update(members)
-        clusters.append({
-            "id": f"mux-{index:06d}",
-            "kind": "slice",
-            "site_templates": ["SLICEL", "SLICEM"],
-            "control_set": None,
-            "assignments": assignments,
-        })
-    if mux_members.intersection(constants):
-        raise ValidationError("mux cone contains a constant pseudo-cell")
-
-    # CARRY8 DI/S are dedicated in-slice LUT O5/O6 connections, not general
-    # inter-site pins.  The normalizer therefore creates one LUT6_2
-    # route-through per carry bit; bind those eight cells to the matching LUT
-    # BELs in the same exclusive slice.
-    carry_members = set()
-    for index, name in enumerate(sorted(name for name, cell in cells.items() if cell.get("type") == "CARRY8")):
-        assignments = []
-        for bit_index, letter in enumerate("ABCDEFGH"):
-            di = _bits(cells[name], "DI")[bit_index]
-            s = _bits(cells[name], "S")[bit_index]
-            di_driver = drivers.get(di)
-            s_driver = drivers.get(s)
-            if (
-                di_driver is None
-                or di_driver != s_driver
-                or cells[di_driver].get("type") != DUAL_OUTPUT_LUT_TYPE
-            ):
-                raise ValidationError(
-                    f"CARRY8 {name!r} bit {bit_index} lacks its LUT6_2 DI/S adapter"
-                )
-            if di_driver in carry_members:
-                raise ValidationError("a LUT6_2 adapter belongs to multiple carry bits")
-            carry_members.add(di_driver)
-            assignments.append({
-                "instance": di_driver,
-                "cell_type": DUAL_OUTPUT_LUT_TYPE,
-                "bel": f"{letter}6LUT",
-            })
-        assignments.append({"instance": name, "cell_type": "CARRY8", "bel": "CARRY8"})
-        clusters.append({
-            "id": f"carry-{index:06d}",
-            "kind": "carry",
-            "site_templates": ["SLICEL", "SLICEM"],
-            "control_set": None,
-            "assignments": assignments,
-        })
-
-    # One physical RAMB36 site supports either one RAMB36E2 or two independent
-    # RAMB18E2 halves.  DeviceResources exposes RAMB180/RAMB181/RAMB36 as
-    # alternate site modes, so a two-cell cluster explicitly consumes the
-    # lower and upper BEL together rather than pretending they are two sites.
-    ramb18_names = sorted(
-        name for name, cell in cells.items() if cell.get("type") == "RAMB18E2"
-    )
-    for index, offset in enumerate(range(0, len(ramb18_names), 2)):
-        names = ramb18_names[offset:offset + 2]
-        assignments = []
-        for name, bel in zip(names, ("RAMB18E2_L", "RAMB18E2_U")):
-            assignments.append({
-                "instance": name,
-                "cell_type": "RAMB18E2",
-                "bel": bel,
-            })
-        clusters.append({
-            "id": f"ramb18e2-{index:06d}",
-            "kind": "hard",
-            "site_templates": ["RAMB180", "RAMB181"],
-            "site_mode": f"RAMB18E2x{len(names)}",
-            "control_set": None,
-            "assignments": assignments,
-        })
-
-    for cell_type, (templates, bels) in HARD_BINDINGS.items():
-        names = sorted(name for name, cell in cells.items() if cell.get("type") == cell_type)
-        for index, name in enumerate(names):
-            clusters.append({
-                "id": f"{cell_type.lower()}-{index:06d}",
-                "kind": "hard",
-                "site_templates": templates,
-                "control_set": None,
-                "assignments": [{
-                    "instance": name,
-                    "cell_type": cell_type,
-                    "bel_candidates": bels,
-                }],
-            })
-
-    luts = sorted(
-        name for name, cell in cells.items()
-        if cell.get("type") in LUT_TYPES and name not in mux_members
-    )
-    ff_groups: Dict[str, List[str]] = defaultdict(list)
-    for name, cell in sorted(cells.items()):
-        if cell.get("type") in FF_TYPES and name not in mux_members:
-            ff_groups[_ff_control_set(cell)].append(name)
-
-    # A slice is restricted to one complete FF control set.  This is stricter
-    # than the silicon maximum and therefore cannot create an illegal pack.
-    slice_index = 0
-    lut_cursor = 0
-    for control_set in sorted(ff_groups):
-        ff_names = ff_groups[control_set]
-        for offset in range(0, len(ff_names), len(SLICE_FF_BELS)):
-            chunk = ff_names[offset:offset + len(SLICE_FF_BELS)]
-            lut_chunk = luts[lut_cursor:lut_cursor + len(SLICE_LUT_BELS)]
-            lut_cursor += len(lut_chunk)
-            clusters.append(_slice_cluster(
-                f"slice-{slice_index:06d}", lut_chunk, chunk, cells, control_set
-            ))
-            slice_index += 1
-    while lut_cursor < len(luts):
-        lut_chunk = luts[lut_cursor:lut_cursor + len(SLICE_LUT_BELS)]
-        lut_cursor += len(lut_chunk)
-        clusters.append(_slice_cluster(
-            f"slice-{slice_index:06d}", lut_chunk, [], cells, None
-        ))
-        slice_index += 1
-
-    handled = set(constants)
-    for cluster in clusters:
-        handled.update(item["instance"] for item in cluster["assignments"])
-    missing = sorted(set(cells) - handled)
-    if missing:
-        raise ValidationError("unpacked Xilinx cells: " + ", ".join(missing))
-
-    cascade_chains = _derive_cascade_chains(cells)
-
-    kind_counts = Counter(cluster["kind"] for cluster in clusters)
-    value = {
-        "schema": PACKED_SITE_NETLIST_SCHEMA,
-        "status": "pass",
-        "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
-        "top": selected_top,
-        "source": {
-            "mapped_json_sha256": source_sha256,
-            "primitive_library_sha256": audit["primitive_library_sha256"],
-        },
-        "policy": {
-            "provider": "emuflow-ultrascaleplus-conservative-packer-v1",
-            "slice_lut_capacity": len(SLICE_LUT_BELS),
-            "slice_ff_capacity": len(SLICE_FF_BELS),
-            "ff_control_sets_per_slice": 1,
-            "carry_site_exclusive": True,
-        },
-        "clusters": clusters,
-        "cascade_chains": cascade_chains,
-        "unplaced_constants": constants,
-        "summary": {
-            "cells": len(cells),
-            "placed_cells": len(cells) - len(constants),
-            "constant_cells": len(constants),
-            "clusters": len(clusters),
-            "cluster_kinds": dict(sorted(kind_counts.items())),
-            "cascade_chains": len(cascade_chains),
-            "cascade_links": sum(len(chain["links"]) for chain in cascade_chains),
-        },
-    }
-    write_json(output, value)
-    validate_xilinx_packing(
-        mapped_json,
-        output,
-        top=selected_top,
-        mapped_value=source,
-        mapped_sha256=source_sha256,
-        packed_value=value,
-    )
-    return value
-
-
 def validate_xilinx_packing(
     mapped_json: Path,
     packed_path: Path,
@@ -1099,40 +858,3 @@ def validate_xilinx_packing(
         "architecture_checked": architecture_path is not None,
         "packed_sha256": _sha256(packed_path),
     }
-
-
-def exhaustive_minimum_slice_count(items: Iterable[Tuple[int, int]]) -> int:
-    """Tiny independent oracle for (LUT, FF) capacity-directed tests."""
-
-    demands = sorted(items, reverse=True)
-    best = len(demands)
-    bins: List[List[int]] = []
-
-    def visit(index: int) -> None:
-        nonlocal best
-        if len(bins) >= best:
-            return
-        if index == len(demands):
-            best = len(bins)
-            return
-        lut, ff = demands[index]
-        seen = set()
-        for slot in bins:
-            state = tuple(slot)
-            if state in seen:
-                continue
-            seen.add(state)
-            if slot[0] + lut <= 8 and slot[1] + ff <= 16:
-                slot[0] += lut
-                slot[1] += ff
-                visit(index + 1)
-                slot[0] -= lut
-                slot[1] -= ff
-        bins.append([lut, ff])
-        visit(index + 1)
-        bins.pop()
-
-    if not demands:
-        return 0
-    visit(0)
-    return best

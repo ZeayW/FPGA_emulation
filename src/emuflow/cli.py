@@ -173,14 +173,10 @@ from .rapidwright_provider import (
     validate_rapidwright_architecture,
     validate_rapidwright_provider_manifest,
 )
-from .xilinx_packing import pack_xilinx_sites, validate_xilinx_packing
+from .xilinx_packing import validate_xilinx_packing
 from .xilinx_placement import (
-    plan_xilinx_single_slr,
-    place_xilinx_clusters,
-    validate_xilinx_single_slr_plan,
     validate_xilinx_placement,
 )
-from .xilinx_openparf import run_xilinx_openparf_guidance
 from .xilinx_rwroute import (
     export_rwroute_input,
     run_rwroute,
@@ -219,8 +215,6 @@ from .multi_fpga_flow import (
 )
 from .multi_fpga_bsp_flow import run_multi_fpga_bsp_flow
 from .multi_fpga_physical_flow import (
-    DEFAULT_RAPIDWRIGHT_PLACER,
-    RAPIDWRIGHT_PLACERS,
     run_multi_fpga_physical_flow,
 )
 from .opensta import (
@@ -2088,16 +2082,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--physical-rapidwright-timing-data", type=Path
     )
     multi_fpga_compile.add_argument("--physical-rapidwright-opensta")
-    multi_fpga_compile.add_argument(
-        "--physical-rapidwright-placer",
-        choices=RAPIDWRIGHT_PLACERS,
-        default=None,
-        help=(
-            "select the RapidWright placement producer; when the RapidWright "
-            f"backend is selected the default is {DEFAULT_RAPIDWRIGHT_PLACER}, "
-            "which is fail-closed and has no fallback"
-        ),
-    )
+
     multi_fpga_compile.add_argument(
         "--physical-rapidwright-native-constraints", type=Path,
         help="source-sealed RapidWright native device constraints",
@@ -2218,16 +2203,7 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_physical.add_argument("--rapidwright-device-data", type=Path)
     multi_fpga_physical.add_argument("--rapidwright-timing-data", type=Path)
     multi_fpga_physical.add_argument("--rapidwright-opensta")
-    multi_fpga_physical.add_argument(
-        "--rapidwright-placer",
-        choices=RAPIDWRIGHT_PLACERS,
-        default=None,
-        help=(
-            "select the RapidWright placement producer; the RapidWright "
-            f"backend defaults to {DEFAULT_RAPIDWRIGHT_PLACER}, which is "
-            "fail-closed and has no fallback"
-        ),
-    )
+
     multi_fpga_physical.add_argument(
         "--rapidwright-native-constraints", type=Path,
     )
@@ -2559,13 +2535,6 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_validate_rapidwright_device.add_argument(
         "--require-physical-regions", action="store_true"
     )
-    arch_pack_xilinx = arch_subparsers.add_parser(
-        "pack-xilinx",
-        help="pack an audited UltraScale+ mapped JSON into physical site clusters",
-    )
-    arch_pack_xilinx.add_argument("--mapped-json", type=Path, required=True)
-    arch_pack_xilinx.add_argument("--output", "-o", type=Path, required=True)
-    arch_pack_xilinx.add_argument("--top")
     arch_validate_xilinx_packing = arch_subparsers.add_parser(
         "validate-xilinx-packing",
         help="independently validate UltraScale+ site packing and cascade chains",
@@ -2576,39 +2545,6 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_validate_xilinx_packing.add_argument("--packed", type=Path, required=True)
     arch_validate_xilinx_packing.add_argument("--architecture", type=Path)
     arch_validate_xilinx_packing.add_argument("--top")
-    arch_place_xilinx = arch_subparsers.add_parser(
-        "place-xilinx",
-        help="legalize packed UltraScale+ clusters onto exact physical sites",
-    )
-    arch_place_xilinx.add_argument("--packed", type=Path, required=True)
-    arch_place_xilinx.add_argument("--architecture", type=Path, required=True)
-    arch_place_xilinx.add_argument("--guidance", type=Path)
-    arch_place_xilinx.add_argument("--constraints", type=Path)
-    arch_place_xilinx.add_argument("--output", "-o", type=Path, required=True)
-    arch_plan_xilinx_slr = arch_subparsers.add_parser(
-        "plan-xilinx-single-slr",
-        help="select one exactly feasible SLR using legal placement guidance",
-    )
-    arch_plan_xilinx_slr.add_argument("--packed", type=Path, required=True)
-    arch_plan_xilinx_slr.add_argument("--architecture", type=Path, required=True)
-    arch_plan_xilinx_slr.add_argument("--guidance", type=Path)
-    arch_plan_xilinx_slr.add_argument(
-        "--slr", help="require this physical SLR instead of ranking all SLRs"
-    )
-    arch_plan_xilinx_slr.add_argument("--output", "-o", type=Path, required=True)
-    arch_plan_xilinx_slr.add_argument(
-        "--placement-output", type=Path, required=True,
-        help="write the exact legal placement selected by the planner",
-    )
-    arch_validate_xilinx_slr = arch_subparsers.add_parser(
-        "validate-xilinx-single-slr-plan",
-        help="validate a single-SLR constraint certificate and legal witness",
-    )
-    arch_validate_xilinx_slr.add_argument("--packed", type=Path, required=True)
-    arch_validate_xilinx_slr.add_argument("--architecture", type=Path, required=True)
-    arch_validate_xilinx_slr.add_argument("--guidance", type=Path)
-    arch_validate_xilinx_slr.add_argument("--constraints", type=Path, required=True)
-    arch_validate_xilinx_slr.add_argument("--placement", type=Path, required=True)
     arch_validate_xilinx_placement = arch_subparsers.add_parser(
         "validate-xilinx-placement",
         help="independently validate exact UltraScale+ site/BEL placement",
@@ -2623,20 +2559,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--placement", type=Path, required=True
     )
     arch_validate_xilinx_placement.add_argument("--constraints", type=Path)
-    arch_guide_xilinx = arch_subparsers.add_parser(
-        "guide-xilinx-openparf",
-        help="run OpenPARF for packed-cluster global placement guidance",
-    )
-    arch_guide_xilinx.add_argument("--mapped-json", type=Path, required=True)
-    arch_guide_xilinx.add_argument("--packed", type=Path, required=True)
-    arch_guide_xilinx.add_argument("--architecture", type=Path, required=True)
-    arch_guide_xilinx.add_argument("--out", type=Path, required=True)
-    arch_guide_xilinx.add_argument("--top")
-    arch_guide_xilinx.add_argument(
-        "--slr", help="restrict the OpenPARF guidance problem to one SLR"
-    )
-    arch_guide_xilinx.add_argument("--openparf-install", type=Path)
-    arch_guide_xilinx.add_argument("--openparf-python", type=Path)
     arch_export_rwroute = arch_subparsers.add_parser(
         "export-xilinx-rwroute-input",
         help="export a sealed placed UltraScale+ netlist for RWRoute",
@@ -4696,16 +4618,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 manifest_path=args.provider_manifest,
                 require_physical_regions=args.require_physical_regions,
             )
-        elif args.arch_command == "pack-xilinx":
-            result = pack_xilinx_sites(
-                args.mapped_json,
-                args.output,
-                top=args.top,
-            )
-            report = {
-                "status": result["status"], "schema": result["schema"],
-                "output": str(args.output), **result["summary"],
-            }
         elif args.arch_command == "validate-xilinx-packing":
             report = validate_xilinx_packing(
                 args.mapped_json,
@@ -4713,54 +4625,12 @@ def _dispatch(args: argparse.Namespace) -> int:
                 top=args.top,
                 architecture_path=args.architecture,
             )
-        elif args.arch_command == "place-xilinx":
-            result = place_xilinx_clusters(
-                args.packed,
-                args.architecture,
-                args.output,
-                guidance_path=args.guidance,
-                constraints_path=args.constraints,
-            )
-            report = {
-                "status": result["status"], "schema": result["schema"],
-                "part": result["part"], "output": str(args.output),
-                **result["summary"],
-            }
-        elif args.arch_command == "plan-xilinx-single-slr":
-            result = plan_xilinx_single_slr(
-                args.packed,
-                args.architecture,
-                args.output,
-                args.placement_output,
-                guidance_path=args.guidance,
-                required_slr=args.slr,
-            )
-            report = {
-                "status": result["status"], "schema": result["schema"],
-                "part": result["part"], "output": str(args.output),
-                "selected_slr": result["selected_slr"], **result["summary"],
-            }
-        elif args.arch_command == "validate-xilinx-single-slr-plan":
-            report = validate_xilinx_single_slr_plan(
-                args.packed,
-                args.architecture,
-                args.constraints,
-                args.placement,
-                guidance_path=args.guidance,
-            )
         elif args.arch_command == "validate-xilinx-placement":
             report = validate_xilinx_placement(
                 args.packed,
                 args.architecture,
                 args.placement,
                 constraints_path=args.constraints,
-            )
-        elif args.arch_command == "guide-xilinx-openparf":
-            report = run_xilinx_openparf_guidance(
-                args.mapped_json, args.packed, args.architecture, args.out,
-                top=args.top, slr=args.slr,
-                openparf_install=args.openparf_install,
-                openparf_python=args.openparf_python,
             )
         elif args.arch_command == "export-xilinx-rwroute-input":
             report = export_rwroute_input(
@@ -4984,7 +4854,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 rapidwright_device_data=args.rapidwright_device_data,
                 rapidwright_timing_data=args.rapidwright_timing_data,
                 rapidwright_opensta=args.rapidwright_opensta,
-                rapidwright_placer=args.rapidwright_placer,
                 rapidwright_native_constraints=(
                     args.rapidwright_native_constraints
                 ),
@@ -5185,9 +5054,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.physical_rapidwright_timing_data
             ),
             physical_rapidwright_opensta=args.physical_rapidwright_opensta,
-            physical_rapidwright_placer=(
-                args.physical_rapidwright_placer
-            ),
             physical_rapidwright_native_constraints=(
                 args.physical_rapidwright_native_constraints
             ),

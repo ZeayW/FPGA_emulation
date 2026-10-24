@@ -222,6 +222,11 @@ Vivado is an optional proprietary integration.
 AMF and DREAMPlaceFPGA feasibility routes are retired, including their native
 runners and adapter-specific validation. Shared physical contracts continue to
 serve the maintained Xilinx routes; upstream code used by OpenPARF is retained.
+The packed-cluster OpenPARF guidance plus Python greedy legalizer and
+single-SLR selection are also retired. Native OpenPARF is the sole RapidWright
+placement producer. Shared physical legality rules remain in production;
+bounded packing/site fixture oracles are test-only. The capability probe
+describes the atomic path and no longer offers the retired packed-cluster smoke.
 
 See the [Xilinx physical-flow contract](XILINX_PHYSICAL_FLOW.md) for placement,
 routing, fixed differential I/O, and timing acceptance criteria. Board topology,

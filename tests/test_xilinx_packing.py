@@ -6,12 +6,8 @@ from pathlib import Path
 from unittest import mock
 
 from emuflow.errors import ValidationError
-from emuflow.xilinx_packing import (
-    exhaustive_minimum_slice_count,
-    legalize_xilinx_slice_site_pins,
-    pack_xilinx_sites,
-    validate_xilinx_packing,
-)
+from emuflow.xilinx_packing import legalize_xilinx_slice_site_pins, validate_xilinx_packing
+from tests.xilinx_site_reference import exhaustive_minimum_slice_count, pack_xilinx_sites
 
 
 def cell(cell_type, connections=None):
@@ -58,6 +54,21 @@ class XilinxPackingTest(unittest.TestCase):
         cells["uram"] = cell("URAM288", {"ADDR": [330], "DOUT": [331]})
         cells["ground"] = cell("GND", {})
         return {"modules": {"top": {"attributes": {"top": "1"}, "cells": cells}}}
+
+    def test_packing_oracle_rejects_graph_sized_inputs_before_audit(self):
+        source = {"modules": {"top": {"cells": {
+            f"cell-{i}": {} for i in range(4097)
+        }}}}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with mock.patch("tests.xilinx_site_reference.audit_xilinx_mapped_json",
+                            side_effect=AssertionError("oversized fixture was audited")):
+                with self.assertRaisesRegex(ValidationError, "bounded test fixtures"):
+                    pack_xilinx_sites(root / "mapped", root / "packed", top="top",
+                                      mapped_value=source, mapped_sha256="a" * 64)
+            self.assertFalse((root / "packed").exists())
+        with self.assertRaisesRegex(ValidationError, "at most 24 items"):
+            exhaustive_minimum_slice_count((1, 1) for _ in range(25))
 
     def test_packer_and_independent_checker(self):
         with tempfile.TemporaryDirectory() as temporary:

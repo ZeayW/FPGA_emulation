@@ -11,7 +11,6 @@ from emuflow.xilinx_physical_backend import (
     _run_rapidwright_routed_backend_tail,
     _select_xilinx_slr_window,
     run_rapidwright_openparf_native_candidate_backend,
-    run_rapidwright_partition_backend,
 )
 
 
@@ -278,7 +277,6 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     },
                 }
 
-            forbidden = AssertionError("legacy placement path was called")
             with (
                 mock.patch(
                     "emuflow.xilinx_physical_backend.ArchitectureDB.load",
@@ -325,18 +323,6 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     "emuflow.xilinx_physical_backend._sha256",
                     return_value="0" * 64,
                 ) as digest,
-                mock.patch(
-                    "emuflow.xilinx_physical_backend.pack_xilinx_sites",
-                    side_effect=forbidden,
-                ),
-                mock.patch(
-                    "emuflow.xilinx_physical_backend.run_xilinx_openparf_guidance",
-                    side_effect=forbidden,
-                ),
-                mock.patch(
-                    "emuflow.xilinx_physical_backend.place_xilinx_clusters",
-                    side_effect=forbidden,
-                ),
             ):
                 with self.assertRaisesRegex(
                     RuntimeError, "native-bridge-reached-rwroute"
@@ -529,84 +515,6 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 ("SLR0", "SLR1", "SLR2"),
             )
 
-    def test_production_backend_uses_complete_device_region(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            guidance = root / "physical" / "openparf-guidance" / "guidance.json"
-
-            def stop_after_placement_check(*_args, **kwargs):
-                self.assertEqual(
-                    kwargs["constraints_path"], root / "physical" / "placement-region.json"
-                )
-                raise RuntimeError("slr-window-observed")
-
-            with (
-                mock.patch(
-                    "emuflow.xilinx_physical_backend.ArchitectureDB.load",
-                    return_value=SimpleNamespace(
-                        part="xcvu19p-test", value={"site_templates": {}}
-                    ),
-                ),
-                mock.patch(
-                    "emuflow.xilinx_physical_backend.emit_xilinx_mapped_json",
-                    return_value={"top": "top", "output_sha256": "a" * 64},
-                ),
-                mock.patch(
-                    "emuflow.xilinx_physical_backend.read_json",
-                    return_value={"modules": {}},
-                ),
-                mock.patch(
-                    "emuflow.xilinx_physical_backend.pack_xilinx_sites",
-                    return_value={"summary": {}},
-                ),
-                mock.patch(
-                    "emuflow.xilinx_physical_backend.validate_xilinx_packing",
-                    return_value={},
-                ),
-                mock.patch(
-                    "emuflow.xilinx_physical_backend._select_xilinx_slr_window",
-                    return_value=("SLR0", "SLR1", "SLR2", "SLR3"),
-                ),
-                mock.patch(
-                    "emuflow.xilinx_physical_backend.run_xilinx_openparf_guidance",
-                    side_effect=lambda *_args, **kwargs: self.assertEqual(
-                        kwargs["slrs"], ("SLR0", "SLR1", "SLR2", "SLR3")
-                    ),
-                ),
-                mock.patch(
-                    "emuflow.xilinx_physical_backend.place_xilinx_clusters",
-                    side_effect=lambda *_args, **kwargs: (
-                        self.assertEqual(kwargs["guidance_path"], guidance)
-                        or self.assertEqual(
-                            kwargs["constraints_path"],
-                            root / "physical" / "placement-region.json",
-                        )
-                        or {"summary": {"clusters": 1}}
-                    ),
-                ),
-                mock.patch(
-                    "emuflow.xilinx_physical_backend.validate_xilinx_placement",
-                    side_effect=stop_after_placement_check,
-                ),
-            ):
-                with self.assertRaisesRegex(RuntimeError, "slr-window-observed"):
-                    run_rapidwright_partition_backend(
-                        fpga="fpga0",
-                        part="xcvu19p-test",
-                        merged_ir_path=root / "input.json",
-                        architecture_path=root / "architecture.json",
-                        runtime={},
-                        original_cells=0,
-                        transport_cells=0,
-                        output_dir=root / "physical",
-                        boundary_identity_path=root / "boundary.json",
-                        rapidwright_jar=root / "rapidwright.jar",
-                        java=root / "java",
-                        classes_dir=root / "classes",
-                        java_source=root / "route.java",
-                        device_data_root=root / "device-data",
-                        timing_data_dir=root / "timing-data",
-                    )
 
 
 if __name__ == "__main__":

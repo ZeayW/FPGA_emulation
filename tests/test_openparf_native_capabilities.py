@@ -16,11 +16,7 @@ from emuflow.xilinx_placer_capability import (
     qualify_xilinx_placer_capabilities,
     validate_xilinx_placer_capability_report,
 )
-from emuflow.xilinx_openparf import (
-    export_xilinx_cluster_bookshelf,
-    run_xilinx_openparf_native_legalization_smoke,
-    validate_xilinx_openparf_native_smoke_placement,
-)
+
 from emuflow.xilinx_physical_macros import (
     derive_xilinx_physical_macro_contract,
 )
@@ -197,6 +193,8 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
             serialized = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(matrix, serialized)
         self.assertEqual(matrix["schema"], OPENPARF_NATIVE_CAPABILITY_SCHEMA)
+        self.assertNotIn("native_packed_cluster_smoke", matrix)
+        self.assertIn("typed-physical-handoff -> RWRoute", matrix["current_production_path"])
         validate_xilinx_placer_capability_report(matrix)
         feature = {item["feature"]: item for item in matrix["provider_features"]}
         self.assertEqual(feature["continuous_global_placement"]["status"], "native_supported")
@@ -233,7 +231,6 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
             matrix["source_audit"]["checks"]["sparse_site_anchor_reservation"]["status"],
             "native_supported",
         )
-        self.assertTrue(matrix["native_packed_cluster_smoke"]["eligible"])
         for item in matrix["provider_features"] + matrix["primitive_inventory"]:
             self.assertIn(item["status"], CAPABILITY_STATUSES)
         decision = qualify_xilinx_placer_capabilities(
@@ -244,22 +241,13 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
         self.assertEqual(decision["status"], "fail")
         self.assertIn("stages.detailed_placement", decision["blocked_entries"])
 
-    def test_probe_rejects_cascade_and_ambiguous_tile_for_native_smoke(self):
+    def test_probe_records_cascade_and_ambiguous_tile_hazards(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             mapped, packed, architecture = _write_fixture(
                 root, cascade=True, collision=True
             )
             matrix = probe_openparf_native_capabilities(mapped, packed, architecture)
-            with self.assertRaisesRegex(ValidationError, "dedicated cascades"):
-                export_xilinx_cluster_bookshelf(
-                    mapped,
-                    packed,
-                    architecture,
-                    root / "out",
-                    native_packed_cluster_legalization=True,
-                )
-        self.assertFalse(matrix["native_packed_cluster_smoke"]["eligible"])
         self.assertTrue(matrix["design_hazards"]["ambiguous_physical_coordinates"])
 
     def test_missing_pinned_source_is_unverified_or_core_missing(self):
@@ -272,7 +260,6 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
         feature = {item["feature"]: item for item in matrix["provider_features"]}
         self.assertEqual(feature["continuous_global_placement"]["status"], "unverified")
         self.assertEqual(feature["single_site_resource_mcf_legalization"]["status"], "core_missing")
-        self.assertFalse(matrix["native_packed_cluster_smoke"]["eligible"])
 
     def test_probe_classifies_complete_current_primitive_inventory(self):
         placed = (
@@ -314,7 +301,6 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
         self.assertEqual(
             matrix["primitives"]["FUTURE_PRIMITIVE"]["status"], "unverified"
         )
-        self.assertFalse(matrix["native_packed_cluster_smoke"]["eligible"])
 
     def test_carry_probe_requires_explicit_runtime_qualification(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -454,55 +440,6 @@ class OpenparfNativeCapabilitiesTest(unittest.TestCase):
             entry["status"] == "unverified"
             for entry in report["source_audit"]["checks"].values()
         ))
-
-    def test_native_smoke_export_enables_only_generic_mcf_legalization(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            mapped, packed, architecture = _write_fixture(root)
-            out = root / "out"
-            manifest = export_xilinx_cluster_bookshelf(
-                mapped,
-                packed,
-                architecture,
-                out,
-                native_packed_cluster_legalization=True,
-            )
-            config = json.loads((out / "openparf.json").read_text(encoding="utf-8"))
-            sites = (out / "design.scl").read_text(encoding="utf-8")
-        self.assertEqual(manifest["mode"], "native-packed-cluster-mcf-smoke")
-        self.assertEqual(config["legalize_flag"], 1)
-        self.assertEqual(config["detailed_place_flag"], 0)
-        self.assertFalse(config["emuflow_continuous_global_guidance"])
-        self.assertEqual(config["resource_categories"], {"X_SLICE": "SSSIR"})
-        self.assertNotIn("X_SLICE_AUX", sites)
-
-    def test_native_smoke_runner_has_no_greedy_fallback(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            mapped, packed, architecture = _write_fixture(root)
-            out = root / "out"
-
-            def fake_openparf(_config, **_kwargs):
-                result = out / "results" / "xilinx_clusters.pl"
-                result.parent.mkdir(parents=True, exist_ok=True)
-                result.write_text("c0 0 0 0\nc1 0 1 0\n", encoding="utf-8")
-                return result
-
-            with mock.patch(
-                "emuflow.xilinx_openparf.run_openparf", side_effect=fake_openparf
-            ):
-                report = run_xilinx_openparf_native_legalization_smoke(
-                    mapped, packed, architecture, out
-                )
-            self.assertEqual(report["status"], "pass")
-            self.assertEqual(report["validation"]["unique_sites"], 2)
-
-            overlap = out / "overlap.pl"
-            overlap.write_text("c0 0 0 0\nc1 0 0 0\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValidationError, "overlaps"):
-                validate_xilinx_openparf_native_smoke_placement(
-                    overlap, out / "name_map.json"
-                )
 
 
 if __name__ == "__main__":

@@ -29,7 +29,6 @@ from .frame_search import (
 )
 from .io import read_json, write_json
 from .multi_fpga_physical_flow import (
-    DEFAULT_RAPIDWRIGHT_PLACER,
     run_multi_fpga_physical_flow,
     validate_multi_fpga_physical_report,
 )
@@ -1421,17 +1420,7 @@ def _compile_preflight(ctx: _CompileContext):
     # interpreter inside the physical-flow helper is much too late for a
     # one-shot Phase 1--7 invocation.  Reject an unusable OpenPARF/PyTorch
     # binding before creating any frontend artifact or doing synthesis.
-    physical_uses_openparf = ctx.physical and (
-        ctx.physical_backend == "open"
-        or (
-            ctx.physical_backend == "rapidwright"
-            and (
-                ctx.physical_rapidwright_placer
-                or DEFAULT_RAPIDWRIGHT_PLACER
-            )
-            == "openparf-native"
-        )
-    )
+    physical_uses_openparf = ctx.physical and ctx.physical_backend in {"open", "rapidwright"}
     if physical_uses_openparf:
         validate_openparf_runtime(
             install_root=ctx.physical_openparf_install,
@@ -2188,7 +2177,6 @@ def _compile_physical(ctx: _CompileContext):
             rapidwright_device_data=ctx.physical_rapidwright_device_data,
             rapidwright_timing_data=ctx.physical_rapidwright_timing_data,
             rapidwright_opensta=ctx.physical_rapidwright_opensta,
-            rapidwright_placer=ctx.physical_rapidwright_placer,
             rapidwright_native_constraints=(
                 ctx.physical_rapidwright_native_constraints
             ),
@@ -2701,7 +2689,6 @@ def run_multi_fpga_flow(
     physical_rapidwright_device_data: Optional[Path] = None,
     physical_rapidwright_timing_data: Optional[Path] = None,
     physical_rapidwright_opensta: Optional[str] = None,
-    physical_rapidwright_placer: Optional[str] = None,
     physical_rapidwright_native_constraints: Optional[Path] = None,
     physical_rapidwright_provider_manifest: Optional[Path] = None,
     physical_workers: int = 1,

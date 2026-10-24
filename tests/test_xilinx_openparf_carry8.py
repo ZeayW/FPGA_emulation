@@ -16,7 +16,7 @@ from emuflow.xilinx_openparf_carry8 import (
 )
 from emuflow.xilinx_openparf_atomic import _native_carry_y_axis_order
 from emuflow.architecture import ArchitectureDB
-from emuflow.xilinx_packing import pack_xilinx_sites
+from tests.xilinx_site_reference import pack_xilinx_sites
 
 
 ROOT = Path(__file__).resolve().parents[1]

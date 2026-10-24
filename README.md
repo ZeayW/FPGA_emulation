@@ -100,6 +100,8 @@ candidate comparator are retired. The maintained Xilinx implementations are
 OpenPARF/RWRoute and Vivado; VTR/open remains while Chimew lookahead depends on
 it. Shared site/BEL and handoff validation remain. See the
 [backend contract](docs/XILINX_PHYSICAL_FLOW.md#backend-contract).
+RapidWright uses only native OpenPARF placement. The legacy placer selector,
+packed-cluster guidance flow and single-SLR planner are removed.
 The typed mapped/physical handoff also feeds a shared-core RWRoute exporter;
 Python sends file references and board I/O configuration. Native export uses a
 compact cell catalog, sparse clock-net reductions and one live net of endpoints.

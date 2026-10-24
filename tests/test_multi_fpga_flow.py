@@ -370,19 +370,11 @@ class MultiFpgaFlowTest(unittest.TestCase):
         defaults = _build_parser().parse_args(base)
         self.assertTrue(defaults.timing_driven)
         self.assertFalse(hasattr(defaults, "ratio_quantum"))
-        self.assertIsNone(defaults.physical_rapidwright_placer)
-        self.assertEqual(
-            _build_parser()
-            .parse_args(
-                [
-                    *base,
-                    "--physical-rapidwright-placer",
-                    "legacy",
-                ]
+        self.assertFalse(hasattr(defaults, "physical_rapidwright_placer"))
+        with self.assertRaises(SystemExit):
+            _build_parser().parse_args(
+                [*base, "--physical-rapidwright-placer", "legacy"]
             )
-            .physical_rapidwright_placer,
-            "legacy",
-        )
         self.assertFalse(
             _build_parser().parse_args(
                 [*base, "--no-timing-driven"]
@@ -747,7 +739,6 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                         physical=True,
                         mapping_profile="xilinx-ultrascaleplus-open-v1",
                         physical_backend="rapidwright",
-                        physical_rapidwright_placer="openparf-native",
                     )
             preflight.assert_called_once_with(
                 install_root=None,

@@ -46,7 +46,8 @@ from emuflow.xilinx_openparf_source_storage import (
 from emuflow.xilinx_openparf_bridge import (
     materialize_xilinx_openparf_atomic_contract,
 )
-from emuflow.xilinx_packing import pack_xilinx_sites, validate_xilinx_packing
+from emuflow.xilinx_packing import validate_xilinx_packing
+from tests.xilinx_site_reference import pack_xilinx_sites
 from emuflow.xilinx_placement import validate_xilinx_placement
 from tests.openparf_runtime_fixture import (
     write_openparf_hardblock_cascade_fixture,

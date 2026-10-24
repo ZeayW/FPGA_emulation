@@ -116,13 +116,10 @@ from .vivado_netlist import emit_vivado_mapped_verilog
 from .yosys import import_yosys_json_indexed
 from .xilinx_physical_backend import (
     run_rapidwright_openparf_native_candidate_backend,
-    run_rapidwright_partition_backend,
 )
 
 
 MULTI_FPGA_PHYSICAL_SCHEMA = "emuflow.multi-fpga-physical-flow/v1"
-RAPIDWRIGHT_PLACERS = ("legacy", "openparf-native")
-DEFAULT_RAPIDWRIGHT_PLACER = "openparf-native"
 _TRANSPORT_MODULE = re.compile(r"^module\s+([A-Za-z_][A-Za-z0-9_$]*)", re.M)
 _INACTIVE_PARTITION_PROVIDER = "inactive-empty-partition-v1"
 
@@ -886,7 +883,6 @@ def run_multi_fpga_physical_flow(
     rapidwright_device_data: Optional[Path] = None,
     rapidwright_timing_data: Optional[Path] = None,
     rapidwright_opensta: Optional[str] = None,
-    rapidwright_placer: Optional[str] = None,
     rapidwright_native_constraints: Optional[Path] = None,
     rapidwright_provider_manifest: Optional[Path] = None,
     original_ir_path: Optional[Path] = None,
@@ -900,22 +896,6 @@ def run_multi_fpga_physical_flow(
 ) -> Dict[str, Any]:
     if workers < 1:
         raise ValidationError("physical workers must be at least one")
-    if (
-        rapidwright_placer is not None
-        and rapidwright_placer not in RAPIDWRIGHT_PLACERS
-    ):
-        raise ValidationError(
-            "RapidWright placer must be 'legacy' or 'openparf-native'"
-        )
-    if backend != "rapidwright" and rapidwright_placer is not None:
-        raise ValidationError(
-            "--rapidwright-placer applies only to the RapidWright backend"
-        )
-    effective_rapidwright_placer = None
-    if backend == "rapidwright":
-        effective_rapidwright_placer = (
-            rapidwright_placer or DEFAULT_RAPIDWRIGHT_PLACER
-        )
     if (rapidwright_native_constraints is None) != (
         rapidwright_provider_manifest is None
     ):
@@ -923,7 +903,7 @@ def run_multi_fpga_physical_flow(
             "RapidWright native placement requires both the native constraints "
             "and provider manifest"
         )
-    if effective_rapidwright_placer == "openparf-native" and (
+    if backend == "rapidwright" and (
         rapidwright_native_constraints is None
         or rapidwright_provider_manifest is None
     ):
@@ -1061,10 +1041,7 @@ def run_multi_fpga_physical_flow(
         raise EmuFlowError(
             f"multi-FPGA physical output must be an empty directory: {output_dir}"
         )
-    if backend == "open" or (
-        backend == "rapidwright"
-        and effective_rapidwright_placer == "openparf-native"
-    ):
+    if backend in {"open", "rapidwright"}:
         # Validate the compiled OpenPARF/PyTorch runtime before reading the
         # graph-sized EmuIR and timing databases.  A loader mismatch must fail
         # in seconds, not after minutes of deterministic input preparation.
@@ -2024,17 +2001,7 @@ def run_multi_fpga_physical_flow(
             assert rapidwright_java_source is not None
             assert rapidwright_device_data is not None
             assert rapidwright_timing_data is not None
-            rapidwright_runner = (
-                run_rapidwright_openparf_native_candidate_backend
-                if effective_rapidwright_placer == "openparf-native"
-                else run_rapidwright_partition_backend
-            )
-            rapidwright_resume = (
-                {"resume": resume}
-                if effective_rapidwright_placer == "openparf-native"
-                else {}
-            )
-            rapidwright_report = rapidwright_runner(
+            rapidwright_report = run_rapidwright_openparf_native_candidate_backend(
                 fpga=fpga_id,
                 part=fpga_part,
                 merged_ir_path=merged_ir,
@@ -2063,7 +2030,7 @@ def run_multi_fpga_physical_flow(
                 logic_identity_path=logic_identity_path,
                 local_identity_path=local_identity_path,
                 virtual_io_contract=virtual_io_contract,
-                **rapidwright_resume,
+                resume=resume,
             )
             if logic_query_report is not None:
                 rapidwright_report["logic_segment_timing"][
@@ -2211,7 +2178,7 @@ def run_multi_fpga_physical_flow(
         "pack_place_resume": resume,
         "route_resume": resume,
         **(
-            {"rapidwright_placer": effective_rapidwright_placer}
+            {"rapidwright_placer": "openparf-native"}
             if backend == "rapidwright"
             else {}
         ),
