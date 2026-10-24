@@ -323,3 +323,14 @@ source pin and role into a bounded-memory SQLite diagnostic. It reports
 remain deferred. Diagnostic TSV rows use an invalid native hint, so ignoring
 the incomplete status cannot silently produce partial timing measurements.
 Normal execution retains fail-fast behavior.
+
+Constant-confirmation version 2 proves the selected states inductively using
+only their selected values and specified, already-proven constant states. Other
+conditional source states remain unknown; their proposed INIT choices cannot be
+borrowed silently. For the selected synthesis frontiers, primitive type, INIT,
+and each pin binding must also agree with the source projection. Boolean
+function equality alone can conceal a different input association and is only
+a diagnostic in that case. These checks validate selected synthesized facts;
+Vivado optimization remains unconstrained. Version 1 confirmation documents are
+preliminary diagnostics and cannot qualify a vendor-confirmed elimination in
+the current proof reader.

@@ -298,7 +298,8 @@ class OptimizationProofView(Mapping[str, Any]):
                 raise ValidationError("Vivado optimization proof partition or stage disagrees")
             confirmed = {}
             if "vendor_confirmation_document_sha256" in self.header:
-                from .vivado_constant_frontier import CONSTANT_CONFIRMATION_SCHEMA, CONSTANT_INITIALIZATION_POLICY
+                from .vivado_constant_frontier import (CONSTANT_CONFIRMATION_SCHEMA, CONSTANT_INITIALIZATION_POLICY,
+                                                       CONSTANT_MODEL_SCOPE, CONSTANT_NATIVE_INPUT_POLICY)
                 rows = self.connection.execute("SELECT id,document FROM vendor_confirmation_document").fetchall()
                 if len(rows) != 1 or rows[0][0] != 0 or len(rows[0][1]) > 16 * 1024 * 1024:
                     raise ValidationError("Vivado vendor confirmation document is invalid")
@@ -308,13 +309,15 @@ class OptimizationProofView(Mapping[str, Any]):
                 document = json.loads(raw)
                 keys = {"schema","status","fpga","mapped_index_sha256","source_stage","initialization_policy",
                         "synthesized_checkpoint_sha256","source_candidate_proofs_sha256","source_inventory_sha256",
-                        "observations_sha256","sources","frontiers"}
+                        "observations_sha256","sources","frontiers","source_model_scope","native_input_policy"}
                 if (not isinstance(document,dict) or set(document) != keys
                         or document["schema"] != CONSTANT_CONFIRMATION_SCHEMA or document["status"] != "pass"
                         or document["fpga"] != expected_fpga or document["source_stage"] != "synthesized"
                         or document["mapped_index_sha256"] != self.header["mapped_index_sha256"]
                         or document["synthesized_checkpoint_sha256"] != self.header.get("synthesized_checkpoint_sha256")
                         or document["initialization_policy"] != CONSTANT_INITIALIZATION_POLICY
+                        or document["source_model_scope"] != CONSTANT_MODEL_SCOPE
+                        or document["native_input_policy"] != CONSTANT_NATIVE_INPUT_POLICY
                         or self.header.get("vendor_initialization_policy") != CONSTANT_INITIALIZATION_POLICY
                         or not isinstance(document["sources"],list) or not 1 <= len(document["sources"]) <= 4096
                         or not isinstance(document["frontiers"],list) or not 1 <= len(document["frontiers"]) <= 4096):

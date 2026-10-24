@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 import csv
 import hashlib
+from functools import lru_cache
 import json
 from pathlib import Path
 import re
@@ -18,8 +19,10 @@ from typing import Any
 
 from .errors import ValidationError
 
-CONSTANT_CONFIRMATION_SCHEMA = "emuflow.vivado-selected-constant-confirmations/v1"
+CONSTANT_CONFIRMATION_SCHEMA = "emuflow.vivado-selected-constant-confirmations/v2"
 CONSTANT_INITIALIZATION_POLICY = "joint-inductive-source-model-with-explicit-vendor-selected-initialization"
+CONSTANT_MODEL_SCOPE = "selected-states-inductive-without-unconfirmed-state-assumptions"
+CONSTANT_NATIVE_INPUT_POLICY = "same-primitive-and-pin-bindings-at-synthesis"
 _CHECKED_CONSTANT_TOKEN = object()
 
 
@@ -116,7 +119,9 @@ def require_equal_frontier_functions(source: Mapping[str, Any], native: Mapping[
 
 def compare_selected_constant_frontiers(mapped_path: Path, functions_path: Path,
                                         candidates_path: Path, observations_path: Path, *,
-                                        mapped_sha256: str, expected_objects) -> dict[str, Any]:
+                                        mapped_sha256: str, expected_objects,
+                                        selected_constant_values=None,
+                                        require_input_identity: bool = False) -> dict[str, Any]:
     """Compare selected native observations with the conditional source model.
 
     This diagnostic does not authorize eliminating a source: the caller still
@@ -157,7 +162,14 @@ def compare_selected_constant_frontiers(mapped_path: Path, functions_path: Path,
             if len(drivers) != 1:
                 return f"source-net:{bit}"
             origin, pin, pin_bit = drivers[0]
-            constant = db.execute("SELECT constant_value FROM proofs.constant_candidates WHERE origin=? UNION ALL SELECT constant_value FROM proofs.eliminated_sources WHERE origin=? AND reason='constant-state'", (origin,origin)).fetchone()
+            if selected_constant_values is None:
+                # Hypothetical-model comparison is diagnostic only. A proof
+                # must pass its independently checked, explicitly selected set.
+                constant = db.execute("SELECT constant_value FROM proofs.constant_candidates WHERE origin=? UNION ALL SELECT constant_value FROM proofs.eliminated_sources WHERE origin=? AND reason='constant-state' AND initialization='specified'", (origin,origin)).fetchone()
+            elif origin in selected_constant_values:
+                constant = (selected_constant_values[origin],)
+            else:
+                constant = db.execute("SELECT constant_value FROM proofs.eliminated_sources WHERE origin=? AND reason='constant-state' AND initialization='specified'", (origin,)).fetchone()
             if constant is not None and pin == "Q" and pin_bit == 0:
                 return int(constant[0])
             return canonical_variable(origin, pin if pin_bit == 0 else f"{pin}[{pin_bit}]")
@@ -215,6 +227,10 @@ def compare_selected_constant_frontiers(mapped_path: Path, functions_path: Path,
                         source_inputs[pin] = source_binding(cell["connections"][pin][0])
                 source = {"type":cell["type"], "init":cell["parameters"].get("INIT"), "inputs":source_inputs}
                 native = {"type":group[0]["ref"], "init":group[0]["init"], "inputs":{row["pin"]:native_binding(row) for row in group}}
+                if require_input_identity:
+                    left, right = _lut(source), _lut(native)
+                    if left != right:
+                        raise ValidationError("native frontier primitive or pin bindings do not prove the selected source projection")
                 result = require_equal_frontier_functions(source, native)
                 checked.append({"source_origin":key[0], "native_cell":key[1], **result})
 
@@ -239,6 +255,79 @@ def compare_selected_constant_frontiers(mapped_path: Path, functions_path: Path,
         raise ValidationError("constant-frontier observation or source index is malformed") from error
     finally:
         db.close()
+
+
+def _require_inductive_selected_states(db, mapped_path: Path, values: Mapping[int, int]):
+    """Prove the selected joint states without assuming other INIT choices."""
+    from .vivado_optimization import _RESET, _parameter_bit, _lut_value
+    from .xilinx_netlist import open_xilinx_mapped_index
+    with open_xilinx_mapped_index(mapped_path) as mapped:
+        @lru_cache(maxsize=256)
+        def primitive(name):
+            return mapped.cells[name]
+
+        visiting = set()
+
+        @lru_cache(maxsize=4096)
+        def evaluate(bit, depth=0):
+            if isinstance(bit,str) and bit in {"0","1"}:
+                return int(bit)
+            if not isinstance(bit,int) or depth >= 64 or bit in visiting:
+                return None
+            drivers = db.execute("SELECT cell_seq,cell_id,port FROM cell_pins WHERE net_bit=? AND direction=1 AND value_kind=0 LIMIT 2", (bit,)).fetchall()
+            if len(drivers) != 1:
+                return None
+            origin, name, output = drivers[0]
+            if origin in values and output == "Q":
+                return values[origin]
+            strict = db.execute("SELECT constant_value FROM proofs.eliminated_sources WHERE origin=? AND reason='constant-state' AND initialization='specified'", (origin,)).fetchone()
+            cell = primitive(name)
+            if strict is not None and output == "Q":
+                if cell["type"] not in _RESET:
+                    raise ValidationError("strict constant source is not a supported state primitive")
+                initial = cell.get("parameters",{}).get("INIT",str(_RESET[cell["type"]][1]))
+                if initial not in {"0","1"} or int(initial) != strict[0]:
+                    raise ValidationError("strict source initial value differs from its constant proof")
+                return int(strict[0])
+            if not (cell["type"].startswith("LUT") or cell["type"] in {"MUXF7","MUXF8","MUXF9"}):
+                return None
+            visiting.add(bit)
+            try:
+                pins = {pin:evaluate(bits[0],depth+1) for pin,bits in cell["connections"].items()
+                        if cell["port_directions"][pin] == "input" and len(bits)==1}
+                if cell["type"].startswith("LUT"):
+                    return _lut_value(cell,output,pins)
+                select = pins.get("S")
+                return pins.get("I"+str(select)) if select is not None else pins.get("I0") if pins.get("I0") == pins.get("I1") else None
+            finally:
+                visiting.remove(bit)
+
+        for origin,value in values.items():
+            row = db.execute("SELECT id FROM cells WHERE seq=?", (origin,)).fetchone()
+            if row is None:
+                raise ValidationError("selected constant source is absent from its mapped owner")
+            cell = primitive(row[0])
+            if cell["type"] not in _RESET:
+                raise ValidationError("selected constant source is not a supported state primitive")
+            reset, reset_value = _RESET[cell["type"]]
+            initial = cell.get("parameters",{}).get("INIT",str(reset_value))
+            if initial not in {"0","1","x","X"} or (initial in {"0","1"} and int(initial) != value):
+                raise ValidationError("selected constant source initial value is not a legal choice")
+            def pin_value(pin):
+                bits = cell["connections"].get(pin,[])
+                return evaluate(bits[0]) if len(bits)==1 else None
+            data, enable, control = pin_value("D"), pin_value("CE"), pin_value(reset)
+            inversions = [_parameter_bit(cell,"IS_"+pin+"_INVERTED") for pin in ("D","CE",reset)]
+            if any(v is None for v in inversions):
+                stable = False
+            else:
+                data = None if data is None else data ^ inversions[0]
+                enable = None if enable is None else enable ^ inversions[1]
+                control = None if control is None else control ^ inversions[2]
+                stable = ((value == reset_value) if control == 1 else
+                          (control == 0 or value == reset_value) and (enable == 0 or data == value))
+            if not stable:
+                raise ValidationError("selected source states are not independently inductive; unconfirmed state assumptions remain")
 
 
 def confirm_selected_constant_sources(mapped_path: Path, functions_path: Path,
@@ -307,6 +396,8 @@ def confirm_selected_constant_sources(mapped_path: Path, functions_path: Path,
         if any(bit in selected_q for port in ports.values() if port["direction"] == "output"
                for bit in port["bits"] if isinstance(bit, int)):
             raise ValidationError("conditional source directly reaches an unconfirmed output port")
+        selected_values = {int(row["source"][1:]):row["constant_value"] for row in source_rows}
+        _require_inductive_selected_states(db,mapped_path,selected_values)
         expected_objects = []
         selected_origins = {int(s[1:]) for s in selected_sources}
         inventory_digest = hashlib.sha256()
@@ -333,10 +424,12 @@ def confirm_selected_constant_sources(mapped_path: Path, functions_path: Path,
         if {int(item["source_origin"][1:]) for item in expected_objects} != frontier_origins:
             raise ValidationError("conditional source has an unobserved or optimized frontier")
         comparison = compare_selected_constant_frontiers(mapped_path, functions_path, candidates_path, observations_path,
-            mapped_sha256=mapped_sha256, expected_objects=expected_objects)
+            mapped_sha256=mapped_sha256, expected_objects=expected_objects,
+            selected_constant_values=selected_values,require_input_identity=True)
         return {"schema":CONSTANT_CONFIRMATION_SCHEMA, "status":"pass", "fpga":fpga,
                 "mapped_index_sha256":mapped_sha256, "source_stage":"synthesized",
                 "initialization_policy":CONSTANT_INITIALIZATION_POLICY,
+                "source_model_scope":CONSTANT_MODEL_SCOPE, "native_input_policy":CONSTANT_NATIVE_INPUT_POLICY,
                 "synthesized_checkpoint_sha256":checkpoint_sha256,
                 "source_candidate_proofs_sha256":candidate_proofs_sha256,
                 "source_inventory_sha256":inventory_digest.hexdigest(),

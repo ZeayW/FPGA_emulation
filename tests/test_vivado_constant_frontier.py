@@ -69,7 +69,7 @@ def test_selected_native_observations_use_indexed_source_driver_identity(tmp_pat
     with pytest.raises(ValidationError,match="input coverage"): compare()
 
 
-def conditional_model(tmp_path, *, expose_state=False, duplicate_frontier=False):
+def conditional_model(tmp_path, *, expose_state=False, duplicate_frontier=False, dependent=False):
     import csv
     import json
     from emuflow.yosys import import_yosys_json
@@ -88,6 +88,11 @@ def conditional_model(tmp_path, *, expose_state=False, duplicate_frontier=False)
                 "port_directions":{"I0":"input","I1":"input","O":"output"},
                 "connections":{"I0":[5],"I1":[4],"O":[6]}},
     }
+    if dependent:
+        cells["upstream"]={"type":"FDRE","parameters":{"INIT":"x"},"attributes":{},
+            "port_directions":{"C":"input","CE":"input","D":"input","R":"input","Q":"output"},
+            "connections":{"C":[2],"CE":["0"],"D":[3],"R":["0"],"Q":[7]}}
+        cells["conditional"]["connections"]["D"]=[7]
     source=tmp_path/"source.json"
     source.write_text(json.dumps({"modules":{"dut":{"attributes":{"top":"1"},"cells":cells,
         "ports":{"clk":{"direction":"input","bits":[2]},"d":{"direction":"input","bits":[3]},
@@ -130,7 +135,7 @@ def test_constant_confirmation_checks_complete_source_fanout_and_native_snapshot
     for bad in ([{}], ["s00"], [f"s{origins['kept']}"]):
         with pytest.raises(ValidationError):confirm(bad)
     observed.write_text(observed.read_text().replace("4'h6","4'h9"))
-    with pytest.raises(ValidationError,match="does not confirm"):confirm()
+    with pytest.raises(ValidationError,match="pin bindings"):confirm()
 
 
 @pytest.mark.parametrize("variant,match", [("output","output port"),("replica","incomplete")])
@@ -179,6 +184,16 @@ def test_only_checked_constant_sources_can_enter_a_bound_routed_proof(tmp_path):
     # agree with the proof rows sealed by the source-model owner.
     with sqlite3.connect(final) as db:
         document=json.loads(db.execute("SELECT document FROM vendor_confirmation_document").fetchone()[0])
+        document["schema"]="emuflow.vivado-selected-constant-confirmations/v1"
+        raw=json.dumps(document,sort_keys=True,separators=(",",":"))
+        db.execute("UPDATE vendor_confirmation_document SET document=?",(raw,))
+        db.execute("UPDATE metadata SET value=? WHERE key='vendor_confirmation_document_sha256'",
+                   (json.dumps(hashlib.sha256(raw.encode()).hexdigest()),))
+    with pytest.raises(ValidationError,match="source or initialization policy"):
+        OptimizationProofView(final,expected_fpga="fpga0")
+    with sqlite3.connect(final) as db:
+        from emuflow.vivado_constant_frontier import CONSTANT_CONFIRMATION_SCHEMA
+        document["schema"]=CONSTANT_CONFIRMATION_SCHEMA
         document["sources"][0]["constant_value"]=1
         raw=json.dumps(document,sort_keys=True,separators=(",",":"))
         db.execute("UPDATE vendor_confirmation_document SET document=?",(raw,))
@@ -210,3 +225,32 @@ def test_synthesized_preflight_does_not_claim_routed_query_resolution(tmp_path):
     assert f"optimized-away:s{origins['conditional']}" in (tmp_path/"resolved.tsv").read_text()
     with pytest.raises(ValidationError,match="different source or stage"):
         resolve_timing_query(mapped,functions,lineage,query,tmp_path/"wrong-stage.tsv",optimization_proofs=final,allow_eliminated=True)
+
+
+def test_constant_proof_does_not_borrow_unselected_initialization_hypotheses(tmp_path):
+    from emuflow.vivado_constant_frontier import confirm_selected_constant_sources, compare_selected_constant_frontiers
+    from emuflow.io import file_sha256
+    mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path,dependent=True)
+    # A hypothetical all-zero source model matches the native LUT, but that
+    # alone does not prove the selected state without its upstream INIT choice.
+    result=compare_selected_constant_frontiers(mapped,functions,proof,observed,mapped_sha256=digest,
+        expected_objects=[{"source_origin":f"s{origins['front']}","name":"p/front"}])
+    assert result["status"] == "pass"
+    with pytest.raises(ValidationError,match="not independently inductive"):
+        confirm_selected_constant_sources(mapped,functions,proof,observed,inventory,mapped_sha256=digest,
+            candidate_proofs_sha256=file_sha256(proof),checkpoint_sha256="a"*64,fpga="fpga0",selected_sources=[f"s{origins['conditional']}"])
+
+
+def test_functional_equivalence_alone_is_not_a_synthesis_pin_projection(tmp_path):
+    from emuflow.vivado_constant_frontier import compare_selected_constant_frontiers
+    mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path)
+    # XOR allows swapping pins without changing the function. A diagnostic
+    # accepts that equality; a constant-selection proof requires the actual
+    # source signal's pin projection before physical optimization.
+    text=observed.read_text();text=text.replace("\tI0\t","\tTEMP\t").replace("\tI1\t","\tI0\t").replace("\tTEMP\t","\tI1\t")
+    observed.write_text(text)
+    options=dict(mapped_sha256=digest,expected_objects=[{"source_origin":f"s{origins['front']}","name":"p/front"}],
+                 selected_constant_values={origins['conditional']:0})
+    assert compare_selected_constant_frontiers(mapped,functions,proof,observed,**options)["status"] == "pass"
+    with pytest.raises(ValidationError,match="pin bindings"):
+        compare_selected_constant_frontiers(mapped,functions,proof,observed,require_input_identity=True,**options)
