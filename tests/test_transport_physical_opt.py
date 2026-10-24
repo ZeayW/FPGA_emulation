@@ -8,7 +8,7 @@ from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
 from emuflow.io import file_sha256
 from emuflow.transport_fanout import buffer_transport_high_fanout_nets
-from emuflow.transport_physical_opt import _assign, rewire_transport_buffers
+from emuflow.transport_physical_opt import _assign, _cluster, rewire_transport_buffers
 from emuflow.xilinx_physical_handoff import write_xilinx_physical_handoff
 from tests.test_transport_fanout import _transport_ir
 from tests.test_xilinx_physical_handoff import _contracts
@@ -92,6 +92,14 @@ class PhysicalTransportTest(unittest.TestCase):
     def test_nonimproving_assignment_is_retained(self):
         chosen, before, after = _assign([[0, 100], [100, 0]], [0, 1])
         self.assertEqual((chosen, before, after), ([0, 1], 0, 0))
+
+    def test_cluster_escapes_coincident_buffer_anchors(self):
+        points = [(0, 0), (100, 0), (0, 0), (100, 0), (0, 0), (100, 0)]
+        chosen, centers, before, after = _cluster(points, [0, 0, 0, 1, 1, 1], [(50, 0)]*2)
+        self.assertEqual((before, after), (200, 0))
+        self.assertEqual(sorted(centers), [(0, 0), (100, 0)])
+        self.assertEqual(chosen.count(0), 3)
+        self.assertEqual(chosen.count(1), 3)
 
     def test_distinct_inputs_cannot_exchange_sinks(self):
         with tempfile.TemporaryDirectory() as d:

@@ -74,8 +74,11 @@ explicit qualification API. It consumes an immutable compact transport EmuIR
 and a validated preliminary physical handoff. It groups existing leaf LUT1
 buffers only when their truth tables prove identity and their input net is
 identical. It reassigns sinks with a deterministic capacity-constrained spatial
-heuristic, retaining the original assignment unless total sink-to-driver
-Manhattan distance strictly decreases. Every branch keeps its original fanout;
+heuristic, alternating capacitated assignment with median recentering. Farthest
+point seeding escapes coincident preliminary buffer positions. It retains the
+original assignment unless within-group Manhattan distance strictly decreases,
+measured against optimally recentered original groups. Returned median centers
+are guidance for fresh placement, not legal site assignments. Every branch keeps its original fanout;
 no resource is added and all endpoint fields are preserved. Missing coordinates
 skip the whole group. Each move is recorded with the original and new net
 ordinals, input identities, and source/output hashes.

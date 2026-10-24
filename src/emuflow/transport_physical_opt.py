@@ -37,13 +37,56 @@ def _assign(costs, original):
     return (chosen, before, after) if after < before else (original, before, before)
 
 
+def _cluster(points, original, anchors):
+    """Alternate fixed-capacity assignment and Manhattan-optimal medians.
+
+    Compare against optimally recentered original groups, so merely moving
+    a buffer cannot masquerade as an improvement from rewiring its sinks.
+    Returned centers are guidance for a fresh placement, never legal sites.
+    """
+    def medians(labels):
+        centers = []
+        for j in range(len(anchors)):
+            group = [p for p, b in zip(points, labels) if b == j]
+            centers.append(tuple(sorted(p[d] for p in group)[len(group)//2]
+                                 for d in range(2)) if group else anchors[j])
+        return centers
+
+    def cost(labels, centers):
+        return sum(abs(p[0]-centers[j][0]) + abs(p[1]-centers[j][1])
+                   for p, j in zip(points, labels))
+
+    best, centers = original, medians(original)
+    before = after = cost(original, centers)
+    # Farthest-point seeding breaks the near-identical central anchors that
+    # prevented pure rewiring around already placed buffers from spreading.
+    seeds = [min(points)]
+    while len(seeds) < len(anchors):
+        seeds.append(max(points, key=lambda p: (
+            min(abs(p[0]-c[0])+abs(p[1]-c[1]) for c in seeds), p)))
+    for initial in (centers, seeds):
+        labels, trial = original, initial
+        for _ in range(12):
+            costs = [[abs(p[0]-c[0])+abs(p[1]-c[1]) for c in trial] for p in points]
+            updated, _, _ = _assign(costs, labels)
+            trial = medians(updated)
+            value = cost(updated, trial)
+            if value < after:
+                best, centers, after = list(updated), trial, value
+            if updated == labels:
+                break
+            labels = updated
+    return best, centers, before, after
+
+
 def rewire_transport_buffers(source: Path, handoff: Path, output: Path):
     """Reassign sinks only between identity LUT1s sharing exactly one input.
 
     Existing per-branch fanout is preserved exactly. A group is skipped unless
     every sink and driver has a physical coordinate. Each published change
-    strictly reduces summed Manhattan sink-to-driver distance at those fixed
-    coordinates. This predicts a benefit; only a subsequent route can prove it.
+    strictly reduces within-group Manhattan distance to optimally recentered
+    buffers. The returned target locations require fresh placement. This
+    predicts a benefit; only a subsequent route can prove it.
     """
     source, handoff, output = map(Path, (source, handoff, output))
     if output.resolve() in {source.resolve(), handoff.resolve()}:
@@ -124,10 +167,12 @@ def rewire_transport_buffers(source: Path, handoff: Path, output: Path):
             if any(seq not in positions for seq, _ in branches) or any(s[0] not in positions for s in sinks):
                 records.append({'owner': owner, 'status': 'skipped-missing-coordinate'})
                 continue
-            costs = [[abs(positions[s[0]][0] - positions[b][0])
-                      + abs(positions[s[0]][1] - positions[b][1])
-                      for b, _ in branches] for s in sinks]
-            chosen, before, after = _assign(costs, original)
+            if not sinks:
+                continue
+            chosen, centers, before, after = _cluster(
+                [positions[s[0]] for s in sinks], original,
+                [positions[b] for b, _ in branches],
+            )
             if Counter(chosen) != Counter(original):
                 raise ValidationError("physical rewiring changed branch capacity")
             moves = [{'instance_seq': s[0], 'port_seq': s[1], 'bit': s[2],
@@ -149,6 +194,7 @@ def rewire_transport_buffers(source: Path, handoff: Path, output: Path):
                     raise ValidationError("physical rewiring lost or duplicated endpoints")
             records.append({'owner': owner, 'status': 'improved' if moves else 'unchanged',
                             'branches': [names[b] for b, _ in branches],
+                            'target_centers': centers,
                             'before_manhattan': before, 'after_manhattan': after, 'moves': moves})
         db.commit()
         db.close()
@@ -158,6 +204,7 @@ def rewire_transport_buffers(source: Path, handoff: Path, output: Path):
         os.replace(temporary, output)
         return {'schema': 'emuflow.transport-physical-rewire/v1', 'status': 'candidate',
                 'source_sha256': source_sha, 'placement_handoff_sha256': handoff_sha,
+                'objective': 'capacity-preserving-sink-cluster-median-distance',
                 'output_sha256': file_sha256(output), 'groups': records,
                 'summary': {'improved_groups': sum(r['status'] == 'improved' for r in records),
                             'moved_sinks': sum(len(r.get('moves', [])) for r in records),

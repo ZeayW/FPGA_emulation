@@ -104,8 +104,9 @@ the feedback window and legalization displacement and still requires exact
 site/BEL validation plus real negotiated-routing convergence before release.
 The final route still requires zero
 overused nodes and complete source-to-sink connectivity.
-An explicit qualification transform can reassign transport buffer loads using
-preliminary placement while preserving equivalent drivers and branch fanout.
+An explicit qualification transform can spatially cluster transport buffer
+loads and compute new branch centers from preliminary placement while
+preserving equivalent drivers and branch fanout.
 Its output requires remapping and a new placement/routing validation; see
 [physical optimization](docs/PHASE7_PHYSICAL_OPTIMIZATION.md).
 
