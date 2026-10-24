@@ -176,7 +176,7 @@ public final class EmuFlowRWRoute {
         ArrayDeque<T> queue = new ArrayDeque<>();
         towardSink.put(sink, null); queue.add(sink);
         T selected = null;
-        for (int depth = 0; depth <= maximumDepth && !queue.isEmpty(); depth++) {
+        search: for (int depth = 0; depth <= maximumDepth && !queue.isEmpty(); depth++) {
             int count = queue.size();
             while (count-- > 0) {
                 T node = queue.removeFirst();
@@ -186,7 +186,15 @@ public final class EmuFlowRWRoute {
                 if (depth == maximumDepth || !expand.test(node)) continue;
                 for (T next : uphill.apply(node)) {
                     if (towardSink.containsKey(next) || !available.test(next)) continue;
-                    towardSink.put(next, node); queue.addLast(next);
+                    towardSink.put(next, node);
+                    if (parents.containsKey(next) && join.test(next)) {
+                        selected = next; break search;
+                    }
+                    if (towardSink.size() >= 200000) {
+                        throw new IllegalStateException("clock tail search budget exhausted (not an infeasibility proof): "
+                            + sink + "; visited=" + towardSink.size() + "; depth=" + (depth + 1));
+                    }
+                    queue.addLast(next);
                 }
             }
             if (selected != null) break;
@@ -546,10 +554,23 @@ public final class EmuFlowRWRoute {
                                 left.compareTo(right) <= 0 ? left : right);
                         }
                     }
+                    Map<String, String> localLeaves = new java.util.TreeMap<>();
+                    Node intNode = RouterHelper.projectInputPinToINTNode(pin);
+                    if (intNode != null) {
+                        for (Node first : intNode.getAllUphillNodes()) {
+                            for (Node leaf : first.getAllUphillNodes()) {
+                                if (leaf.getIntentCode() != IntentCode.NODE_GLOBAL_LEAF) continue;
+                                localLeaves.put(leaf.toString(), "reachable=" + tree.containsKey(leaf)
+                                    + ",owner=" + clockRouteOwners.get(leaf)
+                                    + ",status=" + getGlobalRoutingNodeStatus(clk, leaf));
+                            }
+                        }
+                    }
                     System.out.println("INFO: EmuFlow clock reachability failure: " + new JSONObject()
                         .put("clock", clk.getName()).put("source", source.toString())
                         .put("source_node", source.getConnectedNode().toString())
-                        .put("sink", pin.toString()).put("frontier", new JSONObject(frontier))
+                        .put("sink", pin.toString()).put("local_leaves", new JSONObject(localLeaves))
+                        .put("frontier", new JSONObject(frontier))
                         .put("frontier_examples", new JSONObject(examples)));
                     throw error;
                 }

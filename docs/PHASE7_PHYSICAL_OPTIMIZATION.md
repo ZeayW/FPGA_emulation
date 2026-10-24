@@ -161,7 +161,11 @@ device labels `INTENT_DEFAULT`. A sink's bounded uphill search must
 join a leaf reachable from that source; an available but unreachable leaf is
 insufficient. The sink tail does not expand back into an unreachable dedicated
 clock branch: all source-reachable dedicated nodes have already been explored.
-BUFGCE cascade inputs may join another reachable dedicated node.
+BUFGCE cascade inputs may join another reachable dedicated node. A tail search
+also has a 200,000-node work bound. Exhaustion reports the endpoint, depth,
+local leaf owners and resource status; it is explicitly a search-budget failure,
+not proof that the placement is unroutable. Matching leaves terminate discovery
+when enqueued, avoiding unnecessary expansion of an already solved BFS layer.
 Clock-tile reservation arrays use each tile's complete device wire domain;
 clock exploration must not index a shorter sparse array inferred from another
 tile of the same type. Ordinary signal tiles retain upstream sparse allocation.
