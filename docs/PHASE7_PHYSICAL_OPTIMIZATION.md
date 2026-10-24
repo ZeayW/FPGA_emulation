@@ -62,43 +62,30 @@ freeze packing before enough physical information is available.  See the
 [VPR basic flow](https://docs.verilogtorouting.org/en/latest/vpr/basic_flow/)
 and [analytical-placement options](https://docs.verilogtorouting.org/en/latest/vpr/command_line_usage/).
 
-## Evidence from the current NVDLA run
+## Route feedback and explicit transport qualification
 
-The full-site fpga1 placement is exactly legal and has lower final HPWL than
-the site-depleted candidate, but RWRoute is not converging.  Through iteration
-7 it still has 325,836 overused nodes.  The largest classes are `NODE_LOCAL`
-(153,772), `NODE_SINGLE` (56,484), `NODE_DOUBLE` (54,972), and
-`NODE_PINBOUNCE` (12,546), with 317,787 overused nodes in SLR2.  The counts are
-consistent with severe local-access and short-wire pressure in the fixed
-packing, although net-level attribution is still required before assigning a
-specific root cause.
+The RWRoute adapter ranks the sixteen logical nets touching the most overused
+nodes in each iteration. It records connection uses, shared excess exposure,
+local/short-wire/pin-access contributions, SLR distribution, fanout, HPWL, and
+source. Ownership comes directly from the router's route-node user maps.
 
-This evidence also shows why global-placement overflow alone is insufficient.
-A legal placement with reasonable HPWL can still present the router with poor
-site-pin access, physically incoherent high-fanout trees, or local clusters
-whose external connectivity exceeds nearby routing supply.
+`rewire_transport_buffers` in `src/emuflow/transport_physical_opt.py` is an
+explicit qualification API. It consumes an immutable compact transport EmuIR
+and a validated preliminary physical handoff. It groups existing leaf LUT1
+buffers only when their truth tables prove identity and their input net is
+identical. It reassigns sinks with a deterministic capacity-constrained spatial
+heuristic, retaining the original assignment unless total sink-to-driver
+Manhattan distance strictly decreases. Every branch keeps its original fanout;
+no resource is added and all endpoint fields are preserved. Missing coordinates
+skip the whole group. Each move is recorded with the original and new net
+ordinals, input identities, and source/output hashes.
 
-The RWRoute adapter now emits the first feedback artifact directly in each
-iteration log.  It ranks the sixteen logical nets touching the most overused
-nodes and records their routed connection uses, shared excess exposure, local,
-short-wire and pin-access contributions, SLR distribution, fanout, HPWL and
-physical source.  The data comes from RWRoute's exact route-node user maps; it
-does not infer ownership from a bounding-box congestion proxy.  This is the
-selection input for the structural passes below.
-
-The first bounded NVDLA fpga1 attribution run confirmed three concrete
-physical-synthesis targets.  The largest contributor, `n118481`, is an `FDCE`
-output in CMAC with fanout 8,224; it touched 5,105 overused nodes in iteration
-2.  Three adjacent CMAC registers with fanouts 2,685, 2,269 and 2,017 ranked
-second through fourth.  CVIF/MCIF arbitration LUT outputs with fanout about
-1,054 and an SDP LUT output with fanout 4,488 also ranked near the top.
-
-Several other top-ranked nets have fanout exactly 512 and are outputs of the
-transport `LUT1` trees inserted before placement.  Their sinks are currently
-partitioned by stable endpoint identity, before physical coordinates exist.
-This is direct evidence that a topology-only maximum-fanout tree is
-insufficient: its branches must be rewired or rebuilt from the preliminary
-placement so that each branch owns a physically coherent sink cluster.
+The transform publishes a separate candidate transport EmuIR atomically. It
+must subsequently pass normal lowering, remapping, placement, and routing;
+editing a frozen route-input TSV or rebinding an old certificate is not
+permitted. The distance improvement is a placement predictor and cannot be
+reported as proven routing improvement. This API is not enabled automatically
+in the production flow until a complete physical run qualifies it.
 
 ## Relevant academic results
 

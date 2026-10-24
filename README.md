@@ -79,8 +79,8 @@ does not expand this platform ratio domain.
 The Xilinx Phase 7 path combines fanout-aware placement, RUDY/pin-density area
 adjustment, and a reserved post-adjustment convergence window before exact
 legalization and negotiated routing. An utilization-adaptive `0.40..0.75`
-density target prevents low whole-device utilization from collapsing into the
-central SLRs. Analytical LUT density uses the eight qualified LUT BELs per
+density target controls analytical whitespace across the full device without
+guaranteeing occupancy of every SLR. Analytical LUT density uses the eight qualified LUT BELs per
 slice, independently of the native sixteen-slot encoding.
 OpenPARF and DirectLG receive every qualified physical site. The density target
 is the sole analytical whitespace control, so site filtering cannot compound
@@ -104,6 +104,10 @@ the feedback window and legalization displacement and still requires exact
 site/BEL validation plus real negotiated-routing convergence before release.
 The final route still requires zero
 overused nodes and complete source-to-sink connectivity.
+An explicit qualification transform can reassign transport buffer loads using
+preliminary placement while preserving equivalent drivers and branch fanout.
+Its output requires remapping and a new placement/routing validation; see
+[physical optimization](docs/PHASE7_PHYSICAL_OPTIMIZATION.md).
 
 Phase 3 can seal per-FPGA downstream resource reservations in
 `resource_reservations_by_fpga`. Every partition provider then limits the

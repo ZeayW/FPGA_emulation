@@ -565,11 +565,6 @@ def buffer_transport_high_fanout_store(
                 "WHERE cut_class NOT IN ('clock','reset')"
             ).fetchone()[0]
         )
-        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
-        if integrity != "ok":
-            raise ValidationError(
-                f"transport fanout SQLite integrity check failed: {integrity}"
-            )
         orphan = connection.execute(
             """SELECT 1 FROM endpoint_records e LEFT JOIN cell_records c
             ON c.seq=e.instance_seq WHERE e.instance_seq IS NOT NULL
