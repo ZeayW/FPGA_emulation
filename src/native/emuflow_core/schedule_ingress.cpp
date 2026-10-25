@@ -77,7 +77,7 @@ ExactScheduleModel BuildExactScheduleModel(const std::string& route_path,
       const double fixed = arc.base - arc.slope;
       Require(arc.affine == 1 && quantum % arc.word_bits == 0 && minimum % arc.word_bits == 0 &&
               maximum % arc.word_bits == 0 && std::abs(arc.slope * arc.word_bits - arc.period) <= 1e-12 &&
-              fixed >= arc.period && std::ceil(fixed / arc.period) == arc.fixed_latency,
+              fixed >= arc.period && std::abs(fixed - arc.fixed_latency * arc.period) <= 1e-12,
               "LVDS word arc time units or fixed pipeline disagree");
     }
   }

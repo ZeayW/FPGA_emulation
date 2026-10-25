@@ -1194,8 +1194,6 @@ def write_transport_systemverilog(
 ) -> None:
     """Stream production transport RTL from indexed endpoint cursors."""
 
-    from .tdm_word import require_word_transport_implementation
-    require_word_transport_implementation(platform)
 
     rtl_rows = getattr(transport, "iter_rtl_endpoints", None)
     endpoint_groups = getattr(transport, "endpoint_groups", None)
@@ -1263,6 +1261,13 @@ def write_transport_systemverilog(
 
     try:
         with temporary.open("w", encoding="utf-8") as stream:
+            if any(link.word_timing is not None for link in platform.links):
+                from .word_transport_rtl import emit_word_transport
+                emit_word_transport(stream, transport, platform, rtl_rows, groups)
+                stream.flush()
+                os.fsync(stream.fileno())
+                os.replace(temporary, path)
+                return
             line(stream, f"module emuflow_transport_{_sv_name(fpga)} #(")
             line(stream, f"  parameter integer FRAME_SLOTS = {frame_slots},")
             line(stream, f"  parameter integer SLOT_BITS = {slot_bits},")
@@ -1467,8 +1472,8 @@ def write_transport_storage(
 ) -> dict[str, Any]:
     """Publish Phase 6 transport relations without hop-sized Python lists."""
 
-    from .tdm_word import require_word_transport_implementation
-    require_word_transport_implementation(platform)
+    from .tdm_word import word_transport_metadata, word_endpoint_metadata
+    word_metadata = word_transport_metadata(platform, schedule, pin_plan=pin_plan, physical_io=virtual_board is not None)
 
     if schedule.get("schema") != TDM_SCHEDULE_SCHEMA:
         raise ValidationError("schedule has an unsupported schema")
@@ -1591,6 +1596,7 @@ def write_transport_storage(
             "virtual_clock_order": sorted(item["id"] for item in clocks) or ["clk"],
             "semantic_contract_sha256": exact_digest,
             "semantic_contract_storage": exact_storage,
+            **word_metadata,
         }
         connection.executemany(
             "INSERT INTO metadata(key,value) VALUES (?,?)",
@@ -1738,6 +1744,7 @@ def write_transport_storage(
                 "lane": lane,
                 "logical_lane": logical_lane,
             }
+            common.update(word_endpoint_metadata(binding_links[link], slot=slot, arrival_slot=arrival_slot, lane=lane, ratio=tdm_ratio))
             tx_exact: dict[str, Any] = {}
             rx_exact: dict[str, Any] = {}
             if exact_mode:
@@ -1949,6 +1956,11 @@ def write_transport_storage(
             if len(lane_rows) >= 4096:
                 flush()
         flush()
+        if word_metadata:
+            connection.execute("CREATE UNIQUE INDEX word_phase_occupancy ON endpoints(fpga,kind,link,peer,lane,(slot % (json_extract(record_json,'$.tdm_ratio')/8)))")
+            inconsistent = connection.execute("SELECT 1 FROM endpoints GROUP BY fpga,kind,link,peer,(lane/8) HAVING min(json_extract(record_json,'$.tdm_ratio')) != max(json_extract(record_json,'$.tdm_ratio')) LIMIT 1").fetchone()
+            if inconsistent:
+                raise ValidationError("one physical word lane cannot use multiple cyclic periods")
         if pin_lane_iterator is not None and next(pin_lane_iterator, None) is not None:
             raise ValidationError("pin plan must cover schedule entries exactly")
         if (
@@ -2043,11 +2055,13 @@ def write_transport_storage(
             if board_link is None:
                 raise ValidationError("transport endpoint references an unknown link")
             lane = int(row["lane"])
-            if board_link.mode == "serial":
+            if board_link.mode == "serial" or board_link.word_timing is not None:
                 required_fields = [
                     "package_pin_p", "package_pin_n", "connector",
                     "transceiver_site",
                 ]
+                if board_link.word_timing is not None:
+                    required_fields = ["package_pin_p", "package_pin_n", "bank", "iostandard", "forwarded_clock", "word_alignment"]
                 physical_lane = lane // board_link.payload_bits_per_lane_per_cycle
                 bit_within_physical_lane = (
                     lane % board_link.payload_bits_per_lane_per_cycle
@@ -2169,6 +2183,7 @@ def write_transport_storage(
                 "fpga": fpga,
                 "frame_slots": schedule["metrics"]["frame_slots"],
                 "virtual_clock_order": clock_order,
+                **word_metadata,
                 **(
                     {
                         "cut_mode": "static-exact-combinational",

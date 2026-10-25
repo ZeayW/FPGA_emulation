@@ -140,23 +140,34 @@ def test_periodic_wait_is_bounded_for_all_phases_and_fractional_readiness():
             for ready in (0.0,0.125,4.999,5.0,5.001,31.25,139.875,140.0,185.125):
                 event=timing.next_transfer(ready_ns=ready,phase_word=phase,bit_in_word=7,ratio=ratio)
                 assert event.word_load_ns >= ready
-                assert event.word_load_ns-5.0*(ratio//8) < ready or event.word_load_ns == phase*5.0
+                assert event.word_load_ns-5.0*(ratio//8) < max(ready,5.0)
                 assert 0 <= event.tdm_wait_ns <= ratio*0.625
                 assert event.delay_ns <= timing.pre_schedule_delay_ns(ratio)
 
 
-def test_word_plan_cannot_silently_enter_the_one_bit_one_shot_transport(tmp_path):
+def test_word_plan_requires_explicit_policy_and_rejects_unqualified_physical_binding(tmp_path):
     from emuflow.netlist import build_split_artifacts, transport_to_systemverilog
     from emuflow.transport_storage import write_transport_storage, write_transport_systemverilog
     platform = Platform.from_dict(board())
-    with pytest.raises(ValidationError, match="qualified word transport and PHY"):
+    with pytest.raises(ValidationError, match="word event policy"):
         build_split_artifacts(None, {}, {}, platform)
-    with pytest.raises(ValidationError, match="qualified word transport and PHY"):
+    with pytest.raises(ValidationError, match="word event policy"):
         write_transport_storage(tmp_path, tmp_path/"missing.sqlite", {}, platform, design={}, clocks=[])
-    with pytest.raises(ValidationError, match="qualified word transport and PHY"):
+    from emuflow.tdm_word import WORD_EVENT_POLICY
+    with pytest.raises(ValidationError, match="PHY binding is not yet qualified"):
+        write_transport_storage(tmp_path,tmp_path/"missing.sqlite",{"word_event_policy":WORD_EVENT_POLICY},platform,design={},clocks=[],virtual_board={})
+    with pytest.raises(ValidationError, match="word event policy"):
         write_transport_systemverilog(tmp_path/"bad.sv", {}, platform)
-    with pytest.raises(ValidationError, match="qualified word transport and PHY"):
+    with pytest.raises(ValidationError, match="word event policy"):
         transport_to_systemverilog({}, platform)
+
+
+def test_epoch_release_edge_is_never_used_as_a_new_word_load():
+    timing = LVDSWordTiming(5,30)
+    assert timing.next_transfer(ready_ns=0,phase_word=0,bit_in_word=0,ratio=8).word_load_ns == 5
+    assert timing.next_transfer(ready_ns=0,phase_word=0,bit_in_word=0,ratio=24).word_load_ns == 15
+    with pytest.raises(ValidationError, match="index is invalid"):
+        timing.transfer(ready_ns=0,word_index=0,bit_in_word=0,ratio=8)
 
 
 def test_word_plan_cannot_fall_back_to_uniform_ratio_arcs_in_global_physical_timing():

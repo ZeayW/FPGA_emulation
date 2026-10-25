@@ -70,8 +70,8 @@ def build_split_artifacts(
     platform: Platform,
     pin_plan: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    from .tdm_word import require_word_transport_implementation
-    require_word_transport_implementation(platform)
+    from .tdm_word import word_transport_metadata, word_endpoint_metadata
+    word_metadata = word_transport_metadata(platform, schedule, pin_plan=pin_plan)
 
     if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
         raise ValidationError(
@@ -209,6 +209,8 @@ def build_split_artifacts(
             "lane": physical_lane_by_entry.get(entry["id"], entry["lane"]),
             "logical_lane": entry["lane"],
         }
+        common.update(word_endpoint_metadata(next(link for link in platform.links if link.id == entry["link"]),
+            slot=entry["slot"], arrival_slot=entry["arrival_slot"], lane=common["lane"], ratio=entry.get("tdm_ratio")))
         exact_tx = {}
         exact_rx = {}
         if exact_contract is not None:
@@ -469,6 +471,7 @@ def build_split_artifacts(
             "platform": platform.name,
             "fpga": fpga_id,
             "frame_slots": schedule["metrics"]["frame_slots"],
+            **word_metadata,
             "virtual_clock_order": sorted(
                 item["id"] for item in ir.value.get("clocks", [])
             )
@@ -604,8 +607,15 @@ def transport_endpoint_port(endpoint: Mapping[str, Any]) -> str:
 def transport_to_systemverilog(
     transport: Mapping[str, Any], platform: Platform
 ) -> str:
-    from .tdm_word import require_word_transport_implementation
-    require_word_transport_implementation(platform)
+    if any(link.word_timing is not None for link in platform.links):
+        import io
+        from .word_transport_rtl import emit_word_transport, materialized_rtl_rows
+        from .tdm_word import word_transport_metadata
+        word_transport_metadata(platform, transport)
+        stream = io.StringIO()
+        groups, rows = materialized_rtl_rows(transport)
+        emit_word_transport(stream, transport, platform, rows, groups)
+        return stream.getvalue()
 
     fpga_id = transport["fpga"]
     module_name = f"emuflow_transport_{_sv_name(fpga_id)}"
@@ -825,13 +835,15 @@ def _build_virtual_anchors(
     records = []
     for (link, peer, kind, lane), items in sorted(grouped.items()):
         board_link = links[link]
-        if board_link.mode == "serial":
+        if board_link.mode == "serial" or board_link.word_timing is not None:
             required_fields = [
                 "package_pin_p",
                 "package_pin_n",
                 "connector",
                 "transceiver_site",
             ]
+            if board_link.word_timing is not None:
+                required_fields = ["package_pin_p", "package_pin_n", "bank", "iostandard", "forwarded_clock", "word_alignment"]
             physical_lane = lane // board_link.payload_bits_per_lane_per_cycle
             bit_within_physical_lane = (
                 lane % board_link.payload_bits_per_lane_per_cycle

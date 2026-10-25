@@ -13,16 +13,36 @@ import math
 from .errors import ValidationError
 
 
-WORD_EVENT_POLICY = "periodic-lvds-8bit-word-load-to-rx-visible-v1"
+WORD_EVENT_POLICY = "periodic-lvds-8bit-word-load-to-rx-visible-v2"
 
 
-def require_word_transport_implementation(platform):
-    """Reject an 8:1 plan at the current one-shot, direct-pad RTL boundary."""
-    if any(link.word_timing is not None for link in platform.links):
-        raise ValidationError(
-            "periodic eight-bit LVDS plans require a qualified word transport and PHY; "
-            "the current one-shot direct-pad Phase 6 implementation cannot consume them"
-        )
+def word_transport_metadata(platform, schedule, *, pin_plan=None, physical_io=False):
+    """Admit a declared word schedule to its logical transport boundary."""
+    enabled = any(link.word_timing is not None for link in platform.links)
+    expected = WORD_EVENT_POLICY if enabled else None
+    if schedule.get("word_event_policy") != expected:
+        raise ValidationError("transport word event policy differs from BoardDB")
+    if enabled:
+        if any(link.word_timing is None for link in platform.links):
+            raise ValidationError("one transport cannot mix periodic word and one-shot link formats")
+        if pin_plan is not None:
+            raise ValidationError("periodic word transport requires word-group-aware pin planning")
+        if physical_io:
+            raise ValidationError("periodic word PHY binding is not yet qualified")
+    return {"word_event_policy": expected} if enabled else {}
+
+
+def word_endpoint_metadata(link, *, slot, arrival_slot, lane, ratio):
+    timing = link.word_timing
+    if timing is None:
+        return {}
+    words = timing.word_cycles_for_ratio(ratio)
+    _integer(slot, "load index", minimum=1)
+    _integer(arrival_slot, "capture index", minimum=1)
+    timing.channel_position(lane, link.data_lanes_per_direction)
+    if arrival_slot != slot + timing.fixed_latency_word_cycles:
+        raise ValidationError("word endpoint arrival differs from its fixed capture latency")
+    return {"tdm_ratio":ratio, "word_phase":slot % words}
 
 
 def _number(value, name, *, positive=False):
@@ -107,7 +127,7 @@ class LVDSWordTiming:
         """Resolve one assigned event; a missed event never wraps to another round."""
         ready = _number(ready_ns, "readiness")
         epoch = _number(word_epoch_ns, "epoch")
-        _integer(word_index, "index")
+        _integer(word_index, "index", minimum=1)
         _integer(bit_in_word, "bit position")
         if bit_in_word >= self.bits_per_word:
             raise ValidationError("TDM serial bit position exceeds its word")
@@ -137,7 +157,8 @@ class LVDSWordTiming:
         ready = _number(ready_ns, "readiness")
         epoch = _number(word_epoch_ns, "epoch")
         first = epoch + phase_word * self.word_period_ns
-        cycles = max(0, math.ceil((ready - first) / (words * self.word_period_ns)))
+        cycles = max(0, math.ceil((ready - first) / (words * self.word_period_ns)),
+                     math.ceil((epoch + self.word_period_ns - first) / (words * self.word_period_ns)))
         return self.transfer(ready_ns=ready, word_index=phase_word + cycles * words,
                              bit_in_word=bit_in_word, ratio=ratio, word_epoch_ns=epoch)
 
@@ -154,6 +175,8 @@ class LVDSWordTiming:
             raise ValidationError("LVDS ratio coefficient must equal one serial UI, not one word period")
         if result.line_rate_gbps > link.max_line_rate_gbps_per_lane * (1.0 + 1e-12):
             raise ValidationError("LVDS word rate exceeds the declared physical lane limit")
+        if not math.isclose(result.fixed_delay_ns, result.fixed_latency_word_cycles * result.word_period_ns, rel_tol=1e-12, abs_tol=1e-12):
+            raise ValidationError("LVDS word capture requires an integral fixed word-cycle latency")
         if link.latency_cycles != result.fixed_latency_word_cycles:
             raise ValidationError("LVDS cycle latency must describe the fixed arc without a ratio estimate")
         return result

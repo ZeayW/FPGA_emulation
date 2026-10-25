@@ -57,7 +57,8 @@ def virtual_runtime_controller_to_systemverilog(
   input  logic links_ready,
   output logic [{clock_count - 1}:0] virtual_clock_enable,
   output logic [{event_bits - 1}:0] event_index_debug,
-  output logic [SLOT_BITS-1:0] slot
+  output logic [SLOT_BITS-1:0] slot,
+  output logic transport_active
 );
   localparam integer CLOCK_COUNT = {clock_count};
   localparam integer EVENT_COUNT = {event_count};
@@ -68,6 +69,7 @@ def virtual_runtime_controller_to_systemverilog(
 
   always_comb begin
     virtual_clock_enable = '0;
+    transport_active = !reset && started && (slot != FRAME_SLOTS - 1);
     if (!reset && started && links_ready && (slot == FRAME_SLOTS - 1)) begin
       case (event_index)
 {case_lines}

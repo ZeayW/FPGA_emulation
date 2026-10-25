@@ -204,7 +204,7 @@ void PublishScheduleData(const std::vector<Route>& routes, const ExactScheduleSo
             "schedule publication requires the qualified exact contract");
     Require(!header.count("word_event_policy"), "schedule word policy is producer owned");
     if (uses_word_links)
-      header.emplace("word_event_policy", Encode(JsonRecord("periodic-lvds-8bit-word-load-to-rx-visible-v1")));
+      header.emplace("word_event_policy", Encode(JsonRecord("periodic-lvds-8bit-word-load-to-rx-visible-v2")));
     const auto domains = request.Read<std::uint32_t>();
     Require(domains <= request.remaining() / 15, "schedule publication domain records are truncated");
     std::vector<std::pair<std::string, Encoded>> domain_records;

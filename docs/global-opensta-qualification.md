@@ -54,8 +54,9 @@ resolved from the actual execution events instead of assigning the same ratio
 estimate to every member. This is the contract required for the
 [8:1 PHY reference](HARDWARE_PLATFORM.md#serial-phy-time-units); the current
 one-bit-per-fabric-cycle adapter has not qualified its implementation. Native
-Phase 5 word-table planning is available, while Phase 6 word transport/PHY and
-the physical periodic-event projection are not yet admitted. The global binder
+Phase 5 word-table planning and Phase 6 logical word RTL are available. The
+fixed-pin PHY binding and physical periodic-event projection are not yet
+admitted. The global binder
 rejects such plans rather than assigning the pre-schedule ratio arc to them.
 
 For the bundled platform, the planning expression is
@@ -77,6 +78,13 @@ Post-schedule analysis must retain the following events per signal and hop:
 - `word_load`: its assigned word is sampled by the TX PHY;
 - `serial_tx`: its bit is transmitted within that word;
 - `rx_visible`: the receiving interface makes the value available to logic.
+
+Word policy v2 uses a DUT-release/startup epoch and positive load indices. The
+epoch edge cannot load a newly launched value. The first phase-zero occurrence
+is therefore the following table round; other phases use their first positive
+indices. The corresponding RTL uses the controller interval `slot` to prepare
+load edge `slot + 1`, and drains the channel before commit. Physical event
+projection must reject an occurrence that would enter this drained region.
 
 The execution policy must distinguish a periodic table from a one-shot
 calendar. For a declared periodic table, each physical lane repeats its

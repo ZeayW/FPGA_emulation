@@ -209,7 +209,7 @@ waiting term. The current direct adapter does not yet qualify the required
 serial-word mapping, receive events, or PHY timing boundaries.
 
 An explicitly configured `source_synchronous` link with eight payload bits
-uses `periodic-lvds-8bit-word-load-to-rx-visible-v1`. The native scheduler packs
+uses `periodic-lvds-8bit-word-load-to-rx-visible-v2`. The native scheduler packs
 eight parallel positions per physical lane, measures R in serial UIs, and
 repeats each lane table every R/8 word cycles. It selects the first word-load
 occurrence satisfying conservative dependency readiness. Schedule `lane`
@@ -220,10 +220,16 @@ published schedule and checked independently. The board request protocol is
 version 2; selected native installations must be rebuilt. Abstract one-bit
 platform presets retain their explicit separate format.
 
-This planner support is not a qualified Phase 6 word transport or PHY.
-Current direct-adapter emitters reject these plans before publishing transport
-hardware. Physical readiness and clock-normalized global timing still require
-the corresponding implementation and event binding.
+Phase 6 consumes this policy through a common streamed word-RTL emitter. Word
+indices are positive and relative to the preceding DUT release (or initial
+startup) edge; index zero cannot sample newly launched data. The generated
+controller exposes its active interval. The transport repeats the table,
+stops TX early enough to drain its declared fixed pipeline before commit,
+holds shadows during a delayed barrier, and restarts phases at each new epoch.
+Logical word ports are supported independently of a physical PHY. Fixed-pin PHY
+binding, word-aware Chimew permutation and the physical periodic-event projection
+remain unqualified and reject instead of falling back to one-shot RTL or ratio
+arcs. See the [Phase 6 word contract](FLOW_PLAN.md#periodic-lvds-word-transport).
 
 Whole communication banks are allocated between directions using directional
 load. Hardware ratio limits, compatibility, shared capacity and the calibrated

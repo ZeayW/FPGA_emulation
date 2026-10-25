@@ -485,3 +485,39 @@ W0 completion does not mean the remaining phase algorithms, Python data planes,
 advanced compile controls or physical/global timing qualification have migrated.
 Those retain the W1–W7 ownership and acceptance requirements. An infrastructure
 closure must not be reported as completion of the whole native production flow.
+
+
+## Periodic LVDS word transport
+
+An explicit source-synchronous eight-bit link uses
+`periodic-lvds-8bit-word-load-to-rx-visible-v2`. Phase 5 owns the lane table,
+ratio and a conservative concrete occurrence per transfer. Phase 6 preserves
+ratio and word phase in its indexed endpoint owner, validates unique phase/bit
+occupancy and one period per physical lane in SQLite, and streams the same RTL
+used by the materialized compatibility API. It does not build an endpoint map
+in Python. Word anchors identify physical lane `logical_lane / 8` and bit
+`logical_lane % 8`; P/N conductors do not multiply lane capacity.
+
+The epoch is the preceding DUT release edge or initial runtime-start edge.
+The controller's slot labels the interval before word load edge `slot + 1`.
+All concrete load indices are positive. A signal available on the epoch edge
+therefore uses the next occurrence, including phase zero in the following
+lane-table round. This retains the maximum wait of R serial UIs. The fixed
+capture latency must be an integral number of word cycles in this policy.
+
+RX supplies the complete word before its declared receiver capture edge;
+transport shadows sample that word together. The declared fixed arc owns the
+TX load-to-RX capture timing model. Local physical boundary/setup/clock-to-Q
+measurements require their own explicit ownership when binding real PHYs.
+The transport gates startup, repeats table phases during each epoch, suppresses
+loads whose captures would reach the reserved commit region, and holds shadows
+while the distributed controller waits at its barrier. A new epoch resets the
+table phase even when the frame length is not divisible by the lane period.
+This drain prevents old-frame words from being consumed as new-frame data.
+
+These are logical transport semantics, not vendor PHY characterization. Current
+fixed-pin differential adapters do not implement them; Phase 6 rejects that
+physical binding until the native word PHY is integrated. Current Chimew plans
+also require a word-group-aware permutation before admission. The global binder
+rejects word plans until its complete-fanin physical event projection is
+implemented; it cannot substitute pre-schedule ratio estimates.
