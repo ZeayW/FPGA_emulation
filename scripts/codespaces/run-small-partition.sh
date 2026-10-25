@@ -30,7 +30,7 @@ emuflow phase1 \
   --clock clk \
   --out "${output_root}/phase1"
 
-for provider in greedy mfspart; do
+for provider in tritonpart; do
   emuflow phase3 \
     --ir "${output_root}/phase1/design.emuir.json" \
     --platform "${platform}" \
@@ -40,7 +40,7 @@ for provider in greedy mfspart; do
     --out "${output_root}/phase3-${provider}"
 done
 
-for provider in greedy mfspart; do
+for provider in tritonpart; do
   echo "${provider}:"
   jq '{provider, seed, validation}' \
     "${output_root}/phase3-${provider}/phase3_report.json"

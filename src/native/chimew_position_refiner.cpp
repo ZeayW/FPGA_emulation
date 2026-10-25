@@ -33,35 +33,7 @@ struct Signal {
   double source_y = 0.0;
 };
 
-std::vector<Signal> read_input(const std::string& path) {
-  std::ifstream stream(path);
-  std::string header;
-  if (!(stream >> header) || header != "EMUFLOW_CHIMEW_REFINER_INPUT_V1") {
-    throw std::runtime_error("invalid Chimew refiner input header");
-  }
-  std::vector<Signal> signals;
-  std::string record;
-  while (stream >> record) {
-    if (record != "SIGNAL") {
-      throw std::runtime_error("invalid Chimew refiner record");
-    }
-    Signal signal;
-    if (!(stream >> signal.index >> signal.domain >> signal.ratio >>
-          signal.encoding >> signal.group >> signal.source_y)) {
-      throw std::runtime_error("malformed Chimew refiner signal");
-    }
-    if (signal.index != static_cast<int>(signals.size()) ||
-        signal.domain < 0 || signal.ratio <= 0 || signal.group < 0 ||
-        !std::isfinite(signal.source_y)) {
-      throw std::runtime_error("invalid Chimew refiner signal identity");
-    }
-    signals.push_back(signal);
-  }
-  if (signals.empty()) {
-    throw std::runtime_error("Chimew refiner requires at least one signal");
-  }
-  return signals;
-}
+
 
 void read_exact(std::istream& stream, void* destination, std::size_t size,
                 const char* label) {
@@ -333,7 +305,7 @@ void refine_bucket(std::vector<Signal>& signals,
   }
 }
 
-void run(std::vector<Signal> signals, const std::string& output_path) {
+void run(std::vector<Signal> signals, std::ostream& output) {
   auto members = group_members(signals);
   std::set<int> all_groups;
   std::map<std::tuple<int, int, unsigned long long>, std::vector<int>> buckets;
@@ -355,63 +327,23 @@ void run(std::vector<Signal> signals, const std::string& output_path) {
     throw std::runtime_error("position refinement increased its objective");
   }
 
-  std::ofstream output_file;
-  std::ostream* output = &std::cout;
-  if (output_path != "-") {
-    output_file.open(output_path);
-    if (!output_file) {
-      throw std::runtime_error("cannot open Chimew refiner output");
-    }
-    output = &output_file;
-  }
-  *output << "EMUFLOW_CHIMEW_REFINER_OUTPUT_V1\n";
-  *output << std::setprecision(17);
-  *output << "METRIC " << accepted_buckets << " " << moved_signals << " "
+  output << "EMUFLOW_CHIMEW_REFINER_OUTPUT_V1\n";
+  output << std::setprecision(17);
+  output << "METRIC " << accepted_buckets << " " << moved_signals << " "
           << before << " " << after << "\n";
   std::sort(signals.begin(), signals.end(),
             [](const Signal& lhs, const Signal& rhs) {
               return lhs.index < rhs.index;
             });
   for (const auto& signal : signals) {
-    *output << "ASSIGN " << signal.index << " " << signal.group << "\n";
+    output << "ASSIGN " << signal.index << " " << signal.group << "\n";
   }
 }
 
 }  // namespace
 
 void emuflow::native::RefineChimewPositions(
-    const std::string& input_path, const std::string& output_path,
-    bool typed_input, const std::string& expected_sha256) {
-  run(typed_input ? read_typed_input(input_path, parse_digest(expected_sha256))
-                  : read_input(input_path),
-      output_path);
+    const std::string& input_path, std::ostream& output,
+    const std::string& expected_sha256) {
+  run(read_typed_input(input_path, parse_digest(expected_sha256)), output);
 }
-
-#if !defined(EMUFLOW_NATIVE_STAGE_LIBRARY)
-int main(int argc, char** argv) {
-  if (argc == 2 && std::string(argv[1]) == "--help") {
-    std::cout << "usage: emuflow_chimew_position_refiner "
-                 "--typed-input INPUT OUTPUT EXPECTED_SHA256 | "
-                 "--legacy-text INPUT OUTPUT\n";
-    return 0;
-  }
-  const bool typed_input =
-      argc == 5 && std::string(argv[1]) == "--typed-input";
-  const bool legacy_text =
-      argc == 4 && std::string(argv[1]) == "--legacy-text";
-  if (!typed_input && !legacy_text) {
-    std::cerr << "usage: emuflow_chimew_position_refiner "
-                 "--typed-input INPUT OUTPUT EXPECTED_SHA256 | "
-                 "--legacy-text INPUT OUTPUT\n";
-    return 2;
-  }
-  try {
-    emuflow::native::RefineChimewPositions(
-        argv[2], argv[3], typed_input, typed_input ? argv[4] : "");
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << "emuflow_chimew_position_refiner: " << error.what() << "\n";
-    return 1;
-  }
-}
-#endif

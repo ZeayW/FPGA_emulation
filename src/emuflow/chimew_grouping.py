@@ -154,6 +154,7 @@ def validate_chimew_crossings(
         or metrics.get("physical_sll_crossings") != total_crossings
     ):
         raise ValidationError("Chimew crossing metrics do not agree")
+    _crossing_timing_guard(schedule, document)
     return encodings
 
 
@@ -332,8 +333,7 @@ def _guarded_lane_domains(
     return _GuardedLaneDomains(entries, protected_lanes)
 
 
-def _schedule_timing_guard(schedule: Mapping[str, Any]) -> Optional[set[str]]:
-    raw = schedule.get("chimew_timing_guard")
+def _validate_timing_guard(raw: Any) -> Optional[set[str]]:
     if raw is None:
         return None
     if (
@@ -341,15 +341,25 @@ def _schedule_timing_guard(schedule: Mapping[str, Any]) -> Optional[set[str]]:
         or raw.get("provider") != CHIMEW_TIMING_GUARD_PROVIDER
         or raw.get("scope") != "EmuFlow extension, not a Chimew paper claim"
     ):
-        raise ValidationError("Chimew schedule timing guard is invalid")
+        raise ValidationError("Chimew lookahead timing guard is invalid")
     entries = raw.get("protected_entries")
     if (
         not isinstance(entries, list)
         or any(not isinstance(entry, str) or not entry for entry in entries)
         or entries != sorted(set(entries))
     ):
-        raise ValidationError("Chimew schedule timing guard entries are invalid")
+        raise ValidationError("Chimew lookahead timing guard entries are invalid")
     return set(entries)
+
+
+def _crossing_timing_guard(schedule, document):
+    """The lookahead owns its policy; the Phase5 hop store stays unchanged."""
+    if "chimew_timing_guard" in schedule:
+        raise ValidationError("Chimew timing guards belong to the crossing input, not a copied schedule")
+    effective = _validate_timing_guard(document.get("timing_guard"))
+    if effective is not None:
+        _guarded_lane_domains(schedule["entries"], effective)
+    return effective
 
 
 def _oracle_group_array(
@@ -634,35 +644,6 @@ def _typed_logical_sha256(
     return logical.hexdigest()
 
 
-def _serialize_legacy_text(
-    entries: Sequence[Mapping[str, Any]],
-    encodings: Mapping[str, int],
-    guarded_lanes: Sequence[Optional[Tuple[str, str, str, int]]]
-    | Mapping[str, Optional[Tuple[str, str, str, int]]],
-    path: Path,
-) -> None:
-    """Write the historical text protocol for explicit differential tests."""
-
-    guard_sentinel = ("", "", "", -1)
-    domains = sorted(
-        {
-            (_domain(entry), _guard_at(guarded_lanes, entries, index))
-            for index, entry in enumerate(entries)
-        },
-        key=lambda item: (
-            item[0], item[1] is not None, item[1] or guard_sentinel
-        ),
-    )
-    domain_index = {domain: index for index, domain in enumerate(domains)}
-    with path.open("w", encoding="utf-8") as stream:
-        stream.write("EMUFLOW_CHIMEW_GROUPER_INPUT_V2\n")
-        for index, entry in enumerate(entries):
-            guard = _guard_at(guarded_lanes, entries, index)
-            stream.write(
-                f"SIGNAL {index} {domain_index[(_domain(entry), guard)]} "
-                f"{_tdm_ratio(entry)} {_tdm_slot(entry, index)} "
-                f"{encodings[entry['id']]}\n"
-            )
 
 
 def _parse_native_output(stream: Any, signal_count: int) -> tuple[array, int, int]:
@@ -738,7 +719,6 @@ def _run_native(
             entries, encodings, guarded_lanes
         )
         native_command = resolve_native_stage_command(
-            "emuflow_chimew_signal_grouper",
             "phase6",
             "group-signals",
             explicit=executable,
@@ -826,17 +806,17 @@ def build_chimew_initial_groups(
 
     encodings = validate_chimew_crossings(schedule, crossing_document)
     entries = sorted(schedule["entries"], key=lambda entry: entry["id"])
-    scheduled_guard = _schedule_timing_guard(schedule)
+    declared_guard = _crossing_timing_guard(schedule, crossing_document)
     if (
         protected_entries is not None
-        and scheduled_guard is not None
-        and protected_entries != scheduled_guard
+        and declared_guard is not None
+        and protected_entries != declared_guard
     ):
-        raise ValidationError("Chimew explicit and scheduled timing guards differ")
+        raise ValidationError("Chimew explicit and declared timing guards differ")
     effective_guard = (
         protected_entries
         if protected_entries is not None
-        else scheduled_guard or set()
+        else declared_guard or set()
     )
     guarded_lanes = _guarded_lane_domains(entries, effective_guard)
     native = _run_native(entries, encodings, guarded_lanes, executable)

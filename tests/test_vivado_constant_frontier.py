@@ -115,9 +115,9 @@ def conditional_model(tmp_path, *, expose_state=False, duplicate_frontier=False,
     inventory=tmp_path/"inventory.tsv"
     with inventory.open("w") as stream:
         writer=csv.writer(stream,delimiter="\t",lineterminator="\n");writer.writerow(INVENTORY_HEADER)
-        writer.writerow(["p/kept","FDRE",f"s{origins['kept']}",""])
-        writer.writerow(["p/front","LUT2",f"s{origins['front']}",""])
-        if duplicate_frontier:writer.writerow(["p/front_clone","LUT2",f"s{origins['front']}",""])
+        writer.writerow(["p/kept","FDRE",f"s{origins['kept']}","", "", "", "", "", ""])
+        writer.writerow(["p/front","LUT2",f"s{origins['front']}","", "", "", "", "", ""])
+        if duplicate_frontier:writer.writerow(["p/front_clone","LUT2",f"s{origins['front']}","", "", "", "", "", ""])
     lineage=tmp_path/"lineage.sqlite"
     digest=report["mapped_index"]["sha256"]
     import_cell_lineage(mapped,functions,{"synthesized":inventory},lineage,mapped_sha256=digest,retain_stage="synthesized")
@@ -178,7 +178,15 @@ def test_only_checked_constant_sources_can_enter_a_bound_routed_proof(tmp_path,c
     copy=checked.to_document();copy["sources"][0]["constant_value"]=1
     assert checked["sources"][0]["constant_value"] == 0
     routed_lineage=tmp_path/"routed-lineage.sqlite"
-    import_cell_lineage(mapped,functions,{"synthesized":inventory,"routed":inventory},routed_lineage,mapped_sha256=digest)
+    import csv
+    routed_inventory = tmp_path / "routed-inventory.tsv"
+    with inventory.open() as source, routed_inventory.open("w") as target:
+        rows = csv.reader(source, delimiter="\t")
+        writer = csv.writer(target, delimiter="\t", lineterminator="\n")
+        writer.writerow(next(rows))
+        for index, row in enumerate(rows):
+            writer.writerow(row[:4]+[f"SLICE_X{index}Y0", "AFF", str(index), "0", "LEAF"])
+    import_cell_lineage(mapped,functions,{"synthesized":inventory,"routed":routed_inventory},routed_lineage,mapped_sha256=digest)
     final=tmp_path/"routed-proof.sqlite"
     for supplied,checkpoint in [(checked.to_document(),"a"*64),(checked,"b"*64)]:
         with pytest.raises(ValidationError):
@@ -318,7 +326,7 @@ def test_internal_state_must_be_absent_from_the_native_snapshot(tmp_path):
     from emuflow.io import file_sha256
     mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path,state_chain="pipeline")
     with inventory.open("a") as stream:
-        csv.writer(stream,delimiter="\t",lineterminator="\n").writerow(["p/relay","FDRE",f"s{origins['relay']}",""])
+        csv.writer(stream,delimiter="\t",lineterminator="\n").writerow(["p/relay","FDRE",f"s{origins['relay']}","", "", "", "", "", ""])
     # Bind this altered observation owner, so failure exercises the internal
     # state's actual presence rather than a mismatched inventory seal.
     with sqlite3.connect(proof) as db:

@@ -34,10 +34,8 @@ for a physical resource budget.
 TritonPart initialization uses an envelope derived from these resource and
 logic-balance bounds, including the feasible lower bounds. The native legalizer,
 PATRON refinement, and independent validators enforce the same limits.
-The minimum number of used FPGAs remains mandatory. If optional MFSPart
-post-refinement empties a required FPGA, it retains the legal initialization
-and records why it rejected the candidate; the native candidate certificate
-and the selected assignment remain independently verifiable.
+The minimum number of used FPGAs remains mandatory. PATRON candidate selection
+and independent validators must preserve this requirement.
 
 Balance remains observable in `balance_observation`:
 
@@ -67,8 +65,8 @@ resources such as transport LUTs and FFs. For FPGA `i` and resource `r`, Phase
 3 uses `planning_capacity[i,r] = effective_capacity[i,r] - reservation[i,r]`.
 The capacity-proportional share used by `balance_tolerance` is still computed
 from `effective_capacity`; a reservation can tighten an FPGA's integer upper
-bound but cannot redefine balance. Greedy, TritonPart, MFSPart, RePart, the hop
-refiner, PATRON, indexed terminal validation, and artifact replay all consume
+bound but cannot redefine balance. TritonPart, the hop refiner, PATRON, indexed terminal validation, and
+artifact replay consume
 the same sealed value. Phase 6 copies it into the split manifest. Phase 7
 independently aggregates the synthesized transport resources from compact
 SQLite, requires each total to fit its reservation, and separately requires
@@ -291,6 +289,20 @@ transport ports and bank direction allocation. It rejects missing or altered
 bindings, polarity swaps, pin collisions, and modified XDC or adapter RTL. The
 logical netlist/anchor artifacts keep their existing board-independent status;
 the separate virtual-board result records the additional differential binding.
+
+Chimew fixed-board electrical maps and bindings use logical v3. Each selected
+channel is one existing differential wire, identified by its link/lane, HP bank,
+and both endpoints' P/N package pins and sites. The adapter checks these against
+the same fixed wiring and inventory owner as baseline Phase 6. Indexed bindings
+carry fixed-wire references and the source seal; both polarities resolve from
+the unique board inventory instead of being copied into another pin table.
+Accounting counts four package pins per point-to-point channel. Opposite directions cannot share a physical bank, even
+when their TDM slots differ. The Phase 5 direction-bank allocation is checked
+again after channel selection. Single-ended maps cannot stand in for this
+fixed-board contract. The contract does not itself qualify the lookahead's
+placement coordinates. The maintained lookahead obtains coordinates from the
+selected Xilinx backend and its sealed package geometry, independently of this
+electrical contract.
 
 The board assumes HP-bank `LVDS` at 1.8 V VCCO and internal 100-ohm receiver
 termination (`IBUFDS.DIFF_TERM=TRUE`), enabled only at the receiving end

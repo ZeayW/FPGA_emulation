@@ -8,7 +8,7 @@ from collections import defaultdict, deque
 from collections.abc import Set as AbstractSet
 from itertools import combinations
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .errors import ValidationError
 from .io import read_json
@@ -35,6 +35,8 @@ LEGAL_CUT_CLASSES = {*TRANSPORTED_CUT_CLASSES, "primary_input"}
 REPLICATED_NET_CLASSES = {"clock", "reset", "primary_input"}
 CUT_MODE_SEQUENTIAL_ONLY = "sequential-only"
 CUT_MODE_STATIC_EXACT = "static-exact-combinational"
+DEFAULT_PARTITION_CUT_MODE = CUT_MODE_STATIC_EXACT
+DEFAULT_PATRON_ALGORITHM_VERSION = 14
 HARD_MACRO_RESOURCES = {
     "bram",
     "dsp",
@@ -80,6 +82,766 @@ class _UnionFind:
         self.parent[right_root] = left_root
         if self.rank[left_root] == self.rank[right_root]:
             self.rank[left_root] += 1
+
+
+class _CompactClusterRecords(list):
+    """Lazy v1 cluster records backed by packed ordinal columns.
+
+    The public Phase 3 contract deliberately remains a ``list`` so existing
+    providers and the canonical JSON encoder keep the same behavior.  The
+    base list is empty, however: production retains cell names once in a UTF-8
+    pool, cluster membership as CSR ordinals, resource totals in uint32
+    columns, and only the sparse fixed/group constraints.  Iteration expands
+    one record at a time.
+    """
+
+    def __init__(
+        self,
+        *,
+        name_bytes: bytearray,
+        name_offsets: array,
+        member_offsets: array,
+        member_ordinals: array,
+        resource_columns: Tuple[array, ...],
+        fixed_by_cluster: Mapping[int, str],
+        groups_by_cluster: Mapping[int, Sequence[str]],
+        source_cluster_indices: array,
+    ) -> None:
+        super().__init__()
+        cluster_count = len(member_offsets) - 1
+        if (
+            cluster_count < 0
+            or len(name_offsets) != len(source_cluster_indices) + 1
+            or len(member_ordinals) != len(source_cluster_indices)
+            or len(resource_columns) != len(RESOURCE_FIELDS)
+            or any(len(column) != cluster_count for column in resource_columns)
+            or not member_offsets
+            or member_offsets[0] != 0
+            or member_offsets[-1] != len(member_ordinals)
+        ):
+            raise ValidationError("compact partition cluster columns are invalid")
+        self._name_bytes = name_bytes
+        self._name_offsets = name_offsets
+        self._member_offsets = member_offsets
+        self._member_ordinals = member_ordinals
+        self._resource_columns = resource_columns
+        self._fixed_by_cluster = dict(fixed_by_cluster)
+        self._groups_by_cluster = {
+            int(index): tuple(groups)
+            for index, groups in groups_by_cluster.items()
+        }
+        self.source_cluster_indices = source_cluster_indices
+
+    def __len__(self) -> int:
+        return len(self._member_offsets) - 1
+
+    def _name(self, ordinal: int) -> str:
+        begin = self._name_offsets[ordinal]
+        end = self._name_offsets[ordinal + 1]
+        return bytes(self._name_bytes[begin:end]).decode("utf-8")
+
+    def _record(self, index: int) -> Dict[str, Any]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError("compact cluster index out of range")
+        begin = self._member_offsets[index]
+        end = self._member_offsets[index + 1]
+        return {
+            "id": f"c{index:06d}",
+            "instances": [
+                self._name(self._member_ordinals[offset])
+                for offset in range(begin, end)
+            ],
+            "resources": {
+                field: column[index]
+                for field, column in zip(
+                    RESOURCE_FIELDS, self._resource_columns
+                )
+                if column[index]
+            },
+            "fixed_fpga": self._fixed_by_cluster.get(index),
+            "groups": list(self._groups_by_cluster.get(index, ())),
+        }
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self)):
+            yield self._record(index)
+
+    def cluster_id_at(self, index: int) -> str:
+        if index < 0 or index >= len(self):
+            raise IndexError("compact cluster index out of range")
+        return f"c{index:06d}"
+
+    def cluster_member_count(self, index: int) -> int:
+        if index < 0 or index >= len(self):
+            raise IndexError("compact cluster index out of range")
+        return self._member_offsets[index + 1] - self._member_offsets[index]
+
+    def __getitem__(self, index: Any) -> Any:
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("compact cluster indices must be integers or slices")
+        return self._record(index)
+
+    def __contains__(self, item: object) -> bool:
+        return any(record == item for record in self)
+
+    def __reversed__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self) - 1, -1, -1):
+            yield self._record(index)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, (list, tuple)):
+            return list(self) == list(other)
+        return False
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+    def copy(self) -> List[Dict[str, Any]]:
+        return list(self)
+
+    def __copy__(self) -> List[Dict[str, Any]]:
+        return list(self)
+
+    def __deepcopy__(self, memo: Dict[int, Any]) -> List[Dict[str, Any]]:
+        import copy
+
+        result = copy.deepcopy(list(self), memo)
+        memo[id(self)] = result
+        return result
+
+    @property
+    def packed_payload_bytes(self) -> int:
+        columns = (
+            self._name_offsets,
+            self._member_offsets,
+            self._member_ordinals,
+            self.source_cluster_indices,
+            *self._resource_columns,
+        )
+        return len(self._name_bytes) + sum(
+            len(column) * column.itemsize for column in columns
+        )
+
+    @staticmethod
+    def _immutable(*_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("compact cluster records are immutable")
+
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+    __delitem__ = _immutable
+    __setitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+
+
+class _CompactCutNetIdentities(Sequence[str]):
+    """Repeatable net-name projection without a retained Python string list."""
+
+    def __init__(self, records: "_CompactCutNetRecords") -> None:
+        self._records = records
+
+    def __len__(self) -> int:
+        return len(self._records)
+
+    def __getitem__(self, index: Any) -> Any:
+        if isinstance(index, slice):
+            return [
+                self._records.net_at(item)
+                for item in range(*index.indices(len(self)))
+            ]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("compact cut identity index must be an integer")
+        return self._records.net_at(index)
+
+    def __iter__(self) -> Iterator[str]:
+        for index in range(len(self)):
+            yield self._records.net_at(index)
+
+
+class _CompactCutNetRecords(list):
+    """Lazy cut records backed by fixed-width ownership columns.
+
+    Compact Phase 3 used to expand one dictionary plus several Python lists
+    for every transported net immediately after the endpoint scan.  The final
+    assignment index already normalizes those fields again.  This list-
+    compatible production view keeps net names once in a UTF-8 pool, FPGA
+    ownership as integer CSR columns, and expands only the record currently
+    consumed by the analyzer, validator, or writer.
+    """
+
+    _CUT_CLASSES = (
+        "clock",
+        "combinational",
+        "multi_driver",
+        "primary_input",
+        "register_input",
+        "register_output",
+        "reset",
+        "undriven",
+    )
+    _CUT_CLASS_INDEX = {
+        name: index for index, name in enumerate(_CUT_CLASSES)
+    }
+
+    def __init__(self, part_ids: Sequence[str]) -> None:
+        super().__init__()
+        if (
+            not part_ids
+            or len(part_ids) >= 2**32
+            or any(not isinstance(part, str) or not part for part in part_ids)
+            or list(part_ids) != sorted(set(part_ids))
+        ):
+            raise ValidationError("compact cut FPGA identities are invalid")
+        self._part_ids = tuple(part_ids)
+        self._part_index = {
+            part: index for index, part in enumerate(self._part_ids)
+        }
+        self._net_bytes = bytearray()
+        self._net_offsets = array("Q", [0])
+        self._cut_classes = bytearray()
+        self._source_offsets = array("Q", [0])
+        self._source_parts = array("I")
+        self._sink_offsets = array("Q", [0])
+        self._sink_parts = array("I")
+        self._sink_endpoints = array("Q")
+        self._transport_rounds = bytearray()
+        self._canonical = True
+        self._previous_net: str | None = None
+
+    def append_record(
+        self,
+        *,
+        net: Any,
+        cut_class: Any,
+        source_fpgas: Sequence[str],
+        sink_fpgas: Sequence[str],
+        sink_endpoints: Any,
+        transport_round: Any = None,
+    ) -> None:
+        if not isinstance(net, str) or not net:
+            raise ValidationError("compact cut identity is invalid")
+        try:
+            encoded = net.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ValidationError("compact cut identity is invalid") from error
+        cut_class_index = self._CUT_CLASS_INDEX.get(cut_class)
+        if cut_class_index is None:
+            raise ValidationError("compact cut class is invalid")
+        if (
+            isinstance(sink_endpoints, bool)
+            or not isinstance(sink_endpoints, int)
+            or sink_endpoints < 0
+            or sink_endpoints >= 2**64
+        ):
+            raise ValidationError("compact cut endpoint count is invalid")
+        if transport_round is not None and (
+            isinstance(transport_round, bool)
+            or not isinstance(transport_round, int)
+            or transport_round < 0
+            or transport_round >= 255
+        ):
+            raise ValidationError("compact cut transport round is invalid")
+
+        def append_parts(target: array, values: Sequence[str]) -> None:
+            if (
+                not isinstance(values, Sequence)
+                or isinstance(values, (str, bytes, bytearray))
+            ):
+                raise ValidationError("compact cut FPGA ownership is invalid")
+            previous: str | None = None
+            for part in values:
+                if (
+                    not isinstance(part, str)
+                    or not part
+                    or (previous is not None and part <= previous)
+                ):
+                    raise ValidationError(
+                        "compact cut FPGA ownership is invalid"
+                    )
+                index = self._part_index.get(part)
+                if index is None:
+                    raise ValidationError(
+                        "compact cut FPGA ownership is invalid"
+                    )
+                target.append(index)
+                previous = part
+
+        if self._previous_net is not None:
+            self._canonical = self._canonical and self._previous_net < net
+        self._previous_net = net
+        self._net_bytes.extend(encoded)
+        self._net_offsets.append(len(self._net_bytes))
+        self._cut_classes.append(cut_class_index)
+        append_parts(self._source_parts, source_fpgas)
+        self._source_offsets.append(len(self._source_parts))
+        append_parts(self._sink_parts, sink_fpgas)
+        self._sink_offsets.append(len(self._sink_parts))
+        self._sink_endpoints.append(sink_endpoints)
+        self._transport_rounds.append(
+            0 if transport_round is None else transport_round + 1
+        )
+
+    def __len__(self) -> int:
+        return len(self._cut_classes)
+
+    def net_at(self, index: int) -> str:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError("compact cut index out of range")
+        return self._net_bytes[
+            self._net_offsets[index] : self._net_offsets[index + 1]
+        ].decode("utf-8")
+
+    @property
+    def is_canonical(self) -> bool:
+        return self._canonical
+
+    def net_identities(self) -> Sequence[str]:
+        return _CompactCutNetIdentities(self)
+
+    def _record(self, index: int) -> Dict[str, Any]:
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError("compact cut index out of range")
+        source_begin = self._source_offsets[index]
+        source_end = self._source_offsets[index + 1]
+        sink_begin = self._sink_offsets[index]
+        sink_end = self._sink_offsets[index + 1]
+        record: Dict[str, Any] = {
+            "net": self.net_at(index),
+            "cut_class": self._CUT_CLASSES[self._cut_classes[index]],
+            "source_fpgas": [
+                self._part_ids[self._source_parts[offset]]
+                for offset in range(source_begin, source_end)
+            ],
+            "sink_fpgas": [
+                self._part_ids[self._sink_parts[offset]]
+                for offset in range(sink_begin, sink_end)
+            ],
+            "sink_endpoints": self._sink_endpoints[index],
+        }
+        encoded_round = self._transport_rounds[index]
+        if encoded_round:
+            record["transport_round"] = encoded_round - 1
+        return record
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self)):
+            yield self._record(index)
+
+    def __getitem__(self, index: Any) -> Any:
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("compact cut indices must be integers or slices")
+        return self._record(index)
+
+    def __contains__(self, item: object) -> bool:
+        return any(record == item for record in self)
+
+    def __reversed__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self) - 1, -1, -1):
+            yield self._record(index)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Sequence):
+            return False
+        return len(self) == len(other) and all(
+            left == right for left, right in zip(self, other)
+        )
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+    def copy(self) -> List[Dict[str, Any]]:
+        return list(self)
+
+    def __copy__(self) -> List[Dict[str, Any]]:
+        return list(self)
+
+    def __deepcopy__(self, memo: Dict[int, Any]) -> List[Dict[str, Any]]:
+        import copy
+
+        result = copy.deepcopy(list(self), memo)
+        memo[id(self)] = result
+        return result
+
+    @property
+    def packed_payload_bytes(self) -> int:
+        columns = (
+            self._net_offsets,
+            self._source_offsets,
+            self._source_parts,
+            self._sink_offsets,
+            self._sink_parts,
+            self._sink_endpoints,
+        )
+        return (
+            len(self._net_bytes)
+            + len(self._cut_classes)
+            + len(self._transport_rounds)
+            + sum(len(column) * column.itemsize for column in columns)
+        )
+
+    @staticmethod
+    def _immutable(*_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("compact cut records are immutable")
+
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+    __delitem__ = _immutable
+    __setitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+
+
+class _StaticExactCutNetRecords(list):
+    """Final cut records projected from compact cuts and typed cut nodes."""
+
+    def __init__(
+        self,
+        cuts: _CompactCutNetRecords,
+        nodes: Sequence[Mapping[str, Any]],
+    ) -> None:
+        super().__init__()
+        if len(cuts) != len(nodes):
+            raise ValidationError("Static Exact contract cut coverage disagrees")
+        for index in range(len(cuts)):
+            if cuts.net_at(index) != nodes[index].get("net"):
+                raise ValidationError("Static Exact contract cut order disagrees")
+        self._cuts = cuts
+        self._nodes = nodes
+
+    def __len__(self) -> int:
+        return len(self._cuts)
+
+    def _record(self, index: int) -> Dict[str, Any]:
+        cut = self._cuts[index]
+        cut.pop("transport_round", None)
+        node = self._nodes[index]
+        cut.update(
+            {
+                "dependency_level": node["dependency_level"],
+                "combinational_dependency_depth": node[
+                    "combinational_dependency_depth"
+                ],
+                "predecessor_cut_nets": node["predecessor_cut_nets"],
+            }
+        )
+        return cut
+
+    def __iter__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self)):
+            yield self._record(index)
+
+    def __getitem__(self, index: Any) -> Any:
+        if isinstance(index, slice):
+            return [self._record(item) for item in range(*index.indices(len(self)))]
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise TypeError("Static Exact cut index must be an integer")
+        resolved = index if index >= 0 else len(self) + index
+        if resolved < 0 or resolved >= len(self):
+            raise IndexError("Static Exact cut index out of range")
+        return self._record(resolved)
+
+    def __contains__(self, item: object) -> bool:
+        return any(record == item for record in self)
+
+    def __reversed__(self) -> Iterator[Dict[str, Any]]:
+        for index in range(len(self) - 1, -1, -1):
+            yield self._record(index)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Sequence):
+            return False
+        return len(self) == len(other) and all(
+            left == right for left, right in zip(self, other)
+        )
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+    def copy(self) -> List[Dict[str, Any]]:
+        return list(self)
+
+    def __copy__(self) -> List[Dict[str, Any]]:
+        return list(self)
+
+    def __deepcopy__(self, memo: Dict[int, Any]) -> List[Dict[str, Any]]:
+        import copy
+
+        result = copy.deepcopy(list(self), memo)
+        memo[id(self)] = result
+        return result
+
+    @property
+    def packed_payload_bytes(self) -> int:
+        return self._cuts.packed_payload_bytes
+
+    @staticmethod
+    def _immutable(*_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("Static Exact cut records are immutable")
+
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+    __delitem__ = _immutable
+    __setitem__ = _immutable
+    __iadd__ = _immutable
+    __imul__ = _immutable
+
+
+class _CompactInstanceAssignment(Mapping[str, str]):
+    """Bounded-memory instance assignment over compact EmuIR ordinals."""
+
+    def __init__(
+        self,
+        path: Path,
+        clusters: _CompactClusterRecords,
+        cluster_assignment: Mapping[str, str],
+    ) -> None:
+        self.path = path
+        self._native_publication = getattr(clusters, "implementation_id", None) == "native-primary-clusters-v1"
+        self._native_primary_artifact = getattr(clusters, "native_artifact", None)
+        if self._native_publication:
+            if self._native_primary_artifact is None:
+                raise ValidationError("native assignment primary ownership is missing")
+            self._native_primary_generation = clusters.native_generation
+            self._native_source_generation = clusters.native_source_generation
+        _validate_cluster_assignment_coverage(clusters, cluster_assignment)
+        self._cluster_member_offsets = clusters._member_offsets
+        if isinstance(cluster_assignment, _PackedClusterAssignment):
+            used = set(cluster_assignment.part_indices)
+            if any(index >= len(cluster_assignment.part_ids) for index in used):
+                raise ValidationError("compact partition cluster ownership is invalid")
+            self.part_ids = tuple(sorted(cluster_assignment.part_ids[index] for index in used))
+            if self.part_ids == cluster_assignment.part_ids:
+                self._cluster_parts = cluster_assignment.part_indices
+            else:
+                lookup = {part: index for index, part in enumerate(self.part_ids)}
+                translation = {index: lookup[cluster_assignment.part_ids[index]] for index in used}
+                self._cluster_parts = array("I", (translation[index] for index in cluster_assignment.part_indices))
+        else:
+            self.part_ids = tuple(sorted(set(cluster_assignment.values())))
+            part_index = {part: index for index, part in enumerate(self.part_ids)}
+            self._cluster_parts = array("I", (part_index[cluster_assignment[f"c{i:06d}"]] for i in range(len(clusters))))
+        self._source_clusters = clusters.source_cluster_indices
+        if (self._cluster_member_offsets[0] != 0 or
+                self._cluster_member_offsets[-1] != len(self._source_clusters)):
+            raise ValidationError("compact partition instance coverage is invalid")
+        if (getattr(clusters, "implementation_id", None) != "native-primary-clusters-v1" and
+                any(not 0 < clusters.cluster_member_count(i) < 2**32 for i in range(len(clusters)))):
+            raise ValidationError("compact partition cluster ownership is invalid")
+        # The native primary owner already verified source coverage. Reference
+        # columns still require their independent ordinal bound check here.
+        if (getattr(clusters, "implementation_id", None) != "native-primary-clusters-v1" and
+                self._source_clusters and max(self._source_clusters) >= len(clusters)):
+            raise ValidationError("compact partition source ownership is invalid")
+
+    def __len__(self) -> int:
+        return len(self._source_clusters)
+
+    def __iter__(self) -> Iterator[str]:
+        from .emuir_storage import open_emuir_sqlite_read_only
+
+        connection = open_emuir_sqlite_read_only(self.path)
+        try:
+            for row in connection.execute(
+                "SELECT id FROM cell_records ORDER BY id"
+            ):
+                yield row["id"]
+        finally:
+            connection.close()
+
+    def __getitem__(self, identity: str) -> str:
+        from .emuir_storage import open_emuir_sqlite_read_only
+
+        connection = open_emuir_sqlite_read_only(self.path)
+        try:
+            row = connection.execute(
+                "SELECT seq FROM cell_records WHERE id=?", (identity,)
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise KeyError(identity)
+        return self.part_for_source_seq(row["seq"])
+
+    def values(self) -> Iterator[str]:
+        for source_seq in range(len(self)):
+            yield self.part_for_source_seq(source_seq)
+
+    def items(self) -> Iterator[Tuple[str, str]]:
+        for _, identity, part in self.iter_source_assignments(order_by_id=True):
+            yield identity, part
+
+    def part_for_source_seq(self, source_seq: int) -> str:
+        if (
+            isinstance(source_seq, bool)
+            or not isinstance(source_seq, int)
+            or source_seq < 0
+            or source_seq >= len(self._source_clusters)
+        ):
+            raise ValidationError("compact assignment source sequence is invalid")
+        cluster_index = self._source_clusters[source_seq]
+        return self.part_ids[self._cluster_parts[cluster_index]]
+
+    def cluster_part(self, cluster_index: int) -> str:
+        return self.part_ids[self._cluster_parts[cluster_index]]
+
+    def cluster_member_count(self, cluster_index: int) -> int:
+        return self._cluster_member_offsets[cluster_index + 1] - self._cluster_member_offsets[cluster_index]
+
+    def iter_source_assignments(
+        self, *, order_by_id: bool = False
+    ) -> Iterator[Tuple[int, str, str]]:
+        from .emuir_storage import open_emuir_sqlite_read_only
+
+        connection = open_emuir_sqlite_read_only(self.path)
+        try:
+            order = "id" if order_by_id else "seq"
+            for row in connection.execute(
+                f"SELECT seq,id FROM cell_records ORDER BY {order}"
+            ):
+                source_seq = row["seq"]
+                yield source_seq, row["id"], self.part_for_source_seq(source_seq)
+        finally:
+            connection.close()
+
+    def canonical_sha256(self) -> str:
+        """Hash the exact legacy pretty JSON without materializing it."""
+
+        import json
+
+        digest = hashlib.sha256()
+        digest.update(b'{\n  "instance_assignment": {')
+        first = True
+        encoder = json.JSONEncoder(sort_keys=True)
+        for _, identity, part in self.iter_source_assignments(order_by_id=True):
+            digest.update(b"\n" if first else b",\n")
+            first = False
+            digest.update(b"    ")
+            digest.update(encoder.encode(identity).encode("utf-8"))
+            digest.update(b": ")
+            digest.update(encoder.encode(part).encode("utf-8"))
+        if first:
+            digest.update(b"}")
+        else:
+            digest.update(b"\n  }")
+        digest.update(b"\n}\n")
+        return digest.hexdigest()
+
+
+class _PackedClusterAssignment(Mapping[str, str]):
+    """Canonical ``cN -> FPGA`` ownership in one fixed-width part column."""
+
+    def __init__(
+        self,
+        part_ids: Sequence[str],
+        part_indices: Iterable[int],
+    ) -> None:
+        self.part_ids = tuple(part_ids)
+        if (
+            not self.part_ids
+            or len(set(self.part_ids)) != len(self.part_ids)
+            or any(not isinstance(part, str) or not part for part in self.part_ids)
+        ):
+            raise ValidationError("packed cluster assignment parts are invalid")
+        self.part_indices = array("I", part_indices)
+        if self.part_indices and max(self.part_indices) >= len(self.part_ids):
+            raise ValidationError(
+                "packed cluster assignment part index is invalid"
+            )
+
+    @staticmethod
+    def identity(index: int) -> str:
+        return f"c{index:06d}"
+
+    def _index(self, identity: str) -> int:
+        if (
+            not isinstance(identity, str)
+            or not identity.startswith("c")
+            or not identity[1:].isdigit()
+        ):
+            raise KeyError(identity)
+        index = int(identity[1:])
+        if (
+            index < 0
+            or index >= len(self.part_indices)
+            or self.identity(index) != identity
+        ):
+            raise KeyError(identity)
+        return index
+
+    def __len__(self) -> int:
+        return len(self.part_indices)
+
+    def __iter__(self) -> Iterator[str]:
+        for index in range(len(self)):
+            yield self.identity(index)
+
+    def __getitem__(self, identity: str) -> str:
+        return self.part_ids[self.part_indices[self._index(identity)]]
+
+    def part_for_index(self, index: int) -> str:
+        if (
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or index < 0
+            or index >= len(self)
+        ):
+            raise IndexError("packed cluster index out of range")
+        return self.part_ids[self.part_indices[index]]
+
+    def values(self) -> Iterator[str]:
+        for part_index in self.part_indices:
+            yield self.part_ids[part_index]
+
+    def items(self) -> Iterator[Tuple[str, str]]:
+        for index, part_index in enumerate(self.part_indices):
+            yield self.identity(index), self.part_ids[part_index]
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, _PackedClusterAssignment):
+            if self.part_ids == other.part_ids:
+                return self.part_indices == other.part_indices
+        if not isinstance(other, Mapping) or len(self) != len(other):
+            return False
+        missing = object()
+        return all(
+            other.get(identity, missing) == part
+            for identity, part in self.items()
+        )
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+    @property
+    def packed_payload_bytes(self) -> int:
+        return len(self.part_indices) * self.part_indices.itemsize
 
 
 def _instance_ids_on_net(net: Mapping[str, Any]) -> List[str]:
@@ -278,12 +1040,18 @@ def _build_clusters_from_compact_ir(
         if endpoint is not None:
             raise ValidationError("compact EmuIR has orphaned endpoints")
 
-        # Build the final records in lexical cell order.  The first member of
-        # each component therefore establishes the same cluster ordering as
-        # sorting all grouped member lists, without retaining those lists a
-        # second time.
+        # Build packed authoritative columns in lexical cell order.  The first
+        # member of each component therefore establishes the same cluster
+        # ordering as sorting all grouped member lists.  Unlike the former
+        # implementation, this does not retain one dictionary, list and set of
+        # Python strings for every cluster.
         root_to_cluster = array("I", [missing]) * instance_count
-        clusters: List[Dict[str, Any]] = []
+        lexical_clusters = array("I")
+        member_counts = array("I")
+        first_member_ordinals = array("I")
+        name_bytes = bytearray()
+        name_offsets = array("Q", [0])
+        resource_columns = tuple(array("I") for _ in RESOURCE_FIELDS)
         resources_by_payload: Dict[int, ResourceVector] = {}
         cells = connection.execute(
             """SELECT id,resources_seq
@@ -301,19 +1069,17 @@ def _build_clusters_from_compact_ir(
             root = union_find.find(ordinal)
             cluster_index = root_to_cluster[root]
             if cluster_index == missing:
-                cluster_index = len(clusters)
+                cluster_index = len(member_counts)
                 root_to_cluster[root] = cluster_index
-                clusters.append(
-                    {
-                        "id": f"c{cluster_index:06d}",
-                        "instances": [],
-                        "resources": {},
-                        "fixed_fpga": None,
-                        "groups": [],
-                    }
-                )
-            cluster = clusters[cluster_index]
-            cluster["instances"].append(instance_id)
+                member_counts.append(0)
+                first_member_ordinals.append(ordinal)
+                for column in resource_columns:
+                    column.append(0)
+            lexical_clusters.append(cluster_index)
+            member_counts[cluster_index] += 1
+            encoded_name = instance_id.encode("utf-8")
+            name_bytes.extend(encoded_name)
+            name_offsets.append(len(name_bytes))
             payload_seq = row["resources_seq"]
             if payload_seq is None:
                 raise ValidationError(
@@ -338,12 +1104,15 @@ def _build_clusters_from_compact_ir(
                     f"instance {instance_id!r} resources",
                 )
                 resources_by_payload[payload_seq] = resources
-            for field in RESOURCE_FIELDS:
+            for field_index, field in enumerate(RESOURCE_FIELDS):
                 amount = getattr(resources, field)
                 if amount:
-                    cluster["resources"][field] = (
-                        cluster["resources"].get(field, 0) + amount
-                    )
+                    total = resource_columns[field_index][cluster_index] + amount
+                    if total >= 2**32:
+                        raise ValidationError(
+                            "compact partition cluster resource exceeds uint32"
+                        )
+                    resource_columns[field_index][cluster_index] = total
         if resource_cell_count != instance_count:
             raise ValidationError(
                 "compact EmuIR resource cell sequence is incomplete"
@@ -356,12 +1125,14 @@ def _build_clusters_from_compact_ir(
             fixed_by_cluster[cluster_index].add(item["fpga"])
         for cluster_index, fixed_fpgas in fixed_by_cluster.items():
             if len(fixed_fpgas) > 1:
-                members = clusters[cluster_index]["instances"]
+                member_ordinal = first_member_ordinals[cluster_index]
+                begin = name_offsets[member_ordinal]
+                end = name_offsets[member_ordinal + 1]
+                first_member = name_bytes[begin:end].decode("utf-8")
                 raise ValidationError(
-                    f"cluster containing {members[0]!r} has conflicting fixed "
+                    f"cluster containing {first_member!r} has conflicting fixed "
                     f"FPGA constraints {sorted(fixed_fpgas)}"
                 )
-            clusters[cluster_index]["fixed_fpga"] = next(iter(fixed_fpgas))
 
         groups_by_cluster: Dict[int, Set[str]] = defaultdict(set)
         for group, ordinals in zip(constraints["groups"], group_ordinals):
@@ -369,9 +1140,42 @@ def _build_clusters_from_compact_ir(
                 groups_by_cluster[
                     root_to_cluster[union_find.find(ordinal)]
                 ].add(group["id"])
-        for cluster_index, group_ids in groups_by_cluster.items():
-            clusters[cluster_index]["groups"] = sorted(group_ids)
-        return clusters
+        member_offsets = array("I", [0])
+        member_total = 0
+        for count in member_counts:
+            member_total += count
+            member_offsets.append(member_total)
+        if member_total != instance_count:
+            raise ValidationError("compact partition cluster membership is incomplete")
+        next_member_offsets = array("I", member_offsets[:-1])
+        member_ordinals = array("I", [0]) * instance_count
+        for ordinal, cluster_index in enumerate(lexical_clusters):
+            offset = next_member_offsets[cluster_index]
+            member_ordinals[offset] = ordinal
+            next_member_offsets[cluster_index] = offset + 1
+        source_cluster_indices = array(
+            "I",
+            (
+                root_to_cluster[union_find.find(seq_to_ordinal[source_seq])]
+                for source_seq in range(instance_count)
+            ),
+        )
+        return _CompactClusterRecords(
+            name_bytes=name_bytes,
+            name_offsets=name_offsets,
+            member_offsets=member_offsets,
+            member_ordinals=member_ordinals,
+            resource_columns=resource_columns,
+            fixed_by_cluster={
+                index: next(iter(values))
+                for index, values in fixed_by_cluster.items()
+            },
+            groups_by_cluster={
+                index: sorted(values)
+                for index, values in groups_by_cluster.items()
+            },
+            source_cluster_indices=source_cluster_indices,
+        )
     finally:
         connection.close()
 
@@ -1041,14 +1845,17 @@ def load_partition_constraints(
 def build_clusters(
     ir: EmuIR,
     constraints: Mapping[str, Any],
-    cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
+    cut_mode: str = DEFAULT_PARTITION_CUT_MODE,
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),
     static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     *,
     _stream_eligible_policy_names: bool = False,
+    _native_compact_clusters: bool = False,
 ) -> Dict[str, Any]:
+    if not isinstance(_native_compact_clusters, bool):
+        raise ValidationError("native compact clusters flag is invalid")
     if not isinstance(_stream_eligible_policy_names, bool):
         raise ValidationError("stream eligible policy names flag is invalid")
     if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
@@ -1056,6 +1863,7 @@ def build_clusters(
             "partition cut mode must be 'sequential-only' or "
             "'static-exact-combinational'"
         )
+    compact_ir_path = _compact_partition_ir_path(ir)
     released_combinational_nets: AbstractSet[str] = set()
     candidate_index = None
     if cut_mode == CUT_MODE_STATIC_EXACT:
@@ -1074,6 +1882,7 @@ def build_clusters(
             ir,
             include_dependency_levels=False,
             include_source_identity=False,
+            _native_candidate_ids=(_native_compact_clusters and compact_ir_path is not None),
         )
         # Candidate depth is not intrinsic to a net.  A net deep in the
         # potential-cut DAG can still be the only transported boundary in its
@@ -1081,13 +1890,18 @@ def build_clusters(
         # structurally legal candidate and reconstruct actual depth only after
         # the provider supplies an assignment.
         released_combinational_nets = candidate_index["eligible_ids"]
-    compact_ir_path = _compact_partition_ir_path(ir)
     if compact_ir_path is not None:
-        clusters = _build_clusters_from_compact_ir(
-            ir,
-            constraints,
-            released_combinational_nets,
-        )
+        if _native_compact_clusters:
+            from .phase3_clusters_native import build_native_clusters
+            clusters = build_native_clusters(ir, constraints, released_combinational_nets)
+        else:
+            clusters = _build_clusters_from_compact_ir(
+                ir, constraints, released_combinational_nets,
+            )
+        candidate_implementation = getattr(released_combinational_nets, "implementation_id", None)
+        if candidate_implementation is not None:
+            clusters.candidate_implementation_id = candidate_implementation
+            clusters.candidate_native_metrics = released_combinational_nets.native_metrics
         instance_count = len(ir.value["instances"])
         result = {
             "schema": CLUSTERS_SCHEMA,
@@ -1272,361 +2086,49 @@ def transported_cut_classes_for_clusters(
     return result
 
 
-def _cluster_adjacency(
-    ir: EmuIR,
-    cluster_by_instance: Mapping[str, str],
-    transported_cut_classes: Set[str],
-) -> Dict[str, Dict[str, int]]:
-    adjacency: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    for net in ir.value["nets"]:
-        if net["cut_class"] not in transported_cut_classes:
-            continue
-        driver_clusters = {
-            cluster_by_instance[endpoint["instance"]]
-            for endpoint in net["drivers"]
-            if endpoint["instance"] is not None
-        }
-        sink_clusters = {
-            cluster_by_instance[endpoint["instance"]]
-            for endpoint in net["sinks"]
-            if endpoint["instance"] is not None
-        }
-        for driver_cluster in driver_clusters:
-            for sink_cluster in sink_clusters:
-                if driver_cluster == sink_cluster:
-                    continue
-                adjacency[driver_cluster][sink_cluster] += 1
-                adjacency[sink_cluster][driver_cluster] += 1
-    return adjacency
+def _validate_cluster_assignment_coverage(clusters, assignment):
+    """Check identities without decoding compact membership/resource records."""
+    compact = isinstance(clusters, _CompactClusterRecords)
+    if len(assignment) == len(clusters):
+        if compact and isinstance(assignment, _PackedClusterAssignment):
+            return  # Canonical identities are intrinsic to this typed mapping.
+        identities = (f"c{i:06d}" for i in range(len(clusters))) if compact else (c["id"] for c in clusters)
+        if all(identity in assignment for identity in identities):
+            return
+    expected = ({f"c{i:06d}" for i in range(len(clusters))} if compact
+                else {cluster["id"] for cluster in clusters})
+    actual = set(assignment)
+    raise ValidationError("cluster assignment exact coverage failed; "
+                          f"missing={sorted(expected-actual)[:8]}, extra={sorted(actual-expected)[:8]}")
 
 
-def _cluster_transport_arcs(
-    ir: EmuIR,
-    cluster_by_instance: Mapping[str, str],
-    transported_cut_classes: Set[str],
-) -> Dict[str, Set[Tuple[str, bool]]]:
-    """Return neighbor arcs and whether the keyed cluster drives the arc."""
-    arcs: Dict[str, Set[Tuple[str, bool]]] = defaultdict(set)
-    for net in ir.value["nets"]:
-        if net["cut_class"] not in transported_cut_classes:
-            continue
-        driver_clusters = {
-            cluster_by_instance[endpoint["instance"]]
-            for endpoint in net["drivers"]
-            if endpoint["instance"] is not None
-        }
-        sink_clusters = {
-            cluster_by_instance[endpoint["instance"]]
-            for endpoint in net["sinks"]
-            if endpoint["instance"] is not None
-        }
-        for driver_cluster in driver_clusters:
-            for sink_cluster in sink_clusters:
-                if driver_cluster == sink_cluster:
-                    continue
-                arcs[driver_cluster].add((sink_cluster, True))
-                arcs[sink_cluster].add((driver_cluster, False))
-    return arcs
-
-
-def _resource_add(
-    left: Mapping[str, int], right: Mapping[str, int]
-) -> Dict[str, int]:
-    return {
-        field: left.get(field, 0) + right.get(field, 0)
-        for field in RESOURCE_FIELDS
-    }
-
-
-def _fits(resources: Mapping[str, int], capacity: Mapping[str, int]) -> bool:
-    return all(resources.get(field, 0) <= limit for field, limit in capacity.items())
-
-
-def _seeded_tie(seed: int, cluster_id: str) -> str:
-    return hashlib.sha256(f"{seed}:{cluster_id}".encode("utf-8")).hexdigest()
-
-
-def _partition_hop_distances(
-    platform: Platform,
-    route_constraints: Mapping[str, Any],
-) -> Dict[str, Dict[str, Optional[int]]]:
-    # Import locally because routing owns the canonical directed BoardDB graph
-    # and imports the partition artifact schema at module initialization.
-    from .routing import (
-        SYSTEM_ROUTE_CONSTRAINTS_SCHEMA,
-        build_directed_graph,
-        normalize_route_constraints,
-    )
-
-    raw_constraints = dict(route_constraints)
-    raw_constraints.setdefault("schema", SYSTEM_ROUTE_CONSTRAINTS_SCHEMA)
-    normalized = normalize_route_constraints(raw_constraints, platform)
-    adjacency, _, _ = build_directed_graph(platform, normalized)
-    result: Dict[str, Dict[str, Optional[int]]] = {}
-    for source in sorted(adjacency):
-        distance = {source: 0}
-        queue = deque([source])
-        while queue:
-            node = queue.popleft()
-            for arc in adjacency[node]:
-                neighbor = arc["to"]
-                if neighbor in distance:
-                    continue
-                distance[neighbor] = distance[node] + 1
-                queue.append(neighbor)
-        result[source] = {
-            sink: distance.get(sink) for sink in sorted(adjacency)
-        }
-    return result
-
-
-def assign_clusters(
-    ir: EmuIR,
-    platform: Platform,
-    clusters_artifact: Mapping[str, Any],
-    constraints: Mapping[str, Any],
-    seed: int = 0,
-    route_constraints: Optional[Mapping[str, Any]] = None,
-    *,
-    _include_semantic_contract: bool = True,
-) -> Dict[str, Any]:
-    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
-        raise ValidationError("partition seed: expected a non-negative integer")
-
-    clusters = {
-        cluster["id"]: cluster for cluster in clusters_artifact["clusters"]
-    }
-    if len(clusters) < constraints["min_used_fpgas"]:
-        raise ValidationError(
-            f"partitioning has {len(clusters)} atomic clusters but "
-            f"{constraints['min_used_fpgas']} FPGAs must be used"
-        )
-    cluster_by_instance = {
-        instance_id: cluster_id
-        for cluster_id, cluster in clusters.items()
-        for instance_id in cluster["instances"]
-    }
-    transported_cut_classes = transported_cut_classes_for_clusters(
-        clusters_artifact
-    )
-    adjacency = _cluster_adjacency(
-        ir, cluster_by_instance, transported_cut_classes
-    )
-    transport_arcs = _cluster_transport_arcs(
-        ir, cluster_by_instance, transported_cut_classes
-    )
-    hop_limit = (
-        route_constraints.get("max_route_hops")
-        if route_constraints is not None
-        else None
-    )
-    hop_distances = (
-        _partition_hop_distances(platform, route_constraints)
-        if hop_limit is not None
-        else None
-    )
-    partition_fpgas = active_partition_fpgas(platform, constraints)
-    fpga_ids = [fpga.id for fpga in partition_fpgas]
-    planning_capacity = planning_resource_capacities(
-        partition_fpgas,
-        constraints.get("resource_reservations_by_fpga", {}),
-    )
-    loads = {
-        fpga_id: {field: 0 for field in RESOURCE_FIELDS}
-        for fpga_id in fpga_ids
-    }
-
-    total_resources = ResourceVector.sum(
-        ResourceVector.from_mapping(cluster["resources"])
-        for cluster in clusters.values()
-    ).to_dict()
-    tolerance = constraints["balance_tolerance"]
-    dimension_tolerances = constraints.get(
-        "balance_tolerance_by_dimension", {}
-    )
-    soft_caps = strict_balance_limits(
-        partition_fpgas,
-        total_resources,
-        tolerance,
-        dimension_tolerances,
-        constraints.get("balance_dimensions", ()),
-        constraints.get("resource_reservations_by_fpga", {}),
-    )
-
-    def dominant_size(cluster: Mapping[str, Any]) -> float:
-        resources = cluster["resources"]
-        ratios = []
-        for fpga_id in fpga_ids:
-            capacity = planning_capacity[fpga_id]
-            ratios.extend(
-                resources.get(field, 0) / capacity[field]
-                for field in capacity
-                if capacity[field] > 0
-            )
-        return max(ratios, default=0.0)
-
-    order = sorted(
-        clusters,
-        key=lambda cluster_id: (
-            -sum(adjacency.get(cluster_id, {}).values())
-            if hop_limit is not None
-            else 0,
-            -dominant_size(clusters[cluster_id]),
-            -len(clusters[cluster_id]["instances"]),
-            _seeded_tie(seed, cluster_id),
-            cluster_id,
-        ),
-    )
-    assignment: Dict[str, str] = {}
-
-    def hop_legal(cluster_id: str, fpga_id: str) -> bool:
-        if hop_limit is None or hop_distances is None:
-            return True
-        for neighbor, cluster_is_driver in transport_arcs.get(
-            cluster_id, set()
-        ):
-            if neighbor not in assignment:
-                continue
-            if cluster_is_driver:
-                distance = hop_distances[fpga_id][assignment[neighbor]]
-            else:
-                distance = hop_distances[assignment[neighbor]][fpga_id]
-            if distance is None or distance > hop_limit:
-                return False
-        return True
-
-    def place(cluster_id: str, fpga_id: str) -> None:
-        cluster_resources = ResourceVector.from_mapping(
-            clusters[cluster_id]["resources"]
-        ).to_dict()
-        projected = _resource_add(loads[fpga_id], cluster_resources)
-        if not _fits(projected, planning_capacity[fpga_id]):
-            raise ValidationError(
-                f"cluster {cluster_id!r} does not fit FPGA {fpga_id!r}"
-            )
-        assignment[cluster_id] = fpga_id
-        loads[fpga_id] = projected
-
-    for cluster_id in order:
-        fixed_fpga = clusters[cluster_id]["fixed_fpga"]
-        if fixed_fpga is not None:
-            place(cluster_id, fixed_fpga)
-
-    populated = {fpga_id for fpga_id in assignment.values()}
-    for fpga_id in fpga_ids:
-        if len(populated) >= constraints["min_used_fpgas"]:
-            break
-        if fpga_id in populated:
-            continue
-        candidate = next(
-            (
-                cluster_id
-                for cluster_id in order
-                if cluster_id not in assignment
-                and hop_legal(cluster_id, fpga_id)
-                and _fits(
-                    _resource_add(
-                        loads[fpga_id],
-                        ResourceVector.from_mapping(
-                            clusters[cluster_id]["resources"]
-                        ).to_dict(),
-                    ),
-                    planning_capacity[fpga_id],
-                )
-            ),
-            None,
-        )
-        if candidate is None and hop_limit is not None:
-            candidate = next(
-                (
-                    cluster_id
-                    for cluster_id in order
-                    if cluster_id not in assignment
-                    and _fits(
-                        _resource_add(
-                            loads[fpga_id],
-                            ResourceVector.from_mapping(
-                                clusters[cluster_id]["resources"]
-                            ).to_dict(),
-                        ),
-                        planning_capacity[fpga_id],
-                    )
-                ),
-                None,
-            )
-        if candidate is None:
-            raise ValidationError(
-                f"cannot populate required FPGA {fpga_id!r} within capacity"
-            )
-        place(candidate, fpga_id)
-        populated.add(fpga_id)
-
-    for cluster_id in order:
-        if cluster_id in assignment:
-            continue
-        resources = ResourceVector.from_mapping(
-            clusters[cluster_id]["resources"]
-        ).to_dict()
-        capacity_candidates = [
-            fpga_id
-            for fpga_id in fpga_ids
-            if _fits(
-                _resource_add(loads[fpga_id], resources),
-                planning_capacity[fpga_id],
-            )
-        ]
-        if not capacity_candidates:
-            raise ValidationError(
-                f"cluster {cluster_id!r} cannot fit any FPGA; resources "
-                f"{clusters[cluster_id]['resources']}"
-            )
-        topology_candidates = [
-            fpga_id
-            for fpga_id in capacity_candidates
-            if hop_legal(cluster_id, fpga_id)
-        ]
-        actual_candidates = topology_candidates or capacity_candidates
-        balanced_candidates = [
-            fpga_id
-            for fpga_id in actual_candidates
-            if _fits(
-                _resource_add(loads[fpga_id], resources),
-                soft_caps[fpga_id],
-            )
-        ]
-        candidates = balanced_candidates or actual_candidates
-
-        def score(fpga_id: str) -> Tuple[float, float, float, str]:
-            cut_cost = sum(
-                weight
-                for neighbor, weight in adjacency.get(cluster_id, {}).items()
-                if neighbor in assignment and assignment[neighbor] != fpga_id
-            )
-            projected = _resource_add(loads[fpga_id], resources)
-            ratios = [
-                projected[field] / planning_capacity[fpga_id][field]
-                for field in planning_capacity[fpga_id]
-                if planning_capacity[fpga_id][field] > 0
-            ]
-            return (
-                float(cut_cost),
-                max(ratios, default=0.0),
-                sum(ratios),
-                fpga_id,
-            )
-
-        place(cluster_id, min(candidates, key=score))
-
-    return build_partition_assignment(
-        ir,
-        platform,
-        clusters_artifact,
-        constraints,
-        assignment,
-        provider="deterministic-multiresource-greedy-v1",
-        seed=seed,
-        _include_semantic_contract=_include_semantic_contract,
-    )
+def _cluster_assignment_summary(clusters, assignment, fpga_ids):
+    """Independent primary-column reduction; reference records remain explicit."""
+    _validate_cluster_assignment_coverage(clusters, assignment)
+    if getattr(clusters, "implementation_id", None) == "native-primary-clusters-v1":
+        from .phase3_assignment_native import reduce_native_partition_loads
+        return reduce_native_partition_loads(clusters, assignment, fpga_ids)
+    dimensions = ("cells", *RESOURCE_FIELDS)
+    totals = dict.fromkeys(dimensions, 0)
+    loads = {part: dict.fromkeys(dimensions, 0) for part in fpga_ids}
+    counts = dict.fromkeys(fpga_ids, 0)
+    for index in range(len(clusters)):
+        if isinstance(clusters, _CompactClusterRecords):
+            identity = f"c{index:06d}"
+            values = (clusters.cluster_member_count(index),
+                      *(column[index] for column in clusters._resource_columns))
+        else:
+            cluster = clusters[index]
+            identity = cluster["id"]
+            values = (len(cluster["instances"]), *(cluster["resources"].get(field, 0) for field in RESOURCE_FIELDS))
+        part = assignment[identity]
+        if part not in loads:
+            raise ValidationError(f"balance assignment references unknown FPGA {part!r}")
+        counts[part] += 1
+        for dimension, value in zip(dimensions, values):
+            totals[dimension] += value
+            loads[part][dimension] += value
+    return totals, loads, counts
 
 
 def build_partition_assignment(
@@ -1641,39 +2143,67 @@ def build_partition_assignment(
     *,
     _include_semantic_contract: bool = True,
     _stream_semantic_records: bool = False,
+    _defer_derived_records: bool = False,
 ) -> Dict[str, Any]:
     """Build the common Phase 3 assignment artifact for any provider."""
 
-    clusters = {
-        cluster["id"]: cluster for cluster in clusters_artifact["clusters"]
-    }
-    if set(cluster_assignment) != set(clusters):
-        missing = sorted(set(clusters) - set(cluster_assignment))
-        extra = sorted(set(cluster_assignment) - set(clusters))
+    if not isinstance(_defer_derived_records, bool):
+        raise ValidationError("partition derived-record deferral is invalid")
+    if _defer_derived_records and _include_semantic_contract:
         raise ValidationError(
-            "cluster assignment exact coverage failed; "
-            f"missing={missing[:8]}, extra={extra[:8]}"
+            "partition derived records cannot be deferred while building "
+            "the semantic contract"
         )
+
+    cluster_records = clusters_artifact["clusters"]
+    if not isinstance(cluster_records, list):
+        raise ValidationError("partition clusters are incomplete")
+    _validate_cluster_assignment_coverage(cluster_records, cluster_assignment)
     fpga_ids = {
         fpga.id for fpga in active_partition_fpgas(platform, constraints)
     }
-    unknown_fpgas = sorted(set(cluster_assignment.values()) - fpga_ids)
+    assigned_fpgas = ({cluster_assignment.part_ids[index] for index in set(cluster_assignment.part_indices)}
+                      if isinstance(cluster_assignment, _PackedClusterAssignment)
+                      else set(cluster_assignment.values()))
+    unknown_fpgas = sorted(assigned_fpgas - fpga_ids)
     if unknown_fpgas:
         raise ValidationError(
             f"cluster assignment references unknown FPGAs {unknown_fpgas}"
         )
 
-    instance_assignment = {
-        instance_id: cluster_assignment[cluster_id]
-        for cluster_id, cluster in clusters.items()
-        for instance_id in cluster["instances"]
-    }
+    compact_path = _compact_partition_ir_path(ir)
+    compact_assignment = (
+        _stream_semantic_records
+        and compact_path is not None
+        and isinstance(cluster_records, _CompactClusterRecords)
+    )
+    instance_assignment: Mapping[str, str]
+    if compact_assignment:
+        instance_assignment = _CompactInstanceAssignment(
+            compact_path, cluster_records, cluster_assignment
+        )
+    else:
+        instance_assignment = {
+            instance_id: cluster_assignment[cluster["id"]]
+            for cluster in cluster_records
+            for instance_id in cluster["instances"]
+        }
     cut_policy = clusters_artifact.get("policy", {})
     build_exact_contract = (
         cut_policy.get("cut_mode") == CUT_MODE_STATIC_EXACT
         and _include_semantic_contract
     )
-    if build_exact_contract:
+    if _defer_derived_records:
+        # PATRON v14 selects between assignments using the native predictive
+        # path objective and scheduler-independent legality.  Cut records and
+        # Static Exact topology do not participate in that decision.  Keeping
+        # them out of this transient selection object lets the caller release
+        # the pressure graph and unselected assignment before constructing the
+        # one authoritative final contract.
+        cut_nets = None
+        cut_metrics: Dict[str, Any] = {}
+        cut_net_ordinals = None
+    elif build_exact_contract:
         cut_nets, cut_metrics, cut_net_ordinals = (
             _compute_cut_nets_with_ordinals(ir, instance_assignment)
         )
@@ -1707,22 +2237,25 @@ def build_partition_assignment(
             raise ValidationError(
                 "Static Exact contract cut coverage disagrees"
             )
-        for cut, node in zip(cut_nets, contract_nodes):
-            if cut["net"] != node["net"]:
-                raise ValidationError(
-                    "Static Exact contract cut order disagrees"
+        if isinstance(cut_nets, _CompactCutNetRecords):
+            cut_nets = _StaticExactCutNetRecords(cut_nets, contract_nodes)
+        else:
+            for cut, node in zip(cut_nets, contract_nodes):
+                if cut["net"] != node["net"]:
+                    raise ValidationError(
+                        "Static Exact contract cut order disagrees"
+                    )
+                cut.update(
+                    {
+                        "dependency_level": node["dependency_level"],
+                        "combinational_dependency_depth": node[
+                            "combinational_dependency_depth"
+                        ],
+                        "predecessor_cut_nets": node[
+                            "predecessor_cut_nets"
+                        ],
+                    }
                 )
-            cut.update(
-                {
-                    "dependency_level": node["dependency_level"],
-                    "combinational_dependency_depth": node[
-                        "combinational_dependency_depth"
-                    ],
-                    "predecessor_cut_nets": node[
-                        "predecessor_cut_nets"
-                    ],
-                }
-            )
         cut_metrics.update(
             {
                 "combinational_cut_nets": semantic_contract["metrics"][
@@ -1736,24 +2269,54 @@ def build_partition_assignment(
             }
         )
         _remove_static_exact_global_rounds(cut_nets, cut_metrics)
+    # The packed production artifact reconstructs partition membership from
+    # the authoritative cluster-part column.  Retaining every freshly decoded
+    # ``cN`` identity in per-FPGA lists here duplicates the complete cluster
+    # population only for ``pack_phase3_assignment`` to discard it moments
+    # later.  Compatibility/reference artifacts still expose the v1 lists.
+    retain_partition_clusters = not compact_assignment
+    partition_state = {
+        fpga.id: {
+            "clusters": [] if retain_partition_clusters else None,
+            "cluster_count": 0,
+            "instance_count": 0,
+            "resources": {field: 0 for field in RESOURCE_FIELDS},
+        }
+        for fpga in platform.fpgas
+    }
+    if not retain_partition_clusters:
+        _totals, loads, counts = _cluster_assignment_summary(
+            cluster_records, cluster_assignment, tuple(partition_state)
+        )
+        for part, state in partition_state.items():
+            state["cluster_count"] = counts[part]
+            state["instance_count"] = loads[part]["cells"]
+            state["resources"] = {field: loads[part][field] for field in RESOURCE_FIELDS}
+    else:
+        for cluster in cluster_records:
+            cluster_id = cluster["id"]
+            assigned_fpga = cluster_assignment[cluster_id]
+            state = partition_state[assigned_fpga]
+            if retain_partition_clusters:
+                state["clusters"].append(cluster_id)
+            state["cluster_count"] += 1
+            state["instance_count"] += len(cluster["instances"])
+            vector = ResourceVector.from_mapping(cluster["resources"])
+            for field in RESOURCE_FIELDS:
+                state["resources"][field] += getattr(vector, field)
     reservations = constraints.get("resource_reservations_by_fpga", {})
     planning_capacity = planning_resource_capacities(
         platform.fpgas, reservations
     )
     partition_records = []
     for fpga in platform.fpgas:
-        cluster_ids = sorted(
-            cluster_id
-            for cluster_id, assigned_fpga in cluster_assignment.items()
-            if assigned_fpga == fpga.id
-        )
-        instance_count = sum(
-            len(clusters[cluster_id]["instances"]) for cluster_id in cluster_ids
-        )
-        resources = ResourceVector.sum(
-            ResourceVector.from_mapping(clusters[cluster_id]["resources"])
-            for cluster_id in cluster_ids
-        ).to_dict(include_zeros=False)
+        state = partition_state[fpga.id]
+        instance_count = state["instance_count"]
+        resources = {
+            field: amount
+            for field, amount in state["resources"].items()
+            if amount
+        }
         if not ResourceVector.from_mapping(resources).fits_capacity(
             planning_capacity[fpga.id]
         ):
@@ -1766,17 +2329,20 @@ def build_partition_assignment(
             for field in fpga.effective_capacity
             if fpga.effective_capacity[field] > 0
         }
-        record = {
-            "fpga": fpga.id,
-            "clusters": cluster_ids,
-            "cluster_count": len(cluster_ids),
-            "instance_count": instance_count,
-            "resources": resources,
-            "effective_capacity": dict(
-                sorted(fpga.effective_capacity.items())
-            ),
-            "utilization": dict(sorted(utilization.items())),
-        }
+        record = {"fpga": fpga.id}
+        if retain_partition_clusters:
+            record["clusters"] = state["clusters"]
+        record.update(
+            {
+                "cluster_count": state["cluster_count"],
+                "instance_count": instance_count,
+                "resources": resources,
+                "effective_capacity": dict(
+                    sorted(fpga.effective_capacity.items())
+                ),
+                "utilization": dict(sorted(utilization.items())),
+            }
+        )
         if reservations:
             record["planning_capacity"] = dict(
                 sorted(planning_capacity[fpga.id].items())
@@ -1786,6 +2352,15 @@ def build_partition_assignment(
             )
         partition_records.append(record)
 
+    cluster_assignment_is_canonical = isinstance(cluster_assignment, _PackedClusterAssignment) and isinstance(cluster_records, _CompactClusterRecords)
+    if not cluster_assignment_is_canonical and isinstance(cluster_assignment, (dict, _PackedClusterAssignment)):
+        identities = (f"c{i:06d}" for i in range(len(cluster_records))) if isinstance(cluster_records, _CompactClusterRecords) else (c["id"] for c in cluster_records)
+        cluster_assignment_is_canonical = all(left == right for left, right in zip(cluster_assignment, identities))
+    stored_cluster_assignment = (
+        cluster_assignment
+        if cluster_assignment_is_canonical
+        else dict(sorted(cluster_assignment.items()))
+    )
     result: Dict[str, Any] = {
         "schema": PARTITION_ASSIGNMENT_SCHEMA,
         "design": ir.value["design"]["name"],
@@ -1793,19 +2368,26 @@ def build_partition_assignment(
         "provider": provider,
         "seed": seed,
         "constraints": dict(constraints),
-        "cluster_assignment": dict(sorted(cluster_assignment.items())),
-        "instance_assignment": dict(sorted(instance_assignment.items())),
+        "cluster_assignment": stored_cluster_assignment,
+        "instance_assignment": (
+            instance_assignment
+            if compact_assignment
+            else dict(sorted(instance_assignment.items()))
+        ),
         "partitions": partition_records,
-        "cut_nets": cut_nets,
         "metrics": {
             "instances": len(instance_assignment),
-            "clusters": len(clusters),
+            "clusters": len(cluster_records),
             "used_fpgas": sum(
                 1 for record in partition_records if record["instance_count"]
             ),
             **cut_metrics,
         },
     }
+    if cut_nets is None:
+        result["_derived_records"] = "deferred-selection-only"
+    else:
+        result["cut_nets"] = cut_nets
     if provider_metadata is not None:
         result["provider_metadata"] = dict(provider_metadata)
     if semantic_contract is not None:
@@ -1844,14 +2426,15 @@ def validate_partition_artifacts_online(
     constraints = assignment_artifact.get("constraints")
     if (
         not isinstance(raw_clusters, list)
-        or not isinstance(raw_assignment, dict)
-        or not isinstance(cluster_assignment, dict)
+        or not isinstance(raw_assignment, Mapping)
+        or not isinstance(cluster_assignment, Mapping)
         or not isinstance(metrics, dict)
         or not isinstance(constraints, dict)
     ):
         raise ValidationError("incomplete online partition artifact")
 
     fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
+    compact_assignment = isinstance(raw_assignment, _CompactInstanceAssignment)
     cluster_ids = set()
     instance_ids = set()
     resource_totals = {
@@ -1859,44 +2442,100 @@ def validate_partition_artifacts_online(
         for fpga_id in fpga_by_id
     }
     expected_cluster_assignment = {}
-    for index, cluster in enumerate(raw_clusters):
-        if not isinstance(cluster, dict):
-            raise ValidationError(f"clusters[{index}] is not an object")
-        cluster_id = cluster.get("id")
-        members = cluster.get("instances")
-        resources = cluster.get("resources")
+    native_compact = (compact_assignment and isinstance(raw_clusters, _CompactClusterRecords) and
+                      getattr(raw_clusters, "implementation_id", None) == "native-primary-clusters-v1")
+    if native_compact:
+        if (raw_assignment._source_clusters is not raw_clusters.source_cluster_indices or
+                raw_assignment._cluster_member_offsets is not raw_clusters._member_offsets or
+                len(raw_assignment._cluster_parts) != len(raw_clusters) or
+                raw_assignment.path.resolve() != Path(raw_clusters.native_source_path).resolve()):
+            raise ValidationError("online compact cluster membership disagrees")
+        _validate_cluster_assignment_coverage(raw_clusters, cluster_assignment)
+        if isinstance(cluster_assignment, _PackedClusterAssignment):
+            if raw_assignment.part_ids == cluster_assignment.part_ids:
+                same_parts = raw_assignment._cluster_parts == cluster_assignment.part_indices
+            else:
+                same_parts = all(raw_assignment.cluster_part(i) == cluster_assignment.part_for_index(i)
+                                 for i in range(len(raw_clusters)))
+        else:
+            same_parts = all(raw_assignment.cluster_part(i) == cluster_assignment.get(f"c{i:06d}")
+                             for i in range(len(raw_clusters)))
+        if not same_parts:
+            raise ValidationError("online cluster assignment disagrees with instances")
+        _totals, loads, native_counts = _cluster_assignment_summary(raw_clusters, cluster_assignment, tuple(fpga_by_id))
+        for part in fpga_by_id:
+            resource_totals[part] = {field: loads[part][field] for field in RESOURCE_FIELDS}
+    else:
+        for index, cluster in enumerate(raw_clusters):
+            if not isinstance(cluster, dict):
+                raise ValidationError(f"clusters[{index}] is not an object")
+            cluster_id = cluster.get("id")
+            members = cluster.get("instances")
+            resources = cluster.get("resources")
+            if (
+                not isinstance(cluster_id, str)
+                or not cluster_id
+                or (
+                    cluster_id != f"c{index:06d}"
+                    if compact_assignment
+                    else cluster_id in cluster_ids
+                )
+                or not isinstance(members, list)
+                or not members
+                or not all(isinstance(member, str) for member in members)
+                or not isinstance(resources, dict)
+            ):
+                raise ValidationError(f"clusters[{index}] is malformed")
+            if compact_assignment:
+                if raw_assignment.cluster_member_count(index) != len(members):
+                    raise ValidationError(
+                        "online compact cluster membership disagrees"
+                    )
+                part = raw_assignment.cluster_part(index)
+            else:
+                duplicate_members = instance_ids & set(members)
+                if duplicate_members:
+                    raise ValidationError(
+                        "online clusters contain duplicate instances"
+                    )
+                cluster_ids.add(cluster_id)
+                instance_ids.update(members)
+                assigned_parts = {raw_assignment.get(member) for member in members}
+                if len(assigned_parts) != 1:
+                    raise ValidationError("online assignment splits a cluster")
+                part = next(iter(assigned_parts))
+            if part not in fpga_by_id:
+                raise ValidationError("online assignment references an unknown FPGA")
+            if cluster_assignment.get(cluster_id) != part:
+                raise ValidationError(
+                    "online cluster assignment disagrees with instances"
+                )
+            if not compact_assignment:
+                expected_cluster_assignment[cluster_id] = part
+            vector = ResourceVector.from_mapping(resources)
+            for field in RESOURCE_FIELDS:
+                resource_totals[part][field] += getattr(vector, field)
+    if compact_assignment:
         if (
-            not isinstance(cluster_id, str)
-            or not cluster_id
-            or cluster_id in cluster_ids
-            or not isinstance(members, list)
-            or not members
-            or not all(isinstance(member, str) for member in members)
-            or not isinstance(resources, dict)
+            len(raw_assignment) != clusters_artifact.get("instances")
+            or len(cluster_assignment) != len(raw_clusters)
         ):
-            raise ValidationError(f"clusters[{index}] is malformed")
-        duplicate_members = instance_ids & set(members)
-        if duplicate_members:
-            raise ValidationError("online clusters contain duplicate instances")
-        cluster_ids.add(cluster_id)
-        instance_ids.update(members)
-        assigned_parts = {raw_assignment.get(member) for member in members}
-        if len(assigned_parts) != 1:
-            raise ValidationError("online assignment splits a cluster")
-        part = next(iter(assigned_parts))
-        if part not in fpga_by_id:
-            raise ValidationError("online assignment references an unknown FPGA")
-        expected_cluster_assignment[cluster_id] = part
-        vector = ResourceVector.from_mapping(resources)
-        for field in RESOURCE_FIELDS:
-            resource_totals[part][field] += getattr(vector, field)
-
-    if set(raw_assignment) != instance_ids:
-        raise ValidationError("online assignment does not exactly cover instances")
-    if set(cluster_assignment) != cluster_ids:
-        raise ValidationError("online assignment does not exactly cover clusters")
-    if cluster_assignment != expected_cluster_assignment:
-        raise ValidationError("online cluster assignment disagrees with instances")
+            raise ValidationError(
+                "online compact assignment coverage disagrees"
+            )
+    else:
+        if set(raw_assignment) != instance_ids:
+            raise ValidationError(
+                "online assignment does not exactly cover instances"
+            )
+        if set(cluster_assignment) != cluster_ids:
+            raise ValidationError(
+                "online assignment does not exactly cover clusters"
+            )
+        if cluster_assignment != expected_cluster_assignment:
+            raise ValidationError(
+                "online cluster assignment disagrees with instances"
+            )
     for fixed in constraints.get("fixed", []):
         if raw_assignment.get(fixed.get("instance")) != fixed.get("fpga"):
             raise ValidationError("online assignment violates a fixed instance")
@@ -1920,29 +2559,37 @@ def validate_partition_artifacts_online(
             raise ValidationError(
                 "online assignment exceeds reserved planning capacity"
             )
-    used_fpgas = len(set(cluster_assignment.values()))
+    used_parts = ({part for part, count in native_counts.items() if count} if native_compact
+                  else set(cluster_assignment.values()))
+    used_fpgas = len(used_parts)
     if used_fpgas < constraints.get("min_used_fpgas", 1):
         raise ValidationError("online assignment uses too few FPGAs")
     active_fpgas = constraints.get("active_fpgas")
-    if active_fpgas is not None and not set(cluster_assignment.values()) <= set(
-        active_fpgas
-    ):
+    if active_fpgas is not None and not used_parts <= set(active_fpgas):
         raise ValidationError("online assignment uses an inactive FPGA")
 
-    balance = validate_cluster_assignment_balance(
-        platform,
-        raw_clusters,
-        cluster_assignment,
-        constraints["balance_tolerance"],
-        constraints.get("balance_tolerance_by_dimension", {}),
-        constraints.get("active_fpgas"),
-        constraints.get("balance_dimensions"),
-        constraints.get("resource_reservations_by_fpga", {}),
-    )
+    if native_compact:
+        # Reuse the just-validated primary reduction, never a producer's loads.
+        balance = _validate_balance_loads(
+            _balance_partition_fpgas(platform, constraints.get("active_fpgas")),
+            _totals, loads, {field: bool(_totals[field]) for field in RESOURCE_FIELDS},
+            constraints["balance_tolerance"], constraints.get("balance_tolerance_by_dimension", {}),
+            constraints.get("balance_dimensions"), constraints.get("resource_reservations_by_fpga", {}))
+    else:
+        balance = validate_cluster_assignment_balance(
+            platform,
+            raw_clusters,
+            cluster_assignment,
+            constraints["balance_tolerance"],
+            constraints.get("balance_tolerance_by_dimension", {}),
+            constraints.get("active_fpgas"),
+            constraints.get("balance_dimensions"),
+            constraints.get("resource_reservations_by_fpga", {}),
+        )
     result = {
         "status": "pass",
-        "instances": len(instance_ids),
-        "clusters": len(cluster_ids),
+        "instances": len(raw_assignment),
+        "clusters": len(raw_clusters),
         "used_fpgas": used_fpgas,
         "illegal_cuts": 0,
         **{
@@ -1994,6 +2641,16 @@ def _compute_cut_nets_with_ordinals(
     construction, where it avoids rebuilding a cut-name hash table to recover
     coordinates that this traversal already knew.
     """
+
+    compact_path = _compact_partition_ir_path(ir)
+    if compact_path is not None and isinstance(
+        instance_assignment, _CompactInstanceAssignment
+    ):
+        return _compute_compact_cut_nets_with_ordinals(
+            ir,
+            instance_assignment,
+            retain_ordinals=retain_ordinals,
+        )
 
     cut_nets: List[Dict[str, Any]] = []
     cut_net_ordinals = array("I") if retain_ordinals else None
@@ -2091,6 +2748,125 @@ def _compute_cut_nets_with_ordinals(
     return cut_nets, metrics, cut_net_ordinals
 
 
+def _compute_compact_cut_nets_with_ordinals(
+    ir: Any,
+    instance_assignment: _CompactInstanceAssignment,
+    *,
+    retain_ordinals: bool,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any], array | None]:
+    """Compute cuts from integer endpoint owners without instance-name maps."""
+
+    from .emuir_storage import open_emuir_sqlite_read_only
+
+    connection = open_emuir_sqlite_read_only(instance_assignment.path)
+    cut_nets: list[Dict[str, Any]] = _CompactCutNetRecords(
+        instance_assignment.part_ids
+    )
+    cut_net_ordinals = array("I") if retain_ordinals else None
+    replicated_primary_inputs = 0
+    global_nets = 0
+    cut_sink_endpoints = 0
+    try:
+        endpoint_rows = iter(
+            connection.execute(
+                """SELECT net_seq,role,instance_seq
+                     FROM endpoint_records
+                    ORDER BY net_seq,role,ordinal"""
+            )
+        )
+        endpoint = next(endpoint_rows, None)
+        observed_nets = 0
+        for net in connection.execute(
+            "SELECT seq,id,cut_class FROM net_records ORDER BY seq"
+        ):
+            net_seq = net["seq"]
+            if net_seq != observed_nets:
+                raise ValidationError("compact EmuIR net sequence is invalid")
+            observed_nets += 1
+            driver_parts: Set[str] = set()
+            sink_counts: Dict[str, int] = defaultdict(int)
+            while endpoint is not None and endpoint["net_seq"] == net_seq:
+                role = endpoint["role"]
+                source_seq = endpoint["instance_seq"]
+                if role not in (0, 1):
+                    raise ValidationError("compact EmuIR endpoint role is invalid")
+                if source_seq is not None:
+                    part = instance_assignment.part_for_source_seq(source_seq)
+                    if role == 0:
+                        driver_parts.add(part)
+                    else:
+                        sink_counts[part] += 1
+                endpoint = next(endpoint_rows, None)
+            if endpoint is not None and endpoint["net_seq"] < net_seq:
+                raise ValidationError("compact EmuIR has orphaned endpoints")
+            driver_fpgas = sorted(driver_parts)
+            sink_fpgas = sorted(sink_counts)
+            instance_fpgas = driver_parts | set(sink_counts)
+            cut_class = net["cut_class"]
+            if cut_class in {"clock", "reset"}:
+                if len(instance_fpgas) > 1:
+                    global_nets += 1
+                continue
+            if not driver_fpgas and cut_class == "undriven":
+                continue
+            if not driver_fpgas and cut_class == "primary_input":
+                if len(sink_fpgas) > 1:
+                    replicated_primary_inputs += 1
+                continue
+            remote_sink_fpgas = [
+                part for part in sink_fpgas if part not in driver_parts
+            ]
+            if not remote_sink_fpgas:
+                continue
+            remote_endpoints = sum(
+                sink_counts[part] for part in remote_sink_fpgas
+            )
+            cut_sink_endpoints += remote_endpoints
+            cut_nets.append_record(
+                net=net["id"],
+                cut_class=cut_class,
+                source_fpgas=driver_fpgas,
+                sink_fpgas=remote_sink_fpgas,
+                sink_endpoints=remote_endpoints,
+                transport_round=(1 if cut_class == "register_input" else None),
+            )
+            if cut_net_ordinals is not None:
+                cut_net_ordinals.append(net_seq)
+        if observed_nets != len(ir.value["nets"]) or endpoint is not None:
+            raise ValidationError("compact EmuIR endpoint coverage is invalid")
+    finally:
+        connection.close()
+
+    metrics = {
+        "cut_nets": len(cut_nets),
+        "cut_sink_endpoints": cut_sink_endpoints,
+        "replicated_primary_inputs": replicated_primary_inputs,
+        "global_nets": global_nets,
+    }
+    register_input_cuts = sum(
+        cut["cut_class"] == "register_input" for cut in cut_nets
+    )
+    if register_input_cuts:
+        metrics.update(
+            {
+                "register_input_cut_nets": register_input_cuts,
+                "transport_rounds": 2,
+                "round_barriers": 1,
+            }
+        )
+    if (
+        isinstance(cut_nets, _CompactCutNetRecords)
+        and not cut_nets.is_canonical
+    ):
+        order = sorted(range(len(cut_nets)), key=cut_nets.net_at)
+        cut_nets = [cut_nets[index] for index in order]
+        if cut_net_ordinals is not None:
+            cut_net_ordinals = array(
+                "I", (cut_net_ordinals[index] for index in order)
+            )
+    return cut_nets, metrics, cut_net_ordinals
+
+
 def _remove_static_exact_global_rounds(
     cut_nets: Sequence[Dict[str, Any]],
     metrics: Dict[str, Any],
@@ -2104,8 +2880,9 @@ def _remove_static_exact_global_rounds(
     equivalence and scheduling reintroduce an unrelated global barrier.
     """
 
-    for cut in cut_nets:
-        cut.pop("transport_round", None)
+    if not isinstance(cut_nets, _StaticExactCutNetRecords):
+        for cut in cut_nets:
+            cut.pop("transport_round", None)
     metrics.pop("transport_rounds", None)
     metrics.pop("round_barriers", None)
     metrics["transport_ordering_policy"] = "path-local-dependency-dag-v1"
@@ -2148,6 +2925,58 @@ def validate_cluster_assignment_balance(
     ] = None,
 ) -> Dict[str, Any]:
     """Check capacities and opt-in share limits; explicit None is legacy all-fields."""
+    partition_fpgas = _balance_partition_fpgas(platform, active_fpgas)
+    fpga_ids = [fpga.id for fpga in partition_fpgas]
+    if len(cluster_assignment) != len(clusters):
+        raise ValidationError("balance assignment cluster coverage changed")
+
+    if isinstance(clusters, _CompactClusterRecords):
+        totals_all, loads_all, _counts = _cluster_assignment_summary(clusters, cluster_assignment, fpga_ids)
+        resource_present = {field: bool(totals_all[field]) for field in RESOURCE_FIELDS}
+    else:
+        # Accumulate totals and assigned loads while each cluster record is live.
+        # The former implementation retained a nested ``weights`` dictionary for
+        # every cluster, then walked that graph a second time through the
+        # assignment.  NVDLA has more than a million clusters, so this independent
+        # validator duplicated the optimizer's largest string-keyed structure
+        # after TritonPart had already finished.  All balance equations are sums;
+        # no per-cluster weight is needed after its owning partition has been
+        # checked.
+        all_dimensions = ("cells", *RESOURCE_FIELDS)
+        totals_all = {dimension: 0 for dimension in all_dimensions}
+        loads_all = {
+            fpga_id: {dimension: 0 for dimension in all_dimensions}
+            for fpga_id in fpga_ids
+        }
+        resource_present = {field: False for field in RESOURCE_FIELDS}
+        missing = object()
+        for cluster in clusters:
+            cluster_id = cluster["id"]
+            fpga_id = cluster_assignment.get(cluster_id, missing)
+            if fpga_id is missing:
+                raise ValidationError(
+                    "balance assignment cluster coverage changed"
+                )
+            if fpga_id not in loads_all:
+                raise ValidationError(
+                    f"balance assignment references unknown FPGA {fpga_id!r}"
+                )
+            cells = len(cluster["instances"])
+            totals_all["cells"] += cells
+            loads_all[fpga_id]["cells"] += cells
+            resources = cluster["resources"]
+            for field in RESOURCE_FIELDS:
+                value = resources.get(field, 0)
+                resource_present[field] = resource_present[field] or bool(value)
+                totals_all[field] += value
+                loads_all[fpga_id][field] += value
+
+    return _validate_balance_loads(partition_fpgas, totals_all, loads_all, resource_present,
+                                  requested_tolerance, requested_tolerance_by_dimension,
+                                  requested_balance_dimensions, resource_reservations_by_fpga)
+
+
+def _balance_partition_fpgas(platform, active_fpgas):
     active_set = (
         set(active_fpgas)
         if active_fpgas is not None
@@ -2158,32 +2987,25 @@ def validate_cluster_assignment_balance(
     ]
     if len(partition_fpgas) != len(active_set) or not partition_fpgas:
         raise ValidationError("balance active FPGA set is invalid")
+    return partition_fpgas
+
+
+def _validate_balance_loads(partition_fpgas, totals_all, loads_all, resource_present,
+                            requested_tolerance, requested_tolerance_by_dimension,
+                            requested_balance_dimensions, resource_reservations_by_fpga):
+    """Apply independent capacity/share equations to primary-derived facts."""
     fpga_ids = [fpga.id for fpga in partition_fpgas]
     dimensions = ["cells"]
     dimensions.extend(
         field
         for field in RESOURCE_FIELDS
-        if any(cluster["resources"].get(field, 0) for cluster in clusters)
+        if resource_present[field]
         and all(
             fpga.effective_capacity.get(field, 0) > 0
             for fpga in partition_fpgas
         )
     )
-    weights = {
-        cluster["id"]: {
-            "cells": len(cluster["instances"]),
-            **{
-                field: cluster["resources"].get(field, 0)
-                for field in dimensions
-                if field != "cells"
-            },
-        }
-        for cluster in clusters
-    }
-    totals = {
-        dimension: sum(item[dimension] for item in weights.values())
-        for dimension in dimensions
-    }
+    totals = {dimension: totals_all[dimension] for dimension in dimensions}
     tolerance_overrides = requested_tolerance_by_dimension or {}
     requested_percent_by_dimension = {
         dimension: float(tolerance_overrides.get(dimension, requested_tolerance)) * 100.0
@@ -2209,12 +3031,12 @@ def validate_cluster_assignment_balance(
         partition_fpgas, resource_reservations_by_fpga
     )
     loads = {
-        fpga_id: {dimension: 0 for dimension in dimensions}
+        fpga_id: {
+            dimension: loads_all[fpga_id][dimension]
+            for dimension in dimensions
+        }
         for fpga_id in fpga_ids
     }
-    for cluster_id, fpga_id in cluster_assignment.items():
-        for dimension in dimensions:
-            loads[fpga_id][dimension] += weights[cluster_id][dimension]
 
     violations = []
     maximum_ratio = 0.0

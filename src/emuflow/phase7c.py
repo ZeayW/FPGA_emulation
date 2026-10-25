@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 import hashlib
 import os
 from pathlib import Path
@@ -87,10 +88,8 @@ def run_phase7c(
     global_timing_engine: str = "opensta",
     allow_legacy_phase5_generation: bool = False,
 ) -> Dict[str, Any]:
-    if global_timing_engine not in {"opensta", "python"}:
-        raise ValidationError("unsupported global timing engine")
-    if global_timing_engine == "python" and (global_sta_executable is not None or global_sta_results_dir is not None):
-        raise ValidationError("Python timing cannot accept OpenSTA options")
+    if global_timing_engine != "opensta":
+        raise ValidationError("only the OpenSTA global timing engine is supported")
     generation_validation = validate_phase5_generation(
         phase5_report_path,
         allow_legacy=allow_legacy_phase5_generation,
@@ -229,8 +228,8 @@ def run_phase7c(
                 **physical_binding["metrics"],
             }
         sta_timing = None
-        if ((global_timing_engine == "opensta" and physical_summary is not None)
-                or global_sta_executable is not None or global_sta_results_dir is not None):
+        if (physical_summary is not None or global_sta_executable is not None
+                or global_sta_results_dir is not None):
             if global_sta_executable is not None and global_sta_results_dir is not None:
                 raise ValidationError("choose live OpenSTA or explicit saved-result validation")
             if physical_summary is None or routes is None:
@@ -275,10 +274,6 @@ def run_phase7c(
             phase6_report,
             physical_summary,
             platform,
-            routes=routes,
-            schedule=schedule,
-            routes_artifact_sha256=routes_artifact_sha256,
-            semantic_contract=semantic_contract,
             system_timing_result=sta_timing,
         )
         if physical_binding_validation is not None:

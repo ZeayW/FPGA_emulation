@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from emuflow.emuir_compact import write_compact_emuir
 from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
 from emuflow.partition import (
@@ -14,6 +15,7 @@ from emuflow.partition import (
     normalize_partition_constraints,
 )
 from emuflow.phase3 import run_phase3
+from emuflow.partition_ir import load_partition_ir
 from emuflow.platform import Platform
 from emuflow.tritonpart import (
     TRITONPART_INPUT_SCHEMA,
@@ -107,7 +109,7 @@ class TritonPartTest(unittest.TestCase):
         self.constraints = normalize_partition_constraints(
             None, self.ir, self.platform
         )
-        self.clusters = build_clusters(self.ir, self.constraints)
+        self.clusters = build_clusters(self.ir, self.constraints, cut_mode="sequential-only")
 
     def test_export_keeps_resource_absent_from_one_device(self):
         value = self.platform.to_dict()
@@ -180,6 +182,67 @@ class TritonPartTest(unittest.TestCase):
                 vertex_count,
             )
 
+    def test_compact_export_matches_reference_without_graph_materialization(
+        self,
+    ) -> None:
+        timed_net = next(
+            net["id"]
+            for net in self.ir.value["nets"]
+            if net["cut_class"] in {"register_input", "register_output"}
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            reference = export_tritonpart_inputs(
+                self.ir,
+                self.platform,
+                self.clusters,
+                self.constraints,
+                root / "reference",
+                net_weights={timed_net: 7.0},
+                write_manifest=False,
+            )
+            ir_path = root / "partition.emuir.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            compact_ir = load_partition_ir(ir_path)
+            compact_clusters = build_clusters(
+                compact_ir, self.constraints, cut_mode="sequential-only"
+            )
+            actual = export_tritonpart_inputs(
+                compact_ir,
+                self.platform,
+                compact_clusters,
+                self.constraints,
+                root / "compact",
+                net_weights={timed_net: 7.0},
+                write_manifest=False,
+            )
+
+            for field in (
+                "cluster_order",
+                "vertex_weights",
+                "hyperedges",
+            ):
+                self.assertEqual(list(actual[field]), list(reference[field]))
+            for field in (
+                "objective_components",
+                "vertex_dimensions",
+                "timing_weight_coverage",
+                "balance_allowed_loads",
+                "files",
+            ):
+                self.assertEqual(actual[field], reference[field])
+            for name in (
+                "partition.hgr",
+                "partition.unweighted.hgr",
+                "partition.fix",
+                "partition.edge-classes",
+            ):
+                self.assertEqual(
+                    (root / "compact" / name).read_bytes(),
+                    (root / "reference" / name).read_bytes(),
+                )
+            self.assertGreater(actual["hyperedges"].payload_bytes, 0)
+
     def test_export_respects_capacity_selected_partition_targets(self) -> None:
         constraints = normalize_partition_constraints(
             {
@@ -189,7 +252,7 @@ class TritonPartTest(unittest.TestCase):
             self.ir,
             self.platform,
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         with tempfile.TemporaryDirectory() as temporary_directory:
             artifact = export_tritonpart_inputs(
                 self.ir,
@@ -259,9 +322,59 @@ class TritonPartTest(unittest.TestCase):
                 seed=1,
                 solution_input=solution,
                 defer_semantic_contract=True,
+                _defer_derived_records=True,
                 persist_input_manifest=False,
             )
             self.assertNotIn("semantic_contract", assignment)
+
+    def test_deferred_compact_assignment_keeps_instance_owner_columns(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            ir_path = root / "partition.emuir.sqlite"
+            write_compact_emuir(ir_path, self.ir.to_dict())
+            compact_ir = load_partition_ir(ir_path)
+            clusters = build_clusters(compact_ir, self.constraints, cut_mode="sequential-only")
+            solution = root / "solution.txt"
+            solution.write_text(
+                "\n".join(
+                    str(index % 2)
+                    for index in range(len(clusters["clusters"]))
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            assignment = run_tritonpart(
+                compact_ir,
+                self.platform,
+                clusters,
+                self.constraints,
+                root / "run",
+                seed=1,
+                solution_input=solution,
+                defer_semantic_contract=True,
+                _defer_derived_records=True,
+                persist_input_manifest=False,
+            )
+            owners = assignment["instance_assignment"]
+            cluster_owners = assignment["cluster_assignment"]
+            self.assertNotIsInstance(owners, dict)
+            self.assertNotIsInstance(cluster_owners, dict)
+            self.assertEqual(
+                assignment["_derived_records"], "deferred-selection-only"
+            )
+            self.assertNotIn("cut_nets", assignment)
+            self.assertEqual(
+                cluster_owners.packed_payload_bytes,
+                4 * len(clusters["clusters"]),
+            )
+            expected = {
+                instance_id: f"fpga{index % 2}"
+                for index, cluster in enumerate(clusters["clusters"])
+                for instance_id in cluster["instances"]
+            }
+            self.assertEqual(dict(owners.items()), expected)
 
 
     def test_initializer_envelope_has_no_hidden_design_share_bound(self) -> None:
@@ -399,7 +512,7 @@ class TritonPartTest(unittest.TestCase):
     def test_min_used_repair_populates_multiple_empty_partitions(self) -> None:
         platform = Platform.load(FOUR_FPGA_PLATFORM_PATH)
         constraints = normalize_partition_constraints(None, self.ir, platform)
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         with tempfile.TemporaryDirectory() as temporary_directory:
             artifact = export_tritonpart_inputs(
                 self.ir,

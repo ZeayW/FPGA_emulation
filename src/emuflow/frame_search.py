@@ -9,7 +9,9 @@ from typing import Any, Dict, Optional
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .phase4 import run_phase4
+from .tdm_schedule_storage import read_tdm_schedule
 from .phase5 import run_phase5
+from .tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from .platform import Platform
 from .runtime import (
     build_virtual_runtime,
@@ -17,9 +19,7 @@ from .runtime import (
     validate_virtual_runtime,
 )
 
-
-FRAME_SEARCH_SCHEMA = "emuflow.frame-search/v4"
-
+FRAME_SEARCH_SCHEMA = "emuflow.frame-search/v5"
 
 def validate_frame_search_report(report: Dict[str, Any]) -> Dict[str, Any]:
     if report.get("schema") != FRAME_SEARCH_SCHEMA:
@@ -108,61 +108,14 @@ def validate_frame_search_report(report: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(configuration, dict):
         raise ValidationError("frame-search configuration is invalid")
     expected_configuration_keys = {
-        "ratio_max_iterations",
-        "max_ratio",
-        "ratio_quantum",
-        "post_refinement_iterations",
-        "slot_refinement_iterations",
         "tdm_provider",
-        "ratio_convergence",
-        "simulation_frames",
     }
     if set(configuration) != expected_configuration_keys:
         raise ValidationError("frame-search configuration is incomplete")
-    for name in (
-        "ratio_max_iterations",
-        "ratio_quantum",
-        "post_refinement_iterations",
-        "simulation_frames",
-    ):
-        value = configuration[name]
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            raise ValidationError(
-                f"frame-search configuration {name} is invalid"
-            )
-    slot_iterations = configuration["slot_refinement_iterations"]
-    if (
-        isinstance(slot_iterations, bool)
-        or not isinstance(slot_iterations, int)
-        or slot_iterations < 0
-    ):
-        raise ValidationError(
-            "frame-search configuration slot_refinement_iterations is invalid"
-        )
     tdm_provider = configuration["tdm_provider"]
-    if tdm_provider is not None and (
-        not isinstance(tdm_provider, str) or not tdm_provider
-    ):
+    if tdm_provider not in {None, TDM_EXACT_DEPENDENCY_PROVIDER}:
         raise ValidationError(
             "frame-search configuration tdm_provider is invalid"
-        )
-    max_ratio = configuration["max_ratio"]
-    if max_ratio is not None and (
-        isinstance(max_ratio, bool)
-        or not isinstance(max_ratio, int)
-        or max_ratio <= 0
-    ):
-        raise ValidationError(
-            "frame-search configuration max_ratio is invalid"
-        )
-    convergence = configuration["ratio_convergence"]
-    if (
-        isinstance(convergence, bool)
-        or not isinstance(convergence, (int, float))
-        or convergence <= 0.0
-    ):
-        raise ValidationError(
-            "frame-search configuration ratio_convergence is invalid"
         )
     return {
         "status": "pass",
@@ -170,7 +123,6 @@ def validate_frame_search_report(report: Dict[str, Any]) -> Dict[str, Any]:
         "evaluated_candidates": len(attempts),
         "speedup_over_maximum": float(speedup),
     }
-
 
 def run_frame_length_search(
     assignment_path: Path,
@@ -187,16 +139,7 @@ def run_frame_length_search(
     route_provider: Optional[str] = None,
     candidate_workers: int = 1,
     tdm_provider: Optional[str] = None,
-    ratio_optimizer: Optional[str] = None,
-    timing_dag_optimizer: Optional[str] = None,
-    slot_optimizer: Optional[str] = None,
-    simulation_frames: int = 16,
-    ratio_max_iterations: int = 500,
-    max_ratio: Optional[int] = None,
-    ratio_quantum: Optional[int] = None,
-    post_refinement_iterations: int = 200,
-    slot_refinement_iterations: int = 0,
-    ratio_convergence: float = 1.0e-9,
+
 ) -> Dict[str, Any]:
     """Find the shortest feasible frame under the exact downstream checks.
 
@@ -245,19 +188,11 @@ def run_frame_length_search(
                 platform_path,
                 tdm_root,
                 assignment_path=assignment_path,
-                simulation_frames=simulation_frames,
+
                 provider=tdm_provider,
-                ratio_optimizer=ratio_optimizer,
-                timing_dag_optimizer=timing_dag_optimizer,
-                slot_optimizer=slot_optimizer,
-                ratio_max_iterations=ratio_max_iterations,
-                max_ratio=max_ratio,
-                ratio_quantum=ratio_quantum,
-                post_refinement_iterations=post_refinement_iterations,
-                slot_refinement_iterations=slot_refinement_iterations,
-                convergence=ratio_convergence,
+
             )
-            schedule = read_json(tdm_root / "schedule.json")
+            schedule = read_tdm_schedule(tdm_root / "schedule.json")
             runtime = build_virtual_runtime(schedule, platform)
             runtime_validation = validate_virtual_runtime(
                 runtime, schedule, platform
@@ -320,12 +255,6 @@ def run_frame_length_search(
     selected_root = search_root / f"frame-{chosen:08d}"
     shutil.copytree(selected_root / "system-route", route_output_dir)
     shutil.copytree(selected_root / "tdm", tdm_output_dir)
-    selected_routes = read_json(route_output_dir / "routes.json")
-    resolved_ratio_quantum = (
-        ratio_quantum
-        if ratio_quantum is not None
-        else int(selected_routes["constraints"].get("tdm_ratio_quantum", 8))
-    )
     report = {
         "schema": FRAME_SEARCH_SCHEMA,
         "status": "pass",
@@ -336,14 +265,7 @@ def run_frame_length_search(
         "speedup_over_maximum": max_frame_slots / chosen,
         "evaluated_candidates": len(attempts),
         "configuration": {
-            "ratio_max_iterations": ratio_max_iterations,
-            "max_ratio": max_ratio,
-            "ratio_quantum": resolved_ratio_quantum,
-            "post_refinement_iterations": post_refinement_iterations,
-            "slot_refinement_iterations": slot_refinement_iterations,
             "tdm_provider": tdm_provider,
-            "ratio_convergence": ratio_convergence,
-            "simulation_frames": simulation_frames,
         },
         "attempts": [attempts[key] for key in sorted(attempts)],
         "selected_candidate": str(selected_root.relative_to(search_root)),

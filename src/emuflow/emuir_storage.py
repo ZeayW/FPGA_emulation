@@ -88,10 +88,14 @@ def is_emuir_sqlite(path: Path) -> bool:
         return False
 
 
-def write_emuir_sqlite(path: Path, value: Mapping[str, Any]) -> None:
+def write_emuir_sqlite(
+    path: Path, value: Mapping[str, Any], *, source_bindings=(), _finalize=None
+) -> None:
     """Write the current compact store; preserve the logical v1 graph schema."""
     from .emuir_compact import write_compact_emuir
-    write_compact_emuir(path, value)
+    write_compact_emuir(
+        path, value, source_bindings=source_bindings, _finalize=_finalize
+    )
 
 
 def _write_emuir_sqlite_v1(path: Path, value: Mapping[str, Any]) -> None:

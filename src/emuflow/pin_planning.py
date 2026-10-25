@@ -1,8 +1,7 @@
-"""Placement-aware TDM grouping and virtual pin assignment."""
+"""Shared Chimew pin-plan, bank-direction and physical ownership validation."""
 
 from __future__ import annotations
 
-import subprocess
 import sqlite3
 import tempfile
 from collections import defaultdict
@@ -10,20 +9,15 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
-from .errors import EmuFlowError, ValidationError
-from .native_tools import resolve_native_executable
+from .sqlite_artifacts import immutable_sqlite_uri
+from .errors import ValidationError
 from .platform import Platform
-from .placement import PLACEMENT_SCHEMA
 
 
 SIGNAL_POSITION_HINTS_SCHEMA = "emuflow.signal-position-hints/v1"
 PIN_PLAN_SCHEMA = "emuflow.placement-aware-pin-plan/v1"
-PIN_PLAN_PROVIDER = "placement-aware-region-grouping-mcf-v1"
 CHIMEW_PIN_PLAN_PROVIDER = "chimew-paper-plus-emuflow-electrical-slot-v1"
 CHIMEW_PHYSICAL_POSITION_PROVIDER = "chimew-physical-site-projection-v1"
-LEGACY_PIN_PLAN_PROVIDERS = frozenset(
-    {"chimew-placement-aware-grouping-mcf-v1"}
-)
 
 
 def _domain_key(entry: Mapping[str, Any]) -> Tuple[str, str, str]:
@@ -39,125 +33,6 @@ def _schedule_tdm_ratio(entry: Mapping[str, Any]) -> int:
             f"schedule entry {entry.get('id')!r} has an invalid TDM ratio"
         )
     return value
-
-
-def build_signal_position_hints(
-    ir: Mapping[str, Any],
-    schedule: Mapping[str, Any],
-    placements: Mapping[str, Mapping[str, Any]],
-    *,
-    region_count: int = 3,
-    output_path: Optional[Path] = None,
-) -> Mapping[str, Any]:
-    """Derive interface-signal centroids from lookahead placements."""
-    if region_count <= 0 or region_count >= 32:
-        raise ValueError("region_count must be in [1, 31]")
-    expected_fpgas = {
-        endpoint
-        for entry in schedule["entries"]
-        for endpoint in (entry["from"], entry["to"])
-    }
-    if set(placements) != expected_fpgas:
-        raise ValidationError(
-            "lookahead placements must cover schedule FPGAs exactly; "
-            f"expected={sorted(expected_fpgas)}, "
-            f"actual={sorted(placements)}"
-        )
-    cell_locations: Dict[str, Dict[str, Tuple[float, float]]] = {}
-    ranges: Dict[str, Tuple[int, int]] = {}
-    for fpga, placement in placements.items():
-        if placement.get("schema") != PLACEMENT_SCHEMA:
-            raise ValidationError(
-                f"lookahead placement {fpga!r} has an invalid schema"
-            )
-        cells = placement.get("cells")
-        if not isinstance(cells, list) or not cells:
-            raise ValidationError(
-                f"lookahead placement {fpga!r} has no cells"
-            )
-        ys = [cell["y"] for cell in cells]
-        y_min, y_max = min(ys), max(ys)
-        ranges[fpga] = (y_min, y_max)
-        cell_locations[fpga] = {
-            cell["instance"]: (float(cell["x"]), float(cell["y"]))
-            for cell in cells
-        }
-    net_by_id = {net["id"]: net for net in ir["nets"]}
-
-    def normalized_y(
-        fpga: str, instances: list[str]
-    ) -> Tuple[float, bool]:
-        locations = [
-            cell_locations[fpga][instance][1]
-            for instance in instances
-            if instance in cell_locations.get(fpga, {})
-        ]
-        if not locations:
-            return 0.5, True
-        y_min, y_max = ranges[fpga]
-        mean = sum(locations) / len(locations)
-        if y_max == y_min:
-            return 0.5, False
-        return (mean - y_min) / (y_max - y_min), False
-
-    fallbacks = 0
-    signals = 0
-
-    def records() -> Iterable[Mapping[str, Any]]:
-        nonlocal fallbacks, signals
-        for entry in sorted(schedule["entries"], key=lambda item: item["id"]):
-            net = net_by_id[entry["net"]]
-            drivers = [
-                endpoint["instance"]
-                for endpoint in net["drivers"]
-                if endpoint.get("instance") is not None
-            ]
-            sinks = [
-                endpoint["instance"]
-                for endpoint in net["sinks"]
-                if endpoint.get("instance") is not None
-            ]
-            source_y, source_fallback = normalized_y(entry["from"], drivers)
-            sink_y, sink_fallback = normalized_y(entry["to"], sinks)
-            fallbacks += int(source_fallback) + int(sink_fallback)
-            signals += 1
-            yield {
-                "schedule_entry": entry["id"],
-                "source_y": source_y,
-                "sink_y": sink_y,
-                "source_region": min(
-                    region_count - 1, int(source_y * region_count)
-                ),
-                "sink_region": min(
-                    region_count - 1, int(sink_y * region_count)
-                ),
-                "source_fallback": source_fallback,
-                "sink_fallback": sink_fallback,
-            }
-    header = {
-        "schema": SIGNAL_POSITION_HINTS_SCHEMA,
-        "design": schedule["design"],
-        "platform": schedule["platform"],
-        "provider": "openparf-lookahead-centroid-v1",
-        "region_count": region_count,
-    }
-    if output_path is not None:
-        from .position_hints_storage import write_position_hints_storage
-
-        return write_position_hints_storage(
-            output_path,
-            {**header, "entries": records()},
-            derive_metrics=True,
-        )
-    hints = list(records())
-    return {
-        **header,
-        "metrics": {
-            "signals": signals,
-            "endpoint_centroid_fallbacks": fallbacks,
-        },
-        "entries": hints,
-    }
 
 
 def _validate_positions(
@@ -340,82 +215,6 @@ def _iter_position_pairs(
         _validate_position_metrics(positions, count, fallback_count)
 
     return records()
-
-
-def _write_model(
-    path: Path,
-    schedule: Mapping[str, Any],
-    platform: Platform,
-    positions: Mapping[str, Any],
-    *,
-    refinement_iterations: int,
-    crossing_weight: float,
-    position_weight: float,
-) -> Tuple[list[Mapping[str, Any]], list[Tuple[str, str, str]]]:
-    domains = sorted({_domain_key(entry) for entry in schedule["entries"]})
-    domain_index = {domain: index for index, domain in enumerate(domains)}
-    link_by_id = {link.id: link for link in platform.links}
-    entries = sorted(schedule["entries"], key=lambda item: item["id"])
-    lines = [
-        "EMUFLOW_PIN_PLANNER_INPUT_V1",
-        (
-            f"PARAM {refinement_iterations} {crossing_weight:.17g} "
-            f"{position_weight:.17g}"
-        ),
-    ]
-    for index, domain in enumerate(domains):
-        lines.append(
-            f"DOMAIN {index} "
-            f"{link_by_id[domain[0]].transport_bits_per_cycle_per_direction}"
-        )
-    for index, (entry, hint) in enumerate(
-        _iter_position_pairs(schedule, positions, entries)
-    ):
-        crossing = (
-            (1 << hint["source_region"])
-            | (1 << (32 + hint["sink_region"]))
-        )
-        lines.append(
-            "SIGNAL "
-            f"{index} {domain_index[_domain_key(entry)]} "
-            f"{_schedule_tdm_ratio(entry)} {entry['slot']} {crossing} "
-            f"{float(hint['source_y']):.17g} "
-            f"{float(hint['sink_y']):.17g}"
-        )
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return entries, domains
-
-
-def _parse_output(
-    path: Path, entries: list[Mapping[str, Any]]
-) -> Tuple[Dict[str, Tuple[int, int]], Dict[str, Any]]:
-    lines = path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != "EMUFLOW_PIN_PLANNER_OUTPUT_V1":
-        raise EmuFlowError("pin planner returned an invalid output header")
-    assignments: Dict[str, Tuple[int, int]] = {}
-    metrics: Dict[str, Any] = {}
-    for line in lines[1:]:
-        fields = line.split()
-        if not fields:
-            continue
-        if fields[0] == "METRIC" and len(fields) == 3:
-            metrics = {
-                "groups": int(fields[1]),
-                "native_objective": float(fields[2]),
-            }
-        elif fields[0] == "ASSIGN" and len(fields) == 4:
-            index = int(fields[1])
-            if not 0 <= index < len(entries):
-                raise EmuFlowError("pin planner returned an invalid signal")
-            entry_id = entries[index]["id"]
-            if entry_id in assignments:
-                raise EmuFlowError("pin planner returned a duplicate signal")
-            assignments[entry_id] = (int(fields[2]), int(fields[3]))
-        else:
-            raise EmuFlowError(f"pin planner returned malformed line: {line}")
-    if len(assignments) != len(entries) or not metrics:
-        raise EmuFlowError("pin planner output is incomplete")
-    return assignments, metrics
 
 
 def _assignment_metrics(
@@ -660,22 +459,20 @@ def _open_indexed_pin_plan_validation(
 ) -> tuple[sqlite3.Connection, int]:
     """Build a file-backed validation index without Python hop maps."""
 
-    connection = sqlite3.connect("")
+    connection = sqlite3.connect("", uri=True)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA temp_store=FILE")
     try:
         connection.execute(
             "ATTACH DATABASE ? AS schedule_store",
             (
-                f"file:{schedule.store_path.resolve()}"
-                "?mode=ro&immutable=1",
+                immutable_sqlite_uri(schedule.store_path),
             ),
         )
         connection.execute(
             "ATTACH DATABASE ? AS pin_store",
             (
-                f"file:{plan.store_path.resolve()}"
-                "?mode=ro&immutable=1",
+                immutable_sqlite_uri(plan.store_path),
             ),
         )
         schedule_count = _install_indexed_schedule_entry_relation(connection)
@@ -1390,11 +1187,7 @@ def validate_pin_plan(
 ) -> Dict[str, Any]:
     if plan.get("schema") != PIN_PLAN_SCHEMA:
         raise ValidationError(f"pin plan schema must be {PIN_PLAN_SCHEMA!r}")
-    if plan.get("provider") not in {
-        PIN_PLAN_PROVIDER,
-        CHIMEW_PIN_PLAN_PROVIDER,
-        *LEGACY_PIN_PLAN_PROVIDERS,
-    }:
+    if plan.get("provider") != CHIMEW_PIN_PLAN_PROVIDER:
         raise ValidationError("pin plan provider is not source-complete")
     if (
         plan.get("design") != schedule.get("design")
@@ -1625,121 +1418,3 @@ def validate_pin_plan(
         ),
         "pin_distance_improvement_percent": pin_distance_improvement,
     }
-
-
-def build_pin_plan(
-    schedule: Mapping[str, Any],
-    platform: Platform,
-    positions: Mapping[str, Any],
-    *,
-    executable: Optional[str] = None,
-    refinement_iterations: int = 100,
-    crossing_weight: float = 1.0,
-    position_weight: float = 1.0,
-    output_path: Optional[Path] = None,
-) -> Mapping[str, Any]:
-    if refinement_iterations < 0:
-        raise ValueError("refinement_iterations must be non-negative")
-    if crossing_weight < 0.0 or position_weight < 0.0:
-        raise ValueError("objective weights must be non-negative")
-    native = resolve_native_executable("emuflow_pin_planner", executable)
-    with tempfile.TemporaryDirectory() as temporary_directory:
-        root = Path(temporary_directory)
-        entries, _ = _write_model(
-            root / "input.txt",
-            schedule,
-            platform,
-            positions,
-            refinement_iterations=refinement_iterations,
-            crossing_weight=crossing_weight,
-            position_weight=position_weight,
-        )
-        completed = subprocess.run(
-            [native, str(root / "input.txt"), str(root / "output.txt")],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if completed.returncode != 0:
-            detail = completed.stderr.strip() or completed.stdout.strip()
-            raise EmuFlowError(
-                f"in-tree pin planner failed with exit code "
-                f"{completed.returncode}: {detail}"
-            )
-        assignments, native_metrics = _parse_output(
-            root / "output.txt", entries
-        )
-    assignment_metrics = _assignment_metrics(
-        schedule,
-        platform,
-        positions,
-        assignments,
-        crossing_weight,
-        position_weight,
-    )
-    tolerance = 1.0e-8 * max(
-        1.0, abs(assignment_metrics["objective"])
-    )
-    if (
-        abs(
-            native_metrics["native_objective"]
-            - assignment_metrics["objective"]
-        )
-        > tolerance
-    ):
-        raise EmuFlowError(
-            "native pin-planner objective does not independently agree"
-        )
-    baseline_metrics = _assignment_metrics(
-        schedule,
-        platform,
-        positions,
-        _baseline_assignment(schedule),
-        crossing_weight,
-        position_weight,
-    )
-    plan = {
-        "schema": PIN_PLAN_SCHEMA,
-        "design": schedule["design"],
-        "platform": platform.name,
-        "provider": PIN_PLAN_PROVIDER,
-        "configuration": {
-            "refinement_iterations": refinement_iterations,
-        },
-        "weights": {
-            "crossing": crossing_weight,
-            "position": position_weight,
-        },
-        "metrics": {
-            "signals": len(entries),
-            "groups": native_metrics["groups"],
-            **assignment_metrics,
-            "baseline_logical_lane_objective": baseline_metrics["objective"],
-            "baseline_logical_lane_crossing_bits": baseline_metrics[
-                "crossing_bits"
-            ],
-            "baseline_logical_lane_position_sse": baseline_metrics[
-                "position_sse"
-            ],
-            "baseline_logical_lane_pin_distance": baseline_metrics[
-                "pin_distance"
-            ],
-        },
-        "entries": [
-            {
-                "schedule_entry": entry["id"],
-                "group": assignments[entry["id"]][0],
-                "physical_lane": assignments[entry["id"]][1],
-                "logical_lane": entry["lane"],
-            }
-            for entry in entries
-        ],
-    }
-    if output_path is not None:
-        from .pin_plan_storage import write_pin_plan_storage
-
-        indexed_plan = write_pin_plan_storage(output_path, plan)
-        validate_pin_plan(schedule, platform, positions, indexed_plan)
-        return indexed_plan
-    validate_pin_plan(schedule, platform, positions, plan)
-    return plan

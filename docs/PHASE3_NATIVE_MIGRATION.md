@@ -1,455 +1,663 @@
-# Phase 3 native migration
+# Native data-plane migration
 
-## Program status and storage decision
+## Architecture and ownership
 
-The staged migration plan remains the implementation direction, with one
-important storage correction. SQLite is the indexed control plane for facts
-that require joins, uniqueness constraints, or bounded random lookup. Large
-relations that are consumed in deterministic order use versioned typed binary
-sections or ordered record streams. They are not copied into SQLite merely to
-make every boundary use one container. `assignment.exact.bin` is the first
-production instance of this split. Compatibility JSON is an explicit exporter,
-not a second authoritative payload.
+The production target is one `libemuflow_core` and an `emuflow-native compile`
+entry that owns execution of the complete flow. External Yosys, OpenSTA,
+OpenROAD/TritonPart, OpenPARF, RapidWright/RWRoute and optional Vivado remain
+separate engines. OpenPARF may retain its required thin Python/PyTorch host.
+A native command that only invokes the Python compiler is not this target.
 
-Normal phase handoffs validate schema, source identity, required row counts,
-keys, and circuit semantics. They do not run SQLite `quick_check` or
-`integrity_check`; those remain explicit offline corruption diagnostics.
+The current native executable links real Phase 3, 4, 5 and 6 kernels through a
+shared typed operation API, including PATRON search. An opt-in native controller
+now owns the ordinary one-shot phase sequence through isolated shared Python
+adapters. Advanced orchestration and remaining native data-plane ownership are
+unfinished. W0 shared-core
+consolidation and W7 native compilation are the priority architectural delivery;
+stage adapters must converge on those interfaces rather than add independent
+parsers, identity maps, error formats and publication implementations.
+Completion also requires retiring superseded execution chains, unused schemas,
+standalone entry points and installation fallbacks. A disabled compatibility
+switch alone is not a reason to retain a complete implementation. Keep only
+readers with a demonstrated current consumer, and record their exit condition;
+historical replay uses its matching Git version. Independent correctness
+oracles may remain in tests without retaining a second production flow.
 
-The implementation status at this revision is:
+See [phase contracts](FLOW_PLAN.md) for the whole-flow architecture,
+[algorithm implementations](ALGORITHMS.md) for providers, and
+[physical acceptance](XILINX_PHYSICAL_FLOW.md) for backend requirements.
 
-| Wave | Status | Implemented boundary | Remaining production work |
-| --- | --- | --- | --- |
-| W0 shared core and stores | **Started** | `libemuflow_core` now owns bounded streaming native artifact reads, synchronized atomic binary publication, representation-scoped typed IDs, the common magic/version envelope check, and shared CRC-32/SHA-256 primitives used by the Phase 6 grouping, refinement and assignment protocols. The shared reader no longer copies a complete native input into memory. The Static Exact analyzer and exact scheduler use that shared boundary. | Move the remaining native tools onto the shared storage/error/metrics interfaces; extend the stage-neutral schema catalog and add SQLite RAII views as consumers require them. |
-| W1 Phase 5 exact schedule | **Partial** | Phase 4 now publishes a selector plus sealed typed RouteStore instead of a graph-sized `routes.json`; demands are projected from authoritative route rows, while route sinks/edges, exact predecessors and timing paths are normalized relations. Phase 5 consumes ordered route and hop cursors directly. For indexed Static Exact designs with at least 100,000 routed cuts, `emuflow_tdm_exact_scheduler` performs dependency ordering, readiness propagation, lane/slot occupancy, and completion calculation in C++. Its adapter derives integer ranks in SQL and retains compact columns instead of Python route dictionaries and net/demand maps. Fixed hop and variable completion records remain in memory-mapped lazy views; completion ordering and offsets use fixed-width arrays, while certificate sink arrivals use a packed net-rank by FPGA-rank matrix. Phase 5 publishes ScheduleStore v4 with typed hops, routes, route sinks/edges, completions and sink arrivals. Both logical seals remain compatible, legacy route JSON and ScheduleStore v1--v3 readers remain available, and stores use selector-last content-addressed publication. RouteStore validates and can restore the previous generation, binds the artifact filename to its digest, validates the new view before old-sidecar cleanup, omits unjustified append-only `VACUUM`, and joins every generic archive selector/sidecar pair into one retention group. The ScheduleStore, selector, cross-layer contract, optional ratio plan, standalone derivatives and report are staged as one generation. The report records a canonical self-identity and the name, size and SHA-256 of every member. Publication fsyncs all members and pre-report directory entries before `phase5_report.json` commits the generation; caught failures restore the prior bytes, while uncaught termination leaves a mixed generation that every direct validator, Phase 7C and canonical/shared consumer rejects before schedule/contract access. Report-less legacy data requires an explicit compatibility option. Production Phase 6 dispatch reads only the typed entry count; Phase 7C and physical/local timing readers keep RouteStore lazy. Small designs retain the Python scheduling reference. Historical canonical readers inventory the complete route/TDM output directories; shared replay dynamically resolves and copies both content-addressed sidecars before their selectors and rejects dangling generations. Managed roots use bounded strict-envelope, basename and size checks because the root checkpoint already sealed the bytes and binds the Phase 5 report/member table; standalone replay retains full hashing and semantic validation. | Independent typed validation now reconstructs exact ready order with packed CSR/rank arrays, uses a compact arrival matrix, streams certificate digests and compares completion rows through a bounded temporary SQLite relation instead of route-level Python maps. The native adapter retains R-scale compact columns, the ratio-delay baseline branch performs H-scale work when enabled, and completion identity columns remain route-scale, while completion payloads are lazy and sink arrivals use fixed-width packed storage. A synthetic 100,000-route/two-sink comparison reduced retained traced completion/arrival allocation from 65.70 MiB to 2.67 MiB of packed arrays plus a 3.05 MiB native record file; a complete lazy traversal added 0.014 MiB traced peak. This is adapter evidence, not NVDLA qualification. At 100,000 routes, independent-root validation used 13.88 MiB versus 316.65 MiB peak (4.55 versus 6.94 seconds); a 99,999-edge chain used 5.51 MiB versus 338.55 MiB (5.25 versus 6.33 seconds). Cross-layer contract v2 now merges ordered RouteStore/ScheduleStore hop cursors, binds their digests and checked count, and omits the former H-scale `hop_bindings`; materialized v1 artifacts remain validatable. A synthetic 100,000-hop typed-store comparison reduced retained Python allocation from 38.69 MiB to 0.17 MiB, peak allocation from 82.58 MiB to 44.06 MiB, and contract JSON from 6.87 MiB to 0.00063 MiB at 0.746 versus 0.730 seconds. This is adapter evidence, not NVDLA qualification. Terminal full-bundle replay still materializes compatibility views in some paths. A synthetic 100,000-route one-hop build reduced Python peak allocation 346.1 MB to 108.2 MB and route bytes 46.60 MB to 32.19 MB; two repeated builds were 8.16--8.32 seconds versus 8.92--9.59 seconds. This is adapter evidence only. NVDLA wall-time, RSS and temporary-I/O qualification remain required. |
-| W2 Phase 7 lowering and transport import | **Partial** | Indexed DUT lowering and placement stores avoid the former whole-DUT JSON path. Generic Yosys now streams synthesized transport JSON directly into compact EmuIR SQLite, so `transport-synthesized.json` is never materialized. Lowering opens the store as a bounded view and the placement writer uses SQLite `ATTACH` to copy, namespace and filter transport cells/nets/endpoints without reconstructing the transport graph. RX signal/placeholder coverage uses ordered store cursors. Boundary identity production now streams endpoint records into a content-addressed typed owner and publishes only a bounded selector; independent identity and timing validation merge ordered endpoint cursors instead of building expected/actual dictionaries, and timing construction no longer rebuilds an identity map. The physical summary relocates the selector and immutable generation without expansion. Whole-design physical assembly publishes sealed per-FPGA evidence references instead of embedding all boundary/path databases again in `physical-summary.json`. A 100,000-endpoint producer comparison reduced process peak RSS from 179,355,648 to 53,002,240 bytes and artifact bytes from 42,855,750 to 29,086,441; fsync-inclusive wall time changed from 1.008 to 1.546 seconds. A separate 100,000-record validator comparison reduced process peak RSS from 82,395,136 to 17,645,568 bytes while wall time changed from 0.104 to 0.201 seconds. Boundary timing producers now publish a bounded selector plus a content-addressed typed SQLite owner; RapidWright timing generation streams directly into the writer, the physical summary relocates the complete selector/store pair, and readers validate each FPGA lazily. Local-path timing now uses the same selector-backed typed-owner model for VPR, RapidWright, inactive partitions, physical-summary relocation and lazy consumers. A 100,000-record local-path read and full seal validation reduced process peak RSS from 251,887,616 to 32,653,312 bytes and artifact bytes from 30 MiB to 24 MiB, while wall time changed from 0.73 to 0.90 seconds. | Interface-net overlay records and backend measurement/query builders still retain endpoint-scale maps. Move the remaining query/import joins to native/indexed cursors, then qualify the full per-FPGA path for RSS and I/O on NVDLA. |
-| W3 Phase 6 split and binding | **Partial** | DUT ownership/split uses SQLite joins. Phase 6 writes endpoint, lane, virtual-anchor, virtual-board binding and differential adapter-port relations once to sealed `transport.sqlite`. A bounded `binding_physical_ports` relation records one row per real differential pair, its member count and ordered member seal. Indexed physical-I/O contract v2 independently recomputes those memberships from one ordered authoritative binding-entry cursor, then merges them with the compact relation and adapter ports; it does not serialize every hop for each FPGA. Legacy v1 remains readable. Typed pin-plan and position-hint stores own hop-sized rows behind small selectors, validators use ordered merges/indexed joins, and Transport RTL plus XDC/SystemVerilog stream atomically. The production Chimew builder reads ScheduleStore directly, validates member coverage through a file-backed join, and streams position, pin-plan and electrical-binding rows into typed stores without hop-sized schedule, coverage or output containers. Chimew lookahead publishes bank pairs/channels and group/member/fanin records once behind a sealed selector; qualification and native serialization walk lazy sequences, while the Phase 6 binding cursor is store-ordered by group ID and avoids an H-sized sort. Native assignment input now walks those validated cursors once and streams a versioned fixed-width protocol over stdin; exact counts, tags, CRC-32 and matching logical source digests reject truncation, trailing bytes and mixed generations without publishing `input.txt`. The explicit `--legacy-text` CLI remains for differential compatibility, unflagged input is rejected, and production always selects `--typed-input`. The native assignment certificate streams on unchanged stdout into a temporary typed index: an exact-order protocol state machine and typed record normalization precede certificate checking, which uses fixed-width vectors for only the active bank and a bounded repeated-cost cache instead of graph-sized assignment/alternative/potential dictionaries. Certificate headers must exactly match the input-derived Stage 1 and per-bank node counts before any potential rows are accepted. Its final assignment report is another selector plus sealed typed relation consumed by ordered qualification and adapter cursors. Qualification stages bank/channel identity in a temporary relation, batches channel rows at 4,096 even within one large bank, and recomputes every metric and direction priority instead of retaining bank/channel maps. Both pipeline and adapter generations inventory the selector and sidecar. Production readers reject legacy JSON unless an explicit compatibility caller passes `allow_legacy=True`. Exact selector/table envelopes, sidecar path confinement and raw-header-derived normalized contracts reject extensions, symlinks, typed-field coercion and re-sealed semantic relabelling. Store-level POSIX shared leases span each reader's last cursor; exclusive leases span staging and selector commit. An old selector is eligible for post-commit sidecar GC only after its complete selector and store view validate, so malformed selector bytes cannot nominate an arbitrary file for deletion. All stores are built and semantically validated in sibling staging, then immutable sidecars and selectors are published before an adapter report commit. Standalone adapters own their fixed report and garbage collection; pipeline-managed adapters use an immutable report generation and retain the preceding generation until the outer `pipeline_report.json` commits. The complete outer input/source/kernel/adapter inventory is staged and validated before its generation directory is atomically installed, and `pipeline_report.json` alone commits that generation. Orphan recognition reuses complete bundle semantics: ScheduleStore selector/sidecar, platform, every grouping/RUDY/bank artifact, qualification and source provenance, adapter pairing, paths and aliases must all validate after the seals. Manifest design/platform identity is bound to the sealed schedule and BoardDB. A resealed malformed or relabelled payload remains invalid and is never collected as a generation. Per-output writers hold an exclusive POSIX lock; validators and production consumers retain a shared lease across report and referenced-artifact reads, preventing GC from removing an older reader's generation. Phase 7 resolves binding entries with indexed lookups, and Phase 6 explicitly inventories every selector sidecar for relocation. RUDY production dispatch now uses the unified native entry and streams its existing grammar over stdin/stdout, eliminating the net-sized Python line list and both payload scratch files while preserving the independent Python bin replay. | Chimew lookahead grouping and position refinement now use sealed fixed-width stdin protocols and ordered output streams; position refinement no longer constructs a complete text line list or publishes input/output scratch files. A 100,000-signal refinement serialization comparison reduced traced Python peak allocation from 14,577,179 to 1,192,370 bytes and process peak RSS from 96,387,072 to 75,825,152 bytes, while the two-pass logical seal changed operation time from 0.531 to 1.591 seconds; the 3,300,104 typed bytes are IPC volume rather than a persistent production artifact. This is adapter evidence, not NVDLA qualification. Grouping uses a sealed fixed-width stdin protocol and fixed-width result arrays; the native kernel assigns directly from sorted signal indices and no longer retains a group-of-vectors copy. Native group IDs now reuse each processed signal's domain field, so the separate assignment array is gone. A 100,000-signal byte-identical A/B reduced native peak RSS from 57,704,448 to 57,278,464 bytes while wall time changed from 23.04 to 23.30 seconds. Native signal/order/candidate arrays and the Python qualification oracle remain linear in signal count. The prior 20,000-channel/group input-store comparison reduced retained traced allocation 52.38 to 0.17 MiB, peak 59.39 to 43.52 MiB, RSS 159.75 to 121.63 MiB and bytes 12,292,219 to 6,125,401, while validation rose from 0.772 to 1.138 seconds. A serialization-only 100,000-channel/100,000-group comparison removed the 8,833,627-byte input scratch, reduced time from 1.146 to 0.693 seconds and traced peak from 0.042 to 0.006 MiB, while sending 12,800,193 typed bytes through the pipe; it proves disk/text removal, not lower IPC volume. A 30,000-group certificate-parser comparison reduced retained allocation 24.18 to 0.30 MiB, peak 31.34 to 1.74 MiB and scratch bytes 6,414,799 to a 4,907,008-byte temporary index, while parsing rose from 0.621 to 1.634 seconds. A 100,000-assignment report comparison reduced retained allocation 55.89 to 0.57 MiB, peak 55.96 to 2.99 MiB and bytes 15,156,114 to 1,068 plus 10,211,328, while publication/validation rose from 0.961 to 7.043 seconds. These are adapter measurements; native-producer and NVDLA wall/RSS/I/O qualification remain required. |
-| W4 Phase 3 model and publication | **Partial** | Large dependency/capture traversal is native; assignment index v3 separates bounded SQLite control data from typed binary Static Exact data. Capture protocol v3 preserves original EmuIR ordinals and returns only fixed-width `(cut, partition, net ordinal, sink ordinal)` records. The production native-input bridge now streams compact `cell_records`, `net_records` and integer `endpoint_records` directly, so it does not build another instance-name ordinal map or decode the graph into Python endpoint dictionaries. Cut identity/class validation uses one ordered store merge, and capture coordinates are independently resolved with one ordered authoritative sink cursor instead of random whole-net decoding. Exact-binary v2 encodes bounded canonical capture-bit bytes and validates counts before allocation while keeping v1 read compatibility. Phase 3 carries the net ordinals discovered by cut construction directly into native input, removing the analyzer adapter's cut-name lookup/match/coordinate hash containers; name-only historical callers retain a checked compatibility lookup. The analyzer also returns predecessor CSR plus fixed-width launch/level/depth arrays and production publication derives all four graph-scale semantic relations as repeatable byte-backed streams. The exact-binary writer consumes the native CSR plus raw cut/capture fields directly, validates their agreement with the canonical view, and emits unchanged sections without rebuilding cut-name or dependency/logic-record populations. Native canonical hashing now consumes the same compact cut/capture bytes, launch flags and counter-derived ordinals without invoking dependency, logic or capture dictionary factories. One immutable launch-flag snapshot feeds both the factories and direct source, preventing caller-owned bytearray mutation from splitting their identities. Compact clustering now uses ordered SQLite cell/endpoint cursors plus fixed-width ordinal and union-find arrays, emitting final cluster rows without a decoded cell/net graph, instance-name index or grouped-member copy. Combinational-candidate characterization likewise consumes ordered compact endpoints, deduplicates arcs in a temporary relation and runs SCC over fixed-width CSR arrays; per-net state is bounded and high fanout is inserted in batches of at most 8,192. Its primary endpoint scan reads only integer columns: cell types are reduced to one-byte sequential-input policies during the cell pass and the interned pin vocabulary is loaded once, eliminating two indexed joins and repeated type/port text for every endpoint. Cell/net identity uniqueness is verified from complete single-column SQLite unique indexes rather than two additional full-table GROUP BY scans; removed or partial constraints fail closed. PATRON pressure construction now reads ordered compact endpoints, interns identities once, stores cluster/net membership and driver/sink relations in fixed-width ordinal arrays, and streams native input record by record through an atomic writer instead of materializing joined text. Production cluster publication now streams canonical JSON through zlib and incremental base64 directly into its atomic temporary file; it emits byte-identical v2 artifacts without retaining compressed chunks, joined bytes and a complete base64 string. A 100,000-cluster comparison reduced traced publication peak from 3,203,902 to 400,854 bytes while wall time changed from 2.246 to 2.494 seconds. Compact eligibility reconstruction now stores one ordinal bit per net plus a lexical UTF-8 name pool and fixed-width offsets; compact clustering and native validation use ordinal membership without recreating a Python name set. Production cluster publication iterates a private list-compatible view over that pool, while default and explicitly mutable APIs retain ordinary-list behavior. A 1,000,000-name representation comparison reduced process peak RSS from 139,264,000 to 57,245,696 bytes with a 16,125,008-byte packed payload (0.24 versus 0.30 seconds). A separate construction-plus-canonical-encoding comparison emitted the same 14,000,014 characters while reducing incremental traced peak allocation from 68,009,482 to 11,327 bytes and process peak RSS from 203,161,600 to 64,749,568 bytes; wall time changed from 1.618 to 1.780 seconds. Materialized and legacy contracts retain the generic encoder, while the independent binary reader reconstructs the logical contract and verifies the unchanged canonical SHA. Digest tests reject mixed generations and truncated raw nodes; the binary publisher independently rejects stateful-CSR disagreement and million-range lexical-order errors. A synthetic 10,000-cut/79,964-edge comparison measured 0.832--0.847 seconds for record replay and 0.736--0.762 seconds for the typed cursor, with 0.039 MiB traced peak; a separate 300,000-cell clustering comparison reduced traced peak from 436.58 MiB to 212.52 MiB and wall time from 9.94 to 5.70 seconds. Both are adapter evidence rather than NVDLA qualification. | Final cluster/path objects and the C++ analyzer's internal graph/capture vectors still scale with the graph. The emitted eligible-name policy array remains graph-sized on disk until the cluster artifact schema becomes ordinal/typed, although production no longer retains a second decoded Python list; internal reconstruction and consumers use the packed ordinal/name view. Canonical hashing remains linear in the logical record count even though it no longer constructs the three derived dictionary streams. RePart/MFSPart initial candidates can still materialize a transient contract before their final rebuild. |
-| W5 physical exporters | **Partial** | One typed physical handoff replaced production `packed-sites.json` and `placement.json`. The production bridge appends normalized clusters directly to a private SQLite artifact; legalization retains only MUX-bearing slices and independent topology validation retains only required MUX/CARRY records. Assignment/site/BEL ownership uses unique constraints, counts, a single ordered scan and bounded per-site state. Source-certificate ownership and full mapped-output driver uniqueness use temporary disk-backed relations rather than million-entry Python maps. Publication occurs only after all checks pass. Lazy typed views feed RWRoute and routed timing; mapped-index v2 owns typed cell pins and RWRoute streams route-cell, physical-binding, endpoint, deterministic safe-name ordinal and clock-candidate rows. The production atomic-source artifact is now a compact selector plus sealed typed sidecar: only macro/cascade/constant facts are stored, while ordinary singleton clusters are lazily derived from the authoritative mapped-index cell/type cursor. The downstream atomic name map is also selector-backed: atom and CARRY8 cascade identities live in a typed sealed sidecar, the selector binds mapped/packed/architecture sources, and production consumers use the lazy logical v2 view. Both historical graph-sized JSON forms require explicit compatibility export. Placement validation now streams native `.pl` coordinates into a temporary file-backed relation and joins them directly to the leased typed name-map sidecar. SQLite proves duplicate, unknown and missing atom coverage, owns normalized site/BEL records and rejects repeated physical slots through a unique occupancy relation. Macro and cascade checks perform bounded instance queries, while one ordered site cursor performs control-set/resource checks. Production writes those validated site groups directly into a versioned content-addressed placement-certificate store instead of constructing and then renormalizing the final cluster tree. The small selector binds exact store identity/counts plus mapped, packed, architecture, name-map, native-placement and optional native-constraint/provider seals; selector-last publication, shared/exclusive leases and post-commit GC preserve complete generations across failures and concurrent readers. The archive retains selector and sidecar atomically, and the physical handoff path rejects inline legacy clusters. Bookshelf net construction now stages fixed endpoint rows in a private SQLite relation, scans them by numeric net and source ordinal, keeps only the active net fanout, and atomically streams `design.nets`; production never materializes the graph-wide endpoint dictionary, net-line list or final net text. A 100,000-cell/100,000-net byte-identical comparison reduced incremental traced peak allocation from 65,399,671 to 1,202,189 bytes and process peak RSS from 311,623,680 to 188,874,752 bytes, while measured operation time changed from 2.204 to 1.377 seconds and both outputs were 4,166,670 bytes. This is isolated adapter evidence, not NVDLA qualification. The final export atom relation is now a private file-backed lexical cursor rather than a Python list of per-atom dictionaries; duplicate ownership is rejected by a unique key, mapped coverage is validated by ordered merge, and every downstream pass reopens the bounded cursor. A 300,000-atom construction plus full traversal reduced incremental traced peak allocation from 112,101,868 to 29,567 bytes and process peak RSS from 257,196,032 to 46,989,312 bytes. It used a 46,149,632-byte temporary relation and changed wall time from 1.41 to 2.98 seconds. The temporary relation is removed after the sealed name map is published; direct promotion into that final store remains a future I/O optimization. This is isolated adapter evidence, not NVDLA qualification. The atomic exporter now derives deterministic `aN` identities from the already sorted atom ordinal instead of retaining an additional instance-to-safe-name dictionary; library/net construction uses one ordered mapped-cell/atom merge without rebuilding an atom dictionary or coverage set, and `design.nodes` is written record by record. A 500,000-atom safe-name comparison reduced incremental traced allocation from 50,920,742 to 2,654 bytes and process peak RSS from 323,371,008 to 212,008,960 bytes, while wall time changed from 0.67 to 0.31 seconds. This isolates the removed identity map; it is not NVDLA qualification. A 100,000-cluster publication comparison reduced retained traced allocation from 108.90 MiB to 0.045 MiB, peak from 110.88 MiB to 2.02 MiB and process peak RSS from 281.81 MiB to 45.27 MiB, with identical 22,085,632-byte typed stores; fsync-inclusive wall time was 1.705 versus 1.953 seconds. Earlier evidence remains: a 100,000-singleton source projection used a 1,073-byte selector and 45,056-byte sidecar with 1.10 MiB traced peak allocation versus 28,500,397 bytes and 167.93 MiB when materialized; a 100,000-atom name-map writer reduced peak from 28.21 MiB to 2.34 MiB; `_collect_atoms` reduced peak from 38.00 MiB to 29.00 MiB; and shuffled end-to-end placement normalization before this final publication change reduced peak from 188.98 MiB to 43.61 MiB. These are adapter measurements, not NVDLA qualification. | Electrical-binding maps, clock-gate qualification subset, parameter lookups and the remaining exporter loop still scale with design data. Temporary atom and endpoint relations are still separate staging stores; the atom relation is copied once into the sealed name-map store rather than promoted directly. Explicit compatibility calls can still materialize the certificate tree. DeviceRegionIndex and pin-aware SLR planning are separate semantic/QoR work. NVDLA wall-time, process-RSS and temporary-I/O qualification remain required. |
-| W6 global STA stitching | **Started** | OpenSTA remains the numerical engine, indexed timing readers exist, and Phase 7C no longer expands the whole ScheduleStore before binding. Measurement TSV import validates endpoint order and arc equations in one pass. Production event/check construction now appends interned strings and fixed-width columns to `_IndexedEventChecks`, validates target/runtime and TX/commit coverage online, and creates representative indices without a second complete compression scan. Original-path metadata is a sorted, interned, fixed-width mapping instead of one nested dictionary per path. Canonical report stitching consumes one path bundle at a time. Representative membership uses a fixed-width integer map and exposes original-check measurements through a repeatable lazy sequence, so stitching and TSV publication no longer allocate object/arc lists or a second dictionary list for all expanded checks. Logic-segment producers now write a content-addressed typed store directly; selectors and physical summary bind route, schedule and Phase 3 logical seals. Boundary identities, boundary timing and local-path timing are leased typed stores, and physical-summary readers resolve each FPGA lazily. A leased bounded multi-FPGA ordered merge validates global segment/path-key uniqueness and supplies Global STA/system timing without the former `path -> member -> segments` tree or per-member/per-FPGA queries. Archive retention follows the complete summary/selector/store group. Logic-segment query preparation now spools ordered rows on disk and atomically publishes the query with its content-addressed identity selector. Measurement import streams into a temporary typed relation, proves exact coverage and equations with set joins, and writes the final timing store directly without per-row identity queries. Interleaved legacy input remains a checked compatibility fallback and WNS/TNS still count every original path once. Local-path timing producers now publish ordered typed rows directly, and validation projects identity fields through a repeatable lazy sequence while accumulating statistics in one pass. A 100,000-path typed-owner comparison reduced process peak RSS from 251,887,616 to 32,653,312 bytes and artifact bytes from 30 MiB to 24 MiB, while read and full seal validation changed from 0.73 to 0.90 seconds. | String interning, path IDs and representative identity tables remain linear in unique checks/paths, and the legacy interleaved fallback still requires graph-sized Python work. Other per-FPGA evidence remains to migrate. NVDLA Phase 7C wall/RSS/I/O qualification remains required. |
-| W7 native production entry | **Started** | The installed `emuflow-native` executable now dispatches the real Phase 3 Static Exact analyzer, Phase 5 exact scheduler and Phase 6 Chimew signal-grouping, position-refinement, RUDY and bank/channel assignment kernels in-process through one linked stage library. All six production adapters resolve the unified entry directly without requiring a redundant standalone executable; explicit comparison overrides remain standalone, and older installs fall back to them. Differential checks require byte-identical output. | There is no complete `emuflow-native compile` path yet. Phase 1/2/4/6/7 orchestration remains in Python, and Python production memory can still scale with routes, endpoints, and timing paths. Move stage ownership into this entry incrementally rather than delegating `compile` back to the Python CLI. |
+## Shared core (W0)
 
-Representation-only waves must preserve the effective provider, seed,
-constraints, ordering, and external tool versions. DeviceRegionIndex,
-pin-aware SLR cost, and other placement-policy changes are qualified in
-separate commits and A/B runs so storage migration cannot hide a QoR change.
-The completion gate remains a fresh, isolated NVDLA Phase 1--7/7C run with
-stage wall time/RSS/I/O, zero unrouted nets and DRC violations, complete
-original-path coverage, and global OpenSTA WNS/TNS. That terminal gate is
-still pending.
+The core owns representation-scoped typed IDs, checked artifact I/O, common
+CRC-32/SHA-256, SQLite statement/transaction lifetimes, and atomic publication.
+The linked operations use a versioned schema registry, `ArtifactRef`,
+`StageRequest` and `StageResult`. `SqliteStore`, `EmuirView`, `AssignmentView`,
+`SplitView` and `RouteView` share artifact binding and connection ownership;
+`SqliteArtifactWriter` owns staged SQLite publication, including ScheduleStore.
+EmuIR v1/v2, assignment v3/v4 and split v2 have explicit versioned readers.
+The initial topology hop legalizer also links into this core and uses the
+shared stage/error/metrics/source-binding and atomic output contracts. Its old
+standalone build, deployment and test entry are retired. The existing algorithm
+and independent final hop audit remain; summary output retains counters without
+a Python move trace. Native direct model construction is still W4 work.
 
-## Scope
+The [W0 contract](FLOW_PLAN.md#shared-native-core-w0) specifies shared interfaces,
+compatibility and acceptance separately from the later phase algorithm migrations.
+An integer identity is meaningful only with its owning artifact;
+equal integers in different stores are not interchangeable.
 
-The first migration tranche covers the production Phase 3 path from compact
-EmuIR loading through clustering, provider input construction, Static Exact
-semantic generation, validation and publication. Provider search, imported
-solutions and frozen-output replay are measured separately so search time is
-not attributed to Python orchestration.
+`phase7 import-vivado-lineage MAPPED FUNCTIONS REQUEST STORE SUMMARY INVENTORY...`
+is a shared-core operation exposed through the same typed API. Mapped input,
+versioned source-function signatures, the small request and every inventory are
+bound `ArtifactRef`s. The importer uses the common SQLite RAII, registry, error,
+metric and atomic-publication contracts. It streams census records into the
+canonical source/placement owner without Python per-cell parsing. Only the
+selected stage is retained. `check-runtime SCHEMA` verifies an explicitly
+registered version; Vivado compile/standalone preflight requires the lineage
+schema before synthesis or vendor implementation. Write-store connections explicitly enable URI
+handling before attaching immutable source stores. This operation does not
+complete the remaining Vivado RTL exporter or W7 data-plane migration.
 
-## Evidence contract
+Python SQLite adapter scopes close their connection explicitly as well as
+commit or roll back their transaction. The SQLite connection context manager
+alone does not close the handle. Prepared timing readers, native ScheduleStore
+summary readers and physical certificate/site adapters release their handles
+before publication or phase retirement, including on validation errors. Tests
+retain connection objects beyond those scopes to verify actual close behavior;
+resource release cannot depend on garbage collection or filesystem unlink rules.
+The same rule covers SQLite connection factories behind lazy physical name maps,
+atom lookups, boundary identity/timing, logic-segment identity/timing and local
+path timing. Exhausted or explicitly closed iterators release their connection;
+live iterators retain it until their consumer closes or finishes them. A reader
+lease remains explicitly owned by its view and must close before that view's
+publication is retired.
+Python adapters construct immutable input URIs through `sqlite_artifacts` and
+explicitly enable URI handling on connections that attach published stores.
+This preserves read-only inputs independently of SQLite's build-time URI
+default and protects path characters such as `?`, `#` and `%` from URI parsing.
+These operation implementations and their supporting contracts are compiled
+into one `libemuflow_core` target. The former `emuflow_native_stages` target is
+only a CMake compatibility alias; the executable and native library tests link
+the core directly. This does not yet cover every standalone adapter or complete
+the native production data plane.
 
-Every qualification run publishes `phase3-runtime.json`. Its nested records
-separate input loading, cluster construction, TritonPart/PATRON work, Static
-Exact semantic construction, final validation, packing, JSON writes and
-assignment-index publication. Parent records include their children and are
-not summed. Comparisons use the same source inputs, platform, constraints,
-provider version, imported TritonPart solution and frozen PATRON output.
+The duplicate Static Exact analyzer and four Chimew executables/build options
+are retired. Tests and current adapters call the same unified entry and shared
+kernel implementation. Chimew's superseded text readers/writers and schema
+registry names are removed. Its grouping, refinement, bank and RUDY kernels
+accept a caller-owned output stream; the shared stage layer publishes file
+outputs only after production completes and source generations still match.
+Atomicity failure gates exercise early parse rejection, late producer failure,
+changed sources, failed output streams and prior-result preservation. Pipe
+outputs retain their streaming protocol and require complete record validation
+plus process success. Infrastructure acceptance is separate from the remaining
+adapter integration and W7's native data plane; a common interface is not
+whole-flow qualification.
 
-The migration is accepted only when all of the following hold:
+`phase3 refine-patron-from-primary EMUIR TIMING PRIMARY INITIAL REQUEST OUTPUT`
+builds the PATRON v14 model and invokes the existing solver in one shared-core
+process. Normal compact native clustering selects this direct owner. The shared
+`PrimaryClusterView` reads source-scoped ownership and resource columns without
+copying them into another membership/resource artifact or transposed C++ matrix.
+The Python adapter carries board-sized configuration and packed initial ownership
+plus fixed constraints. It does not create pressure-net/path/name populations,
+derive a second model or stream per-record solver input. The snapshot command,
+cluster-column protocol and v1 board request are retired. Missing primary
+ownership fails without generating a replacement snapshot. Final semantic/index
+publication still has Python work.
 
-1. The final Phase 3 validation status and all resource, cut, dependency and
-   capture populations agree.
-2. The Static Exact v3 semantic contract is byte-canonical and has the same
-   SHA-256 identity on reference fixtures.
-3. The indexed terminal validator proves the complete instance relation,
-   resource loads and cut source/sink relation against compact EmuIR.
-4. Phase 4 through Phase 7 consumers return the same logical segment and
-   capture records through the assignment-index API.
-5. Peak RSS, artifact sizes and wall time are recorded for both runs; an
-   optimization is not accepted from a synthetic microbenchmark alone.
+The shared model is move-only, and both its typed pressure-model reader and direct
+store producer call the same search implementation. The producer checks primary
+cell/membership coverage, pin identities, sparse endpoint ordinals, ordered timing
+paths/net references, fixed ownership, resource/balance limits and bank symmetry.
+Capacity and route policies retain their existing meanings; no schedule-readiness
+or Static Exact feasibility guard is introduced. Input CRCs and retained file
+generations reject truncation, corruption and mixed sources before solving.
+The output keeps the existing typed assignment format. A sealed integer order
+sidecar binds its lexical native coordinates to canonical cluster ordinals,
+including identities longer than six digits; Python maps it without a name pool.
+Only counts and implementation identity return in the bounded
+[model summary](../schemas/patron-native-model-v1.schema.json).
+The summary also separates model-build and search operations using the common
+wall/CPU/I/O metrics. Their RSS values are process-lifetime high-water snapshots,
+not incremental stage memory; the enclosing sampled process-tree peak remains
+the whole-phase memory measurement.
+Normal handoff still runs the independent assignment validator and candidate
+selection before final semantic/index publication.
 
-## Migration boundaries
+`phase3 reduce-loads EMUIR PRIMARY REQUEST OUTPUT` independently reduces the
+primary resource columns under the final packed assignment. Construction of
+compact partition summaries, balance validation and final online validation use
+this common operation rather than expand every cluster's names, membership and
+resources. The request binds the source and primary generations and streams one
+integer part per canonical cluster; it does not carry solver resource totals.
+Only per-partition cluster/cell/resource counts return to Python, where the
+existing independent capacity, reservation and share equations remain unchanged.
+The final validator checks instance/cluster ownership agreement, fixed/group
+constraints and source-bound membership, and reuses its independently reduced
+loads for its balance equations. Unknown owners, missing coverage, source
+changes, malformed requests and checksums reject before atomic publication.
+Native consumer failure never retries through expanded reference records.
+Instance ownership borrows the existing member offsets and, when catalogs
+match, the packed part column; it does not rebuild cluster IDs or member counts.
+The public assignment and balance-report schemas are unchanged. Final semantic
+record construction and index publication still require further native ownership.
 
-The current first boundary moves dependency-cone and capture-cone traversal to
-`emuflow_static_exact_analyzer` for designs with at least 100,000 instances.
-Python writes a versioned integer-only binary graph, validates the native
-result, and materializes the unchanged semantic contract. Small designs use
-the original Python traversal as a continuously tested reference.
+`phase3 build-captures EMUIR REQUEST TOPOLOGY PARTS OUTPUT` owns compact capture
+production and independent source validation in one shared-core operation.
+Inputs keep their current EmuIR v2, exact request v4, topology v3 and part-catalog
+v1 envelopes; the final capture stream remains byte-compatible v1. Python sends
+file references and the bounded part catalog, then reads the checked output. It
+does not replay capture coordinates, decode the capture population, retain a
+coverage bitset or issue a SQLite lookup for each capture.
 
-Assignment index v2 replaces per-row JSON copies with typed segment and capture
-columns plus compact integer enums. Version 1 remains readable. Assignment
-storage v3 removes the duplicate compressed semantic graph from
-`assignment.json`; the JSON document carries a schema-and-digest descriptor,
-while the typed index is the canonical persisted payload. Full-document reads
-reconstruct the historical logical contract from the index and reject any
-digest mismatch. Production Phase 4--7 readers continue to request bounded
-indexed views.
+The producer writes one ordered cursor directly rather than maintain the legacy
+per-capture seq index through repeated select/update statements. Its private
+normalization spool closes and is removed before validation. The independent
+checker does not consume that spool: it rebinds topology coordinates to source
+endpoints, validates dense ordinals despite stored ordinal gaps, checks owners,
+architectural-state resources and exact pin/bit identities, and merges its own
+canonical relation with the immutable capture stream. Missing, extra, reordered
+or changed records reject. Coverage is relative to the declared topology
+coordinates; graph traversal and downstream equivalence/timing retain their
+separate qualification gates. A complete required source cursor also checks sink
+coverage without a separate recount. Its temporary relation is retired on exit.
 
-The final assignment is the authoritative owner of the canonical Static Exact
-digest. Production assignment-index publication passes that already validated
-identity into the binary writer rather than iterating the complete resident
-contract a second time. The explicit migration path for detached historical
-artifacts continues to recompute the digest because it does not share the
-producer's validated in-process object.
+Shared `OrderedRecordTable` decoding is also used by native semantic hashing and
+section emission. `StagedArtifact` owns exclusive same-directory staging and
+private sidecars for both PATRON and capture operations. A capture result replaces
+an older generation only after independent checking and source-generation checks.
+`phase3 validate-captures EMUIR REQUEST TOPOLOGY PARTS CAPTURES OUTPUT` exposes the
+same independent checker with a bounded JSON proof. The former `resolve-captures`
+command, persistent seq index and its schema registry entry are retired. Tests
+compare the current owner with an independent source-coordinate oracle; there
+is no second production capture publisher or Python fallback.
+The Phase 3 profiler records a nested `static_exact.native_capture_build_and_validation`
+interval and native capture count. The interval belongs to its enclosing semantic
+operation and must not be added to that enclosing time. Final semantic-node
+metadata construction, other Python semantic traversals and assignment/index
+publication are still separate migration work. Native node-reader rejection
+explicitly releases its mapped views before retiring staging, so NFS cleanup
+cannot mask the original semantic validation error. The reader also releases
+partially constructed mappings on malformed input.
+Native node and capture readers reuse the shared column/record mapping owner.
+It retains registered views and any borrowed record iterator or scalar decoder;
+dropping the outer view cannot retire a live borrower. Producers transfer their
+private scratch to that same owner. There is no independent temporary-directory
+weak-reference finalizer: normal release and exception cycles both release views,
+unmap, then retire scratch in that order. Explicit close invalidates borrowed
+cursors. Readers of external published inputs unmap without deleting those inputs.
 
-Compact EmuIR clustering now follows the same integer-first rule. One ordered
-cell cursor builds a four-byte original-sequence to lexical-ordinal
-permutation; ordered endpoint records drive compact union-find arrays; a final
-ordered cell/resource cursor emits the canonical cluster payload directly.
-The production path therefore does not decode the graph into cell/net
-dictionaries or retain the old instance dictionary, name index and grouped
-member copy beside the final result. The legacy in-memory implementation
-remains the differential oracle. Tests cover group/fixed semantics and reject
-an invalid endpoint owner before publication. A synthetic 300,000-cell
-singleton comparison measured loading plus clustering at 436.58 MiB traced
-peak and 9.94 seconds for the in-memory path versus 212.52 MiB and 5.70 seconds
-for the ordered compact path. These numbers isolate construction and do not
-qualify NVDLA.
+Small/inline and explicitly selected external tools, retained diagnostic traces,
+and explicit typed input copies keep the reference model path. A selected native producer never retries through that path. Its
+`native_input_transport` is `native-primary-store-model-v2` for direct primary
+ownership. Input bytes count only the emitted packed initial/fixed ownership
+and bounded request; the primary store is referenced. Input records count those
+two emitted private artifacts rather than pressure vertices/hops. They are phase-owned scratch,
+not checkpoints. Full NVDLA runtime/RSS/disk and terminal Phase 7/7C qualification
+remain required before declaring the migration complete.
 
-The production exact-binary boundary now emits sections directly from the
-native integer topology and compact typed record buffers. Capture protocol v3 already avoids a token/string
-round-trip: production native input scans the compact EmuIR integer relations
-directly and output identifies only the requested cut, partition, net and sink
-ordinals. Python resolves those coordinates with one ordered authoritative sink
-cursor and performs independent semantic checks; it does not rebuild ordered
-instance/net copies, an instance-name ordinal map, or whole-net dictionaries
-for captures. Stable segment
-numbering is derived from ordered counters rather than duplicate graph-sized
-lookup maps. Cut construction also forwards its already-known net ordinal
-column to the analyzer, which checks every `(name, ordinal)` pair against EmuIR
-and avoids rebuilding cut-name lookup, matched-name and coordinate maps. The
-name-only compatibility entry remains available for old callers. The current implementation transfers predecessor lists directly into a
-byte-backed cut-node sequence, while dependency edges, logic segments and
-capture records remain repeatable typed streams for the canonical digest. The
-exact-binary writer no longer replays the dependency or logic record streams:
-it consumes predecessor CSR, launch flags, raw cut-node fields and raw capture
-fields, checks the integer relation against the canonical node records, and
-stages each validated edge once in a typed temporary spool before canonical
-section assembly. Capture-node segment identities are checked in the same
-lexical order used by the v3 contract across six-digit boundaries, while the
-binary logic section remains in numeric global-ordinal order. Exact-binary v2 bounds capture bits to
-8192 bits, uses canonical unsigned byte encoding, and validates section sizes
-before allocation. Independent readers still reconstruct and validate the
-published relation. NVDLA qualification must measure the remaining digest
-decode CPU, final cluster/path and eligible-candidate memory, and analyzer-side
-graph/capture vectors. The eligible-name policy no longer adds a second
-retained Python string list in production, but its logical JSON array still
-requires linear encoding and artifact bytes.
+`phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL` is also a shared
+`StageRequest`/`ArtifactRef` operation. The production adapter requires the unified
+entry; the redundant standalone Bookshelf CLI has been removed. The core owns
+typed SQLite reads, immutable input paths, ordered atom/pin joins, endpoint
+spooling, degree/driver checks, atomic text publication and scratch lifetime.
+Two ordered cursors preserve numeric net order and stable driver-first endpoint
+order without a per-net fanout vector. Counts and primitive pin signatures are
+the only summary returned to Python. Existing mapped v2 and private lexical
+atom relations retain their zero application/user PRAGMAs; their stage-owned
+metadata and ordered-record checks remain required. This integration does not
+complete the other physical exporters or full W0/W7 qualification.
 
-## NVDLA baseline
+The OpenPARF bridge has one required typed output and consumes typed placement
+certificates. Its validator requires a record sink, instead of optionally returning
+a complete physical-cluster tree. The physical publisher binds source generations,
+rejects output/input aliases and rechecks sources at atomic publication. Separate
+packing/placement JSON output is retired; bounded test snapshots use the same
+producer. This does not make the remaining Python bridge data plane native.
 
-The reference run
-`nvdla-phase3-runtime-f4e62aad-v1` uses commit `f4e62aad`, the imported
-four-way TritonPart solution and the frozen PATRON v14 replay. It completed in
-7,828.99 seconds (2:10:29 measured inside Phase 3; 2:10:32 by `/usr/bin/time`)
-with a 49.73 GiB peak process-tree RSS. Selected records are below. Parent
-records include their named children and must not be added to those children.
+RWRoute's production API takes the mapped SQLite index and one typed physical
+handoff directly. JSON/object export is retired; the noninstalled
+`tests/rwroute_reference.py` remains an explicit differential oracle. Native request
+v2 derives top/part from the stores instead of Python metadata views.
 
-| Step | Wall time | Share of total |
-| --- | ---: | ---: |
-| Cluster construction | 841.82 s | 10.75% |
-| TritonPart initialization | 662.57 s | 8.46% |
-| PATRON pressure-model construction | 335.00 s | 4.28% |
-| PATRON native refinement | 2,350.46 s | 30.02% |
-| `patron.build_candidate_assignment` child | 2,259.03 s | 28.85% |
-| Final PATRON and online validations | 245.15 s | 3.13% |
-| Cluster packing and write | 143.97 s | 1.84% |
-| Assignment packing and JSON write | 1,428.76 s | 18.25% |
-| Assignment-index publication | 1,734.99 s | 22.16% |
-| All publication steps | 3,307.79 s | 42.25% |
+`phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY` now owns the complete
+production TSV export from mapped index v2 and the typed physical handoff in the
+shared core. Its small request binds source generations and carries board I/O
+and resource configuration only. Placed cells, RAM properties, LUT6_2 route
+ordinals, closed clock-gate qualification and net/pin rows stay native. The
+Python cursor oracle is noninstalled and reserved for explicit independent
+differentials; it is not a production input path or failed-native fallback. See the authoritative
+[physical export contract](XILINX_PHYSICAL_FLOW.md#native-rwroute-export).
+This closes that exporter boundary, not all physical adapters or W7.
 
-The baseline assignment JSON is 1,078,736,794 bytes and its v1 index is
-16,276,533,248 bytes. These measurements show two independent hot regions:
-Static Exact construction is inside `patron.build_candidate_assignment`, and
-the duplicate JSON/index publication path consumes another 55.13 minutes.
+`phase5 build-schedule ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST OUTPUT`
+owns the complete current indexed exact producer. It builds the integer model
+from v3 RouteStore, computes a typed in-process solution, derives the dependency
+and sink-readiness certificates and domain/phase metrics, then publishes the
+existing v4 ScheduleStore through the shared writer. Python sends only bounded
+board configuration, static header fields and domain templates. It never imports
+the complete native result or builds route/predecessor arrays, completion offsets,
+hop-sequence arrays or certificate populations for this producer. No numeric
+input/result files are written or reread on this path.
 
-## NVDLA qualification result
+The common model and solver preserve tree traversal/order, predecessor ranks,
+capacity budgets, fixed lane/ratio groups and affine-delay cycle rounding.
+`ComputeStaticExactSchedule` returns typed records directly to its C++ caller.
+The numeric model/result readers and writers, Python result import owners,
+standalone Exact scheduler and split scheduling/publication commands have been
+removed. Current native production has one complete producer and no intermediate
+wire-format replay path. Negative tests exercise RouteStore/configuration sources,
+publication ownership and the independent staged-store validator directly.
 
-The candidate run `nvdla-phase3-runtime-c639b12b-v1` uses the same EmuIR,
-platform, timing inputs, imported four-way TritonPart solution and frozen
-PATRON v14 output as the baseline. It passed in 5,877.25 seconds (1:37:57
-inside Phase 3; 1:37:59 by `/usr/bin/time`). The final report is identical to
-the baseline after excluding the expected storage-schema descriptor.
+Canonical and pretty logical hashes are accumulated from typed records during
+publication. Original route edge order, Unicode identities, nullable ratios and
+section seals are retained. Bounded floating-point header/domain values use the
+same shortest round-trip decimal convention as Python, including its exponent
+thresholds and signed zero. The shared `RouteView` reads identities and original
+edge order from the authoritative RouteStore through ordered joins; there is no
+additional graph identity catalog or per-route SQL lookup.
+The complete producer keeps the publication identities and original integer
+edge order from its model-building scan and moves them into the writer;
+publication does not rescan RouteStore to reconstruct them.
 
-| Metric | Baseline | Candidate | Change |
-| --- | ---: | ---: | ---: |
-| Phase 3 wall time | 7,828.99 s | 5,877.25 s | -24.93% |
-| Peak process-tree RSS | 49.73 GiB | 42.69 GiB | -14.16% |
-| Parent bytes read | 9,243,000,832 | 5,771,280,384 | -37.56% |
-| Parent bytes written | 19,443,142,656 | 15,418,499,072 | -20.70% |
-| `assignment.json` | 1,078,736,794 B | 613,148,446 B | -43.16% |
-| `assignment.sqlite` | 16,276,533,248 B | 12,677,718,016 B | -22.11% |
-| Candidate-assignment construction | 2,259.03 s | 2,113.69 s | -6.43% |
-| Assignment packing | 1,407.53 s | 13.71 s | -99.03% |
-| Assignment-index publication | 1,734.99 s | 1,296.98 s | -25.25% |
-| All publication steps | 3,307.79 s | 1,458.63 s | -55.90% |
+This production path requires current v3 typed route input and the unified
+native scheduler, regardless of the route count. Indexed production never
+selects Python because a partition happens to have fewer cut routes, and a
+standalone-only installation is rejected for this boundary. Older storage and
+dictionary inputs and supported registered-boundary/ratio providers still use
+the common Python schedule builder; it no longer selects native result import
+by a circuit-size threshold. A native failure never
+retries that path. Requests retain the
+source file generations captured by their producer; stale references are rejected
+before computation and rechecked before atomic publication. The Python layer
+still commits the compact manifest and report. Phase 5 reports identify the
+store and producer implementations separately from the schedule algorithm.
+Storage wall time includes native calculation for the complete producer and is
+labelled with its measurement scope.
 
-Both indexes carry semantic SHA-256
-`45555fdcb6c612e311bbc181ee48ed81f123ebf1306fda1af3eb9f2c6d7c12a5`.
-Their complete indexed populations also agree: 3,941,369 instance copies,
-496,941 cut sinks, 473,287 exact cut nodes, 5,830,661 cut-source records,
-17,422,850 logic segments, 17,779,692 segment bindings and 11,949,031 capture
-requirements. The unchanged digest, row counts and report prove that the
-storage reduction did not weaken Static Exact semantics or validation.
+Independent schedule validation runs against the staged typed store before
+report commit. It does not rebuild the reference validator's complete route/hop
+dictionaries. Native domain summaries use bounded counts over the in-process
+solution. Timing reconstruction consumes the staged typed view, and opening
+that freshly sealed producer-owned store does not repeat its full file hash.
+Compact output and indexed validation apply without a managed-storage flag;
+legacy TSV/transport JSON/testbench/feedback exports and reference simulation
+are not implicit native-production outputs. Small reference and explicit
+compatibility paths retain their export behavior; qualification tools may
+request those functions explicitly.
 
-The remaining 613 MB JSON and 11.81 GiB index were implementation costs, not
-logical requirements. Assignment-index v3 now keeps only the bounded control
-relations (`parts`, `copies`, and `cut_sinks`) in SQLite. Static Exact nodes,
-segments and captures use the versioned `assignment.exact.bin` data plane with
-integer identities, per-FPGA sections, section SHA-256 seals and one descriptor
-sealed by the SQLite index. Phase 6 transfers this artifact by hard link when
-the filesystem permits it; split and placement consumers read the required
-sections directly instead of rebuilding the same B-trees.
+The independent Python validator still has compact route-scale working data;
+non-exact providers, explicit compatibility result import, timing adapters and
+advanced phase orchestration are unfinished. This delivery does not
+complete W7 or establish whole-stage performance gains.
+Deployment probes load the unified entry and physical bridge before publishing
+runtime provenance; launchers must repeat them in the actual execution
+environment before expensive computation.
+`emuflow-native check-runtime` exercises SQLite version and JSON features without
+creating graph artifacts or an on-disk database. Its optional `--report` uses
+the common operation-result contract. External EDA engines retain their own
+qualification requirements.
 
-A 20,000-cut-node synthetic population with the NVDLA relation proportions
-(240,000 source segments, 720,000 logic segments and 480,000 captures) occupies
-30,142,145 bytes in the binary data plane versus 134,692,864 bytes in the v2
-exact-relation SQLite tables, a 77.62% reduction. Binary publication took
-1.657 seconds and the independent full scan took 1.913 seconds on the
-development host; legacy SQLite insertion alone took 1.898 seconds. This is a
-format benchmark, not a replacement for the required full NVDLA rerun.
+SQLite owns relations requiring joins, uniqueness or bounded lookup. Large
+ordered populations may use typed binary sections or ordered record streams;
+they must not be expanded into SQLite solely for container uniformity.
+Compatibility JSON is an explicit exporter, not a second authoritative owner.
 
-For the cut-coordinate preparation substep, a 300,000-record synthetic check
-measured 19.66 MiB of incremental Python allocation and 0.149 seconds for the
-name-only compatibility lookup, versus no measurable incremental allocation
-and 0.110 seconds when validating the ordinal column already owned by cut
-construction. This isolates the removed hash containers; it is not an NVDLA
-stage-level performance claim.
+Normal handoffs verify schema, source identity, required row counts and circuit
+semantics. They do not run SQLite `quick_check` or `integrity_check`. Strong
+hashing belongs to publication/import and explicit terminal verification,
+not repeated routine reads of already validated immutable artifacts.
 
-A 100,000-cell/100,000-net synthetic compact-input bridge comparison measured
-15.42 MiB peak Python allocation and 1.58 seconds for the former decoded
-instance map plus endpoint loop, versus 2.03 MiB and 1.50 seconds for the direct
-SQLite integer-relation stream (-86.85% peak allocation). This isolates the
-native input adapter and is not an NVDLA stage-level claim.
+`emuflow_core/emuir_view.hpp` supplies the compact EmuIR v2 read-only view used
+by the production Phase 3 analyzer. Its cell-state and connectivity visitors
+consume ordered records and check sequence, ownership and declared coverage in
+that same scan. Construction reads bounded metadata; it does not preload or
+recount the graph. Sparse endpoint ordinals, top-level endpoints and empty nets
+retain their existing meaning. Algorithms explicitly extract local integer
+sequences for their own arrays; public cell/net IDs retain the source artifact
+namespace. A lookup using an ID from another artifact is rejected even when its
+local sequence matches. This does not yet migrate legacy v1 readers, noncompact
+capture adapters, mapped physical stores or the other remaining phase views.
 
-The typed writer now emits the binary sections directly from the native CSR
-and compact byte-backed cut/capture relations, so publication no longer builds
-a cut-name hash table or expands dependency and logic-segment dictionaries. A
-100,000-cut/100,000-capture comparison measured 23.77 MiB versus 9.71 MiB peak
-Python allocation and 14.368 versus 6.135 seconds, with byte-identical output.
-The next Phase 3 tranche is to compute the canonical digest from the same typed
-relation without replaying logical dictionaries and to reduce the C++
-analyzer's internal graph/capture vectors. This isolated writer result is not
-an NVDLA stage-level claim.
+### Native operation API
 
-### Digest-reuse NVDLA A/B
+`emuflow_core/native_pipeline.hpp` defines the typed in-process operation
+interface; CLI parsing is a separate adapter. The library executes the native
+implementation directly, with no Python invocation or graph-sized FFI transfer.
+PATRON uses the unified entry, including when its path is supplied explicitly.
+The redundant in-tree standalone CLI and legacy text input parser are retired.
+`EMUFLOW_PATRON_INPUT_COPY` publishes the same CRC-checked typed binary stream
+as pipe input, with atomic replacement and rollback on publication failure.
+An explicit external comparison engine remains a separately supplied input. A present unified binary that
+rejects a request is an error, not permission to retry an older implementation.
+The new PATRON operation defaults to compact typed summary output; detailed
+text traces require explicit `--trace-output`. Existing Python qualification
+calls select that mode explicitly when retained trace evidence is requested.
 
-A later same-input NVDLA Phase 3 replay compared `8d802686` with `2040572a`.
-Both used the same prepared EmuIR and timing inputs, imported four-way
-TritonPart solution, frozen PATRON v14 replay, platform, constraints, and
-native executable hashes. They ran on different otherwise-idle compute nodes,
-so this is a stage-level qualification rather than a substitute for the final
-same-host Phase 1--7/7C gate.
+`ArtifactRef` binds an explicit registered schema to a canonical path and a local
+file generation (device, inode, size, modification and change timestamps).
+Generation checks run before and after computation. File envelopes are checked
+without full payload loading or rehashing. SQLite inputs must be finalized
+single-file publications; active WAL/journal sidecars are rejected. Pipe inputs
+retain the stage's CRC/EOF and semantic parser without consuming their prefix
+twice or creating a scratch copy. Text compatibility grammars likewise remain
+stage-owned rather than being guessed from file contents.
+Native callers pass producer `ArtifactRef` objects directly; the library
+checks their declared schema and retained generation before execution. It does
+not silently rebind stale producer references to whatever now occupies a path.
+CLI paths remain an explicit import boundary. Supplying both bound artifacts
+and paths for the same request is rejected as ambiguous ownership.
 
-| Metric | `8d802686` | `2040572a` | Change |
-| --- | ---: | ---: | ---: |
-| Phase 3 wall time | 5,719.81 s | 4,999.22 s | -12.60% |
-| Parent CPU time | 5,697.84 s | 4,974.99 s | -12.69% |
-| Peak process-tree RSS | 44,772,444 KiB | 44,773,952 KiB | +0.003% |
-| Assignment-index publication | 1,086.81 s | 361.53 s | -66.73% |
-| Parent bytes read | 6,462,756,864 | 8,850,466,816 | +36.95% |
-| Parent bytes written | 6,517,743,616 | 6,517,723,136 | unchanged |
+Local generation metadata is not a cryptographic or portable semantic identity.
+Producer seals, artifact namespace binding, cross-input provenance, row counts
+and independent circuit validation remain required. The registry does not
+replace those checks with a successful header read.
 
-The candidate index publication spent 233.93 seconds writing the exact binary,
-102.30 seconds writing primary copies, 3.89 seconds writing cut sinks,
-0.42 seconds committing, and 15.21 seconds in the independent indexed
-validator. Its semantic digest, binary manifest digest, row counts, validation
-metrics, artifact sizes, and byte hashes for `clusters.json`, `assignment.json`
-and `phase3_report.json` all match the baseline. The unchanged 42.70 GiB peak
-shows that removing the repeated digest traversal saves CPU and wall time but
-does not solve the resident Python semantic-contract tree; direct native
-emission remains the Phase 3 memory priority. The higher read count is retained
-as measured node/page-cache variance and is not claimed as an I/O improvement.
+`emuflow-native --report RESULT_JSON PHASE OPERATION ...` optionally publishes
+the bounded [operation result](../schemas/native-stage-result-v1.schema.json)
+atomically. It includes registered input/output references, status, an error
+code/message and common metrics. Payload stdout stays available for existing
+stream protocols. Report paths may not alias inputs, outputs or the capture
+index; invalid requests are rejected without overwriting those artifacts.
+Errors use nonzero exits and never trigger a silent reference fallback.
 
-## Phase 1--7 repeated-materialization audit
+Wall time describes the operation; CPU counters are process-interval deltas.
+Parallel operations in one process may overlap, so their CPU/I/O deltas are not
+exclusive stage costs and must not be summed. RSS is explicitly the current
+process's lifetime high-water mark, not a sampled per-operation/process-tree
+peak. Linux I/O counters are self-process physical read/write deltas; unavailable
+counters are null. An operation result does not qualify a complete phase or
+substitute for whole-flow provenance, validation or timing evidence. Exact
+section emission still leaves final manifest publication with its owning outer
+publisher; its native operation result is the section summary, not a claim that
+the complete Phase 3 assignment has been published.
 
-The Phase 3 failure mode was defined as a graph-sized population being
-expanded, sorted, serialized, indexed, reread, or revalidated more than once
-without adding a new semantic guarantee. The production flow was audited with
-that definition rather than treating every stage boundary as removable.
+## Native production entry (W7)
 
-| Phase | Finding | Current action |
+`core::Compile` and `emuflow-native compile REQUEST_JSON` execute the fixed
+preflight → frontend → timing → partition → route-policy → route → TDM → split →
+physical → signoff → finalize sequence. The opt-in CLI bridge is
+`multi-fpga compile --compile-implementation native-control-v1`. The native owner
+does not call the Python compiler. Each transitional Python adapter invokes one
+shared phase body and exits, releasing its working population before the next
+phase starts. The existing Python controller uses the same phase bodies and
+retains advanced modes. Current defaults resolve from the shared phase API
+signature: PATRON v14 and generalized Static Exact. Cut mode does not infer an
+algorithm version, and the redundant flow-refinement selector is retired;
+both requested and effective configuration are recorded in the separate native
+result. See [supported modes and contracts](USER_GUIDE.md#native-compile-control).
+
+The controller binds the request, adapter and interpreter through `ArtifactRef`,
+checks phase order, run identity and request generation, and claims an empty
+output directory. It validates the terminal flow-report envelope before atomic
+controller-result publication. Stage failure or cancellation never advances or
+retries the sequence. Previous control state is removed after the next adapter
+consumes it; no checkpoint DAG is created. Canonical phase artifacts retain their
+normal validation and publication contracts. Controller validation is not a new
+electrical/timing oracle or a replacement for terminal flow validation.
+Phase temporary/cache roots are isolated and retired after successful execution
+and state validation, rather than accumulated until the complete flow exits.
+Control-state paths cannot refer into those roots through absolute paths or
+output symlinks; required downstream stores must be published outside them.
+
+This is a native orchestration milestone, not completed W7. Python phase data
+planes and several direct engine adapters remain. Retained Chimew comparison
+runs through native control with either Xilinx backend. Its source-bound device
+catalog is carried as bounded control data; baseline physical/runtime reports
+are serialized once within the comparison. Frame search and serial BSP remain
+unsupported by native control. Component coverage does not establish real-design
+physical/global timing qualification.
+The controller reports `native_data_plane_complete:false`. Full native data-plane
+ownership and real-design Phase 7/7C qualification remain required for completion.
+
+`core::RunExternalTool` owns actual engine execution: explicit executable/argv,
+working directory, inherited or replaced environment, optional wall/CPU/address
+space/file-size limits, a separate process group, deadline/cancellation escalation
+and `wait4` reaping. It does not invoke a shell. Empty argv elements and
+environment values remain distinct from missing fields; executable, working
+directory and environment names remain nonempty. Engine diagnostics use a fixed-size
+tail rather than a full temporary log or Python string. Forwarded stdout remains
+a direct engine-to-importer pipe for production Yosys; document bytes never pass
+through the request/result protocol. A failed importer cancels the supervisor,
+which reaps its engine before the adapter removes request scratch. Remaining
+members of the engine process group are killed when the leader exits. This is
+process-group ownership, not containment of deliberately daemonized processes.
+
+The CLI boundary is `emuflow-native run-tool REQUEST RESULT_JSON`; its bounded,
+versioned binary request carries only tool configuration. The atomic
+[tool result](../schemas/external-tool-result-v1.schema.json) embeds the common
+operation result and distinguishes launch errors, engine exit/signal, timeout
+and cancellation. Diagnostic bytes use hex encoding so invalid UTF-8 cannot
+corrupt the result. Engine CPU and maximum-process high-water RSS from `wait4`
+remain separate from supervisor metrics; neither is a simultaneous process-tree
+RSS measurement. Tool artifact semantics and whole-phase publication remain the
+owning phase's responsibility.
+
+The installed production Yosys stream and OpenSTA version/extraction adapters
+select this runtime from the tool's unified sibling or configured native install.
+The bounded provider-output helper uses the same owner. Explicit comparison tools
+without a unified installation retain the Python launcher. Once a native runtime
+is selected, failure never retries the engine through Python. Other direct
+subprocess adapters and advanced compile orchestration are still unfinished.
+
+The complete entry must resolve effective configuration, execute dependencies,
+manage external tools and resource limits, collect stage metrics, and publish
+terminal evidence through the shared core. Each stage consumes artifact
+references and bounded configuration and returns references plus summaries.
+Graph-, hop-, endpoint- and path-sized Python containers are outside the native
+production contract. Python reference algorithms and explicit legacy exporters
+remain separate from production implementation selection.
+
+Delivery requires an actual complete compile, not only CLI parsing, a plan
+printer, a kernel dispatcher or a subprocess wrapper around the Python CLI.
+Defaults, provider/policy identifiers, seeds, failure behavior and external
+tool identities must remain explicit. Unsupported combinations fail closed;
+there is no silent implementation or provider fallback.
+
+## Stage ownership boundaries
+
+| Stage | Existing native/indexed foundation | Remaining delivery obligation |
 | --- | --- | --- |
-| 1 | The current frontend writes compact EmuIR SQLite and computes reports with indexed scans. The JSON report and normalized BoardDB are bounded control data. | No graph-sized duplicate found. |
-| 2 | TimingPathDB uses a compact JSON manifest plus a sealed streaming payload/index. Selected-path readers query only requested paths. | No duplicate path population found in the current indexed producer. The older standalone placement `phase2.py` remains a compatibility flow outside the canonical multi-FPGA Phase 2 timing path. |
-| 3 | Assignment JSON, SQLite, and exact relations previously repeated the same graph. | Assignment-index v3 and `assignment.exact.bin` are the implemented control/data split. Native predecessor CSR and fixed-width launch/level/depth arrays replace four analyzer-side Python maps. Capture protocol v3 returns fixed-width original net/sink ordinals. The production adapter streams compact cell/net/integer-endpoint rows directly into native input, validates cut ordinals/classes with an ordered merge, and resolves capture coordinates against one ordered sink cursor. It therefore avoids the extra instance-name ordinal map, decoded endpoint graph, per-cut random queries and per-capture whole-net decoding while preserving name-only compatibility. Compact clustering separately uses ordered integer cell/endpoint cursors and fixed-width union-find state, so the final clusters are no longer built beside instance/name/group graph copies. Exact-binary v2 provides bounded canonical capture-bit storage with v1 read compatibility. Production PATRON derives all four semantic relations as repeatable byte-backed streams. The exact-binary writer consumes the native predecessor CSR plus raw cut/capture bytes directly, checks them against the canonical record view, and avoids cut-name/hash and dependency/logic-record expansion while preserving byte identity. Combinational-candidate characterization and PATRON pressure construction now use ordered compact endpoints, temporary arc deduplication, fixed-width CSR/membership arrays and streamed native input. Cluster publication streams its compressed/base64 envelope directly to the atomic file without another complete encoded payload. The production policy writer also walks the packed lexical candidate view without retaining a second Python string list. The logical v1 policy array, cluster/path objects and the C++ analyzer's internal graph/capture vectors remain pending schema/native work. |
-| 4 | The former `routes.json` repeated demands and routed records inside one graph-sized JSON document, forcing Phase 5 to parse and retain it before scheduling. | `routes.json` is now a small selector for a content-addressed typed RouteStore. Demand records are projected from their authoritative routes; sinks, edges, predecessors and timing paths are normalized once. Phase 4 and the final flow report inventory the sidecar, and legacy `read_json` remains an explicit materializer. |
-| 5 | The former canonical `schedule.json` serialized every routed hop and managed mode only wrapped that complete JSON in zlib/base64. Phase 5 also sorted and indexed the complete Phase 4 route dictionary population. | RouteStore ordered cursors feed native Static Exact input, SQL supplies stable net/demand ranks and cross-layer hop order, and Phase 5 retains compact route columns plus lazy schedule-route projections. ScheduleStore v4 stores hops, routes, route sinks/edges, completions and arrivals as typed relations and keeps only domain-scale JSON records. Cross-layer timing v2 verifies exact route/schedule hop coverage with an ordered cursor merge and stores only the two artifact digests, merge policy and hop count; it no longer emits a second H-scale `hop_bindings` array. Materialized v1 contracts, both logical seals and legacy readers remain supported. Standalone independent exact validation still has route-level maps, so NVDLA I/O qualification is pending. |
-| 6 | Streaming split metadata formerly rebuilt every hop as endpoint/lane/binding dictionaries and repeated the population in several JSON artifacts. | Endpoint, lane, anchor, board-binding and adapter-port relations are stored once in sealed `transport.sqlite`. The bounded `binding_physical_ports` relation lets physical-I/O contract v2 emit one record per real pair with a member count/seal. Its reader replays one ordered authoritative binding cursor to verify those memberships without serializing them into the contract. Pin plans, position hints and Chimew electrical groups/members use compact selectors plus sealed indexed stores; the Chimew adapter consumes ScheduleStore through a file-backed member join and streams all three outputs without hop-sized schedule, coverage or output containers. The upstream Chimew bank/channel input and final assignment report are strict selectors plus ordered SQLite relations, and every pipeline/adapter generation inventories their sidecars. Native certificate output streams directly into a temporary typed index; independent primal/residual-dual validation uses ordered cursors, fixed-width active-bank vectors and a bounded cost cache instead of Python certificate maps. Store-level leases protect old readers during replacement, normalized headers are rederived from sealed facts, and production rejects implicit legacy input. Phase 7 performs indexed binding lookup, and reports inventory every sidecar required for relocation. Chimew grouping now uses a sealed typed stdin stream and fixed-width result arrays; the C++ group-of-vectors copy is gone. Native group IDs reuse the processed signal domain field, so no separate assignment array remains. Native signal/order/candidate arrays and the Python oracle remain linear in signal count. |
-| 7 | Transport synthesis previously wrote a full Yosys JSON, imported it into another full Python `EmuIR`, and loaded the graph again. Boundary identities repeated every endpoint in JSON, and the OpenPARF bridge built and reread separate packing/placement trees while validators rebuilt multiple owner maps. | Generic Yosys pipes directly to indexed EmuIR and lowering copies records set-wise. Boundary identities now stream into a typed owner and are validated by ordered merge. The production bridge writes one private typed handoff incrementally, validates ownership and packing/placement identity with SQLite constraints, ordered scans and bounded MUX/CARRY state, then atomically publishes. Source ownership and full output-bit driver uniqueness use temporary disk relations. RWRoute and timing consume lazy views; compatibility mode alone exports the historical large JSON contracts. |
+| Phase 1–2 | Native synthesis/STA engines; compact indexed inputs | Consolidate import, identities and timing adapters under the shared artifact API |
+| Phase 3 | Shared-core candidate eligibility and primary clustering; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Migrate remaining policy/assignment publication and reference modes; qualify complete stage costs |
+| Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
+| Phase 5 | One native exact model/solver/certificate/store producer; independent staged cursor validation | Native independent validation, timing adapters and non-exact interfaces |
+| Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |
+| Phase 7 | Indexed lowering; typed physical handoff and native Bookshelf pin export | Complete remaining backend/export/validation ownership and full physical qualification |
+| Global STA | Typed segments/results and bounded identity/stitching views | Native check/input construction, result import and ordered complete-path stitching |
 
-Cross-layer and global timing paths were also checked. Their current indexed
-readers stream complete payloads or selected identities. Physical timing
-evidence remains in one authoritative per-FPGA file and the whole-design
-summary stores only a sealed reference, so that population is no longer copied
-into a second JSON tree. Independent terminal validation is retained where it
-proves a different boundary; redundant replay inside the same producer process
-is removed. Boundary and logic-segment identities now use content-addressed
-typed owners, while logic query and measurement handoff use typed stores plus
-set-based import. Boundary timing now uses an indexed typed owner. Moving local-path timing and
-the remaining event-check identity tables to indexed/native stores remains
-W2/W6 work.
+Native computation does not eliminate algorithmic search cost. Compare search,
+imported-solution and frozen-output replay as separate execution modes. Porting
+an adapter must not change the algorithm budget or weaken independent legality.
 
-## Priority follow-on: OpenPARF to RapidWright handoff
+## Structural candidate production
 
-The same repeated-materialization pattern exists in the Phase 7 physical hot
-path and is the next priority after direct Phase 3 index streaming. The current
-implementation already has useful foundations:
+`phase3 build-candidate-ids EMUIR POLICY OUTPUT` owns candidate resource/pin
+classification, adjacency construction and iterative SCC analysis inside the
+shared core. The policy is bounded and binds the EmuIR generation; cells, nets
+and pins use the shared artifact-scoped identity view. A common bounded resource
+decoder is used by candidate analysis and primary clustering.
 
-- `partition.mapped.sqlite` is the sole production mapped-netlist data plane.
-- The OpenPARF placement certificate stores assignment rows in a normalized
-  SQLite sidecar and keeps only a sealed descriptor in JSON.
-- RWRoute TSV output is streamed to a temporary file, flushed, synchronized
-  and atomically renamed.
+The integer graph has forward CSR only. Parallel logical arcs preserve SCC
+membership, so the producer needs neither a temporary SQLite arc table nor a
+sort/deduplication pass. Net identity on each arc lets cycle rejection project
+back to candidates without another endpoint scan. Architectural state remains
+outside that graph. Soft drivers, complete driver multiplicity, cyclic sinks,
+hard/opaque resources, safe sequential input ports and top-level pins keep the
+reference rules; readiness, slot feasibility and downstream timing remain absent.
 
-The first bridge tranches are implemented. Certificate rows stream from
-SQLite. The atomic-source control file is now a selector over a typed sidecar
-and the already-authoritative mapped index: macro/cascade/constant facts are
-stored once, ordinary singleton clusters are derived by an ordered cell/type
-cursor, and only an explicit compatibility operation expands the historical
-JSON tree. Its physical-stage evidence records source-build wall time,
-selector/sidecar bytes, stored macro count and derived singleton count. One
-normalized, versioned physical-handoff database replaces the
-packed and placement JSON publications in the production native path. The
-atomic-source publisher discovers the previous sealed generation without
-opening the replacement mapped artifact, validates the new store and selector
-in staging, commits selector-last, and removes the old sidecar only after that
-commit. Its selector/header/count/mapped envelopes reject unknown keys, while
-canonical meaning is independent of JSON key order and whitespace. The
-derived `atomic-source-*` identity namespace is reserved, and macro/cascade
-identity collisions fail closed.
-The placement-certificate boundary follows the same fail-closed generation
-contract. Its reader takes the shared lease before reading the selector and
-keeps it through descriptor validation and the final ordered assignment row.
-It compares exact `PRAGMA table_xinfo` results, whole-table counts, cluster and
-per-cluster assignment continuity, and orphan coverage. A versioned canonical
-digest streams the compact selector header plus every ordered cluster and
-assignment record; it is stored in both metadata and selector, independently
-recomputed by readers, and remains stable across equivalent SQLite page
-layouts. The SQLite file digest continues to protect the physical bytes.
-Archive discovery rejects mixed generic and `cluster_storage` declarations as
-ambiguous rather than choosing either sidecar.
-The atomic placement name map uses the same production rule. Its JSON path is
-a small selector; the typed sidecar owns ordered `aN` atom identity/type/source
-cluster/resource rows and CARRY8 cascade records. Exact envelopes, byte seals,
-logical record seals, source hashes, contiguous ordinals and unique
-OpenPARF/instance identities are checked without materializing the rows.
-Readers hold a POSIX shared lease through their last lazy row and writers hold
-the exclusive lease through selector commit and old-sidecar collection, so an
-old view remains valid while replacement waits. Post-commit unlink failures
-become deferred GC and cannot contradict the visible selector. Selector/store
-symlinks and sidecars outside the selector directory fail closed. Legacy JSON
-requires an explicit compatibility option and must carry every source seal a
-caller asks to verify. CARRY8 records normalize ordered adjacent links and
-member ownership; writer and reader separately require existing CARRY8 atoms
-and unique ownership within and across chains. Selector-last replacement keeps
-the prior generation valid on failure, the atomic manifest inventories both
-files plus mapped/packed/architecture identity, all production placement
-consumers check packed identity, and a separately named materializer is the
-only route to the historical complete v2 JSON.
-The physical-handoff producer appends clusters to a
-private same-directory SQLite artifact. Legalization retains only MUX-bearing
-slices; an independent streaming validator keeps the required MUX/CARRY
-topology and uses uniqueness,
-counts, ordered assignment scans and bounded per-site state; source ownership
-is compared with temporary disk relations. It no longer invokes the generic
-packing/placement validators that rebuild full owner and cluster maps. All
-checks finish before atomic replacement. RWRoute export and routed timing then
-use relocatable lazy views; compatibility JSON alone expands them explicitly.
-RWRoute TSV export now generates route-cell rows from the physical binding
-instead of retaining a second whole-design route-cell dictionary; its report
-exposes per-substep timing. Mapped-index v2 owns cell
-pins as one typed ordered relation and reconstructs historical cell mappings
-lazily. RWRoute streams that relation by net and materializes only pins needed
-to qualify clock gates, removing its whole-design Python endpoint index. V1
-indexes remain readable. The production exporter obtains mapped cell types,
-site/BEL bindings, and net-ordered pins from read-only joins between
-mapped-index v2 and the typed physical handoff, so it no longer builds the
-former million-entry physical-binding dictionary. That ordered join also
-computes each route-cell ordinal, including the two-cell LUT6_2 expansion, so
-the production exporter formats textual `cN` names as rows are emitted without
-retaining a million-entry safe-name map. Remaining design-scale costs include
-selected exporter relations after the lazy mapped-source scan. Clock-gate
-discovery now queries only typed `LUT2` records and their pins rather than
-reconstructing every mapped cell;
-candidate qualification, hard-block parameter access, and the final TSV loop
-remain Python work.
+A single lexical cursor streams eligible names into the sealed output, followed
+by integer offsets. Python borrows that view without rebuilding graph arrays or
+a name pool. Compact production clustering and the large native exact analyzer
+select this operation. Explicit characterization/reference APIs keep their own
+independent implementation; a selected native failure never falls back.
+The name-facing policy export remains a conversion boundary to retire during
+final publication work. Normal native primary-to-pressure handoff reuses the
+primary artifact; full membership/resource snapshot protocols are retired.
 
-The migration boundary is the OpenPARF placement certificate through RWRoute
-launch. Work proceeds in this order:
+## Primary cluster production
 
-1. The bridge report now records certificate-validation and
-   publication/validation wall time, row counts, artifact bytes, and whether
-   streaming/in-process paths were used. Extend this with process-tree peak RSS,
-   RWRoute export, and RapidWright startup measurements during qualification on
-   a partition with at least one million instances.
-2. **Implemented:** define one typed, versioned physical-handoff index
-   containing clusters,
-   instance-to-site/BEL assignments, cascades/macros, constants, source
-   identities and validation summaries. JSON retains only compact summaries
-   and sealed references. Legacy JSON expansion remains an explicit
-   compatibility operation outside the production hot path.
-3. **Implemented for the production OpenPARF bridge:** make packing, placement
-   and resource/SLR checks operate over bounded index
-   scans with database uniqueness, foreign-key and occupancy constraints.
-   Keep an independent read-only validator; do not replace validation with
-   trust in the writer.
-4. Nativeize the remaining bridge/export loop so it consumes the mapped-netlist
-   and
-   placement indexes and emits the RapidWright input once. Prefer direct
-   certificate consumption by the RapidWright adapter when the pinned Java
-   runtime can support it; otherwise emit one streaming typed or TSV contract
-   without intermediate packed and placement JSON. The current Python exporter
-   already consumes the shared SQLite views and emits no intermediate physical
-   JSON; moving its whole-design maps into native/Java code remains pending.
-5. Publish the index, compact manifest and RapidWright input through temporary
-   files plus atomic replacement. Launch RapidWright only after source seals,
-   row counts, unique placement, site/BEL occupancy, macro/cascade legality,
-   resource limits and SLR constraints all pass.
+Compact production clustering is a shared-core operation behind
+`phase3 build-clusters`. It consumes the authoritative compact EmuIR and a
+same-generation packed eligibility/group request. C++ owns union-find,
+canonical lexical membership, integer CSR columns and resource sums. An illegal
+high-fanout net is unioned as its endpoints arrive, without retaining a net
+membership set. Resource payload caching has a fixed bound independent of cell
+count. Group unions and fixed ownership preserve the reference behavior.
 
-Acceptance requires identical placed-instance ownership, site/BEL bindings,
-macro and cascade populations, resource/SLR summaries, source digests,
-RapidWright route certificate and downstream timing results. The optimization
-is measured against the existing handoff using identical OpenPARF output; a
-smaller artifact alone is not evidence of equivalent behavior.
+The private v2 primary envelope binds the source generation and carries sealed
+resource totals, with header and full-column CRCs. Shared native readers validate
+source/count/membership/resource coverage and retire completed projection pages
+before constructing the next model population. Python uses the header totals for
+TritonPart dimension/totals queries without scanning resource columns.
 
-The current cross-wave regression covers Phase 3 compact clustering,
-candidate/pressure characterization and capture protocol; packed Phase 5
-independent validation and ScheduleStore v4 consumers; Phase 6 typed native
-grouping input and binding/adapter contracts; typed physical handoff and
-placement-certificate publication; and typed logic-segment identity, query,
-measurement and Global STA stitching: 864 tests passed in 339.10 seconds, 5
-optional-tool tests skipped and 2
-unavailable external-fixture cases were explicitly deselected.
-Randomized review additionally compared 300 capture populations,
-200 STA expansion/stitching cases and 20 shuffled physical-certificate orders.
-These results establish local contract compatibility; they do not replace the
-pending isolated NVDLA Static Exact Phase 1--7/7C qualification.
+Python borrows read-only memory-mapped columns, including the UTF-8 name pool;
+it does not rebuild the primary arrays or rerun the union/resource loops.
+Borrowed columns retain their mapping and phase-owned scratch until the last
+consumer releases them. That owner releases views and closes the mapping before
+removing its directory, including exception cycles; no independent weak-reference
+scratch finalizer may unlink a still-mapped file. Final catalog publication now
+reads those columns in the shared core and writes the existing compressed SQLite
+sections directly. It also consumes the original candidate artifact, checking its
+bitmap/name/source pairing without decoding the name population in Python.
+The common SQL publisher adopts the closed generation; the selector follows its
+sealed payload descriptor rather than a fixed filename. Source replacement,
+corrupt member/name relations and failed selector commits reject publication.
+The final logical cluster/assignment schemas remain unchanged. Assignment packing
+uses ordinal IDs/member counts without replaying cluster records. Remaining
+policy/semantic/index orchestration still needs native ownership; this boundary
+alone is not complete Phase 3 migration. The public reference constructor remains
+available for independent differential validation; native failure has no fallback.
 
-### Parallel execution model
+## Phase 3 contracts
 
-Independent FPGA implementations may run concurrently and may be at different
-internal stages. The current physical-flow executor already supports this
-shape: `--physical-workers N` runs each FPGA's complete partition task in its
-own worker, so one FPGA can be routing while another is placing. The default is
-one worker. Selected-FPGA batches can also run on separate HPC nodes and be
-assembled only after every partition record passes.
+Production clustering consumes compact EmuIR resource/type/endpoint projections,
+not synthesis attributes or complete cell dictionaries. Packed cluster ownership
+and resource columns feed deterministic hMetis/Tcl exports and native providers.
+Strict resource bounds include reservations before search; separate balance
+repair is not a replacement for a valid initializer. Provider-neutral capacity,
+fixed/group, SCC/cascade, reachability and hop checks remain authoritative.
+Do not introduce early Static Exact readiness, frame feasibility or physical
+segment deadline hard constraints into partition selection.
 
-Parallelism remains constrained by real data dependencies:
+After selection, native analysis reads compact EmuIR and selected ownership.
+Native semantic records retain canonical cut order, dependency levels, source
+and capture segments, launch flags and integer predecessor coordinates. Stored
+endpoint ordinals may have gaps; capture coordinates use dense positions in
+logical EmuIR iteration order. Independent readers reconstruct that same order.
 
-- Phase 3 partitioning and the global Phase 4--5 route/schedule contracts are
-  common barriers because they define cross-FPGA cuts and shared-link use.
-- After a sealed per-FPGA split input exists, mapping, placement and routing for
-  different FPGAs are independent. Within one FPGA, mapping precedes placement,
-  placement legality precedes routing, and routing precedes timing.
-- Whole-design assembly, boundary checking and global timing wait for all
-  active FPGA records. Reports and legacy compatibility exports that are not
-  consumed by production stages should run asynchronously after their source
-  seal is available.
+Python maps lifecycle-scoped native semantic/capture artifacts and independently
+checks source/topology coverage. Native hashing reproduces canonical semantics;
+native binary publication writes final sections directly into one staged file,
+hashing them as emitted. A bounded manifest seals exact counts, source identity,
+section extents and digests before fsync and atomic replacement. Do not restore
+section spool copying, a complete Python semantic tree or duplicate full hashing.
 
-A fixed thread count is insufficient for large partitions. The scheduler must
-admit work using memory, CPU and I/O budgets and prefer one large physical job
-per HPC node when a partition approaches the node memory limit. It should
-record ready, start, finish and blocked-on-contract timestamps for each
-per-FPGA stage. Qualification compares both total work and end-to-end makespan,
-and repeats concurrent runs to prove deterministic digests and the absence of
-shared-directory races.
+`assignment.sqlite` owns instance/partition lookup, while `assignment.exact.bin`
+owns ordered dependency/segment/capture payloads. Downstream consumers use the
+bounded assignment view and typed cursors. Generic JSON materialization is an
+explicit compatibility operation. References bind a complete generation;
+unknown versions, truncation, corruption and mixed generations fail closed.
+
+## Assignment index publication
+
+`emuflow-native phase3 publish-assignment EMUIR PRIMARY REQUEST [NATIVE_NODES] OUTPUT`
+publishes current assignment v4 through the shared `SqliteArtifactWriter`.
+The C++ owner joins primary ownership with the paired EmuIR cell cursor and writes
+primary copies directly; Python never expands or transfers instance records for
+this operation. With final native semantic nodes, the v2 request carries their
+original file generation, integer cluster ownership, FPGA catalogs, bounded
+metadata and one uint64 endpoint count per cut. The C++ reader consumes ordered
+cut identities, ownership and predecessors directly from that node artifact,
+using the shared bounded semantic-record decoder. It does not receive another
+host-generated cut/predecessor record protocol. The compact cut owner lends its
+existing count column; an already materialized noncanonical-source cut list
+projects only counts. This does not remove that earlier list-construction cost.
+
+The explicit v1 request remains for current nonsemantic and Python-reference
+semantic producers. Missing or changed native ownership fails; it never selects
+v1 as recovery. Both native and reference writers use the same installed SQL
+schema. CMake, compiler-only fixture builds and deployment builds generate the
+native header from those authoritative SQL files.
+
+The producer checks source generations, counts, ownership, cut order and
+predecessor coverage. Original node and capture generations remain bound through
+independent validation and final index/binary pair publication, including ctime
+changes. The separate typed-index validator still checks the output,
+canonical cut digest and exact contract. For assignment v4,
+`phase3 validate-cuts ASSIGNMENT SUMMARY` invokes `AssignmentView::ValidateCuts()`
+through the shared stage API. It reads the published SQL relation independently
+of the producer, merges cuts with the sink table's native net/sink order and the
+predecessor table's index/ordinal order, and streams canonical fields into the
+logical hash. It retains no per-cut dictionary, child list or global name map.
+A separate indexed join verifies predecessor-name existence; the merge checks
+parent coordinates, ownership, scalar types, completeness, order and orphans.
+It does not sort the complete sink relation through a parent join. Only a bounded
+count/digest summary returns to Python, which retains the design/instance and
+exact-binary validation gates. The superseded Python digest-only replay is
+removed; record iteration remains for consumers that actually need cut records.
+Selected native validation failures never retry that iterator. Only then does
+the host publish the index/binary pair and its descriptor. Failed requests or validation preserve the
+previous pair, including failures before the previous binary can be moved aside.
+A selected native failure does not retry through the reference writer.
+
+The phase report records `assignment_index_writer_implementation_id` and native
+writer metrics, including native/host cut counts and request bytes. This closes
+the Python instance-row and final native-cut request boundaries; policy
+conversion, initial cut construction, reference inputs and other remaining
+publication work retain their explicit migration obligations. It does not qualify
+complete Phase 3 costs or complete native compilation without the required real-design measurements.
+
+## Physical and timing contracts
+
+Mapped indexes, placement certificates and `physical-handoff.sqlite` carry
+site/BEL placement, macros and connectivity into RapidWright. Production does
+not reconstruct `placement.json` or `packed-sites.json` trees. Preserve cell
+accounting, site/BEL/PIP uniqueness, macro/cascade legality, fixed IOB coverage,
+clock/SLR constraints and final per-device resource budgets.
+
+The transport owner binds endpoint, lane, slot, direction, differential pins,
+RTL and XDC semantics. Schedule frame length does not expand the BoardDB's
+permitted ratio domain. Consumers join sealed relations rather than retain
+independent full binding or endpoint maps.
+
+Global OpenSTA remains the numerical authority. Ordered event/check and
+measurement relations must preserve every original timing-path member exactly
+once, complete TX/commit checks and disjoint local/cross-FPGA populations. TNS
+counts each original path once, even when checks use representative bundles.
+See [global timing semantics](global-opensta-qualification.md).
+
+## Validation and completion
+
+Qualification records separate nested stage wall time, parent/child CPU,
+sampled process-tree RSS and available I/O counters. Enclosing and child step
+times must not be added together. Keep actual experiment measurements outside
+public design documentation.
+
+Representation changes require independent record equivalence, deterministic
+ordering and corruption/truncation/mixed-generation/publication-interruption
+rejection. Preserve provider, policy, effective constraints, seeds and tool
+versions. Physical-policy changes receive separate qualification.
+
+Final acceptance uses the requested NVDLA design and the registered complete-flow
+contract: exact provenance, per-phase/total runtime and resource evidence,
+complete physical accounting, zero unrouted nets and DRC violations, final
+resource budgets, original-path coverage and global OpenSTA WNS/TNS. Prepared
+input continuations and component tests are intermediate evidence; they do not
+establish complete Phase 1–7 qualification or completion of W0/W7.
+
+### Chimew lookahead ownership
+
+The maintained optional Chimew producer queries indexed Xilinx physical owners
+for the selected backend. VTR atom-order reconstruction, full instance-position
+dictionaries, copied placement/architecture/routing JSON sources and synthetic
+package-pin generation are retired from that producer. Its source document
+contains owner references only. Timing guards reside in the crossing input;
+the Phase 5 schedule is not cloned. Native paper kernels remain unchanged.
+
+Python still builds hop/group inputs and timing weights, and the shared core
+and full native production data plane are not complete. VTR/open execution
+entries, standalone artifact adapters and engine/build dependencies are retired.
+This scope reduction does not establish full NVDLA acceptance.

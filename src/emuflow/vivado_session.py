@@ -194,6 +194,8 @@ def prepare_timing(session):
     write_json(out/"routed-query-preparation.json", result, compact=True)
     # Native exporters consume only the sealed resolved queries and proof store.
     lineage.unlink()
+    for inventory in ("mapped_cells.tsv", "routed_mapped_cells.tsv"):
+        (out / inventory).unlink()
     return {"status": "pass", "query_classes": len(resolutions)}
 
 

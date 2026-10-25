@@ -26,6 +26,8 @@ from .netlist import (
 )
 from .platform import Platform
 from .pin_plan_storage import read_pin_plan, write_pin_plan_storage
+from .store_publication import bind_view_sources
+from .native_tools import require_native_schema
 from .position_hints_storage import (
     read_position_hints,
     write_position_hints_storage,
@@ -223,6 +225,7 @@ def run_phase6(
     clock_periods: Optional[Mapping[str, float]] = None,
 ) -> Dict[str, Any]:
     source = read_compact_emuir_control_metadata(ir_path)
+    require_native_schema("sqlite-publication-request-v1")
     design_name = source["design"]["name"]
     declared_clocks = [item["id"] for item in source.get("clocks", [])]
     if clock_periods is None:
@@ -275,14 +278,23 @@ def run_phase6(
         ) as temporary_directory:
             temporary_root = Path(temporary_directory)
             staged_pin_plan = write_pin_plan_storage(
-                temporary_root / "pin_plan.json", pin_plan
+                temporary_root / "pin_plan.json",
+                pin_plan,
+                source_bindings=bind_view_sources(
+                    (schedule, "tdm-schedule-store-v4"), (pin_plan, "pin-plan-store-v1")
+                ),
             )
             if position_hints is None:
                 raise ValueError(
                     "position_hints_path is required with pin_plan_path"
                 )
             staged_position_hints = write_position_hints_storage(
-                temporary_root / "position_hints.json", position_hints
+                temporary_root / "position_hints.json",
+                position_hints,
+                source_bindings=bind_view_sources(
+                    (schedule, "tdm-schedule-store-v4"),
+                    (position_hints, "position-hints-store-v1"),
+                ),
             )
             pin_validation = validate_pin_plan(
                 schedule,
@@ -391,12 +403,7 @@ def run_phase6(
         "design": design_name,
         "platform": platform.name,
         "provider": (
-            (
-                "chimew-electrical-pin-split-v1"
-                if pin_plan.get("provider")
-                == "chimew-paper-plus-emuflow-electrical-slot-v1"
-                else "placement-aware-pin-split-v1"
-            )
+            "chimew-electrical-pin-split-v1"
             if pin_plan is not None
             else "sqlite-streaming-cut-shadow-split-v1"
         ),
@@ -611,6 +618,11 @@ def run_phase6(
             electrical_binding_view = write_chimew_binding_storage(
                 output_dir / "electrical_binding.json",
                 electrical_binding,
+                source_bindings=bind_view_sources(
+                    (schedule, "tdm-schedule-store-v4"),
+                    (pin_plan, "pin-plan-store-v1"),
+                    (electrical_binding, "chimew-binding-store-v1"),
+                ),
             )
     if transport_cost is not None:
         write_json(output_dir / "transport-cost.json", transport_cost, compact=True)

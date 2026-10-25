@@ -1,10 +1,12 @@
 # Global timing model and qualification
 
-Physical flows default to `--global-timing-engine opensta`. OpenSTA computes
-the numeric results from bound physical logic/interface/link arcs and explicit
-transport-event constraints. It does not implicitly run the separate Python
-timing composer. Select that engine explicitly with
-`--global-timing-engine python`.
+OpenSTA is the only production global physical timing engine. It computes
+numeric results from bound physical logic/interface/link arcs and explicit
+transport-event constraints. The Python timing engine and historical
+comparison/adoption replay are retired. Independent numerical oracles are
+bounded test utilities and are not installed with the production package.
+Unsupported physical evidence fails explicitly; no partition-maxima or
+alternative-engine fallback substitutes for missing event/segment coverage.
 
 With the repository OpenSTA container launcher, `executable_sha256` identifies
 the delegated native OpenSTA engine, while `launcher_sha256` separately seals
@@ -26,7 +28,28 @@ Without characterized link timing, BoardDB cycle latency remains a model-only
 input. Timing abstraction files are analysis inputs, not new synthesizable
 transport hardware.
 
+## Current event-stream contract
+
+Checks and imported OpenSTA measurements must contain one contiguous bundle
+per original path, including exactly one target and one runtime observation.
+A path cannot reappear after its bundle ends. Interleaved historical records
+are rejected; the current flow does not regroup them into whole-design maps.
+Export, representative compression, independent validation and result stitching
+all use this contract. Complete numerical bundles remain the unit of
+compression, and expansion preserves every original member.
+
+Timing reconstruction must supply each scheduled hop's concrete
+`fixed_slot_tx_time_ns` and its bound TDM ratio where the link model requires
+one. Global binding consumes those fields directly. It rejects an incomplete
+reconstruction instead of rebuilding a second schedule-entry dictionary.
+Historical artifacts requiring the retired reconstruction or interleaved order
+must be examined with their matching Git version.
+
 ## Metrics and scope
+
+The following disposition contract is a completion requirement. The indexed
+Vivado proof owner exists, but terminal global timing does not yet consume
+elimination records; unresolved endpoints still fail coverage.
 
 Every declared original member must have exactly one implementation disposition:
 physically timed, or proven optimized away. Original identities remain covered
@@ -88,7 +111,10 @@ contains the bounded QoR summary; its named sibling
 SQLite store uses typed columns and interned metadata strings, including null
 scalars and proof references for optimized-away members. Neither publication
 nor a summary read expands the path population into JSON. The logical schemas
-remain `emuflow.qor-report/v4` and `emuflow.system-timing/v2`.
+remain `emuflow.qor-report/v4` and `emuflow.system-timing/v2`. The shared
+native publication core admits this result owner and the nullable v2 boundary,
+logic-segment and local timing stores. Historical measured-only v1 stores
+retain their own version checks.
 
 `emuflow.io.read_json` exposes the logical document with a lazy `timing.paths`
 sequence. Ordinal lookup and `timing.paths.by_path(original_id)` read only the
@@ -118,8 +144,9 @@ short-path mismatch.
 
 A complete real-design gate also needs physical implementation, original-member
 coverage, and delay qualifications. Terminal validation reconstructs raw binding
-and checks saved engine scalars; it does not need to run STA or the alternate
-Python engine again.
+and checks saved engine scalars without running STA again. Historical physical
+reports without standalone OpenSTA evidence require their matching Git version;
+the current terminal validator does not reconstruct them with another engine.
 
 `scripts/opensta/opentimer_event_check.cpp` is an optional offline OpenTimer
 driver for independent model checks. It is not a production dependency or a

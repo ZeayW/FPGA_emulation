@@ -505,44 +505,6 @@ def _candidate_cost(group: Mapping[str, Any], endpoint_a: Tuple[float, float], e
     return _ranked_cost(_raw_cost(group, endpoint_a, endpoint_b), scale)
 
 
-def _serialize(problem: Mapping[str, Any], path: Path) -> None:
-    """Write the explicit legacy text protocol used by compatibility tests."""
-    with path.open("w", encoding="utf-8") as stream:
-        stream.write("EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V2\n")
-        stream.write(f"PARAM {problem['cost_scale']}\n")
-        for bank_index, bank in enumerate(problem["banks"]):
-            point_a = bank["bank_a"]["point"]
-            point_b = bank["bank_b"]["point"]
-            stream.write(
-                f"BANK {bank_index} {bank['domain']} {point_a[0]:.17g} "
-                f"{point_a[1]:.17g} {point_b[0]:.17g} {point_b[1]:.17g}\n"
-            )
-            for channel in bank["channels"]:
-                pin_a, pin_b = channel["pin_a"], channel["pin_b"]
-                stream.write(
-                    f"CHANNEL {channel['index']} {bank_index} {channel['order']} "
-                    f"{pin_a[0]:.17g} {pin_a[1]:.17g} {pin_b[0]:.17g} "
-                    f"{pin_b[1]:.17g}\n"
-                )
-        for group_index, group in enumerate(problem["groups"]):
-            stream.write(
-                f"GROUP {group_index} {group['domain']} {group['kind']} "
-                f"{group['direction']} {len(group['members'])}\n"
-            )
-            for member_index, member in enumerate(group["members"]):
-                fanout = member["fanout"]
-                fanins = " ".join(
-                    f"{point[0]:.17g} {point[1]:.17g}"
-                    for point in member["fanins"]
-                )
-                stream.write(
-                    f"MEMBER {group_index} {member_index} "
-                    f"{member['direction']} {member['timing_weight']:.17g} "
-                    f"{fanout[0]:.17g} {fanout[1]:.17g} "
-                    f"{len(member['fanins'])} {fanins}\n"
-                )
-
-
 def _serialize_typed(
     problem: Mapping[str, Any], stream: Any, logical_sha256: str
 ) -> Mapping[str, int]:
@@ -823,7 +785,6 @@ def _run_native(
     stderr_stream: Any = None
     try:
         native_command = resolve_native_stage_command(
-            "emuflow_chimew_bank_channel_assigner",
             "phase6",
             "assign-banks",
             explicit=executable,
@@ -1505,6 +1466,9 @@ def evaluate_chimew_bank_channel_assignment(
 ) -> Mapping[str, Any]:
     """Run both paper stages and check exact optimality without replaying them."""
 
+    from .store_publication import bind_view_sources
+
+    source_bindings = bind_view_sources((document, "chimew-bank-input-store-v1"))
     from .chimew_bank_channel_storage import (
         canonical_bank_channel_input_sha256,
     )
@@ -1655,6 +1619,7 @@ def evaluate_chimew_bank_channel_assignment(
                 output_path,
                 document_view,
                 _derive_physical_costs=True,
+                source_bindings=source_bindings,
             )
         materialized_assignments = []
         stage1_physical_cost = 0.0

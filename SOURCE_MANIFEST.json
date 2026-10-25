@@ -24,11 +24,6 @@
       "id": "open-fpga-architecture-import",
       "stage": "R0 / Phase 2 architecture database",
       "source_paths": [
-        "src/native/vtr_architecture_importer.cpp",
-        "src/emuflow/vtr_architecture.py",
-        "schemas/architecture-timing-db-v1.schema.json",
-        "resources/architectures/vtr/flagship-k6-n10-40nm.json",
-        "examples/architecture/vtr_k6_heterogeneous_fixture.xml",
         "engines/openparf/thirdparty/pugixml",
         "engines/capnproto",
         "engines/fpga-interchange-schema",
@@ -51,12 +46,10 @@
         "scripts/rapidwright/export_route_resource_certificate.py"
       ],
       "build_targets": [
-        "emuflow_vtr_arch_importer",
         "emuflow_fpgaif_arch_importer",
         "emuflow_python"
       ],
       "runtime_products": [
-        "emuflow_vtr_arch_importer",
         "emuflow_fpgaif_arch_importer",
         "emuflow"
       ],
@@ -127,20 +120,6 @@
       "integration": "default-in-tree-build"
     },
     {
-      "id": "repart-partitioning",
-      "stage": "Phase 3",
-      "source_paths": [
-        "engines/repart/RePart"
-      ],
-      "build_targets": [
-        "repart"
-      ],
-      "runtime_products": [
-        "repart"
-      ],
-      "integration": "default-in-tree-build"
-    },
-    {
       "id": "partition-independent-sta",
       "stage": "R0 / Phase 3/4/5 cross-stage timing projection",
       "source_paths": [
@@ -149,10 +128,6 @@
         "engines/openroad/src/sta",
         "engines/cudd",
         "scripts/opensta/export_timing_path_database.tcl",
-        "scripts/vivado/export_timing_path_database.tcl",
-        "scripts/vivado/analyze_timing.tcl",
-        "src/emuflow/vivado_backend.py",
-        "src/emuflow/vivado_netlist.py",
         "schemas/sta-path-database-v1.schema.json",
         "schemas/fpga-timing-model-v1.schema.json",
         "resources/timing/ultrascaleplus-softlogic-v1.json"
@@ -169,32 +144,6 @@
       "integration": "default-in-tree-build"
     },
     {
-      "id": "partition-tdm-feedback",
-      "stage": "Phase 3/4/5 joint optimization",
-      "source_paths": [
-        "src/native/tdm_partition_feedback.cpp",
-        "src/emuflow/partition_feedback.py",
-        "src/emuflow/cross_stage.py",
-        "src/emuflow/frame_search.py",
-        "schemas/partition-net-weights-v1.schema.json",
-        "schemas/frame-search-v2.schema.json",
-        "schemas/cross-stage-candidate-v2.schema.json",
-        "schemas/cross-stage-report-v2.schema.json",
-        "engines/repart/RePart"
-      ],
-      "build_targets": [
-        "emuflow_tdm_partition_feedback",
-        "repart",
-        "emuflow_python"
-      ],
-      "runtime_products": [
-        "emuflow_tdm_partition_feedback",
-        "repart",
-        "emuflow"
-      ],
-      "integration": "default-in-tree-build"
-    },
-    {
       "id": "system-routing",
       "stage": "Phase 4/5 route-TDM co-optimization",
       "source_paths": [
@@ -202,10 +151,10 @@
         "src/emuflow/timing_routing.py"
       ],
       "build_targets": [
-        "emuflow_tlr_router"
+        "emuflow_native"
       ],
       "runtime_products": [
-        "emuflow_tlr_router"
+        "emuflow-native"
       ],
       "integration": "default-in-tree-build"
     },
@@ -213,18 +162,19 @@
       "id": "tdm-assignment",
       "stage": "Phase 5",
       "source_paths": [
-        "src/native/tdm_ratio_optimizer.cpp",
-        "src/emuflow/tdm_ratio.py",
+        "src/native/tdm_exact_scheduler.cpp",
         "src/emuflow/tdm.py",
         "src/emuflow/phase5.py",
-        "schemas/tdm-ratio-plan-v1.schema.json"
+        "src/emuflow/tdm_schedule_storage.py",
+        "src/emuflow/frame_search.py",
+        "schemas/frame-search-v5.schema.json"
       ],
       "build_targets": [
-        "emuflow_tdm_ratio_optimizer",
+        "emuflow_native",
         "emuflow_python"
       ],
       "runtime_products": [
-        "emuflow_tdm_ratio_optimizer",
+        "emuflow-native",
         "emuflow"
       ],
       "integration": "default-in-tree-build"
@@ -233,7 +183,6 @@
       "id": "netlist-transport-pin-generation",
       "stage": "Phase 6",
       "source_paths": [
-        "src/native/placement_aware_pin_planner.cpp",
         "src/native/bsp_pin_solver.cpp",
         "src/emuflow/pin_planning.py",
         "src/emuflow/physical_pins.py",
@@ -254,12 +203,10 @@
         "schemas/serial-wrapper-v1.schema.json"
       ],
       "build_targets": [
-        "emuflow_pin_planner",
         "emuflow_bsp_pin_solver",
         "emuflow_python"
       ],
       "runtime_products": [
-        "emuflow_pin_planner",
         "emuflow_bsp_pin_solver",
         "emuflow"
       ],
@@ -283,14 +230,12 @@
     },
     {
       "id": "fpga-placement",
-      "stage": "Phase 2 / Phase 7",
+      "stage": "Phase 7 / shared OpenPARF runtime",
       "source_paths": [
         "engines/openparf/openparf/placement",
         "engines/openparf/openparf/ops",
         "engines/openparf/openparf/pybind",
-        "src/emuflow/openparf.py",
-        "src/emuflow/placement.py",
-        "src/emuflow/packed_placement.py"
+        "src/emuflow/openparf.py"
       ],
       "build_targets": [
         "openparf_native"
@@ -302,45 +247,13 @@
       "integration": "default-in-tree-build"
     },
     {
-      "id": "open-fpga-pack-place-route",
-      "stage": "R1 / per-FPGA physical backend",
+      "id": "xilinx-physical-orchestration",
+      "stage": "Phase 7 / two Xilinx physical backends",
       "source_paths": [
-        "src/emuflow/vpr.py",
-        "src/emuflow/packed_netlist.py",
-        "src/emuflow/packed_placement.py",
-        "src/emuflow/route_artifact.py",
-        "src/native/vpr_packed_netlist_importer.cpp",
-        "src/native/vpr_route_checker.cpp",
         "src/emuflow/physical_backend.py",
         "src/emuflow/multi_fpga_physical_flow.py",
         "schemas/physical-backend-v1.schema.json",
-        "schemas/physical-partition-result-v1.schema.json",
-        "schemas/vpr-packed-netlist-v1.schema.json",
-        "schemas/vpr-route-check-v1.schema.json",
-        "engines/vtr/vpr",
-        "engines/vtr/libs/libarchfpga",
-        "engines/vtr/libs/librrgraph",
-        "engines/vtr/libs/EXTERNAL/libsdcparse",
-        "engines/vtr/libs/EXTERNAL/yaml-cpp"
-      ],
-      "build_targets": [
-        "vpr_native",
-        "emuflow_vpr_packed_netlist_importer",
-        "emuflow_vpr_route_checker"
-      ],
-      "runtime_products": [
-        "vpr",
-        "emuflow_vpr_packed_netlist_importer",
-        "emuflow_vpr_route_checker"
-      ],
-      "integration": "default-in-tree-build"
-    },
-    {
-      "id": "parallel-validation-orchestration",
-      "stage": "Cross-stage validation infrastructure",
-      "source_paths": [
-        "src/emuflow/validation_farm.py",
-        "schemas/validation-farm-v1.schema.json"
+        "schemas/physical-partition-result-v1.schema.json"
       ],
       "build_targets": [
         "emuflow_python"
@@ -348,20 +261,28 @@
       "runtime_products": [
         "emuflow"
       ],
-      "integration": "in-tree-python"
+      "integration": "default-in-tree-build"
     },
     {
       "id": "optional-vivado-physical-provider",
-      "stage": "Phase 3 timing / Phase 7 per-FPGA physical backend",
+      "stage": "Phase 7 indexed Xilinx physical backend",
       "source_paths": [
         "src/emuflow/physical_backend.py",
         "src/emuflow/vivado_backend.py",
         "src/emuflow/vivado_netlist.py",
-        "scripts/vivado/analyze_timing.tcl",
-        "scripts/vivado/implement_partition.tcl",
-        "scripts/vivado/export_timing_path_database.tcl",
         "schemas/physical-backend-v1.schema.json",
-        "schemas/physical-partition-result-v1.schema.json"
+        "schemas/physical-partition-result-v1.schema.json",
+        "src/emuflow/vivado_physical.py",
+        "src/emuflow/vivado_indexed_netlist.py",
+        "src/emuflow/vivado_lineage.py",
+        "src/emuflow/vivado_optimization.py",
+        "src/emuflow/vivado_physical_timing.py",
+        "src/emuflow/vivado_physical_top.py",
+        "src/emuflow/vivado_source.py",
+        "scripts/vivado/implement_indexed_partition.tcl",
+        "scripts/vivado/source_inventory.tcl",
+        "scripts/vivado/resource_inventory.tcl",
+        "scripts/vivado/timing_contract.tcl"
       ],
       "build_targets": [
         "emuflow_python"
@@ -416,11 +337,6 @@
     }
   ],
   "open_path_blockers": [
-    {
-      "id": "default-open-packing-and-timing",
-      "status": "partial",
-      "reason": "The source-built VTR importer and pinned public flagship model provide open heterogeneous layout and timing data; exact VPR packing and the checked packed-netlist contract are present in the root build. Architecture-neutral hard-block mapping and Architecture TimingDB-to-OpenSTA translation remain pending."
-    },
     {
       "id": "open-ultrascale-plus-bitstream",
       "status": "out-of-scope-until-viable",

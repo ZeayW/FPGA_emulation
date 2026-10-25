@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EmuFlow one-shot native compile request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "python_executable", "python_source", "working_directory", "options"],
+  "properties": {
+    "schema": {"const": "emuflow.native-compile/v1"},
+    "python_executable": {"type": "string", "pattern": "^/"},
+    "python_source": {"type": "string", "pattern": "^/"},
+    "working_directory": {"type": "string", "pattern": "^/"},
+    "options": {
+      "description": "Current run_multi_fpga_flow keyword configuration; signature binding rejects unknown options. Missing options use current defaults; the result retains the resolved configuration.",
+      "type": "object",
+      "required": ["output_dir"],
+      "properties": {"output_dir": {"type": "string", "pattern": "^/"}}
+    }
+  }
+}

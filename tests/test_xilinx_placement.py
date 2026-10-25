@@ -6,12 +6,8 @@ from pathlib import Path
 from unittest import mock
 
 from emuflow.errors import ValidationError
-from emuflow.xilinx_placement import (
-    plan_xilinx_single_slr,
-    place_xilinx_clusters,
-    validate_xilinx_single_slr_plan,
-    validate_xilinx_placement,
-)
+from emuflow.xilinx_placement import validate_xilinx_placement
+from tests.xilinx_site_reference import place_xilinx_clusters
 
 
 def bel(name, cell_type, z=0):
@@ -112,6 +108,37 @@ class XilinxPlacementTest(unittest.TestCase):
         }), encoding="utf-8")
         return arch, packed, guidance, constraints
 
+    def test_site_oracle_rejects_graph_sized_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arch, packed, guidance, constraints = self._write_inputs(root)
+            value = json.loads(arch.read_text())
+            value["sites"] *= 1025
+            arch.write_text(json.dumps(value))
+            output = root / "placement.json"
+            # Check the fixture-size boundary before even constructing the
+            # architecture view, independently of its duplicate-site validity.
+            with mock.patch("tests.xilinx_site_reference.ArchitectureDB.load",
+                            return_value=type("Fixture", (), {"value": value})()):
+                with self.assertRaisesRegex(ValidationError, "bounded test fixtures"):
+                    place_xilinx_clusters(packed, arch, output)
+            self.assertFalse(output.exists())
+
+    def test_retired_placer_certificates_are_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            arch, packed, guidance, constraints = self._write_inputs(root)
+            output = root / "placement.json"
+            result = place_xilinx_clusters(packed, arch, output,
+                guidance_path=guidance, constraints_path=constraints)
+            for provider in ("amf-placer-public-basic-2.0-native-bridge-v1",
+                             "dreamplacefpga-interchange-candidate-v1"):
+                with self.subTest(provider=provider):
+                    result["provider"] = provider
+                    output.write_text(json.dumps(result), encoding="utf-8")
+                    with self.assertRaisesRegex(ValidationError, "provider is invalid"):
+                        validate_xilinx_placement(packed, arch, output, constraints_path=constraints)
+
     def test_exact_legalizer_and_checker_are_deterministic(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -174,7 +201,7 @@ class XilinxPlacementTest(unittest.TestCase):
                 "openparf-native-mcf-direct-lg-ism-atomic-bridge-v1"
             )
             value["policy"] = {
-                "clock_region_site_utilization_limit": 0.75,
+                "clock_region_site_utilization_limit": 1.0,
                 "capacity_rounding": "ceil-with-one-site-minimum",
                 "packing": "native-openparf-atomic-site-groups-v1",
                 "placement_certificate": "emuflow.openparf-atomic-placement/v2",
@@ -472,7 +499,7 @@ class XilinxPlacementTest(unittest.TestCase):
                     packed, arch, output, constraints_path=constraints
                 )
 
-    def test_clock_region_headroom_spreads_guidance_and_is_validated(self):
+    def test_clock_region_uses_full_nonoverlapping_site_capacity(self):
         architecture = {
             "schema": "emuflow.archdb/v1", "part": "xcvu19p-density-test",
             "source": {"format": "unit-test/v1"},
@@ -540,38 +567,16 @@ class XilinxPlacementTest(unittest.TestCase):
                 )
             self.assertEqual(
                 {key: len(entries) for key, entries in placed_by_region.items()},
-                {"X0Y0": 6, "X1Y0": 1},
+                {"X0Y0": 7, "X1Y0": 0},
             )
             self.assertEqual(
                 result["summary"]["maximum_clock_region_site_utilization"],
-                0.75,
+                0.875,
             )
             self.assertEqual(
                 result["summary"]["maximum_clock_region_site_reservation"],
-                1.0,
+                0.875,
             )
-
-            # Move the spill cluster into the only unused site in the already
-            # full clock region. It remains a legal, non-overlapping SLICEL,
-            # so only the independent routability policy should reject it.
-            spill = placed_by_region["X1Y0"][0]
-            used = {entry["site"] for entry in placed_by_region["X0Y0"]}
-            replacement = next(
-                site for site in architecture["sites"]
-                if site["physical_region"]["clock_region"] == "X0Y0"
-                and site["name"] not in used
-            )
-            spill.update({
-                "site": replacement["name"],
-                "site_type": replacement["type"],
-                "x": replacement["x"], "y": replacement["y"],
-                "physical_region": replacement["physical_region"],
-            })
-            output.write_text(json.dumps(value), encoding="utf-8")
-            with self.assertRaisesRegex(
-                ValidationError, "clock-region site utilization limit"
-            ):
-                validate_xilinx_placement(packed_path, arch_path, output)
 
     def test_bram_anchor_requires_source_sealed_native_tile_group(self):
         architecture = {
@@ -620,107 +625,6 @@ class XilinxPlacementTest(unittest.TestCase):
             ):
                 place_xilinx_clusters(packed_path, arch, output)
             self.assertFalse(output.exists())
-
-    def test_single_slr_planner_uses_legal_guidance_not_slr_name(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            arch, packed, guidance, _constraints = self._write_inputs(root)
-            guidance.write_text(json.dumps({
-                "schema": "emuflow.xilinx-global-placement-guidance/v1",
-                "clusters": [
-                    {"cluster": "slice-a", "x": 1, "y": 0},
-                    {"cluster": "slice-b", "x": 1, "y": 1},
-                    {"cluster": "dsp-a", "x": 3, "y": 1},
-                    {"cluster": "dsp-b", "x": 3, "y": 2},
-                ],
-            }), encoding="utf-8")
-            first = root / "single-slr-first.json"
-            second = root / "single-slr-second.json"
-            first_placement = root / "single-slr-first-placement.json"
-            second_placement = root / "single-slr-second-placement.json"
-            result = plan_xilinx_single_slr(
-                packed, arch, first, first_placement, guidance_path=guidance
-            )
-            plan_xilinx_single_slr(
-                packed, arch, second, second_placement, guidance_path=guidance
-            )
-            checked = validate_xilinx_single_slr_plan(
-                packed, arch, first, first_placement, guidance_path=guidance
-            )
-            first_value = json.loads(first.read_text(encoding="utf-8"))
-            second_value = json.loads(second.read_text(encoding="utf-8"))
-        self.assertEqual(result["selected_slr"], "SLR1")
-        self.assertEqual(checked["selected_slr"], "SLR1")
-        self.assertEqual(first_value, second_value)
-        self.assertEqual(
-            {entry["slr"] for entry in first_value["clusters"]}, {"SLR1"}
-        )
-        self.assertEqual(
-            [entry["status"] for entry in first_value["candidates"]],
-            ["capacity-feasible", "selected"],
-        )
-
-    def test_single_slr_planner_fails_when_no_slr_has_capacity(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            arch, _packed, _guidance, _constraints = self._write_inputs(root)
-            packed = root / "overfull.json"
-            packed.write_text(json.dumps({
-                "schema": "emuflow.packed-site-netlist/v1",
-                "status": "pass",
-                "clusters": [
-                    {
-                        "id": f"slice-{index}", "kind": "slice",
-                        "site_templates": ["SLICEL"],
-                        "assignments": [{
-                            "instance": f"lut-{index}", "cell_type": "LUT6",
-                            "bel": "A6LUT", "bel_candidates": ["A6LUT"],
-                        }],
-                    }
-                    for index in range(3)
-                ],
-                "cascade_chains": [],
-            }), encoding="utf-8")
-            with self.assertRaisesRegex(ValidationError, "no single SLR"):
-                plan_xilinx_single_slr(
-                    packed, arch, root / "impossible.json",
-                    root / "impossible-placement.json",
-                )
-
-    def test_single_slr_plan_validator_rejects_tampering(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            arch, packed, guidance, _constraints = self._write_inputs(root)
-            output = root / "single-slr.json"
-            placement = root / "single-slr-placement.json"
-            plan_xilinx_single_slr(
-                packed, arch, output, placement, guidance_path=guidance
-            )
-            value = json.loads(output.read_text(encoding="utf-8"))
-            value["clusters"][0]["slr"] = (
-                "SLR1" if value["selected_slr"] == "SLR0" else "SLR0"
-            )
-            output.write_text(json.dumps(value), encoding="utf-8")
-            with self.assertRaisesRegex(ValidationError, "mixes regions"):
-                validate_xilinx_single_slr_plan(
-                    packed, arch, output, placement, guidance_path=guidance
-                )
-
-    def test_single_slr_planner_honors_required_region(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            arch, packed, guidance, _constraints = self._write_inputs(root)
-            result = plan_xilinx_single_slr(
-                packed, arch, root / "plan.json", root / "placement.json",
-                guidance_path=guidance, required_slr="SLR1",
-            )
-            self.assertEqual(result["selected_slr"], "SLR1")
-            self.assertEqual(result["policy"]["selection"], "required-slr")
-            with self.assertRaisesRegex(ValidationError, "not present"):
-                plan_xilinx_single_slr(
-                    packed, arch, root / "bad.json", root / "bad-placement.json",
-                    guidance_path=guidance, required_slr="SLR9",
-                )
 
 
 if __name__ == "__main__":

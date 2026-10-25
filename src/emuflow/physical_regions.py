@@ -60,6 +60,17 @@ def _integer(value: Any, context: str) -> int:
     return value
 
 
+def _validate_pin_native_tile(pin, context):
+    tile = pin.get("native_tile")
+    if tile is None:
+        return  # Existing geometry-free device sidecars remain usable by baseline.
+    if (not isinstance(tile, dict) or set(tile) != {"coordinate_system", "column", "row"}
+            or tile.get("coordinate_system") != "native-device-tile-column-row-v1"):
+        raise ValidationError(f"{context}: invalid native tile coordinate system")
+    for key in ("column", "row"):
+        _integer(tile.get(key), f"{context}.native_tile.{key}")
+
+
 def validate_physical_region_sidecar(
     architecture: ArchitectureDB,
     sidecar: Mapping[str, Any],
@@ -199,6 +210,7 @@ def validate_physical_region_sidecar(
             )
             site = _string(raw_pin.get("site"), f"{pin_context}.site")
             _string(raw_pin.get("bel"), f"{pin_context}.bel")
+            _validate_pin_native_tile(raw_pin, pin_context)
             if package_pin in package_pins:
                 raise ValidationError(
                     f"{pin_context}: duplicate package pin {package_pin!r}"
@@ -341,6 +353,7 @@ def validate_fpga_interchange_architecture_regions(
             )
             _string(pin.get("site"), f"{pin_context}.site")
             _string(pin.get("bel"), f"{pin_context}.bel")
+            _validate_pin_native_tile(pin, pin_context)
             if package_pin in package_pins:
                 raise ValidationError(
                     f"{pin_context}: duplicate package pin {package_pin!r}"

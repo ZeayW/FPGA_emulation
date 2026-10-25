@@ -17,8 +17,8 @@ with the physical backend.
 
 EmuFlow's contribution is the frontend integration and EmuIR representation:
 stable cell/net identities, connectivity, primitive parameters, and resource
-demand shared by the later stages. The VTR and Xilinx profiles describe
-different target models, not interchangeable LUT-capacity units.
+demand shared by the later stages. Production mapping targets the supported
+Xilinx UltraScale+ primitive namespace; alternative compile profiles are retired.
 
 ## Phase 2: timing extraction
 
@@ -26,7 +26,9 @@ different target models, not interchangeable LUT-capacity units.
 netlist under the declared timing model and clock constraints. EmuFlow exports
 the resulting path population, endpoint identities, and slack into
 TimingPathDB, then derives criticality information for partitioning, routing,
-and TDM optimization. A Vivado adapter is available for supported vendor flows.
+and TDM optimization. This upstream producer is shared by both maintained
+Xilinx physical backends. The independent Vivado timing producer is retired;
+vendor post-route measurement belongs to Phase 7.
 
 This is pre-physical timing: inter-FPGA route, TDM events, and routed FPGA delays
 are resolved later. Phase 7 performs the final global analysis.
@@ -56,6 +58,20 @@ seed back to FM and uncoarsening. It does not repair a published partition.
 There is no external balance legalizer. EmuFlow checks
 and repairs configured hop constraints before handing the initial assignment
 to PATRON. See the [TritonPart project and publication](https://github.com/ABKGroup/TritonPart).
+
+Only PATRON v14 is supported in production. The older native global-best and
+critical-flow variants, v10 hop-guard scoring, v11 measured-residual feedback,
+legacy trace/provider dispatch and full reference-search runner are retired.
+Old results require their matching Git revision. The shared model's v6 schema
+is still current: its storage version is independent of the search algorithm.
+The v14 typed wire contract, min-cut/ejection kernels and independent complete
+model/objective/assignment validation remain. Detailed qualification merges
+moves and flow batches as ordered subsequences using independently checked,
+strictly improving objective ranks. Sweep labels describe a local pass rather
+than a global event order. Each source/target/fixed/resource transition and the
+complete initial/final objectives are reconstructed; production still publishes
+summary-only typed results. A bounded fixture comparison is
+not a replacement for real-design physical/global timing acceptance.
 
 **PATRON is EmuFlow's communication-aware post-processing algorithm.** Its
 native C++ local search starts from that assignment and considers single
@@ -118,17 +134,18 @@ physical results. Any claim of final timing improvement therefore requires a
 separate complete-flow comparison. PATRON is the project's algorithm name,
 not a claim to reproduce one particular paper.
 
-Explicit alternatives include upstream **RePart**, with an optional
-logic-replication route ([RePart paper](#research-references)), and
-EmuFlow's separately implemented **MFSPart-based** multilevel provider
-([MFSPart paper](#research-references)). Greedy partitioning remains a
-baseline. Boundary policy is a separate choice: sequential-only and generalized
+RePart and MFSPart initialization, replication and post-refinement routes are
+retired. Greedy partitioning is retained only as a small independent test oracle.
+TritonPart remains the PATRON initializer and a direct comparison
+capability. Historical implementations are available through Git.
+Boundary policy is a separate choice: sequential-only and generalized
 Static Exact admit different cut locations. Exact transport-event legality is
 established after routing and TDM assignment, not by a Phase 3 timing proxy.
 
 ## Phase 4: system-level multicast routing
 
-EmuFlow's native C++ router connects each cross-FPGA net's source to its sinks
+The sole Phase 4 production provider, `timing-aware-global-candidate-v1`,
+connects each cross-FPGA net's source to its sinks
 on the BoardDB graph. It supports shortest-path and delay-demand-balanced tree
 construction, additional Steiner-style candidates, and iterative rerouting.
 Candidate costs account for delay, congestion, shared link capacity, and TDM
@@ -142,40 +159,72 @@ and TDM Assignment** (ASP-DAC 2026); links are in the
 extends these ideas with EmuFlow's route contracts and candidate selection.
 System routing selects FPGA/die paths; it does not route wires inside an FPGA.
 
+Shortest-path, delay-demand-balanced, Steiner, metric-closure, shallow-light
+and adaptive-hop trees are candidate generators inside this engine. They are
+not separate supported routing providers. The restricted master and conflict
+batch refinement select and improve complete legal multicast routes. Independent
+capacity, direction, hop-bound, timing and candidate checks remain in force.
+
+The timing-oblivious policy uses the same candidate engine without STA costs,
+then independently attaches the original normalized timing records when given.
+It does not select a second load-balanced or post-evaluation provider. A
+zero-demand assignment produces an empty route artifact under the same provider.
+The small exhaustive route oracle lives only in tests.
+Legacy routing input versions, standalone routing executables and the old
+routing/TDM baseline-versus-upgrade comparison commands are retired.
+
+
+
+### Retired external routing feedback
+
+Phase 4 consumes the selected assignment, BoardDB constraints and upstream timing
+population. Standalone TDM/physical feedback documents, feedback price injection,
+and the unused clock/protocol compatibility exporter are retired. The native
+global-candidate router retains its own congestion history, candidate generation,
+timing weights and TDM cost model. Historical feedback runs require their matching
+Git revision; there is no alternate production reader or fallback.
+
+
 ## Phase 5: TDM ratio, lane, and slot assignment
 
-The native ratio optimizer uses **Lagrangian relaxation/KKT updates**, followed
-by discrete ratio legalization and local refinement. Its foundations are
-Pui and Young's TODAES 2020 TDM method and the ASP-DAC 2026 timing-aware method.
-The implementation includes a timing-DAG continuous optimizer and a separate
-concrete slot optimizer; a continuous ratio alone is not an executable
-communication assignment.
+The production algorithm is `deterministic-dependency-earliest-slot-v1`, an
+EmuFlow scheduler for the Static Exact cut-dependency DAG. It processes ready
+cuts in deterministic dependency order, assigns a legal lane and earliest TX
+slot, and propagates actual RX arrival before releasing dependent transfers.
+It preserves relay latency, sampled virtual-wire settle/commit constraints,
+and absolute TX events used by downstream timing analysis.
 
-EmuFlow then materializes legal lanes and slots under the platform's ratio,
-direction, compatibility, and shared-capacity rules. Slot refinement evaluates
-concrete transmission events. For supported combinational cuts, the binding
-also records when upstream values become available and when downstream
-transmissions consume them. Those runtime bindings are EmuFlow integration
-work, distinct from the cited ratio-optimization algorithms.
+The shared native `build-schedule` operation consumes the current typed
+RouteStore and the Phase 3 source-bound contract. It constructs the schedule
+and readiness certificate directly in ScheduleStore. Independent cursor/join
+validation completes before atomic report-last publication; there is no
+Python result import or size-dependent reference fallback.
 
-For the default research platform, Phase 5 allocates whole communication
-banks between the two directions of each connected FPGA pair according to
-directional communication load, then optimizes TDM ratios and slots within
-that allocation. Each bank serves one direction for the schedule. See the
-[hardware platform and link model](HARDWARE_PLATFORM.md).
+Whole communication banks are allocated between directions using directional
+load. Hardware ratio limits, compatibility, shared capacity and the calibrated
+per-hop delay model remain constraints even though independent ratio/KKT,
+timing-DAG and slot-refinement providers are retired. Chimew consumes these
+concrete lane/slot/ratio facts and does not depend on the retired optimizers.
+See the [hardware platform and link model](HARDWARE_PLATFORM.md).
+
+The old registered-boundary producer, split scheduling/publication protocol,
+and cross-stage ratio-feedback optimizer are removed. A bounded earliest-slot
+oracle lives in tests only; supported explicit artifacts retain independent
+legality checks. Minimum-frame search reruns the same production scheduler
+and records `emuflow.frame-search/v5`, without optimizer-selection parameters.
 
 ## Phase 6: pin planning, netlist splitting, and transport
 
 The **baseline** consumes the Phase 5 lane/slot assignment directly. The
-optional **placement-aware** provider adds compatible signal grouping,
-placement-proximity refinement, and minimum-cost group-to-virtual-pin matching.
-Its normalized region model is an EmuFlow baseline.
+maintained optional provider is **Chimew**. The independent region-based
+placement-aware planner, its native executable and its comparison arm are
+retired; necessary pin-plan, direction, electrical and slot validators remain.
 
 The optional **Chimew** provider implements methods from *TDM Signal Grouping
 and Package Pin Assignment for 2.5D Multi-FPGA Systems with Lookahead Placement*
 (FPGA 2026): crossing-encoding grouping, position refinement, and two-stage
-bank/channel assignment using min-cost flow. OpenPARF lookahead placement and
-RUDY congestion estimates supply physical guidance. The implementation keeps
+bank/channel assignment using min-cost flow. Indexed placement from the selected
+Xilinx physical backend and RUDY estimates supply physical guidance. The implementation keeps
 paper-derived kernels separate from EmuFlow's electrical, slot, and transport
 adapters. Academic region estimates must be distinguished from actual SLR/SLL
 data, and package binding requires a declared pin/electrical model.
@@ -183,6 +232,18 @@ data, and package binding requires a declared pin/electrical model.
 For shared-bank platforms, physical lane remapping must remain inside the
 direction banks allocated by Phase 5. Phase 6 rejects mappings that cross those
 bank ranges or combine opposite directions in one bank.
+
+The fixed-board Chimew electrical adapter resolves v3 wire references through
+[the existing HP-bank LVDS inventory](HARDWARE_PLATFORM.md#fixed-virtual-board-wiring),
+including both polarities at both ends. This is an EmuFlow integration contract;
+it does not change the paper-derived grouping or min-cost-flow kernels.
+The integrated producer queries original instance IDs in the source/mapped
+owners and actual placed descendants, with boundary registers for forwarded
+hops. It exposes only fixed wires eligible under the concrete Phase 5 bank
+directions. Former synthetic pins, lane-index geometry and opposite-direction
+TDM bundling are removed from this producer. Timing guards belong to the
+crossing input; the Phase 5 hop store is referenced without cloning it.
+These integration-policy changes require separate physical/QoR qualification.
 
 All providers feed the EmuFlow netlist splitter and transport generator.
 Static TDM communication, shadow state, and frame synchronization implement
@@ -194,8 +255,18 @@ equivalence checks are project implementations, not part of Chimew.
 The physical backends share a result contract while using different device
 models and implementation engines. The default Xilinx research route combines
 RapidWright device data, native OpenPARF placement, validated site/BEL binding,
-and RWRoute detailed routing. VTR is the alternative academic backend, and
-Vivado is an optional proprietary integration.
+and RWRoute detailed routing. Vivado is the other maintained implementation.
+The VTR/open engine and its architecture, packing, routing and timing adapters
+are retired; shared source identity, coverage and physical validators remain.
+
+AMF and DREAMPlaceFPGA feasibility routes are retired, including their native
+runners and adapter-specific validation. Shared physical contracts continue to
+serve the maintained Xilinx routes; upstream code used by OpenPARF is retained.
+The packed-cluster OpenPARF guidance plus Python greedy legalizer and
+single-SLR selection are also retired. Native OpenPARF is the sole RapidWright
+placement producer. Shared physical legality rules remain in production;
+bounded packing/site fixture oracles are test-only. The capability probe
+describes the atomic path and no longer offers the retired packed-cluster smoke.
 
 See the [Xilinx physical-flow contract](XILINX_PHYSICAL_FLOW.md) for placement,
 routing, fixed differential I/O, and timing acceptance criteria. Board topology,
@@ -221,20 +292,17 @@ adapter.
 | --- | --- | --- |
 | Yosys / ABC synthesis | Direct upstream tool execution; EmuFlow mapping profiles and import | [yosys.py](../src/emuflow/yosys.py) |
 | OpenSTA path extraction | Direct STA-engine integration; EmuFlow path contract | [opensta.py](../src/emuflow/opensta.py) |
-| TritonPart / RePart | Upstream partitioner integrations; shared assignment/legality contracts | [partition.py](../src/emuflow/partition.py) |
+| TritonPart | Upstream initializer integration; shared assignment/legality contracts | [partition.py](../src/emuflow/partition.py) |
 | PATRON | EmuFlow path-aware K-way refinement initialized by TritonPart; not an external paper implementation | [patron_refiner.cpp](../src/native/patron_refiner.cpp) |
 | Static Exact semantic analysis | EmuFlow structural dependency/capture traversal with a Python reference and native large-design implementation | [static_exact_analyzer.cpp](../src/native/static_exact_analyzer.cpp) |
 | System router | EmuFlow implementation drawing on DAC 2025 delay-demand balancing and ASP-DAC 2026 timing-aware routing, with additional candidate trees | [tlr_router.cpp](../src/native/tlr_router.cpp) |
-| TDM ratios | Published Lagrangian/KKT methods, discrete legalization, and EmuFlow platform constraints | [tdm_ratio_optimizer.cpp](../src/native/tdm_ratio_optimizer.cpp) |
-| Timing-DAG ratio solver | ASP-DAC 2026 equation-based continuous optimizer; distinct from runtime dependency/event binding | [tdm_timing_dag_optimizer.cpp](../src/native/tdm_timing_dag_optimizer.cpp) |
-| Concrete slot refinement | EmuFlow event-based local optimization after ratio assignment | [tdm_slot_optimizer.cpp](../src/native/tdm_slot_optimizer.cpp) |
-| Placement-aware pin baseline | EmuFlow region grouping, proximity costs, and minimum-cost assignment | [placement_aware_pin_planner.cpp](../src/native/placement_aware_pin_planner.cpp) |
+| Static Exact TDM scheduler | EmuFlow deterministic dependency ordering, earliest legal TX events, and independent readiness validation | [tdm_exact_scheduler.cpp](../src/native/tdm_exact_scheduler.cpp) |
 | Chimew initial grouping | Paper Algorithm 1 crossing-encoding grouping | [chimew_signal_grouper.cpp](../src/native/chimew_signal_grouper.cpp) |
 | Chimew position refinement | Paper Section 3.3.2 with explicitly documented implementation choices | [chimew_refinement.py](../src/emuflow/chimew_refinement.py) |
 | Chimew bank/channel assignment | Paper Section 3.4 two-stage min-cost-flow kernel | [chimew_bank_channel_assigner.cpp](../src/native/chimew_bank_channel_assigner.cpp) |
 | Chimew integration | EmuFlow electrical and slot binding around the paper-derived output | [chimew_phase6.py](../src/emuflow/chimew_phase6.py) |
 | Split netlists and transport | EmuFlow runtime implementation and validation | [phase6.py](../src/emuflow/phase6.py) |
-| VPR / OpenPARF / Vivado | Physical-tool integrations selected by backend and device contract | [physical_backend.py](../src/emuflow/physical_backend.py) |
+| OpenPARF/RWRoute / Vivado | Physical-tool integrations selected by backend and device contract | [physical_backend.py](../src/emuflow/physical_backend.py) |
 | RapidWright / RWRoute | Device-resource, site/BEL, and native routing integration | [rapidwright_provider.py](../src/emuflow/rapidwright_provider.py) |
 | Global OpenSTA | EmuFlow timing-model exporter and upstream STA execution | [global_sta.py](../src/emuflow/global_sta.py) |
 
@@ -252,18 +320,9 @@ points are mapped in [implementation and reference map](#implementation-and-refe
 
 - **TritonPart** — multilevel, multi-constraint partitioning, ICCAD 2023.
   [Author project and paper](https://github.com/ABKGroup/TritonPart).
-- **RePart: Efficient Hypergraph Partitioning with Logic Replication Optimization
-  for Multi-FPGA System** — 2026 preprint.
-  [Paper](https://arxiv.org/abs/2604.00780), [source](https://github.com/Welement-zyf/RePart).
-- **MFSPart: A Generalized Partitioning Framework for Multi-FPGA Systems and Its
-  Ensemble-Based Extension** — TCAD 2026.
-  [Author manuscript](https://zhiyaoxie.com/files/TCAD26_MFSPart.pdf).
 - **Synergistic Die-Level Router for Multi-FPGA System with Time-Division
   Multiplexing Optimization** — Wang et al., DAC 2025.
   [Author manuscript](https://yibolin.com/publications/papers/ROUTE_DAC2025_Wang.pdf).
-- **Lagrangian Relaxation-Based Time-Division Multiplexing Optimization for
-  Multi-FPGA Systems** — Pui and Young, TODAES 2020.
-  [Paper](https://cwpui.com/doc/j4.pdf), [DOI](https://doi.org/10.1145/3377551).
 - **Timing-Aware Optimization of Die-Level Routing and TDM Assignment for
   Multi-FPGA Systems** — Chen et al., ASP-DAC 2026.
   [Author manuscript](https://numbda.cs.tsinghua.edu.cn/papers/aspdac262.pdf).

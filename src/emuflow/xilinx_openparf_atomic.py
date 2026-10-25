@@ -12,9 +12,11 @@ before producing a compact EmuFlow placement certificate.
 
 from __future__ import annotations
 
+from contextlib import closing
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Mapping as MappingABC
 import fcntl
+import errno
 import hashlib
 import json
 import math
@@ -27,10 +29,17 @@ import tempfile
 import threading
 from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .architecture import ArchitectureDB
 from .errors import ImportError, ValidationError
+from .store_publication import (
+    bind_store_source,
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+)
 from .io import file_sha256, read_json, write_json
-from .native_tools import resolve_native_executable
+from .native_tools import native_file_generation, resolve_native_stage_command
 from .xilinx_netlist import _IndexedCells
 from .openparf import run_openparf, validate_openparf_runtime
 from .openparf_native_driver import (
@@ -125,7 +134,6 @@ OPENPARF_FF_CONTROL_LEGALIZATION_SCHEMA = (
 OPENPARF_RESULT_CHECKPOINT_SCHEMA = "emuflow.openparf-result-checkpoint/v1"
 _TARGET_DENSITY = 0.75
 _QUALIFIED_LUTS_PER_SLICE = 8
-_CLOCK_REGION_SITE_UTILIZATION_LIMIT = 0.75
 _GLOBAL_PLACEMENT_STOP_OVERFLOW = 0.10
 _DIAGNOSTIC_HANDOFF_OVERFLOW = 0.25
 _DIAGNOSTIC_HANDOFF_PATIENCE = 64
@@ -557,6 +565,21 @@ def _bram_claims(tile: str, role: str) -> List[str]:
     raise ValidationError(f"unknown BRAM tile role {role!r}")
 
 
+def _physical_input_bindings(paths, *views):
+    """Keep raw input generations and borrow registered indexed owner scopes."""
+    sources = tuple(
+        bind_store_source(path, "physical-input-document-v1")
+        for path in paths
+        if path is not None
+    )
+    for view in views:
+        bind = getattr(view, "bound_store_sources", None)
+        if callable(bind):
+            sources += bind()
+    require_store_sources_unchanged(sources)
+    return sources
+
+
 def _sha256(path: Path) -> str:
     return file_sha256(path)
 
@@ -858,7 +881,10 @@ def _validate_placement_database_contract(
 
 
 def _validate_atomic_placement_descriptor(
-    path: Path, descriptor: Any,
+    path: Path,
+    descriptor: Any,
+    *,
+    source_bindings=None,
 ) -> Path:
     if (
         not isinstance(descriptor, Mapping)
@@ -910,6 +936,7 @@ def _validate_atomic_placement_descriptor(
     try:
         database_path = unresolved.resolve(strict=True)
         stat = database_path.stat()
+        source = bind_store_source(database_path, "openparf-placement-certificate-v3")
     except OSError as error:
         raise ValidationError(
             "OpenPARF atomic placement database is missing"
@@ -923,6 +950,9 @@ def _validate_atomic_placement_descriptor(
         or _sha256(database_path) != descriptor["sha256"]
     ):
         raise ValidationError("OpenPARF atomic placement database seal is invalid")
+    require_store_sources_unchanged((source,))
+    if source_bindings is not None:
+        source_bindings.append(source)
     return database_path
 
 
@@ -946,9 +976,9 @@ def _valid_unreferenced_certificate_store(
     ):
         return False
     try:
-        with sqlite3.connect(
-            f"file:{candidate.resolve()}?mode=ro&immutable=1", uri=True
-        ) as database:
+        with closing(sqlite3.connect(
+            immutable_sqlite_uri(candidate), uri=True
+        )) as database, database:
             if (
                 int(database.execute("PRAGMA application_id").fetchone()[0])
                 != OPENPARF_ATOMIC_PLACEMENT_DATABASE_APPLICATION_ID
@@ -1019,11 +1049,17 @@ def _valid_unreferenced_certificate_store(
 class _AtomicPlacementCertificateBuilder:
     """Stream validated site groups into one typed certificate generation."""
 
-    def __init__(self, selector_path: Path) -> None:
+    def __init__(self, selector_path: Path, *, source_bindings=()) -> None:
+        self.closed = True
+        self.source_bindings = validate_store_destination(
+            selector_path, source_bindings
+        )
         selector_path.parent.mkdir(parents=True, exist_ok=True)
         self.selector_path = selector_path
         self.lease = _PlacementCertificateLease(selector_path, exclusive=True)
         self.closed = False
+        self.created_store = None
+        self.selector_committed = False
         self.temporary_path: Optional[Path] = None
         self.database: Optional[sqlite3.Connection] = None
         self.previous_store: Optional[Path] = None
@@ -1048,10 +1084,10 @@ class _AtomicPlacementCertificateBuilder:
                 previous_header = dict(previous)
                 previous_header.pop("cluster_storage")
                 try:
-                    with sqlite3.connect(
-                        f"file:{self.previous_store}?mode=ro&immutable=1",
+                    with closing(sqlite3.connect(
+                        immutable_sqlite_uri(self.previous_store),
                         uri=True,
-                    ) as previous_database:
+                    )) as previous_database, previous_database:
                         _validate_placement_database_contract(
                             previous_database,
                             descriptor=previous_descriptor,
@@ -1165,6 +1201,7 @@ class _AtomicPlacementCertificateBuilder:
             raise ValidationError("OpenPARF atomic placement clusters are invalid")
         if self.database is None or self.temporary_path is None:
             raise ValidationError("OpenPARF placement-certificate writer is closed")
+        require_store_sources_unchanged(self.source_bindings)
         compact = dict(header)
         compact.pop("clusters", None)
         compact.pop("cluster_storage", None)
@@ -1181,8 +1218,6 @@ class _AtomicPlacementCertificateBuilder:
         self.database.commit()
         self.database.close()
         self.database = None
-        with self.temporary_path.open("rb") as stream:
-            os.fsync(stream.fileno())
         digest = _sha256(self.temporary_path)
         store_path = self.selector_path.parent / _certificate_store_name(
             self.selector_path, digest
@@ -1191,6 +1226,7 @@ class _AtomicPlacementCertificateBuilder:
             raise ValidationError(
                 "OpenPARF atomic placement database is a symbolic link"
             )
+        require_store_sources_unchanged(self.source_bindings)
         if store_path.exists():
             if _sha256(store_path) != digest:
                 raise ValidationError(
@@ -1198,7 +1234,13 @@ class _AtomicPlacementCertificateBuilder:
                 )
             self.temporary_path.unlink()
         else:
-            os.replace(self.temporary_path, store_path)
+            publish_sqlite_store(
+                self.temporary_path,
+                store_path,
+                "openparf-placement-certificate-v3",
+                sources=self.source_bindings,
+            )
+            self.created_store = store_path
         descriptor = {
             "schema": OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA,
             "application_id": OPENPARF_ATOMIC_PLACEMENT_DATABASE_APPLICATION_ID,
@@ -1218,7 +1260,9 @@ class _AtomicPlacementCertificateBuilder:
             write_json(temporary_selector, compact, compact=True)
             with temporary_selector.open("rb") as stream:
                 os.fsync(stream.fileno())
+            require_store_sources_unchanged(self.source_bindings)
             os.replace(temporary_selector, self.selector_path)
+            self.selector_committed = True
             _fsync_directory(self.selector_path.parent)
             for candidate in self.selector_path.parent.glob(
                 f"{self.selector_path.stem}.*"
@@ -1258,6 +1302,8 @@ class _AtomicPlacementCertificateBuilder:
         self.temporary_path = None
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
+        if self.created_store is not None and not self.selector_committed:
+            self.created_store.unlink(missing_ok=True)
         self.lease.close()
 
     def __del__(self) -> None:
@@ -1265,14 +1311,14 @@ class _AtomicPlacementCertificateBuilder:
 
 
 def write_xilinx_openparf_atomic_placement_certificate(
-    path: Path, certificate: Mapping[str, Any]
+    path: Path, certificate: Mapping[str, Any], *, source_bindings=()
 ) -> Dict[str, Any]:
     """Write a compact certificate whose sidecar owns assignment rows."""
 
     clusters = certificate.get("clusters")
     if not isinstance(clusters, list) or not clusters:
         raise ValidationError("OpenPARF atomic placement clusters are invalid")
-    builder = _AtomicPlacementCertificateBuilder(path)
+    builder = _AtomicPlacementCertificateBuilder(path, source_bindings=source_bindings)
     try:
         for cluster in clusters:
             builder.append(cluster)
@@ -1360,12 +1406,17 @@ class XilinxOpenparfAtomicPlacementView(MappingABC[str, Any]):
         self.path = path
         self.lease = _PlacementCertificateLease(path, exclusive=False)
         self.database: Optional[sqlite3.Connection] = None
+        self.store_path: Optional[Path] = None
+        self.store_generation: Optional[tuple[int, ...]] = None
         self.closed = False
         try:
             if path.is_symlink():
                 raise ValidationError(
                     "OpenPARF atomic placement certificate is a symbolic link"
                 )
+            self._source_bindings = [
+                bind_store_source(path, "openparf-placement-selector-v2")
+            ]
             try:
                 selector = read_json(path)
             except (OSError, ValueError) as error:
@@ -1387,6 +1438,7 @@ class XilinxOpenparfAtomicPlacementView(MappingABC[str, Any]):
                 self.inline = inline
                 self.descriptor = None
                 self.legacy = True
+                self.require_source_unchanged()
                 return
             self.inline = None
             descriptor = selector.get("cluster_storage")
@@ -1428,6 +1480,9 @@ class XilinxOpenparfAtomicPlacementView(MappingABC[str, Any]):
                         "OpenPARF atomic placement database is a symbolic link"
                     )
                 database_path = unresolved.resolve(strict=True)
+                self._source_bindings.append(
+                    bind_store_source(database_path, "physical-input-document-v1")
+                )
                 if (
                     database_path.parent != path.parent.resolve()
                     or database_path.stat().st_size != descriptor["bytes"]
@@ -1438,12 +1493,14 @@ class XilinxOpenparfAtomicPlacementView(MappingABC[str, Any]):
                     )
             else:
                 database_path = _validate_atomic_placement_descriptor(
-                    path, descriptor
+                    path, descriptor, source_bindings=self._source_bindings
                 )
             assert isinstance(descriptor, Mapping)
             self.descriptor = descriptor
+            self.store_path = database_path
+            self.store_generation = self._source_bindings[-1].generation
             database = sqlite3.connect(
-                f"file:{database_path}?mode=ro&immutable=1", uri=True
+                immutable_sqlite_uri(database_path), uri=True
             )
             self.database = database
             header = dict(selector)
@@ -1452,9 +1509,19 @@ class XilinxOpenparfAtomicPlacementView(MappingABC[str, Any]):
                 database, descriptor=descriptor, header=header,
                 legacy=self.legacy,
             )
+            self.require_source_unchanged()
         except BaseException:
             self.close()
             raise
+
+    def bound_store_sources(self):
+        self.require_source_unchanged()
+        return tuple(self._source_bindings)
+
+    def require_source_unchanged(self) -> None:
+        if self.closed:
+            raise ValidationError("OpenPARF atomic placement view is closed")
+        require_store_sources_unchanged(self._source_bindings)
 
     def __getitem__(self, key: str) -> Any:
         return self.selector[key]
@@ -1531,11 +1598,11 @@ def iter_xilinx_openparf_atomic_placement_clusters(
 
 
 def _write_site_database(
-    path: Path, coordinate_system: Mapping[str, Any]
+    path: Path, coordinate_system: Mapping[str, Any], *, source_bindings=()
 ) -> int:
     """Write the large physical site map once in a queryable representation."""
 
-    path.unlink(missing_ok=True)
+    source_bindings = validate_store_destination(path, source_bindings)
     sites = coordinate_system.get("sites")
     if not isinstance(sites, list) or not sites:
         raise ValidationError("OpenPARF atomic coordinate system is empty")
@@ -1544,7 +1611,7 @@ def _write_site_database(
     # database in memory, create indexes after the bulk inserts, then emit its
     # pages once through SQLite's backup API.  The final bytes retain the same
     # read-only schema and remain under the required /research run directory.
-    with sqlite3.connect(":memory:") as database:
+    with closing(sqlite3.connect(":memory:")) as database, database:
         database.executescript("""
             PRAGMA page_size = 65536;
             PRAGMA journal_mode = OFF;
@@ -1587,6 +1654,12 @@ def _write_site_database(
             "INSERT INTO metadata(key, value) VALUES (?, ?)",
             ("site_count", str(len(sites))),
         )
+        if coordinate_system.get("coordinate_system") is not None:
+            database.execute("INSERT INTO metadata VALUES ('coordinate_system',?)",
+                             (coordinate_system["coordinate_system"],))
+        if coordinate_system.get("architecture_sha256") is not None:
+            database.execute("INSERT INTO metadata VALUES ('architecture_sha256',?)",
+                             (coordinate_system["architecture_sha256"],))
         database.executemany(
             "INSERT INTO sites VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
@@ -1627,35 +1700,93 @@ def _write_site_database(
                 ON physical_sites (resource, physical_site);
             CREATE INDEX physical_sites_coordinate
                 ON physical_sites (dense_x, dense_y, resource, slot);
+            CREATE INDEX physical_sites_name ON physical_sites(physical_site);
         """)
         database.commit()
-        with sqlite3.connect(path) as destination:
-            destination.executescript("""
-                PRAGMA journal_mode = OFF;
-                PRAGMA synchronous = OFF;
-            """)
-            database.backup(destination, pages=4096)
+        descriptor, name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+        os.close(descriptor)
+        temporary = Path(name)
+        try:
+            with closing(sqlite3.connect(temporary)) as destination, destination:
+                destination.executescript(
+                    "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;"
+                )
+                database.backup(destination, pages=4096)
+            publish_sqlite_store(
+                temporary, path, "openparf-site-store-v1", sources=source_bindings
+            )
+        finally:
+            temporary.unlink(missing_ok=True)
     return len(sites)
 
 
 def _materialize_site_database(
-    path: Path, device_static: Dict[str, Any]
+    path: Path, device_static: Dict[str, Any], *, source_bindings=()
 ) -> int:
     """Write one immutable device site database, then hard-link later users."""
 
+    source_bindings = validate_store_destination(path, source_bindings)
     with _DEVICE_STATIC_CACHE_LOCK:
         source = device_static.get("site_database")
         if isinstance(source, Path) and source.is_file():
-            path.unlink(missing_ok=True)
-            try:
-                os.link(source, path)
+            from .native_tools import native_file_generation
+            before = native_file_generation(source)
+            expected = device_static["site_database_generation"]
+            if before != expected:
+                if (before[:5] != expected[:5]
+                        or _sha256(source) != device_static["site_database_sha256"]
+                        or native_file_generation(source) != before):
+                    raise ValidationError("OpenPARF immutable device site map changed after publication")
+            if path.exists() and os.path.samefile(source,path):
+                device_static["site_database_generation"] = before
                 return int(device_static["site_count"])
-            except OSError:
-                # A different filesystem cannot share an inode. Preserve the
-                # contract by materializing normally instead of copying a
-                # mutable SQLite file behind the cache's back.
-                pass
-        count = _write_site_database(path, device_static["coordinate_system"])
+            require_store_sources_unchanged(source_bindings)
+            descriptor, name = tempfile.mkstemp(
+                prefix=f".{path.name}.", suffix=".link.tmp", dir=path.parent
+            )
+            os.close(descriptor)
+            alias = Path(name)
+            alias.unlink()
+            try:
+                try:
+                    os.link(source, alias)
+                except OSError as error:
+                    if error.errno != errno.EXDEV:
+                        raise
+                else:
+                    # The link is a namespace alias of the already sealed owner,
+                    # not private SQL staging. Do not copy it to satisfy the
+                    # private writer's single-link ownership requirement.
+                    linked_generation = native_file_generation(source)
+                    if linked_generation[:5] != before[:5]:
+                        raise ValidationError(
+                            "OpenPARF site map changed while creating its alias"
+                        )
+                    require_store_sources_unchanged(source_bindings)
+                    os.replace(alias, path)
+                    _fsync_directory(path.parent)
+                    committed_generation = native_file_generation(source)
+                    if committed_generation[:5] != before[:5]:
+                        raise ValidationError(
+                            "OpenPARF site map changed while publishing its alias"
+                        )
+                    device_static["site_database_generation"] = committed_generation
+                    return int(device_static["site_count"])
+            finally:
+                alias.unlink(missing_ok=True)
+        count = _write_site_database(
+            path, device_static["coordinate_system"], source_bindings=source_bindings
+        )
+        # Seal this immutable device generation once, before publishing any
+        # hard links. Later users reuse this seal instead of hashing per FPGA.
+        from .native_tools import native_file_generation
+        generation = native_file_generation(path)
+        device_static["site_database_sha256"] = _sha256(path)
+        if native_file_generation(path) != generation:
+            raise ValidationError("OpenPARF device site map changed while sealing")
+        device_static["site_database_generation"] = generation
         device_static["site_database"] = path
         device_static["site_count"] = count
         return count
@@ -1719,8 +1850,8 @@ def load_xilinx_openparf_sites(
         (int(coordinate[0]), int(coordinate[1])) for coordinate in coordinates or []
     }
     resource_filter = {str(resource) for resource in resources or []}
-    uri = f"file:{database_path.resolve()}?mode=ro&immutable=1"
-    with sqlite3.connect(uri, uri=True) as database:
+    uri = immutable_sqlite_uri(database_path)
+    with closing(sqlite3.connect(uri, uri=True)) as database, database:
         metadata = dict(database.execute("SELECT key, value FROM metadata"))
         if (
             metadata.get("schema") != XILINX_OPENPARF_SITE_DATABASE_SCHEMA
@@ -2618,101 +2749,43 @@ def _clock_region_site_key(
     return slr, clock_region, site_type
 
 
-def _derate_clock_region_sites(
+def _expose_all_clock_region_sites(
     sites: Sequence[Tuple[Mapping[str, Any], Mapping[str, int]]],
 ) -> Tuple[
     List[Tuple[Mapping[str, Any], Mapping[str, int]]], Dict[str, Any]
 ]:
-    """Reserve physical placement headroom before OpenPARF legalization.
+    """Expose every qualified physical site to placement and legalization.
 
-    Global analytical target density is not a local clock-region occupancy
-    constraint.  Expose at most 75% of each (SLR, clock region, site type) to
-    every downstream legalizer.  Each physical column retains one contiguous
-    run, alternating its reserved edge across columns, so dedicated vertical
-    chains remain useful while the reservation is spatially distributed.
+    Analytical target density already reserves whitespace. Removing another
+    fraction of the sites would apply the same headroom twice and distort its
+    spatial distribution before the density optimizer can choose where that
+    whitespace is useful.
     """
 
-    groups: Dict[
-        Tuple[str, str, str],
-        List[Tuple[Mapping[str, Any], Mapping[str, int]]],
-    ] = defaultdict(list)
-    passthrough = []
+    groups: Counter = Counter()
     for item in sites:
         key = _clock_region_site_key(item[0])
-        if key is None:
-            passthrough.append(item)
-        else:
-            groups[key].append(item)
+        if key is not None:
+            groups[key] += 1
     if not groups:
         return list(sites), {
-            "status": "not-applicable", "limit": None,
+            "status": "not-applicable",
+            "policy": "full-qualified-site-domain",
+            "limit": None,
             "groups": 0, "original_sites": len(sites),
             "available_sites": len(sites), "reserved_sites": 0,
         }
 
-    selected_names = {item[0]["name"] for item in passthrough}
-    group_available = []
-    for key, group in sorted(groups.items()):
-        limit = max(
-            1,
-            int(math.ceil(
-                len(group) * _CLOCK_REGION_SITE_UTILIZATION_LIMIT
-            )),
-        )
-        columns: Dict[int, List[Tuple[Mapping[str, Any], Mapping[str, int]]]] = (
-            defaultdict(list)
-        )
-        for item in group:
-            columns[int(item[0]["x"])].append(item)
-        ordered_columns = []
-        for x, column in sorted(columns.items()):
-            column.sort(key=lambda item: (int(item[0]["y"]), item[0]["name"]))
-            ordered_columns.append((x, column))
-
-        allocations = [
-            int(math.floor(
-                len(column) * _CLOCK_REGION_SITE_UTILIZATION_LIMIT
-            ))
-            for _x, column in ordered_columns
-        ]
-        remaining = limit - sum(allocations)
-        for index in range(remaining):
-            allocations[index % len(allocations)] += 1
-
-        for index, ((_x, column), count) in enumerate(
-            zip(ordered_columns, allocations)
-        ):
-            if count <= 0:
-                continue
-            if len(ordered_columns) == 1:
-                start = (len(column) - count) // 2
-            elif index % 2:
-                start = len(column) - count
-            else:
-                start = 0
-            selected_names.update(
-                item[0]["name"] for item in column[start:start + count]
-            )
-        available = sum(
-            item[0]["name"] in selected_names for item in group
-        )
-        if available != limit:
-            raise ValidationError(
-                f"clock-region site derating failed for {key!r}: "
-                f"available={available}, limit={limit}"
-            )
-        group_available.append(available)
-
-    result = [item for item in sites if item[0]["name"] in selected_names]
-    return result, {
+    return list(sites), {
         "status": "pass",
-        "limit": _CLOCK_REGION_SITE_UTILIZATION_LIMIT,
+        "policy": "full-qualified-site-domain",
+        "limit": 1.0,
         "groups": len(groups),
         "original_sites": len(sites),
-        "available_sites": len(result),
-        "reserved_sites": len(sites) - len(result),
-        "minimum_group_available_sites": min(group_available),
-        "maximum_group_available_sites": max(group_available),
+        "available_sites": len(sites),
+        "reserved_sites": 0,
+        "minimum_group_available_sites": min(groups.values()),
+        "maximum_group_available_sites": max(groups.values()),
     }
 
 
@@ -2848,7 +2921,7 @@ class _IndexedAtomSequence(Sequence[Mapping[str, str]]):
         if self._count is None or self._closed:
             raise ValidationError("OpenPARF atom index is not readable")
         connection = sqlite3.connect(
-            f"file:{self.path.resolve()}?mode=ro&immutable=1", uri=True
+            immutable_sqlite_uri(self.path), uri=True
         )
         connection.row_factory = sqlite3.Row
         return connection
@@ -2868,7 +2941,7 @@ class _IndexedAtomSequence(Sequence[Mapping[str, str]]):
         return self._count
 
     def __iter__(self) -> Iterator[Mapping[str, str]]:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             for row in connection.execute(
                 "SELECT instance,cell_type,source_cluster,resource "
                 "FROM atoms ORDER BY seq"
@@ -2883,7 +2956,7 @@ class _IndexedAtomSequence(Sequence[Mapping[str, str]]):
             index += count
         if not 0 <= index < count:
             raise IndexError(index)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 "SELECT instance,cell_type,source_cluster,resource "
                 "FROM atoms WHERE seq=?", (index + 1,),
@@ -2893,7 +2966,7 @@ class _IndexedAtomSequence(Sequence[Mapping[str, str]]):
         return self._record(row)
 
     def ordinal_for_instance(self, instance: str) -> int:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             row = connection.execute(
                 "SELECT seq FROM atoms WHERE instance=?", (instance,)
             ).fetchone()
@@ -3471,7 +3544,9 @@ def _render_indexed_bookshelf(
 ) -> Tuple[str, Optional[str], int, int]:
     """Keep typed pin traversal and net text emission entirely in C++."""
 
-    executable = resolve_native_executable("emuflow_xilinx_bookshelf_exporter")
+    command = resolve_native_stage_command(
+        "phase7", "export-bookshelf"
+    )
     database = next(
         row[2] for row in cells.connection.execute("PRAGMA database_list")
         if row[1] == "main"
@@ -3486,8 +3561,7 @@ def _render_indexed_bookshelf(
         output = root / "design.nets"
         report = root / "summary.tsv"
         result = subprocess.run(
-            [executable, Path(database).resolve().as_uri() + "?mode=ro&immutable=1",
-             atoms.path.resolve().as_uri() + "?mode=ro&immutable=1",
+            [*command, str(Path(database).resolve()), str(atoms.path.resolve()),
              str(output), str(report), str(root / "endpoints.sqlite")],
             capture_output=True, text=True, check=False,
         )
@@ -3535,8 +3609,9 @@ def _render_library_and_nets(
     """Render library data and stream net endpoints through a file relation.
 
     Atom and mapped-cell identities are merged in lexical order. Endpoint rows
-    are spooled once, then read by numeric net ID and source order; only one
-    net's fanout is resident while ``design.nets`` is emitted. An omitted
+    are spooled once, then read by numeric net ID and source order. The indexed
+    native path streams degree checks and pins without retaining a net's fanout;
+    the compatibility renderer retains one net at a time. An omitted
     ``nets_path`` explicitly materializes the final text for small compatibility
     callers and differential tests.
     """
@@ -3910,7 +3985,7 @@ def _render_site_geometry(
             "physical_region": group["physical_region"],
         })
     # OpenPARF extends each entry to the next entry in its column. Terminate
-    # each logic site after one row: physical gaps and derated sites are not
+    # each logic site after one row: physical gaps are not
     # extra placement area. Hard-resource spans retain their native height.
     # Legalizer position tensors use the center of that box, while the emitted
     # .pl file is written back using its lower-left dense coordinate.  Preserve
@@ -4156,6 +4231,13 @@ def _render_site_geometry(
     return site_prefix, "\n".join(lines) + "\n", {
         "x_axis": x_axis, "y_axis": y_axis,
         "y_axis_order": y_axis_order, "sites": site_map,
+        "coordinate_system": (
+            "native-device-tile-column-row-v1"
+            if all(isinstance(site.get("tile"), Mapping)
+                   and all(isinstance(site["tile"].get(key), int)
+                           and not isinstance(site["tile"][key], bool)
+                           and site["tile"][key]>=0 for key in ("grid_col", "grid_row"))
+                   for site, _resources in sites) else None),
         "clock_regions": clock_region_contract,
         "super_logic_regions": slr_contract,
     }
@@ -4243,7 +4325,7 @@ def _device_static_geometry(
                 and item[0]["physical_region"].get("slr") in selected_slrs
             ]
         placement_region = _validate_native_placement_region(sites)
-        sites, site_headroom_contract = _derate_clock_region_sites(sites)
+        sites, site_headroom_contract = _expose_all_clock_region_sites(sites)
         placement_region = {
             **placement_region,
             "available_logic_sites": sum(
@@ -4369,6 +4451,17 @@ def export_xilinx_openparf_atomic(
 ) -> Dict[str, Any]:
     """Export the fail-closed native mixed-resource qualification subset."""
 
+    source_bindings = _physical_input_bindings(
+        (
+            mapped_path,
+            packed_path,
+            architecture_path,
+            native_constraints_path,
+            provider_manifest_path,
+        ),
+        mapped_value,
+        packed_value,
+    )
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
     if packed_value is None:
         candidate = read_json(packed_path)
@@ -4398,6 +4491,8 @@ def export_xilinx_openparf_atomic(
             or source.get("mapped_sha256") != _sha256(mapped_path)
         ):
             raise ValidationError("OpenPARF atomic source identity is invalid")
+    source_bindings += _physical_input_bindings((), mapped, packed)
+    architecture_digest = _sha256(architecture_path)
     architecture = (
         ArchitectureDB.load(architecture_path)
         if architecture is None else architecture
@@ -4761,7 +4856,7 @@ def export_xilinx_openparf_atomic(
         native_carry_chains = filtered_native_carry_chains
         if not native_carry_chains:
             raise ValidationError(
-                "clock-region site derating removed every CARRY_NEXT window"
+                "available site domain contains no CARRY_NEXT window"
             )
         chain_set_id = "native:CARRY_NEXT"
         site_chain_sets.append({
@@ -5058,18 +5153,22 @@ def export_xilinx_openparf_atomic(
         if covered_hardblocks != expected_hardblocks:
             raise ValidationError("typed hardblock constraints have incomplete ownership")
     site_database_path = output_dir / "site-map.sqlite3"
-    site_count = _materialize_site_database(site_database_path, device_static)
+    device_static["coordinate_system"]["architecture_sha256"] = architecture_digest
+    site_count = _materialize_site_database(
+        site_database_path, device_static, source_bindings=source_bindings
+    )
     site_database_descriptor = {
         "schema": XILINX_OPENPARF_SITE_DATABASE_SCHEMA,
         "file": site_database_path.name,
         "sites": site_count,
+        "sha256": device_static["site_database_sha256"],
     }
     if hardblock_groups:
         constraint_path = output_dir / "physical-macro-groups.json"
         source_identity = {
             "mapped_sha256": _sha256(mapped_path),
             "packed_sha256": _sha256(packed_path),
-            "architecture_sha256": _sha256(architecture_path),
+            "architecture_sha256": architecture_digest,
         }
         if typed_hardblock_mode:
             source_identity.update({
@@ -5121,14 +5220,12 @@ def export_xilinx_openparf_atomic(
     name_map = write_xilinx_openparf_atomic_name_map_storage(
         output_dir / "name_map.json",
         header=name_map_header,
-        atoms=(
-            {"openparf": f"a{index}", **atom}
-            for index, atom in enumerate(atoms)
-        ),
+        atoms=({"openparf": f"a{index}", **atom} for index, atom in enumerate(atoms)),
         carry_cascade_chains=carry_cascade_chains,
         mapped_sha256=_sha256(mapped_path),
         packed_sha256=_sha256(packed_path),
-        architecture_sha256=_sha256(architecture_path),
+        architecture_sha256=architecture_digest,
+        source_bindings=source_bindings,
     )
     name_map_selector = name_map.selector
     name_map_store_path = name_map.store_path
@@ -5137,6 +5234,7 @@ def export_xilinx_openparf_atomic(
         "schema": OPENPARF_ATOMIC_MANIFEST_SCHEMA,
         "status": "pass", "mode": "native-atomic-mixed-resource-qualification",
         "part": architecture.part, "atoms": len(atoms), "nets": net_count,
+        "site_database": dict(site_database_descriptor),
         "net_export": {
             "emitted": net_count,
             "dropped_single_endpoint": dropped_single_endpoint_nets,
@@ -5152,7 +5250,7 @@ def export_xilinx_openparf_atomic(
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "routability_contract": {
-            "provider": "openparf-rudy-pin-stable-feasible-v7",
+            "provider": "openparf-rudy-pin-stable-feasible-full-sites-v8",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": (
                 _GLOBAL_PLACEMENT_STOP_OVERFLOW
@@ -5288,6 +5386,19 @@ def validate_xilinx_openparf_atomic_placement(
 ) -> Dict[str, Any]:
     """Validate and aggregate native atom placement without fallback."""
 
+    source_bindings = _physical_input_bindings(
+        (
+            name_map_path,
+            mapped_path,
+            architecture_path,
+            packed_path,
+            native_constraints_path,
+            provider_manifest_path,
+        ),
+        mapped_value,
+    )
+    if output_path is not None:
+        validate_store_destination(output_path, source_bindings)
     mapped_digest = _sha256(mapped_path)
     packed_digest = _sha256(packed_path) if packed_path is not None else None
     architecture_digest = _sha256(architecture_path)
@@ -5316,6 +5427,7 @@ def validate_xilinx_openparf_atomic_placement(
                 "production OpenPARF placement validation requires the typed "
                 "atomic name map"
             )
+        source_bindings += _physical_input_bindings((placement_path,), name_map, mapped)
         name_map_top = name_map.get("top")
         hardblock_groups = _load_physical_macro_groups(name_map_path, name_map)
         carry_cascade_chains = list(name_map.get("carry_cascade_chains", []))
@@ -5789,7 +5901,9 @@ def validate_xilinx_openparf_atomic_placement(
 
         clusters: list[Dict[str, Any]] = []
         if output_path is not None and not materialize_result:
-            certificate_builder = _AtomicPlacementCertificateBuilder(output_path)
+            certificate_builder = _AtomicPlacementCertificateBuilder(
+                output_path, source_bindings=source_bindings
+            )
         for site_name, items in placement_index.iter_site_groups():
             if sum(item["resource"] == "LUT" for item in items) > 8:
                 raise ValidationError(f"site {site_name!r} exceeds physical LUT capacity")
@@ -5930,7 +6044,7 @@ def validate_xilinx_openparf_atomic_placement(
             result["clusters"] = clusters
             if output_path is not None:
                 write_xilinx_openparf_atomic_placement_certificate(
-                    output_path, result
+                    output_path, result, source_bindings=source_bindings
                 )
         return result
     finally:

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EmuFlow native PATRON model summary v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "implementation_id", "clusters", "nets", "paths", "dimensions", "capacity_domains", "model_build", "search"],
+  "properties": {
+    "schema": {"const": "emuflow.patron-native-model/v1"},
+    "implementation_id": {"const": "native-primary-store-model-v2"},
+    "clusters": {"type": "integer", "minimum": 1},
+    "nets": {"type": "integer", "minimum": 1},
+    "paths": {"type": "integer", "minimum": 1},
+    "dimensions": {"type": "integer", "minimum": 1, "maximum": 13},
+    "capacity_domains": {"type": "integer", "minimum": 1},
+    "model_build": {
+      "allOf": [{"$ref": "native-stage-result-v1.schema.json"}],
+      "properties": {"stage": {"const": "phase3.model-build"}, "status": {"const": "pass"}}
+    },
+    "search": {
+      "allOf": [{"$ref": "native-stage-result-v1.schema.json"}],
+      "properties": {"stage": {"const": "phase3.patron-search"}, "status": {"const": "pass"}}
+    }
+  }
+}

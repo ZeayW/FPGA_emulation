@@ -1,4 +1,4 @@
-"""Indexed Phase 6 placement-aware pin-plan storage.
+"""Indexed Phase 6 Chimew pin-plan storage.
 
 The logical v1 pin-plan contract remains unchanged.  Production Phase 6
 publishes its hop-sized records once in SQLite and keeps only the small header
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sqlite3
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
@@ -17,8 +16,14 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ValidationError
-from .io import file_sha256, read_json, write_json
+from .io import file_sha256, read_json
 from .pin_planning import PIN_PLAN_SCHEMA
+from .store_publication import (
+    publish_sqlite_store,
+    commit_store_selector,
+    require_store_sources_unchanged,
+    bind_store_source,
+)
 
 
 PIN_PLAN_STORAGE_SCHEMA = "emuflow.pin-plan-storage/v1"
@@ -112,6 +117,7 @@ class PinPlanEntrySequence(Sequence[Mapping[str, Any]]):
 class PinPlanView(Mapping[str, Any]):
     def __init__(self, manifest_path: Path):
         self.manifest_path = manifest_path.resolve()
+        selector_source = bind_store_source(self.manifest_path, "pin-plan-selector-v1")
         manifest = read_json(self.manifest_path)
         if (
             manifest.get("schema") != PIN_PLAN_STORAGE_SCHEMA
@@ -145,6 +151,7 @@ class PinPlanView(Mapping[str, Any]):
             raise ValidationError("pin-plan storage path is invalid")
         store_path = self.manifest_path.with_name(artifact)
         try:
+            store_source = bind_store_source(store_path, "pin-plan-store-v1")
             stat = store_path.stat()
         except OSError as error:
             raise ValidationError("pin-plan SQLite store is missing") from error
@@ -209,6 +216,13 @@ class PinPlanView(Mapping[str, Any]):
             store_path, entries["records"], entries["sha256"]
         )
 
+        self._source_bindings = (selector_source, store_source)
+        require_store_sources_unchanged(self._source_bindings)
+
+    def bound_store_sources(self):
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
+
     def __getitem__(self, key: str) -> Any:
         if key == "entries":
             return self._entries
@@ -247,9 +261,13 @@ class PinPlanView(Mapping[str, Any]):
         return {**self._header, "entries": values}
 
 
-def write_pin_plan_storage(path: Path, plan: Mapping[str, Any]) -> PinPlanView:
+def write_pin_plan_storage(
+    path: Path, plan: Mapping[str, Any], *, source_bindings=()
+) -> PinPlanView:
     if plan.get("schema") != PIN_PLAN_SCHEMA:
         raise ValidationError("pin plan has an unsupported schema")
+    source_bindings = tuple(source_bindings)
+    require_store_sources_unchanged(source_bindings)
     records = plan.get("entries")
     if not isinstance(records, Sequence) or isinstance(records, (str, bytes)):
         raise ValidationError("pin plan entries must be a sequence")
@@ -337,8 +355,6 @@ def write_pin_plan_storage(path: Path, plan: Mapping[str, Any]) -> PinPlanView:
         )
         connection.commit()
         connection.close()
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
     except sqlite3.IntegrityError as error:
         try:
             connection.close()
@@ -351,17 +367,22 @@ def write_pin_plan_storage(path: Path, plan: Mapping[str, Any]) -> PinPlanView:
         finally:
             temporary.unlink(missing_ok=True)
         raise
-    store_sha256 = file_sha256(temporary)
-    artifact = path.with_name(f"{path.stem}.{store_sha256}.sqlite")
-    created_artifact = not artifact.exists()
-    if created_artifact:
-        os.replace(temporary, artifact)
-    else:
-        if file_sha256(artifact) != store_sha256:
-            temporary.unlink(missing_ok=True)
-            raise ValidationError("pin-plan artifact digest collision")
-        temporary.unlink()
-
+    try:
+        store_sha256 = file_sha256(temporary)
+        artifact = path.with_name(f"{path.stem}.{store_sha256}.sqlite")
+        created_artifact = not artifact.exists()
+        if created_artifact:
+            publish_sqlite_store(
+                temporary, artifact, "pin-plan-store-v1", sources=source_bindings
+            )
+        else:
+            require_store_sources_unchanged(source_bindings)
+            if file_sha256(artifact) != store_sha256:
+                raise ValidationError("pin-plan artifact digest collision")
+            temporary.unlink()
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     manifest = {
         "schema": PIN_PLAN_STORAGE_SCHEMA,
         "logical_schema": PIN_PLAN_SCHEMA,
@@ -374,13 +395,14 @@ def write_pin_plan_storage(path: Path, plan: Mapping[str, Any]) -> PinPlanView:
         "entries": {"records": count, "sha256": entries_sha256},
         "logical_sha256": logical_sha256,
     }
-    try:
-        write_json(path, manifest, compact=True)
-    except BaseException:
-        if created_artifact and artifact != previous_artifact:
-            artifact.unlink(missing_ok=True)
-        raise
-    view = PinPlanView(path)
+    view = commit_store_selector(
+        path,
+        manifest,
+        source_bindings,
+        artifact,
+        created_artifact,
+        validate=lambda: PinPlanView(path),
+    )
     if previous_artifact is not None and previous_artifact != artifact:
         previous_artifact.unlink(missing_ok=True)
     return view

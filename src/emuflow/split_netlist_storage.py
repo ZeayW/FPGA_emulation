@@ -17,6 +17,7 @@ from pathlib import Path
 from collections import defaultdict
 from typing import Any, Iterable, Mapping, Optional
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import ValidationError
 from .phase3_assignment_index import (
     ASSIGNMENT_INDEX_SCHEMA,
@@ -37,6 +38,14 @@ from .netlist import (
 )
 from .platform import Platform
 from .tdm import TDM_SCHEDULE_SCHEMA, is_sampled_virtual_wire_schedule
+from .store_publication import (
+    StoreSource,
+    bind_store_source,
+    bind_view_sources,
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+)
+from .native_tools import native_file_generation
 
 
 SPLIT_NETLIST_STORAGE_SCHEMA = "emuflow.split-netlists-sqlite/v2"
@@ -153,7 +162,7 @@ def _json(value: Any) -> str:
 
 
 def _sqlite_uri(path: Path) -> str:
-    return f"file:{path.resolve()}?mode=ro&immutable=1"
+    return immutable_sqlite_uri(path)
 
 
 def _binary_artifact_path(
@@ -220,7 +229,9 @@ def _exact_relation_maps(
 def _stage_binary_artifact(
     source: Path, destination: Path
 ) -> Path | None:
-    if source.resolve() == destination.resolve():
+    if source.resolve() == destination.resolve() or (
+        destination.exists() and os.path.samefile(source, destination)
+    ):
         return None
     temporary = destination.with_name(
         f".{destination.name}.{uuid.uuid4().hex}.tmp"
@@ -438,6 +449,8 @@ def build_streaming_split_metadata(
     if pin_plan is not None:
         if pin_plan.get("schema") != "emuflow.placement-aware-pin-plan/v1":
             raise ValidationError("pin plan has an unsupported schema")
+        if pin_plan.get("provider") != "chimew-paper-plus-emuflow-electrical-slot-v1":
+            raise ValidationError("pin plan has a retired or unsupported provider")
         physical_lane_by_entry = {
             item["schedule_entry"]: item["physical_lane"]
             for item in pin_plan.get("entries", [])
@@ -643,12 +656,7 @@ def build_streaming_split_metadata(
         "design": design_name,
         "platform": platform.name,
         "provider": (
-            (
-                "chimew-electrical-pin-split-v1"
-                if pin_plan.get("provider")
-                == "chimew-paper-plus-emuflow-electrical-slot-v1"
-                else "placement-aware-pin-split-v1"
-            )
+            "chimew-electrical-pin-split-v1"
             if pin_plan is not None
             else "sqlite-streaming-cut-shadow-split-v1"
         ),
@@ -704,6 +712,11 @@ def write_split_netlists_sqlite(
 ) -> dict[str, Any]:
     """Join and split a complete EmuIR without Python graph materialization."""
 
+    ir_binding = bind_store_source(ir_path, "emuir-compact-v2")
+    assignment_generation = native_file_generation(assignment_index_path)
+    source_bindings = (ir_binding,) + bind_view_sources(
+        (schedule, "tdm-schedule-store-v4")
+    )
     assignment = open_phase3_assignment_index(assignment_index_path)
     try:
         assignment_metadata = {
@@ -717,8 +730,21 @@ def write_split_netlists_sqlite(
         )
     finally:
         assignment.close()
-    if assignment_metadata.get("schema") != ASSIGNMENT_INDEX_SCHEMA:
+    if assignment_metadata.get("schema") not in {
+        "emuflow.phase3-assignment-sqlite/v3",
+        ASSIGNMENT_INDEX_SCHEMA,
+    }:
         raise ValidationError("Phase 6 assignment index schema is invalid")
+    source_bindings += (
+        StoreSource(
+            Path(assignment_index_path).resolve(),
+            {
+                "emuflow.phase3-assignment-sqlite/v3": "assignment-index-v3",
+                ASSIGNMENT_INDEX_SCHEMA: "assignment-index-v4",
+            }[assignment_metadata["schema"]],
+            assignment_generation,
+        ),
+    )
     if assignment_metadata.get("design") != expected_design:
         raise ValidationError("Phase 6 assignment index design disagrees")
     if assignment_metadata.get("platform") != expected_platform:
@@ -728,13 +754,38 @@ def write_split_netlists_sqlite(
     exact_binary = assignment_metadata.get("semantic_contract_binary")
     staged_binary: Path | None = None
     final_binary: Path | None = None
+    binary_binding = None
+    linked_binary = False
     if isinstance(exact_binary, Mapping):
         source_binary = _binary_artifact_path(
             assignment_index_path, exact_binary
         )
+        binary_schema = {
+            "emuflow.phase3-static-exact-binary/v1": "phase3-exact-data-v1",
+            "emuflow.phase3-static-exact-binary/v2": "phase3-exact-data-v2",
+        }.get(exact_binary.get("schema"))
+        if binary_schema is None:
+            raise ValidationError("split Static Exact binary schema is unsupported")
+        binary_binding = bind_store_source(source_binary, binary_schema)
         phase3_exact_binary_counts(source_binary, exact_binary)
         final_binary = _binary_artifact_path(output_path, exact_binary)
         staged_binary = _stage_binary_artifact(source_binary, final_binary)
+        linked_binary = staged_binary is not None and os.path.samefile(
+            source_binary, staged_binary
+        )
+        try:
+            generation = native_file_generation(binary_binding.path)
+            if generation[:5] != binary_binding.generation[:5] or (
+                not linked_binary and generation != binary_binding.generation
+            ):
+                raise ValidationError("split Static Exact source generation changed")
+            binary_binding = StoreSource(
+                binary_binding.path, binary_binding.schema, generation
+            )
+        except BaseException:
+            if staged_binary is not None:
+                staged_binary.unlink(missing_ok=True)
+            raise
     temporary = output_path.with_name(
         f".{output_path.name}.{uuid.uuid4().hex}.tmp"
     )
@@ -995,12 +1046,28 @@ def write_split_netlists_sqlite(
             ),
         )
         connection.close()
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
+        require_store_sources_unchanged(source_bindings)
+        if binary_binding is not None:
+            require_store_sources_unchanged((binary_binding,))
         if staged_binary is not None and final_binary is not None:
             os.replace(staged_binary, final_binary)
             staged_binary = None
-        os.replace(temporary, output_path)
+        if binary_binding is not None:
+            generation = native_file_generation(binary_binding.path)
+            # Creating/renaming our read-only hardlink changes ctime. Only
+            # this known alias operation may advance it; inode/content/mtime
+            # must retain their original binding. The shared publisher checks
+            # the resulting generation immediately before committing the DB.
+            if generation[:5] != binary_binding.generation[:5] or (
+                not linked_binary and generation != binary_binding.generation
+            ):
+                raise ValidationError("split Static Exact source generation changed")
+            source_bindings += (
+                StoreSource(binary_binding.path, binary_binding.schema, generation),
+            )
+        publish_sqlite_store(
+            temporary, output_path, "split-netlists-v2", sources=source_bindings
+        )
         return summary
     except BaseException:
         try:
@@ -1014,7 +1081,7 @@ def write_split_netlists_sqlite(
 
 def open_split_netlists_sqlite(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(
-        f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+        immutable_sqlite_uri(path), uri=True
     )
     connection.row_factory = sqlite3.Row
     if (

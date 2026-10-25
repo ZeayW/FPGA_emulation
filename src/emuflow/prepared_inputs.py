@@ -1,5 +1,6 @@
 """Read-only, bounded binding of completed indexed frontend/timing boundaries."""
 
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 from typing import Mapping
@@ -8,6 +9,32 @@ from .errors import ValidationError
 from .io import read_json, write_json
 from .platform import BOARDDB_SCHEMA, Platform
 from .split_netlist_storage import read_compact_emuir_control_metadata
+
+
+def _prepared_device_parts(platform_path: Path):
+    """Read the device identity from a historical Phase-1 board snapshot.
+
+    A prepared boundary only contributes its indexed design database.  The
+    selected platform is rebound below and remains the authoritative topology,
+    link-delay, and TDM-ratio contract.  Reading only the immutable device-part
+    identity keeps older boundaries usable when BoardDB gains new required link
+    fields, without assigning defaults to those historical link records.
+    """
+    document = read_json(platform_path)
+    if document.get("schema") != "emuflow.boarddb/v1":
+        raise ValidationError("prepared Phase 1 platform schema is unsupported")
+    fpgas = document.get("fpgas")
+    if not isinstance(fpgas, list) or not fpgas:
+        raise ValidationError("prepared Phase 1 platform FPGA inventory is invalid")
+    parts = set()
+    for fpga in fpgas:
+        if not isinstance(fpga, dict):
+            raise ValidationError("prepared Phase 1 platform FPGA inventory is invalid")
+        part = fpga.get("part")
+        if not isinstance(part, str) or not part:
+            raise ValidationError("prepared Phase 1 device identity: platform device part is invalid")
+        parts.add(part)
+    return parts
 
 
 def _published_timing_report(timing, database, weights, clock_periods):
@@ -26,7 +53,7 @@ def _published_timing_report(timing, database, weights, clock_periods):
             raise ValidationError("prepared published timing payload is invalid or missing")
         payloads.append((timing / name, descriptor["records"]))
     try:
-        with sqlite3.connect(f"file:{payloads[0][0]}?mode=ro", uri=True) as connection:
+        with closing(sqlite3.connect(f"file:{payloads[0][0]}?mode=ro", uri=True)) as connection, connection:
             if connection.execute("PRAGMA user_version").fetchone()[0] != 1:
                 raise ValidationError("prepared timing SQLite version mismatch")
             rows = list(connection.execute(
@@ -37,7 +64,7 @@ def _published_timing_report(timing, database, weights, clock_periods):
             raise ValidationError("prepared Phase 2 clock constraints mismatch")
         if sum(row[2] for row in rows) != payloads[0][1] or database.get("summary", {}).get("paths") != payloads[0][1]:
             raise ValidationError("prepared timing path publication count mismatch")
-        with sqlite3.connect(f"file:{payloads[1][0]}?mode=ro", uri=True) as connection:
+        with closing(sqlite3.connect(f"file:{payloads[1][0]}?mode=ro", uri=True)) as connection, connection:
             if connection.execute("PRAGMA user_version").fetchone()[0] != 1:
                 raise ValidationError("prepared weight SQLite version mismatch")
             count = connection.execute("SELECT COUNT(*) FROM net_weights").fetchone()[0]
@@ -111,20 +138,10 @@ def bind_prepared_inputs(frontend, timing, phase1_out, timing_out, platform_path
         raise ValidationError("prepared Phase 1 design mismatch")
     if {c["id"] for c in control["clocks"]} != set(clock_periods or {}):
         raise ValidationError("prepared continuation must preserve every DUT clock")
-    # The saved board describes the mapping device, not the interconnect used
-    # by this continuation. Do not parse retired link models with the current
-    # producer schema, or infer missing routing defaults from the old board.
-    saved_board = read_json(phase1 / "platform.normalized.json")
-    saved_fpgas = saved_board.get("fpgas")
-    if (saved_board.get("schema") != BOARDDB_SCHEMA
-            or not isinstance(saved_fpgas, list) or not saved_fpgas
-            or any(not isinstance(fpga, dict)
-                   or not isinstance(fpga.get("part"), str)
-                   or not fpga["part"].strip() for fpga in saved_fpgas)):
-        raise ValidationError("prepared Phase 1 device identity is invalid")
-    saved_parts = {fpga["part"] for fpga in saved_fpgas}
     platform = Platform.load(platform_path)
-    if saved_parts != {f.part for f in platform.fpgas}:
+    if _prepared_device_parts(phase1 / "platform.normalized.json") != {
+        f.part for f in platform.fpgas
+    }:
         raise ValidationError("prepared Phase 1 device part differs from the selected platform")
     database = read_json(timing / "path-database.json")
     if database.get("schema") != "emuflow.sta-path-database/v3" or database.get("design") != report["design"]:

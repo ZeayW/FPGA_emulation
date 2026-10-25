@@ -44,14 +44,15 @@ fixtures, but are not substitutes for representative full-flow evidence.
 ## Registries
 
 - [RTL catalog](../benchmarks/rtl_catalog.json): upstream source definitions.
-- [Full-flow matrix](../benchmarks/end_to_end_validation_matrix.json):
-  real workload/platform combinations and their acceptance contracts.
 - [Contest matrix](../benchmarks/contest_validation_matrix.json):
   raw communication-algorithm inputs.
 
 Identify each comparison by its full workload/platform combination, not a bare
 contest case number. A registry's planned entry is not a completed result.
 A qualified entry needs the declared complete physical and global-timing gates.
+The VTR-only KOIOS medium run specification and its planned full-flow matrix
+are retired, including `benchmark-matrix-validate`. Do not reinterpret their
+identities as Xilinx experiments. Other RTL catalog entries remain available.
 
 ## Outputs
 

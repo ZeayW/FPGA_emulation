@@ -13,6 +13,13 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, Mapping, Optional
 
 from .errors import ValidationError
+from .store_publication import (
+    bind_store_source,
+    publish_sqlite_store,
+    commit_store_selector,
+    require_store_sources_unchanged,
+    validate_store_destination,
+)
 from .io import read_json, write_json
 from .ir import EmuIR
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
@@ -23,11 +30,6 @@ from .phase3_storage import (
 from .timing_routing import STA_PATHS_SCHEMA, compress_sta_paths
 
 
-VIVADO_STA_TSV_HEADER = (
-    "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\t"
-    "fixed_delay_ns\tcut_nets_hex"
-)
-VIVADO_CUT_NET_MAP_HEADER = "vivado_net_hex\tcut_net_hex"
 STA_PATH_DATABASE_SCHEMA = "emuflow.sta-path-database/v1"
 STA_PATH_DATABASE_STREAM_SCHEMA = "emuflow.sta-path-database/v2"
 STA_PATH_DATABASE_INDEX_SCHEMA = "emuflow.sta-path-database/v3"
@@ -40,15 +42,12 @@ PARTITION_NET_WEIGHTS_INDEX_SCHEMA = "emuflow.partition-net-weights/v2"
 PARTITION_NET_WEIGHTS_SQLITE_FORMAT = "sqlite-net-weights/v1"
 STA_PATH_DATABASE_PROVIDERS = {
     "opensta-fpga-path-database-v1",
-    "vivado-get-timing-path-database-v1",
 }
 EMUIR_NET_MAP_HEADER = "mapped_net_hex\temuir_net_hex"
-VIVADO_NET_MAP_HEADER = "vivado_net_hex\temuir_net_hex"
 STA_PATH_DATABASE_TSV_HEADER = (
     "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\t"
     "fixed_delay_ns\tpath_nets_hex"
 )
-VIVADO_PATH_DATABASE_TSV_HEADER = STA_PATH_DATABASE_TSV_HEADER
 
 
 def _file_sha256(path: Path) -> str:
@@ -652,73 +651,6 @@ def sta_path_endpoints(
     )
 
 
-def _vivado_hard_macro_path_endpoints(
-    path: Mapping[str, Any],
-    object_index: Mapping[str, Mapping[str, Any]],
-    instances: Mapping[str, Mapping[str, Any]],
-    nets: Mapping[str, Mapping[str, Any]],
-) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    """Recover a logical RAM launch hidden behind a Vivado RAMB endpoint.
-
-    Vivado reports a synchronous block-RAM launch at the physical RAMB clock
-    pin (for example ``.../memory_reg_bram_0/CLKBWRCLK``), not at the
-    source-level VTR RAM output.  The stable EmuIR net identities on that path
-    identify the exact logical output bit.  Preserve the physical object for
-    the routed timing query while exposing the logical instance/port/bit to
-    partition projection.
-    """
-    path_id = path.get("id")
-    match = (
-        re.fullmatch(r"(.+)->(.+)#\d{8}", path_id)
-        if isinstance(path_id, str)
-        else None
-    )
-    if match is None:
-        raise ValidationError("Vivado hard-macro path identity is invalid")
-    start_name, end_name = match.groups()
-    if end_name not in object_index:
-        raise ValidationError("Vivado hard-macro capture endpoint is unmapped")
-    marker = "/memory_reg_bram_"
-    if marker not in start_name:
-        raise ValidationError("Vivado hard-macro launch endpoint is unmapped")
-    instance_id = start_name.split(marker, 1)[0]
-    instance = instances.get(instance_id)
-    if instance is None or instance.get("type") not in {
-        "VTR_SP_RAM",
-        "VTR_DP_RAM",
-    }:
-        raise ValidationError("Vivado RAMB launch has no logical RAM instance")
-    candidates = []
-    for net_id in path.get("path_nets", []):
-        net = nets.get(net_id)
-        if net is None:
-            continue
-        candidates.extend(
-            endpoint
-            for endpoint in net["drivers"]
-            if endpoint.get("instance") == instance_id
-            and endpoint.get("port") in {"out", "out1", "out2"}
-        )
-    identities = {
-        (item["instance"], item["port"], item["bit"])
-        for item in candidates
-    }
-    if len(identities) != 1:
-        raise ValidationError(
-            "Vivado RAMB launch does not identify one logical output bit"
-        )
-    _, port, bit = next(iter(identities))
-    return (
-        {
-            "object": start_name,
-            "instance": instance_id,
-            "port": port,
-            "bit": bit,
-        },
-        dict(object_index[end_name]),
-    )
-
-
 def _validate_endpoint_identity(
     endpoint: Any,
     known_instances: set[str],
@@ -832,50 +764,6 @@ def _normalized_slack(
     )
 
 
-def write_vivado_cut_net_map(
-    ir_path: Path,
-    assignment_path: Path,
-    output_path: Path,
-) -> Dict[str, Any]:
-    ir = EmuIR.load(ir_path)
-    assignment = read_phase3_assignment_view(assignment_path)
-    if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
-        raise ValidationError(
-            f"assignment.schema: expected {PARTITION_ASSIGNMENT_SCHEMA!r}"
-        )
-    if assignment.get("design") != ir.value["design"]["name"]:
-        raise ValidationError("assignment.design does not match EmuIR")
-    net_index = {
-        net["id"]: index for index, net in enumerate(ir.value["nets"])
-    }
-    cut_nets = sorted(
-        {
-            cut["net"]
-            for cut in assignment.get("cut_nets", [])
-            if isinstance(cut, dict) and isinstance(cut.get("net"), str)
-        }
-    )
-    unknown = sorted(set(cut_nets) - set(net_index))
-    if unknown:
-        raise ValidationError(
-            f"assignment cut nets are absent from EmuIR: {unknown[:10]}"
-        )
-    lines = [VIVADO_CUT_NET_MAP_HEADER]
-    for cut_net in cut_nets:
-        vivado_name = f"__emuflow_net_{net_index[cut_net]}"
-        lines.append(
-            f"{_hex_encode(vivado_name)}\t{_hex_encode(cut_net)}"
-        )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return {
-        "status": "pass",
-        "design": assignment["design"],
-        "cut_nets": len(cut_nets),
-        "output": str(output_path),
-    }
-
-
 def _write_net_map(
     ir_path: Path,
     output_path: Path,
@@ -914,22 +802,12 @@ def write_emuir_net_map(
     return _write_net_map(ir_path, output_path, EMUIR_NET_MAP_HEADER, _ir=_ir)
 
 
-def write_vivado_net_map(
-    ir_path: Path,
-    output_path: Path,
-) -> Dict[str, Any]:
-    return _write_net_map(ir_path, output_path, VIVADO_NET_MAP_HEADER)
-
-
 def _parse_sta_path_database_tsv_record(
     line: str,
     index: int,
     *,
-    provider: str,
     known_nets: set[str],
     object_index: Mapping[str, Mapping[str, Any]],
-    instances_by_id: Mapping[str, Mapping[str, Any]],
-    nets_by_id: Mapping[str, Mapping[str, Any]],
 ) -> Dict[str, Any]:
     fields = line.split("\t")
     if len(fields) != 6:
@@ -996,16 +874,7 @@ def _parse_sta_path_database_tsv_record(
     try:
         startpoint, endpoint = sta_path_endpoints(record, object_index)
     except ValidationError:
-        if provider == "vivado-get-timing-path-database-v1":
-            try:
-                startpoint, endpoint = _vivado_hard_macro_path_endpoints(
-                    record, object_index, instances_by_id, nets_by_id
-                )
-            except ValidationError:
-                pass
-            else:
-                record["startpoint"] = startpoint
-                record["endpoint"] = endpoint
+        pass
     else:
         record["startpoint"] = startpoint
         record["endpoint"] = endpoint
@@ -1022,6 +891,8 @@ def import_sta_path_database_tsv(
     _ir: Optional[EmuIR] = None,
     _return_value: bool = False,
 ) -> Dict[str, Any]:
+    if provider not in STA_PATH_DATABASE_PROVIDERS:
+        raise ValidationError("STA path database provider is invalid")
     # Large physical timing graphs can exceed hundreds of MiB.  The OpenSTA
     # producer already owns the validated EmuIR object, so let that producer
     # pass the object through rather than reparsing the same JSON solely for
@@ -1030,21 +901,9 @@ def import_sta_path_database_tsv(
     ir = _ir if _ir is not None else EmuIR.load(ir_path)
     known_nets = ir.net_ids if hasattr(ir, "net_ids") else {net["id"] for net in ir.value["nets"]}
     object_index = sta_object_index(ir)
-    instances_by_id = (
-        {item["id"]: item for item in ir.value["instances"]}
-        if provider == "vivado-get-timing-path-database-v1"
-        else {}
-    )
-    nets_by_id = (
-        {item["id"]: item for item in ir.value["nets"]}
-        if provider == "vivado-get-timing-path-database-v1"
-        else {}
-    )
     lines = input_path.read_text(encoding="utf-8").splitlines()
     if not lines or lines[0] != STA_PATH_DATABASE_TSV_HEADER:
         raise ValidationError("STA path database TSV: invalid header")
-    if provider not in STA_PATH_DATABASE_PROVIDERS:
-        raise ValidationError("STA path database provider is invalid")
     paths = []
     path_ids = set()
     for index, line in enumerate(lines[1:], start=2):
@@ -1053,11 +912,8 @@ def import_sta_path_database_tsv(
         record = _parse_sta_path_database_tsv_record(
             line,
             index,
-            provider=provider,
             known_nets=known_nets,
             object_index=object_index,
-            instances_by_id=instances_by_id,
-            nets_by_id=nets_by_id,
         )
         path_id = record["id"]
         if path_id in path_ids:
@@ -1110,6 +966,40 @@ def import_sta_path_database_tsv(
     return result
 
 
+def _adopt_sta_payload(temporary, selector, kind, schema, sources):
+    """Commit an immutable SQL generation; the selector remains the public commit."""
+    digest = _file_sha256(temporary)
+    payload = selector.with_name(f"{selector.name}.{kind}.{digest}.sqlite")
+    validate_store_destination(payload, sources)
+    if payload.is_symlink():
+        raise ValidationError("STA payload generation is a symbolic link")
+    created = not payload.exists()
+    if created:
+        publish_sqlite_store(temporary, payload, schema, sources=sources)
+    else:
+        require_store_sources_unchanged(sources)
+        if _file_sha256(payload) != digest:
+            raise ValidationError("STA payload generation seal disagrees")
+        temporary.unlink()
+    return payload, digest, created
+
+
+def _sta_ir_source_bindings(path, supplied_ir=None):
+    # In-memory reference inputs do not claim a missing provenance filename.
+    if supplied_ir is not None and not path.is_file():
+        return ()
+    from .emuir_storage import is_emuir_sqlite
+    from .emuir_compact import is_compact_emuir
+
+    sqlite_input = is_emuir_sqlite(path)
+    schema = (
+        "emuir-compact-v2"
+        if sqlite_input and is_compact_emuir(path)
+        else "emuir-indexed-v1" if sqlite_input else "sta-source-document-v1"
+    )
+    return (bind_store_source(path, schema),)
+
+
 def import_sta_path_database_tsv_streaming(
     input_path: Path,
     ir_path: Path,
@@ -1128,22 +1018,20 @@ def import_sta_path_database_tsv_streaming(
 
     if provider not in STA_PATH_DATABASE_PROVIDERS:
         raise ValidationError("STA path database provider is invalid")
+    if output_path.is_symlink():
+        raise ValidationError("STA selector is a symbolic link")
+    source_bindings = validate_store_destination(
+        output_path,
+        (bind_store_source(input_path, "sta-source-document-v1"),)
+        + _sta_ir_source_bindings(ir_path, _ir),
+    )
     ir = _ir if _ir is not None else EmuIR.load(ir_path)
     known_nets = ir.net_ids if hasattr(ir, "net_ids") else {net["id"] for net in ir.value["nets"]}
     object_index = sta_object_index(ir)
-    instances_by_id = (
-        {item["id"]: item for item in ir.value["instances"]}
-        if provider == "vivado-get-timing-path-database-v1"
-        else {}
-    )
-    nets_by_id = (
-        {item["id"]: item for item in ir.value["nets"]}
-        if provider == "vivado-get-timing-path-database-v1"
-        else {}
-    )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload_path = output_path.with_name(output_path.name + ".paths.sqlite")
+    validate_store_destination(payload_path, source_bindings)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=payload_path.name + ".",
         suffix=".tmp",
@@ -1206,11 +1094,8 @@ def import_sta_path_database_tsv_streaming(
                 record = _parse_sta_path_database_tsv_record(
                     line,
                     index,
-                    provider=provider,
                     known_nets=known_nets,
                     object_index=object_index,
-                    instances_by_id=instances_by_id,
-                    nets_by_id=nets_by_id,
                 )
                 path_id = record["id"]
                 if path_id in path_ids:
@@ -1283,7 +1168,13 @@ def import_sta_path_database_tsv_streaming(
         connection.commit()
         connection.close()
         connection = None
-        os.replace(temporary_path, payload_path)
+        payload_path, payload_sha256, created_payload = _adopt_sta_payload(
+            temporary_path,
+            output_path,
+            "paths",
+            "timing-path-store-v1",
+            source_bindings,
+        )
     finally:
         if connection is not None:
             connection.close()
@@ -1325,12 +1216,14 @@ def import_sta_path_database_tsv_streaming(
             "paths": {
                 "format": STA_PATH_DATABASE_SQLITE_FORMAT,
                 "path": payload_path.name,
-                "sha256": _file_sha256(payload_path),
+                "sha256": payload_sha256,
                 "records": count,
             }
         },
     }
-    write_json(output_path, artifact, compact=True)
+    commit_store_selector(
+        output_path, artifact, source_bindings, payload_path, created_payload
+    )
     return {
         "status": "pass",
         "design": artifact["design"],
@@ -1494,19 +1387,6 @@ def _validate_sta_path_database_stream(
         "worst_slack_ns": worst_slack,
         "path_qor": recomputed_qor,
     }
-
-
-def import_vivado_path_database_tsv(
-    input_path: Path,
-    ir_path: Path,
-    output_path: Path,
-) -> Dict[str, Any]:
-    return import_sta_path_database_tsv(
-        input_path,
-        ir_path,
-        output_path,
-        provider="vivado-get-timing-path-database-v1",
-    )
 
 
 def validate_sta_path_database_value(
@@ -1707,7 +1587,28 @@ def derive_partition_net_weights(
     all extracted paths containing the net. The power-law edge weight is the
     standard timing-driven partitioning form ``1 + scale * criticality^p``.
     """
+    if output_path.is_symlink():
+        raise ValidationError("STA selector is a symbolic link")
+    source_bindings = validate_store_destination(
+        output_path,
+        (bind_store_source(database_path, "sta-path-selector-v1"),)
+        + _sta_ir_source_bindings(ir_path),
+    )
     database = read_json(database_path)
+    if database.get("schema") == STA_PATH_DATABASE_INDEX_SCHEMA:
+        source_payload, _digest, _records, source_format = _sta_path_payload(
+            database_path, database
+        )
+        source_bindings += (
+            bind_store_source(
+                source_payload,
+                (
+                    "timing-path-store-v1"
+                    if source_format == STA_PATH_DATABASE_SQLITE_FORMAT
+                    else "sta-source-document-v1"
+                ),
+            ),
+        )
     if input_already_validated:
         summary = database.get("summary")
         if not isinstance(summary, Mapping):
@@ -1731,6 +1632,7 @@ def derive_partition_net_weights(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload_path = output_path.with_name(output_path.name + ".weights.sqlite")
+    validate_store_destination(payload_path, source_bindings)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=payload_path.name + ".",
         suffix=".tmp",
@@ -1800,7 +1702,13 @@ def derive_partition_net_weights(
         ).fetchone()
         connection.close()
         connection = None
-        os.replace(temporary_path, payload_path)
+        payload_path, payload_sha256, created_payload = _adopt_sta_payload(
+            temporary_path,
+            output_path,
+            "weights",
+            "net-weight-store-v1",
+            source_bindings,
+        )
     finally:
         if connection is not None:
             connection.close()
@@ -1839,12 +1747,14 @@ def derive_partition_net_weights(
             "weights": {
                 "format": PARTITION_NET_WEIGHTS_SQLITE_FORMAT,
                 "path": payload_path.name,
-                "sha256": _file_sha256(payload_path),
+                "sha256": payload_sha256,
                 "records": timed_nets,
             }
         },
     }
-    write_json(output_path, artifact, compact=True)
+    commit_store_selector(
+        output_path, artifact, source_bindings, payload_path, created_payload
+    )
     return {
         "status": "pass",
         "design": database["design"],
@@ -2456,106 +2366,4 @@ def project_sta_path_database_value(
         "covered_cut_nets": len(covered_cut_nets),
         "uncovered_cut_nets": len(cut_nets - covered_cut_nets),
         **({"output": output_path} if output_path is not None else {}),
-    }
-
-
-def import_vivado_sta_tsv(
-    input_path: Path,
-    assignment_path: Path,
-    output_path: Path,
-) -> Dict[str, Any]:
-    assignment = read_phase3_assignment_view(assignment_path)
-    if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
-        raise ValidationError(
-            f"assignment.schema: expected {PARTITION_ASSIGNMENT_SCHEMA!r}"
-        )
-    valid_cut_nets = {
-        cut["net"]
-        for cut in assignment.get("cut_nets", [])
-        if isinstance(cut, dict) and isinstance(cut.get("net"), str)
-    }
-    lines = input_path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] != VIVADO_STA_TSV_HEADER:
-        raise ValidationError("Vivado STA TSV: invalid header")
-    paths = []
-    path_ids = set()
-    for index, line in enumerate(lines[1:], start=2):
-        if not line:
-            continue
-        fields = line.split("\t")
-        if len(fields) != 6:
-            raise ValidationError(
-                f"Vivado STA TSV line {index}: expected six fields"
-            )
-        path_id = _hex_decode(fields[0], f"Vivado STA TSV line {index} path")
-        clock_domain = _hex_decode(
-            fields[1], f"Vivado STA TSV line {index} clock"
-        )
-        if not path_id or path_id in path_ids:
-            raise ValidationError(
-                f"Vivado STA TSV line {index}: invalid or duplicate path"
-            )
-        path_ids.add(path_id)
-        try:
-            clock_period = float(fields[2])
-            slack = float(fields[3])
-            fixed_delay = float(fields[4])
-        except ValueError as error:
-            raise ValidationError(
-                f"Vivado STA TSV line {index}: invalid numeric field"
-            ) from error
-        if clock_period <= 0.0 or fixed_delay < 0.0:
-            raise ValidationError(
-                f"Vivado STA TSV line {index}: invalid period/delay"
-            )
-        raw_cut_nets = fields[5].split(",")
-        if not raw_cut_nets or any(not item for item in raw_cut_nets):
-            raise ValidationError(
-                f"Vivado STA TSV line {index}: empty cut-net list"
-            )
-        cut_nets = [
-            _hex_decode(
-                item, f"Vivado STA TSV line {index} cut_nets_hex"
-            )
-            for item in raw_cut_nets
-        ]
-        if len(set(cut_nets)) != len(cut_nets):
-            raise ValidationError(
-                f"Vivado STA TSV line {index}: duplicate cut net"
-            )
-        unknown = sorted(set(cut_nets) - valid_cut_nets)
-        if unknown:
-            raise ValidationError(
-                f"Vivado STA TSV line {index}: unknown cut nets {unknown}"
-            )
-        paths.append(
-            {
-                "id": path_id,
-                "clock_domain": clock_domain,
-                "clock_period_ns": clock_period,
-                "slack_ns": slack,
-                "fixed_delay_ns": fixed_delay,
-                "cut_nets": cut_nets,
-            }
-        )
-    if not paths:
-        raise ValidationError("Vivado STA TSV contains no cut timing paths")
-    artifact = {
-        "schema": STA_PATHS_SCHEMA,
-        "design": assignment["design"],
-        "source": {
-            "provider": "vivado-get-timing-paths-v1",
-            "input": str(input_path),
-        },
-        "paths": paths,
-    }
-    write_json(output_path, artifact)
-    return {
-        "status": "pass",
-        "design": assignment["design"],
-        "paths": len(paths),
-        "unique_cut_nets": len(
-            {net for path in paths for net in path["cut_nets"]}
-        ),
-        "output": str(output_path),
     }

@@ -1,5 +1,6 @@
 """Cross-stage regression checks for the declared cable/HP-bank model."""
 import copy
+from contextlib import contextmanager
 import pytest
 
 from emuflow.board_link_timing import (
@@ -7,11 +8,10 @@ from emuflow.board_link_timing import (
     directed_route_link_delays,
     validate_board_link_timing,
 )
-from emuflow.cross_stage import _scheduled_transport_delay_by_net
 from emuflow.errors import ValidationError
 from emuflow.global_sta import bind_physical_checks
 from emuflow.platform import Platform
-from emuflow.system_timing import _fixed_slot_transport_path_delay
+from tests.system_timing_oracle import _fixed_slot_transport_path_delay
 from emuflow.routing import normalize_route_constraints
 from emuflow.default_platform import research_platform_path
 
@@ -69,23 +69,13 @@ def two_hop_case():
     return platform, routes, {"entries": entries}
 
 
-def test_cross_stage_uses_each_hops_ratio_without_another_slot_wait():
-    platform, routes, schedule = two_hop_case()
-    assert _scheduled_transport_delay_by_net(routes,schedule,platform) == {"n":72.0}
-    schedule["entries"][1]["slot"] += 9
-    assert _scheduled_transport_delay_by_net(routes,schedule,platform) == {"n":72.0}
-    schedule["entries"][1]["tdm_ratio"] = 24
-    assert _scheduled_transport_delay_by_net(routes,schedule,platform) == {"n":76.0}
-    del schedule["entries"][1]["tdm_ratio"]
-    with pytest.raises(ValidationError, match="TDM ratio"):
-        _scheduled_transport_delay_by_net(routes,schedule,platform)
-
-
-def test_physical_path_keeps_local_delays_and_separate_readiness_gate(monkeypatch):
+@pytest.mark.parametrize("missing_tx_time", [False, True])
+def test_physical_path_keeps_local_delays_and_separate_readiness_gate(monkeypatch, missing_tx_time):
     platform, routes, schedule = two_hop_case()
     entries = schedule["entries"]
     hops = [{**{k:e[k] for k in ("demand","link","from","to")},
              "schedule_entry":e["id"],"tdm_slot_ns":4.0,"base_link_delay_ns":30.5,
+             "fixed_slot_tx_time_ns":e["slot"]*4.0,"tdm_ratio":e["tdm_ratio"],
              "tx_endpoint":f"tx{i}","rx_endpoint":f"rx{i}"}
             for i,e in enumerate(entries)]
     record = {"path":"p","cut_nets":["n"],"scheduled_hops":hops,
@@ -103,16 +93,41 @@ def test_physical_path_keeps_local_delays_and_separate_readiness_gate(monkeypatc
     assert result["system_delay_bound_ns"] == 78.5
     assert result["fixed_slot_event_timing_status"] == "pass"
     # Check independently generated OpenSTA raw arc chains match physical sum.
-    import emuflow.system_timing as st
+    import emuflow.physical_timing_inputs as st
     import emuflow.tdm as tdm
     monkeypatch.setattr(st,"_endpoint_delay_database",lambda _: endpoints)
     monkeypatch.setattr(st,"_logic_segment_database",lambda _: {"p":{"p":segments}})
     monkeypatch.setattr(st,"_board_link_delay_database",lambda *_: {
         (h["link"],h["from"],h["to"]):30.5 for h in hops})
-    monkeypatch.setattr(tdm,"reconstruct_tdm_schedule_timing_paths",lambda *_: [record])
+    @contextmanager
+    def injected_timing_stream(*_args, **_kwargs):
+        yield iter([{**record, "_cut_demands": ["d"]}])
+
+    monkeypatch.setattr(
+        tdm,
+        "open_tdm_schedule_timing_path_stream",
+        injected_timing_stream,
+    )
     schedule.update(transport_semantics="registered-boundary",route_constraints={"frame_slots":41})
-    checks = bind_physical_checks({"virtual_dut_clocks":{"clk":{"nominal_period_ns":164,"target_period_ns":10}}},
-                                  routes,schedule,{},platform)
+    class NoScheduleEntryScan(dict):
+        def __getitem__(self, key):
+            if key == "entries":
+                raise AssertionError("binding rebuilt a complete schedule entry map")
+            return super().__getitem__(key)
+
+    def bind():
+        return bind_physical_checks(
+            {"virtual_dut_clocks": {"clk": {"nominal_period_ns": 164,
+                                            "target_period_ns": 10}}},
+            routes, NoScheduleEntryScan(schedule), {}, platform,
+        )
+
+    if missing_tx_time:
+        del hops[0]["fixed_slot_tx_time_ns"]
+        with pytest.raises(ValidationError, match="concrete scheduled TX time"):
+            bind()
+        return
+    checks = bind()
     assert next(c for c in checks if c.role=="target").arcs_ns == (2,34,.5,.5,38,.5,3,0)
     entries[1]["slot"] = 10 # relay TX at40ns precedes arrival46.5 + relay .5
     late = evaluate()

@@ -14,6 +14,7 @@ import heapq
 import json
 import os
 import struct
+import subprocess
 import tempfile
 import uuid
 from array import array
@@ -178,6 +179,98 @@ def _validate_direct_capture_segment_ids(
         ):
             raise ValidationError("Static Exact direct capture segments disagree")
         previous = identity
+
+
+def _write_native_phase3_exact_binary(path, exact_contract, part_ids, source, native_paths, semantic_digest, format_version):
+    """C++ fills the final data plane once; Python seals its bounded manifest."""
+
+    from .native_tools import resolve_native_stage_command
+
+    exact_digest = semantic_digest or semantic_contract_sha256(exact_contract)
+    if not isinstance(exact_digest, str) or len(exact_digest) != 64 or any(
+        character not in "0123456789abcdef" for character in exact_digest
+    ):
+        raise ValidationError("Static Exact semantic digest is invalid")
+    schema = _SUPPORTED_SCHEMAS[format_version]
+    header = {key: value for key, value in exact_contract.items() if key not in {
+        "cut_nodes", "dependency_edges", "logic_segments", "capture_requirements"
+    }}
+    names = ["nets", "node_sources"]
+    for index in range(len(part_ids)):
+        names.extend((f"segments:{index}", f"captures:{index}"))
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tempfile.TemporaryDirectory(prefix=".native-exact-sections-", dir=path.parent) as directory:
+            request, summary = Path(directory) / "request.bin", Path(directory) / "counts.bin"
+            with request.open("wb") as stream:
+                stream.write(struct.pack("<QIII", 0x31574553464D5545, 1, format_version, len(part_ids)))
+                for value in [*part_ids, str(temporary.resolve())]:
+                    raw = value.encode("utf-8")
+                    if not raw or len(raw) >= 2**32:
+                        raise ValidationError("native exact section identity is invalid")
+                    stream.write(_U32.pack(len(raw)))
+                    stream.write(raw)
+            command = resolve_native_stage_command(
+                "phase3", "write-exact-sections"
+            )
+            if len(command) == 1:
+                command = [*command, "--write-exact-sections"]
+            completed = subprocess.run(
+                [*command, str(native_paths[0]), str(native_paths[1]), str(request), str(summary)],
+                capture_output=True, text=True, check=False,
+            )
+            if completed.returncode:
+                raise ValidationError("native exact section publication failed: " + completed.stderr.strip())
+            data = summary.read_bytes()
+            if len(data) != 16 + 56 * len(names) + 40:
+                raise ValidationError("native exact section summary is invalid")
+            magic, version, sections_count = struct.unpack_from("<QII", data)
+            if magic != 0x314F5753464D5545 or version != 2 or sections_count != len(names):
+                raise ValidationError("native exact section summary is invalid")
+            sections = {}
+            cursor = _PREAMBLE.size
+            for index, name in enumerate(names):
+                offset, size, count, digest = struct.unpack_from("<QQQ32s", data, 16 + 56 * index)
+                if offset != cursor:
+                    raise ValidationError("native exact section extents disagree")
+                sections[name] = {"offset": offset, "bytes": size, "records": count, "sha256": digest.hex()}
+                cursor += size
+            counts = dict(zip(("cut_nodes", "source_segments", "logic_segments", "consumer_segments", "capture_requirements"),
+                              struct.unpack_from("<5Q", data, 16 + 56 * len(names))))
+            if counts != {
+                "cut_nodes": len(source.cut_nodes), "source_segments": source.launch_count + source.dependency_count,
+                "logic_segments": len(exact_contract["logic_segments"]),
+                "consumer_segments": source.dependency_count + len(source.captures),
+                "capture_requirements": len(source.captures),
+            } or len(exact_contract["dependency_edges"]) != source.dependency_count or temporary.stat().st_size != cursor:
+                raise ValidationError("native exact section population disagrees")
+            manifest = {
+                "schema": schema,
+                **({"capture_bit_max_bits": STATIC_EXACT_CAPTURE_BIT_MAX_BITS} if format_version == 2 else {}),
+                "semantic_contract_schema": exact_contract.get("schema"),
+                "semantic_contract_sha256": exact_digest, "contract_header": header,
+                "parts": list(part_ids), "counts": counts, "sections": sections,
+            }
+            manifest_bytes = _json(manifest)
+            with temporary.open("r+b") as output:
+                output.seek(cursor)
+                output.write(manifest_bytes)
+                output.seek(0)
+                output.write(_PREAMBLE.pack(_MAGIC, format_version, cursor, len(manifest_bytes)))
+                output.flush()
+                os.fsync(output.fileno())
+            descriptor = {
+                "artifact": EXACT_BINARY_ARTIFACT, "schema": schema,
+                **({"capture_bit_max_bits": STATIC_EXACT_CAPTURE_BIT_MAX_BITS} if format_version == 2 else {}),
+                "bytes": temporary.stat().st_size, "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+                "semantic_contract_schema": exact_contract.get("schema"), "semantic_contract_sha256": exact_digest,
+                "counts": counts,
+            }
+        os.replace(temporary, path)
+        return descriptor
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _write_direct_static_exact_sections(
@@ -465,6 +558,17 @@ def write_phase3_exact_binary(
         raise ValidationError("Static Exact cut-node order is invalid")
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(cut_nodes, StaticExactCutNodeSequence) and cut_nodes.direct_binary_source is not None:
+        source = cut_nodes.direct_binary_source
+        native_paths = source.native_record_paths()
+        if native_paths is not None:
+            if source.cut_nodes is not cut_nodes or source.captures is not captures or source.logic_segments is not segments or (
+                source.dependency_edges is not exact_contract.get("dependency_edges")
+            ):
+                raise ValidationError("Static Exact direct binary generation is mixed")
+            return _write_native_phase3_exact_binary(
+                path, exact_contract, part_ids, source, native_paths, semantic_digest, _format_version,
+            )
     spools: dict[str, _Spool] = {
         "nets": _Spool(path.parent, "nets"),
         "node_sources": _Spool(path.parent, "node-sources"),

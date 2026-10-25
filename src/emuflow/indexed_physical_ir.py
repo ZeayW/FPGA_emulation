@@ -15,6 +15,8 @@ from typing import Any, Iterator
 
 from .emuir_compact import _decode, compact_metadata, selected_net_records
 from .emuir_storage import open_emuir_sqlite_read_only
+from .store_publication import bind_store_source, require_store_sources_unchanged
+from .errors import ValidationError
 
 
 class _BoundedMapping(Mapping):
@@ -163,6 +165,11 @@ class IndexedPhysicalIR:
     """Read only the physical identities requested by one backend worker."""
 
     def __init__(self, path: Path):
+        self.store_path = Path(path).resolve()
+        self._closed = False
+        self._source_bindings = (
+            bind_store_source(self.store_path, "emuir-compact-v2"),
+        )
         self.connection = open_emuir_sqlite_read_only(path)
         try:
             if self.connection.execute("PRAGMA user_version").fetchone()[0] != 2:
@@ -174,11 +181,19 @@ class IndexedPhysicalIR:
             self.instance_indices = _BoundedMapping(self, "instance_index")
             self.net_indices = _BoundedMapping(self, "net_index")
             self.pins = _BoundedMapping(self, "pins")
+            require_store_sources_unchanged(self._source_bindings)
         except BaseException:
             self.connection.close()
             raise
 
+    def bound_store_sources(self):
+        if self._closed:
+            raise ValidationError("indexed physical view is closed")
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
+
     def close(self) -> None:
+        self._closed = True
         self.connection.close()
 
     def __enter__(self) -> "IndexedPhysicalIR":

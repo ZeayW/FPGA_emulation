@@ -15,12 +15,11 @@ from .board_link_timing import (
     directed_route_link_delays,
     validate_board_link_timing,
 )
-from .academic_chimew import materialize_academic_chimew_inputs
+from .chimew_lookahead import materialize_xilinx_chimew_inputs
 from .chimew_pipeline import (
     read_chimew_phase6_pipeline,
     run_chimew_phase6_pipeline,
 )
-from .cross_stage import run_cross_stage_optimization
 from .cut_segment_qualification import build_cut_segment_qualification
 from .default_platform import DEFAULT_PLATFORM_PATH
 from .errors import EmuFlowError, ValidationError
@@ -30,7 +29,6 @@ from .frame_search import (
 )
 from .io import read_json, write_json
 from .multi_fpga_physical_flow import (
-    DEFAULT_RAPIDWRIGHT_PLACER,
     run_multi_fpga_physical_flow,
     validate_multi_fpga_physical_report,
 )
@@ -57,25 +55,25 @@ from .phase6 import run_phase6, validate_phase6
 from .phase7c import run_phase7c
 from .pin_plan_storage import read_pin_plan
 from .physical_summary_storage import read_physical_summary
-from .partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT
+from .partition import (
+    CUT_MODE_SEQUENTIAL_ONLY,
+    CUT_MODE_STATIC_EXACT,
+    DEFAULT_PARTITION_CUT_MODE,
+    DEFAULT_PATRON_ALGORITHM_VERSION,
+)
 from .combinational_cut import (
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
 )
-from .mfspart_refine import DEFAULT_TIMING_PATH_BETA
 from .native_tools import resolve_native_executable
 from .platform import Platform
 from .ppro_calibrated_platform import validate_transport_cost_database
 from .runtime import validate_virtual_runtime
 from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
-from .tdm import TDM_BASELINE_PROVIDER, TDM_EXACT_DEPENDENCY_PROVIDER
+from .tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from .tdm_schedule_storage import read_tdm_schedule, tdm_schedule_store_path
-from .system_route_storage import system_route_store_path
-from .tdm_ratio import TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER
-from .timing_routing import (
-    NATIVE_ROUTER_PROVIDER,
-    NATIVE_TIMING_EVALUATED_PROVIDER,
-)
+from .system_route_storage import read_system_routes, system_route_store_path
+from .timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from .sta import (
     derive_partition_net_weights,
     partition_net_weights_payload_path,
@@ -85,13 +83,8 @@ from .sta import (
 from .synthesis import (
     DEFAULT_XILINX_MAPPING_STRATEGY,
     VALID_XILINX_MAPPING_STRATEGIES,
-    run_generic_yosys,
     run_xilinx_ultrascaleplus_yosys_stream,
 )
-from .vivado_backend import run_vivado_timing_path_database
-from .vpr import VTR_HARD_BLOCK_PROFILE, run_vtr_yosys
-from .vtr_architecture import ARCHITECTURE_TIMING_DB_SCHEMA
-from .vtr_netlist import normalize_vtr_hard_block_json
 from .xilinx_preplacement_timing import XILINX_PREPLACEMENT_TIMING_SCHEMA
 from .xilinx_primitives import (
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
@@ -99,20 +92,16 @@ from .xilinx_primitives import (
     normalize_xilinx_indexed_staging,
 )
 
-
 MULTI_FPGA_FLOW_SCHEMA = "emuflow.multi-fpga-flow/v2"
 MULTI_FPGA_FLOW_PROVIDER = (
     "profiled-yosys+partition+system-route+tdm+split-transport+runtime"
 )
 MULTI_FPGA_MAPPING_PROFILES = (
-    "vtr-hard-blocks",
-    "generic-soft",
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
 )
-MULTI_FPGA_PHASE6_PROVIDERS = ("auto", "chimew", "baseline")
-PHASE6_AB_COMPARISON_SCHEMA = "emuflow.phase6-ab-comparison/v2"
+MULTI_FPGA_PHASE6_PROVIDERS = ("chimew", "baseline")
+PHASE6_AB_COMPARISON_SCHEMA = "emuflow.phase6-ab-comparison/v3"
 _REQUIRED_STAGES = ("frontend", "partition", "system_route", "tdm", "split")
-
 
 def _schedule_has_entries(schedule_path: Path) -> bool:
     """Answer the Phase 6 dispatch question without decoding hop records."""
@@ -124,31 +113,19 @@ def _schedule_has_entries(schedule_path: Path) -> bool:
     except TypeError as error:
         raise ValidationError("TDM schedule entries are not sized") from error
 
-
 def _validate_mapping_timing_contract(
     mapping_profile: str,
     timing_db_path: Optional[Path],
 ) -> None:
-    """Reject a provider-mismatched timing model before RTL synthesis.
-
-    Provider dispatch inside OpenSTA remains fail-closed, but discovering a
-    VTR/Xilinx mismatch after a large Yosys run wastes substantial compute.
-    The Xilinx mapping profile therefore requires its source-sealed
-    RapidWright pre-placement contract up front.  A supplied VTR hard-block
-    contract must likewise carry the VTR schema.
-    """
-
-    if mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
-        if timing_db_path is None:
-            raise EmuFlowError(
-                "xilinx-ultrascaleplus-open-v1 requires a source-sealed "
-                "Xilinx pre-placement --architecture-timing-db"
-            )
-        expected_schema = XILINX_PREPLACEMENT_TIMING_SCHEMA
-    elif mapping_profile == VTR_HARD_BLOCK_PROFILE and timing_db_path is not None:
-        expected_schema = ARCHITECTURE_TIMING_DB_SCHEMA
-    else:
-        return
+    """Require the maintained Xilinx pre-placement contract before synthesis."""
+    if mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
+        raise EmuFlowError(f"unsupported multi-FPGA mapping profile {mapping_profile!r}")
+    if timing_db_path is None:
+        raise EmuFlowError(
+            "xilinx-ultrascaleplus-open-v1 requires a source-sealed "
+            "Xilinx pre-placement --architecture-timing-db"
+        )
+    expected_schema = XILINX_PREPLACEMENT_TIMING_SCHEMA
 
     observed_schema = read_json(timing_db_path).get("schema")
     if observed_schema != expected_schema:
@@ -157,17 +134,18 @@ def _validate_mapping_timing_contract(
             f"TimingDB schema {expected_schema!r}, got {observed_schema!r}"
         )
 
-
 def _resolve_partition_openroad(
     partition_provider: str,
     executable: Optional[str],
+    solution_input: Optional[Path] = None,
 ) -> Optional[str]:
     """Resolve a required partition engine before producing flow artifacts."""
 
+    if solution_input is not None:
+        return executable
     if partition_provider in {"tritonpart", "patron"}:
         return resolve_native_executable("openroad", executable)
     return executable
-
 
 _STAGE_SUMMARY_FIELDS = {
     "frontend": ("schema", "phase", "status", "design", "platform", "synthesis"),
@@ -221,13 +199,11 @@ _STAGE_SUMMARY_FIELDS = {
     ),
 }
 
-
 def _stage_summary(name: str, report: Dict[str, Any]) -> Dict[str, Any]:
     """Project a canonical stage report to its bounded orchestration view."""
 
     fields = _STAGE_SUMMARY_FIELDS[name]
     return {field: report[field] for field in fields if field in report}
-
 
 def _timing_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
     """Return timing orchestration metadata without canonical path payloads."""
@@ -250,7 +226,6 @@ def _timing_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
         if field in report
     }
 
-
 def _physical_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
     """Return a bounded physical-flow projection for the parent report."""
 
@@ -271,7 +246,6 @@ def _physical_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
         if field in report
     }
 
-
 def _validate_physical_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
     """Validate the bounded parent projection without reparsing FPGA records."""
 
@@ -287,7 +261,6 @@ def _validate_physical_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
     ):
         raise ValidationError("multi-FPGA physical-flow summary is invalid")
     return report["summary"]
-
 
 def _checked_flow_member(root: Path, path: Path, label: str) -> Path:
     """Check a flow member, including its explicitly bound prepared EmuIR."""
@@ -455,14 +428,9 @@ def finalize_multi_fpga_physical_checkpoint(
     write_json(root / "multi-fpga-flow-report.json", report)
     return report
 
-
 def _phase6_physical_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
-    records = value["fpgas"]
+    records = [record for record in value["fpgas"] if record.get("active",True)]
     return {
-        "total_wirelength": sum(
-            int(record["stages"]["vpr_route"]["metrics"]["wirelength"])
-            for record in records
-        ),
         "worst_critical_path_ns": max(
             float(record["critical_path_ns"]) for record in records
         ),
@@ -496,7 +464,6 @@ def _phase6_physical_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
         ),
     }
 
-
 def _phase6_system_timing_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
     timing = value.get("system_timing_summary", value.get("system_timing"))
     if not isinstance(timing, dict) or timing.get("status") not in {
@@ -528,14 +495,13 @@ def _phase6_system_timing_metrics(value: Dict[str, Any]) -> Dict[str, Any]:
             metrics[f"{clock}_{field}"] = metric
     return metrics
 
-
 def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
     if (
         report.get("schema") != PHASE6_AB_COMPARISON_SCHEMA
         or report.get("status") != "pass"
         or report.get("selected_provider") != "chimew"
-        or report.get("baseline_provider") != "historical-default-static-phase6"
-        or report.get("qualification") != "academic-virtual-physical-model"
+        or report.get("baseline_provider") != "baseline"
+        or report.get("qualification") != "xilinx-placed-lookahead+fixed-lvds-wiring"
     ):
         raise ValidationError("Phase 6 A/B comparison identity is invalid")
     upstream = report.get("frozen_upstream")
@@ -566,11 +532,16 @@ def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
         runtime_report = arm.get("runtime")
         if not isinstance(runtime_report, dict):
             raise ValidationError(f"Phase 6 A/B {label} runtime report is missing")
+    lhs, rhs = baseline_arm["physical"], chimew_arm["physical"]
+    backend = lhs.get("backend")
+    if (not isinstance(backend,dict) or backend.get("id") not in {"rapidwright","vivado"}
+            or backend != rhs.get("backend") or lhs.get("architecture") != rhs.get("architecture")
+            or not isinstance(lhs.get("execution"),dict) or lhs["execution"] != rhs.get("execution")):
+        raise ValidationError("Phase 6 A/B backend, device or execution options differ")
     baseline = report.get("baseline_physical")
     chimew = report.get("chimew_physical")
     delta = report.get("physical_delta")
     required_metrics = {
-        "total_wirelength",
         "worst_critical_path_ns",
         "worst_wns_ns",
         "total_tns_ns",
@@ -601,9 +572,6 @@ def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
         if metrics["unrouted_nets"] != 0 or metrics["drc_violations"] != 0:
             raise ValidationError("Phase 6 A/B physical arm did not close")
     expected_delta = {
-        "total_wirelength": (
-            chimew["total_wirelength"] - baseline["total_wirelength"]
-        ),
         "worst_critical_path_ns": (
             chimew["worst_critical_path_ns"]
             - baseline["worst_critical_path_ns"]
@@ -649,7 +617,6 @@ def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
         raise ValidationError("Phase 6 A/B Chimew pin metrics are missing")
     return {
         "status": "pass",
-        "wirelength_delta": expected_delta["total_wirelength"],
         "critical_path_delta_ns": expected_delta["worst_critical_path_ns"],
         "wns_delta_ns": expected_delta["worst_wns_ns"],
         "tns_delta_ns": expected_delta["total_tns_ns"],
@@ -668,14 +635,12 @@ def validate_phase6_ab_comparison(report: Dict[str, Any]) -> Dict[str, Any]:
         ],
     }
 
-
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
-
 
 def validate_multi_fpga_flow_report(
     report: Dict[str, Any],
@@ -733,15 +698,13 @@ def validate_multi_fpga_flow_report(
                 "timing-driven report is missing partition weights"
             )
         if not timing_optimization:
-            expected_tdm_provider = (
-                TDM_EXACT_DEPENDENCY_PROVIDER
-                if partition_validation.get("cut_mode")
-                == CUT_MODE_STATIC_EXACT
-                else TDM_BASELINE_PROVIDER
-            )
+            expected_tdm_provider = TDM_EXACT_DEPENDENCY_PROVIDER
             if (
                 stages["system_route"].get("provider")
-                != NATIVE_TIMING_EVALUATED_PROVIDER
+                != GLOBAL_CANDIDATE_PROVIDER
+                or stages["system_route"].get("validation", {}).get(
+                    "timing_optimization_enabled"
+                ) is not False
                 or stages["tdm"].get("provider")
                 != expected_tdm_provider
                 or stages["tdm"].get("timing_validation", {}).get(
@@ -888,47 +851,8 @@ def validate_multi_fpga_flow_report(
             raise ValidationError(
                 "frame-search selection disagrees with TDM/runtime"
             )
-    cross_stage = report.get("cross_stage")
-    cross_stage_iteration = None
-    if cross_stage is not None:
-        if (
-            not isinstance(cross_stage, dict)
-            or cross_stage.get("status") != "pass"
-            or cross_stage.get("design") != design
-            or cross_stage.get("platform") != platform
-        ):
-            raise ValidationError(
-                "multi-FPGA cross-stage identity disagrees"
-            )
-        candidates = cross_stage.get("candidates")
-        selected_iteration = cross_stage.get("selected_iteration")
-        if (
-            not isinstance(candidates, list)
-            or isinstance(selected_iteration, bool)
-            or not isinstance(selected_iteration, int)
-            or selected_iteration < 0
-            or selected_iteration >= len(candidates)
-        ):
-            raise ValidationError(
-                "multi-FPGA cross-stage selection is invalid"
-            )
-        selected = candidates[selected_iteration]
-        if (
-            not isinstance(selected, dict)
-            or selected.get("status") != "pass"
-            or selected.get("iteration") != selected_iteration
-            or selected.get("candidate_id")
-            != cross_stage.get("selected_candidate_id")
-            or selected.get("phase3_validation")
-            != partition_validation
-            or selected.get("phase4_validation") != route_validation
-            or selected.get("phase5_validation") != tdm_validation
-        ):
-            raise ValidationError(
-                "selected cross-stage candidate disagrees with canonical "
-                "Phase 3--5 stages"
-            )
-        cross_stage_iteration = selected_iteration
+    if report.get("cross_stage") is not None:
+        raise ValidationError("retired cross-stage ratio-feedback flow is not supported")
     if any(
         item.get("status") != "pass"
         for item in (
@@ -953,7 +877,6 @@ def validate_multi_fpga_flow_report(
         "scheduled_hops": split_validation.get("scheduled_hops"),
         "equivalence_mismatches": equivalence.get("mismatches"),
         "frame_slots": runtime["validation"].get("frame_slots"),
-        "cross_stage_iteration": cross_stage_iteration,
         "timing_optimization": (
             "enabled"
             if timing_optimization
@@ -981,7 +904,6 @@ def validate_multi_fpga_flow_report(
             else "not-requested"
         ),
     }
-
 
 def validate_multi_fpga_flow_bundle(
     flow_root: Path,
@@ -1098,15 +1020,10 @@ def validate_multi_fpga_flow_bundle(
                 "than required"
             )
 
-    route_provider = report["stages"]["system_route"].get("provider")
+    projected_paths = flow_root / "timing/cut-timing-paths.json"
     timing_paths_path = (
-        _checked_flow_member(
-            flow_root,
-            Path("timing/cut-timing-paths.json"),
-            "projected timing paths",
-        )
-        if route_provider != NATIVE_ROUTER_PROVIDER
-        else None
+        _checked_flow_member(flow_root, Path("timing/cut-timing-paths.json"), "projected timing paths")
+        if projected_paths.exists() else None
     )
     phase4_validation = validate_phase4(
         assignment_path,
@@ -1117,12 +1034,10 @@ def validate_multi_fpga_flow_bundle(
     if phase4_validation != report["stages"]["system_route"]["validation"]:
         raise ValidationError("independent Phase 4 replay disagrees")
 
-    ratio_plan_path = flow_root / "tdm/ratio_plan.json"
     phase5_validation = validate_phase5(
         routes_path,
         platform_path,
         schedule_path,
-        ratio_plan_path=ratio_plan_path if ratio_plan_path.is_file() else None,
         assignment_path=assignment_path,
     )
     timing_validation = phase5_validation.pop("timing", None)
@@ -1170,9 +1085,15 @@ def validate_multi_fpga_flow_bundle(
         raise ValidationError(
             "split manifest lacks the DUT clock-period contract"
         )
-    runtime_validation = validate_virtual_runtime(
-        runtime_contract, read_json(schedule_path), platform, clock_periods
-    )
+    terminal_schedule = read_tdm_schedule(schedule_path)
+    try:
+        runtime_validation = validate_virtual_runtime(
+            runtime_contract, terminal_schedule, platform, clock_periods
+        )
+    finally:
+        close_schedule = getattr(terminal_schedule, "close", None)
+        if callable(close_schedule):
+            close_schedule()
     if runtime_validation != report["runtime"].get("validation"):
         raise ValidationError("independent runtime replay disagrees")
 
@@ -1217,6 +1138,8 @@ def validate_multi_fpga_flow_bundle(
     standalone_sta = stored_qor.get("timing", {}).get("global_opensta", {}).get("execution") == "standalone"
     empty_sta = stored_qor.get("timing", {}).get("global_opensta", {}).get("authority") == "no-numerical-checks"
     opensta_result = standalone_sta or empty_sta
+    if physical_summary_path is not None and not opensta_result:
+        raise ValidationError("physical terminal validation requires standalone OpenSTA evidence")
     if opensta_result:
         for name in (("measurements.tsv", "opensta.log") if standalone_sta else ("measurements.tsv",)):
             _checked_flow_member(flow_root, Path("runtime/global-opensta") / name,
@@ -1235,44 +1158,13 @@ def validate_multi_fpga_flow_bundle(
             routes_path=routes_path if physical_summary_path is not None else None,
             board_link_timing_path=board_link_timing_path,
             global_sta_results_dir=flow_root / "runtime/global-opensta" if opensta_result else None,
-            global_timing_engine="opensta" if opensta_result else "python",
+            global_timing_engine="opensta",
         )
         replay_qor = read_json(Path(temporary) / "qor_report.json")
-        if "global_opensta" in stored_qor.get("timing", {}) and not opensta_result:
-            from .global_sta import adopt_opensta_results, bind_physical_checks, compare_system_timing, read_engine_identity, read_measurements
-            if physical_summary_path is None:
-                raise ValidationError("global OpenSTA qualification lacks physical inputs")
-            with read_physical_summary(physical_summary_path) as physical:
-                if board_link_timing_path is not None:
-                    physical["board_link_timing"] = read_json(board_link_timing_path)
-                checks = bind_physical_checks(
-                    read_json(flow_root / "runtime/runtime_contract.json"),
-                    read_json(routes_path), read_json(schedule_path), physical,
-                    Platform.load(platform_path),
-                )
-            # Explicit terminal validation reconstructs the binding and checks the
-            # raw engine scalars, without running the same external STA twice.
-            measurements = read_measurements(_checked_flow_member(
-                flow_root, Path("runtime/global-opensta/measurements.tsv"),
-                "global OpenSTA measurements"), checks)
-            if stored_qor["timing"]["global_opensta"].get("authority") == "opensta":
-                gate = adopt_opensta_results(replay_qor["timing"], measurements)
-            else:
-                # Read historical qualification artifacts without preserving an
-                # implicit old producer default.
-                gate = compare_system_timing(measurements, replay_qor["timing"])
-            replay_qor["timing"]["global_opensta"] = gate
-            if gate["status"] != "pass" or replay_qor["timing"]["status"] == "fail":
-                replay_qor["status"] = "fail"
-                replay["status"] = "fail"
-            if "engine" in stored_qor["timing"]["global_opensta"]:
-                replay_qor["timing"]["global_opensta"]["engine"] = read_engine_identity(
-                    _checked_flow_member(flow_root, Path("runtime/global-opensta/opensta.log"),
-                                         "global OpenSTA engine log"))
-        if replay_qor != stored_qor:
-            raise ValidationError("independent Phase 7C QoR replay disagrees")
-        if replay.get("status") != report["runtime"].get("status"):
-            raise ValidationError("independent Phase 7C status replay disagrees")
+    if replay_qor != stored_qor:
+        raise ValidationError("independent Phase 7C QoR replay disagrees")
+    if replay.get("status") != report["runtime"].get("status"):
+        raise ValidationError("independent Phase 7C status replay disagrees")
 
     return {
         **summary,
@@ -1288,282 +1180,169 @@ def validate_multi_fpga_flow_bundle(
         "physical_required": require_physical,
     }
 
+class _CompileContext:
+    """Execution-scoped configuration and bounded inter-stage state.
 
-def run_multi_fpga_flow(
-    platform_path: Path = DEFAULT_PLATFORM_PATH,
-    output_dir: Optional[Path] = None,
-    *,
-    sources: Iterable[Path] = (),
-    include_dirs: Iterable[Path] = (),
-    defines: Iterable[str] = (),
-    top: Optional[str] = None,
-    clocks: Iterable[str] = (),
-    yosys_json: Optional[Path] = None,
-    prepared_frontend: Optional[Path] = None,
-    prepared_timing: Optional[Path] = None,
-    yosys: Optional[str] = None,
-    mapping_profile: str = XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
-    xilinx_mapping_strategy: Optional[str] = None,
-    partition_constraints: Optional[Path] = None,
-    partition_provider: str = "patron",
-    seed: int = 0,
-    min_used_fpgas: Optional[int] = None,
-    balance_tolerance: Optional[float] = None,
-    openroad: Optional[str] = None,
-    tritonpart_solution: Optional[Path] = None,
-    repart: Optional[str] = None,
-    patron_refiner: Optional[str] = None,
-    patron_max_moves: Optional[int] = None,
-    patron_flow_refinement: bool = False,
-    patron_algorithm_version: int = 6,
-    partition_timeout_seconds: int = 3600,
-    partition_seed_attempts: int = 1,
-    partition_num_initial_solutions: int = 50,
-    partition_num_best_initial_solutions: int = 10,
-    partition_repair_min_used_fpgas: bool = True,
-    cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
-    max_cross_fpga_dependency_depth: int = (
-        STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
-    ),
-    static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
-    mfspart_post_refinement: bool = False,
-    mfspart_post_refinement_timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
-    timing_driven: bool = True,
-    timing_backend: str = "opensta",
-    clock_periods: Optional[Dict[str, float]] = None,
-    timing_io: Optional[Mapping[str, Any]] = None,
-    timing_model: Path = DEFAULT_TIMING_MODEL,
-    architecture_timing_db: Optional[Path] = None,
-    opensta: Optional[str] = None,
-    timing_vivado: Optional[str] = None,
-    sta_max_paths: int = 200000,
-    timing_criticality_scale: float = 9.0,
-    timing_criticality_exponent: float = 2.0,
-    route_constraints: Optional[Path] = None,
-    board_link_timing_db: Optional[Path] = None,
-    transport_cost_db: Optional[Path] = None,
-    timing_paths: Optional[Path] = None,
-    router: Optional[str] = None,
-    route_provider: Optional[str] = None,
-    route_candidate_workers: int = 1,
-    frame_slots: Optional[int] = None,
-    optimize_frame_slots: bool = False,
-    route_max_iterations: Optional[int] = None,
-    tdm_provider: Optional[str] = None,
-    ratio_optimizer: Optional[str] = None,
-    timing_dag_optimizer: Optional[str] = None,
-    slot_optimizer: Optional[str] = None,
-    ratio_max_iterations: int = 500,
-    max_ratio: Optional[int] = None,
-    ratio_quantum: Optional[int] = None,
-    post_refinement_iterations: int = 200,
-    slot_refinement_iterations: int = 200,
-    ratio_convergence: float = 1.0e-9,
-    cross_stage_iterations: int = 0,
-    cross_stage_feedback_optimizer: Optional[str] = None,
-    cross_stage_pair_pressure_weight: float = 1.0,
-    simulation_frames: int = 16,
-    equivalence_cycles: int = 1,
-    equivalence_seed: int = 20260727,
-    phase6_provider: str = "baseline",
-    phase6_chimew_region_count: int = 4,
-    phase6_chimew_grouper: Optional[str] = None,
-    phase6_chimew_refiner: Optional[str] = None,
-    phase6_chimew_rudy: Optional[str] = None,
-    phase6_chimew_assigner: Optional[str] = None,
-    physical: bool = False,
-    physical_backend: str = "rapidwright",
-    physical_architecture: Optional[Path] = None,
-    physical_architecture_id: str = VTR_HARD_BLOCK_PROFILE,
-    physical_vpr: Optional[str] = None,
-    physical_architecture_importer: Optional[str] = None,
-    physical_packed_importer: Optional[str] = None,
-    physical_route_checker: Optional[str] = None,
-    physical_openparf_install: Optional[Path] = None,
-    physical_openparf_python: Optional[Path] = None,
-    physical_seed: int = 1,
-    physical_route_channel_width: int = 300,
-    physical_vivado: Optional[str] = None,
-    physical_vivado_max_timing_paths: int = 10000,
-    physical_vivado_place_directive: str = "Default",
-    physical_vivado_route_directive: str = "Default",
-    physical_rapidwright_jar: Optional[Path] = None,
-    physical_rapidwright_java: Optional[Path] = None,
-    physical_rapidwright_classes: Optional[Path] = None,
-    physical_rapidwright_java_source: Optional[Path] = None,
-    physical_rapidwright_device_data: Optional[Path] = None,
-    physical_rapidwright_timing_data: Optional[Path] = None,
-    physical_rapidwright_opensta: Optional[str] = None,
-    physical_rapidwright_placer: Optional[str] = None,
-    physical_rapidwright_native_constraints: Optional[Path] = None,
-    physical_rapidwright_provider_manifest: Optional[Path] = None,
-    physical_workers: int = 1,
-    global_sta_executable: Optional[str] = None,
-    global_timing_engine: str = "opensta",
-    serial_bsp_phy_provider: Optional[Path] = None,
-    serial_bsp_runtime_sync_provider: Optional[Path] = None,
-    serial_bsp_board_overlay: Optional[Path] = None,
-    serial_bsp_gt_site_map: Optional[Path] = None,
-    serial_bsp_vivado: Optional[Path] = None,
-    serial_bsp_yosys: Optional[Path] = None,
-    serial_bsp_runtime_sync_root: Optional[str] = None,
-    serial_bsp_ready_stable_cycles: int = 4,
-) -> Dict[str, Any]:
-    """Compile RTL/EmuIR, using the bundled research BoardDB when omitted."""
+    Native orchestration serializes only this state between isolated adapters;
+    design graphs remain in their phase artifacts, not in this controller.
+    """
 
-    if output_dir is None:
+    def __init__(self, values, *, native_mode=False):
+        self.__dict__.update(values)
+        self._native_mode = native_mode
+
+    def measured(self, stage, function, *args, **kwargs):
+        from .stage_metrics import measure_stage
+        return measure_stage(self.output_dir, stage, function, *args, **kwargs)
+
+def _compile_preflight(ctx: _CompileContext):
+    if (
+        isinstance(ctx.patron_algorithm_version, bool)
+        or not isinstance(ctx.patron_algorithm_version, int)
+        or ctx.patron_algorithm_version != 14
+    ):
+        raise EmuFlowError("only PATRON v14 is supported")
+    if ctx.partition_provider not in {"patron", "tritonpart"}:
+        raise EmuFlowError(f"unsupported Phase 3 provider {ctx.partition_provider!r}")
+    if ctx._native_mode and (
+        ctx.optimize_frame_slots or
+        ctx.serial_bsp_phy_provider is not None
+    ):
+        raise EmuFlowError(
+            "native compile does not yet support frame search "
+            "or serial BSP continuation"
+        )
+    if ctx.output_dir is None:
         raise EmuFlowError("multi-FPGA compilation requires an output directory")
 
-    if global_timing_engine not in {"opensta", "python"}:
-        raise EmuFlowError("unsupported global timing engine")
-    if global_timing_engine == "python" and global_sta_executable is not None:
-        raise EmuFlowError("Python timing cannot accept --global-sta-executable")
-    if global_sta_executable is not None and not physical:
+    if ctx.global_timing_engine != "opensta":
+        raise EmuFlowError("only the OpenSTA global timing engine is supported")
+    if ctx.global_sta_executable is not None and not ctx.physical:
         raise EmuFlowError("global OpenSTA qualification requires --physical")
-    if mapping_profile not in MULTI_FPGA_MAPPING_PROFILES:
+    if ctx.physical_backend not in {"rapidwright", "vivado"}:
+        raise EmuFlowError(f"unsupported physical backend {ctx.physical_backend!r}")
+    if ctx.mapping_profile not in MULTI_FPGA_MAPPING_PROFILES:
         raise EmuFlowError(
             "unsupported multi-FPGA mapping profile "
-            f"{mapping_profile!r}; expected one of "
+            f"{ctx.mapping_profile!r}; expected one of "
             f"{', '.join(MULTI_FPGA_MAPPING_PROFILES)}"
         )
-    if xilinx_mapping_strategy is not None:
-        if xilinx_mapping_strategy not in VALID_XILINX_MAPPING_STRATEGIES:
+    if ctx.xilinx_mapping_strategy is not None:
+        if ctx.xilinx_mapping_strategy not in VALID_XILINX_MAPPING_STRATEGIES:
             raise EmuFlowError("unsupported Xilinx mapping strategy")
-        if mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE or yosys_json is not None:
+        if ctx.mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE or ctx.yosys_json is not None:
             raise EmuFlowError(
                 "Xilinx mapping strategy requires native Xilinx RTL synthesis"
             )
     if (
-        physical
-        and physical_backend == "rapidwright"
-        and mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+        ctx.physical
+        and ctx.physical_backend == "rapidwright"
+        and ctx.mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE
     ):
         raise EmuFlowError(
             "physical-backend=rapidwright requires "
             "mapping-profile=xilinx-ultrascaleplus-open-v1"
         )
-    if phase6_provider not in MULTI_FPGA_PHASE6_PROVIDERS:
+    if ctx.tdm_provider not in {None, TDM_EXACT_DEPENDENCY_PROVIDER}:
+        raise EmuFlowError(f"unsupported Phase 5 provider {ctx.tdm_provider!r}")
+    if ctx.cut_mode != CUT_MODE_STATIC_EXACT:
+        raise EmuFlowError("multi-FPGA compilation requires static-exact-combinational")
+    if ctx.route_provider not in {None, GLOBAL_CANDIDATE_PROVIDER}:
+        raise EmuFlowError("unsupported Phase 4 routing provider; use " + GLOBAL_CANDIDATE_PROVIDER)
+    if ctx.phase6_provider not in MULTI_FPGA_PHASE6_PROVIDERS:
         raise EmuFlowError(
             "unsupported Phase 6 provider "
-            f"{phase6_provider!r}; expected one of "
+            f"{ctx.phase6_provider!r}; expected one of "
             f"{', '.join(MULTI_FPGA_PHASE6_PROVIDERS)}"
         )
-    if cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
+    if ctx.cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
         raise EmuFlowError("unsupported combinational cut mode")
-    exact_cut_mode = cut_mode == CUT_MODE_STATIC_EXACT
-    clocks = tuple(clocks)
+    ctx.exact_cut_mode = ctx.cut_mode == CUT_MODE_STATIC_EXACT
+    ctx.clocks = tuple(ctx.clocks)
     if (
-        partition_provider == "patron"
-        and patron_algorithm_version == 14
-        and not exact_cut_mode
+        ctx.partition_provider == "patron"
+        and ctx.patron_algorithm_version == 14
+        and not ctx.exact_cut_mode
     ):
         raise EmuFlowError(
             "PATRON v14 requires generalized Static Exact mode"
         )
-    if not 2 <= phase6_chimew_region_count <= 31:
+    if not 2 <= ctx.phase6_chimew_region_count <= 31:
         raise EmuFlowError("--phase6-chimew-region-count must be in [2, 31]")
-    if phase6_provider == "chimew" and (
-        not physical or physical_backend != "open"
-    ):
-        raise EmuFlowError(
-            "--phase6-provider chimew requires --physical with "
-            "--physical-backend open"
-        )
-    if timing_backend not in {"opensta", "vivado"}:
-        raise EmuFlowError(
-            "timing backend must be 'opensta' or 'vivado'"
-        )
-    if timing_backend == "vivado" and architecture_timing_db is not None:
-        raise EmuFlowError(
-            "--architecture-timing-db applies only to timing-backend=opensta"
-        )
-    if timing_backend == "vivado" and opensta is not None:
-        raise EmuFlowError("--opensta applies only to timing-backend=opensta")
-    if timing_backend != "opensta" and timing_io is not None:
-        raise EmuFlowError(
-            "benchmark timing_io currently requires timing-backend=opensta"
-        )
-    if timing_backend == "opensta" and timing_vivado is not None:
-        raise EmuFlowError(
-            "--timing-vivado applies only to timing-backend=vivado"
-        )
-    if timing_backend == "opensta":
-        _validate_mapping_timing_contract(
-            mapping_profile, architecture_timing_db
-        )
-    internal_timing_database = timing_paths is None
-    if partition_provider == "patron" and not internal_timing_database:
+    if ctx.phase6_provider == "chimew":
+        if (not ctx.physical or ctx.physical_backend not in {"rapidwright", "vivado"}
+                or ctx.mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE):
+            raise EmuFlowError("Chimew requires --physical and the Xilinx mapping with RapidWright or Vivado")
+        if ctx.physical_architecture is None:
+            raise EmuFlowError("Chimew requires the source-qualified Xilinx ArchitectureDB package geometry")
+        from .xilinx_chimew_geometry import XilinxPackageGeometry
+        from .chimew_fixed_wiring import FixedWiringChannels
+        board = FixedWiringChannels(Platform.load(ctx.platform_path))
+        parts = {fpga.part for fpga in Platform.load(ctx.platform_path).fpgas}
+        if len(parts) != 1:
+            raise EmuFlowError("Chimew requires a single Xilinx device model")
+        ctx.chimew_package_geometry = XilinxPackageGeometry.open(ctx.physical_architecture, next(iter(parts)))
+        pins = ctx.chimew_package_geometry.pins
+        for wire in board.board["wires"]:
+            for end in wire["endpoints"]:
+                for polarity in ("p", "n"):
+                    pin = end[polarity]
+                    if pins.get(pin["package_pin"], (None,))[0] != pin["site"]:
+                        raise ValidationError("Chimew native package geometry does not cover the fixed P/N wiring")
+    _validate_mapping_timing_contract(
+        ctx.mapping_profile, ctx.architecture_timing_db
+    )
+    ctx.internal_timing_database = ctx.timing_paths is None
+    if ctx.partition_provider == "patron" and not ctx.internal_timing_database:
         raise EmuFlowError(
             "--partition-provider patron requires the internally generated "
             "complete TimingPathDB"
         )
-    if timing_paths is not None and (
-        timing_driven or architecture_timing_db is not None
+    if ctx.timing_paths is not None and (
+        ctx.timing_driven or ctx.architecture_timing_db is not None
     ):
         raise EmuFlowError(
             "--timing-driven/--architecture-timing-db cannot be combined "
             "with externally projected --timing-paths"
         )
-    if physical and timing_paths is not None:
+    if ctx.physical and ctx.timing_paths is not None:
         raise EmuFlowError(
             "physical Phase 7C requires an internally generated complete "
             "TimingPathDB; externally projected --timing-paths are only "
             "supported by non-physical algorithm tests"
         )
-    if (
-        isinstance(cross_stage_iterations, bool)
-        or not isinstance(cross_stage_iterations, int)
-        or cross_stage_iterations < 0
-    ):
-        raise EmuFlowError("--cross-stage-iterations must be non-negative")
-    if cross_stage_iterations and not timing_driven:
-        raise EmuFlowError(
-            "--cross-stage-iterations requires --timing-driven"
-        )
-    if (
-        exact_cut_mode
-        and cross_stage_iterations
-        and tdm_provider
-        not in {TDM_RATIO_PROVIDER, TDM_TIMING_DAG_RATIO_PROVIDER}
-    ):
-        raise EmuFlowError(
-            "Static Exact cross-stage ratio feedback requires an explicit "
-            f"--tdm-provider {TDM_TIMING_DAG_RATIO_PROVIDER}; the default "
-            f"{TDM_EXACT_DEPENDENCY_PROVIDER} scheduler deliberately has "
-            "no ratio-plan or global transport-round barrier"
-        )
-    if optimize_frame_slots and not timing_driven:
+    if ctx.optimize_frame_slots and not ctx.timing_driven:
         raise EmuFlowError(
             "--optimize-frame-slots requires --timing-driven"
         )
-    if internal_timing_database and not clock_periods:
+    if ctx.internal_timing_database and not ctx.clock_periods:
         raise EmuFlowError(
             "multi-FPGA timing analysis requires at least one "
             "--clock-period CLOCK=PERIOD_NS; TimingPathDB remains mandatory "
             "for physical Phase 7C even with --no-timing-driven"
         )
-    serial_bsp_requested = serial_bsp_phy_provider is not None
+    ctx.serial_bsp_requested = ctx.serial_bsp_phy_provider is not None
     serial_bsp_auxiliary = any(
         value is not None
         for value in (
-            serial_bsp_runtime_sync_provider,
-            serial_bsp_board_overlay,
-            serial_bsp_gt_site_map,
-            serial_bsp_vivado,
-            serial_bsp_yosys,
-            serial_bsp_runtime_sync_root,
+            ctx.serial_bsp_runtime_sync_provider,
+            ctx.serial_bsp_board_overlay,
+            ctx.serial_bsp_gt_site_map,
+            ctx.serial_bsp_vivado,
+            ctx.serial_bsp_yosys,
+            ctx.serial_bsp_runtime_sync_root,
         )
     )
-    if serial_bsp_auxiliary and not serial_bsp_requested:
+    if serial_bsp_auxiliary and not ctx.serial_bsp_requested:
         raise EmuFlowError(
             "serial BSP options require --serial-bsp-phy-provider"
         )
-    if serial_bsp_requested and serial_bsp_runtime_sync_provider is None:
+    if ctx.serial_bsp_requested and ctx.serial_bsp_runtime_sync_provider is None:
         raise EmuFlowError(
             "serial BSP continuation requires --serial-bsp-runtime-sync-provider"
         )
-    if serial_bsp_requested and (
-        (serial_bsp_vivado is None) == (serial_bsp_yosys is None)
+    if ctx.serial_bsp_requested and (
+        (ctx.serial_bsp_vivado is None) == (ctx.serial_bsp_yosys is None)
     ):
         raise EmuFlowError(
             "serial BSP continuation requires exactly one of "
@@ -1573,18 +1352,18 @@ def run_multi_fpga_flow(
     # These small board contracts can be checked without a synthesized graph.
     # Reject a renamed stress platform paired with the original timing/cost
     # databases before spending hours on synthesis and timing extraction.
-    checked_link_timing = None
-    checked_link_timing_validation = None
-    if board_link_timing_db is not None or transport_cost_db is not None:
-        board_contract_platform = Platform.load(platform_path)
-        if board_link_timing_db is not None:
-            checked_link_timing = read_json(board_link_timing_db.resolve())
-            checked_link_timing_validation = validate_board_link_timing(
-                checked_link_timing, board_contract_platform
+    ctx.checked_link_timing = None
+    ctx.checked_link_timing_validation = None
+    if ctx.board_link_timing_db is not None or ctx.transport_cost_db is not None:
+        board_contract_platform = Platform.load(ctx.platform_path)
+        if ctx.board_link_timing_db is not None:
+            ctx.checked_link_timing = read_json(ctx.board_link_timing_db.resolve())
+            ctx.checked_link_timing_validation = validate_board_link_timing(
+                ctx.checked_link_timing, board_contract_platform
             )
-        if transport_cost_db is not None:
+        if ctx.transport_cost_db is not None:
             validate_transport_cost_database(
-                read_json(transport_cost_db.resolve()),
+                read_json(ctx.transport_cost_db.resolve()),
                 expected_platform=board_contract_platform.name,
             )
 
@@ -1592,74 +1371,68 @@ def run_multi_fpga_flow(
     # interpreter inside the physical-flow helper is much too late for a
     # one-shot Phase 1--7 invocation.  Reject an unusable OpenPARF/PyTorch
     # binding before creating any frontend artifact or doing synthesis.
-    physical_uses_openparf = physical and (
-        physical_backend == "open"
-        or (
-            physical_backend == "rapidwright"
-            and (
-                physical_rapidwright_placer
-                or DEFAULT_RAPIDWRIGHT_PLACER
-            )
-            == "openparf-native"
-        )
-    )
+    physical_uses_openparf = ctx.physical and ctx.physical_backend == "rapidwright"
     if physical_uses_openparf:
+        from .native_tools import require_native_schema
+        require_native_schema("rwroute-export-request-v2")
         validate_openparf_runtime(
-            install_root=physical_openparf_install,
-            python_executable=physical_openparf_python,
+            install_root=ctx.physical_openparf_install,
+            python_executable=ctx.physical_openparf_python,
         )
-    if timing_backend == "opensta" and internal_timing_database:
-        opensta = resolve_native_executable("sta", opensta)
-        check_opensta_engine_version(opensta)
-    if physical and global_timing_engine == "opensta":
-        global_sta_executable = resolve_native_executable("sta", global_sta_executable)
-        if not Path(global_sta_executable).is_file() or not os.access(global_sta_executable, os.X_OK):
+    if ctx.physical and ctx.physical_backend == "vivado":
+        from .native_tools import require_native_schema
+        require_native_schema("vivado-lineage-store-v2")
+    if ctx.internal_timing_database:
+        ctx.opensta = resolve_native_executable("sta", ctx.opensta)
+        check_opensta_engine_version(ctx.opensta)
+    if ctx.physical:
+        ctx.global_sta_executable = resolve_native_executable("sta", ctx.global_sta_executable)
+        if not Path(ctx.global_sta_executable).is_file() or not os.access(ctx.global_sta_executable, os.X_OK):
             raise EmuFlowError("global OpenSTA executable is unavailable or not executable")
-        if global_sta_executable != opensta:
-            check_opensta_engine_version(global_sta_executable)
+        if ctx.global_sta_executable != ctx.opensta:
+            check_opensta_engine_version(ctx.global_sta_executable)
 
-    output_dir = output_dir.resolve()
-    if output_dir.exists():
-        if not output_dir.is_dir() or any(output_dir.iterdir()):
+    ctx.output_dir = ctx.output_dir.resolve()
+    if ctx.output_dir.exists():
+        if not ctx.output_dir.is_dir() or any(ctx.output_dir.iterdir()):
             raise EmuFlowError(
                 "multi-FPGA output path must be an empty directory: "
-                f"{output_dir}"
+                f"{ctx.output_dir}"
             )
-    openroad = _resolve_partition_openroad(partition_provider, openroad)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    ctx.openroad = _resolve_partition_openroad(
+        ctx.partition_provider, ctx.openroad, ctx.tritonpart_solution
+    )
+    ctx.output_dir.mkdir(parents=True, exist_ok=True)
 
-    from functools import partial
-    from .stage_metrics import measure_stage
-    measured = partial(measure_stage, output_dir)
-
-    source_list = [path.resolve() for path in sources]
-    include_dir_list = [path.resolve() for path in include_dirs]
-    define_list = list(defines)
-    frontend_root = output_dir / "frontend"
+def _compile_frontend(ctx: _CompileContext):
+    source_list = [path.resolve() for path in ctx.sources]
+    include_dir_list = [path.resolve() for path in ctx.include_dirs]
+    define_list = list(ctx.defines)
+    frontend_root = ctx.output_dir / "frontend"
     frontend_root.mkdir(parents=True, exist_ok=True)
-    phase1_root = frontend_root / "phase1"
+    ctx.phase1_root = frontend_root / "phase1"
     synthesized_json = frontend_root / (
         "synthesized.json.gz"
         if (
-            mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE
-            and (yosys_json is None or yosys_json.suffix == ".gz")
+            ctx.mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+            and (ctx.yosys_json is None or ctx.yosys_json.suffix == ".gz")
         )
         else "synthesized.json"
     )
     synthesis_mode: str
     indexed_staging_transform = None
-    frontend_report: Optional[Dict[str, Any]] = None
+    ctx.frontend_report: Optional[Dict[str, Any]] = None
     synthesized_json_sha256: Optional[str] = None
-    if prepared_frontend is not None or prepared_timing is not None:
-        if prepared_frontend is None or prepared_timing is None or source_list or yosys_json is not None:
+    if ctx.prepared_frontend is not None or ctx.prepared_timing is not None:
+        if ctx.prepared_frontend is None or ctx.prepared_timing is None or source_list or ctx.yosys_json is not None:
             raise EmuFlowError("prepared continuation requires both Phase 1 and Phase 2 boundaries and no synthesis inputs")
         from .prepared_inputs import bind_prepared_inputs
-        frontend_report, timing_report = bind_prepared_inputs(
-            prepared_frontend, prepared_timing, phase1_root,
-            output_dir / "timing", platform_path, clock_periods, mapping_profile,
+        ctx.frontend_report, ctx.timing_report = bind_prepared_inputs(
+            ctx.prepared_frontend, ctx.prepared_timing, ctx.phase1_root,
+            ctx.output_dir / "timing", ctx.platform_path, ctx.clock_periods, ctx.mapping_profile,
         )
     else:
-        if yosys_json is not None:
+        if ctx.yosys_json is not None:
             if source_list:
                 raise EmuFlowError(
                     "provide RTL sources or --yosys-json, not both"
@@ -1669,18 +1442,18 @@ def run_multi_fpga_flow(
                     "Verilog include directories and defines apply only when "
                     "compiling RTL sources"
                 )
-            source_json = yosys_json.resolve()
+            source_json = ctx.yosys_json.resolve()
             if not source_json.is_file():
                 raise EmuFlowError(f"Yosys JSON does not exist: {source_json}")
             shutil.copyfile(source_json, synthesized_json)
             synthesis_mode = "provided-yosys-json"
-            if mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
+            if ctx.mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
                 synthesis_report = {
                     "status": "pass",
                     "provider": "provided-yosys-json",
-                    "mapping_profile": mapping_profile,
+                    "mapping_profile": ctx.mapping_profile,
                     "primitive_audit": audit_xilinx_mapped_json(
-                        synthesized_json, top=top
+                        synthesized_json, top=ctx.top
                     ),
                 }
         else:
@@ -1688,64 +1461,32 @@ def run_multi_fpga_flow(
                 raise EmuFlowError(
                     "multi-FPGA compilation requires RTL sources or --yosys-json"
                 )
-            if top is None:
+            if ctx.top is None:
                 raise EmuFlowError("--top is required when compiling RTL sources")
-            if mapping_profile == "vtr-hard-blocks":
-                raw_json = frontend_root / "vtr-hard-block-atoms.json"
-                eblif = frontend_root / "design.eblif"
-                synthesis_report = run_vtr_yosys(
-                    source_list,
-                    top,
-                    eblif,
-                    executable=yosys,
-                    log_path=frontend_root / "yosys.log",
-                    hard_blocks=True,
-                    json_output=raw_json,
-                    include_dirs=include_dir_list,
-                    defines=define_list,
-                )
-                normalization_report = normalize_vtr_hard_block_json(
-                    raw_json,
-                    synthesized_json,
-                    top=top,
-                )
-                synthesis_mode = "vtr-lut6-ff-hard-blocks"
-            elif mapping_profile == "generic-soft":
-                synthesis_report = run_generic_yosys(
-                    source_list,
-                    top,
-                    synthesized_json,
-                    executable=yosys,
-                    log_path=frontend_root / "yosys.log",
-                    include_dirs=include_dir_list,
-                    defines=define_list,
-                )
-                normalization_report = None
-                synthesis_mode = "generic-lut6-ff"
-            elif mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
+            if ctx.mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
                 indexed_staging_transform = normalize_xilinx_indexed_staging
-                synthesis_report, frontend_report = (
+                synthesis_report, ctx.frontend_report = (
                     run_xilinx_ultrascaleplus_yosys_stream(
                         source_list,
-                        top,
+                        ctx.top,
                         lambda stream: run_phase1(
                             Path("<yosys-stdout>"),
-                            platform_path,
-                            phase1_root,
-                            top=top,
-                            clocks=clocks,
+                            ctx.platform_path,
+                            ctx.phase1_root,
+                            top=ctx.top,
+                            clocks=ctx.clocks,
                             indexed_staging_transform=(
                                 normalize_xilinx_indexed_staging
                             ),
                             yosys_stream=stream,
                             yosys_hierarchical_stream=True,
                         ),
-                        executable=yosys,
+                        executable=ctx.yosys,
                         log_path=frontend_root / "yosys.log",
                         include_dirs=include_dir_list,
                         defines=define_list,
                         mapping_strategy=(
-                            xilinx_mapping_strategy or DEFAULT_XILINX_MAPPING_STRATEGY
+                            ctx.xilinx_mapping_strategy or DEFAULT_XILINX_MAPPING_STRATEGY
                         ),
                     )
                 )
@@ -1754,46 +1495,41 @@ def run_multi_fpga_flow(
             else:
                 raise ValidationError("frontend mapping profile is invalid")
 
-        # Non-Xilinx frontends still use a transient interchange file. The Xilinx
-        # production path has already piped Yosys stdout directly into indexed
-        # Phase 1 above and therefore never materializes a graph JSON artifact.
-        if frontend_report is None:
+        # Explicit user-supplied JSON is imported once and its staging copy is
+        # removed. RTL synthesis above streams directly into indexed Phase 1.
+        if ctx.frontend_report is None:
             synthesized_json_sha256 = _sha256(synthesized_json)
             try:
-                frontend_report = run_phase1(
+                ctx.frontend_report = run_phase1(
                     synthesized_json,
-                    platform_path,
-                    phase1_root,
-                    top=top,
-                    clocks=clocks,
+                    ctx.platform_path,
+                    ctx.phase1_root,
+                    top=ctx.top,
+                    clocks=ctx.clocks,
                     indexed_staging_transform=indexed_staging_transform,
                 )
             finally:
                 synthesized_json.unlink(missing_ok=True)
-        if frontend_report["status"] != "pass":
+        if ctx.frontend_report["status"] != "pass":
             raise EmuFlowError(
                 "multi-FPGA frontend failed capacity or clock-topology checks"
             )
         if indexed_staging_transform is not None:
-            indexed_normalization = frontend_report["indexed_staging_transform"]
+            indexed_normalization = ctx.frontend_report["indexed_staging_transform"]
             synthesis_report = {
                 **synthesis_report,
                 "normalization": indexed_normalization,
                 "primitive_audit": indexed_normalization["primitive_audit"],
             }
-        frontend_report = {
-            **frontend_report,
+        ctx.frontend_report = {
+            **ctx.frontend_report,
             "synthesis": {
                 "provider": "yosys",
                 "mode": synthesis_mode,
                 "mapping_profile": (
-                    VTR_HARD_BLOCK_PROFILE
-                    if synthesis_mode == "vtr-lut6-ff-hard-blocks"
-                    else (
-                        "provided-yosys-json"
-                        if synthesis_mode == "provided-yosys-json"
-                        else mapping_profile
-                    )
+                    "provided-yosys-json"
+                    if synthesis_mode == "provided-yosys-json"
+                    else ctx.mapping_profile
                 ),
                 "sources": [str(path) for path in source_list],
                 "include_dirs": [str(path) for path in include_dir_list],
@@ -1810,73 +1546,57 @@ def run_multi_fpga_flow(
                 ),
                 **(
                     {"tool_report": synthesis_report}
-                    if yosys_json is None
+                    if ctx.yosys_json is None
                     else {}
                 ),
                 **(
                     {"normalization": normalization_report}
-                    if yosys_json is None
+                    if ctx.yosys_json is None
                     and normalization_report is not None
                     else {}
                 ),
             },
         }
-    ir_path = phase1_root / "design.emuir.sqlite"
+    ctx.ir_path = ctx.phase1_root / "design.emuir.sqlite"
 
-    timing_root = output_dir / "timing"
-    path_database_path = timing_root / "path-database.json"
-    cut_segment_qualification_path = None
-    net_weights_path = timing_root / "partition-net-weights.json"
-    if prepared_timing is None:
-        timing_report = None
-    if internal_timing_database and prepared_timing is None:
-        timing_root.mkdir(parents=True, exist_ok=True)
-        if timing_backend == "opensta":
-            sta_report = run_opensta_path_database(
-                ir_path=ir_path,
-                output_path=path_database_path,
-                clocks=clock_periods,
-                timing_io=timing_io,
-                timing_model_path=timing_model,
-                architecture_timing_db_path=architecture_timing_db,
-                executable=opensta,
-                max_paths=sta_max_paths,
-                log_path=timing_root / "opensta.log",
-                _stream_output=True,
-            )
-            timing_mode = "opensta-preplacement"
-        else:
-            platform = Platform.load(platform_path)
-            parts = {fpga.part for fpga in platform.fpgas}
-            if len(parts) != 1:
-                raise EmuFlowError(
-                    "Vivado timing backend requires one common FPGA part"
-                )
-            sta_report = run_vivado_timing_path_database(
-                ir_path=ir_path,
-                output_path=path_database_path,
-                clocks=clock_periods,
-                part=next(iter(parts)),
-                executable=timing_vivado,
-                max_paths=sta_max_paths,
-            )
-            timing_mode = "vivado-post-synthesis"
+def _compile_timing(ctx: _CompileContext):
+    ctx.timing_root = ctx.output_dir / "timing"
+    ctx.path_database_path = ctx.timing_root / "path-database.json"
+    ctx.cut_segment_qualification_path = None
+    ctx.net_weights_path = ctx.timing_root / "partition-net-weights.json"
+    if ctx.prepared_timing is None:
+        ctx.timing_report = None
+    if ctx.internal_timing_database and ctx.prepared_timing is None:
+        ctx.timing_root.mkdir(parents=True, exist_ok=True)
+        sta_report = run_opensta_path_database(
+            ir_path=ctx.ir_path,
+            output_path=ctx.path_database_path,
+            clocks=ctx.clock_periods,
+            timing_io=ctx.timing_io,
+            timing_model_path=ctx.timing_model,
+            architecture_timing_db_path=ctx.architecture_timing_db,
+            executable=ctx.opensta,
+            max_paths=ctx.sta_max_paths,
+            log_path=ctx.timing_root / "opensta.log",
+            _stream_output=True,
+        )
+        timing_mode = "opensta-preplacement"
         weights_report = None
-        if timing_driven:
+        if ctx.timing_driven:
             weights_report = derive_partition_net_weights(
-                path_database_path,
-                ir_path,
-                net_weights_path,
-                criticality_scale=timing_criticality_scale,
-                criticality_exponent=timing_criticality_exponent,
+                ctx.path_database_path,
+                ctx.ir_path,
+                ctx.net_weights_path,
+                criticality_scale=ctx.timing_criticality_scale,
+                criticality_exponent=ctx.timing_criticality_exponent,
                 input_already_validated=True,
             )
-        timing_report = {
+        ctx.timing_report = {
             "status": "pass",
             "mode": timing_mode,
-            "backend": timing_backend,
+            "backend": "opensta",
             "sta": sta_report,
-            "optimization_enabled": timing_driven,
+            "optimization_enabled": ctx.timing_driven,
             **(
                 {"partition_weights": weights_report}
                 if weights_report is not None
@@ -1884,57 +1604,57 @@ def run_multi_fpga_flow(
             ),
         }
 
-    path_database_payload = (
-        sta_path_database_payload_path(path_database_path)
-        if internal_timing_database
+    ctx.path_database_payload = (
+        sta_path_database_payload_path(ctx.path_database_path)
+        if ctx.internal_timing_database
         else None
     )
-    net_weights_payload = (
-        partition_net_weights_payload_path(net_weights_path)
-        if net_weights_path.is_file()
+    ctx.net_weights_payload = (
+        partition_net_weights_payload_path(ctx.net_weights_path)
+        if ctx.net_weights_path.is_file()
         else None
     )
 
-    effective_route_constraints = route_constraints
-    link_timing_report = None
-    copied_link_timing_path = None
-    effective_route_constraints_path = None
-    if board_link_timing_db is not None:
-        platform = Platform.load(platform_path)
-        database = checked_link_timing
-        validation = checked_link_timing_validation
+    ctx.effective_route_constraints = ctx.route_constraints
+    ctx.link_timing_report = None
+    ctx.copied_link_timing_path = None
+    ctx.effective_route_constraints_path = None
+    if ctx.board_link_timing_db is not None:
+        platform = Platform.load(ctx.platform_path)
+        database = ctx.checked_link_timing
+        validation = ctx.checked_link_timing_validation
         link_delays, projection = directed_route_link_delays(
             database, platform
         )
-        timing_root.mkdir(parents=True, exist_ok=True)
-        copied_link_timing_path = timing_root / "board-link-timing.json"
-        write_json(copied_link_timing_path, database)
+        ctx.timing_root.mkdir(parents=True, exist_ok=True)
+        ctx.copied_link_timing_path = ctx.timing_root / "board-link-timing.json"
+        write_json(ctx.copied_link_timing_path, database)
         raw_constraints = (
-            read_json(route_constraints.resolve())
-            if route_constraints is not None
+            read_json(ctx.route_constraints.resolve())
+            if ctx.route_constraints is not None
             else {"schema": SYSTEM_ROUTE_CONSTRAINTS_SCHEMA}
         )
         if not isinstance(raw_constraints, dict):
             raise ValidationError("route constraints must be an object")
         raw_constraints = dict(raw_constraints)
         raw_constraints["directed_link_delay_ns"] = link_delays
-        effective_route_constraints_path = (
-            timing_root / "board-link-route-constraints.json"
+        ctx.effective_route_constraints_path = (
+            ctx.timing_root / "board-link-route-constraints.json"
         )
-        write_json(effective_route_constraints_path, raw_constraints)
-        effective_route_constraints = effective_route_constraints_path
-        link_timing_report = {
+        write_json(ctx.effective_route_constraints_path, raw_constraints)
+        ctx.effective_route_constraints = ctx.effective_route_constraints_path
+        ctx.link_timing_report = {
             "status": "pass",
             "validation": validation,
             "routing_projection": projection,
-            "optimization_enabled": timing_driven,
+            "optimization_enabled": ctx.timing_driven,
             "applied_to": (
                 [
                     "phase4-system-routing",
                     "phase5-tdm-ratio-and-schedule-timing",
                     "phase7c-system-timing-when-physical",
                 ]
-                if timing_driven
+                if ctx.timing_driven
                 else [
                     "phase4-post-route-timing-evaluation",
                     "phase5-baseline-schedule-timing-evaluation",
@@ -1943,18 +1663,16 @@ def run_multi_fpga_flow(
             ),
         }
 
-    if timing_report is not None:
-        provider_consumes_weights = (
-            timing_driven and partition_provider != "greedy"
-        )
+    if ctx.timing_report is not None:
+        provider_consumes_weights = ctx.timing_driven
         hop_refiner_consumes_weights = False
-        if effective_route_constraints is not None:
+        if ctx.effective_route_constraints is not None:
             raw_route_constraints = read_json(
-                effective_route_constraints.resolve()
+                ctx.effective_route_constraints.resolve()
             )
             if not isinstance(raw_route_constraints, dict):
                 raise ValidationError("route constraints must be an object")
-            hop_refiner_consumes_weights = timing_driven and (
+            hop_refiner_consumes_weights = ctx.timing_driven and (
                 raw_route_constraints.get("max_route_hops") is not None
             )
         consumers = []
@@ -1962,7 +1680,7 @@ def run_multi_fpga_flow(
             consumers.append("phase3-provider")
         if hop_refiner_consumes_weights:
             consumers.append("phase3-hop-refinement")
-        timing_report.update(
+        ctx.timing_report.update(
             {
                 "partition_weights_applied": bool(consumers),
                 "partition_provider_weights_applied": (
@@ -1975,58 +1693,47 @@ def run_multi_fpga_flow(
             }
         )
 
-    phase3_root = output_dir / "partition"
-    phase3_report = measured("phase3", run_phase3,
-        ir_path,
-        platform_path,
-        phase3_root,
-        constraints_path=partition_constraints,
-        seed=seed,
-        min_used_fpgas=min_used_fpgas,
-        balance_tolerance=balance_tolerance,
-        provider=partition_provider,
-        openroad=openroad,
-        tritonpart_solution=tritonpart_solution,
-        tritonpart_timeout_seconds=partition_timeout_seconds,
-        tritonpart_seed_attempts=partition_seed_attempts,
-        tritonpart_num_initial_solutions=partition_num_initial_solutions,
+def _compile_partition(ctx: _CompileContext):
+    ctx.phase3_root = ctx.output_dir / "partition"
+    ctx.phase3_report = ctx.measured("phase3", run_phase3,
+        ctx.ir_path,
+        ctx.platform_path,
+        ctx.phase3_root,
+        constraints_path=ctx.partition_constraints,
+        seed=ctx.seed,
+        min_used_fpgas=ctx.min_used_fpgas,
+        balance_tolerance=ctx.balance_tolerance,
+        provider=ctx.partition_provider,
+        openroad=ctx.openroad,
+        tritonpart_solution=ctx.tritonpart_solution,
+        tritonpart_timeout_seconds=ctx.partition_timeout_seconds,
+        tritonpart_seed_attempts=ctx.partition_seed_attempts,
+        tritonpart_num_initial_solutions=ctx.partition_num_initial_solutions,
         tritonpart_num_best_initial_solutions=(
-            partition_num_best_initial_solutions
+            ctx.partition_num_best_initial_solutions
         ),
         tritonpart_repair_min_used_fpgas=(
-            partition_repair_min_used_fpgas
+            ctx.partition_repair_min_used_fpgas
         ),
-        repart=repart,
-        repart_timeout_seconds=partition_timeout_seconds,
         net_weights_path=(
-            net_weights_path
-            if timing_driven
+            ctx.net_weights_path
+            if ctx.timing_driven
             else None
         ),
-        route_constraints_path=effective_route_constraints,
-        cut_mode=cut_mode,
-        max_cross_fpga_dependency_depth=max_cross_fpga_dependency_depth,
+        route_constraints_path=ctx.effective_route_constraints,
+        cut_mode=ctx.cut_mode,
+        max_cross_fpga_dependency_depth=ctx.max_cross_fpga_dependency_depth,
         timing_database_path=(
-            path_database_path if partition_provider == "patron" else None
+            ctx.path_database_path if ctx.partition_provider == "patron" else None
         ),
-        patron_refiner=patron_refiner,
-        patron_max_moves=patron_max_moves,
-        patron_flow_refinement=patron_flow_refinement,
-        patron_algorithm_version=patron_algorithm_version,
-        static_exact_candidate_policy=static_exact_candidate_policy,
-        mfspart_post_refinement=mfspart_post_refinement,
-        timing_path_database_path=(
-            path_database_path if exact_cut_mode else None
-        ),
-        mfspart_post_refinement_timing_path_beta=(
-            mfspart_post_refinement_timing_path_beta
-        ),
-        retain_patron_baseline=(
-            partition_provider == "patron" and bool(cross_stage_iterations)
-        ),
+        patron_refiner=ctx.patron_refiner,
+        patron_max_moves=ctx.patron_max_moves,
+        patron_algorithm_version=ctx.patron_algorithm_version,
+        static_exact_candidate_policy=ctx.static_exact_candidate_policy,
+        retain_patron_baseline=False,
     )
-    assignment_path = phase3_root / "assignment.json"
-    phase3_validation = phase3_report.get("validation")
+    ctx.assignment_path = ctx.phase3_root / "assignment.json"
+    phase3_validation = ctx.phase3_report.get("validation")
     inter_fpga_cut_count = (
         phase3_validation.get("cut_nets")
         if isinstance(phase3_validation, dict)
@@ -2040,49 +1747,37 @@ def run_multi_fpga_flow(
         raise ValidationError(
             "Phase 3 report has an invalid inter-FPGA cut-net count"
         )
-    has_inter_fpga_cuts = inter_fpga_cut_count > 0
-    effective_cross_stage_iterations = (
-        cross_stage_iterations if has_inter_fpga_cuts else 0
+    ctx.has_inter_fpga_cuts = inter_fpga_cut_count > 0
+    ctx.effective_optimize_frame_slots = (
+        ctx.optimize_frame_slots if ctx.has_inter_fpga_cuts else False
     )
-    effective_optimize_frame_slots = (
-        optimize_frame_slots if has_inter_fpga_cuts else False
-    )
-    patron_initial_assignment_path = None
-    if partition_provider == "patron" and effective_cross_stage_iterations:
-        initial_artifact = phase3_report.get("artifacts", {}).get(
-            "patron_initial_assignment"
-        )
-        if not isinstance(initial_artifact, str):
-            raise ValidationError(
-                "PATRON cross-stage baseline assignment is unavailable"
-            )
-        patron_initial_assignment_path = phase3_root / initial_artifact
 
-    projected_timing_paths = timing_paths
-    if internal_timing_database and not effective_cross_stage_iterations:
-        cut_segment_qualification_path = (
-            timing_root / "cut-segment-qualification.json"
+def _compile_route_policy(ctx: _CompileContext):
+    ctx.projected_timing_paths = ctx.timing_paths
+    if ctx.internal_timing_database:
+        ctx.cut_segment_qualification_path = (
+            ctx.timing_root / "cut-segment-qualification.json"
         )
         cut_qualification = build_cut_segment_qualification(
-            ir_path,
-            assignment_path,
-            path_database_path,
-            timing_model_path=timing_model,
-            architecture_timing_db_path=architecture_timing_db,
+            ctx.ir_path,
+            ctx.assignment_path,
+            ctx.path_database_path,
+            timing_model_path=ctx.timing_model,
+            architecture_timing_db_path=ctx.architecture_timing_db,
             input_already_validated=True,
         )
-        write_json(cut_segment_qualification_path, cut_qualification)
-        timing_report["cut_segment_qualification"] = cut_qualification
-        if has_inter_fpga_cuts:
-            projected_timing_paths = timing_root / "cut-timing-paths.json"
+        write_json(ctx.cut_segment_qualification_path, cut_qualification)
+        ctx.timing_report["cut_segment_qualification"] = cut_qualification
+        if ctx.has_inter_fpga_cuts:
+            ctx.projected_timing_paths = ctx.timing_root / "cut-timing-paths.json"
             # Phase 4/5 must optimize the same complete original TimingPathDB
             # population that Phase 7C later reports.  The post-partition
             # structural cut-segment qualification is intentionally separate
             # from this original-path population.
             projection_report = project_sta_path_database(
-                path_database_path,
-                assignment_path,
-                projected_timing_paths,
+                ctx.path_database_path,
+                ctx.assignment_path,
+                ctx.projected_timing_paths,
                 input_already_validated=True,
             )
         else:
@@ -2091,10 +1786,10 @@ def run_multi_fpga_flow(
             # schema intentionally represents only paths that cross at least
             # one partition cut.  The original TimingPathDB remains the input
             # to the physical backend and authoritative global OpenSTA signoff.
-            projected_timing_paths = None
+            ctx.projected_timing_paths = None
             projection_report = {
                 "status": "pass",
-                "design": phase3_report.get("design"),
+                "design": ctx.phase3_report.get("design"),
                 "mode": "not-required-no-inter-fpga-cuts",
                 "projected_paths": 0,
                 "compressed_paths": 0,
@@ -2102,367 +1797,150 @@ def run_multi_fpga_flow(
                 "covered_cut_nets": 0,
                 "uncovered_cut_nets": 0,
             }
-        timing_report["cut_path_projection"] = projection_report
+        ctx.timing_report["cut_path_projection"] = projection_report
 
-    effective_route_provider = route_provider
-    effective_tdm_provider = tdm_provider
-    if effective_tdm_provider is None:
-        effective_tdm_provider = (
-            TDM_EXACT_DEPENDENCY_PROVIDER
-            if exact_cut_mode
-            else (
-                TDM_TIMING_DAG_RATIO_PROVIDER
-                if timing_driven
-                else TDM_BASELINE_PROVIDER
-            )
-        )
-    if internal_timing_database and not timing_driven:
-        if route_provider not in {
-            None,
-            NATIVE_ROUTER_PROVIDER,
-            NATIVE_TIMING_EVALUATED_PROVIDER,
-        }:
-            raise EmuFlowError(
-                "--no-timing-driven requires the timing-oblivious Phase 4 "
-                "baseline; remove --route-provider"
-            )
-        no_timing_tdm_provider = (
-            TDM_EXACT_DEPENDENCY_PROVIDER
-            if exact_cut_mode
-            else TDM_BASELINE_PROVIDER
-        )
-        if tdm_provider not in {None, no_timing_tdm_provider}:
-            raise EmuFlowError(
-                "--no-timing-driven requires the provider-neutral Phase 5 "
-                f"correctness path {no_timing_tdm_provider!r}; remove or "
-                "correct --tdm-provider"
-            )
-        if route_candidate_workers != 1:
-            raise EmuFlowError(
-                "--no-timing-driven requires --route-candidate-workers 1"
-            )
-        effective_route_provider = NATIVE_TIMING_EVALUATED_PROVIDER
-        effective_tdm_provider = no_timing_tdm_provider
-    if not has_inter_fpga_cuts:
-        # Timing-aware interconnect optimization is vacuous for a packed
-        # single-FPGA solution.  Keep Phase 4/5 artifacts explicit and
-        # independently replayable with the ordinary zero-demand providers.
-        effective_route_provider = NATIVE_ROUTER_PROVIDER
-        effective_tdm_provider = (
-            TDM_EXACT_DEPENDENCY_PROVIDER
-            if exact_cut_mode
-            else TDM_BASELINE_PROVIDER
-        )
+    ctx.effective_route_provider = ctx.route_provider or GLOBAL_CANDIDATE_PROVIDER
+    ctx.effective_tdm_provider = TDM_EXACT_DEPENDENCY_PROVIDER
+    ctx.phase4_root = ctx.output_dir / "system-route"
+    ctx.phase5_root = ctx.output_dir / "tdm"
+    ctx.frame_search_report = None
 
-    academic_tdm_provider = effective_tdm_provider in {
-        TDM_RATIO_PROVIDER,
-        TDM_TIMING_DAG_RATIO_PROVIDER,
-    }
-
-    phase4_root = output_dir / "system-route"
-    phase5_root = output_dir / "tdm"
-    frame_search_report = None
-    cross_stage_report = None
-    if effective_cross_stage_iterations:
-        cross_stage_root = output_dir / "cross-stage"
-        cross_stage_report = run_cross_stage_optimization(
-            ir_path=ir_path,
-            platform_path=platform_path,
-            database_path=path_database_path,
-            initial_assignment_path=(
-                patron_initial_assignment_path
-                if partition_provider == "patron"
-                else assignment_path
-            ),
-            output_dir=cross_stage_root,
-            seed_candidate_phase3_root=(
-                phase3_root if partition_provider == "patron" else None
-            ),
-            phase3_constraints_path=(
-                phase3_root / "constraints.normalized.json"
-            ),
-            route_constraints_path=effective_route_constraints,
-            board_link_timing_path=board_link_timing_db,
-            phase3_provider=partition_provider,
-            cut_mode=cut_mode,
-            max_cross_fpga_dependency_depth=(
-                max_cross_fpga_dependency_depth
-            ),
-            static_exact_candidate_policy=(
-                static_exact_candidate_policy
-            ),
-            max_outer_iterations=effective_cross_stage_iterations,
-            seed=seed,
-            min_used_fpgas=min_used_fpgas,
-            balance_tolerance=balance_tolerance,
-            openroad=openroad,
-            repart=repart,
-            patron_refiner=patron_refiner,
-            patron_max_moves=patron_max_moves,
-            patron_flow_refinement=patron_flow_refinement,
-            patron_algorithm_version=patron_algorithm_version,
-            partition_timeout_seconds=partition_timeout_seconds,
-            partition_seed_attempts=partition_seed_attempts,
-            partition_num_initial_solutions=partition_num_initial_solutions,
-            partition_num_best_initial_solutions=(
-                partition_num_best_initial_solutions
-            ),
-            partition_repair_min_used_fpgas=(
-                partition_repair_min_used_fpgas
-            ),
-            router=router,
-            route_provider=route_provider,
-            route_candidate_workers=route_candidate_workers,
-            frame_slots=frame_slots,
-            optimize_frame_slots=optimize_frame_slots,
-            route_max_iterations=route_max_iterations,
-            tdm_provider=effective_tdm_provider,
-            ratio_optimizer=(
-                ratio_optimizer if academic_tdm_provider else None
-            ),
-            timing_dag_optimizer=(
-                timing_dag_optimizer if academic_tdm_provider else None
-            ),
-            slot_optimizer=(
-                slot_optimizer if academic_tdm_provider else None
-            ),
-            ratio_max_iterations=ratio_max_iterations,
-            max_ratio=max_ratio,
-            ratio_quantum=ratio_quantum,
-            post_refinement_iterations=post_refinement_iterations,
-            slot_refinement_iterations=slot_refinement_iterations,
-            ratio_convergence=ratio_convergence,
-            feedback_optimizer=cross_stage_feedback_optimizer,
-            simulation_frames=simulation_frames,
-            pair_pressure_weight=cross_stage_pair_pressure_weight,
-        )
-        selected = cross_stage_report["candidates"][
-            cross_stage_report["selected_iteration"]
-        ]
-        if cross_stage_report["selected_iteration"] != 0:
-            selected_phase3_root = (
-                cross_stage_root / selected["assignment"]
-            ).parent
-            shutil.rmtree(phase3_root)
-            shutil.copytree(selected_phase3_root, phase3_root)
-            phase3_report = read_json(phase3_root / "phase3_report.json")
-            assignment_path = phase3_root / "assignment.json"
-        elif partition_provider == "patron":
-            phase3_report = promote_patron_baseline(
-                ir_path, platform_path, phase3_root
-            )
-            assignment_path = phase3_root / "assignment.json"
-        projected_timing_paths = timing_root / "cut-timing-paths.json"
-        shutil.copy2(
-            cross_stage_root / selected["timing_paths"],
-            projected_timing_paths,
-        )
-        timing_report["cut_path_projection"] = selected["projection"]
-        shutil.copytree(
-            (cross_stage_root / selected["routes"]).parent,
-            phase4_root,
-        )
-        shutil.copytree(
-            (cross_stage_root / selected["schedule"]).parent,
-            phase5_root,
-        )
-        phase4_report = read_json(phase4_root / "phase4_report.json")
-        phase5_report = read_json(phase5_root / "phase5_report.json")
-        if optimize_frame_slots:
-            selected_frame_search = cross_stage_root / selected[
-                "frame_search"
-            ]
-            shutil.copytree(
-                selected_frame_search.parent,
-                output_dir / "frame-search",
-            )
-            frame_search_report = read_json(
-                output_dir / "frame-search/frame-search-report.json"
-            )
-    elif effective_optimize_frame_slots:
-        if frame_slots is None:
+def _compile_routing_schedule(ctx: _CompileContext):
+    if ctx.effective_optimize_frame_slots:
+        if ctx.frame_slots is None:
             raise EmuFlowError(
                 "--optimize-frame-slots requires --frame-slots as its "
                 "feasible upper bound"
             )
-        frame_search_report = run_frame_length_search(
-            assignment_path,
-            platform_path,
-            projected_timing_paths,
-            output_dir / "frame-search",
-            phase4_root,
-            phase5_root,
-            max_frame_slots=frame_slots,
-            route_constraints=effective_route_constraints,
-            route_max_iterations=route_max_iterations,
-            router=router,
-            route_provider=route_provider,
-            candidate_workers=route_candidate_workers,
-            tdm_provider=tdm_provider,
-            ratio_optimizer=ratio_optimizer,
-            timing_dag_optimizer=timing_dag_optimizer,
-            slot_optimizer=slot_optimizer,
-            ratio_max_iterations=ratio_max_iterations,
-            max_ratio=max_ratio,
-            ratio_quantum=ratio_quantum,
-            post_refinement_iterations=post_refinement_iterations,
-            slot_refinement_iterations=slot_refinement_iterations,
-            ratio_convergence=ratio_convergence,
-            simulation_frames=simulation_frames,
-        )
-        phase4_report = read_json(phase4_root / "phase4_report.json")
-        phase5_report = read_json(phase5_root / "phase5_report.json")
-    else:
-        phase4_report = measured("phase4", run_phase4,
-            assignment_path,
-            platform_path,
-            phase4_root,
-            constraints_path=effective_route_constraints,
-            frame_slots=frame_slots,
-            max_iterations=route_max_iterations,
-            timing_paths_path=projected_timing_paths,
-            router=router,
-            provider=effective_route_provider,
-            candidate_workers=(
-                route_candidate_workers if has_inter_fpga_cuts else 1
-            ),
-        )
-        phase5_report = measured("phase5", run_phase5,
-            phase4_root / "routes.json",
-            platform_path,
-            phase5_root,
-            assignment_path=assignment_path,
-            simulation_frames=simulation_frames,
-            provider=effective_tdm_provider,
-            ratio_optimizer=(
-                ratio_optimizer
-                if has_inter_fpga_cuts and academic_tdm_provider
-                else None
-            ),
-            timing_dag_optimizer=(
-                timing_dag_optimizer
-                if has_inter_fpga_cuts and academic_tdm_provider
-                else None
-            ),
-            slot_optimizer=(
-                slot_optimizer
-                if has_inter_fpga_cuts and academic_tdm_provider
-                else None
-            ),
-            ratio_max_iterations=ratio_max_iterations,
-            max_ratio=max_ratio,
-            ratio_quantum=ratio_quantum,
-            post_refinement_iterations=post_refinement_iterations,
-            slot_refinement_iterations=slot_refinement_iterations,
-            convergence=ratio_convergence,
-        )
-    routes_path = phase4_root / "routes.json"
-    schedule_path = phase5_root / "schedule.json"
+        ctx.frame_search_report = run_frame_length_search(
+            ctx.assignment_path,
+            ctx.platform_path,
+            ctx.projected_timing_paths,
+            ctx.output_dir / "frame-search",
+            ctx.phase4_root,
+            ctx.phase5_root,
+            max_frame_slots=ctx.frame_slots,
+            route_constraints=ctx.effective_route_constraints,
+            route_max_iterations=ctx.route_max_iterations,
+            router=ctx.router,
+            route_provider=ctx.route_provider,
+            candidate_workers=ctx.route_candidate_workers,
+            tdm_provider=ctx.tdm_provider,
 
-    phase6_root = output_dir / "split"
-    has_scheduled_signals = _schedule_has_entries(schedule_path)
-    if phase6_provider == "chimew" and not has_scheduled_signals:
+        )
+        ctx.phase4_report = read_json(ctx.phase4_root / "phase4_report.json")
+        ctx.phase5_report = read_json(ctx.phase5_root / "phase5_report.json")
+    else:
+        _compile_route(ctx)
+        _compile_schedule(ctx)
+
+def _run_selected_physical(ctx, split_root, schedule_path, output_dir):
+    catalog = getattr(ctx,"chimew_package_geometry",None)
+    if catalog is not None:
+        catalog.require_unchanged()
+    return ctx.measured("phase7", run_multi_fpga_physical_flow,
+        split_root,
+        ctx.platform_path,
+        schedule_path,
+        output_dir,
+        backend=ctx.physical_backend,
+        architecture=ctx.effective_physical_architecture,
+        yosys=ctx.yosys,
+        openparf_install=ctx.physical_openparf_install,
+        openparf_python=ctx.physical_openparf_python,
+        seed=ctx.physical_seed,
+        vivado=ctx.physical_vivado,
+        vivado_place_directive=ctx.physical_vivado_place_directive,
+        vivado_route_directive=ctx.physical_vivado_route_directive,
+        rapidwright_jar=ctx.physical_rapidwright_jar,
+        rapidwright_java=ctx.physical_rapidwright_java,
+        rapidwright_classes=ctx.physical_rapidwright_classes,
+        rapidwright_java_source=ctx.physical_rapidwright_java_source,
+        rapidwright_device_data=ctx.physical_rapidwright_device_data,
+        rapidwright_timing_data=ctx.physical_rapidwright_timing_data,
+        rapidwright_opensta=ctx.physical_rapidwright_opensta,
+        rapidwright_native_constraints=(
+            ctx.physical_rapidwright_native_constraints
+        ),
+        rapidwright_provider_manifest=(
+            ctx.physical_rapidwright_provider_manifest
+        ),
+        original_ir_path=ctx.ir_path,
+        assignment_path=ctx.assignment_path,
+        routes_path=ctx.routes_path,
+        path_database_path=ctx.path_database_path,
+        logic_path_database_path=ctx.path_database_path,
+        workers=ctx.physical_workers,
+    )
+
+def _compile_split(ctx: _CompileContext):
+    ctx.routes_path = ctx.phase4_root / "routes.json"
+    ctx.schedule_path = ctx.phase5_root / "schedule.json"
+
+    ctx.phase6_root = ctx.output_dir / "split"
+    has_scheduled_signals = _schedule_has_entries(ctx.schedule_path)
+    if ctx.phase6_provider == "chimew" and not has_scheduled_signals:
         raise EmuFlowError(
             "--phase6-provider chimew requires at least one scheduled "
             "inter-FPGA signal"
         )
-    use_academic_chimew = (
-        phase6_provider == "chimew"
-        or (
-            phase6_provider == "auto"
-            and physical
-            and physical_backend == "open"
-            and has_scheduled_signals
-        )
-    )
-    baseline_physical_report = None
-    baseline_runtime_report = None
-    phase6_comparison = None
-    effective_physical_architecture = physical_architecture
-    if use_academic_chimew:
-        comparison_root = output_dir / "phase6-comparison"
+    ctx.baseline_physical_report = None
+    ctx.baseline_runtime_report = None
+    ctx.phase6_comparison = None
+    ctx.effective_physical_architecture = ctx.physical_architecture
+    if ctx.phase6_provider == "chimew":
+        comparison_root = ctx.output_dir / "phase6-comparison"
         baseline_root = comparison_root / "baseline"
         baseline_split = baseline_root / "split"
         baseline_phase6_started = time.monotonic()
-        baseline_phase6_report = measured("phase6", run_phase6,
-            ir_path,
-            assignment_path,
-            schedule_path,
-            platform_path,
+        baseline_phase6_report = ctx.measured("phase6", run_phase6,
+            ctx.ir_path,
+            ctx.assignment_path,
+            ctx.schedule_path,
+            ctx.platform_path,
             baseline_split,
-            equivalence_cycles=equivalence_cycles,
-            equivalence_seed=equivalence_seed,
-            transport_cost_path=transport_cost_db,
-            clock_periods=clock_periods,
+            equivalence_cycles=ctx.equivalence_cycles,
+            equivalence_seed=ctx.equivalence_seed,
+            transport_cost_path=ctx.transport_cost_db,
+            clock_periods=ctx.clock_periods,
         )
         baseline_phase6_seconds = time.monotonic() - baseline_phase6_started
         baseline_physical_started = time.monotonic()
-        baseline_physical_report = measured("phase7", run_multi_fpga_physical_flow,
-            baseline_split,
-            platform_path,
-            schedule_path,
-            baseline_root / "physical",
-            backend="open",
-            architecture=physical_architecture,
-            architecture_id=physical_architecture_id,
-            yosys=yosys,
-            vpr=physical_vpr,
-            architecture_importer=physical_architecture_importer,
-            packed_importer=physical_packed_importer,
-            route_checker=physical_route_checker,
-            openparf_install=physical_openparf_install,
-            openparf_python=physical_openparf_python,
-            seed=physical_seed,
-            route_channel_width=physical_route_channel_width,
-            original_ir_path=ir_path,
-            assignment_path=assignment_path,
-            routes_path=routes_path,
-            path_database_path=path_database_path,
-            logic_path_database_path=path_database_path,
-            workers=physical_workers,
-        )
+        ctx.baseline_physical_report = _run_selected_physical(ctx, baseline_split, ctx.schedule_path, baseline_root / "physical")
         baseline_physical_seconds = time.monotonic() - baseline_physical_started
-        baseline_runtime_report = measured("phase7c", run_phase7c,
-            schedule_path,
-            platform_path,
-            phase3_root / "phase3_report.json",
-            phase4_root / "phase4_report.json",
-            phase5_root / "phase5_report.json",
+        ctx.baseline_runtime_report = ctx.measured("phase7c", run_phase7c,
+            ctx.schedule_path,
+            ctx.platform_path,
+            ctx.phase3_root / "phase3_report.json",
+            ctx.phase4_root / "phase4_report.json",
+            ctx.phase5_root / "phase5_report.json",
             baseline_split / "phase6_report.json",
             baseline_root / "runtime",
-            assignment_path=assignment_path,
+            assignment_path=ctx.assignment_path,
             physical_summary_path=(
                 baseline_root / "physical/physical-summary.json"
             ),
-            routes_path=routes_path,
-            board_link_timing_path=copied_link_timing_path,
-            global_sta_executable=global_sta_executable,
-            global_timing_engine=global_timing_engine,
+            routes_path=ctx.routes_path,
+            board_link_timing_path=ctx.copied_link_timing_path,
+            global_sta_executable=ctx.global_sta_executable,
+            global_timing_engine=ctx.global_timing_engine,
         )
-        if effective_physical_architecture is None:
-            fetched_architecture = (
-                baseline_root / "physical/architecture/vtr-flagship.xml"
-            )
-            if not fetched_architecture.is_file():
-                raise ValidationError(
-                    "academic Chimew prepass did not retain its VTR "
-                    "architecture source"
-                )
-            effective_physical_architecture = fetched_architecture
         lookahead_root = comparison_root / "lookahead"
-        lookahead = materialize_academic_chimew_inputs(
-            ir_path=ir_path,
-            schedule_path=schedule_path,
-            routes_path=routes_path,
-            platform_path=platform_path,
-            physical_report=baseline_physical_report,
+        lookahead = materialize_xilinx_chimew_inputs(
+            architecture_path=ctx.physical_architecture,
+            package_geometry=ctx.chimew_package_geometry,
+            ir_path=ctx.ir_path,
+            schedule_path=ctx.schedule_path,
+            routes_path=ctx.routes_path,
+            platform_path=ctx.platform_path,
+            physical_report=ctx.baseline_physical_report,
             output_dir=lookahead_root,
             timing_paths_path=(
-                projected_timing_paths if timing_driven else None
+                ctx.projected_timing_paths if ctx.timing_driven else None
             ),
-            region_count=phase6_chimew_region_count,
-            grouper=phase6_chimew_grouper,
-            refiner=phase6_chimew_refiner,
+            region_count=ctx.phase6_chimew_region_count,
+            grouper=ctx.phase6_chimew_grouper,
+            refiner=ctx.phase6_chimew_refiner,
         )
         inputs = lookahead["artifacts"]
         chimew_schedule_path = Path(inputs["schedule"]["path"])
@@ -2470,7 +1948,7 @@ def run_multi_fpga_flow(
         chimew_pipeline_root = comparison_root / "chimew"
         pipeline = run_chimew_phase6_pipeline(
             chimew_schedule_path,
-            platform_path,
+            ctx.platform_path,
             Path(inputs["crossings"]["path"]),
             Path(inputs["positions"]["path"]),
             Path(inputs["rudy_input"]["path"]),
@@ -2480,11 +1958,11 @@ def run_multi_fpga_flow(
             source_paths={
                 label: Path(path) for label, path in sources_map.items()
             },
-            grouper=phase6_chimew_grouper,
-            refiner=phase6_chimew_refiner,
-            rudy=phase6_chimew_rudy,
-            assigner=phase6_chimew_assigner,
-            region_count=phase6_chimew_region_count,
+            grouper=ctx.phase6_chimew_grouper,
+            refiner=ctx.phase6_chimew_refiner,
+            rudy=ctx.phase6_chimew_rudy,
+            assigner=ctx.phase6_chimew_assigner,
+            region_count=ctx.phase6_chimew_region_count,
         )
         with read_chimew_phase6_pipeline(chimew_pipeline_root) as (
             leased_pipeline,
@@ -2493,14 +1971,14 @@ def run_multi_fpga_flow(
             pipeline = dict(leased_pipeline)
             adapter_artifacts = pipeline["artifacts"]
             chimew_phase6_started = time.monotonic()
-            phase6_report = measured("phase6", run_phase6,
-                ir_path,
-                assignment_path,
+            ctx.phase6_report = ctx.measured("phase6", run_phase6,
+                ctx.ir_path,
+                ctx.assignment_path,
                 chimew_schedule_path,
-                platform_path,
-                phase6_root,
-                equivalence_cycles=equivalence_cycles,
-                equivalence_seed=equivalence_seed,
+                ctx.platform_path,
+                ctx.phase6_root,
+                equivalence_cycles=ctx.equivalence_cycles,
+                equivalence_seed=ctx.equivalence_seed,
                 pin_plan_path=(
                     chimew_pipeline_root
                     / adapter_artifacts["adapter_pin_plan"]["path"]
@@ -2513,40 +1991,40 @@ def run_multi_fpga_flow(
                     chimew_pipeline_root
                     / adapter_artifacts["adapter_electrical_binding"]["path"]
                 ),
-                transport_cost_path=transport_cost_db,
-                clock_periods=clock_periods,
+                transport_cost_path=ctx.transport_cost_db,
+                clock_periods=ctx.clock_periods,
             )
-            chimew_pin_metrics = read_pin_plan(
+            ctx.chimew_pin_metrics = read_pin_plan(
                 chimew_pipeline_root
                 / adapter_artifacts["adapter_pin_plan"]["path"]
             )["metrics"]
         chimew_phase6_seconds = time.monotonic() - chimew_phase6_started
-        phase6_comparison = {
+        ctx.phase6_comparison = {
             "schema": PHASE6_AB_COMPARISON_SCHEMA,
             "status": "pending-physical-comparison",
             "selected_provider": "chimew",
-            "baseline_provider": "historical-default-static-phase6",
-            "qualification": "academic-virtual-physical-model",
+            "baseline_provider": "baseline",
+            "qualification": "xilinx-placed-lookahead+fixed-lvds-wiring",
             "frozen_upstream": {
-                "emuir_sha256": _sha256(ir_path),
-                "assignment_sha256": _sha256(assignment_path),
-                "routes_sha256": _sha256(routes_path),
-                "schedule_sha256": _sha256(schedule_path),
-                "platform_sha256": _sha256(platform_path),
+                "emuir_sha256": _sha256(ctx.ir_path),
+                "assignment_sha256": _sha256(ctx.assignment_path),
+                "routes_sha256": _sha256(ctx.routes_path),
+                "schedule_sha256": _sha256(ctx.schedule_path),
+                "platform_sha256": _sha256(ctx.platform_path),
             },
             "claim_boundary": {
                 "lookahead": (
-                    "normalized virtual regions from an open physical "
+                    "normalized virtual regions from the selected Xilinx physical "
                     "prepass, not final device SLR/SLL closure"
                 ),
                 "electrical": (
-                    "synthetic academic package-pin inventory, not a BSP"
+                    "fixed source-qualified LVDS P/N wiring; not board electrical signoff"
                 ),
             },
             "baseline": {
                 "phase6": baseline_phase6_report,
-                "physical": baseline_physical_report,
-                "runtime": baseline_runtime_report,
+                "physical": ctx.baseline_physical_report,
+                "runtime": ctx.baseline_runtime_report,
                 "phase6_runtime_seconds": baseline_phase6_seconds,
                 "physical_runtime_seconds": baseline_physical_seconds,
             },
@@ -2555,79 +2033,39 @@ def run_multi_fpga_flow(
             "chimew_phase6_runtime_seconds": chimew_phase6_seconds,
         }
     else:
-        phase6_report = measured("phase6", run_phase6,
-            ir_path,
-            assignment_path,
-            schedule_path,
-            platform_path,
-            phase6_root,
-            equivalence_cycles=equivalence_cycles,
-            equivalence_seed=equivalence_seed,
-            transport_cost_path=transport_cost_db,
-            clock_periods=clock_periods,
+        ctx.phase6_report = ctx.measured("phase6", run_phase6,
+            ctx.ir_path,
+            ctx.assignment_path,
+            ctx.schedule_path,
+            ctx.platform_path,
+            ctx.phase6_root,
+            equivalence_cycles=ctx.equivalence_cycles,
+            equivalence_seed=ctx.equivalence_seed,
+            transport_cost_path=ctx.transport_cost_db,
+            clock_periods=ctx.clock_periods,
         )
 
-    physical_report = None
-    physical_summary_path = None
-    if physical:
+def _compile_physical(ctx: _CompileContext):
+    ctx.physical_report = None
+    ctx.physical_summary_path = None
+    if ctx.physical:
         physical_started = time.monotonic()
-        physical_report = measured("phase7", run_multi_fpga_physical_flow,
-            phase6_root,
-            platform_path,
-            schedule_path,
-            output_dir / "physical",
-            backend=physical_backend,
-            architecture=effective_physical_architecture,
-            architecture_id=physical_architecture_id,
-            yosys=yosys,
-            vpr=physical_vpr,
-            architecture_importer=physical_architecture_importer,
-            packed_importer=physical_packed_importer,
-            route_checker=physical_route_checker,
-            openparf_install=physical_openparf_install,
-            openparf_python=physical_openparf_python,
-            seed=physical_seed,
-            route_channel_width=physical_route_channel_width,
-            vivado=physical_vivado,
-            vivado_max_timing_paths=physical_vivado_max_timing_paths,
-            vivado_place_directive=physical_vivado_place_directive,
-            vivado_route_directive=physical_vivado_route_directive,
-            rapidwright_jar=physical_rapidwright_jar,
-            rapidwright_java=physical_rapidwright_java,
-            rapidwright_classes=physical_rapidwright_classes,
-            rapidwright_java_source=physical_rapidwright_java_source,
-            rapidwright_device_data=physical_rapidwright_device_data,
-            rapidwright_timing_data=physical_rapidwright_timing_data,
-            rapidwright_opensta=physical_rapidwright_opensta,
-            rapidwright_placer=physical_rapidwright_placer,
-            rapidwright_native_constraints=(
-                physical_rapidwright_native_constraints
-            ),
-            rapidwright_provider_manifest=(
-                physical_rapidwright_provider_manifest
-            ),
-            original_ir_path=ir_path,
-            assignment_path=assignment_path,
-            routes_path=routes_path,
-            path_database_path=path_database_path,
-            logic_path_database_path=path_database_path,
-            workers=physical_workers,
-        )
+        ctx.physical_report = _run_selected_physical(ctx, ctx.phase6_root, ctx.schedule_path, ctx.output_dir / "physical")
         physical_seconds = time.monotonic() - physical_started
-        physical_summary_path = output_dir / "physical/physical-summary.json"
-        if phase6_comparison is not None and baseline_physical_report is not None:
+        ctx.physical_summary_path = ctx.output_dir / "physical/physical-summary.json"
+        if ctx.phase6_comparison is not None and ctx.baseline_physical_report is not None:
             baseline_metrics = _phase6_physical_metrics(
-                baseline_physical_report
+                ctx.baseline_physical_report
             )
-            chimew_metrics = _phase6_physical_metrics(physical_report)
-            pin_metrics = chimew_pin_metrics
-            phase6_comparison.update(
+            chimew_metrics = _phase6_physical_metrics(ctx.physical_report)
+            pin_metrics = ctx.chimew_pin_metrics
+            ctx.phase6_comparison.update(
                 {
                     "status": "pass",
                     "chimew": {
-                        "phase6": phase6_report,
-                        "physical": physical_report,
-                        "phase6_runtime_seconds": phase6_comparison[
+                        "phase6": ctx.phase6_report,
+                        "physical": ctx.physical_report,
+                        "phase6_runtime_seconds": ctx.phase6_comparison[
                             "chimew_phase6_runtime_seconds"
                         ],
                         "physical_runtime_seconds": physical_seconds,
@@ -2635,10 +2073,6 @@ def run_multi_fpga_flow(
                     "baseline_physical": baseline_metrics,
                     "chimew_physical": chimew_metrics,
                     "physical_delta": {
-                        "total_wirelength": (
-                            chimew_metrics["total_wirelength"]
-                            - baseline_metrics["total_wirelength"]
-                        ),
                         "worst_critical_path_ns": (
                             chimew_metrics["worst_critical_path_ns"]
                             - baseline_metrics["worst_critical_path_ns"]
@@ -2667,132 +2101,129 @@ def run_multi_fpga_flow(
                 }
             )
 
-    runtime_root = output_dir / "runtime"
-    runtime_report = measured("phase7c", run_phase7c,
-        schedule_path,
-        platform_path,
-        phase3_root / "phase3_report.json",
-        phase4_root / "phase4_report.json",
-        phase5_root / "phase5_report.json",
-        phase6_root / "phase6_report.json",
-        runtime_root,
-        assignment_path=assignment_path,
-        global_sta_executable=global_sta_executable,
-        global_timing_engine=global_timing_engine,
-        physical_summary_path=physical_summary_path,
-        routes_path=routes_path if physical_summary_path is not None else None,
+def _compile_signoff(ctx: _CompileContext):
+    ctx.runtime_root = ctx.output_dir / "runtime"
+    ctx.runtime_report = ctx.measured("phase7c", run_phase7c,
+        ctx.schedule_path,
+        ctx.platform_path,
+        ctx.phase3_root / "phase3_report.json",
+        ctx.phase4_root / "phase4_report.json",
+        ctx.phase5_root / "phase5_report.json",
+        ctx.phase6_root / "phase6_report.json",
+        ctx.runtime_root,
+        assignment_path=ctx.assignment_path,
+        global_sta_executable=ctx.global_sta_executable,
+        global_timing_engine=ctx.global_timing_engine,
+        physical_summary_path=ctx.physical_summary_path,
+        routes_path=ctx.routes_path if ctx.physical_summary_path is not None else None,
         board_link_timing_path=(
-            copied_link_timing_path
-            if physical_summary_path is not None
+            ctx.copied_link_timing_path
+            if ctx.physical_summary_path is not None
             else None
         ),
     )
-    if physical and runtime_report.get("status") != "pass":
+    if ctx.physical and ctx.runtime_report.get("status") != "pass":
         raise ValidationError(
             "full physical flow did not close unified Phase 7C system timing"
         )
-    if phase6_comparison is not None:
-        if baseline_runtime_report is None:
+    if ctx.phase6_comparison is not None:
+        if ctx.baseline_runtime_report is None:
             raise ValidationError("Phase 6 A/B baseline runtime is missing")
-        phase6_comparison["chimew"]["runtime"] = runtime_report
+        ctx.phase6_comparison["chimew"]["runtime"] = ctx.runtime_report
         baseline_system = _phase6_system_timing_metrics(
-            baseline_runtime_report
+            ctx.baseline_runtime_report
         )
-        chimew_system = _phase6_system_timing_metrics(runtime_report)
-        phase6_comparison["baseline_system_timing"] = baseline_system
-        phase6_comparison["chimew_system_timing"] = chimew_system
-        phase6_comparison["system_timing_delta"] = {
+        chimew_system = _phase6_system_timing_metrics(ctx.runtime_report)
+        ctx.phase6_comparison["baseline_system_timing"] = baseline_system
+        ctx.phase6_comparison["chimew_system_timing"] = chimew_system
+        ctx.phase6_comparison["system_timing_delta"] = {
             key: chimew_system[key] - baseline_system[key]
             for key in baseline_system
         }
-        phase6_comparison["validation"] = validate_phase6_ab_comparison(
-            phase6_comparison
+        ctx.phase6_comparison["validation"] = validate_phase6_ab_comparison(
+            ctx.phase6_comparison
         )
         write_json(
-            output_dir / "phase6-comparison/comparison-report.json",
-            phase6_comparison,
+            ctx.output_dir / "phase6-comparison/comparison-report.json",
+            ctx.phase6_comparison,
         )
 
-    resolved_schedule_store = tdm_schedule_store_path(schedule_path)
+def _compile_finalize(ctx: _CompileContext):
+    resolved_schedule_store = tdm_schedule_store_path(ctx.schedule_path)
     if resolved_schedule_store is None:
         raise ValidationError("Phase 5 schedule has no indexed store")
-    resolved_route_store = system_route_store_path(routes_path)
+    resolved_route_store = system_route_store_path(ctx.routes_path)
     if resolved_route_store is None:
         raise ValidationError("Phase 4 routes have no indexed store")
 
-    report = {
+    ctx.report = {
         "schema": MULTI_FPGA_FLOW_SCHEMA,
         "status": "pass",
         "provider": MULTI_FPGA_FLOW_PROVIDER,
         "architecture_policy": "provider-neutral",
         **(
-            {"timing": _timing_report_summary(timing_report)}
-            if timing_report is not None
+            {"timing": _timing_report_summary(ctx.timing_report)}
+            if ctx.timing_report is not None
             else {}
         ),
         **(
-            {"board_link_timing": link_timing_report}
-            if link_timing_report is not None
+            {"board_link_timing": ctx.link_timing_report}
+            if ctx.link_timing_report is not None
             else {}
         ),
         **(
-            {"frame_search": frame_search_report}
-            if frame_search_report is not None
+            {"frame_search": ctx.frame_search_report}
+            if ctx.frame_search_report is not None
+            else {}
+        ),
+        "runtime": ctx.runtime_report,
+        **(
+            {"physical": _physical_report_summary(ctx.physical_report)}
+            if ctx.physical_report is not None
             else {}
         ),
         **(
-            {"cross_stage": cross_stage_report}
-            if cross_stage_report is not None
-            else {}
-        ),
-        "runtime": runtime_report,
-        **(
-            {"physical": _physical_report_summary(physical_report)}
-            if physical_report is not None
-            else {}
-        ),
-        **(
-            {"phase6_comparison": phase6_comparison}
-            if phase6_comparison is not None
+            {"phase6_comparison": ctx.phase6_comparison}
+            if ctx.phase6_comparison is not None
             else {}
         ),
         "stages": {
-            "frontend": _stage_summary("frontend", frontend_report),
-            "partition": _stage_summary("partition", phase3_report),
-            "system_route": _stage_summary("system_route", phase4_report),
-            "tdm": _stage_summary("tdm", phase5_report),
-            "split": _stage_summary("split", phase6_report),
+            "frontend": _stage_summary("frontend", ctx.frontend_report),
+            "partition": _stage_summary("partition", ctx.phase3_report),
+            "system_route": _stage_summary("system_route", ctx.phase4_report),
+            "tdm": _stage_summary("tdm", ctx.phase5_report),
+            "split": _stage_summary("split", ctx.phase6_report),
         },
         "artifacts": {
             "platform": {
                 "path": "frontend/phase1/platform.normalized.json",
                 "sha256": _sha256(
-                    phase1_root / "platform.normalized.json"
+                    ctx.phase1_root / "platform.normalized.json"
                 ),
             },
             "emuir": {
                 "path": "frontend/phase1/design.emuir.sqlite",
-                "sha256": _sha256(ir_path),
+                "sha256": _sha256(ctx.ir_path),
             },
             "partition_constraints": {
                 "path": "partition/constraints.normalized.json",
                 "sha256": _sha256(
-                    phase3_root / "constraints.normalized.json"
+                    ctx.phase3_root / "constraints.normalized.json"
                 ),
             },
             "route_constraints": {
                 "path": "system-route/route_constraints.normalized.json",
                 "sha256": _sha256(
-                    phase4_root / "route_constraints.normalized.json"
+                    ctx.phase4_root / "route_constraints.normalized.json"
                 ),
             },
             "assignment": {
                 "path": "partition/assignment.json",
-                "sha256": _sha256(assignment_path),
+                "sha256": _sha256(ctx.assignment_path),
             },
             "routes": {
                 "path": "system-route/routes.json",
-                "sha256": _sha256(routes_path),
+                "sha256": _sha256(ctx.routes_path),
             },
             "route_store": {
                 "path": (
@@ -2802,7 +2233,7 @@ def run_multi_fpga_flow(
             },
             "schedule": {
                 "path": "tdm/schedule.json",
-                "sha256": _sha256(schedule_path),
+                "sha256": _sha256(ctx.schedule_path),
             },
             "schedule_store": {
                 "path": (
@@ -2812,59 +2243,46 @@ def run_multi_fpga_flow(
             },
             "split_manifest": {
                 "path": "split/manifest.json",
-                "sha256": _sha256(phase6_root / "manifest.json"),
+                "sha256": _sha256(ctx.phase6_root / "manifest.json"),
             },
             **(
                 {
                     "transport_cost": {
                         "path": "split/transport-cost.json",
                         "sha256": _sha256(
-                            phase6_root / "transport-cost.json"
+                            ctx.phase6_root / "transport-cost.json"
                         ),
                     }
                 }
-                if transport_cost_db is not None
+                if ctx.transport_cost_db is not None
                 else {}
             ),
             "runtime_contract": {
                 "path": "runtime/runtime_contract.json",
-                "sha256": _sha256(runtime_root / "runtime_contract.json"),
+                "sha256": _sha256(ctx.runtime_root / "runtime_contract.json"),
             },
             "qor_report": {
                 "path": "runtime/qor_report.json",
-                "sha256": _sha256(runtime_root / "qor_report.json"),
+                "sha256": _sha256(ctx.runtime_root / "qor_report.json"),
             },
-            **_runtime_timing_artifacts(runtime_root, output_dir, runtime_report),
-            **(
-                {
-                    "cross_stage_report": {
-                        "path": "cross-stage/cross_stage_report.json",
-                        "sha256": _sha256(
-                            output_dir
-                            / "cross-stage/cross_stage_report.json"
-                        ),
-                    }
-                }
-                if cross_stage_report is not None
-                else {}
-            ),
+            **_runtime_timing_artifacts(ctx.runtime_root, ctx.output_dir, ctx.runtime_report),
             **(
                 {
                     "physical_flow_report": {
                         "path": "physical/multi-fpga-physical-flow-report.json",
                         "sha256": _sha256(
-                            output_dir
+                            ctx.output_dir
                             / "physical/multi-fpga-physical-flow-report.json"
                         ),
                     },
                     "physical_summary": {
                         "path": "physical/physical-summary.json",
                         "sha256": _sha256(
-                            output_dir / "physical/physical-summary.json"
+                            ctx.output_dir / "physical/physical-summary.json"
                         ),
                     },
                 }
-                if physical_report is not None
+                if ctx.physical_report is not None
                 else {}
             ),
             **(
@@ -2872,29 +2290,29 @@ def run_multi_fpga_flow(
                     "phase6_comparison_report": {
                         "path": "phase6-comparison/comparison-report.json",
                         "sha256": _sha256(
-                            output_dir
+                            ctx.output_dir
                             / "phase6-comparison/comparison-report.json"
                         ),
                     }
                 }
-                if phase6_comparison is not None
+                if ctx.phase6_comparison is not None
                 else {}
             ),
             **(
                 {
                     "board_link_timing": {
                         "path": "timing/board-link-timing.json",
-                        "sha256": _sha256(copied_link_timing_path),
+                        "sha256": _sha256(ctx.copied_link_timing_path),
                     },
                     "board_link_route_constraints": {
                         "path": "timing/board-link-route-constraints.json",
                         "sha256": _sha256(
-                            effective_route_constraints_path
+                            ctx.effective_route_constraints_path
                         ),
                     },
                 }
-                if copied_link_timing_path is not None
-                and effective_route_constraints_path is not None
+                if ctx.copied_link_timing_path is not None
+                and ctx.effective_route_constraints_path is not None
                 else {}
             ),
             **(
@@ -2902,51 +2320,51 @@ def run_multi_fpga_flow(
                     "frame_search_report": {
                         "path": "frame-search/frame-search-report.json",
                         "sha256": _sha256(
-                            output_dir
+                            ctx.output_dir
                             / "frame-search/frame-search-report.json"
                         ),
                     }
                 }
-                if frame_search_report is not None
+                if ctx.frame_search_report is not None
                 else {}
             ),
             **(
                 {
                     "timing_path_database": {
                         "path": "timing/path-database.json",
-                        "sha256": _sha256(path_database_path),
+                        "sha256": _sha256(ctx.path_database_path),
                     },
                     **(
                         {
                             "timing_path_database_payload": {
                                 "path": str(
                                     Path("timing")
-                                    / path_database_payload.name
+                                    / ctx.path_database_payload.name
                                 ),
-                                "sha256": _sha256(path_database_payload),
+                                "sha256": _sha256(ctx.path_database_payload),
                             }
                         }
-                        if path_database_payload is not None
+                        if ctx.path_database_payload is not None
                         else {}
                     ),
                     **(
                         {
                             "cut_segment_qualification": {
                                 "path": "timing/cut-segment-qualification.json",
-                                "sha256": _sha256(cut_segment_qualification_path),
+                                "sha256": _sha256(ctx.cut_segment_qualification_path),
                             }
                         }
-                        if cut_segment_qualification_path is not None
+                        if ctx.cut_segment_qualification_path is not None
                         else {}
                     ),
                     **(
                         {
                             "partition_net_weights": {
                                 "path": "timing/partition-net-weights.json",
-                                "sha256": _sha256(net_weights_path),
+                                "sha256": _sha256(ctx.net_weights_path),
                             }
                         }
-                        if net_weights_path.is_file()
+                        if ctx.net_weights_path.is_file()
                         else {}
                     ),
                     **(
@@ -2954,59 +2372,196 @@ def run_multi_fpga_flow(
                             "partition_net_weights_payload": {
                                 "path": str(
                                     Path("timing")
-                                    / net_weights_payload.name
+                                    / ctx.net_weights_payload.name
                                 ),
-                                "sha256": _sha256(net_weights_payload),
+                                "sha256": _sha256(ctx.net_weights_payload),
                             }
                         }
-                        if net_weights_payload is not None
+                        if ctx.net_weights_payload is not None
                         else {}
                     ),
                     **(
                         {
                             "cut_timing_paths": {
                                 "path": "timing/cut-timing-paths.json",
-                                "sha256": _sha256(projected_timing_paths),
+                                "sha256": _sha256(ctx.projected_timing_paths),
                             }
                         }
-                        if projected_timing_paths is not None
+                        if ctx.projected_timing_paths is not None
                         else {}
                     ),
                 }
-                if internal_timing_database
+                if ctx.internal_timing_database
                 else {}
             ),
         },
     }
-    report["summary"] = validate_multi_fpga_flow_report(report)
-    if serial_bsp_requested:
-        write_json(output_dir / "board-independent-flow-report.json", report)
-        assert serial_bsp_phy_provider is not None
-        assert serial_bsp_runtime_sync_provider is not None
+    ctx.report["summary"] = validate_multi_fpga_flow_report(ctx.report)
+    if ctx.serial_bsp_requested:
+        write_json(ctx.output_dir / "board-independent-flow-report.json", ctx.report)
+        assert ctx.serial_bsp_phy_provider is not None
+        assert ctx.serial_bsp_runtime_sync_provider is not None
         bsp_report = run_multi_fpga_bsp_flow(
-            flow_root=output_dir,
-            platform_path=platform_path,
-            phy_provider_path=serial_bsp_phy_provider,
-            runtime_sync_provider_path=serial_bsp_runtime_sync_provider,
-            output_dir=output_dir / "hardware-bsp",
-            board_overlay_path=serial_bsp_board_overlay,
-            gt_site_map_path=serial_bsp_gt_site_map,
-            vivado_executable=serial_bsp_vivado,
-            yosys_executable=serial_bsp_yosys,
-            runtime_sync_root=serial_bsp_runtime_sync_root,
-            ready_stable_cycles=serial_bsp_ready_stable_cycles,
+            flow_root=ctx.output_dir,
+            platform_path=ctx.platform_path,
+            phy_provider_path=ctx.serial_bsp_phy_provider,
+            runtime_sync_provider_path=ctx.serial_bsp_runtime_sync_provider,
+            output_dir=ctx.output_dir / "hardware-bsp",
+            board_overlay_path=ctx.serial_bsp_board_overlay,
+            gt_site_map_path=ctx.serial_bsp_gt_site_map,
+            vivado_executable=ctx.serial_bsp_vivado,
+            yosys_executable=ctx.serial_bsp_yosys,
+            runtime_sync_root=ctx.serial_bsp_runtime_sync_root,
+            ready_stable_cycles=ctx.serial_bsp_ready_stable_cycles,
         )
-        report["hardware_bsp"] = bsp_report
-        report["artifacts"]["board_independent_flow_report"] = {
+        ctx.report["hardware_bsp"] = bsp_report
+        ctx.report["artifacts"]["board_independent_flow_report"] = {
             "path": "board-independent-flow-report.json",
-            "sha256": _sha256(output_dir / "board-independent-flow-report.json"),
+            "sha256": _sha256(ctx.output_dir / "board-independent-flow-report.json"),
         }
-        report["artifacts"]["hardware_bsp_flow_report"] = {
+        ctx.report["artifacts"]["hardware_bsp_flow_report"] = {
             "path": "hardware-bsp/multi-fpga-bsp-flow-report.json",
             "sha256": _sha256(
-                output_dir / "hardware-bsp/multi-fpga-bsp-flow-report.json"
+                ctx.output_dir / "hardware-bsp/multi-fpga-bsp-flow-report.json"
             ),
         }
-        report["summary"] = validate_multi_fpga_flow_report(report)
-    write_json(output_dir / "multi-fpga-flow-report.json", report)
-    return report
+        ctx.report["summary"] = validate_multi_fpga_flow_report(ctx.report)
+    write_json(ctx.output_dir / "multi-fpga-flow-report.json", ctx.report)
+    return ctx.report
+
+def _compile_route(ctx: _CompileContext):
+    ctx.phase4_report = ctx.measured("phase4", run_phase4,
+        ctx.assignment_path,
+        ctx.platform_path,
+        ctx.phase4_root,
+        constraints_path=ctx.effective_route_constraints,
+        frame_slots=ctx.frame_slots,
+        max_iterations=ctx.route_max_iterations,
+        timing_paths_path=ctx.projected_timing_paths,
+        router=ctx.router,
+        provider=ctx.effective_route_provider,
+        timing_driven=ctx.timing_driven,
+        candidate_workers=(
+            ctx.route_candidate_workers if ctx.has_inter_fpga_cuts else 1
+        ),
+    )
+
+def _compile_schedule(ctx: _CompileContext):
+    ctx.phase5_report = ctx.measured("phase5", run_phase5,
+        ctx.phase4_root / "routes.json",
+        ctx.platform_path,
+        ctx.phase5_root,
+        assignment_path=ctx.assignment_path,
+
+        provider=ctx.effective_tdm_provider,
+
+    )
+
+def run_multi_fpga_flow(
+    platform_path: Path = DEFAULT_PLATFORM_PATH,
+    output_dir: Optional[Path] = None,
+    *,
+    sources: Iterable[Path] = (),
+    include_dirs: Iterable[Path] = (),
+    defines: Iterable[str] = (),
+    top: Optional[str] = None,
+    clocks: Iterable[str] = (),
+    yosys_json: Optional[Path] = None,
+    prepared_frontend: Optional[Path] = None,
+    prepared_timing: Optional[Path] = None,
+    yosys: Optional[str] = None,
+    mapping_profile: str = XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
+    xilinx_mapping_strategy: Optional[str] = None,
+    partition_constraints: Optional[Path] = None,
+    partition_provider: str = "patron",
+    seed: int = 0,
+    min_used_fpgas: Optional[int] = None,
+    balance_tolerance: Optional[float] = None,
+    openroad: Optional[str] = None,
+    tritonpart_solution: Optional[Path] = None,
+    patron_refiner: Optional[str] = None,
+    patron_max_moves: Optional[int] = None,
+    patron_algorithm_version: int = DEFAULT_PATRON_ALGORITHM_VERSION,
+    partition_timeout_seconds: int = 3600,
+    partition_seed_attempts: int = 1,
+    partition_num_initial_solutions: int = 50,
+    partition_num_best_initial_solutions: int = 10,
+    partition_repair_min_used_fpgas: bool = True,
+    cut_mode: str = DEFAULT_PARTITION_CUT_MODE,
+    max_cross_fpga_dependency_depth: int = (
+        STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
+    ),
+    static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
+    timing_driven: bool = True,
+    clock_periods: Optional[Dict[str, float]] = None,
+    timing_io: Optional[Mapping[str, Any]] = None,
+    timing_model: Path = DEFAULT_TIMING_MODEL,
+    architecture_timing_db: Optional[Path] = None,
+    opensta: Optional[str] = None,
+    sta_max_paths: int = 200000,
+    timing_criticality_scale: float = 9.0,
+    timing_criticality_exponent: float = 2.0,
+    route_constraints: Optional[Path] = None,
+    board_link_timing_db: Optional[Path] = None,
+    transport_cost_db: Optional[Path] = None,
+    timing_paths: Optional[Path] = None,
+    router: Optional[str] = None,
+    route_provider: Optional[str] = None,
+    route_candidate_workers: int = 1,
+    frame_slots: Optional[int] = None,
+    optimize_frame_slots: bool = False,
+    route_max_iterations: Optional[int] = None,
+    tdm_provider: Optional[str] = None,
+
+    simulation_frames: int = 16,
+    equivalence_cycles: int = 1,
+    equivalence_seed: int = 20260727,
+    phase6_provider: str = "baseline",
+    phase6_chimew_region_count: int = 4,
+    phase6_chimew_grouper: Optional[str] = None,
+    phase6_chimew_refiner: Optional[str] = None,
+    phase6_chimew_rudy: Optional[str] = None,
+    phase6_chimew_assigner: Optional[str] = None,
+    physical: bool = False,
+    physical_backend: str = "rapidwright",
+    physical_architecture: Optional[Path] = None,
+    physical_openparf_install: Optional[Path] = None,
+    physical_openparf_python: Optional[Path] = None,
+    physical_seed: int = 1,
+    physical_vivado: Optional[str] = None,
+    physical_vivado_place_directive: str = "Default",
+    physical_vivado_route_directive: str = "Default",
+    physical_rapidwright_jar: Optional[Path] = None,
+    physical_rapidwright_java: Optional[Path] = None,
+    physical_rapidwright_classes: Optional[Path] = None,
+    physical_rapidwright_java_source: Optional[Path] = None,
+    physical_rapidwright_device_data: Optional[Path] = None,
+    physical_rapidwright_timing_data: Optional[Path] = None,
+    physical_rapidwright_opensta: Optional[str] = None,
+    physical_rapidwright_native_constraints: Optional[Path] = None,
+    physical_rapidwright_provider_manifest: Optional[Path] = None,
+    physical_workers: int = 1,
+    global_sta_executable: Optional[str] = None,
+    global_timing_engine: str = "opensta",
+    serial_bsp_phy_provider: Optional[Path] = None,
+    serial_bsp_runtime_sync_provider: Optional[Path] = None,
+    serial_bsp_board_overlay: Optional[Path] = None,
+    serial_bsp_gt_site_map: Optional[Path] = None,
+    serial_bsp_vivado: Optional[Path] = None,
+    serial_bsp_yosys: Optional[Path] = None,
+    serial_bsp_runtime_sync_root: Optional[str] = None,
+    serial_bsp_ready_stable_cycles: int = 4,
+) -> Dict[str, Any]:
+    """Compile RTL/EmuIR using the shared phase adapters and current defaults."""
+    ctx = _CompileContext(locals())
+    _compile_preflight(ctx)
+    _compile_frontend(ctx)
+    _compile_timing(ctx)
+    _compile_partition(ctx)
+    _compile_route_policy(ctx)
+    _compile_routing_schedule(ctx)
+    _compile_split(ctx)
+    _compile_physical(ctx)
+    _compile_signoff(ctx)
+    _compile_finalize(ctx)
+    return ctx.report

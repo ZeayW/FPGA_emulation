@@ -1,3 +1,4 @@
+from contextlib import closing
 import copy
 import hashlib
 import io
@@ -69,25 +70,8 @@ class ChimewBankChannelTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.temporary_directory = tempfile.TemporaryDirectory()
-        compiler = shutil.which("c++") or shutil.which("clang++")
-        if compiler is None:
-            raise RuntimeError("a C++17 compiler is required")
-        cls.executable = Path(cls.temporary_directory.name) / "chimew-assignment"
-        subprocess.run(
-            [
-                compiler,
-                "-std=c++17",
-                "-O2",
-                "-Wall",
-                "-Wextra",
-                "-Werror",
-                "-pthread",
-                str(ROOT / "src/native/chimew_bank_channel_assigner.cpp"),
-                "-o",
-                str(cls.executable),
-            ],
-            check=True,
-        )
+        cls.executable = emuflow_native()
+        cls.command = [str(cls.executable), "phase6", "assign-banks"]
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -564,9 +548,9 @@ class ChimewBankChannelTest(unittest.TestCase):
             failures = []
             real_writer = storage_module._write_chimew_bank_channel_storage_locked
 
-            def instrumented_writer(path, document):
+            def instrumented_writer(path, document, **kwargs):
                 entered_writer.set()
-                return real_writer(path, document)
+                return real_writer(path, document, **kwargs)
 
             def replace() -> None:
                 try:
@@ -984,18 +968,19 @@ class ChimewBankChannelTest(unittest.TestCase):
             root = Path(temporary)
             input_path = root / "input.txt"
             output_path = root / "output.txt"
-            bank_channel_module._serialize(problem, input_path)
+            with input_path.open("wb") as stream:
+                bank_channel_module._serialize_typed(problem, stream, canonical_bank_channel_input_sha256(self.document))
             subprocess.run(
                 [
-                    str(self.executable),
-                    "--legacy-text",
+                    *self.command,
+                    "--typed-input",
                     str(input_path),
                     str(output_path),
                 ],
                 check=True,
             )
             streamed = subprocess.run(
-                [str(self.executable), "--legacy-text", str(input_path), "-"],
+                [*self.command, "--typed-input", str(input_path), "-"],
                 check=True,
                 text=True,
                 capture_output=True,
@@ -1003,102 +988,19 @@ class ChimewBankChannelTest(unittest.TestCase):
             self.assertEqual(streamed.stderr, "")
             self.assertEqual(streamed.stdout, output_path.read_text())
 
-    def test_typed_native_stream_matches_explicit_legacy_protocol(self) -> None:
-        problem = validate_chimew_bank_channel_input(self.document)
-        logical_sha256 = canonical_bank_channel_input_sha256(self.document)
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            legacy_input = root / "legacy.txt"
-            typed_input = root / "typed.bin"
-            legacy_output = root / "legacy.out"
-            typed_output = root / "typed.out"
-            bank_channel_module._serialize(problem, legacy_input)
-            with typed_input.open("wb") as stream:
-                bank_channel_module._serialize_typed(
-                    problem, stream, logical_sha256
-                )
-            subprocess.run(
-                [
-                    str(self.executable),
-                    "--legacy-text",
-                    str(legacy_input),
-                    str(legacy_output),
-                ],
-                check=True,
-            )
-            subprocess.run(
-                [
-                    str(self.executable),
-                    "--typed-input",
-                    str(typed_input),
-                    str(typed_output),
-                ],
-                check=True,
-            )
-            self.assertEqual(typed_output.read_bytes(), legacy_output.read_bytes())
-            self.assertGreater(typed_input.stat().st_size, 0)
-
-    def test_unified_native_entry_matches_phase6_assigner(self) -> None:
-        problem = validate_chimew_bank_channel_input(self.document)
-        logical_sha256 = canonical_bank_channel_input_sha256(self.document)
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            typed_input = root / "typed.bin"
-            legacy_output = root / "legacy.out"
-            unified_output = root / "unified.out"
-            with typed_input.open("wb") as stream:
-                bank_channel_module._serialize_typed(
-                    problem, stream, logical_sha256
-                )
-            subprocess.run(
-                [
-                    str(self.executable),
-                    "--typed-input",
-                    str(typed_input),
-                    str(legacy_output),
-                ],
-                check=True,
-            )
-            subprocess.run(
-                [
-                    str(emuflow_native()),
-                    "phase6",
-                    "assign-banks",
-                    "--typed-input",
-                    str(typed_input),
-                    str(unified_output),
-                ],
-                check=True,
-            )
-            self.assertEqual(
-                unified_output.read_bytes(), legacy_output.read_bytes()
-            )
-
-    def test_production_native_invocation_does_not_write_legacy_input(self) -> None:
-        with mock.patch.object(
-            bank_channel_module,
-            "_serialize",
-            side_effect=AssertionError("legacy text producer was called"),
-        ):
-            result = evaluate_chimew_bank_channel_assignment(
-                self.document, executable=str(self.executable)
-            )
-        self.assertEqual(result["metrics"]["certificate_disagreements"], 0)
-
     def test_production_prefers_unified_phase6_entry(self) -> None:
         problem = validate_chimew_bank_channel_input(self.document)
         digest = canonical_bank_channel_input_sha256(self.document)
         with mock.patch.object(
             bank_channel_module,
             "resolve_native_stage_command",
-            return_value=[str(self.executable)],
+            return_value=[*self.command],
         ) as dispatch:
             with bank_channel_module._run_native(
                 problem, None, logical_sha256=digest
             ):
                 pass
         dispatch.assert_called_once_with(
-            "emuflow_chimew_bank_channel_assigner",
             "phase6",
             "assign-banks",
             explicit=None,
@@ -1133,7 +1035,7 @@ class ChimewBankChannelTest(unittest.TestCase):
                     input_path.write_bytes(payload)
                     completed = subprocess.run(
                         [
-                            str(self.executable),
+                            *self.command,
                             "--typed-input",
                             str(input_path),
                             "-",
@@ -1159,7 +1061,7 @@ class ChimewBankChannelTest(unittest.TestCase):
             input_path = Path(temporary) / "oversize.bin"
             input_path.write_bytes(oversized)
             completed = subprocess.run(
-                [str(self.executable), "--typed-input", str(input_path), "-"],
+                [*self.command, "--typed-input", str(input_path), "-"],
                 capture_output=True,
                 text=True,
             )
@@ -1199,13 +1101,13 @@ class ChimewBankChannelTest(unittest.TestCase):
             root = Path(temporary)
             legacy = root / "legacy.txt"
             typed = root / "typed.bin"
-            bank_channel_module._serialize(problem, legacy)
+            legacy.write_text("EMUFLOW_CHIMEW_BANK_CHANNEL_INPUT_V2\n")
             with typed.open("wb") as stream:
                 bank_channel_module._serialize_typed(problem, stream, digest)
             for command in (
-                [str(self.executable), "--typed-input", str(legacy), "-"],
-                [str(self.executable), "--legacy-text", str(typed), "-"],
-                [str(self.executable), str(legacy), "-"],
+                [*self.command, "--typed-input", str(legacy), "-"],
+                [*self.command, "--legacy-text", str(typed), "-"],
+                [*self.command, str(legacy), "-"],
             ):
                 completed = subprocess.run(
                     command, capture_output=True, text=True
@@ -1218,11 +1120,12 @@ class ChimewBankChannelTest(unittest.TestCase):
             root = Path(temporary)
             input_path = root / "input.txt"
             output_path = root / "output.txt"
-            bank_channel_module._serialize(problem, input_path)
+            with input_path.open("wb") as stream:
+                bank_channel_module._serialize_typed(problem, stream, canonical_bank_channel_input_sha256(self.document))
             subprocess.run(
                 [
-                    str(self.executable),
-                    "--legacy-text",
+                    *self.command,
+                    "--typed-input",
                     str(input_path),
                     str(output_path),
                 ],
@@ -1265,11 +1168,12 @@ class ChimewBankChannelTest(unittest.TestCase):
             root = Path(temporary)
             input_path = root / "input.txt"
             output_path = root / "output.txt"
-            bank_channel_module._serialize(problem, input_path)
+            with input_path.open("wb") as stream:
+                bank_channel_module._serialize_typed(problem, stream, canonical_bank_channel_input_sha256(self.document))
             subprocess.run(
                 [
-                    str(self.executable),
-                    "--legacy-text",
+                    *self.command,
+                    "--typed-input",
                     str(input_path),
                     str(output_path),
                 ],
@@ -1378,7 +1282,7 @@ class ChimewBankChannelTest(unittest.TestCase):
             view = write_chimew_bank_channel_report_storage(path, report)
             store = view.store_path
             view.close()
-            with sqlite3.connect(store) as connection:
+            with closing(sqlite3.connect(store)) as connection, connection:
                 connection.execute("PRAGMA application_id=1")
             digest = hashlib.sha256(store.read_bytes()).hexdigest()
             replacement = root / f"report.{digest}.sqlite"
@@ -1416,7 +1320,7 @@ class ChimewBankChannelTest(unittest.TestCase):
                 view = write_chimew_bank_channel_report_storage(path, report)
                 store = view.store_path
                 view.close()
-                with sqlite3.connect(store) as connection:
+                with closing(sqlite3.connect(store)) as connection, connection:
                     connection.execute(
                         f"UPDATE assignments SET {column}=? WHERE seq=0", (value,)
                     )

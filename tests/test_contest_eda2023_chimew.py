@@ -9,13 +9,12 @@ from pathlib import Path
 from emuflow.chimew_bank_channel_storage import read_chimew_bank_channel_input
 from emuflow.chimew_pipeline import CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER
 from emuflow.contest_eda2023_chimew import (
-    EDA2023_CONTEST_CHIMEW_AB_SCHEMA,
     EDA2023_CONTEST_CHIMEW_QUALIFICATION,
     materialize_eda2023_contest_chimew_inputs,
-    run_eda2023_contest_chimew_ab,
 )
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
+from tests.native_build import emuflow_native
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,32 +23,11 @@ ROOT = Path(__file__).resolve().parents[1]
 class Eda2023ContestChimewTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        compiler = shutil.which("c++") or shutil.which("clang++")
-        if compiler is None:
-            raise RuntimeError("a C++17 compiler is required")
         cls.native_root = tempfile.TemporaryDirectory()
-        cls.executables = {}
-        for source, label in (
-            ("chimew_signal_grouper.cpp", "grouper"),
-            ("chimew_position_refiner.cpp", "refiner"),
-            ("chimew_rudy.cpp", "rudy"),
-            ("chimew_bank_channel_assigner.cpp", "assigner"),
-            ("placement_aware_pin_planner.cpp", "pin_planner"),
-        ):
-            executable = Path(cls.native_root.name) / label
-            subprocess.run(
-                [
-                    compiler,
-                    "-std=c++17",
-                    "-O2",
-                    "-pthread",
-                    str(ROOT / "src/native" / source),
-                    "-o",
-                    str(executable),
-                ],
-                check=True,
-            )
-            cls.executables[label] = str(executable)
+        cls.executables = {
+            label: str(emuflow_native())
+            for label in ("grouper", "refiner", "rudy", "assigner")
+        }
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -244,28 +222,24 @@ class Eda2023ContestChimewTest(unittest.TestCase):
         )
         return imported, routes, tdm
 
-    def test_source_bound_contest_ab_pipeline(self) -> None:
+    def test_source_bound_contest_materialization(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             imported, routes, tdm = self._fixture(root)
-            report = run_eda2023_contest_chimew_ab(
+            report = materialize_eda2023_contest_chimew_inputs(
                 import_dir=imported,
                 routes_path=routes,
                 tdm_plan_path=tdm,
                 output_dir=root / "ab",
-                **self.executables,
+                grouper=self.executables["grouper"],
+                refiner=self.executables["refiner"],
             )
-            self.assertEqual(report["schema"], EDA2023_CONTEST_CHIMEW_AB_SCHEMA)
             self.assertEqual(
                 report["qualification"], EDA2023_CONTEST_CHIMEW_QUALIFICATION
             )
             self.assertEqual(report["metrics"]["signals"], 8)
             self.assertEqual(report["metrics"]["routed_sll_hops"], 9)
-            self.assertLessEqual(
-                report["metrics"]["chimew"]["routed_sll_crossing_bits"],
-                report["metrics"]["baseline"]["routed_sll_crossing_bits"],
-            )
-            crossings = read_json(root / "ab/materialized/inputs/crossings.json")
+            crossings = read_json(root / "ab/inputs/crossings.json")
             actual = [
                 (entry["source_slls"], entry["sink_slls"], entry["encoding"])
                 for entry in crossings["entries"]
@@ -284,21 +258,16 @@ class Eda2023ContestChimewTest(unittest.TestCase):
                 ],
             )
             bank_input = read_chimew_bank_channel_input(
-                root / "ab/materialized/inputs/bank_channel_input.json"
+                root / "ab/inputs/bank_channel_input.json"
             )
             self.assertEqual(bank_input["metrics"]["fanins"], 9)
             self.assertEqual(
-                read_json(root / "ab/chimew/pipeline_report.json")["provider"],
-                CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER,
-            )
-            self.assertEqual(
-                read_json(root / "ab/materialized/schedule.json")[
+                read_json(root / "ab/schedule.json")[
                     "transport_semantics"
                 ],
                 "registered-boundary",
             )
             self.assertIn("synthetic package pins", report["claim_boundary"])
-            self.assertTrue((root / "ab/baseline_pin_plan.json").is_file())
 
     def test_invalid_tdm_link_is_rejected_before_native_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

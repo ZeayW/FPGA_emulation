@@ -17,7 +17,15 @@ import tempfile
 from typing import Any, Dict, Iterable, Optional
 
 from .errors import ValidationError
+from .store_publication import (
+    StoreSource,
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+)
 from .io import file_sha256
+from .native_tools import native_file_generation
+from .sqlite_artifacts import immutable_sqlite_uri
 from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
 from .xilinx_placement import XILINX_PLACEMENT_SCHEMA
 
@@ -96,7 +104,7 @@ def _decode(value: Optional[str]) -> Any:
 
 def _connect(path: Path) -> sqlite3.Connection:
     try:
-        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        connection = sqlite3.connect(immutable_sqlite_uri(path), uri=True)
     except sqlite3.Error as error:
         raise ValidationError("Xilinx physical handoff cannot be opened") from error
     connection.row_factory = sqlite3.Row
@@ -279,8 +287,11 @@ class XilinxPhysicalHandoffBuilder:
     :meth:`publish`.  ``close`` removes every unpublished temporary artifact.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, sources: Iterable[Path] = ()) -> None:
         self.path = path
+        self._bound_sources: Dict[Path, tuple[int, ...]] = {}
+        self._typed_sources = ()
+        self.bind_sources(sources)
         path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
@@ -311,6 +322,59 @@ class XilinxPhysicalHandoffBuilder:
             raise ValidationError(
                 "failed to initialize Xilinx physical handoff"
             ) from error
+
+    def bind_sources(self, paths: Iterable[Path]) -> None:
+        """Bind source generations before reading or deriving their records."""
+
+        self._require_sources_unchanged()
+        for value in paths:
+            path = Path(value).absolute()
+            try:
+                if self.path.resolve() == path.resolve() or (
+                    self.path.exists() and os.path.samefile(self.path, path)
+                ):
+                    raise ValidationError("Xilinx physical handoff output aliases an input")
+                generation = native_file_generation(path)
+            except OSError as error:
+                raise ValidationError("Xilinx physical handoff source cannot be bound") from error
+            if path in self._bound_sources and self._bound_sources[path] != generation:
+                raise ValidationError("Xilinx physical handoff source generation changed")
+            self._bound_sources[path] = generation
+
+    def bind_store_sources(self, sources):
+        sources = validate_store_destination(self.path, sources)
+        self._require_sources_unchanged()
+        for source in sources:
+            old = self._bound_sources.get(source.path)
+            if old is not None and old != source.generation:
+                raise ValidationError(
+                    "Xilinx physical handoff source generation changed"
+                )
+            self._bound_sources[source.path] = source.generation
+        existing = {
+            (source.path, source.schema): source for source in self._typed_sources
+        }
+        for source in sources:
+            old = existing.get((source.path, source.schema))
+            if old is not None and old.generation != source.generation:
+                raise ValidationError(
+                    "Xilinx physical handoff source generation changed"
+                )
+            existing[(source.path, source.schema)] = source
+        self._typed_sources = tuple(existing.values())
+
+    def _require_sources_unchanged(self) -> None:
+        require_store_sources_unchanged(self._typed_sources)
+        for path, expected in self._bound_sources.items():
+            try:
+                if native_file_generation(path) != expected:
+                    raise ValidationError("Xilinx physical handoff source generation changed")
+                if self.path.resolve() == path.resolve() or (
+                    self.path.exists() and os.path.samefile(self.path, path)
+                ):
+                    raise ValidationError("Xilinx physical handoff output aliases an input")
+            except OSError as error:
+                raise ValidationError("Xilinx physical handoff source generation changed") from error
 
     def append_bridge_cluster(self, cluster: Mapping[str, Any]) -> None:
         """Append one normalized bridge-owned cluster without retaining it."""
@@ -549,8 +613,23 @@ class XilinxPhysicalHandoffBuilder:
 
         if not self._sealed or self._published:
             raise ValidationError("Xilinx physical handoff is not ready to publish")
+        self._require_sources_unchanged()
         try:
-            os.replace(self.temporary_path, self.path)
+            sources = (
+                tuple(
+                    StoreSource(
+                        path.resolve(), "physical-input-document-v1", generation
+                    )
+                    for path, generation in self._bound_sources.items()
+                )
+                + self._typed_sources
+            )
+            publish_sqlite_store(
+                self.temporary_path,
+                self.path,
+                "xilinx-physical-handoff-v1",
+                sources=sources,
+            )
         except OSError as error:
             raise ValidationError("failed to publish Xilinx physical handoff") from error
         self._published = True
@@ -734,7 +813,7 @@ def write_xilinx_physical_handoff(
         connection.commit()
         connection.close()
         connection = None
-        os.replace(temporary, path)
+        publish_sqlite_store(temporary, path, "xilinx-physical-handoff-v1")
     except (sqlite3.Error, OSError, TypeError, ValueError) as error:
         raise ValidationError("failed to publish Xilinx physical handoff") from error
     finally:

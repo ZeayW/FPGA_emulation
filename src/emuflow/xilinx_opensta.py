@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import math
 import re
-import sqlite3
 import tempfile
 from collections import defaultdict
 from copy import deepcopy
@@ -13,6 +12,11 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
 from .errors import ValidationError
+from .store_publication import (
+    StoreSource,
+    bind_store_source,
+    require_store_sources_unchanged,
+)
 from .io import file_sha256, read_json, write_json
 from .ir import EmuIR
 from .opensta import (
@@ -384,6 +388,26 @@ def build_xilinx_routed_opensta_inputs(
     return routed_ir, model, metadata
 
 
+def _bind_routed_opensta_inputs(mapped_path, timing_path, timing_value=None):
+    mapped_source = bind_store_source(mapped_path, "yosys-source-document-v1")
+    timing_source = bind_store_source(timing_path, "sta-source-document-v1")
+    if is_xilinx_mapped_index(mapped_path):
+        mapped_source = StoreSource(
+            mapped_source.path, "xilinx-mapped-index-v2", mapped_source.generation
+        )
+    timing_value = read_json(timing_path) if timing_value is None else timing_value
+    sources = (mapped_source, timing_source)
+    if timing_value.get("schema") == XILINX_ROUTED_TIMING_STREAM_SCHEMA:
+        from .xilinx_timing import _timing_payload_path
+
+        payload_path, _digest, _records = _timing_payload_path(
+            timing_path, timing_value
+        )
+        sources += (bind_store_source(payload_path, "sta-source-document-v1"),)
+    require_store_sources_unchanged(sources)
+    return sources, timing_value
+
+
 def build_xilinx_routed_opensta_indexed_inputs(
     mapped_path: Path,
     timing_path: Path,
@@ -394,10 +418,18 @@ def build_xilinx_routed_opensta_indexed_inputs(
     timing_value: Optional[Mapping[str, Any]] = None,
     mapped_sha256: Optional[str] = None,
     timing_sha256: Optional[str] = None,
+    _source_bindings=None,
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
     """Build routed OpenSTA input without a graph-sized Python EmuIR copy."""
 
-    timing_value = read_json(timing_path) if timing_value is None else timing_value
+    if _source_bindings is None:
+        source_bindings, timing_value = _bind_routed_opensta_inputs(
+            mapped_path, timing_path, timing_value
+        )
+    else:
+        source_bindings = tuple(_source_bindings)
+        require_store_sources_unchanged(source_bindings)
+        timing_value = read_json(timing_path) if timing_value is None else timing_value
     timing_sha256 = timing_sha256 or _sha256(timing_path)
     mapped_sha256 = mapped_sha256 or _sha256(mapped_path)
     pending: Dict[tuple[str, str, int], tuple[float, int, str]] = {}
@@ -588,26 +620,8 @@ def build_xilinx_routed_opensta_indexed_inputs(
         transform_state.update(result)
         return result
 
-    transform_report = import_yosys_json_indexed(
-        mapped_path,
-        output_path,
-        top=str(timing["top"]),
-        clocks=tuple(clocks),
-        _source_index_path=(
-            mapped_path if is_xilinx_mapped_index(mapped_path) else None
-        ),
-        staging_transform=stage_route_delays,
-    )
-    if transform_report is None or transform_report != transform_state:
-        raise ValidationError("indexed RapidWright route-delay staging failed")
-    # Preserve the historical timing-only cell accounting and qualification
-    # warning without materializing the logical EmuIR graph.  ``cut_class``
-    # may be recomputed around the inserted delay cell; OpenSTA consumes the
-    # connectivity and timing model, not this partitioning-only annotation.
-    connection = sqlite3.connect(output_path)
-    try:
-        connection.execute("PRAGMA journal_mode=OFF")
-        connection.execute("PRAGMA synchronous=OFF")
+    def finalize_routed_emuir(connection):
+        # Preserve timing-only accounting in the private compact generation.
         zero_resources = json.dumps(
             ResourceVector().to_dict(),
             ensure_ascii=False,
@@ -628,24 +642,14 @@ def build_xilinx_routed_opensta_indexed_inputs(
             "WHERE type LIKE 'EMUFLOW_RW_ROUTE_DELAY_%'",
             (zero_seq,),
         )
-        delay_nets = [
-            int(row[0])
-            for row in connection.execute(
-                "SELECT seq FROM net_records "
-                "WHERE id LIKE '__emuflow_rw_delay_net__%'"
-            )
-        ]
-        if delay_nets:
-            placeholders = ",".join("?" for _ in delay_nets)
-            connection.execute(
-                f"DELETE FROM alias_records WHERE net_seq IN ({placeholders})",
-                delay_nets,
-            )
-            connection.execute(
-                f"UPDATE net_records SET yosys_bit=NULL "
-                f"WHERE seq IN ({placeholders})",
-                delay_nets,
-            )
+        connection.execute(
+            "DELETE FROM alias_records WHERE net_seq IN "
+            "(SELECT seq FROM net_records WHERE id LIKE '__emuflow_rw_delay_net__%')"
+        )
+        connection.execute(
+            "UPDATE net_records SET yosys_bit=NULL "
+            "WHERE id LIKE '__emuflow_rw_delay_net__%'"
+        )
         warning_row = connection.execute(
             "SELECT value FROM metadata WHERE key='warnings_json'"
         ).fetchone()
@@ -656,9 +660,21 @@ def build_xilinx_routed_opensta_indexed_inputs(
             "UPDATE metadata SET value=? WHERE key='warnings_json'",
             (json.dumps(warnings, separators=(",", ":"), sort_keys=True),),
         )
-        connection.commit()
-    finally:
-        connection.close()
+
+    transform_report = import_yosys_json_indexed(
+        mapped_path,
+        output_path,
+        top=str(timing["top"]),
+        clocks=tuple(clocks),
+        _source_index_path=(
+            mapped_path if is_xilinx_mapped_index(mapped_path) else None
+        ),
+        staging_transform=stage_route_delays,
+        source_bindings=source_bindings,
+        _finalize_emuir=finalize_routed_emuir,
+    )
+    if transform_report is None or transform_report != transform_state:
+        raise ValidationError("indexed RapidWright route-delay staging failed")
 
     model = deepcopy(load_timing_model(DEFAULT_TIMING_MODEL))
     coefficients = timing["qualification"]["logic_coefficients_ps"]
@@ -823,8 +839,8 @@ def run_xilinx_routed_opensta(
     # than after minutes of staging work.
     opensta = resolve_native_executable("sta", executable)
     require_opensta_engine(opensta)
-    timing_value = (
-        read_json(timing_path) if timing_value is None else timing_value
+    source_bindings, timing_value = _bind_routed_opensta_inputs(
+        mapped_path, timing_path, timing_value
     )
     input_sha256 = (
         {
@@ -846,6 +862,7 @@ def run_xilinx_routed_opensta(
             timing_value=timing_value,
             mapped_sha256=input_sha256.get("mapped_sha256"),
             timing_sha256=input_sha256.get("routed_timing_sha256"),
+            _source_bindings=source_bindings,
         )
         write_json(model_path, model, compact=True)
         report = run_opensta_path_database(

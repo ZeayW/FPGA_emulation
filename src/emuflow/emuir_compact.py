@@ -6,7 +6,6 @@ The explicit v1 reader remains available for historical immutable artifacts.
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import sys
 import uuid
@@ -17,6 +16,11 @@ from typing import Any, Iterable, Iterator, Mapping
 from .emuir_storage import (
     EMUIR_SQLITE_APPLICATION_ID, EMUIR_COMPACT_STORAGE_SCHEMA,
     _json, _extras, _decode, _RowsForOwner, open_emuir_sqlite_read_only,
+)
+
+from .store_publication import (
+    publish_sqlite_store,
+    validate_store_destination,
 )
 
 
@@ -89,7 +93,10 @@ class _Intern:
         return row_id
 
 
-def write_compact_emuir(path: Path, value: Mapping[str, Any]) -> None:
+def write_compact_emuir(
+    path: Path, value: Mapping[str, Any], *, source_bindings=(), _finalize=None
+) -> None:
+    source_bindings = validate_store_destination(path, source_bindings)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     c = sqlite3.connect(temporary)
@@ -164,14 +171,18 @@ def write_compact_emuir(path: Path, value: Mapping[str, Any]) -> None:
             (seq, _json(record)) for seq, record in enumerate(value.get("clocks", []))
         ))
         c.execute("INSERT INTO metadata VALUES (?,?)", ("record_counts_json", _json(counts)))
+        # Normalization and transport buffering belong to the private generation.
+        # The shared writer owns commit, connection lifetime and publication.
+        if _finalize is not None:
+            _finalize(c)
         # Build the required reverse adjacency once from compact integer rows,
         # rather than randomly updating its B-tree on every pin insertion.
         c.execute("CREATE INDEX endpoint_owner ON endpoint_records(instance_seq,port_seq,bit)")
         c.commit()
         c.close()
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        publish_sqlite_store(
+            temporary, path, "emuir-compact-v2", sources=source_bindings
+        )
     except BaseException:
         c.close()
         temporary.unlink(missing_ok=True)

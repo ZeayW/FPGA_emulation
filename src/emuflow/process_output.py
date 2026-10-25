@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 from typing import Iterable, Mapping, Optional
 
+from .tool_runtime import NativeToolProcess, native_tool_runner
+
 
 DEFAULT_OUTPUT_TAIL_BYTES = 2 * 1024 * 1024
 _READ_CHUNK_BYTES = 64 * 1024
@@ -24,7 +26,8 @@ def run_with_bounded_output(
     memory.  Synthesis logs for large RTL can be hundreds of MiB or more, even
     though callers only need a bounded diagnostic tail on failure.  Drain the
     pipe continuously so the child cannot block, and discard old bytes as the
-    fixed-size tail advances.
+    fixed-size tail advances. Installed tools use the shared native lifecycle;
+    explicit comparison tools without that runtime use the reference launcher.
     """
 
     argv = list(command)
@@ -32,6 +35,13 @@ def run_with_bounded_output(
         raise ValueError("bounded subprocess command must not be empty")
     if maximum_bytes <= 0:
         raise ValueError("bounded subprocess maximum_bytes must be positive")
+    runner = native_tool_runner(argv[0])
+    if runner is not None:
+        with NativeToolProcess(
+            runner, argv, cwd=cwd, environment=environment,
+            maximum_bytes=maximum_bytes,
+        ) as process:
+            return process.finish()
     process = subprocess.Popen(
         argv,
         cwd=cwd,

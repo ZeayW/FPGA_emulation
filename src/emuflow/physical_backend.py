@@ -1,7 +1,7 @@
 """Provider-neutral physical implementation contract.
 
 The contract deliberately describes observable implementation results rather
-than provider-native files.  OpenPARF/VPR and Vivado may expose different
+than provider-native files.  OpenPARF/RWRoute and Vivado may expose different
 internal stages, but both must account for the same partition cells, clocks,
 routing closure, DRC closure, and timing domains before Phase 7C consumes the
 result.
@@ -19,7 +19,7 @@ PHYSICAL_BACKEND_SCHEMA = "emuflow.physical-backend/v1"
 PHYSICAL_PARTITION_RESULT_SCHEMA = (
     "emuflow.physical-partition-result/v1"
 )
-PHYSICAL_BACKENDS = ("open", "rapidwright", "vivado")
+PHYSICAL_BACKENDS = ("rapidwright", "vivado")
 
 
 def validate_source_cell_accounting(accounting: Mapping[str, Any], *, backend: str,
@@ -47,22 +47,6 @@ def validate_source_cell_accounting(accounting: Mapping[str, Any], *, backend: s
 
 
 _DESCRIPTORS: Dict[str, Dict[str, Any]] = {
-    "open": {
-        "schema": PHYSICAL_BACKEND_SCHEMA,
-        "id": "open",
-        "implementation_engine": "vpr-openparf-vpr",
-        "timing_engine": "vpr",
-        "architecture_class": "public-academic",
-        "source_model": "source-complete",
-        "qualification": "academic-architecture-not-vendor-signoff",
-        "capabilities": {
-            "packing": True,
-            "placement": True,
-            "routing": True,
-            "timing": True,
-            "bitstream": False,
-        },
-    },
     "vivado": {
         "schema": PHYSICAL_BACKEND_SCHEMA,
         "id": "vivado",
@@ -341,7 +325,7 @@ def validate_physical_partition_result(
             "failing_endpoint_constraints"
         ),
     }
-    if backend in {"open", "rapidwright"} or any(
+    if backend == "rapidwright" or any(
         value is not None for value in endpoint_timing.values()
     ):
         tns = endpoint_timing["tns_ns"]

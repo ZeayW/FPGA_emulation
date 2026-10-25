@@ -13,10 +13,14 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
+import sqlite3
 import subprocess
+import tempfile
 from array import array
 from bisect import bisect_left
+from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,12 +44,153 @@ class EventCheck:
     required_ns: float
 
 
+class _IndexedMeasurements(Sequence[Mapping[str, object]]):
+    """Fixed-width OpenSTA scalar results over an existing check sequence.
+
+    Check identity already belongs to ``rows``.  Retaining it again in one
+    Python dictionary per measurement used substantially more memory than the
+    three engine scalars, especially for saved-result validation where every
+    original TX/commit/check row is read at once.  This view keeps exactly
+    three doubles per row and materializes a mapping only for the row currently
+    consumed by stitching or validation.
+    """
+
+    def __init__(
+        self,
+        rows: Sequence[EventCheck],
+        arrivals: array,
+        required: array,
+        slacks: array,
+    ):
+        if (
+            arrivals.typecode != "d"
+            or required.typecode != "d"
+            or slacks.typecode != "d"
+            or len(arrivals) != len(rows)
+            or len(required) != len(rows)
+            or len(slacks) != len(rows)
+        ):
+            raise ValidationError("global STA indexed measurements are malformed")
+        self._rows = rows
+        self._arrivals = arrivals
+        self._required = required
+        self._slacks = slacks
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        row = self._rows[index]
+        return {
+            "path": row.path,
+            "role": row.role,
+            "event": row.event,
+            "arrival_ns": self._arrivals[index],
+            "required_ns": self._required[index],
+            "slack_ns": self._slacks[index],
+        }
+
+    def __iter__(self):
+        for index in range(len(self)):
+            yield self[index]
+
+    def __eq__(self, other):
+        if not isinstance(other, Sequence) or len(self) != len(other):
+            return False
+        return all(left == right for left, right in zip(self, other))
+
+    @property
+    def typed_payload_bytes(self) -> int:
+        return sum(
+            values.itemsize * len(values)
+            for values in (self._arrivals, self._required, self._slacks)
+        )
+
+
 _EVENT_CHECK_ROLES = ("target", "runtime", "tx", "commit")
 _EVENT_CHECK_ROLE_INDEX = {
     role: index for index, role in enumerate(_EVENT_CHECK_ROLES)
 }
 _UINT32_MAX = (1 << 32) - 1
 _UINT64_MASK = (1 << 64) - 1
+
+
+class _PackedUtf8Strings(Sequence[str]):
+    """One UTF-8 payload plus fixed-width offsets for a string identity set."""
+
+    def __init__(self, payload: bytearray, offsets: array):
+        if (
+            offsets.typecode != "Q"
+            or not offsets
+            or offsets[0] != 0
+            or offsets[-1] != len(payload)
+            or any(
+                offsets[index - 1] > offsets[index]
+                for index in range(1, len(offsets))
+            )
+        ):
+            raise ValidationError("global STA packed string pool is malformed")
+        self._payload = payload
+        self._offsets = offsets
+
+    def __len__(self) -> int:
+        return len(self._offsets) - 1
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        return self._payload[
+            self._offsets[index] : self._offsets[index + 1]
+        ].decode("utf-8")
+
+    def __iter__(self):
+        for index in range(len(self)):
+            yield self[index]
+
+    def __eq__(self, other):
+        if not isinstance(other, Sequence) or len(self) != len(other):
+            return False
+        return all(left == right for left, right in zip(self, other))
+
+    @property
+    def packed_bytes(self) -> int:
+        return len(self._payload) + len(self._offsets) * self._offsets.itemsize
+
+
+class _PackedStringSelection(Sequence[str]):
+    """A fixed-width ordered projection over a shared packed string pool."""
+
+    def __init__(self, strings: _PackedUtf8Strings, indices: array):
+        if indices.typecode != "I" or any(index >= len(strings) for index in indices):
+            raise ValidationError("global STA packed string selection is malformed")
+        self._strings = strings
+        self._indices = indices
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        return self._strings[self._indices[index]]
+
+    def __iter__(self):
+        for index in self._indices:
+            yield self._strings[index]
 
 
 class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
@@ -60,8 +205,8 @@ class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
 
     def __init__(
         self,
-        paths: list[str],
-        strings: list[str],
+        strings: _PackedUtf8Strings,
+        path_indices: array,
         representative_indices: array,
         scopes: array,
         clock_indices: array,
@@ -70,8 +215,11 @@ class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
         model_indices: array,
         optimization_sources: array | None = None,
         optimization_fpgas: array | None = None,
+        *,
+        validated: bool = False,
     ):
-        count = len(paths)
+        paths = _PackedStringSelection(strings, path_indices)
+        count = len(path_indices)
         if (
             len(representative_indices) != count
             or len(scopes) != count
@@ -79,12 +227,21 @@ class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
             or len(target_periods) != count
             or len(cone_bounds) != count
             or len(model_indices) != count
-            or any(not path for path in paths)
-            or any(paths[index - 1] >= paths[index] for index in range(1, count))
+            or (
+                not validated
+                and (
+                    any(not path for path in paths)
+                    or any(
+                        paths[index - 1] >= paths[index]
+                        for index in range(1, count)
+                    )
+                )
+            )
         ):
             raise ValidationError("global STA indexed path metadata is malformed")
         self._paths = paths
         self._strings = strings
+        self._path_indices = path_indices
         self._representative_indices = representative_indices
         self._scopes = scopes
         self._clock_indices = clock_indices
@@ -170,11 +327,12 @@ class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
 
     @property
     def typed_payload_bytes(self) -> int:
-        """Bytes in fixed-width columns, excluding shared string objects."""
+        """Bytes in fixed-width columns, excluding the shared UTF-8 pool."""
 
         return sum(
             values.itemsize * len(values)
             for values in (
+                self._path_indices,
                 self._representative_indices,
                 self._scopes,
                 self._clock_indices,
@@ -187,49 +345,211 @@ class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
             if values is not None
         )
 
+    @property
+    def packed_identity_bytes(self) -> int:
+        """Bytes retained for all unique identities and their offsets."""
+
+        return self._strings.packed_bytes
+
     def path_id_set_sha256(self) -> str:
         """Hash the already sorted unique path IDs without another copy/sort."""
 
-        encoded = json.dumps(
-            self._paths,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        return hashlib.sha256(encoded).hexdigest()
+        digest = hashlib.sha256()
+        digest.update(b"[")
+        for index, path in enumerate(self._paths):
+            if index:
+                digest.update(b",")
+            digest.update(
+                json.dumps(
+                    path, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8")
+            )
+        digest.update(b"]")
+        return digest.hexdigest()
+
+
+class _IndexedSystemTimingPaths(Sequence[Mapping[str, object]]):
+    """Fixed-width final OpenSTA values over indexed original-path metadata."""
+
+    def __init__(
+        self,
+        metadata: _IndexedPathMetadata,
+        system_delays: array,
+        target_required: array,
+        target_slacks: array,
+        runtime_required: array,
+        runtime_slacks: array,
+    ):
+        values = (
+            system_delays,
+            target_required,
+            target_slacks,
+            runtime_required,
+            runtime_slacks,
+        )
+        if any(column.typecode != "d" or len(column) != len(metadata) for column in values):
+            raise ValidationError("global STA indexed timing paths are malformed")
+        self._metadata = metadata
+        self._system_delays = system_delays
+        self._target_required = target_required
+        self._target_slacks = target_slacks
+        self._runtime_required = runtime_required
+        self._runtime_slacks = runtime_slacks
+
+    def __len__(self) -> int:
+        return len(self._metadata)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        path = self._metadata._paths[index]
+        info = self._metadata[path]
+        if is_optimized_away(info):
+            validate_optimization_record(info)
+            return {"path": path, **info, **dict.fromkeys(_RESULT_SCALARS)}
+        return {
+            "path": path,
+            **info,
+            "system_delay_bound_ns": self._system_delays[index],
+            "target_required_time_ns": self._target_required[index],
+            "target_clock_slack_bound_ns": self._target_slacks[index],
+            "runtime_required_time_ns": self._runtime_required[index],
+            "runtime_clock_slack_bound_ns": self._runtime_slacks[index],
+        }
+
+    def __iter__(self):
+        for index in range(len(self)):
+            yield self[index]
+
+    def __eq__(self, other):
+        if not isinstance(other, Sequence) or len(self) != len(other):
+            return False
+        return all(left == right for left, right in zip(self, other))
+
+    @property
+    def typed_payload_bytes(self) -> int:
+        return sum(
+            column.itemsize * len(column)
+            for column in (
+                self._system_delays,
+                self._target_required,
+                self._target_slacks,
+                self._runtime_required,
+                self._runtime_slacks,
+            )
+        )
+
+
+class _SystemTimingPathBuilder:
+    """Place one complete measurement bundle into sorted metadata columns."""
+
+    def __init__(self, metadata: _IndexedPathMetadata):
+        self._metadata = metadata
+        count = len(metadata)
+        self._seen = array("B", (int(is_optimized_away(metadata[p])) for p in metadata))
+        self._system_delays = array("d", [math.nan]) * count
+        self._target_required = array("d", [math.nan]) * count
+        self._target_slacks = array("d", [math.nan]) * count
+        self._runtime_required = array("d", [math.nan]) * count
+        self._runtime_slacks = array("d", [math.nan]) * count
+
+    def append(self, path: str, target: Mapping, runtime: Mapping) -> bool:
+        index = bisect_left(self._metadata._paths, path)
+        if index >= len(self._metadata) or self._metadata._paths[index] != path:
+            raise ValidationError("global STA measurement path is unknown")
+        if self._seen[index]:
+            return False
+        self._seen[index] = 1
+        self._system_delays[index] = target["arrival_ns"]
+        self._target_required[index] = target["required_ns"]
+        self._target_slacks[index] = target["slack_ns"]
+        self._runtime_required[index] = runtime["required_ns"]
+        self._runtime_slacks[index] = runtime["slack_ns"]
+        return True
+
+    def finish(self) -> _IndexedSystemTimingPaths:
+        if not self._seen or any(not value for value in self._seen):
+            raise ValidationError(
+                "global STA invalid standalone measurement population"
+            )
+        return _IndexedSystemTimingPaths(
+            self._metadata,
+            self._system_delays,
+            self._target_required,
+            self._target_slacks,
+            self._runtime_required,
+            self._runtime_slacks,
+        )
 
 
 class _PathMetadataBuilder:
-    """Append path metadata, then seal it into sorted indexed columns."""
+    """Spool path metadata, then seal sorted packed identity columns.
+
+    Global STA can cover millions of original paths. Keeping path strings, an
+    interning dictionary, a second string list, and the final sort order in
+    Python made all of those populations overlap at ``finish()``. This owner
+    writes bounded batches to a private typed SQLite relation. SQLite owns the
+    external sort and duplicate detection; the sealed view retains one shared
+    UTF-8 pool plus fixed-width columns only.
+    """
+
+    _BATCH_ROWS = 4096
 
     def __init__(self):
         self._finished = False
-        self._paths: list[str] = []
-        self._strings: list[str] = []
-        self._string_indices: dict[str, int] = {}
-        self._representative_indices = array("I")
-        self._scopes = array("B")
-        self._clock_indices = array("I")
-        self._target_periods = array("d")
-        self._cone_bounds = array("B")
-        self._model_indices = array("I")
-        self._optimization_sources = None
-        self._optimization_fpgas = None
+        descriptor, name = tempfile.mkstemp(
+            prefix="emuflow-global-sta-paths-", suffix=".sqlite3"
+        )
+        os.close(descriptor)
+        self._database_path = Path(name)
+        self._connection: sqlite3.Connection | None = sqlite3.connect(name)
+        self._connection.executescript(
+            """
+            PRAGMA journal_mode=OFF;
+            PRAGMA synchronous=OFF;
+            PRAGMA temp_store=FILE;
+            PRAGMA cache_size=-8192;
+            CREATE TABLE path_metadata (
+                path TEXT NOT NULL,
+                representative_path TEXT NOT NULL,
+                path_scope INTEGER NOT NULL CHECK(path_scope IN (0, 1)),
+                clock_domain TEXT,
+                target_period_ns REAL NOT NULL,
+                cone_bound INTEGER NOT NULL CHECK(cone_bound IN (0, 1)),
+                interconnect_delay_model TEXT,
+                optimization_source TEXT,
+                optimization_fpga TEXT
+            );
+            """
+        )
+        self._pending: list[tuple[object, ...]] = []
 
-    def _intern(self, value: str | None) -> int:
-        if value is None:
-            return _UINT32_MAX
-        if not isinstance(value, str) or not value:
-            raise ValidationError("global STA path metadata string is invalid")
-        index = self._string_indices.get(value)
-        if index is None:
-            index = len(self._strings)
-            if index >= _UINT32_MAX:
-                raise ValidationError(
-                    "global STA path metadata string population is too large"
-                )
-            self._string_indices[value] = index
-            self._strings.append(value)
-        return index
+    def _flush(self) -> None:
+        if not self._pending:
+            return
+        assert self._connection is not None
+        self._connection.executemany(
+            "INSERT INTO path_metadata VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            self._pending,
+        )
+        self._pending.clear()
+
+    def _close(self) -> None:
+        connection = self._connection
+        self._connection = None
+        if connection is not None:
+            connection.close()
+        self._database_path.unlink(missing_ok=True)
+
+    def __del__(self):
+        try:
+            self._close()
+        except BaseException:
+            pass
 
     def append(
         self,
@@ -255,6 +575,9 @@ class _PathMetadataBuilder:
             raise ValidationError(
                 "global STA path metadata representative is invalid"
             )
+        for value in (clock_domain, interconnect_delay_model):
+            if value is not None and (not isinstance(value, str) or not value):
+                raise ValidationError("global STA path metadata string is invalid")
         if path_scope not in {"cross-fpga", "same-fpga-local"}:
             raise ValidationError("global STA path metadata scope is invalid")
         if (
@@ -267,51 +590,142 @@ class _PathMetadataBuilder:
             raise ValidationError("global STA path metadata values are invalid")
         if (optimization_source is None) != (optimization_fpga is None):
             raise ValidationError("global STA optimization metadata needs source and FPGA together")
+        if optimization_fpga is not None and (not isinstance(optimization_fpga, str) or not optimization_fpga):
+            raise ValidationError("global STA optimization FPGA identity is invalid")
         if optimization_source is not None:
             validate_optimization_record({"measurement": OPTIMIZED_AWAY,
                                           "optimization_source": optimization_source, "delay_ns": None})
-            if self._optimization_sources is None:
-                self._optimization_sources = array("I", (_UINT32_MAX for _ in self._paths))
-                self._optimization_fpgas = array("I", (_UINT32_MAX for _ in self._paths))
-        if self._optimization_sources is not None:
-            self._optimization_sources.append(self._intern(optimization_source))
-            self._optimization_fpgas.append(self._intern(optimization_fpga))
-        self._paths.append(path)
-        self._representative_indices.append(self._intern(representative_path))
-        self._scopes.append(path_scope == "same-fpga-local")
-        self._clock_indices.append(self._intern(clock_domain))
-        self._target_periods.append(float(target_period_ns))
-        self._cone_bounds.append(physical_logic_segments_cone_bound)
-        self._model_indices.append(self._intern(interconnect_delay_model))
+        self._pending.append(
+            (
+                path,
+                representative_path,
+                path_scope == "same-fpga-local",
+                clock_domain,
+                float(target_period_ns),
+                physical_logic_segments_cone_bound,
+                interconnect_delay_model,
+                optimization_source,
+                optimization_fpga,
+            )
+        )
+        if len(self._pending) >= self._BATCH_ROWS:
+            self._flush()
 
     def finish(self) -> _IndexedPathMetadata:
         if self._finished:
             raise ValidationError("global STA path metadata builder is sealed")
         self._finished = True
-        order = sorted(range(len(self._paths)), key=self._paths.__getitem__)
-        paths = [self._paths[index] for index in order]
-        if any(paths[index - 1] == paths[index] for index in range(1, len(paths))):
-            raise ValidationError("global STA local/crossing path overlap")
+        try:
+            self._flush()
+            assert self._connection is not None
+            connection = self._connection
+            connection.executescript(
+                """
+                CREATE TABLE string_identity (
+                    identity INTEGER PRIMARY KEY,
+                    value TEXT NOT NULL UNIQUE
+                );
+                INSERT INTO string_identity(value)
+                    SELECT value FROM (
+                        SELECT path AS value FROM path_metadata
+                        UNION
+                        SELECT representative_path AS value FROM path_metadata
+                        UNION
+                        SELECT clock_domain AS value FROM path_metadata
+                            WHERE clock_domain IS NOT NULL
+                        UNION
+                        SELECT interconnect_delay_model AS value
+                            FROM path_metadata
+                            WHERE interconnect_delay_model IS NOT NULL
+                        UNION
+                        SELECT optimization_source FROM path_metadata WHERE optimization_source IS NOT NULL
+                        UNION
+                        SELECT optimization_fpga FROM path_metadata WHERE optimization_fpga IS NOT NULL
+                    ) ORDER BY value;
+                """
+            )
+            (identity_count,) = connection.execute(
+                "SELECT COUNT(*) FROM string_identity"
+            ).fetchone()
+            if identity_count >= _UINT32_MAX:
+                raise ValidationError(
+                    "global STA path metadata string population is too large"
+                )
 
-        def reordered(values: array) -> array:
-            return array(values.typecode, (values[index] for index in order))
+            string_payload = bytearray()
+            string_offsets = array("Q", [0])
+            for (value,) in connection.execute(
+                "SELECT value FROM string_identity ORDER BY identity"
+            ):
+                string_payload.extend(value.encode("utf-8"))
+                string_offsets.append(len(string_payload))
+            strings = _PackedUtf8Strings(string_payload, string_offsets)
 
-        result = _IndexedPathMetadata(
-            paths,
-            self._strings,
-            reordered(self._representative_indices),
-            reordered(self._scopes),
-            reordered(self._clock_indices),
-            reordered(self._target_periods),
-            reordered(self._cone_bounds),
-            reordered(self._model_indices),
-            None if self._optimization_sources is None else reordered(self._optimization_sources),
-            None if self._optimization_fpgas is None else reordered(self._optimization_fpgas),
-        )
-        self._paths = []
-        self._strings = []
-        self._string_indices = {}
-        return result
+            path_indices = array("I")
+            representative_indices = array("I")
+            scopes = array("B")
+            clock_indices = array("I")
+            target_periods = array("d")
+            cone_bounds = array("B")
+            model_indices = array("I")
+            optimization_sources = array("I")
+            optimization_fpgas = array("I")
+            previous_path_identity = None
+            query = """
+                SELECT path_string.identity - 1,
+                       representative_string.identity - 1, p.path_scope,
+                       clock_string.identity - 1, p.target_period_ns,
+                       p.cone_bound, model_string.identity - 1,
+                       source_string.identity - 1, fpga_string.identity - 1
+                  FROM path_metadata AS p
+                  JOIN string_identity AS path_string
+                    ON path_string.value = p.path
+                  JOIN string_identity AS representative_string
+                    ON representative_string.value = p.representative_path
+             LEFT JOIN string_identity AS clock_string
+                    ON clock_string.value = p.clock_domain
+             LEFT JOIN string_identity AS model_string
+                    ON model_string.value = p.interconnect_delay_model
+             LEFT JOIN string_identity AS source_string
+                    ON source_string.value = p.optimization_source
+             LEFT JOIN string_identity AS fpga_string
+                    ON fpga_string.value = p.optimization_fpga
+              ORDER BY p.path
+            """
+            for row in connection.execute(query):
+                if previous_path_identity == row[0]:
+                    raise ValidationError("global STA local/crossing path overlap")
+                previous_path_identity = row[0]
+                path_indices.append(row[0])
+                representative_indices.append(row[1])
+                scopes.append(row[2])
+                clock_indices.append(
+                    _UINT32_MAX if row[3] is None else row[3]
+                )
+                target_periods.append(row[4])
+                cone_bounds.append(row[5])
+                model_indices.append(
+                    _UINT32_MAX if row[6] is None else row[6]
+                )
+                optimization_sources.append(_UINT32_MAX if row[7] is None else row[7])
+                optimization_fpgas.append(_UINT32_MAX if row[8] is None else row[8])
+            has_eliminations = any(v != _UINT32_MAX for v in optimization_sources)
+            return _IndexedPathMetadata(
+                strings,
+                path_indices,
+                representative_indices,
+                scopes,
+                clock_indices,
+                target_periods,
+                cone_bounds,
+                model_indices,
+                optimization_sources=optimization_sources if has_eliminations else None,
+                optimization_fpgas=optimization_fpgas if has_eliminations else None,
+                validated=True,
+            )
+        finally:
+            self._pending.clear()
+            self._close()
 
 
 def _event_check_values_hash(
@@ -361,8 +775,8 @@ class _IndexedEventChecks(Sequence[EventCheck]):
 
     def __init__(
         self,
-        paths: list[str],
-        events: list[str],
+        paths: Sequence[str],
+        events: Sequence[str],
         path_indices: array,
         roles: array,
         event_indices: array,
@@ -542,16 +956,32 @@ class _IndexedEventChecks(Sequence[EventCheck]):
             )
         )
 
+    @property
+    def packed_identity_bytes(self) -> int | None:
+        """Bytes in packed path/event pools, if owned by this typed view."""
+
+        if not isinstance(self._paths, _PackedUtf8Strings) or not isinstance(
+            self._events, _PackedUtf8Strings
+        ):
+            return None
+        return self._paths.packed_bytes + self._events.packed_bytes
+
 
 class _EventCheckBuilder:
-    """Append-only builder which releases its string dictionaries at seal."""
+    """Append checks with bounded Python identity and compression state."""
+
+    _EVENT_CACHE_SIZE = 8192
+    _BUNDLE_CACHE_SIZE = 4096
+    _BUNDLE_CANDIDATE_CACHE_SIZE = 8
+    _INDEX_COMMIT_ROWS = 4096
 
     def __init__(self):
         self._finished = False
-        self._paths: list[str] = []
-        self._events: list[str] = []
-        self._path_ids: dict[str, int] = {}
-        self._event_ids: dict[str, int] = {}
+        self._path_payload = bytearray()
+        self._path_offsets = array("Q", [0])
+        self._event_payload = bytearray()
+        self._event_offsets = array("Q", [0])
+        self._event_cache: OrderedDict[str, int] = OrderedDict()
         self._path_indices = array("I")
         self._roles = array("B")
         self._event_indices = array("I")
@@ -562,12 +992,122 @@ class _EventCheckBuilder:
         self._numerical_hashes = array("Q")
         self._original_to_representative = array("I")
         self._representative_indices = array("I")
-        self._representative_bundles: dict[int, _RepresentativeBundle] = {}
+        self._bundle_cache: OrderedDict[
+            tuple[bytes, int], tuple[int, ...]
+        ] = OrderedDict()
         self._current_path_index: int | None = None
+        self._current_path: str | None = None
         self._current_bundle_start = 0
-        self._current_identities: set[tuple[int, int]] = set()
+        self._current_identities: set[tuple[int, str]] = set()
         self._target_chain: tuple[float, tuple[float, ...]] | None = None
         self._runtime_chain: tuple[float, tuple[float, ...]] | None = None
+        descriptor, name = tempfile.mkstemp(
+            prefix="emuflow-global-sta-checks-", suffix=".sqlite3"
+        )
+        os.close(descriptor)
+        self._database_path = Path(name)
+        self._connection: sqlite3.Connection | None = sqlite3.connect(name)
+        self._connection.executescript(
+            """
+            PRAGMA journal_mode=OFF;
+            PRAGMA synchronous=OFF;
+            PRAGMA temp_store=FILE;
+            PRAGMA cache_size=-8192;
+            CREATE TABLE seen_path (
+                path TEXT PRIMARY KEY
+            ) WITHOUT ROWID;
+            CREATE TABLE representative_bundle (
+                bundle_hash BLOB NOT NULL,
+                check_count INTEGER NOT NULL,
+                representative_start INTEGER NOT NULL,
+                PRIMARY KEY(bundle_hash, representative_start)
+            ) WITHOUT ROWID;
+            CREATE INDEX representative_bundle_lookup
+                ON representative_bundle(bundle_hash, check_count);
+            """
+        )
+        self._pending_index_rows = 0
+
+    def _close(self) -> None:
+        connection = self._connection
+        self._connection = None
+        if connection is not None:
+            connection.close()
+        self._database_path.unlink(missing_ok=True)
+
+    def _index_mutated(self) -> None:
+        self._pending_index_rows += 1
+        if self._pending_index_rows >= self._INDEX_COMMIT_ROWS:
+            assert self._connection is not None
+            self._connection.commit()
+            self._pending_index_rows = 0
+
+    def __del__(self):
+        try:
+            self._close()
+        except BaseException:
+            pass
+
+    @staticmethod
+    def _append_packed(value: str, payload: bytearray, offsets: array) -> int:
+        identity = len(offsets) - 1
+        if identity >= _UINT32_MAX:
+            raise ValidationError(
+                "global STA indexed identity population is too large"
+            )
+        payload.extend(value.encode("utf-8"))
+        offsets.append(len(payload))
+        return identity
+
+    def _intern_event(self, event: str) -> int:
+        identity = self._event_cache.get(event)
+        if identity is None:
+            identity = self._append_packed(
+                event, self._event_payload, self._event_offsets
+            )
+            self._event_cache[event] = identity
+            if len(self._event_cache) > self._EVENT_CACHE_SIZE:
+                self._event_cache.popitem(last=False)
+        else:
+            self._event_cache.move_to_end(event)
+        return identity
+
+    def _rows_numerically_equal(
+        self, left: int, right: int
+    ) -> bool:
+        if (
+            self._roles[left] != self._roles[right]
+            or self._launches[left] != self._launches[right]
+            or self._required[left] != self._required[right]
+        ):
+            return False
+        left_begin = self._arc_offsets[left]
+        left_end = self._arc_offsets[left + 1]
+        right_begin = self._arc_offsets[right]
+        right_end = self._arc_offsets[right + 1]
+        return (
+            left_end - left_begin == right_end - right_begin
+            and all(
+                self._arcs[left_begin + offset]
+                == self._arcs[right_begin + offset]
+                for offset in range(left_end - left_begin)
+            )
+        )
+
+    def _bundles_numerically_equal(
+        self, representative_start: int, begin: int, count: int
+    ) -> bool:
+        if representative_start + count > len(self._representative_indices):
+            raise ValidationError(
+                "global STA representative bundle index is malformed"
+            )
+        return all(
+            self._rows_numerically_equal(
+                self._representative_indices[representative_start + offset],
+                begin + offset,
+            )
+            for offset in range(count)
+        )
 
     def _finish_bundle(self) -> None:
         if self._current_path_index is None:
@@ -586,69 +1126,57 @@ class _EventCheckBuilder:
                 (bundle_hash * 1_000_003) ^ self._numerical_hashes[index]
             ) & _UINT64_MASK
 
-        def numerical_key(index: int) -> tuple:
-            arc_begin = self._arc_offsets[index]
-            arc_end = self._arc_offsets[index + 1]
-            return (
-                self._roles[index],
-                self._launches[index],
-                tuple(self._arcs[arc_begin:arc_end]),
-                self._required[index],
-            )
-
         start = None
-        current_key = None
-        candidate = self._representative_bundles.get(bundle_hash)
-        while candidate is not None:
-            if candidate.count != end - begin:
-                candidate = candidate.collision
-                continue
-            if candidate.numerical_key is None:
-                representative_key = tuple(
-                    numerical_key(
-                        self._representative_indices[
-                            candidate.start + offset
-                        ]
-                    )
-                    for offset in range(candidate.count)
-                )
-                candidate.numerical_key = representative_key
-            else:
-                representative_key = candidate.numerical_key
-            if current_key is None:
-                current_key = tuple(
-                    numerical_key(index) for index in range(begin, end)
-                )
-            if current_key == representative_key:
-                start = candidate.start
+        check_count = end - begin
+        hash_bytes = bundle_hash.to_bytes(8, "little")
+        cache_key = (hash_bytes, check_count)
+        candidates = self._bundle_cache.get(cache_key, ())
+        for candidate_start in candidates:
+            if self._bundles_numerically_equal(
+                candidate_start, begin, check_count
+            ):
+                start = candidate_start
                 break
-            candidate = candidate.collision
+        if start is None:
+            assert self._connection is not None
+            for (candidate_start,) in self._connection.execute(
+                    """
+                    SELECT representative_start
+                      FROM representative_bundle
+                     WHERE bundle_hash=? AND check_count=?
+                  ORDER BY representative_start
+                    """,
+                    (sqlite3.Binary(hash_bytes), check_count),
+                ):
+                if candidate_start in candidates:
+                    continue
+                if self._bundles_numerically_equal(
+                    candidate_start, begin, check_count
+                ):
+                    start = candidate_start
+                    break
         if start is None:
             start = len(self._representative_indices)
-            if start + end - begin >= _UINT32_MAX:
+            if start + check_count >= _UINT32_MAX:
                 raise ValidationError(
                     "global STA representative population exceeds indexed storage"
                 )
             self._representative_indices.extend(range(begin, end))
-            self._representative_bundles[bundle_hash] = _RepresentativeBundle(
-                start,
-                end - begin,
-                current_key,
-                self._representative_bundles.get(bundle_hash),
+            assert self._connection is not None
+            self._connection.execute(
+                "INSERT INTO representative_bundle VALUES (?, ?, ?)",
+                (sqlite3.Binary(hash_bytes), check_count, start),
             )
+            self._index_mutated()
+        updated = (start, *(value for value in candidates if value != start))[
+            : self._BUNDLE_CANDIDATE_CACHE_SIZE
+        ]
+        self._bundle_cache[cache_key] = updated
+        self._bundle_cache.move_to_end(cache_key)
+        if len(self._bundle_cache) > self._BUNDLE_CACHE_SIZE:
+            self._bundle_cache.popitem(last=False)
         for offset, index in enumerate(range(begin, end)):
             self._original_to_representative[index] = start + offset
-
-    @staticmethod
-    def _intern(value: str, values: list[str], ids: dict[str, int]) -> int:
-        identity = ids.get(value)
-        if identity is None:
-            identity = len(values)
-            if identity >= _UINT32_MAX:
-                raise ValidationError("global STA indexed identity population is too large")
-            ids[value] = identity
-            values.append(value)
-        return identity
 
     def append(self, row: EventCheck) -> None:
         self.append_values(
@@ -671,7 +1199,12 @@ class _EventCheckBuilder:
     ) -> None:
         if self._finished:
             raise ValidationError("global STA indexed check builder is sealed")
-        if not path or not event:
+        if (
+            not isinstance(path, str)
+            or not path
+            or not isinstance(event, str)
+            or not event
+        ):
             raise ValidationError("global STA has duplicate/empty check identity")
         if role not in _EVENT_CHECK_ROLE_INDEX:
             raise ValidationError("global STA has an unsupported check role")
@@ -682,24 +1215,31 @@ class _EventCheckBuilder:
             raise ValidationError(
                 "global STA launch/arc delay must be nonnegative"
             )
-        path_index = self._intern(path, self._paths, self._path_ids)
-        event_index = self._intern(event, self._events, self._event_ids)
         role_index = _EVENT_CHECK_ROLE_INDEX[role]
-        if path_index != self._current_path_index:
+        if path != self._current_path:
             self._finish_bundle()
-            # Dense IDs are assigned on first sight. Any non-latest ID here is
-            # a reappearing path bundle, which the production builder rejects;
-            # public list callers retain the legacy interleaved fallback.
-            if path_index != len(self._paths) - 1:
+            assert self._connection is not None
+            try:
+                self._connection.execute(
+                    "INSERT INTO seen_path VALUES (?)", (path,)
+                )
+                self._index_mutated()
+            except sqlite3.IntegrityError as error:
                 raise ValidationError(
                     "global STA indexed checks are not path-contiguous"
-                )
+                ) from error
+            path_index = self._append_packed(
+                path, self._path_payload, self._path_offsets
+            )
             self._current_path_index = path_index
+            self._current_path = path
             self._current_identities = set()
             self._target_chain = None
             self._runtime_chain = None
             self._current_bundle_start = len(self._roles)
-        identity = (role_index, event_index)
+        assert self._current_path_index is not None
+        event_index = self._intern_event(event)
+        identity = (role_index, event)
         if identity in self._current_identities:
             raise ValidationError("global STA has duplicate/empty check identity")
         self._current_identities.add(identity)
@@ -715,7 +1255,7 @@ class _EventCheckBuilder:
                     "global STA must observe each original path once"
                 )
             self._runtime_chain = (launch_ns, arcs_ns)
-        self._path_indices.append(path_index)
+        self._path_indices.append(self._current_path_index)
         self._roles.append(role_index)
         self._event_indices.append(event_index)
         self._launches.append(launch_ns)
@@ -730,29 +1270,35 @@ class _EventCheckBuilder:
     def finish(self) -> _IndexedEventChecks:
         if self._finished:
             raise ValidationError("global STA indexed check builder is sealed")
-        self._finish_bundle()
-        self._finished = True
-        result = _IndexedEventChecks(
-            self._paths,
-            self._events,
-            self._path_indices,
-            self._roles,
-            self._event_indices,
-            self._launches,
-            self._required,
-            self._arc_offsets,
-            self._arcs,
-            self._numerical_hashes,
-            self._original_to_representative,
-            self._representative_indices,
-            validated=True,
-        )
-        # These dictionaries are required only while assigning dense IDs.
-        # The sealed view retains the ordered string pools alone.
-        self._path_ids = {}
-        self._event_ids = {}
-        self._representative_bundles = {}
-        return result
+        try:
+            self._finish_bundle()
+            self._finished = True
+            paths = _PackedUtf8Strings(
+                self._path_payload, self._path_offsets
+            )
+            events = _PackedUtf8Strings(
+                self._event_payload, self._event_offsets
+            )
+            result = _IndexedEventChecks(
+                paths,
+                events,
+                self._path_indices,
+                self._roles,
+                self._event_indices,
+                self._launches,
+                self._required,
+                self._arc_offsets,
+                self._arcs,
+                self._numerical_hashes,
+                self._original_to_representative,
+                self._representative_indices,
+                validated=True,
+            )
+            self._event_cache.clear()
+            self._bundle_cache.clear()
+            return result
+        finally:
+            self._close()
 
 
 class _IndexedCheckSelection(Sequence[EventCheck]):
@@ -801,41 +1347,6 @@ def _validate_check_values(row: EventCheck) -> None:
         raise ValidationError("global STA launch/arc delay must be nonnegative")
 
 
-def _validate_interleaved_checks(rows: Sequence[EventCheck]) -> None:
-    """Compatibility validator for callers that interleave path bundles."""
-    seen = set()
-    observations: dict[str, list[EventCheck | None]] = {}
-    for row in rows:
-        _validate_check_values(row)
-        key = (row.path, row.role, row.event)
-        if key in seen:
-            raise ValidationError("global STA has duplicate/empty check identity")
-        seen.add(key)
-        if row.role in {"target", "runtime"}:
-            pair = observations.setdefault(row.path, [None, None])
-            position = 0 if row.role == "target" else 1
-            if pair[position] is not None:
-                raise ValidationError(
-                    "global STA must observe each original path once"
-                )
-            pair[position] = row
-    if not observations or any(
-        target is None or runtime is None
-        for target, runtime in observations.values()
-    ):
-        raise ValidationError("global STA target/runtime population disagrees")
-    for row in rows:
-        if row.path not in observations:
-            raise ValidationError("global STA event has no original-path observation")
-    for target, runtime in observations.values():
-        assert target is not None and runtime is not None
-        if (target.launch_ns, target.arcs_ns) != (
-            runtime.launch_ns,
-            runtime.arcs_ns,
-        ):
-            raise ValidationError("global STA target/runtime physical chains disagree")
-
-
 def _validate_indexed_checks(rows: _IndexedEventChecks) -> None:
     """Validate canonical typed rows without reconstructing every dataclass."""
 
@@ -844,33 +1355,33 @@ def _validate_indexed_checks(rows: _IndexedEventChecks) -> None:
     current_identities: set[tuple[int, int]] = set()
     target = None
     runtime = None
-    interleaved = False
 
-    def finish_bundle() -> bool:
+    def finish_bundle() -> None:
         if current_path is None:
-            return True
+            return
+        if target is None and runtime is None:
+            raise ValidationError("global STA event has no original-path observation")
         if target is None or runtime is None:
-            return False
+            raise ValidationError("global STA target/runtime population disagrees")
         if not rows._physical_chain_equal(target, runtime):
             raise ValidationError(
                 "global STA target/runtime physical chains disagree"
             )
         completed_paths.add(current_path)
-        return True
 
     for index in range(len(rows)):
         rows._validate_row(index)
         path = rows._path_indices[index]
         if path != current_path:
-            if not finish_bundle() or path in completed_paths:
-                interleaved = True
-                break
+            finish_bundle()
+            if path in completed_paths:
+                raise ValidationError("global STA requires contiguous original-path bundles")
             current_path = path
             current_identities = set()
             target = None
             runtime = None
         role = rows._roles[index]
-        identity = (role, rows._event_indices[index])
+        identity = (role, rows._events[rows._event_indices[index]])
         if identity in current_identities:
             raise ValidationError("global STA has duplicate/empty check identity")
         current_identities.add(identity)
@@ -886,10 +1397,7 @@ def _validate_indexed_checks(rows: _IndexedEventChecks) -> None:
                     "global STA must observe each original path once"
                 )
             runtime = index
-    if not interleaved and not finish_bundle():
-        interleaved = True
-    if interleaved:
-        _validate_interleaved_checks(rows)
+    finish_bundle()
 
 
 def validate_checks(checks: Iterable[EventCheck]) -> Sequence[EventCheck]:
@@ -913,34 +1421,32 @@ def validate_checks(checks: Iterable[EventCheck]) -> Sequence[EventCheck]:
     # Validate that order while retaining only the live bundle's event
     # identities and observation pair.  This removes the check-sized identity
     # set and path-sized observation table from the production data plane.
-    # External callers that interleave bundles retain the original behavior
-    # through the compatibility validator below.
     completed_paths = set()
     current_path = None
     current_identities = set()
     target = None
     runtime = None
-    interleaved = False
 
-    def finish_bundle() -> bool:
+    def finish_bundle() -> None:
         if current_path is None:
-            return True
+            return
+        if target is None and runtime is None:
+            raise ValidationError("global STA event has no original-path observation")
         if target is None or runtime is None:
-            return False
+            raise ValidationError("global STA target/runtime population disagrees")
         if (target.launch_ns, target.arcs_ns) != (
             runtime.launch_ns,
             runtime.arcs_ns,
         ):
             raise ValidationError("global STA target/runtime physical chains disagree")
         completed_paths.add(current_path)
-        return True
 
     for row in rows:
         _validate_check_values(row)
         if row.path != current_path:
-            if not finish_bundle() or row.path in completed_paths:
-                interleaved = True
-                break
+            finish_bundle()
+            if row.path in completed_paths:
+                raise ValidationError("global STA requires contiguous original-path bundles")
             current_path = row.path
             current_identities = set()
             target = None
@@ -961,10 +1467,7 @@ def validate_checks(checks: Iterable[EventCheck]) -> Sequence[EventCheck]:
                     "global STA must observe each original path once"
                 )
             runtime = row
-    if not interleaved and not finish_bundle():
-        interleaved = True
-    if interleaved:
-        _validate_interleaved_checks(rows)
+    finish_bundle()
     return rows
 
 
@@ -1059,44 +1562,15 @@ exit 0
     return rows
 
 
-class _MeasurementScalars(Sequence):
-    """Three engine columns; identities stay in the canonical check sequence."""
-
-    def __init__(self, rows):
-        self._rows = rows
-        self._columns = tuple(array("d") for _ in range(3))
-
-    def __len__(self):
-        return len(self._columns[0])
-
-    def append_values(self, arrival, required, slack):
-        for column, value in zip(self._columns, (arrival, required, slack)):
-            column.append(value)
-
-    def __getitem__(self, index):
-        if isinstance(index, slice):
-            return [self[i] for i in range(*index.indices(len(self)))]
-        if index < 0:
-            index += len(self)
-        if index < 0 or index >= len(self):
-            raise IndexError(index)
-        row = self._rows[index]
-        return {"path": row.path, "role": row.role, "event": row.event,
-                **{key: column[index] for key, column in zip(
-                    ("arrival_ns", "required_ns", "slack_ns"), self._columns)}}
-
-    def __eq__(self, other):
-        if not isinstance(other, Sequence) or len(self) != len(other):
-            return False
-        return all(left == right for left, right in zip(self, other))
-
-    @property
-    def typed_payload_bytes(self):
-        return sum(column.itemsize * len(column) for column in self._columns)
-
-
-def read_measurements(path: Path, rows: Sequence[EventCheck], *, verify_arcs=True) -> Sequence[dict]:
-    result = _MeasurementScalars(rows)
+def read_measurements(
+    path: Path,
+    rows: Sequence[EventCheck],
+    *,
+    verify_arcs=True,
+) -> _IndexedMeasurements:
+    arrivals = array("d")
+    required_values = array("d")
+    slacks = array("d")
     with path.open() as stream:
         if next(stream, "").strip() != "endpoint\tarrival_ns\trequired_ns\tslack_ns":
             raise ValidationError("invalid global STA measurements header")
@@ -1131,10 +1605,12 @@ def read_measurements(path: Path, rows: Sequence[EventCheck], *, verify_arcs=Tru
                         raise ValidationError(
                             f"global STA event binding disagrees at o{index}"
                         )
-            result.append_values(numbers[0] + row.launch_ns, numbers[1] + row.launch_ns, numbers[2])
-    if len(result) != len(rows):
+            arrivals.append(numbers[0] + row.launch_ns)
+            required_values.append(numbers[1] + row.launch_ns)
+            slacks.append(numbers[2])
+    if len(arrivals) != len(rows):
         raise ValidationError("global STA missing/extra/unconstrained endpoints")
-    return result
+    return _IndexedMeasurements(rows, arrivals, required_values, slacks)
 
 
 def _compress_path_equivalent_checks(
@@ -1241,15 +1717,10 @@ def _compress_path_equivalent_checks(
         for offset, index in enumerate(indices):
             original_to_representative[index] = start + offset
 
-    # bind_physical_checks emits one contiguous bundle per original path. Keep
-    # only the active bundle in that production order instead of a dictionary
-    # containing one index list for every path. Preserve the public helper's
-    # historical acceptance of interleaved callers through a compatibility
-    # fallback.
+    # Keep only the active original-path bundle; interleaved input is invalid.
     seen_paths = set()
     current_path = None
     current_indices: list[int] = []
-    interleaved = False
     path_identities = (
         enumerate(rows._path_indices)
         if isinstance(rows, _IndexedEventChecks)
@@ -1258,26 +1729,14 @@ def _compress_path_equivalent_checks(
     for index, path_identity in path_identities:
         if path_identity != current_path:
             if path_identity in seen_paths:
-                interleaved = True
-                break
+                raise ValidationError("global STA requires contiguous original-path bundles")
             if current_indices:
                 add_bundle(current_indices)
             current_path = path_identity
             seen_paths.add(path_identity)
             current_indices = []
         current_indices.append(index)
-    if interleaved:
-        representative_indices = array("I")
-        representative_bundles.clear()
-        original_to_representative = array(
-            "I", (missing_representative for _ in rows)
-        )
-        path_indices: dict[str, list[int]] = {}
-        for index, row in enumerate(rows):
-            path_indices.setdefault(row.path, []).append(index)
-        for indices in path_indices.values():
-            add_bundle(indices)
-    elif current_indices:
+    if current_indices:
         add_bundle(current_indices)
     if any(
         index == missing_representative
@@ -1297,7 +1756,7 @@ class _ExpandedMeasurementSequence(Sequence):
     second check-sized population of Python dictionaries before stitching.
     """
 
-    def __init__(self, rows: Sequence[EventCheck], representative_values: Sequence[dict],
+    def __init__(self, rows: Sequence[EventCheck], representative_values: Sequence,
                  original_to_representative: Sequence[int]):
         if len(original_to_representative) != len(rows):
             raise ValidationError("global STA expansion population disagrees")
@@ -1343,7 +1802,7 @@ class _ExpandedMeasurementSequence(Sequence):
 
 
 def _write_expanded_measurements(path: Path, rows: Sequence[EventCheck],
-                                 representative_values: Sequence[dict],
+                                 representative_values: Sequence,
                                  original_to_representative: Sequence[int],
                                  representative_checks: Sequence[EventCheck]
                                  | None = None,
@@ -1500,11 +1959,14 @@ def bind_physical_checks(runtime, routes, schedule, physical, platform, *, metad
 Shared database readers validate identities only. This exporter does not call
 the Python event propagator or consume its per-path numerical results.
 """
-    from .system_timing import (
+    from .physical_timing_inputs import (
         _board_link_delay_database, _endpoint_delay_database,
         _logic_segment_database,
     )
-    from .tdm import is_fixed_slot_transport_schedule, reconstruct_tdm_schedule_timing_paths
+    from .tdm import (
+        is_fixed_slot_transport_schedule,
+        open_tdm_schedule_timing_path_stream,
+    )
 
     if not is_fixed_slot_transport_schedule(schedule):
         raise ValidationError("global OpenSTA requires fixed-slot transport")
@@ -1519,24 +1981,7 @@ the Python event propagator or consume its per-path numerical results.
             {"board_link_timing": build_board_link_timing_model(platform)}, platform)
     if endpoints is None or segments is None or links is None:
         raise ValidationError("global OpenSTA requires physical logic and endpoint measurements")
-    # Timing reconstruction already binds each routed hop to its schedule
-    # entry and carries the concrete TX time/ratio in ``scheduled_hops``.
-    # Keep a compatibility lookup only for older injected reconstruction
-    # records; production must not rebuild a second hop-sized entry map.
-    legacy_entries = None
-
-    def legacy_entry(identity):
-        nonlocal legacy_entries
-        if legacy_entries is None:
-            legacy_entries = {e["id"]: e for e in schedule["entries"]}
-        try:
-            return legacy_entries[identity]
-        except KeyError as exc:
-            raise ValidationError(
-                "global STA references a missing scheduled event"
-            ) from exc
     board_links = {link.id: link for link in platform.links}
-    demand_by_net = {r["net"]: r["id"] for r in routes["routes"]}
     uncertainty = float(physical.get("static_exact_clock_uncertainty_ns", 0.0))
     if uncertainty < 0 or not math.isfinite(uncertainty):
         raise ValidationError("invalid global STA uncertainty")
@@ -1550,154 +1995,162 @@ the Python event propagator or consume its per-path numerical results.
         else None
     )
     try:
-        reconstructed = reconstruct_tdm_schedule_timing_paths(
-            routes, platform, schedule
-        )
-        for record in sorted(reconstructed, key=lambda item: item["path"]):
-            virtual = runtime_clock_period_ns(runtime, record.get("clock_domain"))
-            representatives += 1
-            by_demand = {}
-            for hop in record["scheduled_hops"]:
-                by_demand.setdefault(hop["demand"], []).append(hop)
-            members = sorted(record.get("compressed_path_ids", [record["path"]]))
-            for member in members:
-                chain = list(segment_cursor.take(record["path"], member)) if (
-                    segment_cursor is not None
-                ) else sorted(
-                    segments.get(record["path"], {}).get(member, []),
-                    key=lambda s: s["cut_index"],
+        with open_tdm_schedule_timing_path_stream(
+            routes, platform, schedule, path_order="path"
+        ) as reconstructed:
+            for record in reconstructed:
+                virtual = runtime_clock_period_ns(
+                    runtime, record.get("clock_domain")
                 )
-                if [s["cut_index"] for s in chain] != list(range(len(record["cut_nets"])+1)):
-                    raise ValidationError("global STA missing original-member logic segments")
-                eliminated_segments = [s for s in chain if validate_optimization_record(s)]
-                eliminated_interfaces = []
+                representatives += 1
+                by_demand = {}
                 for hop in record["scheduled_hops"]:
-                    for key in ("tx_endpoint", "rx_endpoint"):
-                        endpoint = endpoints.get(hop[key])
-                        if isinstance(endpoint, Mapping) and validate_optimization_record(endpoint):
-                            require_optimization_proof(physical, endpoint["optimization_fpga"], endpoint["optimization_source"])
-                            eliminated_interfaces.append(endpoint)
-                for segment in eliminated_segments:
-                    require_optimization_proof(physical, segment["fpga"], segment["optimization_source"], segment)
-                if eliminated_segments or eliminated_interfaces:
-                    # Consume and validate the complete original chain even when
-                    # a proven absent dependency makes numerical checks inapplicable.
-                    seen_entries = set()
-                    periods = set()
-                    for k, net in enumerate(record["cut_nets"]):
-                        hops = by_demand.get(demand_by_net[net], [])
-                        if (not hops or chain[k]["replace_tx_endpoint"] != hops[0]["tx_endpoint"]
-                                or chain[k]["kind"] != ("launch" if k == 0 else "transition")):
-                            raise ValidationError("global STA eliminated cut/segment binding disagrees")
-                        for hop in hops:
-                            eid = hop["schedule_entry"]
-                            if eid in seen_entries or hop["tx_endpoint"] not in endpoints or hop["rx_endpoint"] not in endpoints:
-                                raise ValidationError("global STA eliminated path has incomplete endpoint/event coverage")
-                            seen_entries.add(eid)
-                            periods.add(float(hop["tdm_slot_ns"]))
-                    if (chain[-1]["kind"] != "capture" or chain[-1]["replace_tx_endpoint"] is not None
-                            or len(periods) != 1 or len(seen_entries) != len(record["scheduled_hops"])):
-                        raise ValidationError("global STA eliminated path has incomplete segment/event coverage")
-                    proof_segment = eliminated_segments[0] if eliminated_segments else eliminated_interfaces[0]
-                    proof_fpga = proof_segment.get("fpga",proof_segment.get("optimization_fpga"))
-                    path_metadata.append(member, representative_path=record["path"], path_scope="cross-fpga",
-                        clock_domain=record.get("clock_domain"), target_period_ns=record["clock_period_ns"],
-                        physical_logic_segments_cone_bound=False, interconnect_delay_model=None,
-                        optimization_source=proof_segment["optimization_source"], optimization_fpga=proof_fpga)
-                    continue
-                origin = 0.0
-                trailing = ()
-                ratio_mode = any(board_links[h["link"]].tdm_delay_model is not None
-                                 for h in record["scheduled_hops"])
-                if ratio_mode and not all(board_links[h["link"]].tdm_delay_model is not None
-                                          for h in record["scheduled_hops"]):
-                    raise ValidationError("one path cannot mix total net-ratio and fixed-slot delay models")
-                model_arcs = []
-                path_metadata.append(
-                    member,
-                    representative_path=record["path"],
-                    path_scope="cross-fpga",
-                    clock_domain=record.get("clock_domain"),
-                    target_period_ns=record["clock_period_ns"],
-                    physical_logic_segments_cone_bound=any(
-                        s.get("measurement") in {"cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"}
-                        for s in chain
-                    ),
-                    interconnect_delay_model=(
-                        "linear-ratio-v1" if ratio_mode else None
-                    ),
+                    by_demand.setdefault(hop["demand"], []).append(hop)
+                cut_demands = record.get("_cut_demands")
+                if (
+                    not isinstance(cut_demands, list)
+                    or len(cut_demands) != len(record["cut_nets"])
+                ):
+                    raise ValidationError(
+                        "global STA timing stream lacks cut-demand binding"
+                    )
+                members = sorted(
+                    record.get("compressed_path_ids", [record["path"]])
                 )
-                periods = set()
-                seen_entries = set()
-                for k, net in enumerate(record["cut_nets"]):
-                    hops = by_demand.get(demand_by_net[net], [])
-                    if not hops or chain[k]["replace_tx_endpoint"] != hops[0]["tx_endpoint"]:
-                        raise ValidationError("global STA cut/segment binding disagrees")
-                    for j, hop in enumerate(hops):
-                        eid = hop["schedule_entry"]
-                        if eid in seen_entries:
-                            raise ValidationError("global STA reused a scheduled event")
-                        seen_entries.add(eid)
-                        period = float(hop["tdm_slot_ns"])
-                        periods.add(period)
-                        if "fixed_slot_tx_time_ns" in hop:
+                for member in members:
+                    chain = list(segment_cursor.take(record["path"], member)) if (
+                        segment_cursor is not None
+                    ) else sorted(
+                        segments.get(record["path"], {}).get(member, []),
+                        key=lambda s: s["cut_index"],
+                    )
+                    if [s["cut_index"] for s in chain] != list(range(len(record["cut_nets"])+1)):
+                        raise ValidationError("global STA missing original-member logic segments")
+                    eliminated_segments = [s for s in chain if validate_optimization_record(s)]
+                    eliminated_interfaces = []
+                    for hop in record["scheduled_hops"]:
+                        for key in ("tx_endpoint", "rx_endpoint"):
+                            endpoint = endpoints.get(hop[key])
+                            if isinstance(endpoint, Mapping) and validate_optimization_record(endpoint):
+                                require_optimization_proof(physical, endpoint["optimization_fpga"], endpoint["optimization_source"])
+                                eliminated_interfaces.append(endpoint)
+                    for segment in eliminated_segments:
+                        require_optimization_proof(physical, segment["fpga"], segment["optimization_source"], segment)
+                    if eliminated_segments or eliminated_interfaces:
+                        # Consume and validate the complete original chain even when
+                        # a proven absent dependency makes numerical checks inapplicable.
+                        seen_entries = set()
+                        periods = set()
+                        for k, demand in enumerate(cut_demands):
+                            hops = by_demand.get(demand, [])
+                            if (not hops or chain[k]["replace_tx_endpoint"] != hops[0]["tx_endpoint"]
+                                    or chain[k]["kind"] != ("launch" if k == 0 else "transition")):
+                                raise ValidationError("global STA eliminated cut/segment binding disagrees")
+                            for hop in hops:
+                                eid = hop["schedule_entry"]
+                                if eid in seen_entries or hop["tx_endpoint"] not in endpoints or hop["rx_endpoint"] not in endpoints:
+                                    raise ValidationError("global STA eliminated path has incomplete endpoint/event coverage")
+                                seen_entries.add(eid)
+                                periods.add(float(hop["tdm_slot_ns"]))
+                        if (chain[-1]["kind"] != "capture" or chain[-1]["replace_tx_endpoint"] is not None
+                                or len(periods) != 1 or len(seen_entries) != len(record["scheduled_hops"])):
+                            raise ValidationError("global STA eliminated path has incomplete segment/event coverage")
+                        proof_segment = eliminated_segments[0] if eliminated_segments else eliminated_interfaces[0]
+                        proof_fpga = proof_segment.get("fpga",proof_segment.get("optimization_fpga"))
+                        path_metadata.append(member, representative_path=record["path"], path_scope="cross-fpga",
+                            clock_domain=record.get("clock_domain"), target_period_ns=record["clock_period_ns"],
+                            physical_logic_segments_cone_bound=False, interconnect_delay_model=None,
+                            optimization_source=proof_segment["optimization_source"], optimization_fpga=proof_fpga)
+                        continue
+                    origin = 0.0
+                    trailing = ()
+                    ratio_mode = any(board_links[h["link"]].tdm_delay_model is not None
+                                     for h in record["scheduled_hops"])
+                    if ratio_mode and not all(board_links[h["link"]].tdm_delay_model is not None
+                                              for h in record["scheduled_hops"]):
+                        raise ValidationError("one path cannot mix total net-ratio and fixed-slot delay models")
+                    model_arcs = []
+                    path_metadata.append(
+                        member,
+                        representative_path=record["path"],
+                        path_scope="cross-fpga",
+                        clock_domain=record.get("clock_domain"),
+                        target_period_ns=record["clock_period_ns"],
+                        physical_logic_segments_cone_bound=any(
+                            s.get("measurement") in {"cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"}
+                            for s in chain
+                        ),
+                        interconnect_delay_model=(
+                            "linear-ratio-v1" if ratio_mode else None
+                        ),
+                    )
+                    periods = set()
+                    seen_entries = set()
+                    for k, (net, demand) in enumerate(
+                        zip(record["cut_nets"], cut_demands)
+                    ):
+                        hops = by_demand.get(demand, [])
+                        if not hops or chain[k]["replace_tx_endpoint"] != hops[0]["tx_endpoint"]:
+                            raise ValidationError("global STA cut/segment binding disagrees")
+                        for j, hop in enumerate(hops):
+                            eid = hop["schedule_entry"]
+                            if eid in seen_entries:
+                                raise ValidationError("global STA reused a scheduled event")
+                            seen_entries.add(eid)
+                            period = float(hop["tdm_slot_ns"])
+                            periods.add(period)
+                            if "fixed_slot_tx_time_ns" not in hop:
+                                raise ValidationError(
+                                    "global STA timing stream lacks concrete scheduled TX time"
+                                )
                             tx = float(hop["fixed_slot_tx_time_ns"])
                             ratio = hop.get("tdm_ratio")
-                        else:
-                            entry = legacy_entry(eid)
-                            for field in ("link", "from", "to"):
-                                if entry[field] != hop[field]:
-                                    raise ValidationError(
-                                        "global STA hop/event identity disagrees"
-                                    )
-                            tx = entry["slot"] * period
-                            ratio = entry.get("tdm_ratio")
-                        if not math.isfinite(tx) or tx < 0.0:
-                            raise ValidationError("global STA TX time is invalid")
-                        arcs = trailing + (float(chain[k]["delay_ns"]) if not j else
-                                           endpoints[hop["tx_endpoint"]],)
-                        delay_model = board_links[hop["link"]].tdm_delay_model
-                        link_delay = (delay_model.delay_ns(ratio)
-                                      if delay_model is not None else
-                                      links[hop["link"], hop["from"], hop["to"]])
-                        if ratio_mode:
-                            model_arcs.extend((arcs[-1], link_delay, endpoints[hop["rx_endpoint"]]))
-                        # Previous-frame registered values are stable at first TX.
-                        # Only that check is exempt; relays retain current-frame causality.
-                        if not (schedule["transport_semantics"] == "registered-boundary" and not j):
+                            if not math.isfinite(tx) or tx < 0.0:
+                                raise ValidationError("global STA TX time is invalid")
+                            arcs = trailing + (float(chain[k]["delay_ns"]) if not j else
+                                               endpoints[hop["tx_endpoint"]],)
+                            delay_model = board_links[hop["link"]].tdm_delay_model
+                            link_delay = (delay_model.delay_ns(ratio)
+                                          if delay_model is not None else
+                                          links[hop["link"], hop["from"], hop["to"]])
+                            if ratio_mode:
+                                model_arcs.extend((arcs[-1], link_delay, endpoints[hop["rx_endpoint"]]))
+                            # Previous-frame registered values are stable at first TX.
+                            # Only that check is exempt; relays retain current-frame causality.
+                            if not (schedule["transport_semantics"] == "registered-boundary" and not j):
+                                result.append_values(
+                                    member, "tx", eid, origin, arcs, tx - uncertainty
+                                )
+                            origin = tx
+                            trailing = (link_delay,
+                                        endpoints[hop["rx_endpoint"]])
+                    if len(periods) != 1 or len(seen_entries) != len(record["scheduled_hops"]):
+                        raise ValidationError("global STA incomplete event coverage or mixed slot periods")
+                    if chain[-1]["kind"] != "capture" or chain[-1]["replace_tx_endpoint"] is not None:
+                        raise ValidationError("global STA final segment is not capture")
+                    final_arcs = trailing + (float(chain[-1]["delay_ns"]), uncertainty)
+                    required = float(record.get("required_time_ns", record["clock_period_ns"]))
+                    commit = (schedule["route_constraints"]["frame_slots"]-1)*periods.pop()
+                    for role, deadline in (("target", required),
+                                           ("runtime", virtual-(record["clock_period_ns"]-required)),
+                                           ("commit", commit)):
+                        # The total net-ratio model already includes TDM delay.
+                        # Keep absolute TX/commit readiness checks separate; never
+                        # add their slot wait again to the modeled path delay.
+                        if ratio_mode and role in {"target", "runtime"}:
                             result.append_values(
-                                member, "tx", eid, origin, arcs, tx - uncertainty
+                                member,
+                                role,
+                                "capture",
+                                0.0,
+                                tuple(model_arcs)
+                                + (float(chain[-1]["delay_ns"]), uncertainty),
+                                deadline,
                             )
-                        origin = tx
-                        trailing = (link_delay,
-                                    endpoints[hop["rx_endpoint"]])
-                if len(periods) != 1 or len(seen_entries) != len(record["scheduled_hops"]):
-                    raise ValidationError("global STA incomplete event coverage or mixed slot periods")
-                if chain[-1]["kind"] != "capture" or chain[-1]["replace_tx_endpoint"] is not None:
-                    raise ValidationError("global STA final segment is not capture")
-                final_arcs = trailing + (float(chain[-1]["delay_ns"]), uncertainty)
-                required = float(record.get("required_time_ns", record["clock_period_ns"]))
-                commit = (schedule["route_constraints"]["frame_slots"]-1)*periods.pop()
-                for role, deadline in (("target", required),
-                                       ("runtime", virtual-(record["clock_period_ns"]-required)),
-                                       ("commit", commit)):
-                    # The total net-ratio model already includes TDM delay.
-                    # Keep absolute TX/commit readiness checks separate; never
-                    # add their slot wait again to the modeled path delay.
-                    if ratio_mode and role in {"target", "runtime"}:
-                        result.append_values(
-                            member,
-                            role,
-                            "capture",
-                            0.0,
-                            tuple(model_arcs)
-                            + (float(chain[-1]["delay_ns"]), uncertainty),
-                            deadline,
-                        )
-                    else:
-                        result.append_values(
-                            member, role, "capture", origin, final_arcs, deadline
-                        )
+                        else:
+                            result.append_values(
+                                member, role, "capture", origin, final_arcs, deadline
+                            )
         if segment_cursor is not None:
             segment_cursor.finish()
     finally:
@@ -1768,61 +2221,6 @@ _RESULT_SCALARS = ("system_delay_bound_ns", "target_required_time_ns",
                    "runtime_clock_slack_bound_ns")
 
 
-class _IndexedTimingResults(Sequence):
-    """Engine scalars over the canonical metadata; project one path at a time."""
-
-    def __init__(self, metadata: _IndexedPathMetadata):
-        self.metadata = metadata
-        self._columns = tuple(array("d", [0.0]) * len(metadata) for _ in _RESULT_SCALARS)
-        self._present = bytearray(len(metadata))
-        self.measured_count = 0
-
-    def __len__(self):
-        return len(self.metadata)
-
-    def _index(self, path):
-        index = bisect_left(self.metadata._paths, path)
-        if index == len(self) or self.metadata._paths[index] != path:
-            raise ValidationError("global STA result references an unknown original path")
-        return index
-
-    def has_result(self, path):
-        return bool(self._present[self._index(path)])
-
-    def append(self, row):
-        index = self._index(row["path"])
-        if self._present[index] or is_optimized_away(self.metadata[row["path"]]):
-            raise ValidationError("global STA duplicate or eliminated numerical result")
-        for name, column in zip(_RESULT_SCALARS, self._columns):
-            value = row[name]
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-                raise ValidationError("global STA result contains an invalid engine scalar")
-            column[index] = value
-        self._present[index] = 1
-        self.measured_count += 1
-
-    def __getitem__(self, index):
-        if isinstance(index, slice):
-            return [self[i] for i in range(*index.indices(len(self)))]
-        if index < 0:
-            index += len(self)
-        if index < 0 or index >= len(self):
-            raise IndexError(index)
-        path = self.metadata._paths[index]
-        info = self.metadata[path]
-        eliminated = is_optimized_away(info)
-        if eliminated:
-            validate_optimization_record(info)
-        elif not self._present[index]:
-            raise ValidationError("global STA result is missing original-path engine scalars")
-        return {"path": path, **info, **{name: None if eliminated else column[index]
-                for name, column in zip(_RESULT_SCALARS, self._columns)}}
-
-    @property
-    def typed_payload_bytes(self):
-        return len(self._present) + sum(c.itemsize * len(c) for c in self._columns)
-
-
 def build_opensta_timing(runtime, metadata, measurements):
     """Build the canonical report directly from engine scalars, never Python timing.
 
@@ -1834,16 +2232,18 @@ def build_opensta_timing(runtime, metadata, measurements):
         raise ValidationError("global STA empty original population")
     implemented_count = sum(not is_optimized_away(info) for info in metadata_paths.values())
 
-    class InterleavedMeasurements(Exception):
-        pass
-
     def ordered_paths():
         # bind_physical_checks emits one contiguous bundle per original path.
         # Validate identities within the live bundle and construct the final
         # path row when that bundle ends. This avoids an H-sized identity set
         # and a second P-sized target/runtime record map in production.
-        paths = _IndexedTimingResults(metadata_paths) if isinstance(metadata_paths, _IndexedPathMetadata) else []
-        completed = None if isinstance(paths, _IndexedTimingResults) else set()
+        typed_builder = (
+            _SystemTimingPathBuilder(metadata_paths)
+            if isinstance(metadata_paths, _IndexedPathMetadata)
+            else None
+        )
+        paths = [] if typed_builder is None else None
+        completed = set() if typed_builder is None else None
         current_path = None
         current_rows = {}
         current_identities = set()
@@ -1854,20 +2254,29 @@ def build_opensta_timing(runtime, metadata, measurements):
             if current_path is None:
                 return
             if set(current_rows) != {"target", "runtime"}:
-                raise InterleavedMeasurements
+                raise ValidationError(
+                    "global STA requires complete, contiguous original-path measurements"
+                )
             info = metadata_paths[current_path]
             target = current_rows["target"]
-            path = {
-                "path": current_path,
-                **info,
-                "system_delay_bound_ns": target["arrival_ns"],
-            }
-            for role in ("target", "runtime"):
-                row = current_rows[role]
-                path[f"{role}_required_time_ns"] = row["required_ns"]
-                path[f"{role}_clock_slack_bound_ns"] = row["slack_ns"]
-            paths.append(path)
-            if completed is not None:
+            runtime_row = current_rows["runtime"]
+            if typed_builder is not None:
+                if not typed_builder.append(current_path, target, runtime_row):
+                    raise ValidationError(
+                        "global STA requires complete, contiguous original-path measurements"
+                    )
+            else:
+                assert paths is not None and completed is not None
+                path = {
+                    "path": current_path,
+                    **info,
+                    "system_delay_bound_ns": target["arrival_ns"],
+                    "target_required_time_ns": target["required_ns"],
+                    "target_clock_slack_bound_ns": target["slack_ns"],
+                    "runtime_required_time_ns": runtime_row["required_ns"],
+                    "runtime_clock_slack_bound_ns": runtime_row["slack_ns"],
+                }
+                paths.append(path)
                 completed.add(current_path)
 
         for row in measurements:
@@ -1886,9 +2295,10 @@ def build_opensta_timing(runtime, metadata, measurements):
                     "global STA invalid standalone measurement population"
                 )
             if path_id != current_path:
-                already_completed = paths.has_result(path_id) if completed is None else path_id in completed
-                if already_completed:
-                    raise InterleavedMeasurements
+                if completed is not None and path_id in completed:
+                    raise ValidationError(
+                        "global STA requires complete, contiguous original-path measurements"
+                    )
                 finish_bundle()
                 current_path = path_id
                 current_rows = {}
@@ -1917,88 +2327,78 @@ def build_opensta_timing(runtime, metadata, measurements):
             elif row["slack_ns"] < -1e-3:
                 failures += 1
         finish_bundle()
-        if (paths.measured_count if isinstance(paths, _IndexedTimingResults) else len(paths)) != implemented_count:
-            raise ValidationError(
-                "global STA invalid standalone measurement population"
-            )
-        if not isinstance(paths, _IndexedTimingResults):
-            paths.sort(key=lambda path: path["path"])
-        return paths, failures, checks
-
-    try:
-        paths, failures, measurement_count = ordered_paths()
-    except InterleavedMeasurements:
-        if isinstance(metadata_paths, _IndexedPathMetadata):
-            raise ValidationError("global STA indexed measurements are not ordered original-path bundles") from None
-        # Preserve compatibility for external callers that do not retain the
-        # canonical path-bundle order. This is outside the production path.
-        observed = {}
-        identities = set()
-        failures = 0
-        for row in measurements:
-            identity = (row.get("path"), row.get("role"), row.get("event"))
-            if (
-                row.get("path") not in metadata_paths
-                or is_optimized_away(metadata_paths[row["path"]])
-                or row.get("role") not in {"target", "runtime", "tx", "commit"}
-                or identity in identities
-                or any(
-                    isinstance(row.get(key), bool)
-                    or not isinstance(row.get(key), (int, float))
-                    or not math.isfinite(row[key])
-                    for key in ("arrival_ns", "required_ns", "slack_ns")
-                )
-            ):
+        if typed_builder is not None:
+            paths = typed_builder.finish()
+        else:
+            assert paths is not None
+            if len(paths) != implemented_count:
                 raise ValidationError(
                     "global STA invalid standalone measurement population"
                 )
-            identities.add(identity)
-            if row["role"] in {"target", "runtime"}:
-                key = (row["path"], row["role"])
-                if key in observed:
-                    raise ValidationError(
-                        "global STA invalid standalone measurement population"
-                    )
-                observed[key] = row
-            elif row["slack_ns"] < -1e-3:
-                failures += 1
-        expected = {
-            (path_id, role)
-            for path_id, info in metadata_paths.items() if not is_optimized_away(info)
-            for role in ("target", "runtime")
-        }
-        if set(observed) != expected:
-            raise ValidationError(
-                "global STA invalid standalone measurement population"
-            )
-        paths = []
-        for path_id, info in sorted(metadata_paths.items()):
-            if is_optimized_away(info):
-                continue
-            target = observed[path_id, "target"]
-            path = {
-                "path": path_id,
-                **info,
-                "system_delay_bound_ns": target["arrival_ns"],
-            }
-            for role in ("target", "runtime"):
-                row = observed[path_id, role]
-                path[f"{role}_required_time_ns"] = row["required_ns"]
-                path[f"{role}_clock_slack_bound_ns"] = row["slack_ns"]
-            paths.append(path)
-        measurement_count = len(measurements)
-    if not isinstance(paths, _IndexedTimingResults):
+            paths.sort(key=lambda path: path["path"])
+        return paths, failures, checks
+
+    paths, failures, measurement_count = ordered_paths()
+    if not isinstance(paths, _IndexedSystemTimingPaths):
         for path_id, info in metadata_paths.items():
             if is_optimized_away(info):
                 validate_optimization_record(info)
                 paths.append({"path": path_id, **info, **dict.fromkeys(_RESULT_SCALARS)})
         paths.sort(key=lambda path: path["path"])
-    def implemented_paths():
-        return (path for path in paths if not is_optimized_away(path))
     source = metadata["source_binding"]
     scope = "whole-original-design" if source is not None else "cross-fpga-path-subset"
-    local = sum(p["path_scope"] == "same-fpga-local" for p in paths)
-    bounds = sum(p["physical_logic_segments_cone_bound"] for p in implemented_paths())
+    local = 0
+    bounds = 0
+    maximum_delay = None
+    metrics = {
+        role: {
+            "wns_ns": math.inf,
+            "original_path_tns_ns": 0.0,
+            "negative_paths": 0,
+        }
+        for role in ("target", "runtime")
+    }
+    worst_paths = {role: None for role in ("target", "runtime")}
+    negative_partials = {role: [] for role in ("target", "runtime")}
+
+    def add_fsum(partials: list[float], value: float) -> None:
+        """Accumulate one value with math.fsum's bounded partials strategy."""
+
+        index = 0
+        for partial in partials:
+            if abs(value) < abs(partial):
+                value, partial = partial, value
+            high = value + partial
+            low = partial - (high - value)
+            if low:
+                partials[index] = low
+                index += 1
+            value = high
+        partials[index:] = [value]
+
+    for path in paths:
+        local += path["path_scope"] == "same-fpga-local"
+        if is_optimized_away(path):
+            continue
+        bounds += path["physical_logic_segments_cone_bound"]
+        maximum_delay = path["system_delay_bound_ns"] if maximum_delay is None else max(maximum_delay, path["system_delay_bound_ns"])
+        for role in ("target", "runtime"):
+            slack = path[f"{role}_clock_slack_bound_ns"]
+            metric = metrics[role]
+            if (slack, path["path"]) < (
+                metric["wns_ns"], worst_paths[role] or ""
+            ):
+                metric["wns_ns"] = slack
+                worst_paths[role] = path["path"]
+            if slack < 0.0:
+                metric["negative_paths"] += 1
+                add_fsum(negative_partials[role], slack)
+    for role in ("target", "runtime"):
+        if implemented_count == 0:
+            metrics[role]["wns_ns"] = None
+        metrics[role]["original_path_tns_ns"] = math.fsum(
+            negative_partials[role]
+        )
     timing = {"schema": "emuflow.system-timing/v2", "status": "fail" if failures else "pass",
               "qualification": "opensta-fixed-event-physical-bounds", "timing_scope": scope,
               "source_binding": source, "paths": paths, "path_population_policy": PATH_POPULATION_POLICY,
@@ -2011,19 +2411,13 @@ def build_opensta_timing(runtime, metadata, measurements):
                   "compressed_representative_paths": metadata["compressed_representative_paths"],
                   "original_path_coverage": 1.0 if source else None,
                   "original_path_ids_sha256": source["original_path_ids_sha256"] if source else None,
-                  "maximum_system_delay_bound_ns": max((p["system_delay_bound_ns"] for p in implemented_paths()), default=None)}}
-    metrics = {}
+                  "maximum_system_delay_bound_ns": maximum_delay}}
     for role in ("target", "runtime"):
-        worst = min(implemented_paths(), key=lambda p:(p[f"{role}_clock_slack_bound_ns"],p["path"]), default=None)
-        def slacks():
-            return (p[f"{role}_clock_slack_bound_ns"] for p in implemented_paths())
-        tns = math.fsum(min(0.0, value) for value in slacks())
-        wns = min(slacks(), default=None)
-        metrics[role] = {"wns_ns": wns, "original_path_tns_ns": tns,
-                         "negative_paths": sum(value<0 for value in slacks())}
-        timing[f"{role}_clock"] = {"closure_gate": role=="runtime", "worst_path": None if worst is None else worst["path"],
-            "worst_slack_bound_ns": wns, "tns_bound_ns": tns,
-            "total_negative_slack_bound_ns": tns, "negative_slack_paths": metrics[role]["negative_paths"]}
+        metric = metrics[role]
+        tns = metric["original_path_tns_ns"]
+        timing[f"{role}_clock"] = {"closure_gate": role=="runtime", "worst_path": worst_paths[role],
+            "worst_slack_bound_ns": metric["wns_ns"], "tns_bound_ns": tns,
+            "total_negative_slack_bound_ns": tns, "negative_slack_paths": metric["negative_paths"]}
     clock_periods = {
         clock: float(record["nominal_period_ns"])
         for clock, record in runtime["virtual_dut_clocks"].items()
@@ -2048,116 +2442,3 @@ def build_opensta_timing(runtime, metadata, measurements):
         "event_failures": failures, "metrics": metrics,
         "tns_definition": "sum-negative-slack-once-per-implemented-original-TimingPathDB-path"}
     return timing
-
-
-def compare_system_timing(measurements, reference, *, tolerance_ns=1.0e-3):
-    """Compare every original path, not merely extrema; return a compact gate.
-
-    OpenSTA uses float-based timing internally. The floor is 1 ps, with four
-    float32 relative epsilons on the specific compared value (not the global
-    frame). A near-zero slack retains the strict floor even in a huge frame.
-"""
-    if tolerance_ns <= 0 or not math.isfinite(tolerance_ns):
-        raise ValidationError("invalid global STA comparison tolerance")
-    expected = {p["path"]: p for p in reference["paths"]}
-    if not expected or len(expected) != len(reference["paths"]):
-        raise ValidationError("global STA reference has empty/duplicate original paths")
-    original_count = len(expected)
-    for path in expected.values():
-        if is_optimized_away(path):
-            validate_optimization_record(path)
-    expected = {key:path for key,path in expected.items() if not is_optimized_away(path)}
-    observed = {}
-    identities = set()
-    max_error = 0.0
-    max_tolerance = tolerance_ns
-    failures = 0
-    for row in measurements:
-        role = row["role"]
-        identity = (row["path"], role, row["event"])
-        if (role not in {"target", "runtime", "tx", "commit"}
-                or row["path"] not in expected or identity in identities):
-            raise ValidationError("global STA invalid/duplicate measurement identity")
-        identities.add(identity)
-        if any(isinstance(row[k], bool) or not math.isfinite(row[k])
-               for k in ("arrival_ns", "required_ns", "slack_ns")):
-            raise ValidationError("global STA nonfinite measurement")
-        if role in {"tx", "commit"}:
-            failures += row["slack_ns"] < -tolerance_ns
-            continue
-        key = (row["path"], role)
-        if key in observed or row["path"] not in expected:
-            raise ValidationError("global OpenSTA original-path population mismatch")
-        observed[key] = row
-        old = expected[row["path"]]
-        for actual, value in ((row["arrival_ns"], old["system_delay_bound_ns"]),
-                              (row["required_ns"], old[f"{role}_required_time_ns"]),
-                              (row["slack_ns"], old[f"{role}_clock_slack_bound_ns"])):
-            if isinstance(value, bool) or not math.isfinite(value):
-                raise ValidationError("global STA nonfinite reference")
-            error = abs(actual-value)
-            max_error = max(max_error, error)
-            allowance = max(tolerance_ns, 4 * 2**-23 * abs(value))
-            max_tolerance = max(max_tolerance, allowance)
-            if error > allowance:
-                raise ValidationError(f"global OpenSTA disagrees at {key}: error {error} ns")
-    if set(observed) != {(p, r) for p in expected for r in ("target", "runtime")}:
-        raise ValidationError("global OpenSTA original-path coverage is incomplete")
-    summary = {}
-    for role in ("target", "runtime"):
-        slacks = [row["slack_ns"] for row in measurements if row["role"] == role]
-        summary[role] = {"wns_ns": min(slacks, default=None),
-                         "original_path_tns_ns": math.fsum(min(0.0, s) for s in slacks),
-                         "negative_paths": sum(s < 0 for s in slacks)}
-    return {"schema": "emuflow.global-opensta-check/v1", "status": "fail" if failures else "pass",
-            "authority": "qualification-only-pending-full-flow-validation",
-            "timing_scope": reference["timing_scope"], "original_paths": original_count,
-            "implemented_paths": len(expected), "optimized_away_paths": original_count-len(expected),
-            "path_population_policy": PATH_POPULATION_POLICY,
-            "event_failures": failures, "checks": len(measurements),
-            "tolerance_ns": tolerance_ns, "maximum_difference_ns": max_error,
-            "maximum_comparison_tolerance_ns": max_tolerance,
-            "relative_float32_epsilons": 4,
-            "metrics": summary,
-            "tns_definition": "sum-negative-slack-once-per-implemented-original-TimingPathDB-path"}
-
-
-def adopt_opensta_results(timing, measurements):
-    """Project checked engine values into the canonical report, in place.
-
-    Keep the independent composer as the comparison input, not a second persisted path
-    population. All public scalar aliases are updated together.
-    """
-    gate = compare_system_timing(measurements, timing)
-    observed = {(r["path"], r["role"]): r for r in measurements
-                if r["role"] in {"target", "runtime"}}
-    for path in timing["paths"]:
-        if is_optimized_away(path):
-            continue
-        path["system_delay_bound_ns"] = observed[path["path"], "target"]["arrival_ns"]
-        for role in ("target", "runtime"):
-            row = observed[path["path"], role]
-            path[f"{role}_required_time_ns"] = row["required_ns"]
-            path[f"{role}_clock_slack_bound_ns"] = row["slack_ns"]
-    for role in ("target", "runtime"):
-        worst = min((p for p in timing["paths"] if not is_optimized_away(p)), key=lambda p: (
-            p[f"{role}_clock_slack_bound_ns"], p["path"]), default=None)
-        metrics = gate["metrics"][role]
-        timing[f"{role}_clock"].update({
-            "worst_path": None if worst is None else worst["path"],
-            "worst_slack_bound_ns": metrics["wns_ns"],
-            "negative_slack_paths": metrics["negative_paths"],
-            "total_negative_slack_bound_ns": metrics["original_path_tns_ns"],
-            "tns_bound_ns": metrics["original_path_tns_ns"],
-        })
-    maximum = max((p["system_delay_bound_ns"] for p in timing["paths"] if not is_optimized_away(p)), default=None)
-    timing["summary"]["maximum_system_delay_bound_ns"] = maximum
-    timing["runtime_clock"]["minimum_safe_period_bound_ns"] = maximum
-    timing["runtime_clock"]["maximum_safe_frequency_bound_mhz"] = (
-        1000.0 / maximum if maximum is not None and maximum > 0 else None)
-    if gate["status"] != "pass" or (gate["metrics"]["runtime"]["wns_ns"] is not None and gate["metrics"]["runtime"]["wns_ns"] < 0):
-        timing["status"] = "fail"
-    gate["authority"] = "opensta" if observed else "no-numerical-checks"
-    gate["cross_checker"] = "independent-python-event-composer"
-    timing["global_opensta"] = gate
-    return gate

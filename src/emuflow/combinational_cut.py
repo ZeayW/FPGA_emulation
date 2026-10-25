@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mmap
+import os
 import sqlite3
 import struct
 import subprocess
@@ -26,10 +27,13 @@ from .errors import ValidationError
 from .emuir_storage import open_emuir_sqlite_read_only
 from .ir import EMUIR_SCHEMA, EmuIR, VALID_CUT_CLASSES
 from .native_tools import resolve_native_stage_command
+from .native_columns import _ClusterScratch
 from .phase3_exact_records import (
     StaticExactRecordSequence,
     build_static_exact_capture_stream,
     build_static_exact_cut_node_stream,
+    read_native_static_exact_cut_node_stream,
+    read_native_static_exact_capture_stream,
     build_static_exact_record_streams,
     direct_static_exact_semantic_contract_sha256,
     validate_static_exact_capture_bit,
@@ -1225,6 +1229,7 @@ def _build_combinational_cut_candidate_index(
     *,
     include_dependency_levels: bool,
     include_source_identity: bool,
+    _native_candidate_ids: bool = False,
 ) -> Dict[str, Any]:
     """Build the compact candidate index used by Phase 3 hot paths.
 
@@ -1238,17 +1243,21 @@ def _build_combinational_cut_candidate_index(
     """
 
     compact_path = _compact_partition_ir_path(ir)
+    if not isinstance(_native_candidate_ids, bool):
+        raise ValidationError("native candidate producer flag is invalid")
+    if _native_candidate_ids and (compact_path is None or include_dependency_levels or include_source_identity):
+        raise ValidationError("native candidate producer requires compact structural-only input")
     if (
         compact_path is not None
         and not include_dependency_levels
         and not include_source_identity
     ):
-        return {
-            "eligible_ids": _compact_combinational_cut_candidate_ids(
-                ir, compact_path
-            ),
-            "dependency_levels": {},
-        }
+        if _native_candidate_ids:
+            from .phase3_candidates_native import build_native_candidate_ids
+            eligible_ids = build_native_candidate_ids(ir)
+        else:
+            eligible_ids = _compact_combinational_cut_candidate_ids(ir, compact_path)
+        return {"eligible_ids": eligible_ids, "dependency_levels": {}}
 
     instances = {item["id"]: item for item in ir.value["instances"]}
     classes = {
@@ -2038,163 +2047,39 @@ def _validate_compact_native_cuts(
     return ordered_cuts if normalized is None else normalized
 
 
-def _write_compact_native_static_exact_graph(
+def _write_compact_native_static_exact_parts(
     path: Path,
     emit: Any,
     instance_assignment: Mapping[str, str],
     part_index: Mapping[str, int],
-) -> tuple[int, int, int]:
-    """Emit the native graph straight from compact integer EmuIR relations.
+    instance_count: int,
+) -> None:
+    """Pass only the selected partition column; C++ owns graph import."""
 
-    The returned counts are independently checked against the IR view before
-    the caller writes the protocol header.  Instance names are used only for
-    the authoritative assignment lookup; endpoints already carry stable cell
-    ordinals and never pass through a second ``name -> ordinal`` dictionary.
-    """
-
-    connection = open_emuir_sqlite_read_only(path)
-    try:
-        metadata_row = connection.execute(
-            "SELECT value FROM metadata WHERE key='record_counts_json'"
-        ).fetchone()
-        if metadata_row is None:
-            raise ValidationError("compact EmuIR record counts are missing")
-        try:
-            counts = json.loads(metadata_row[0])
-            instance_count = counts["cell_records"]
-            net_count = counts["net_records"]
-            endpoint_count = counts["endpoint_records"]
-        except (KeyError, TypeError, json.JSONDecodeError) as error:
-            raise ValidationError("compact EmuIR record counts are invalid") from error
-        sink_count = connection.execute(
-            "SELECT COUNT(*) FROM endpoint_records WHERE role=1"
-        ).fetchone()[0]
-        if (
-            any(
-                isinstance(value, bool)
-                or not isinstance(value, int)
-                or value < 0
-                or value >= 2**32
-                for value in (instance_count, net_count, sink_count)
-            )
-            or isinstance(endpoint_count, bool)
-            or not isinstance(endpoint_count, int)
-            or endpoint_count < 0
-            or endpoint_count < sink_count
-        ):
-            raise ValidationError("compact EmuIR record counts are invalid")
-
-        observed_instances = 0
-        for row in connection.execute(
-            """SELECT c.seq,c.id,p.value AS resources_json
-                 FROM cell_records c JOIN payloads p ON p.seq=c.resources_seq
-                ORDER BY c.seq"""
-        ):
-            if row["seq"] != observed_instances:
-                raise ValidationError("compact EmuIR instance sequence is invalid")
-            target = instance_assignment.get(row["id"])
+    part_for_source_seq = getattr(instance_assignment, "part_for_source_seq", None)
+    observed = 0
+    if callable(part_for_source_seq):
+        for seq in range(instance_count):
+            target = part_for_source_seq(seq)
             if target not in part_index:
-                raise ValidationError(
-                    "exact semantic contract assignment is incomplete"
-                )
-            try:
-                resources = json.loads(row["resources_json"])
-            except (TypeError, json.JSONDecodeError) as error:
-                raise ValidationError(
-                    "compact EmuIR instance resources are invalid"
-                ) from error
-            if not isinstance(resources, Mapping):
-                raise ValidationError(
-                    "compact EmuIR instance resources are invalid"
-                )
-            emit(
-                "<BI",
-                int(
-                    _instance_class({"resources": resources})
-                    == "architectural-state-or-memory"
-                ),
-                part_index[target],
-            )
-            observed_instances += 1
-        if (
-            observed_instances != instance_count
-            or len(instance_assignment) != instance_count
-        ):
-            raise ValidationError(
-                "exact semantic contract assignment is incomplete"
-            )
-
-        endpoint_rows = iter(
-            connection.execute(
-                """SELECT net_seq,role,ordinal,instance_seq
-                     FROM endpoint_records
-                    ORDER BY net_seq,role,ordinal"""
-            )
-        )
-        endpoint = next(endpoint_rows, None)
-        observed_nets = 0
-        observed_endpoints = 0
-        observed_sinks = 0
-        for row in connection.execute(
-            "SELECT seq FROM net_records ORDER BY seq"
-        ):
-            net_seq = row["seq"]
-            if net_seq != observed_nets:
-                raise ValidationError("compact EmuIR net sequence is invalid")
-            groups: list[list[int]] = [[], []]
-
-            endpoint_ordinals = [-1, -1]
-            while endpoint is not None and endpoint["net_seq"] == net_seq:
-                role = endpoint["role"]
-                ordinal = endpoint["ordinal"]
-                if (
-                    role not in {0, 1}
-                    or isinstance(ordinal, bool)
-                    or not isinstance(ordinal, int)
-                    or ordinal < 0
-
-                    or ordinal <= endpoint_ordinals[role]
-                ):
-                    raise ValidationError(
-                        "compact EmuIR endpoint sequence is invalid"
-                    )
-
-                endpoint_ordinals[role] = ordinal
-                owner = endpoint["instance_seq"]
-                if owner is None:
-                    groups[role].append(-1)
-                elif (
-                    isinstance(owner, bool)
-                    or not isinstance(owner, int)
-                    or owner < 0
-                    or owner >= instance_count
-                ):
-                    raise ValidationError(
-                        "compact EmuIR endpoint owner is invalid"
-                    )
-                else:
-                    groups[role].append(owner)
-                observed_endpoints += 1
-                observed_sinks += int(role == 1)
-                endpoint = next(endpoint_rows, None)
-            if endpoint is not None and endpoint["net_seq"] < net_seq:
-                raise ValidationError("compact EmuIR has orphaned endpoints")
-            for owners in groups:
-                emit("<I", len(owners))
-                for owner in owners:
-                    emit("<i", owner)
-            observed_nets += 1
-        if endpoint is not None:
-            raise ValidationError("compact EmuIR has orphaned endpoints")
-        if (
-            observed_nets != net_count
-            or observed_endpoints != endpoint_count
-            or observed_sinks != sink_count
-        ):
-            raise ValidationError("compact EmuIR record counts disagree")
-        return instance_count, net_count, sink_count
-    finally:
-        connection.close()
+                raise ValidationError("exact semantic contract assignment is incomplete")
+            emit("<I", part_index[target])
+            observed += 1
+    else:
+        connection = open_emuir_sqlite_read_only(path)
+        try:
+            for row in connection.execute("SELECT seq,id FROM cell_records ORDER BY seq"):
+                if row["seq"] != observed:
+                    raise ValidationError("compact EmuIR instance sequence is invalid")
+                target = instance_assignment.get(row["id"])
+                if target not in part_index:
+                    raise ValidationError("exact semantic contract assignment is incomplete")
+                emit("<I", part_index[target])
+                observed += 1
+        finally:
+            connection.close()
+    if observed != instance_count or len(instance_assignment) != instance_count:
+        raise ValidationError("exact semantic contract assignment is incomplete")
 
 
 def _compact_native_static_exact_counts(path: Path) -> tuple[int, int, int]:
@@ -2278,6 +2163,7 @@ def _analyze_static_exact_dependencies_native(
         ir,
         include_dependency_levels=False,
         include_source_identity=False,
+        _native_candidate_ids=_compact_partition_ir_path(ir) is not None,
     )
     eligible = candidate_index["eligible_ids"]
     del candidate_index
@@ -2292,7 +2178,7 @@ def _analyze_static_exact_dependencies_native(
             for index, instance in enumerate(instances)
         }
     )
-    already_ordered = all(
+    already_ordered = getattr(cut_nets, "is_canonical", False) is True or all(
         cut_nets[index - 1]["net"] < cut_nets[index]["net"]
         for index in range(1, len(cut_nets))
     )
@@ -2304,7 +2190,12 @@ def _analyze_static_exact_dependencies_native(
             range(len(cut_nets)), key=lambda index: cut_nets[index]["net"]
         )
         ordered_cuts = [cut_nets[index] for index in ordered_positions]
-    ordered_cut_ids = [cut["net"] for cut in ordered_cuts]
+    net_identities = getattr(ordered_cuts, "net_identities", None)
+    ordered_cut_ids: Sequence[str] = (
+        net_identities()
+        if callable(net_identities)
+        else [cut["net"] for cut in ordered_cuts]
+    )
     if any(
         ordered_cut_ids[index - 1] == ordered_cut_ids[index]
         for index in range(1, len(ordered_cut_ids))
@@ -2394,8 +2285,13 @@ def _analyze_static_exact_dependencies_native(
     del ordered_positions
     del eligible
 
+    compact_part_ids = getattr(instance_assignment, "part_ids", None)
     part_ids = sorted(
-        set(instance_assignment.values())
+        set(
+            compact_part_ids
+            if compact_part_ids is not None
+            else instance_assignment.values()
+        )
         | {
             fpga
             for cut in ordered_cuts
@@ -2417,7 +2313,7 @@ def _analyze_static_exact_dependencies_native(
         raise ValidationError("exact semantic contract assignment is incomplete")
 
     native_command = resolve_native_stage_command(
-        "emuflow_static_exact_analyzer", "phase3", "analyze"
+        "phase3", "analyze"
     )
     with tempfile.TemporaryDirectory(prefix="emuflow-static-exact-") as temporary:
         root = Path(temporary)
@@ -2445,7 +2341,7 @@ def _analyze_static_exact_dependencies_native(
             emit(
                 "<Q6I",
                 _STATIC_EXACT_NATIVE_INPUT_MAGIC,
-                _STATIC_EXACT_NATIVE_PROTOCOL_VERSION,
+                4 if compact_ir_path is not None else _STATIC_EXACT_NATIVE_PROTOCOL_VERSION,
                 instance_count,
                 net_count,
                 len(ordered_cut_ids),
@@ -2453,14 +2349,10 @@ def _analyze_static_exact_dependencies_native(
                 sink_count,
             )
             if compact_ir_path is not None:
-                emitted_counts = _write_compact_native_static_exact_graph(
-                    compact_ir_path,
-                    emit,
-                    instance_assignment,
-                    part_index,
+                _write_compact_native_static_exact_parts(
+                    compact_ir_path, emit, instance_assignment, part_index,
+                    instance_count,
                 )
-                if emitted_counts != (instance_count, net_count, sink_count):
-                    raise ValidationError("compact EmuIR record counts disagree")
             else:
                 if instance_index is None:
                     raise ValidationError("native Static Exact input is incomplete")
@@ -2515,14 +2407,18 @@ def _analyze_static_exact_dependencies_native(
                     emit("<I", part_index[sink])
             if pending:
                 stream.write(pending)
-        # Protocol v3 contains only fixed-width integer graph coordinates. It
-        # preserves original instance/net order, resolves the cut subset while
-        # scanning those arrays, and returns only capture coordinates. Python
-        # binds C returned records back to authoritative EmuIR; native code
-        # never receives names, ports, or potentially unbounded Python bits.
+        # Compact v4 passes the source store plus the selected partition column
+        # and cut coordinates. Native code reads cell/net/endpoint relations
+        # directly; legacy v3 carries the graph for explicit in-memory inputs.
+        # Both return identical v3 capture coordinates, resolved independently
+        # against authoritative EmuIR below.
         del resolved_cut_ordinals
+        indexed_arguments = (
+            ["--indexed-input", str(compact_ir_path.resolve())]
+            if compact_ir_path is not None else []
+        )
         completed = subprocess.run(
-            [*native_command, str(native_input), str(native_output)],
+            [*native_command, *indexed_arguments, str(native_input), str(native_output)],
             capture_output=True,
             text=True,
             check=False,
@@ -2599,17 +2495,12 @@ def _analyze_static_exact_dependencies_native(
                         yield take("<IIII")
 
                 if compact_ir_path is not None:
-                    capture_stream = (
-                        _resolve_compact_native_coordinate_capture_stream(
-                            compact_ir_path,
-                            capture_coordinates(),
-                            ordered_cut_ids,
-                            part_ids,
-                            ordered_cuts,
-                            instance_assignment,
-                            root / "capture-relation.sqlite3",
-                        )
+                    capture_stream = _produce_native_compact_captures(
+                        compact_ir_path, native_input, native_output, part_ids, root,
                     )
+                    # The native owner consumed and checked all coordinates;
+                    # advance the bounded parent envelope without Python replay.
+                    offset += 16 * capture_count
                 else:
                     if instance_index is None:
                         raise ValidationError(
@@ -2631,6 +2522,12 @@ def _analyze_static_exact_dependencies_native(
                         "native Static Exact output has trailing bytes"
                     )
         del instance_index
+        # Keep only the compact native topology until final records are built.
+        retained = tempfile.TemporaryDirectory(prefix="emuflow-exact-topology-")
+        retained_path = Path(retained.name) / "topology.bin"
+        os.replace(native_output, retained_path)
+        analysis_records.native_topology_path = retained_path
+        analysis_records._native_topology_owner = retained
 
     analysis_records.finalize(
         bytearray(
@@ -2927,15 +2824,14 @@ def _resolve_native_coordinate_capture_stream(
     return _normalize_native_capture_stream(capture_relation(), sorter_path)
 
 
-def _resolve_compact_native_coordinate_capture_stream(
+def _iter_compact_native_capture_relation(
     path: Path,
     capture_coordinates: Iterable[Tuple[int, int, int, int]],
     ordered_cut_ids: Sequence[str],
     part_ids: Sequence[str],
     ordered_cuts: Sequence[Mapping[str, Any]],
     instance_assignment: Mapping[str, str],
-    sorter_path: Path,
-) -> StaticExactRecordSequence:
+) -> Iterator[Tuple[str, str, str, str, Any, Any]]:
     """Resolve native captures with one ordered compact-EmuIR merge.
 
     Protocol v3 coordinates name the authoritative net and the sink's dense
@@ -2963,6 +2859,9 @@ def _resolve_compact_native_coordinate_capture_stream(
             )
         )
 
+        part_for_source_seq = getattr(
+            instance_assignment, "part_for_source_seq", None
+        )
         def dense_endpoint_rows() -> Iterator[Tuple[Any, int]]:
             previous_net: int | None = None
             previous_ordinal: int | None = None
@@ -3060,10 +2959,15 @@ def _resolve_compact_native_coordinate_capture_stream(
                     port = None
                     bit = None
                 else:
+                    assigned_part = (
+                        part_for_source_seq(endpoint["instance_seq"])
+                        if callable(part_for_source_seq)
+                        else instance_assignment.get(raw_instance)
+                    )
                     if (
                         not isinstance(raw_instance, str)
                         or not raw_instance
-                        or instance_assignment.get(raw_instance) != fpga
+                        or assigned_part != fpga
                     ):
                         raise ValidationError(
                             "native Static Exact capture is invalid"
@@ -3088,11 +2992,77 @@ def _resolve_compact_native_coordinate_capture_stream(
                     bit = endpoint["bit"]
                 yield cut_net, fpga, kind, identity, port, bit
 
-        return _normalize_native_capture_stream(
-            capture_relation(), sorter_path
-        )
+        yield from capture_relation()
     finally:
         connection.close()
+
+
+def _resolve_compact_native_coordinate_capture_stream(
+    path, capture_coordinates, ordered_cut_ids, part_ids, ordered_cuts,
+    instance_assignment, sorter_path,
+):
+    """Explicit reference normalizer for compact capture qualification."""
+
+    return _normalize_native_capture_stream(
+        _iter_compact_native_capture_relation(
+            path, capture_coordinates, ordered_cut_ids, part_ids,
+            ordered_cuts, instance_assignment,
+        ), sorter_path,
+    )
+
+
+def _produce_native_compact_captures(
+    path, request_path, topology_path, part_ids, root,
+):
+    """Native producer plus independently scanned source/capture coverage."""
+
+    owner = _ClusterScratch(prefix="emuflow-exact-captures-")
+    output = Path(owner.name) / "captures.bin"
+    parts_path = root / "capture-parts.bin"
+    result = None
+    try:
+        with parts_path.open("wb") as stream:
+            stream.write(struct.pack("<QII", 0x31504553464D5545, 1, len(part_ids)))
+            for part in part_ids:
+                raw = part.encode("utf-8")
+                stream.write(struct.pack("<I", len(raw)))
+                stream.write(raw)
+        from .native_tools import native_file_generation, resolve_native_executable
+        from .tool_runtime import NativeToolProcess
+        inputs = (path.resolve(), request_path, topology_path, parts_path)
+        generations = tuple(native_file_generation(item) for item in inputs)
+        executable = resolve_native_executable("emuflow-native")
+        report = root / "capture-operation.json"
+        command = [executable, "--report", str(report), "phase3", "build-captures",
+                   *(str(item) for item in inputs), str(output)]
+        from .phase3_runtime import phase3_runtime_call, phase3_runtime_observe
+        def produce():
+            with NativeToolProcess(executable, command, environment=dict(os.environ),
+                                   scratch_parent=root, timeout_ms=21600000) as process:
+                return process.finish()
+        completed = phase3_runtime_call("static_exact.native_capture_build_and_validation", produce)
+        if completed.returncode:
+            raise ValidationError("native capture production/validation failed: " + completed.stdout)
+        if tuple(native_file_generation(item) for item in inputs) != generations:
+            raise ValidationError("native capture source generation changed")
+        if report.stat().st_size > 65536:
+            raise ValidationError("native capture operation summary exceeds bound")
+        operation = json.loads(report.read_text())
+        if (not isinstance(operation, dict) or operation.get("schema") != "emuflow.native-stage-result/v1" or
+                operation.get("stage") != "phase3.build-captures" or operation.get("status") != "pass"):
+            raise ValidationError("native capture operation report disagrees")
+        result = read_native_static_exact_capture_stream(output)
+        phase3_runtime_observe(native_capture_records=len(result))
+        report.unlink()
+        parts_path.unlink()
+        result.adopt_native_scratch(owner)
+        return result
+    except BaseException:
+        if result is not None:
+            result.close()
+        owner.cleanup()
+        raise
+
 
 
 def _resolve_native_capture_requests(
@@ -3111,6 +3081,82 @@ def _resolve_native_capture_requests(
             part_ids,
         )
     )
+
+
+def _build_native_semantic_cut_nodes(ordered_cuts, topology, captures):
+    """Native final-record owner; Python supplies bounded identity cursors."""
+
+    owner = _ClusterScratch(prefix="emuflow-exact-semantics-")
+    root = Path(owner.name)
+    metadata = root / "identities.bin"
+    output = root / "cut-nodes.bin"
+    capture_cursor = iter(captures.iter_binary_captures())
+    capture = next(capture_cursor, None)
+    nodes = None
+    try:
+        with metadata.open("wb") as stream:
+            stream.write(struct.pack("<QII", 0x314D4553464D5545, 1, len(ordered_cuts)))
+            def write_string(value):
+                raw = value.encode("utf-8")
+                if not raw or len(raw) >= 2**32:
+                    raise ValidationError("native semantic identity is invalid")
+                stream.write(struct.pack("<I", len(raw)))
+                stream.write(raw)
+            for cut in ordered_cuts:
+                net = cut["net"].encode("utf-8")
+                count = 0
+                while capture is not None and capture[0] == net:
+                    count += 1
+                    capture = next(capture_cursor, None)
+                write_string(cut["net"])
+                write_string(cut["cut_class"])
+                write_string(cut["source_fpgas"][0])
+                stream.write(struct.pack("<I", len(cut["sink_fpgas"])))
+                for sink in cut["sink_fpgas"]:
+                    write_string(sink)
+                stream.write(struct.pack("<I", count))
+            if capture is not None:
+                raise ValidationError("native semantic capture coverage disagrees")
+        command = resolve_native_stage_command(
+            "phase3", "finalize-semantics"
+        )
+        # The standalone analyzer exposes the same operation with a flag.
+        if len(command) == 1:
+            command = [*command, "--finalize-semantics"]
+        completed = subprocess.run(
+            [*command, str(topology.native_topology_path), str(metadata), str(output)],
+            capture_output=True, text=True, check=False,
+        )
+        if completed.returncode:
+            raise ValidationError("native semantic finalization failed: " + completed.stderr.strip())
+        nodes = read_native_static_exact_cut_node_stream(output)
+        if nodes.native_semantic_version != 2:
+            raise ValidationError("native semantic producer requires record format v2")
+        nodes.adopt_native_scratch(owner)
+        if len(nodes) != len(ordered_cuts):
+            raise ValidationError("native semantic cut coverage disagrees")
+        for index, (node, cut) in enumerate(zip(nodes, ordered_cuts)):
+            expected_flag = 1 if topology.local_launch(index) else (2 if topology.dependency_count(index) == 0 else 0)
+            if nodes.native_dependency_indices(index) != tuple(topology.dependency_indices(index)):
+                raise ValidationError("native semantic coordinates disagree with independent topology")
+            if nodes.native_launch_flag(index) != expected_flag:
+                raise ValidationError("native semantic launch flag disagrees with independent topology")
+            if any(node[field] != cut[field] for field in (
+                "net", "cut_class", "source_fpgas", "sink_fpgas"
+            )) or node["dependency_level"] != topology.dependency_level(index) or (
+                node["combinational_dependency_depth"] != topology.combinational_depth(index)
+            ) or node["predecessor_cut_nets"] != [
+                ordered_cuts[source]["net"] for source in topology.dependency_indices(index)
+            ]:
+                raise ValidationError("native semantic record disagrees with independent topology")
+        metadata.unlink()
+        topology._native_topology_owner.cleanup()
+        return nodes
+    except BaseException:
+        if nodes is not None:
+            nodes.close()
+        owner.cleanup()
+        raise
 
 
 def build_static_exact_semantic_contract(
@@ -3333,7 +3379,12 @@ def build_static_exact_semantic_contract(
         ordered_cut_ids = sorted(cut_by_net)
         ordered_cuts = [cut_by_net.pop(net_id) for net_id in ordered_cut_ids]
     else:
-        ordered_cut_ids = [cut["net"] for cut in ordered_cuts]
+        net_identities = getattr(ordered_cuts, "net_identities", None)
+        ordered_cut_ids = (
+            net_identities()
+            if callable(net_identities)
+            else [cut["net"] for cut in ordered_cuts]
+        )
     del cut_by_net
     if analysis_records is not None:
         if len(analysis_records) != len(ordered_cut_ids):
@@ -3485,7 +3536,11 @@ def build_static_exact_semantic_contract(
             )
 
     if stream_records:
-        cut_nodes = build_static_exact_cut_node_stream(generate_cut_nodes())
+        cut_nodes = (
+            _build_native_semantic_cut_nodes(ordered_cuts, analysis_records, capture_records)
+            if analysis_records is not None
+            else build_static_exact_cut_node_stream(generate_cut_nodes())
+        )
         record_streams = build_static_exact_record_streams(
             cut_nodes,
             capture_records,
@@ -3539,8 +3594,14 @@ def build_static_exact_semantic_contract(
         "source_identity": {
             "emuir": _bounded_emuir_identity(ir),
             "canonical_platform_sha256": _canonical_sha256(platform_value),
-            "instance_assignment_sha256": _canonical_sha256(
-                {"instance_assignment": instance_assignment}
+            "instance_assignment_sha256": (
+                instance_assignment.canonical_sha256()
+                if callable(
+                    getattr(instance_assignment, "canonical_sha256", None)
+                )
+                else _canonical_sha256(
+                    {"instance_assignment": instance_assignment}
+                )
             ),
             "timing_source_sha256": None,
         },

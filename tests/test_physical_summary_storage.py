@@ -22,7 +22,7 @@ from emuflow.physical_summary_storage import (
     read_physical_summary,
 )
 from emuflow.logic_segment_timing import validate_logic_segment_timing
-from emuflow.system_timing import _logic_segment_database
+from emuflow.physical_timing_inputs import _logic_segment_database
 
 
 class PhysicalSummaryStorageTest(unittest.TestCase):

@@ -710,8 +710,8 @@ The production v2 profile additionally binds one exact device implementation
 contract: `xilinx-ultrascaleplus-open-v1` synthesis, the source-sealed
 RapidWright `xcvu19p-fsva3824-2-e` provider, the `rapidwright` physical backend,
 and `openparf-native` placement. PPro calibrates the inter-FPGA behavior while
-RapidWright owns the intra-FPGA physical model. VTR remains a separate open
-academic backend and cannot qualify a PPro-calibrated holdout.
+RapidWright owns the intra-FPGA physical model. The VTR/open execution route
+is retired; historical VTR evidence cannot qualify a PPro-calibrated holdout.
 
 Production integration binds the three artifacts as one profile, not as
 independent optional hints. BoardDB is the Phase 1--7 capacity/topology
@@ -744,9 +744,8 @@ acceptance.
 
 Status: **independent result assembler, promotion contract, and evaluator
 implemented; all application classes require RapidWright-bound requalification**.
-Earlier AES and CPU physical results used the VTR surrogate and are retained
-only as historical diagnostics; they no longer satisfy the calibrated physical
-contract. A scratch-only application bundle generator now binds an existing
+Historical VTR-surrogate results cannot satisfy the calibrated physical
+contract. A scratch-only application bundle generator binds an existing
 checked benchmark contract and natural RTL source tree to a free-partition
 PPro `application_holdout`; source paths and the EmuFlow platform choice never
 enter the compact observation. Because it emits no placement assignment, this

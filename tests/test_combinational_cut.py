@@ -1,3 +1,4 @@
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 import copy
 import hashlib
 import io
@@ -11,7 +12,7 @@ import subprocess
 import tempfile
 import tracemalloc
 import unittest
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -48,18 +49,21 @@ from emuflow.netlist import (
 )
 from emuflow.partition import (
     CUT_MODE_STATIC_EXACT,
-    assign_clusters,
     build_clusters,
     build_partition_assignment,
     normalize_partition_constraints,
     validate_partition_artifacts,
 )
+from tests.partition_reference import assign_clusters
 from emuflow.platform import Platform
 from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.split_netlist_storage import SplitNetlistView
 from emuflow.phase3_assignment_index import (
     ASSIGNMENT_INDEX_APPLICATION_ID,
-    migrate_phase3_assignment_index,
+    open_phase3_assignment_index,
+    phase3_exact_semantic_counts,
+    phase3_exact_relation_counts,
+    read_phase3_exact_split_relations,
     read_phase3_exact_semantic_contract,
     read_phase3_exact_semantic_partition,
     validate_phase3_assignment_index,
@@ -69,12 +73,16 @@ from emuflow.phase3_exact_records import (
     StaticExactCutNodeSequence,
     StaticExactRecordSequence,
     build_static_exact_capture_stream,
+    build_static_exact_cut_node_stream,
+    read_native_static_exact_cut_node_stream,
+    read_native_static_exact_capture_stream,
 )
 from emuflow.phase3_exact_binary import (
     validate_phase3_exact_binary,
     write_phase3_exact_binary,
 )
 from emuflow.phase3_storage import (
+    PACKED_ASSIGNMENT_SCHEMA,
     pack_phase3_assignment,
     pack_phase3_clusters,
     read_phase3_assignment_view,
@@ -87,19 +95,15 @@ from emuflow.routing import (
 )
 from emuflow.resources import ResourceVector
 from emuflow.tdm import (
-    TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER,
-    TDM_BASELINE_PROVIDER,
     TDM_EXACT_DEPENDENCY_PROVIDER,
     SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
-    build_tdm_schedule,
     validate_tdm_schedule,
 )
-from emuflow.tdm_schedule_storage import (
-    read_tdm_schedule,
-    write_tdm_schedule_storage,
+from tests.schedule_reference import (
+    REFERENCE_TDM_PROVIDER as TDM_BASELINE_PROVIDER,
+    build_tdm_schedule,
 )
-from emuflow.tdm_ratio import build_tdm_ratio_plan
-from emuflow.tdm_slot import refine_tdm_schedule_native
+from emuflow.tdm_schedule_storage import (read_tdm_schedule)
 from emuflow.timing_routing import route_system_native
 from emuflow.transport_storage import write_transport_storage
 from emuflow.system_route_storage import (
@@ -107,13 +111,7 @@ from emuflow.system_route_storage import (
     read_system_routes,
     write_system_route_storage,
 )
-from tests.native_build import (
-    static_exact_analyzer,
-    tdm_exact_scheduler,
-    tdm_ratio_optimizer,
-    tdm_slot_optimizer,
-    tlr_router,
-)
+from tests.native_build import emuflow_native, static_exact_analyzer, tlr_router
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -766,7 +764,7 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "design.emuir.sqlite"
             write_compact_emuir(path, value)
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 connection.execute(
                     "UPDATE endpoint_records SET ordinal=ordinal+1000000"
                 )
@@ -1047,7 +1045,7 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
                 path = Path(temporary) / "design.emuir.sqlite"
                 write_compact_emuir(path, _chain_ir().to_dict())
                 compact_ir = load_partition_ir(path)
-                with sqlite3.connect(path) as connection:
+                with closing(sqlite3.connect(path)) as connection, connection:
                     mutate(connection)
                 with self.assertRaisesRegex(ValidationError, message):
                     _build_combinational_cut_candidate_index(
@@ -1061,7 +1059,7 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
             path = Path(temporary) / "design.emuir.sqlite"
             write_compact_emuir(path, _chain_ir().to_dict())
             compact_ir = load_partition_ir(path)
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 resources_seq = connection.execute(
                     "SELECT resources_seq FROM cell_records WHERE seq=0"
                 ).fetchone()[0]
@@ -1181,7 +1179,7 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
                 path = Path(temporary) / "design.emuir.sqlite"
                 write_compact_emuir(path, _chain_ir().to_dict())
                 compact_ir = load_partition_ir(path)
-                with sqlite3.connect(path) as connection:
+                with closing(sqlite3.connect(path)) as connection, connection:
                     mutate(connection)
                 with self.assertRaisesRegex(ValidationError, message):
                     _build_combinational_cut_candidate_index(
@@ -1270,7 +1268,7 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "million.emuir.sqlite"
             write_compact_emuir(path, value)
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 connection.execute("PRAGMA synchronous=OFF")
                 template = connection.execute(
                     """SELECT resources_seq,constants_seq,extras_seq
@@ -1500,16 +1498,21 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                         "max_cross_fpga_dependency_depth"
                     ],
                 )
-                streamed = build_static_exact_semantic_contract(
-                    self.ir,
-                    self.platform.to_dict(),
-                    assignment["instance_assignment"],
-                    assignment["cut_nets"],
-                    max_dependency_depth=expected[
-                        "max_cross_fpga_dependency_depth"
-                    ],
-                    stream_records=True,
-                )
+                with patch(
+                    "emuflow.combinational_cut.build_static_exact_cut_node_stream",
+                    side_effect=AssertionError("native records must not be repacked in Python"),
+                ):
+                    streamed = build_static_exact_semantic_contract(
+                        self.ir,
+                        self.platform.to_dict(),
+                        assignment["instance_assignment"],
+                        assignment["cut_nets"],
+                        max_dependency_depth=expected[
+                            "max_cross_fpga_dependency_depth"
+                        ],
+                        stream_records=True,
+                    )
+                self.assertTrue(streamed["cut_nodes"].native_semantic_artifact_path.is_file())
             self.assertEqual(actual, expected)
             self.assertIsInstance(
                 streamed["cut_nodes"], StaticExactCutNodeSequence
@@ -1635,7 +1638,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "design.emuir.sqlite"
             write_compact_emuir(path, self.ir.to_dict())
-            with sqlite3.connect(path) as connection:
+            with closing(sqlite3.connect(path)) as connection, connection:
                 connection.execute(
                     "UPDATE endpoint_records SET ordinal=ordinal+100 "
                     "WHERE net_seq=0 AND role=0"
@@ -1670,12 +1673,290 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     cut_net_ordinals=ordinals,
                 )
 
+                with patch(
+                    "emuflow.combinational_cut._normalize_native_capture_stream",
+                    side_effect=AssertionError("compact production must not normalize captures in Python"),
+                ):
+                    streamed = build_static_exact_semantic_contract(
+                        compact_ir, self.platform.to_dict(), assignment["instance_assignment"],
+                        assignment["cut_nets"], max_dependency_depth=expected["max_cross_fpga_dependency_depth"],
+                        cut_net_ordinals=ordinals, stream_records=True,
+                    )
+                capture_path = streamed["capture_requirements"].native_capture_artifact_path
+                self.assertTrue(capture_path.is_file())
+                self.assertEqual([path.name for path in capture_path.parent.iterdir()], ["captures.bin"])
+                self.assertEqual(list(streamed["capture_requirements"]), expected["capture_requirements"])
+                expected_bin, actual_bin = Path(temporary) / "expected.bin", Path(temporary) / "actual.bin"
+                write_phase3_exact_binary(expected_bin, expected, ["fpga0", "fpga1"])
+                write_phase3_exact_binary(actual_bin, streamed, ["fpga0", "fpga1"])
+                self.assertEqual(expected_bin.read_bytes(), actual_bin.read_bytes())
+
         self.assertEqual(actual, expected)
         self.assertEqual(
             semantic_contract_sha256(actual),
             semantic_contract_sha256(expected),
         )
 
+    def test_native_indexed_import_matches_legacy_and_rejects_corruption(self):
+        # Exercise the native boundary itself; parent validation must not mask
+        # bad schema, coverage, endpoints, or an incomplete partition column.
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        instances, nets = self.ir.value["instances"], self.ir.value["nets"]
+        instance_ids = {item["id"]: index for index, item in enumerate(instances)}
+        net_ids = {item["id"]: index for index, item in enumerate(nets)}
+        parts = sorted(set(assignment["instance_assignment"].values()))
+        cuts = sorted(assignment["cut_nets"], key=lambda cut: cut["net"])
+        executable = static_exact_analyzer()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            database = root / "design.sqlite"
+            write_compact_emuir(database, self.ir.to_dict())
+            legacy = bytearray(struct.pack(
+                "<Q6I", 0x31584553464D5545, 3, len(instances), len(nets),
+                len(cuts), len(parts), sum(len(net["sinks"]) for net in nets),
+            ))
+            indexed = bytearray(legacy)
+            struct.pack_into("<I", indexed, 8, 4)
+            for instance in instances:
+                part = parts.index(assignment["instance_assignment"][instance["id"]])
+                state = any(instance["resources"].get(key, 0)
+                            for key in ("ff", "bram", "bram18k", "uram288"))
+                legacy.extend(struct.pack("<BI", state, part))
+                indexed.extend(struct.pack("<I", part))
+            for net in nets:
+                for role in ("drivers", "sinks"):
+                    legacy.extend(struct.pack("<I", len(net[role])))
+                    for endpoint in net[role]:
+                        legacy.extend(struct.pack("<i", instance_ids.get(endpoint["instance"], -1)))
+            for cut in cuts:
+                sinks = sorted(set(cut["sink_fpgas"]))
+                row = struct.pack("<3I", net_ids[cut["net"]],
+                                  parts.index(cut["source_fpgas"][0]), len(sinks))
+                row += b"".join(struct.pack("<I", parts.index(sink)) for sink in sinks)
+                legacy.extend(row)
+                indexed.extend(row)
+            legacy_input, indexed_input = root / "legacy.in", root / "indexed.in"
+            legacy_input.write_bytes(legacy)
+            indexed_input.write_bytes(indexed)
+            legacy_output, indexed_output = root / "legacy.out", root / "indexed.out"
+            subprocess.run([str(executable), "phase3", "analyze", str(legacy_input), str(legacy_output)], check=True)
+            source_digest = hashlib.sha256(database.read_bytes()).hexdigest()
+            command = [str(executable), "phase3", "analyze", "--indexed-input", str(database),
+                       str(indexed_input), str(indexed_output)]
+            subprocess.run(command, check=True)
+            self.assertEqual(indexed_output.read_bytes(), legacy_output.read_bytes())
+            subprocess.run([str(emuflow_native()), "phase3", "analyze",
+                            "--indexed-input", str(database), str(indexed_input),
+                            str(indexed_output)], check=True)
+            self.assertEqual(indexed_output.read_bytes(), legacy_output.read_bytes())
+            self.assertEqual(hashlib.sha256(database.read_bytes()).hexdigest(), source_digest)
+            # Native capture normalization must terminate at the exact record
+            # count, remain byte/record-equivalent, and reject damaged input.
+            parts_path, captures_path = root / "parts", root / "captures.bin"
+            parts_path.write_bytes(struct.pack("<QII", 0x31504553464D5545, 1, len(parts)) +
+                                   b"".join(struct.pack("<I", len(part.encode())) + part.encode() for part in parts))
+            raw_topology = indexed_output.read_bytes()
+            offset = 24
+            for _ in cuts:
+                _, edges = struct.unpack_from("<BI", raw_topology, offset)
+                offset += 5 + 4 * edges
+            def capture_command(output):
+                return [str(emuflow_native()), "phase3", "build-captures", str(database),
+                        str(indexed_input), str(indexed_output), str(parts_path), str(output)]
+            subprocess.run(capture_command(captures_path), check=True, timeout=15)
+            from emuflow.combinational_cut import _resolve_compact_native_coordinate_capture_stream
+            reference_captures = _resolve_compact_native_coordinate_capture_stream(
+                database, struct.iter_unpack("<4I", raw_topology[offset:]),
+                [cut["net"] for cut in cuts], parts, cuts, assignment["instance_assignment"],
+                root / "reference-captures.sqlite",
+            )
+            native_captures = read_native_static_exact_capture_stream(captures_path)
+            self.assertEqual(list(native_captures), list(reference_captures))
+            del native_captures  # Release the mapped fixture before retirement.
+            capture_bytes = captures_path.read_bytes()
+            for number, payload in enumerate((capture_bytes[:16], capture_bytes + b"extra",
+                    capture_bytes[:24] + struct.pack("<Q", 1) + capture_bytes[32:])):
+                corrupted = root / f"corrupt-captures-{number}"
+                corrupted.write_bytes(payload)
+                with self.assertRaises(ValidationError):
+                    list(read_native_static_exact_capture_stream(corrupted))
+            # Repeated physical endpoints must collapse to one canonical fact;
+            # non-ASCII ports and the largest compact integer range stay exact.
+            source_before = database.read_bytes()
+            request_before = indexed_input.read_bytes()
+            coordinates = list(struct.iter_unpack("<4I", raw_topology[offset:]))
+            self.assertTrue(coordinates)
+            _, _, capture_net, capture_sink = coordinates[0]
+            with closing(sqlite3.connect(database)) as connection, connection:
+                next_sink = connection.execute(
+                    "SELECT max(ordinal)+1 FROM endpoint_records WHERE net_seq=? AND role=1",
+                    (capture_net,),
+                ).fetchone()[0]
+                connection.execute(
+                    "INSERT INTO endpoint_records SELECT net_seq,role,?,instance_seq,port_seq,bit,extras_seq "
+                    "FROM endpoint_records WHERE net_seq=? AND role=1 AND ordinal=?",
+                    (next_sink, capture_net, capture_sink),
+                )
+                connection.execute("UPDATE pin_names SET name=name || '端口α'")
+                connection.execute("UPDATE endpoint_records SET bit=?", (2**63-1,))
+                counts = json.loads(connection.execute(
+                    "SELECT value FROM metadata WHERE key='record_counts_json'"
+                ).fetchone()[0])
+                counts["endpoint_records"] += 1
+                connection.execute("UPDATE metadata SET value=? WHERE key='record_counts_json'", (json.dumps(counts),))
+            coordinates += [(cut, part, net, next_sink) for cut, part, net, sink in coordinates
+                            if (net, sink) == (capture_net, capture_sink)]
+            coordinates.sort(key=lambda row: (row[2], row[3], row[0], row[1]))
+            duplicate_topology = bytearray(raw_topology[:offset])
+            struct.pack_into("<Q", duplicate_topology, 16, len(coordinates))
+            duplicate_topology.extend(b"".join(struct.pack("<4I", *row) for row in coordinates))
+            indexed_output.write_bytes(duplicate_topology)
+            duplicate_request = bytearray(request_before)
+            struct.pack_into("<I", duplicate_request, 28, struct.unpack_from("<I", duplicate_request, 28)[0] + 1)
+            indexed_input.write_bytes(duplicate_request)
+            repeated_output = root / "repeated-captures.bin"
+            subprocess.run(capture_command(repeated_output), check=True, timeout=15)
+            repeated_reference = _resolve_compact_native_coordinate_capture_stream(
+                database, iter(coordinates), [cut["net"] for cut in cuts], parts, cuts,
+                assignment["instance_assignment"], root / "repeated-reference.sqlite",
+            )
+            repeated_native = read_native_static_exact_capture_stream(repeated_output)
+            self.assertEqual(list(repeated_native), list(repeated_reference))
+            self.assertLess(len(repeated_native), len(coordinates))
+            del repeated_native
+            database.write_bytes(source_before)
+            indexed_input.write_bytes(request_before)
+            indexed_output.write_bytes(raw_topology)
+            valid_request, valid_parts = indexed_input.read_bytes(), parts_path.read_bytes()
+            malformed_coordinate = bytearray(raw_topology)
+            if offset < len(raw_topology):
+                struct.pack_into("<I", malformed_coordinate, offset, len(cuts))
+            for number, (request_data, topology_data, part_data) in enumerate((
+                (valid_request[:-1], raw_topology, valid_parts),
+                (valid_request, raw_topology[:-1], valid_parts),
+                (valid_request, raw_topology + b"extra", valid_parts),
+                (valid_request, malformed_coordinate, valid_parts),
+                (valid_request, raw_topology, valid_parts[:-1]),
+            )):
+                indexed_input.write_bytes(request_data)
+                indexed_output.write_bytes(topology_data)
+                parts_path.write_bytes(part_data)
+                rejected = root / f"rejected-captures-{number}"
+                rejected.write_bytes(b"previous-generation")
+                result = subprocess.run(capture_command(rejected), capture_output=True, text=True, timeout=15)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(rejected.read_bytes(), b"previous-generation")
+            indexed_input.write_bytes(valid_request)
+            indexed_output.write_bytes(raw_topology)
+            parts_path.write_bytes(valid_parts)
+            pristine = database.read_bytes()
+            for mutation in (
+                "PRAGMA user_version=99",
+                "UPDATE cell_records SET resources_seq=1000000 WHERE seq=0",
+                "UPDATE endpoint_records SET instance_seq=-1 WHERE net_seq=0",
+                "UPDATE endpoint_records SET net_seq=net_seq+1000000",
+                "UPDATE metadata SET value='{}' WHERE key='record_counts_json'",
+            ):
+                with self.subTest(mutation=mutation):
+                    database.write_bytes(pristine)
+                    with closing(sqlite3.connect(database)) as connection, connection:
+                        connection.execute(mutation)
+                    indexed_output.write_bytes(b"previous-generation")
+                    result = subprocess.run(command, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(indexed_output.read_bytes(), b"previous-generation")
+            database.write_bytes(pristine)
+            for payload in (indexed[:32], indexed[:-1], indexed + b"trailing"):
+                with self.subTest(size=len(payload)):
+                    indexed_input.write_bytes(payload)
+                    result = subprocess.run(command, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(indexed_output.read_bytes(), b"previous-generation")
+
+    def test_native_semantic_producer_rejects_old_private_record_version(self):
+        from emuflow.combinational_cut import _build_native_semantic_cut_nodes
+
+        topology = _NativeStaticExactAnalysisRecords(0)
+        topology.native_topology_path = Path("unused-topology")
+        def old_producer(command, **kwargs):
+            Path(command[-1]).write_bytes(struct.pack("<QIIQQ", 0x314E4553464D5545, 1, 0, 0, 0))
+            return subprocess.CompletedProcess(command, 0, "", "")
+        from emuflow.phase3_exact_records import read_native_static_exact_cut_node_stream
+        held = []
+        def reader(path):
+            nodes = read_native_static_exact_cut_node_stream(path)
+            held.append((nodes, nodes._native_mapping[0]))
+            return nodes
+        with patch("emuflow.combinational_cut.resolve_native_stage_command", return_value=["native"]), patch(
+            "emuflow.combinational_cut.subprocess.run", side_effect=old_producer
+        ), patch("emuflow.combinational_cut.read_native_static_exact_cut_node_stream", side_effect=reader), self.assertRaisesRegex(
+            ValidationError, "record format v2"
+        ):
+            _build_native_semantic_cut_nodes([], topology, build_static_exact_capture_stream([]))
+        # Retain both the result and its mmap beyond the rejected operation:
+        # NFS retirement must not depend on traceback/GC releasing either.
+        self.assertEqual(len(held), 1)
+        self.assertIsNone(held[0][0]._native_mapping)
+        self.assertTrue(held[0][1].closed)
+
+    def test_native_semantic_finalizer_matches_records_and_rejects_bad_input(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            topology, metadata, output = root / "topology", root / "metadata", root / "nodes"
+            valid_topology = struct.pack("<QIIQ", 0x315845534F4D5545, 3, 2, 0)
+            valid_topology += struct.pack("<BI", 1, 0) + struct.pack("<BII", 0, 1, 0)
+            valid_metadata = bytearray(struct.pack("<QII", 0x314D4553464D5545, 1, 2))
+            for net, source, sink in (("a", "fpga0", "fpga1"), ("b", "fpga1", "fpga0")):
+                for value in (net, "combinational", source):
+                    raw = value.encode()
+                    valid_metadata.extend(struct.pack("<I", len(raw)) + raw)
+                raw = sink.encode()
+                valid_metadata.extend(struct.pack("<II", 1, len(raw)) + raw + struct.pack("<I", 0))
+            topology.write_bytes(valid_topology)
+            metadata.write_bytes(valid_metadata)
+            command = [str(emuflow_native()), "phase3", "finalize-semantics",
+                       str(topology), str(metadata), str(output)]
+            subprocess.run(command, check=True)
+            native = read_native_static_exact_cut_node_stream(output)
+            expected = []
+            for index, (net, source, sink) in enumerate((("a", "fpga0", "fpga1"), ("b", "fpga1", "fpga0"))):
+                expected.append({
+                    "net": net, "cut_class": "combinational",
+                    "source_fpgas": [source], "sink_fpgas": [sink],
+                    "dependency_level": index + 1,
+                    "combinational_dependency_depth": index + 1,
+                    "predecessor_cut_nets": [] if index == 0 else ["a"],
+                    "source_segment_ids": [f"segment{index:06d}"],
+                    "capture_segment_ids": [],
+                })
+            self.assertEqual(list(native), expected)
+            reference = build_static_exact_cut_node_stream(expected)
+            self.assertEqual([native.binary_node(i) for i in range(2)],
+                             [reference.binary_node(i) for i in range(2)])
+            valid_output = output.read_bytes()
+            for payload in (valid_output[:16], valid_output + b"extra",
+                            valid_output[:24] + struct.pack("<Q", 1) + valid_output[32:]):
+                corrupt = root / "corrupt"
+                corrupt.write_bytes(payload)
+                with self.assertRaises(ValidationError):
+                    read_native_static_exact_cut_node_stream(corrupt)
+            # Close the mapped generation by releasing its only reader before
+            # exercising replacement of the output path.
+            del native
+            for bad_topology, bad_metadata in (
+                (valid_topology[:-1], valid_metadata),
+                (valid_topology + b"extra", valid_metadata),
+                (valid_topology, valid_metadata[:-1]),
+                (valid_topology, valid_metadata + b"extra"),
+                (struct.pack("<QIIQ", 0x315845534F4D5545, 3, 2, 0)
+                 + struct.pack("<BII", 0, 1, 1) + struct.pack("<BII", 0, 1, 0), valid_metadata),
+            ):
+                topology.write_bytes(bad_topology)
+                metadata.write_bytes(bad_metadata)
+                output.write_bytes(b"previous-generation")
+                result = subprocess.run(command, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(output.read_bytes(), b"previous-generation")
     def test_compact_native_path_accepts_sparse_endpoint_ordinals(self):
         _, assignment = self._exact_artifacts(dependent_return=True)
         expected = assignment["semantic_contract"]
@@ -1936,7 +2217,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     native_output = root / f"huge-{label}.out"
                     native_input.write_bytes(payload)
                     completed = subprocess.run(
-                        [executable, native_input, native_output],
+                        [executable, "phase3", "analyze", native_input, native_output],
                         capture_output=True,
                         text=True,
                         check=False,
@@ -2388,10 +2669,21 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         clusters, assignment = self._exact_artifacts(dependent_return=True)
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            write_phase3_assignment_index(
+            index_summary = write_phase3_assignment_index(
                 root / "assignment.sqlite", self.ir, assignment
             )
-            packed = pack_phase3_assignment(assignment, clusters)
+            packed = pack_phase3_assignment(
+                assignment,
+                clusters,
+                cut_nets_index={
+                    "artifact": "assignment.sqlite",
+                    "schema": "emuflow.phase3-cut-records/v1",
+                    "records": index_summary["cut_records"],
+                    "sha256": index_summary["cut_records_sha256"],
+                },
+            )
+            self.assertEqual(packed["schema"], PACKED_ASSIGNMENT_SCHEMA)
+            self.assertNotIn("cut_nets", packed["document"])
             self.assertIsNone(packed["semantic_contract"])
             self.assertEqual(
                 packed["semantic_contract_index"],
@@ -2413,6 +2705,10 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 root / "assignment.json",
                 include_semantic_contract=False,
             )
+            self.assertTrue(route_view["cut_records_indexed"])
+            self.assertIsInstance(route_view["cut_nets"], list)
+            self.assertEqual(list(route_view["cut_nets"]), assignment["cut_nets"])
+            self.assertEqual(list(route_view["cut_nets"]), assignment["cut_nets"])
             self.assertTrue(route_view["semantic_contract_indexed"])
             self.assertNotIn("semantic_contract", route_view)
             self.assertEqual(
@@ -2420,12 +2716,61 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA,
             )
 
+            cut_tampered = copy.deepcopy(packed)
+            cut_tampered["cut_nets_index"]["sha256"] = "0" * 64
+            write_json(root / "assignment.json", cut_tampered, compact=True)
+            with self.assertRaisesRegex(ValueError, "identity disagrees"):
+                read_phase3_assignment_view(root / "assignment.json")
+
             packed["semantic_contract_index"]["sha256"] = "0" * 64
             write_json(root / "assignment.json", packed, compact=True)
             with self.assertRaisesRegex(ValueError, "index is malformed"):
                 read_json(root / "assignment.json")
 
-    def _legacy_exact_assignment_with_bit(self, bit):
+            with closing(sqlite3.connect(root / "assignment.sqlite")) as connection, connection:
+                connection.execute(
+                    "UPDATE cuts SET sink_endpoints=sink_endpoints+1 "
+                    "WHERE cut_index=0"
+                )
+            with self.assertRaisesRegex(
+                ValidationError, "cut-record identity disagrees"
+            ):
+                validate_phase3_assignment_index(root / "assignment.sqlite")
+
+    def test_indexed_assignment_storage_preserves_zero_cut_contract(self):
+        clusters, assignment = self._exact_artifacts(dependent_return=True)
+        assignment = copy.deepcopy(assignment)
+        assignment["cut_nets"] = []
+        assignment.pop("semantic_contract", None)
+        assignment.pop("semantic_contract_sha256", None)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            summary = write_phase3_assignment_index(
+                root / "assignment.sqlite", self.ir, assignment
+            )
+            self.assertEqual(summary["cut_records"], 0)
+            packed = pack_phase3_assignment(
+                assignment,
+                clusters,
+                cut_nets_index={
+                    "artifact": "assignment.sqlite",
+                    "schema": "emuflow.phase3-cut-records/v1",
+                    "records": 0,
+                    "sha256": summary["cut_records_sha256"],
+                },
+            )
+            write_json(
+                root / "clusters.json",
+                pack_phase3_clusters(clusters),
+                compact=True,
+            )
+            write_json(root / "assignment.json", packed, compact=True)
+            view = read_phase3_assignment_view(root / "assignment.json")
+            self.assertEqual(len(view["cut_nets"]), 0)
+            self.assertEqual(list(view["cut_nets"]), [])
+            self.assertEqual(read_json(root / "assignment.json"), assignment)
+
+    def _exact_assignment_with_bit(self, bit):
         _, assignment = self._exact_artifacts(dependent_return=True)
         assignment = copy.deepcopy(assignment)
         capture = next(
@@ -2441,217 +2786,70 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         )
         return assignment, capture["id"], capture["fpga"]
 
-    def test_legacy_migration_uses_canonical_v2_bit_storage_boundaries(self):
-        cases = (
-            ((1 << 63) - 1, "integer", None),
-            (1 << 63, "blob", 8),
-            (1 << 8191, "blob", 1024),
-        )
-        for bit, storage_type, storage_bytes in cases:
+
+
+
+
+
+
+    def test_current_assignment_binary_preserves_capture_bit_boundaries(self):
+        for bit in ((1 << 63) - 1, 1 << 63, 1 << 8191):
             with self.subTest(bit_length=bit.bit_length()):
-                assignment, capture_id, fpga = (
-                    self._legacy_exact_assignment_with_bit(bit)
-                )
-                with tempfile.TemporaryDirectory() as temporary_directory:
-                    root = Path(temporary_directory)
-                    ir_path = root / "design.emuir.sqlite"
-                    assignment_path = root / "assignment.json"
-                    index_path = root / "assignment.sqlite"
-                    write_compact_emuir(ir_path, self.ir.to_dict())
-                    write_json(assignment_path, assignment)
-
-                    summary = migrate_phase3_assignment_index(
-                        index_path, ir_path, assignment_path
-                    )
+                assignment, capture_id, fpga = self._exact_assignment_with_bit(bit)
+                with tempfile.TemporaryDirectory() as temporary:
+                    index = Path(temporary) / "assignment.sqlite"
+                    summary = write_phase3_assignment_index(index, self.ir, assignment)
                     self.assertEqual(summary["status"], "pass")
-                    with sqlite3.connect(index_path) as connection:
-                        stored = connection.execute(
-                            "SELECT typeof(bit),CASE WHEN typeof(bit)='blob' "
-                            "THEN length(bit) END "
-                            "FROM exact_capture_requirements "
-                            "WHERE capture_id=?",
-                            (capture_id,),
-                        ).fetchone()
-                    self.assertEqual(stored, (storage_type, storage_bytes))
+                    partition = read_phase3_exact_semantic_partition(index, fpga)
+                    capture = next(r for r in partition["capture_requirements"] if r["id"] == capture_id)
+                    self.assertEqual(capture["bit"], bit)
+                    self.assertEqual(read_phase3_exact_semantic_contract(index, assignment), assignment["semantic_contract"])
+                    self.assertEqual(validate_phase3_assignment_index(index)["status"], "pass")
 
-                    partition = read_phase3_exact_semantic_partition(
-                        index_path, fpga
-                    )
-                    observed = next(
-                        item
-                        for item in partition["capture_requirements"]
-                        if item["id"] == capture_id
-                    )
-                    self.assertEqual(observed["bit"], bit)
-                    reconstructed = read_phase3_exact_semantic_contract(
-                        index_path, assignment
-                    )
-                    self.assertEqual(
-                        reconstructed["capture_requirements"],
-                        assignment["semantic_contract"][
-                            "capture_requirements"
-                        ],
-                    )
-                    self.assertEqual(
-                        validate_phase3_assignment_index(index_path)["status"],
-                        "pass",
-                    )
-
-    def test_legacy_json_migration_rejects_8193_bit_capture_before_digest(self):
-        assignment, _, _ = self._legacy_exact_assignment_with_bit(0)
-        capture = next(
-            item
-            for item in assignment["semantic_contract"][
-                "capture_requirements"
-            ]
-            if item["kind"] == "architectural-state"
-        )
+    def test_current_assignment_rejects_oversized_capture_without_publishing(self):
+        assignment, _, _ = self._exact_assignment_with_bit(0)
+        capture = next(r for r in assignment["semantic_contract"]["capture_requirements"] if r["kind"] == "architectural-state")
         capture["bit"] = 1 << 8192
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            ir_path = root / "design.emuir.sqlite"
-            assignment_path = root / "assignment.json"
-            index_path = root / "assignment.sqlite"
-            write_compact_emuir(ir_path, self.ir.to_dict())
-            write_json(assignment_path, assignment)
-            with patch(
-                "emuflow.phase3_assignment_index.semantic_contract_sha256",
-                side_effect=AssertionError("digest must follow capture validation"),
-            ), self.assertRaisesRegex(ValidationError, "at most 8192 bits"):
-                migrate_phase3_assignment_index(
-                    index_path, ir_path, assignment_path
-                )
-            self.assertFalse(index_path.exists())
+        with tempfile.TemporaryDirectory() as temporary:
+            index = Path(temporary) / "assignment.sqlite"
+            with self.assertRaisesRegex(ValidationError, "at most 8192 bits"):
+                write_phase3_assignment_index(index, self.ir, assignment)
+            self.assertEqual(list(index.parent.iterdir()), [])
 
-    def test_legacy_v1_and_v2_reads_reject_oversized_capture_bits(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            v1_path = root / "assignment-v1.sqlite"
-            for bit, accepted in ((1 << 8191, True), (1 << 8192, False)):
-                if v1_path.exists():
-                    v1_path.unlink()
-                capture = {
-                    "id": "capture000000",
-                    "cut_net": "net0",
-                    "fpga": "fpga0",
-                    "kind": "architectural-state",
-                    "endpoint": "state/D",
-                    "port": "D",
-                    "bit": bit,
-                }
-                with sqlite3.connect(v1_path) as connection:
-                    connection.executescript(
-                        f"""
-                        PRAGMA application_id={ASSIGNMENT_INDEX_APPLICATION_ID};
-                        PRAGMA user_version=1;
-                        CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);
-                        CREATE TABLE parts(
-                          part_index INTEGER PRIMARY KEY,fpga TEXT
-                        );
-                        CREATE TABLE copies(
-                          source_instance_seq INTEGER,part_index INTEGER,
-                          copy_id TEXT,is_replica INTEGER
-                        );
-                        CREATE TABLE cut_sinks(
-                          net_id TEXT,source_part_index INTEGER,
-                          sink_part_index INTEGER
-                        );
-                        CREATE TABLE exact_segment_bindings(
-                          segment_id TEXT,part_index INTEGER,payload_json TEXT
-                        );
-                        CREATE TABLE exact_capture_requirements(
-                          capture_id TEXT,part_index INTEGER,payload_json TEXT
-                        );
-                        """
-                    )
-                    connection.executemany(
-                        "INSERT INTO metadata VALUES (?,?)",
-                        [
-                            (
-                                "schema",
-                                json.dumps(
-                                    "emuflow.phase3-assignment-sqlite/v1"
-                                ),
-                            ),
-                            ("design", json.dumps("legacy")),
-                            ("platform", json.dumps("test")),
-                            ("source_instance_count", json.dumps(0)),
-                            ("semantic_contract_schema", json.dumps("schema")),
-                            ("semantic_contract_sha256", json.dumps("0" * 64)),
-                        ],
-                    )
-                    connection.execute(
-                        "INSERT INTO parts VALUES (0,'fpga0')"
-                    )
-                    connection.execute(
-                        "INSERT INTO exact_capture_requirements VALUES (?,?,?)",
-                        ("capture000000", 0, json.dumps(capture)),
-                    )
-                if accepted:
-                    partition = read_phase3_exact_semantic_partition(
-                        v1_path, "fpga0"
-                    )
-                    self.assertEqual(
-                        partition["capture_requirements"][0]["bit"], bit
-                    )
-                    self.assertEqual(
-                        validate_phase3_assignment_index(v1_path)["status"],
-                        "pass",
-                    )
-                else:
-                    for reader in (
-                        lambda: read_phase3_exact_semantic_partition(
-                            v1_path, "fpga0"
-                        ),
-                        lambda: validate_phase3_assignment_index(v1_path),
-                    ):
-                        with self.assertRaisesRegex(
-                            ValidationError, "at most 8192 bits"
-                        ):
-                            reader()
+    def test_retired_assignment_versions_rejected_by_all_readers(self):
+        from emuflow.phase3_storage import (
+            IndexedInstanceAssignment, _enrich_indexed_cut_dependencies,
+            read_phase3_cut_timing_view,
+        )
+        from emuflow import phase3_assignment_index
 
-            assignment, capture_id, fpga = (
-                self._legacy_exact_assignment_with_bit(0)
-            )
-            ir_path = root / "design.emuir.sqlite"
-            assignment_path = root / "assignment.json"
-            v2_path = root / "assignment-v2.sqlite"
-            write_compact_emuir(ir_path, self.ir.to_dict())
-            write_json(assignment_path, assignment)
-            migrate_phase3_assignment_index(
-                v2_path, ir_path, assignment_path
-            )
-            invalid_blobs = (
-                (b"\x00", "encoding is invalid"),
-                (b"\x01", "encoding is invalid"),
-                (((1 << 63) - 1).to_bytes(8, "big"), "encoding is invalid"),
-                (b"\x01" + b"\x00" * 1024, "at most 8192 bits"),
-            )
-            for encoded, message in invalid_blobs:
-                with self.subTest(encoded_bytes=len(encoded), message=message):
-                    with sqlite3.connect(v2_path) as connection:
-                        connection.execute(
-                            "UPDATE exact_capture_requirements SET bit=? "
-                            "WHERE capture_id=?",
-                            (sqlite3.Binary(encoded), capture_id),
-                        )
-                    readers = (
-                        lambda: read_phase3_exact_semantic_partition(
-                            v2_path, fpga
-                        ),
-                        lambda: read_phase3_exact_semantic_contract(
-                            v2_path, assignment
-                        ),
-                        lambda: validate_phase3_assignment_index(v2_path),
-                    )
-                    for reader in readers:
-                        with self.assertRaisesRegex(ValidationError, message):
-                            reader()
+        self.assertFalse(hasattr(phase3_assignment_index, "migrate_phase3_assignment_index"))
+        with tempfile.TemporaryDirectory() as temporary:
+            index = Path(temporary) / "assignment.sqlite"
+            (index.parent / "assignment.json").write_text("{}")
+            for version in (1, 2):
+                index.unlink(missing_ok=True)
+                with closing(sqlite3.connect(index)) as db, db:
+                    db.executescript(f"PRAGMA application_id={ASSIGNMENT_INDEX_APPLICATION_ID}; PRAGMA user_version={version};")
+                for reader in (
+                    lambda: open_phase3_assignment_index(index),
+                    lambda: IndexedInstanceAssignment(index),
+                    lambda: read_phase3_cut_timing_view(index.parent / "assignment.json"),
+                    lambda: _enrich_indexed_cut_dependencies({"cut_nets": []}, index),
+                    lambda: read_phase3_exact_semantic_partition(index, "fpga0"),
+                    lambda: read_phase3_exact_semantic_contract(index, {}),
+                    lambda: phase3_exact_semantic_counts(index),
+                    lambda: phase3_exact_relation_counts(index),
+                    lambda: read_phase3_exact_split_relations(index),
+                    lambda: validate_phase3_assignment_index(index),
+                ):
+                    with self.subTest(version=version, reader=reader), self.assertRaisesRegex(ValidationError, "unsupported Phase 3 assignment index"):
+                        reader()
 
     def test_indexed_assignment_publish_reuses_owned_exact_digest(self):
         _, assignment = self._exact_artifacts(dependent_return=True)
         with tempfile.TemporaryDirectory() as temporary_directory, patch(
-            "emuflow.phase3_assignment_index.semantic_contract_sha256",
+            "emuflow.phase3_exact_binary.semantic_contract_sha256",
             side_effect=AssertionError(
                 "production publication must not rehash the resident contract"
             ),
@@ -2802,66 +3000,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         # binding and are hydrated by run_phase5 from assignment.json.
         return {**routes, "semantic_contract": assignment["semantic_contract"]}
 
-    def test_exact_routing_uses_dependency_dag_not_global_round_windows(self):
-        _, assignment = self._exact_artifacts(dependent_return=True)
-        constraints = normalize_route_constraints(
-            None, self.platform, frame_slots=16
-        )
-        routes = route_system_native(
-            assignment,
-            self.platform,
-            constraints,
-            executable=str(tlr_router()),
-        )
-        self.assertNotIn("round_capacity_contract", routes)
-        self.assertEqual(
-            {
-                item["capacity_bits"]
-                for item in routes["link_utilization"]
-            },
-            {32 * 8},
-        )
-
-        checked = validate_system_routes(assignment, self.platform, routes)
-        self.assertEqual(checked["status"], "pass")
-        hydrated = {
-            **routes,
-            "semantic_contract": assignment["semantic_contract"],
-        }
-        hydrated["timing"] = {
-            "schema": "emuflow.sta-paths/v1",
-            "normalization": {
-                "positive_slack_scale_ns": 100.0,
-                "negative_slack_scale_ns": 100.0,
-                "max_clock_period_ns": 100.0,
-            },
-            "compression": {"original_paths": 1, "compressed_paths": 1},
-            "paths": [
-                {
-                    "path": "cross-layer-path",
-                    "clock_domain": "clk",
-                    "clock_period_ns": 100.0,
-                    "fixed_delay_ns": 1.0,
-                    "cut_nets": ["n0", "d"],
-                    "cut_transitions": [
-                        {"net": "n0", "from": "fpga0", "to": "fpga1"},
-                        {"net": "d", "from": "fpga1", "to": "fpga0"},
-                    ],
-                }
-            ],
-        }
-        plan = build_tdm_ratio_plan(
-            hydrated,
-            self.platform,
-            executable=str(tdm_ratio_optimizer()),
-        )
-        self.assertEqual(
-            plan["round_barrier_legalization"]["source_ready_semantics"],
-            "dependency-dag-only",
-        )
-        self.assertIsNone(
-            plan["round_barrier_legalization"]["source_ready_slot"]
-        )
 
     def test_phase4_indexed_contract_view_matches_full_demands(self):
         _, assignment = self._exact_artifacts(dependent_return=True)
@@ -2910,74 +3048,27 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             "qualification": "structural-partition-legality",
             "indexed": True,
         }
-        executable = tdm_exact_scheduler()
+        from tests.native_build import emuflow_native
+        from emuflow.tdm import build_native_exact_schedule_request
 
         def compare(candidate):
             reference = build_tdm_schedule(candidate, self.platform)
-            with (
-                patch.dict(
-                    os.environ,
-                    {"EMUFLOW_NATIVE_ROOT": str(executable.parent.parent)},
-                ),
-                patch("emuflow.tdm.NATIVE_EXACT_SCHEDULE_MIN_ROUTES", 0),
-            ):
-                native = build_tdm_schedule(candidate, self.platform)
-            self.assertIsInstance(native["entries"], list)
-            self.assertIsNot(type(native["entries"]), list)
-            self.assertGreater(len(native["entries"]), 0)
-            self.assertEqual(list.__len__(native["entries"]), 0)
-            self.assertIsInstance(native["demand_completions"], list)
-            self.assertIsNot(type(native["demand_completions"]), list)
-            self.assertEqual(
-                list.__len__(native["demand_completions"]), 0
-            )
-            self.assertEqual(native, reference)
-            self.assertEqual(json.loads(json.dumps(native)), reference)
-            self.assertEqual(
-                validate_tdm_schedule(
-                    candidate, self.platform, native
-                )["status"],
-                "pass",
-            )
             with tempfile.TemporaryDirectory() as temporary:
-                path = Path(temporary) / "schedule.json"
-                write_tdm_schedule_storage(path, native)
-                self.assertEqual(
-                    read_tdm_schedule(path, materialize=True), reference
-                )
-                indexed_schedule = read_tdm_schedule(path)
-                if isinstance(candidate, SystemRoutesView):
-                    with (
-                        patch(
-                            "emuflow.tdm._indexed_exact_nodes",
-                            side_effect=AssertionError(
-                                "typed validation rebuilt an R-sized node map"
-                            ),
-                        ),
-                        patch(
-                            "emuflow.tdm._exact_dependency_order",
-                            side_effect=AssertionError(
-                                "typed validation rebuilt an R-sized order"
-                            ),
-                        ),
-                    ):
-                        self.assertEqual(
-                            validate_tdm_schedule(
-                                candidate,
-                                self.platform,
-                                indexed_schedule,
-                            )["status"],
-                            "pass",
-                        )
-                else:
-                    self.assertEqual(
-                        validate_tdm_schedule(
-                            candidate,
-                            self.platform,
-                            indexed_schedule,
-                        )["status"],
-                        "pass",
-                    )
+                root = Path(temporary)
+                route_path = root / "routes.json"
+                write_system_route_storage(route_path, candidate)
+                native_routes = read_system_routes(route_path)
+                with patch("emuflow.native_tools.resolve_native_stage_command",
+                           return_value=[str(emuflow_native()), "phase5", "build-schedule"]):
+                    request = build_native_exact_schedule_request(native_routes, self.platform)
+                self.assertIsNotNone(request)
+                path = root / "schedule.json"
+                write_tdm_schedule_storage(path, request)
+                self.assertEqual(read_tdm_schedule(path, materialize=True), reference)
+                with read_tdm_schedule(path) as schedule, patch(
+                    "emuflow.tdm._indexed_exact_nodes", side_effect=AssertionError("R-sized node map")), patch(
+                    "emuflow.tdm._exact_dependency_order", side_effect=AssertionError("R-sized order")):
+                    self.assertEqual(validate_tdm_schedule(native_routes, self.platform, schedule)["status"], "pass")
 
         compare(routes)
         template = next(
@@ -3027,7 +3118,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         return persisted
 
     def test_safe_default_is_identical_to_explicit_safe_mode(self):
-        implicit = build_clusters(self.ir, self.constraints)
+        implicit = build_clusters(self.ir, self.constraints, cut_mode="sequential-only")
         explicit = build_clusters(
             self.ir, self.constraints, cut_mode="sequential-only"
         )
@@ -3065,7 +3156,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         )
 
     def test_depth_one_cut_has_independently_validated_contract(self):
-        safe = build_clusters(self.ir, self.constraints)
+        safe = build_clusters(self.ir, self.constraints, cut_mode="sequential-only")
         clusters, assignment = self._exact_artifacts()
         self.assertGreater(
             len(clusters["clusters"]), len(safe["clusters"])
@@ -3898,7 +3989,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
     def test_wide_cone_splits_and_improves_checked_balance(self):
         ir = _wide_fanout_ir()
         constraints = normalize_partition_constraints(None, ir, self.platform)
-        safe_clusters = build_clusters(ir, constraints)
+        safe_clusters = build_clusters(ir, constraints, cut_mode="sequential-only")
         exact_clusters = build_clusters(
             ir,
             constraints,
@@ -3933,7 +4024,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             exact_validation["combinational_cut_nets"], 0
         )
 
-    def test_phase3_cli_emits_opt_in_provisional_qualification(self):
+    def test_phase3_cli_emits_structural_qualification(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             ir_path = root / "design.emuir.json"
@@ -3941,6 +4032,11 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             ir_path.write_text(
                 json.dumps(self.ir.to_dict()), encoding="utf-8"
             )
+            from tests.partition_fixture import write_fixture_solution
+            solution = root / "initial.part"
+            write_fixture_solution(self.ir, PLATFORM_PATH, solution,
+                cut_mode="static-exact-combinational",
+                max_cross_fpga_dependency_depth=2, balance_tolerance=1.0)
             with redirect_stdout(io.StringIO()):
                 status = main(
                     [
@@ -3950,7 +4046,9 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                         "--platform",
                         str(PLATFORM_PATH),
                         "--provider",
-                        "greedy",
+                        "tritonpart",
+                        "--tritonpart-solution",
+                        str(solution),
                         "--cut-mode",
                         "static-exact-combinational",
                         "--max-cross-fpga-dependency-depth",
@@ -4056,65 +4154,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "certificate"):
             validate_tdm_schedule(routes, self.platform, tampered)
 
-    def test_static_exact_uses_the_same_ratio_aware_tdm_solver(self):
-        _, assignment = self._exact_artifacts(dependent_return=True)
-        routes = self._exact_routes(assignment)
-        routes["timing"] = {
-            "schema": "emuflow.sta-paths/v1",
-            "normalization": {
-                "positive_slack_scale_ns": 100.0,
-                "negative_slack_scale_ns": 100.0,
-                "max_clock_period_ns": 100.0,
-            },
-            "compression": {"original_paths": 1, "compressed_paths": 1},
-            "paths": [
-                {
-                    "path": "cross-layer-path",
-                    "clock_domain": "clk",
-                    "clock_period_ns": 100.0,
-                    "fixed_delay_ns": 1.0,
-                    "cut_nets": ["n0", "d"],
-                    "cut_transitions": [
-                        {"net": "n0", "from": "fpga0", "to": "fpga1"},
-                        {"net": "d", "from": "fpga1", "to": "fpga0"},
-                    ],
-                }
-            ],
-        }
-        plan = build_tdm_ratio_plan(
-            routes,
-            self.platform,
-            executable=str(tdm_ratio_optimizer()),
-            max_ratio=16,
-            post_refinement_iterations=0,
-        )
-        schedule = build_tdm_schedule(routes, self.platform, plan)
-        self.assertEqual(
-            schedule["provider"], TDM_ACADEMIC_LIST_SCHEDULE_PROVIDER
-        )
-        self.assertEqual(
-            schedule["transport_semantics"], "sampled-virtual-wire"
-        )
-        self.assertEqual(
-            validate_tdm_schedule(routes, self.platform, schedule, plan)[
-                "qualification"
-            ],
-            "dependency-schedule-readiness-pass",
-        )
-        refined = refine_tdm_schedule_native(
-            routes,
-            self.platform,
-            plan,
-            schedule,
-            executable=str(tdm_slot_optimizer()),
-            max_iterations=8,
-        )
-        self.assertEqual(
-            validate_tdm_schedule(routes, self.platform, refined, plan)[
-                "qualification"
-            ],
-            "dependency-schedule-readiness-pass",
-        )
 
     def test_register_output_launch_reserves_configured_settle_budget(self):
         """A cross-FPGA FF output cannot be sampled by TX in slot zero."""
@@ -4264,7 +4303,8 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             routes_path = root / "routes.json"
             assignment_path = root / "assignment.json"
             output = root / "phase5"
-            routes_path.write_text(json.dumps(routes), encoding="utf-8")
+            from emuflow.system_route_storage import write_system_route_storage
+            write_system_route_storage(routes_path, routes)
             assignment_path.write_text(
                 json.dumps(assignment), encoding="utf-8"
             )
@@ -4626,6 +4666,37 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     0,
                     msg=completed.stdout + completed.stderr,
                 )
+
+    def test_exact_routing_uses_dependency_dag_not_global_round_windows(self):
+        _, assignment = self._exact_artifacts(dependent_return=True)
+        constraints = normalize_route_constraints(
+            None, self.platform, frame_slots=16
+        )
+        routes = route_system_native(
+            assignment,
+            self.platform,
+            constraints,
+            executable=str(tlr_router()),
+        )
+        self.assertNotIn("round_capacity_contract", routes)
+        self.assertEqual(
+            {
+                item["capacity_bits"]
+                for item in routes["link_utilization"]
+            },
+            {32 * 8},
+        )
+
+        checked = validate_system_routes(assignment, self.platform, routes)
+        self.assertEqual(checked["status"], "pass")
+        hydrated = {
+            **routes,
+            "semantic_contract": assignment["semantic_contract"],
+        }
+        schedule = build_tdm_schedule(hydrated, self.platform)
+        self.assertEqual(schedule["transport_semantics"], "sampled-virtual-wire")
+        self.assertNotIn("round_realization", schedule)
+        self.assertEqual(validate_tdm_schedule(hydrated, self.platform, schedule)["status"], "pass")
 
 
 if __name__ == "__main__":

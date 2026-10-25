@@ -14,6 +14,7 @@ from emuflow.cut_segment_qualification import (
     build_cut_segment_qualification_value,
     validate_cut_segment_qualification,
 )
+from tests.phase3_index_fixture import write_assignment_v3_fixture
 from emuflow.io import write_json
 from emuflow.ir import EmuIR
 from emuflow.opensta import (
@@ -172,49 +173,25 @@ class CutSegmentQualificationTest(unittest.TestCase):
             ir_path, assignment_path, database_path, cut_net = self._fixture(root)
             compact_path = root / "design.emuir.sqlite"
             EmuIR.load(ir_path).save(compact_path)
-            with sqlite3.connect(root / "assignment.sqlite") as connection:
-                connection.executescript(
-                    """
-                    CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-                    CREATE TABLE parts(part_index INTEGER PRIMARY KEY,fpga TEXT NOT NULL);
-                    CREATE TABLE cut_sinks(net_id TEXT,source_part_index INTEGER,sink_part_index INTEGER);
-                    CREATE TABLE exact_cut_nodes(net_id TEXT PRIMARY KEY);
-                    CREATE TABLE exact_cut_sources(net_id TEXT,ordinal INTEGER,segment_id TEXT);
-                    CREATE TABLE exact_logic_segments(source_cut_net TEXT,part_index INTEGER,segment_id TEXT);
-                    """
-                )
-                metadata = {
-                    "schema": "emuflow.phase3-assignment-sqlite/v1",
-                    "design": "counter",
-                    "platform": "two",
-                    "provider": "test",
-                    "seed": 0,
-                    "constraints": {},
-                    "semantic_contract_sha256": "b" * 64,
-                }
-                connection.executemany(
-                    "INSERT INTO metadata VALUES (?,?)",
-                    ((key, json.dumps(value)) for key, value in metadata.items()),
-                )
-                connection.executemany(
-                    "INSERT INTO parts VALUES (?,?)",
-                    [(0, "fpga0"), (1, "fpga1")],
-                )
-                connection.execute(
-                    "INSERT INTO cut_sinks VALUES (?,?,?)",
-                    (cut_net, 0, 1),
-                )
-                connection.execute(
-                    "INSERT INTO exact_cut_nodes VALUES (?)", (cut_net,)
-                )
-                connection.execute(
-                    "INSERT INTO exact_cut_sources VALUES (?,?,?)",
-                    (cut_net, 0, "segment000000"),
-                )
-                connection.execute(
-                    "INSERT INTO exact_logic_segments VALUES (?,?,?)",
-                    (cut_net, 1, "segment000001"),
-                )
+            write_assignment_v3_fixture(
+                root / "assignment.sqlite", parts=("fpga0", "fpga1"),
+                metadata={
+                    "design": "counter", "platform": "two", "provider": "test",
+                    "seed": 0, "constraints": {}, "semantic_contract_sha256": "b" * 64,
+                },
+                cut_sinks=[(cut_net, 0, 1)],
+                semantic={
+                    "schema": "emuflow.static-exact-combinational-cut/v3",
+                    "cut_nodes": [{"net": cut_net, "source_segment_ids": ["segment000000"]}],
+                    "logic_segments": [
+                        {"id": "segment000000", "kind": "launch_to_tx", "fpga": "fpga0", "sink_cut_net": cut_net},
+                        {"id": "segment000001", "kind": "rx_to_capture", "fpga": "fpga1", "source_cut_net": cut_net, "capture_requirement": "capture000000"},
+                    ],
+                    "capture_requirements": [
+                        {"id": "capture000000", "cut_net": cut_net, "fpga": "fpga1", "kind": "top-output", "endpoint": "out"},
+                    ],
+                },
+            )
             artifact = build_cut_segment_qualification(
                 compact_path,
                 assignment_path,

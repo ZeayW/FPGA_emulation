@@ -18,73 +18,32 @@ include(GNUInstallDirs)
 find_package(Python3 3.9 REQUIRED COMPONENTS Interpreter)
 find_program(EMUFLOW_MAKE_EXECUTABLE NAMES gmake make REQUIRED)
 
+foreach(EMUFLOW_RETIRED_BUILD_OPTION IN ITEMS
+    EMUFLOW_BUILD_VTR_ARCHITECTURE EMUFLOW_BUILD_VPR
+    EMUFLOW_BUILD_VPR_PACKED_NETLIST EMUFLOW_BUILD_VPR_ROUTE_CHECKER
+    EMUFLOW_BUILD_STATIC_EXACT_ANALYZER EMUFLOW_BUILD_CHIMEW)
+  if(${EMUFLOW_RETIRED_BUILD_OPTION})
+    message(FATAL_ERROR "${EMUFLOW_RETIRED_BUILD_OPTION} is retired; use the unified emuflow-native build")
+  endif()
+endforeach()
+
+if(DEFINED EMUFLOW_BUILD_PIN_PLANNER)
+  message(FATAL_ERROR "EMUFLOW_BUILD_PIN_PLANNER is retired; remove the cache entry; Chimew is in the shared native core")
+endif()
+
 option(EMUFLOW_BUILD_YOSYS "Build the in-tree Yosys and ABC source" ON)
-option(EMUFLOW_BUILD_REPART "Build the in-tree RePart source" ON)
 option(
   EMUFLOW_BUILD_CUDD
   "Build the in-tree CUDD source required by OpenROAD/OpenSTA"
   ON
 )
-option(
-  EMUFLOW_BUILD_TLR_ROUTER
-  "Build the in-tree timing-aware load-balanced system router"
-  ON
-)
-option(
-  EMUFLOW_BUILD_TDM_RATIO_OPTIMIZER
-  "Build the in-tree Lagrangian/KKT TDM ratio optimizer"
-  ON
-)
-option(
-  EMUFLOW_BUILD_TDM_SLOT_OPTIMIZER
-  "Build the in-tree timing-path-guided TDM slot optimizer"
-  ON
-)
-option(
-  EMUFLOW_BUILD_TDM_TIMING_DAG_OPTIMIZER
-  "Build the in-tree ASP-DAC 2026 timing-DAG TDM optimizer"
-  ON
-)
+
 option(
   EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER
   "Build the in-tree quantized-delay topology optimizer"
   ON
 )
-option(
-  EMUFLOW_BUILD_TDM_PARTITION_FEEDBACK
-  "Build the in-tree channel-usage partition feedback optimizer"
-  ON
-)
-option(
-  EMUFLOW_BUILD_HOP_PARTITION_REFINER
-  "Build the in-tree topology-constrained FM partition refiner"
-  ON
-)
-option(
-  EMUFLOW_BUILD_PATRON_REFINER
-  "Build the in-tree path/TDM-pressure-aware partition refiner"
-  ON
-)
-option(
-  EMUFLOW_BUILD_STATIC_EXACT_ANALYZER
-  "Build the native Static Exact dependency and capture analyzer"
-  ON
-)
-option(
-  EMUFLOW_BUILD_TDM_EXACT_SCHEDULER
-  "Build the native Static Exact dependency scheduler"
-  ON
-)
-option(
-  EMUFLOW_BUILD_MFSPART_COARSENER
-  "Build the in-tree MFSPart-style multilevel affinity coarsener"
-  ON
-)
-option(
-  EMUFLOW_BUILD_PIN_PLANNER
-  "Build the in-tree placement-aware TDM grouping and pin planner"
-  ON
-)
+
 option(
   EMUFLOW_BUILD_BSP_PIN_SOLVER
   "Build the in-tree electrical package-pin min-cost-flow solver"
@@ -99,26 +58,6 @@ option(
 option(
   EMUFLOW_BUILD_FPGA_INTERCHANGE
   "Build the in-tree FPGA Interchange DeviceResources importer"
-  ON
-)
-option(
-  EMUFLOW_BUILD_VTR_ARCHITECTURE
-  "Build the in-tree VTR academic architecture XML importer"
-  ON
-)
-option(
-  EMUFLOW_BUILD_VPR
-  "Build the in-tree VTR/VPR exact pack, place, and route engine"
-  ON
-)
-option(
-  EMUFLOW_BUILD_VPR_PACKED_NETLIST
-  "Build the VPR packed-netlist contract importer"
-  ON
-)
-option(
-  EMUFLOW_BUILD_VPR_ROUTE_CHECKER
-  "Build the independent VPR route/RR-graph checker"
   ON
 )
 option(EMUFLOW_BUILD_OPENPARF "Build the in-tree OpenPARF source" ON)
@@ -265,27 +204,52 @@ set(EMUFLOW_INSTALL_BINDIR "${EMUFLOW_INSTALL_ROOT}/${CMAKE_INSTALL_BINDIR}")
 file(MAKE_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
 
 find_package(SQLite3 3.22 REQUIRED)
-add_executable(emuflow_xilinx_bookshelf_exporter
-  "${CMAKE_SOURCE_DIR}/src/native/xilinx_bookshelf_exporter.cpp")
-target_compile_features(emuflow_xilinx_bookshelf_exporter PRIVATE cxx_std_17)
-target_compile_options(emuflow_xilinx_bookshelf_exporter PRIVATE -O3)
-target_link_libraries(emuflow_xilinx_bookshelf_exporter PRIVATE SQLite::SQLite3)
-set_target_properties(emuflow_xilinx_bookshelf_exporter PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
-if(BUILD_TESTING)
-  add_test(NAME emuflow_xilinx_bookshelf_exporter_cli
-    COMMAND "$<TARGET_FILE:emuflow_xilinx_bookshelf_exporter>" --help)
+find_package(ZLIB REQUIRED)
+if(NOT TARGET SQLite3::SQLite3)
+  # CMake 3.x exposes the older imported-target spelling.
+  add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
 endif()
-
-add_library(
-  emuflow_core STATIC
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/artifact_io.cpp"
-)
+set(EMUFLOW_CORE_MANIFEST "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/sources.txt")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${EMUFLOW_CORE_MANIFEST}")
+file(STRINGS "${EMUFLOW_CORE_MANIFEST}" EMUFLOW_CORE_SOURCE_NAMES)
+set(EMUFLOW_CORE_SOURCE_FILES)
+foreach(source IN LISTS EMUFLOW_CORE_SOURCE_NAMES)
+  if(source STREQUAL "" OR source MATCHES "^#")
+    continue()
+  endif()
+  if(NOT source MATCHES "^([A-Za-z0-9_]+/)*[A-Za-z0-9_]+\\.cpp$" OR
+      NOT EXISTS "${CMAKE_SOURCE_DIR}/src/native/${source}")
+    message(FATAL_ERROR "Invalid shared native source: ${source}")
+  endif()
+  list(FIND EMUFLOW_CORE_SOURCE_FILES "${CMAKE_SOURCE_DIR}/src/native/${source}" duplicate)
+  if(NOT duplicate EQUAL -1)
+    message(FATAL_ERROR "Repeated shared native source: ${source}")
+  endif()
+  list(APPEND EMUFLOW_CORE_SOURCE_FILES "${CMAKE_SOURCE_DIR}/src/native/${source}")
+endforeach()
+set(EMUFLOW_STORE_SCHEMA_GENERATOR "${CMAKE_SOURCE_DIR}/scripts/generate_store_schema_headers.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${EMUFLOW_STORE_SCHEMA_GENERATOR}"
+  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/assignment_schema.hpp.in"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_clusters.sql"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_assignment_core.sql"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_assignment_cuts.sql"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase5_schedule.sql"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase5_schedule_indexes.sql")
+execute_process(COMMAND "${Python3_EXECUTABLE}" "${EMUFLOW_STORE_SCHEMA_GENERATOR}"
+  "${CMAKE_BINARY_DIR}/generated/emuflow_core"
+  RESULT_VARIABLE EMUFLOW_STORE_SCHEMA_STATUS)
+if(NOT EMUFLOW_STORE_SCHEMA_STATUS EQUAL 0)
+  message(FATAL_ERROR "Could not generate shared store schemas")
+endif()
+add_library(emuflow_core STATIC ${EMUFLOW_CORE_SOURCE_FILES})
 target_compile_features(emuflow_core PUBLIC cxx_std_17)
 target_compile_options(emuflow_core PRIVATE -O3)
 target_include_directories(
   emuflow_core PUBLIC "${CMAKE_SOURCE_DIR}/src/native"
+  PRIVATE "${CMAKE_BINARY_DIR}/generated"
 )
+target_link_libraries(emuflow_core PUBLIC SQLite3::SQLite3 ZLIB::ZLIB)
 if(BUILD_TESTING)
   add_executable(
     emuflow_core_artifact_io_test
@@ -298,27 +262,24 @@ if(BUILD_TESTING)
   )
 endif()
 
-add_library(
-  emuflow_native_stages STATIC
-  "${CMAKE_SOURCE_DIR}/src/native/static_exact_analyzer.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/tdm_exact_scheduler.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/chimew_bank_channel_assigner.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/chimew_rudy.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/chimew_signal_grouper.cpp"
-  "${CMAKE_SOURCE_DIR}/src/native/chimew_position_refiner.cpp"
-)
-target_compile_features(emuflow_native_stages PUBLIC cxx_std_17)
-target_compile_options(emuflow_native_stages PRIVATE -O3)
-target_compile_definitions(
-  emuflow_native_stages PRIVATE EMUFLOW_NATIVE_STAGE_LIBRARY=1
-)
-target_include_directories(
-  emuflow_native_stages PUBLIC "${CMAKE_SOURCE_DIR}/src/native"
-)
+# One implementation library owns both common contracts and native kernels.
+# Keep the former target spelling as a build-system alias, not a second owner.
+target_compile_definitions(emuflow_core PRIVATE EMUFLOW_NATIVE_STAGE_LIBRARY=1)
 find_package(Threads REQUIRED)
-target_link_libraries(
-  emuflow_native_stages PUBLIC emuflow_core Threads::Threads
-)
+target_link_libraries(emuflow_core PUBLIC Threads::Threads)
+add_library(emuflow_native_stages ALIAS emuflow_core)
+if(BUILD_TESTING)
+  add_executable(emuflow_native_json_record_test "${CMAKE_SOURCE_DIR}/tests/native_json_record_test.cpp")
+  target_link_libraries(emuflow_native_json_record_test PRIVATE emuflow_core)
+  add_test(NAME emuflow_native_json_record COMMAND emuflow_native_json_record_test)
+  add_executable(emuflow_native_pipeline_api_test
+    "${CMAKE_SOURCE_DIR}/tests/native_pipeline_api_test.cpp")
+  target_link_libraries(emuflow_native_pipeline_api_test PRIVATE emuflow_core)
+  add_test(NAME emuflow_native_pipeline_api COMMAND emuflow_native_pipeline_api_test)
+  add_executable(emuflow_native_patron_ingress_test "${CMAKE_SOURCE_DIR}/tests/native_patron_ingress_test.cpp")
+  target_link_libraries(emuflow_native_patron_ingress_test PRIVATE emuflow_core)
+  add_test(NAME emuflow_native_patron_order COMMAND emuflow_native_patron_ingress_test --order)
+endif()
 
 add_executable(
   emuflow_native
@@ -332,8 +293,9 @@ set_target_properties(
 )
 target_compile_features(emuflow_native PRIVATE cxx_std_17)
 target_compile_options(emuflow_native PRIVATE -O3)
-target_link_libraries(emuflow_native PRIVATE emuflow_native_stages)
+target_link_libraries(emuflow_native PRIVATE emuflow_core)
 if(BUILD_TESTING)
+  add_test(NAME emuflow_native_runtime COMMAND emuflow_native check-runtime)
   add_test(
     NAME emuflow_native_cli
     COMMAND "$<TARGET_FILE:emuflow_native>" --help
@@ -378,10 +340,10 @@ file(
   GLOB_RECURSE EMUFLOW_RUNTIME_DATA
   CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/resources/timing/*"
-  "${CMAKE_SOURCE_DIR}/resources/architectures/*"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/platforms/*.json"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/io/*.json"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/rapidwright/*.json"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/*.sql"
   "${CMAKE_SOURCE_DIR}/platforms/virtual/*.wires.csv"
   "${CMAKE_SOURCE_DIR}/scripts/opensta/*"
   "${CMAKE_SOURCE_DIR}/scripts/yosys/*"
@@ -392,8 +354,6 @@ file(
 set(
   EMUFLOW_PUBLIC_CONTEST_DATA
   "${CMAKE_SOURCE_DIR}/benchmarks/contest_validation_matrix.json"
-  "${CMAKE_SOURCE_DIR}/benchmarks/end_to_end_validation_matrix.json"
-  "${CMAKE_SOURCE_DIR}/benchmarks/experiment_dag.schema.example.json"
   "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2023_benchmarks.py"
   "${CMAKE_SOURCE_DIR}/scripts/fetch_repart_benchmarks.py"
   "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2025_benchmarks.py"
@@ -436,6 +396,10 @@ add_custom_command(
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema"
+    "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/schema"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/src/emuflow/data/platforms"
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/platforms"
   COMMAND
@@ -459,13 +423,15 @@ add_custom_command(
     "${CMAKE_SOURCE_DIR}/resources/timing"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/resources/timing"
   COMMAND
-    "${CMAKE_COMMAND}" -E copy_directory
-    "${CMAKE_SOURCE_DIR}/resources/architectures"
+    "${CMAKE_COMMAND}" -E rm -rf
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/resources/architectures"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/scripts/opensta"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts/opensta"
+  COMMAND
+    "${CMAKE_COMMAND}" -E rm -rf
+    "${EMUFLOW_INSTALL_ROOT}/scripts/yosys"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/scripts/yosys"
@@ -478,6 +444,9 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/scripts/patron"
     "${EMUFLOW_INSTALL_ROOT}/scripts/patron"
+  COMMAND
+    "${CMAKE_COMMAND}" -E rm -rf
+    "${EMUFLOW_INSTALL_ROOT}/scripts/vivado"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/scripts/vivado"
@@ -493,6 +462,9 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy
     "${CMAKE_SOURCE_DIR}/scripts/benchmarks/fetch.py"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts/benchmarks/fetch.py"
+  COMMAND
+    "${CMAKE_COMMAND}" -E rm -rf
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/runs"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/benchmarks/runs"
@@ -512,12 +484,17 @@ add_custom_command(
     "${CMAKE_SOURCE_DIR}/benchmarks/contest_validation_matrix.json"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/contest_validation_matrix.json"
   COMMAND
-    "${CMAKE_COMMAND}" -E copy
-    "${CMAKE_SOURCE_DIR}/benchmarks/end_to_end_validation_matrix.json"
+    "${CMAKE_COMMAND}" -E rm -f
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow_static_exact_analyzer"
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow_chimew_signal_grouper"
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow_chimew_position_refiner"
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow_chimew_rudy"
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow_chimew_bank_channel_assigner"
+    "${EMUFLOW_INSTALL_BINDIR}/vpr"
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow_vtr_arch_importer"
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow_vpr_packed_netlist_importer"
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow_vpr_route_checker"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/end_to_end_validation_matrix.json"
-  COMMAND
-    "${CMAKE_COMMAND}" -E copy
-    "${CMAKE_SOURCE_DIR}/benchmarks/experiment_dag.schema.example.json"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/experiment_dag.schema.example.json"
   COMMAND
     "${CMAKE_COMMAND}" -E copy
@@ -593,123 +570,6 @@ if(EMUFLOW_BUILD_FPGA_INTERCHANGE)
   )
 endif()
 
-if(EMUFLOW_BUILD_VTR_ARCHITECTURE)
-  add_executable(
-    emuflow_vtr_arch_importer
-    "${CMAKE_SOURCE_DIR}/src/native/vtr_architecture_importer.cpp"
-    "${CMAKE_SOURCE_DIR}/engines/vtr/libs/EXTERNAL/libpugixml/src/pugixml.cpp"
-  )
-  target_compile_features(emuflow_vtr_arch_importer PRIVATE cxx_std_17)
-  target_compile_options(emuflow_vtr_arch_importer PRIVATE -O3)
-  target_include_directories(
-    emuflow_vtr_arch_importer
-    PRIVATE
-      "${CMAKE_SOURCE_DIR}/engines/vtr/libs/EXTERNAL/libpugixml/src"
-  )
-  set_target_properties(
-    emuflow_vtr_arch_importer
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
-
-if(EMUFLOW_BUILD_VPR_PACKED_NETLIST)
-  add_executable(
-    emuflow_vpr_packed_netlist_importer
-    "${CMAKE_SOURCE_DIR}/src/native/vpr_packed_netlist_importer.cpp"
-    "${CMAKE_SOURCE_DIR}/engines/vtr/libs/EXTERNAL/libpugixml/src/pugixml.cpp"
-  )
-  target_compile_features(
-    emuflow_vpr_packed_netlist_importer PRIVATE cxx_std_17
-  )
-  target_compile_options(
-    emuflow_vpr_packed_netlist_importer PRIVATE -O3
-  )
-  target_include_directories(
-    emuflow_vpr_packed_netlist_importer
-    PRIVATE
-      "${CMAKE_SOURCE_DIR}/engines/vtr/libs/EXTERNAL/libpugixml/src"
-  )
-  set_target_properties(
-    emuflow_vpr_packed_netlist_importer
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
-
-if(EMUFLOW_BUILD_VPR_ROUTE_CHECKER)
-  add_executable(
-    emuflow_vpr_route_checker
-    "${CMAKE_SOURCE_DIR}/src/native/vpr_route_checker.cpp"
-  )
-  target_compile_features(emuflow_vpr_route_checker PRIVATE cxx_std_17)
-  target_compile_options(emuflow_vpr_route_checker PRIVATE -O3)
-  set_target_properties(
-    emuflow_vpr_route_checker
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
-
-if(EMUFLOW_BUILD_TLR_ROUTER)
-  find_package(Threads REQUIRED)
-  add_executable(
-    emuflow_tlr_router
-    "${CMAKE_SOURCE_DIR}/src/native/tlr_router.cpp"
-  )
-  target_compile_features(emuflow_tlr_router PRIVATE cxx_std_17)
-  target_compile_options(emuflow_tlr_router PRIVATE -O3)
-  target_link_libraries(emuflow_tlr_router PRIVATE Threads::Threads)
-  set_target_properties(
-    emuflow_tlr_router
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
-
-if(EMUFLOW_BUILD_TDM_RATIO_OPTIMIZER)
-  add_executable(
-    emuflow_tdm_ratio_optimizer
-    "${CMAKE_SOURCE_DIR}/src/native/tdm_ratio_optimizer.cpp"
-  )
-  target_compile_features(emuflow_tdm_ratio_optimizer PRIVATE cxx_std_17)
-  target_compile_options(emuflow_tdm_ratio_optimizer PRIVATE -O3)
-  set_target_properties(
-    emuflow_tdm_ratio_optimizer
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
-
-if(EMUFLOW_BUILD_TDM_SLOT_OPTIMIZER)
-  add_executable(
-    emuflow_tdm_slot_optimizer
-    "${CMAKE_SOURCE_DIR}/src/native/tdm_slot_optimizer.cpp"
-  )
-  target_compile_features(emuflow_tdm_slot_optimizer PRIVATE cxx_std_17)
-  target_compile_options(emuflow_tdm_slot_optimizer PRIVATE -O3)
-  set_target_properties(
-    emuflow_tdm_slot_optimizer
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
-
-if(EMUFLOW_BUILD_TDM_TIMING_DAG_OPTIMIZER)
-  add_executable(
-    emuflow_tdm_timing_dag_optimizer
-    "${CMAKE_SOURCE_DIR}/src/native/tdm_timing_dag_optimizer.cpp"
-  )
-  target_compile_features(
-    emuflow_tdm_timing_dag_optimizer PRIVATE cxx_std_17
-  )
-  target_compile_options(emuflow_tdm_timing_dag_optimizer PRIVATE -O3)
-  set_target_properties(
-    emuflow_tdm_timing_dag_optimizer
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
 
 if(EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER)
   add_executable(
@@ -725,210 +585,9 @@ if(EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER)
   )
 endif()
 
-if(EMUFLOW_BUILD_TDM_PARTITION_FEEDBACK)
-  add_executable(
-    emuflow_tdm_partition_feedback
-    "${CMAKE_SOURCE_DIR}/src/native/tdm_partition_feedback.cpp"
-  )
-  target_compile_features(emuflow_tdm_partition_feedback PRIVATE cxx_std_17)
-  target_compile_options(emuflow_tdm_partition_feedback PRIVATE -O3)
-  set_target_properties(
-    emuflow_tdm_partition_feedback
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
-
-if(EMUFLOW_BUILD_HOP_PARTITION_REFINER)
-  add_executable(
-    emuflow_hop_partition_refiner
-    "${CMAKE_SOURCE_DIR}/src/native/hop_partition_refiner.cpp"
-  )
-  target_compile_features(
-    emuflow_hop_partition_refiner PRIVATE cxx_std_17
-  )
-  target_compile_options(emuflow_hop_partition_refiner PRIVATE -O3)
-  set_target_properties(
-    emuflow_hop_partition_refiner
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
-
-if(EMUFLOW_BUILD_PATRON_REFINER)
-  add_executable(
-    emuflow_patron_refiner
-    "${CMAKE_SOURCE_DIR}/src/native/patron_refiner.cpp"
-  )
-  target_compile_features(emuflow_patron_refiner PRIVATE cxx_std_17)
-  target_compile_options(emuflow_patron_refiner PRIVATE -O3)
-  set_target_properties(
-    emuflow_patron_refiner
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
-
-if(EMUFLOW_BUILD_STATIC_EXACT_ANALYZER)
-  add_executable(
-    emuflow_static_exact_analyzer
-    "${CMAKE_SOURCE_DIR}/src/native/static_exact_analyzer.cpp"
-  )
-  target_compile_features(emuflow_static_exact_analyzer PRIVATE cxx_std_17)
-  target_compile_options(emuflow_static_exact_analyzer PRIVATE -O3)
-  target_link_libraries(emuflow_static_exact_analyzer PRIVATE emuflow_core)
-  set_target_properties(
-    emuflow_static_exact_analyzer
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
-
-if(EMUFLOW_BUILD_TDM_EXACT_SCHEDULER)
-  add_executable(
-    emuflow_tdm_exact_scheduler
-    "${CMAKE_SOURCE_DIR}/src/native/tdm_exact_scheduler.cpp"
-  )
-  target_compile_features(emuflow_tdm_exact_scheduler PRIVATE cxx_std_17)
-  target_compile_options(emuflow_tdm_exact_scheduler PRIVATE -O3)
-  target_link_libraries(emuflow_tdm_exact_scheduler PRIVATE emuflow_core)
-  set_target_properties(
-    emuflow_tdm_exact_scheduler
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-  if(BUILD_TESTING)
-    add_test(
-      NAME emuflow_tdm_exact_scheduler_cli
-      COMMAND emuflow_tdm_exact_scheduler
-    )
-    set_tests_properties(
-      emuflow_tdm_exact_scheduler_cli PROPERTIES WILL_FAIL TRUE
-    )
-  endif()
-endif()
 
 
-if(EMUFLOW_BUILD_MFSPART_COARSENER)
-  add_executable(
-    emuflow_mfspart_coarsener
-    "${CMAKE_SOURCE_DIR}/src/native/mfspart_coarsener.cpp"
-  )
-  target_compile_features(emuflow_mfspart_coarsener PRIVATE cxx_std_17)
-  target_compile_options(emuflow_mfspart_coarsener PRIVATE -O3)
-  set_target_properties(
-    emuflow_mfspart_coarsener
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-  add_executable(
-    emuflow_mfspart_initializer
-    "${CMAKE_SOURCE_DIR}/src/native/mfspart_initializer.cpp"
-  )
-  target_compile_features(emuflow_mfspart_initializer PRIVATE cxx_std_17)
-  target_compile_options(emuflow_mfspart_initializer PRIVATE -O3)
-  set_target_properties(
-    emuflow_mfspart_initializer
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-  add_executable(
-    emuflow_mfspart_refiner
-    "${CMAKE_SOURCE_DIR}/src/native/mfspart_refiner.cpp"
-  )
-  target_compile_features(emuflow_mfspart_refiner PRIVATE cxx_std_17)
-  target_compile_options(emuflow_mfspart_refiner PRIVATE -O3)
-  set_target_properties(
-    emuflow_mfspart_refiner
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-  add_executable(
-    emuflow_mfspart_refiner_checker
-    "${CMAKE_SOURCE_DIR}/src/native/mfspart_refiner_checker.cpp"
-  )
-  target_compile_features(emuflow_mfspart_refiner_checker PRIVATE cxx_std_17)
-  target_compile_options(emuflow_mfspart_refiner_checker PRIVATE -O3)
-  set_target_properties(
-    emuflow_mfspart_refiner_checker
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-  add_executable(
-    emuflow_mfspart_legalizer
-    "${CMAKE_SOURCE_DIR}/src/native/mfspart_legalizer.cpp"
-  )
-  target_compile_features(emuflow_mfspart_legalizer PRIVATE cxx_std_17)
-  target_compile_options(emuflow_mfspart_legalizer PRIVATE -O3)
-  set_target_properties(
-    emuflow_mfspart_legalizer
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
 
-if(EMUFLOW_BUILD_PIN_PLANNER)
-  add_executable(
-    emuflow_pin_planner
-    "${CMAKE_SOURCE_DIR}/src/native/placement_aware_pin_planner.cpp"
-  )
-  target_compile_features(emuflow_pin_planner PRIVATE cxx_std_17)
-  target_compile_options(emuflow_pin_planner PRIVATE -O3)
-  target_link_libraries(emuflow_pin_planner PRIVATE Threads::Threads)
-  set_target_properties(
-    emuflow_pin_planner
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-  add_executable(
-    emuflow_chimew_signal_grouper
-    "${CMAKE_SOURCE_DIR}/src/native/chimew_signal_grouper.cpp"
-  )
-  target_compile_features(emuflow_chimew_signal_grouper PRIVATE cxx_std_17)
-  target_compile_options(emuflow_chimew_signal_grouper PRIVATE -O3)
-  set_target_properties(
-    emuflow_chimew_signal_grouper
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-  add_executable(
-    emuflow_chimew_position_refiner
-    "${CMAKE_SOURCE_DIR}/src/native/chimew_position_refiner.cpp"
-  )
-  target_compile_features(emuflow_chimew_position_refiner PRIVATE cxx_std_17)
-  target_compile_options(emuflow_chimew_position_refiner PRIVATE -O3)
-  set_target_properties(
-    emuflow_chimew_position_refiner
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-  add_executable(
-    emuflow_chimew_rudy
-    "${CMAKE_SOURCE_DIR}/src/native/chimew_rudy.cpp"
-  )
-  target_compile_features(emuflow_chimew_rudy PRIVATE cxx_std_17)
-  target_compile_options(emuflow_chimew_rudy PRIVATE -O3)
-  set_target_properties(
-    emuflow_chimew_rudy
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-  add_executable(
-    emuflow_chimew_bank_channel_assigner
-    "${CMAKE_SOURCE_DIR}/src/native/chimew_bank_channel_assigner.cpp"
-  )
-  target_compile_features(emuflow_chimew_bank_channel_assigner PRIVATE cxx_std_17)
-  target_compile_options(emuflow_chimew_bank_channel_assigner PRIVATE -O3)
-  target_link_libraries(
-    emuflow_chimew_bank_channel_assigner
-    PRIVATE Threads::Threads
-  )
-  set_target_properties(
-    emuflow_chimew_bank_channel_assigner
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
 
 if(EMUFLOW_BUILD_BSP_PIN_SOLVER)
   add_executable(
@@ -944,35 +603,6 @@ if(EMUFLOW_BUILD_BSP_PIN_SOLVER)
   )
 endif()
 
-if(EMUFLOW_BUILD_REPART)
-  # RePart's upstream build contract links Boost statically.  Keep the
-  # installed executable self-contained so it does not depend on the exact
-  # Boost SONAME available in the build container.
-  set(Boost_USE_STATIC_LIBS ON)
-  find_package(Boost 1.65 REQUIRED COMPONENTS system thread)
-  find_package(Threads REQUIRED)
-
-  add_executable(
-    repart
-    "${CMAKE_SOURCE_DIR}/engines/repart/RePart/partitioner.cpp"
-  )
-  target_compile_features(repart PRIVATE cxx_std_17)
-  target_compile_options(repart PRIVATE -O3)
-  target_compile_definitions(repart PRIVATE NDEBUG)
-  target_include_directories(
-    repart
-    PRIVATE "${CMAKE_SOURCE_DIR}/engines/repart/RePart"
-  )
-  target_link_libraries(
-    repart
-    PRIVATE Boost::system Boost::thread Threads::Threads
-  )
-  set_target_properties(
-    repart
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
 
 if(EMUFLOW_BUILD_YOSYS)
   set(EMUFLOW_YOSYS_SOURCE_DIR "${CMAKE_SOURCE_DIR}/engines/yosys")
@@ -1215,62 +845,6 @@ if(EMUFLOW_BUILD_OPENSTA)
   )
 endif()
 
-if(EMUFLOW_BUILD_VPR)
-  set(
-    EMUFLOW_VPR_CMAKE_ARGS
-    "-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}"
-    "-DCMAKE_PREFIX_PATH=${EMUFLOW_EXTERNAL_CMAKE_PREFIX_PATH}"
-    "-DBUILD_TESTING=OFF"
-    "-DVTR_IPO_BUILD=off"
-    "-DVTR_VCS_REVISION_OVERRIDE=a3e60c31bb4384373d2d1a43c38c7569723733b6"
-    "-DWITH_ABC=OFF"
-    "-DWITH_ODIN=OFF"
-    "-DWITH_PARMYS=OFF"
-    "-DSLANG_SYSTEMVERILOG=OFF"
-    "-DVTR_ENABLE_CAPNPROTO=OFF"
-    "-DVPR_ENABLE_INTERCHANGE=OFF"
-    "-DVPR_ENABLE_NOC_SAT_ROUTING=OFF"
-    "-DVPR_USE_SERVER=OFF"
-    "-DVPR_USE_EZGL=off"
-    "-DVPR_EXECUTION_ENGINE=serial"
-    "-DVPR_ENABLE_OPEN_MP=off"
-    ${EMUFLOW_PARSER_CMAKE_ARGS}
-  )
-  if(EMUFLOW_SWIG_EXECUTABLE)
-    list(
-      APPEND EMUFLOW_VPR_CMAKE_ARGS
-      "-DSWIG_EXECUTABLE=${EMUFLOW_SWIG_EXECUTABLE}"
-    )
-  endif()
-  if(EMUFLOW_SWIG_DIR)
-    list(
-      APPEND EMUFLOW_VPR_CMAKE_ARGS
-      "-DSWIG_DIR=${EMUFLOW_SWIG_DIR}"
-    )
-  endif()
-
-  ExternalProject_Add(
-    vpr_native
-    SOURCE_DIR "${CMAKE_SOURCE_DIR}/engines/vtr"
-    BINARY_DIR "${CMAKE_BINARY_DIR}/vtr"
-    DOWNLOAD_COMMAND ""
-    UPDATE_COMMAND ""
-    PATCH_COMMAND ""
-    LIST_SEPARATOR "|"
-    CMAKE_ARGS ${EMUFLOW_VPR_CMAKE_ARGS}
-    BUILD_COMMAND
-      "${CMAKE_COMMAND}" -E env
-      ${EMUFLOW_EXTERNAL_BUILD_ENV}
-      "${CMAKE_COMMAND}" --build "<BINARY_DIR>"
-      --target vpr
-      --parallel "${EMUFLOW_EXTERNAL_JOBS}"
-    INSTALL_COMMAND
-      "${CMAKE_COMMAND}" -E copy
-      "<BINARY_DIR>/vpr/vpr"
-      "${EMUFLOW_INSTALL_BINDIR}/vpr"
-    BUILD_BYPRODUCTS "${EMUFLOW_INSTALL_BINDIR}/vpr"
-  )
-endif()
 
 if(EMUFLOW_BUILD_OPENPARF)
   ExternalProject_Add(
@@ -1328,17 +902,8 @@ endif()
 if(EMUFLOW_BUILD_CUDD AND EMUFLOW_BUILD_OPENSTA)
   add_dependencies(opensta_native cudd_native)
 endif()
-if(EMUFLOW_BUILD_VPR)
-  if(EMUFLOW_BUILD_OPENROAD)
-    add_dependencies(vpr_native openroad_native)
-  elseif(EMUFLOW_BUILD_YOSYS)
-    add_dependencies(vpr_native yosys_native)
-  endif()
-endif()
 if(EMUFLOW_BUILD_OPENPARF)
-  if(EMUFLOW_BUILD_VPR)
-    add_dependencies(openparf_native vpr_native)
-  elseif(EMUFLOW_BUILD_OPENROAD)
+  if(EMUFLOW_BUILD_OPENROAD)
     add_dependencies(openparf_native openroad_native)
   elseif(EMUFLOW_BUILD_YOSYS)
     add_dependencies(openparf_native yosys_native)
@@ -1346,6 +911,13 @@ if(EMUFLOW_BUILD_OPENPARF)
 endif()
 
 if(BUILD_TESTING)
+  add_test(
+    NAME emuflow_installed_python_runtime
+    COMMAND "${Python3_EXECUTABLE}" -I
+      "${CMAKE_SOURCE_DIR}/tests/check_installed_python_runtime.py"
+      "${CMAKE_SOURCE_DIR}" "${EMUFLOW_INSTALL_ROOT}"
+  )
+
   add_test(
     NAME emuflow_python_tests
     COMMAND
@@ -1376,56 +948,6 @@ if(BUILD_TESTING)
       "${EMUFLOW_INSTALL_ROOT}/scripts/yosys/logic_only_map.v"
   )
 
-  foreach(
-    EMUFLOW_VTR_MAP_FILE
-    IN ITEMS
-      vtr_models.v
-      vtr_multiply_map.v
-      vtr_memories.txt
-      vtr_memory_map.v
-  )
-    add_test(
-      NAME "emuflow_${EMUFLOW_VTR_MAP_FILE}_installed"
-      COMMAND
-        "${CMAKE_COMMAND}" -E compare_files
-        "${CMAKE_SOURCE_DIR}/scripts/yosys/${EMUFLOW_VTR_MAP_FILE}"
-        "${EMUFLOW_INSTALL_ROOT}/scripts/yosys/${EMUFLOW_VTR_MAP_FILE}"
-    )
-  endforeach()
-
-  if(EMUFLOW_BUILD_REPART)
-    add_test(NAME repart_cli COMMAND "$<TARGET_FILE:repart>")
-    set_tests_properties(repart_cli PROPERTIES WILL_FAIL TRUE)
-  endif()
-
-  if(EMUFLOW_BUILD_TLR_ROUTER)
-    add_test(
-      NAME emuflow_tlr_router_cli
-      COMMAND "$<TARGET_FILE:emuflow_tlr_router>" --help
-    )
-  endif()
-
-  if(EMUFLOW_BUILD_TDM_RATIO_OPTIMIZER)
-    add_test(
-      NAME emuflow_tdm_ratio_optimizer_cli
-      COMMAND "$<TARGET_FILE:emuflow_tdm_ratio_optimizer>" --help
-    )
-  endif()
-
-  if(EMUFLOW_BUILD_TDM_SLOT_OPTIMIZER)
-    add_test(
-      NAME emuflow_tdm_slot_optimizer_cli
-      COMMAND "$<TARGET_FILE:emuflow_tdm_slot_optimizer>" --help
-    )
-  endif()
-
-  if(EMUFLOW_BUILD_TDM_TIMING_DAG_OPTIMIZER)
-    add_test(
-      NAME emuflow_tdm_timing_dag_optimizer_cli
-      COMMAND "$<TARGET_FILE:emuflow_tdm_timing_dag_optimizer>" --help
-    )
-  endif()
-
   if(EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER)
     add_test(
       NAME emuflow_eda2025_topology_optimizer_cli
@@ -1433,84 +955,9 @@ if(BUILD_TESTING)
     )
   endif()
 
-  if(EMUFLOW_BUILD_TDM_PARTITION_FEEDBACK)
-    add_test(
-      NAME emuflow_tdm_partition_feedback_cli
-      COMMAND "$<TARGET_FILE:emuflow_tdm_partition_feedback>" --help
-    )
-  endif()
-
-  if(EMUFLOW_BUILD_HOP_PARTITION_REFINER)
-    add_test(
-      NAME emuflow_hop_partition_refiner_cli
-      COMMAND "$<TARGET_FILE:emuflow_hop_partition_refiner>" --help
-    )
-  endif()
-
-  if(EMUFLOW_BUILD_PATRON_REFINER)
-    add_test(
-      NAME emuflow_patron_refiner_cli
-      COMMAND "$<TARGET_FILE:emuflow_patron_refiner>" --help
-    )
-  endif()
-
-  if(EMUFLOW_BUILD_STATIC_EXACT_ANALYZER)
-    add_test(
-      NAME emuflow_static_exact_analyzer_cli
-      COMMAND "$<TARGET_FILE:emuflow_static_exact_analyzer>" --help
-    )
-  endif()
-
-  if(EMUFLOW_BUILD_MFSPART_COARSENER)
-    add_test(
-      NAME emuflow_mfspart_coarsener_cli
-      COMMAND "$<TARGET_FILE:emuflow_mfspart_coarsener>" --help
-    )
-    add_test(
-      NAME emuflow_mfspart_initializer_cli
-      COMMAND "$<TARGET_FILE:emuflow_mfspart_initializer>" --help
-    )
-    add_test(
-      NAME emuflow_mfspart_refiner_cli
-      COMMAND "$<TARGET_FILE:emuflow_mfspart_refiner>" --help
-    )
-    add_test(
-      NAME emuflow_mfspart_refiner_checker_cli
-      COMMAND "$<TARGET_FILE:emuflow_mfspart_refiner_checker>" --help
-    )
-    add_test(
-      NAME emuflow_mfspart_legalizer_cli
-      COMMAND "$<TARGET_FILE:emuflow_mfspart_legalizer>" --help
-    )
-  endif()
 
 
-  if(EMUFLOW_BUILD_PIN_PLANNER)
-    add_test(
-      NAME emuflow_pin_planner_cli
-      COMMAND "$<TARGET_FILE:emuflow_pin_planner>"
-    )
-    set_tests_properties(
-      emuflow_pin_planner_cli
-      PROPERTIES WILL_FAIL TRUE
-    )
-    add_test(
-      NAME emuflow_chimew_signal_grouper_cli
-      COMMAND "$<TARGET_FILE:emuflow_chimew_signal_grouper>" --help
-    )
-    add_test(
-      NAME emuflow_chimew_position_refiner_cli
-      COMMAND "$<TARGET_FILE:emuflow_chimew_position_refiner>" --help
-    )
-    add_test(
-      NAME emuflow_chimew_rudy_cli
-      COMMAND "$<TARGET_FILE:emuflow_chimew_rudy>" --help
-    )
-    add_test(
-      NAME emuflow_chimew_bank_channel_assigner_cli
-      COMMAND "$<TARGET_FILE:emuflow_chimew_bank_channel_assigner>" --help
-    )
-  endif()
+
 
   if(EMUFLOW_BUILD_BSP_PIN_SOLVER)
     add_test(
@@ -1530,68 +977,11 @@ if(BUILD_TESTING)
     )
   endif()
 
-  if(EMUFLOW_BUILD_VTR_ARCHITECTURE)
-    add_test(
-      NAME emuflow_vtr_arch_importer_fixture
-      COMMAND
-        "$<TARGET_FILE:emuflow_vtr_arch_importer>"
-        "${CMAKE_SOURCE_DIR}/examples/architecture/vtr_k6_heterogeneous_fixture.xml"
-    )
-    set_tests_properties(
-      emuflow_vtr_arch_importer_fixture
-      PROPERTIES
-        PASS_REGULAR_EXPRESSION
-          "EMUFLOW_VTR_ARCHITECTURE_EXTRACT_V1"
-    )
-  endif()
-
-  if(EMUFLOW_BUILD_VPR_PACKED_NETLIST)
-    add_test(
-      NAME emuflow_vpr_packed_netlist_importer_fixture
-      COMMAND
-        "$<TARGET_FILE:emuflow_vpr_packed_netlist_importer>"
-        "${CMAKE_SOURCE_DIR}/examples/physical/vpr_packed_fixture.net"
-    )
-    set_tests_properties(
-      emuflow_vpr_packed_netlist_importer_fixture
-      PROPERTIES
-        PASS_REGULAR_EXPRESSION
-          "EMUFLOW_VPR_PACKED_NETLIST_EXTRACT_V1"
-    )
-  endif()
-
-  if(EMUFLOW_BUILD_VPR_ROUTE_CHECKER)
-    add_test(
-      NAME emuflow_vpr_route_checker_fixture
-      COMMAND
-        "$<TARGET_FILE:emuflow_vpr_route_checker>"
-        "${CMAKE_SOURCE_DIR}/examples/physical/vpr_route_fixture.route"
-        "${CMAKE_SOURCE_DIR}/examples/physical/vpr_rr_graph_fixture.xml"
-        "${CMAKE_BINARY_DIR}/vpr-route-fixture-report.json"
-    )
-    set_tests_properties(
-      emuflow_vpr_route_checker_fixture
-      PROPERTIES
-        PASS_REGULAR_EXPRESSION
-          "EMUFLOW_VPR_ROUTE_CORE_CHECK_V1"
-    )
-  endif()
 
   if(EMUFLOW_BUILD_YOSYS)
     add_test(
       NAME yosys_version
       COMMAND "${EMUFLOW_INSTALL_BINDIR}/yosys" -V
-    )
-    add_test(
-      NAME emuflow_vtr_hard_block_synthesis
-      COMMAND
-        "${CMAKE_COMMAND}" -E env
-        "PYTHONPATH=${CMAKE_SOURCE_DIR}/src"
-        "${Python3_EXECUTABLE}"
-        "${CMAKE_SOURCE_DIR}/tests/check_vtr_hard_block_synthesis.py"
-        --yosys "${EMUFLOW_INSTALL_BINDIR}/yosys"
-        --rtl "${CMAKE_SOURCE_DIR}/examples/rtl/vtr_hard_blocks.v"
-        --output "${CMAKE_BINARY_DIR}/vtr_hard_blocks.eblif"
     )
   endif()
 
@@ -1609,12 +999,6 @@ if(BUILD_TESTING)
     )
   endif()
 
-  if(EMUFLOW_BUILD_VPR)
-    add_test(
-      NAME vpr_version
-      COMMAND "${EMUFLOW_INSTALL_BINDIR}/vpr" --version
-    )
-  endif()
 
   if(EMUFLOW_BUILD_OPENPARF)
     add_test(

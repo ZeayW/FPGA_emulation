@@ -36,21 +36,8 @@ class ChimewGroupingTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.temporary_directory = tempfile.TemporaryDirectory()
-        compiler = shutil.which("c++") or shutil.which("clang++")
-        if compiler is None:
-            raise RuntimeError("a C++17 compiler is required")
-        cls.executable = Path(cls.temporary_directory.name) / "chimew-grouper"
-        subprocess.run(
-            [
-                compiler,
-                "-std=c++17",
-                "-O2",
-                str(ROOT / "src/native/chimew_signal_grouper.cpp"),
-                "-o",
-                str(cls.executable),
-            ],
-            check=True,
-        )
+        cls.executable = emuflow_native()
+        cls.command = [str(cls.executable), "phase6", "group-signals"]
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -165,11 +152,12 @@ class ChimewGroupingTest(unittest.TestCase):
         self.assertEqual(groups["s0"], groups["s1"])
         self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
 
-    def test_schedule_seals_timing_guard_for_pipeline_replay(self) -> None:
+    def test_crossings_seal_timing_guard_for_pipeline_replay(self) -> None:
         schedule = copy.deepcopy(self.schedule)
         for index, entry in enumerate(schedule["entries"]):
             entry.update({"lane": index // 2, "slot": index % 2})
-        schedule["chimew_timing_guard"] = {
+        crossings = copy.deepcopy(self.crossings)
+        crossings["timing_guard"] = {
             "provider": CHIMEW_TIMING_GUARD_PROVIDER,
             "scope": "EmuFlow extension, not a Chimew paper claim",
             "source_sha256": "a" * 64,
@@ -177,21 +165,25 @@ class ChimewGroupingTest(unittest.TestCase):
             "protected_entries": ["s0"],
         }
         implicit = build_chimew_initial_groups(
-            schedule, self.crossings, executable=str(self.executable)
+            schedule, crossings, executable=str(self.executable)
         )
         explicit = build_chimew_initial_groups(
             schedule,
-            self.crossings,
+            crossings,
             executable=str(self.executable),
             protected_entries={"s0"},
         )
         self.assertEqual(implicit, explicit)
-        invalid = copy.deepcopy(schedule)
-        invalid["chimew_timing_guard"]["protected_entries"] = ["s0", "s0"]
+        invalid = copy.deepcopy(crossings)
+        invalid["timing_guard"]["protected_entries"] = ["s0", "s0"]
         with self.assertRaisesRegex(ValidationError, "entries are invalid"):
             build_chimew_initial_groups(
-                invalid, self.crossings, executable=str(self.executable)
+                schedule, invalid, executable=str(self.executable)
             )
+
+        schedule["chimew_timing_guard"] = crossings["timing_guard"]
+        with self.assertRaisesRegex(ValidationError, "belong to the crossing input"):
+            build_chimew_initial_groups(schedule,crossings,executable=str(self.executable))
 
     def test_normalized_region_substitute_is_rejected(self) -> None:
         invalid = copy.deepcopy(self.crossings)
@@ -408,117 +400,20 @@ class ChimewGroupingTest(unittest.TestCase):
         self.assertEqual(result["metrics"]["groups"], (count + 63) // 64)
         self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
 
-    def test_typed_and_explicit_legacy_inputs_are_byte_exact(self) -> None:
-        schedule = copy.deepcopy(self.schedule)
-        for index, entry in enumerate(schedule["entries"]):
-            entry.update({"lane": index // 2, "slot": index % 2})
-        schedule["entries"][4].update({"from": "fpga1", "to": "fpga0"})
-        entries = sorted(schedule["entries"], key=lambda entry: entry["id"])
-        encodings = grouping_module.validate_chimew_crossings(
-            schedule, self.crossings
-        )
-        guarded = grouping_module._guarded_lane_domains(entries, {"s0"})
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            legacy_input = root / "legacy.txt"
-            typed_input = root / "typed.bin"
-            legacy_output = root / "legacy.out"
-            typed_output = root / "typed.out"
-            grouping_module._serialize_legacy_text(
-                entries, encodings, guarded, legacy_input
-            )
-            with typed_input.open("wb") as stream:
-                typed_metadata = grouping_module._serialize_typed(
-                    entries, encodings, guarded, stream
-                )
-            subprocess.run(
-                [
-                    str(self.executable),
-                    "--legacy-text",
-                    str(legacy_input),
-                    str(legacy_output),
-                ],
-                check=True,
-            )
-            subprocess.run(
-                [
-                    str(self.executable),
-                    "--typed-input",
-                    str(typed_input),
-                    str(typed_output),
-                    typed_metadata["logical_sha256"],
-                ],
-                check=True,
-            )
-            self.assertEqual(typed_output.read_bytes(), legacy_output.read_bytes())
 
-    def test_unified_native_entry_matches_signal_grouper(self) -> None:
-        schedule = copy.deepcopy(self.schedule)
-        for index, entry in enumerate(schedule["entries"]):
-            entry.update({"lane": index // 2, "slot": index % 2})
-        entries = sorted(schedule["entries"], key=lambda entry: entry["id"])
-        encodings = grouping_module.validate_chimew_crossings(
-            schedule, self.crossings
-        )
-        guarded = grouping_module._guarded_lane_domains(entries, set())
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            typed_input = root / "typed.bin"
-            legacy_output = root / "legacy.out"
-            unified_output = root / "unified.out"
-            with typed_input.open("wb") as stream:
-                metadata = grouping_module._serialize_typed(
-                    entries, encodings, guarded, stream
-                )
-            subprocess.run(
-                [
-                    str(self.executable),
-                    "--typed-input",
-                    str(typed_input),
-                    str(legacy_output),
-                    metadata["logical_sha256"],
-                ],
-                check=True,
-            )
-            subprocess.run(
-                [
-                    str(emuflow_native()),
-                    "phase6",
-                    "group-signals",
-                    "--typed-input",
-                    str(typed_input),
-                    str(unified_output),
-                    metadata["logical_sha256"],
-                ],
-                check=True,
-            )
-            self.assertEqual(
-                unified_output.read_bytes(), legacy_output.read_bytes()
-            )
 
-    def test_production_grouping_does_not_publish_legacy_text(self) -> None:
-        with mock.patch.object(
-            grouping_module,
-            "_serialize_legacy_text",
-            side_effect=AssertionError("legacy text producer was called"),
-        ):
-            result = build_chimew_initial_groups(
-                self.schedule, self.crossings, executable=str(self.executable)
-            )
-        self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
 
     def test_production_prefers_unified_grouping_entry(self) -> None:
         with mock.patch.object(
             grouping_module,
             "resolve_native_stage_command",
-            return_value=[str(self.executable)],
+            return_value=[*self.command],
         ) as dispatch:
             result = build_chimew_initial_groups(
                 self.schedule, self.crossings
             )
         self.assertEqual(result["metrics"]["oracle_disagreements"], 0)
         dispatch.assert_called_once_with(
-            "emuflow_chimew_signal_grouper",
             "phase6",
             "group-signals",
             explicit=None,
@@ -553,7 +448,7 @@ class ChimewGroupingTest(unittest.TestCase):
                     input_path.write_bytes(payload)
                     completed = subprocess.run(
                         [
-                            str(self.executable),
+                            *self.command,
                             "--typed-input",
                             str(input_path),
                             "-",
@@ -585,26 +480,24 @@ class ChimewGroupingTest(unittest.TestCase):
             oversized.write_bytes(
                 valid[:16] + struct.pack("<Q", (1 << 64) - 1) + valid[24:]
             )
-            grouping_module._serialize_legacy_text(
-                entries, encodings, guarded, legacy
-            )
+            legacy.write_text("EMUFLOW_CHIMEW_GROUPER_INPUT_V2\nSIGNAL 0 0 1 0 1\n")
             commands = (
                 [
-                    str(self.executable),
+                    *self.command,
                     "--typed-input",
                     str(oversized),
                     "-",
                     typed_metadata["logical_sha256"],
                 ],
                 [
-                    str(self.executable),
+                    *self.command,
                     "--typed-input",
                     str(legacy),
                     "-",
                     typed_metadata["logical_sha256"],
                 ],
-                [str(self.executable), "--legacy-text", str(typed), "-"],
-                [str(self.executable), str(legacy), "-"],
+                [*self.command, "--legacy-text", str(typed), "-"],
+                [*self.command, str(legacy), "-"],
             )
             for command in commands:
                 completed = subprocess.run(
@@ -695,7 +588,7 @@ class ChimewGroupingTest(unittest.TestCase):
                     path.write_bytes(payload)
                     completed = subprocess.run(
                         [
-                            str(self.executable),
+                            *self.command,
                             "--typed-input",
                             str(path),
                             "-",

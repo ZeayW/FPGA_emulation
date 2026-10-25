@@ -1,3 +1,4 @@
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 import copy
 import json
 import sqlite3
@@ -21,14 +22,8 @@ from emuflow.cross_layer_timing import (
 )
 from emuflow.errors import ValidationError
 from emuflow.platform import Platform
-from emuflow.phase3_assignment_index import (
-    ASSIGNMENT_INDEX_APPLICATION_ID,
-)
-from emuflow.tdm_schedule_storage import (
-    ScheduleRecordSequence,
-    read_tdm_schedule,
-    write_tdm_schedule_storage,
-)
+from tests.phase3_index_fixture import write_assignment_v3_fixture
+from emuflow.tdm_schedule_storage import (ScheduleRecordSequence, read_tdm_schedule)
 from emuflow.system_route_storage import (
     SystemRouteSequence,
     read_system_routes,
@@ -102,6 +97,8 @@ def _schedule(*, exact=False):
             {
                 "id": "s000000",
                 "demand": "d000000",
+                "net": "n0", "hop": 0, "capacity_key": "ab:a:b",
+                "slot": 0, "lane": 0, "ready_slot": 0, "arrival_slot": 1,
                 "link": "ab",
                 "from": "a",
                 "to": "b",
@@ -109,6 +106,8 @@ def _schedule(*, exact=False):
             {
                 "id": "s000001",
                 "demand": "d000000",
+                "net": "n0", "hop": 1, "capacity_key": "bc:b:c",
+                "slot": 1, "lane": 0, "ready_slot": 1, "arrival_slot": 2,
                 "link": "bc",
                 "from": "b",
                 "to": "c",
@@ -280,7 +279,7 @@ class CrossLayerTimingContractTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "does not cover"):
                 build_cross_layer_timing_contract(routes, indexed)
 
-    def test_indexed_schedule_hop_binding_rejects_malformed_record(self):
+    def test_typed_schedule_publication_rejects_missing_hop_field(self):
         routes = _routes()
         schedule = {
             **_schedule(),
@@ -291,10 +290,9 @@ class CrossLayerTimingContractTest(unittest.TestCase):
         del schedule["entries"][1]["from"]
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "schedule.json"
-            write_tdm_schedule_storage(path, schedule)
-            indexed = read_tdm_schedule(path)
             with self.assertRaisesRegex(ValidationError, "malformed"):
-                build_cross_layer_timing_contract(routes, indexed)
+                write_tdm_schedule_storage(path, schedule)
+            self.assertFalse(path.exists())
 
     def test_indexed_semantic_contract_stays_compact(self):
         semantic = {
@@ -346,41 +344,16 @@ class CrossLayerTimingContractTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temporary_directory:
             index = Path(temporary_directory) / "assignment.sqlite"
-            with sqlite3.connect(index) as connection:
-                connection.executescript(
-                    f"""
-                    PRAGMA application_id={ASSIGNMENT_INDEX_APPLICATION_ID};
-                    PRAGMA user_version=1;
-                    CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-                    CREATE TABLE parts(part_index INTEGER PRIMARY KEY,fpga TEXT NOT NULL);
-                    CREATE TABLE exact_segment_bindings(
-                      segment_id TEXT PRIMARY KEY,kind TEXT NOT NULL,
-                      part_index INTEGER NOT NULL,payload_json TEXT NOT NULL);
-                    CREATE TABLE exact_capture_requirements(
-                      capture_id TEXT PRIMARY KEY,part_index INTEGER NOT NULL,
-                      payload_json TEXT NOT NULL);
-                    """
-                )
-                connection.executemany(
-                    "INSERT INTO metadata VALUES (?,?)",
-                    [
-                        ("semantic_contract_schema", json.dumps(semantic["schema"])),
-                        ("semantic_contract_sha256", json.dumps("a" * 64)),
-                    ],
-                )
-                connection.executemany(
-                    "INSERT INTO parts VALUES (?,?)",
-                    enumerate(("a", "b", "c")),
-                )
-                connection.execute(
-                    "INSERT INTO exact_segment_bindings VALUES (?,?,?,?)",
-                    (
-                        segment["id"],
-                        segment["kind"],
-                        0,
-                        json.dumps(segment, sort_keys=True),
-                    ),
-                )
+            write_assignment_v3_fixture(
+                index, parts=("a", "b", "c"),
+                semantic={
+                    **semantic,
+                    "cut_nodes": [{"net": "n0", "source_segment_ids": [segment["id"]]}],
+                    "logic_segments": [segment],
+                    "capture_requirements": [],
+                },
+                metadata={"semantic_contract_sha256": "a" * 64},
+            )
             binding = build_cross_layer_physical_binding(
                 contract,
                 schedule,

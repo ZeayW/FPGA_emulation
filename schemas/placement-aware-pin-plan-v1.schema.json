@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://emuflow.dev/schemas/placement-aware-pin-plan-v1.schema.json",
-  "title": "EmuFlow placement-aware logical pin plan",
+  "title": "EmuFlow Chimew logical pin plan",
   "type": "object",
   "required": [
     "schema",
@@ -26,7 +26,7 @@
       "minLength": 1
     },
     "provider": {
-      "const": "chimew-placement-aware-grouping-mcf-v1"
+      "const": "chimew-paper-plus-emuflow-electrical-slot-v1"
     },
     "configuration": {
       "type": "object",

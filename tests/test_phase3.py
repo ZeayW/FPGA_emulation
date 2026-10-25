@@ -1,4 +1,7 @@
+from tests.partition_fixture import run_phase3_fixture
+from contextlib import closing
 import copy
+import hashlib
 import json
 import math
 import sqlite3
@@ -12,7 +15,6 @@ from emuflow.emuir_compact import write_compact_emuir
 from emuflow.io import read_json
 from emuflow.ir import EmuIR
 from emuflow.partition import (
-    assign_clusters,
     build_partition_assignment,
     build_clusters,
     normalize_partition_constraints,
@@ -20,6 +22,7 @@ from emuflow.partition import (
     validate_partition_artifacts,
     validate_partition_artifacts_online,
 )
+from tests.partition_reference import assign_clusters
 from emuflow.partition_ir import load_partition_ir
 from emuflow.phase3 import run_phase3, validate_phase3_indexed
 from emuflow.phase3_assignment_index import (
@@ -51,7 +54,7 @@ class Phase3Test(unittest.TestCase):
             self.ir,
             self.platform,
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         assignment = assign_clusters(
             self.ir,
             self.platform,
@@ -80,7 +83,7 @@ class Phase3Test(unittest.TestCase):
             self.ir,
             self.platform,
         )
-        expected = build_clusters(self.ir, constraints)
+        expected = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         with tempfile.TemporaryDirectory() as temporary_directory:
             ir_path = Path(temporary_directory) / "design.emuir.sqlite"
             write_compact_emuir(ir_path, self.ir.to_dict())
@@ -92,7 +95,7 @@ class Phase3Test(unittest.TestCase):
                 "emuflow.partition_ir._CompactPartitionNets.__iter__",
                 side_effect=AssertionError("net dictionaries were decoded"),
             ):
-                actual = build_clusters(compact_ir, constraints)
+                actual = build_clusters(compact_ir, constraints, cut_mode="sequential-only")
             expected_exact = build_clusters(
                 self.ir,
                 constraints,
@@ -109,7 +112,21 @@ class Phase3Test(unittest.TestCase):
                 cut_mode="static-exact-combinational",
                 _stream_eligible_policy_names=True,
             )
+            packed_clusters = actual["clusters"]
+            self.assertIsInstance(packed_clusters, list)
+            self.assertEqual(list.__len__(packed_clusters), 0)
+            self.assertGreater(packed_clusters.packed_payload_bytes, 0)
         self.assertEqual(actual, expected)
+        self.assertEqual(list(actual["clusters"]), expected["clusters"])
+        self.assertEqual(actual["clusters"][0], expected["clusters"][0])
+        self.assertEqual(actual["clusters"][-1], expected["clusters"][-1])
+        self.assertEqual(
+            json.dumps(actual, sort_keys=True, separators=(",", ":")),
+            json.dumps(expected, sort_keys=True, separators=(",", ":")),
+        )
+        copied_clusters = copy.deepcopy(actual)["clusters"]
+        self.assertIs(type(copied_clusters), list)
+        self.assertEqual(copied_clusters, expected["clusters"])
         self.assertEqual(actual_exact, expected_exact)
         streamed_names = streamed_exact["policy"][
             "eligible_combinational_cut_nets"
@@ -150,11 +167,11 @@ class Phase3Test(unittest.TestCase):
         constraints = normalize_partition_constraints(
             None, self.ir, self.platform
         )
-        expected = build_clusters(self.ir, constraints)
+        expected = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         with tempfile.TemporaryDirectory() as temporary_directory:
             ir_path = Path(temporary_directory) / "design.emuir.sqlite"
             write_compact_emuir(ir_path, self.ir.to_dict())
-            with sqlite3.connect(ir_path) as connection:
+            with closing(sqlite3.connect(ir_path)) as connection, connection:
                 unique_payloads = connection.execute(
                     "SELECT COUNT(DISTINCT resources_seq) FROM cell_records"
                 ).fetchone()[0]
@@ -167,7 +184,7 @@ class Phase3Test(unittest.TestCase):
                 "emuflow.partition.ResourceVector.from_mapping",
                 wraps=ResourceVector.from_mapping,
             ) as decode:
-                actual = build_clusters(compact_ir, constraints)
+                actual = build_clusters(compact_ir, constraints, cut_mode="sequential-only")
         self.assertEqual(actual, expected)
         self.assertEqual(decode.call_count, unique_payloads)
 
@@ -199,7 +216,7 @@ class Phase3Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             ir_path = Path(temporary_directory) / "design.emuir.sqlite"
             write_compact_emuir(ir_path, self.ir.to_dict())
-            with sqlite3.connect(ir_path) as connection:
+            with closing(sqlite3.connect(ir_path)) as connection, connection:
                 endpoint = connection.execute(
                     """SELECT net_seq,role,ordinal FROM endpoint_records
                         WHERE instance_seq IS NOT NULL LIMIT 1"""
@@ -214,7 +231,7 @@ class Phase3Test(unittest.TestCase):
             with self.assertRaisesRegex(
                 ValidationError, "endpoint owner is invalid"
             ):
-                build_clusters(compact_ir, constraints)
+                build_clusters(compact_ir, constraints, cut_mode="sequential-only")
 
     def test_compact_cluster_builder_rejects_missing_resource_payload(
         self,
@@ -225,7 +242,7 @@ class Phase3Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             ir_path = Path(temporary_directory) / "design.emuir.sqlite"
             write_compact_emuir(ir_path, self.ir.to_dict())
-            with sqlite3.connect(ir_path) as connection:
+            with closing(sqlite3.connect(ir_path)) as connection, connection:
                 missing_seq = connection.execute(
                     "SELECT coalesce(max(seq), -1) + 1 FROM payloads"
                 ).fetchone()[0]
@@ -237,7 +254,7 @@ class Phase3Test(unittest.TestCase):
             with self.assertRaisesRegex(
                 ValidationError, "resource payload is missing"
             ):
-                build_clusters(compact_ir, constraints)
+                build_clusters(compact_ir, constraints, cut_mode="sequential-only")
 
     def test_compact_cluster_builder_rejects_non_object_resources(self) -> None:
         constraints = normalize_partition_constraints(
@@ -246,7 +263,7 @@ class Phase3Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             ir_path = Path(temporary_directory) / "design.emuir.sqlite"
             write_compact_emuir(ir_path, self.ir.to_dict())
-            with sqlite3.connect(ir_path) as connection:
+            with closing(sqlite3.connect(ir_path)) as connection, connection:
                 resources_seq = connection.execute(
                     "SELECT resources_seq FROM cell_records WHERE seq=0"
                 ).fetchone()[0]
@@ -258,7 +275,7 @@ class Phase3Test(unittest.TestCase):
             with self.assertRaisesRegex(
                 ValidationError, "resources: expected an object"
             ):
-                build_clusters(compact_ir, constraints)
+                build_clusters(compact_ir, constraints, cut_mode="sequential-only")
 
     def test_indexed_terminal_validation_avoids_graph_replay(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -272,11 +289,12 @@ class Phase3Test(unittest.TestCase):
                     "production Phase 3 must stream compact EmuIR"
                 ),
             ):
-                report = run_phase3(
+                report = run_phase3_fixture(
                     ir_path,
                     PLATFORM_PATH,
                     output,
-                    provider="greedy",
+                    cut_mode="sequential-only",
+                    provider="tritonpart",
                     seed=7,
                 )
             runtime = read_json(output / "phase3-runtime.json")
@@ -294,7 +312,7 @@ class Phase3Test(unittest.TestCase):
             for name in (
                 "load_partition_ir",
                 "build_clusters",
-                "provider.greedy_assignment",
+                "provider.tritonpart",
                 "publish.write_assignment_index",
             ):
                 self.assertEqual(step_by_name[name]["status"], "pass")
@@ -312,10 +330,10 @@ class Phase3Test(unittest.TestCase):
                     output / "assignment.sqlite",
                 )
             self.assertEqual(checked, report["validation"])
-            with sqlite3.connect(output / "assignment.sqlite") as connection:
+            with closing(sqlite3.connect(output / "assignment.sqlite")) as connection, connection:
                 self.assertEqual(
                     connection.execute("PRAGMA user_version").fetchone()[0],
-                    3,
+                    4,
                 )
                 schema = json.loads(
                     connection.execute(
@@ -323,7 +341,7 @@ class Phase3Test(unittest.TestCase):
                     ).fetchone()[0]
                 )
                 self.assertEqual(
-                    schema, "emuflow.phase3-assignment-sqlite/v3"
+                    schema, "emuflow.phase3-assignment-sqlite/v4"
                 )
                 exact_tables = connection.execute(
                     "SELECT count(*) FROM sqlite_master "
@@ -345,7 +363,7 @@ class Phase3Test(unittest.TestCase):
                     output / "phase3_report.json", output / "assignment.sqlite")
             (output / "phase3_report.json").write_text(json.dumps(report))
 
-            with sqlite3.connect(output / "assignment.sqlite") as connection:
+            with closing(sqlite3.connect(output / "assignment.sqlite")) as connection, connection:
                 connection.execute("DELETE FROM cut_sinks")
             with self.assertRaisesRegex(ValidationError, "cut relation"):
                 validate_phase3_indexed(
@@ -366,11 +384,12 @@ class Phase3Test(unittest.TestCase):
                 side_effect=RuntimeError("synthetic cluster failure"),
             ):
                 with self.assertRaisesRegex(RuntimeError, "cluster failure"):
-                    run_phase3(
+                    run_phase3_fixture(
                         ir_path,
                         PLATFORM_PATH,
                         output,
-                        provider="greedy",
+                        cut_mode="sequential-only",
+                        provider="tritonpart",
                         seed=7,
                     )
             runtime = read_json(output / "phase3-runtime.json")
@@ -389,6 +408,19 @@ class Phase3Test(unittest.TestCase):
 
             def publish_index(path, ir, assignment):
                 contract = assignment["semantic_contract"]
+                materialized_assignment = dict(
+                    assignment["instance_assignment"]
+                )
+                expected_assignment_digest = hashlib.sha256(
+                    (
+                        json.dumps(
+                            {"instance_assignment": materialized_assignment},
+                            indent=2,
+                            sort_keys=True,
+                        )
+                        + "\n"
+                    ).encode("utf-8")
+                ).hexdigest()
                 observed_streams.append(
                     (
                         isinstance(
@@ -403,6 +435,20 @@ class Phase3Test(unittest.TestCase):
                             contract["capture_requirements"],
                             StaticExactRecordSequence,
                         ),
+                        not isinstance(
+                            assignment["instance_assignment"], dict
+                        ),
+                        isinstance(assignment["cut_nets"], list),
+                        list.__len__(assignment["cut_nets"]) == 0,
+                        assignment["cut_nets"].packed_payload_bytes > 0,
+                        assignment["cut_nets"][0]
+                        in assignment["cut_nets"],
+                        list(reversed(assignment["cut_nets"]))
+                        == list(assignment["cut_nets"])[::-1],
+                        contract["source_identity"][
+                            "instance_assignment_sha256"
+                        ]
+                        == expected_assignment_digest,
                     )
                 )
                 return write_phase3_assignment_index(path, ir, assignment)
@@ -416,22 +462,43 @@ class Phase3Test(unittest.TestCase):
                 "emuflow.phase3.write_phase3_assignment_index",
                 side_effect=publish_index,
             ):
-                run_phase3(
+                run_phase3_fixture(
                     ir_path,
                     PLATFORM_PATH,
                     output,
-                    provider="greedy",
+                    provider="tritonpart",
                     seed=7,
                     cut_mode="static-exact-combinational",
                 )
-            self.assertEqual(observed_streams, [(True, True, True)])
+            self.assertEqual(
+                observed_streams,
+                [
+                    (
+                        True,
+                        True,
+                        True,
+                        True,
+                        True,
+                        True,
+                        True,
+                        True,
+                        True,
+                        True,
+                    )
+                ],
+            )
             assignment = read_json(output / "assignment.json")
             packed_assignment = json.loads(
                 (output / "assignment.json").read_text(encoding="utf-8")
             )
             self.assertEqual(
                 packed_assignment["schema"],
-                "emuflow.phase3-assignment-storage/v3",
+                "emuflow.phase3-assignment-storage/v4",
+            )
+            self.assertNotIn("cut_nets", packed_assignment["document"])
+            self.assertEqual(
+                packed_assignment["cut_nets_index"]["artifact"],
+                "assignment.sqlite",
             )
             self.assertIsNone(packed_assignment["semantic_contract"])
             self.assertEqual(
@@ -440,7 +507,7 @@ class Phase3Test(unittest.TestCase):
             )
             binary_path = output / "assignment.exact.bin"
             self.assertTrue(binary_path.is_file())
-            with sqlite3.connect(output / "assignment.sqlite") as connection:
+            with closing(sqlite3.connect(output / "assignment.sqlite")) as connection, connection:
                 self.assertEqual(
                     connection.execute(
                         "SELECT count(*) FROM sqlite_master "
@@ -483,7 +550,7 @@ class Phase3Test(unittest.TestCase):
         )
         self.assertEqual(constraints["active_fpgas"], ["fpga0"])
         self.assertEqual(constraints["min_used_fpgas"], 1)
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         assignment = assign_clusters(
             self.ir,
             self.platform,
@@ -720,45 +787,47 @@ class Phase3Test(unittest.TestCase):
         self.assertEqual(constraints["active_fpgas"], ["fpga1", "fpga2"])
 
     def test_single_active_target_skips_requested_patron(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            ir_path = root / "design.emuir.json"
-            constraints_path = root / "constraints.json"
-            ir_path.write_text(
-                json.dumps(self.ir.to_dict()), encoding="utf-8"
-            )
-            constraints_path.write_text(
-                json.dumps(
-                    {
-                        "schema": "emuflow.partition-constraints/v1",
-                        "fpga_selection_policy": "minimum-capacity",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            with (
-                patch("emuflow.phase3.run_tritonpart") as tritonpart,
-                patch(
-                    "emuflow.phase3.run_partition_pressure_native"
-                ) as patron,
-            ):
-                report = run_phase3(
-                    ir_path=ir_path,
-                    platform_path=PLATFORM_PATH,
-                    output_dir=root / "phase3",
-                    constraints_path=constraints_path,
-                    provider="patron",
-                    seed=19,
+        for compact in (False, True):
+            with self.subTest(compact=compact), tempfile.TemporaryDirectory() as temporary_directory:
+                root = Path(temporary_directory)
+                ir_path = root / ("design.emuir.sqlite" if compact else "design.emuir.json")
+                constraints_path = root / "constraints.json"
+                if compact:
+                    write_compact_emuir(ir_path, self.ir.to_dict())
+                else:
+                    ir_path.write_text(json.dumps(self.ir.to_dict()), encoding="utf-8")
+                constraints_path.write_text(
+                    json.dumps(
+                        {
+                            "schema": "emuflow.partition-constraints/v1",
+                            "fpga_selection_policy": "minimum-capacity",
+                        }
+                    ),
+                    encoding="utf-8",
                 )
-            tritonpart.assert_not_called()
-            patron.assert_not_called()
-            self.assertEqual(
-                report["provider"],
-                "single-active-fpga-capacity-selection-v1",
-            )
-            self.assertEqual(report["requested_provider"], "patron")
-            self.assertFalse(report["partition_decision"]["executed"])
-            self.assertEqual(report["validation"]["used_fpgas"], 1)
+                with (
+                    patch("emuflow.phase3.run_tritonpart") as tritonpart,
+                    patch(
+                        "emuflow.phase3.run_partition_pressure_native"
+                    ) as patron,
+                ):
+                    report = run_phase3(
+                        ir_path=ir_path,
+                        platform_path=PLATFORM_PATH,
+                        output_dir=root / "phase3",
+                        constraints_path=constraints_path,
+                        provider="patron",
+                        seed=19,
+                    )
+                tritonpart.assert_not_called()
+                patron.assert_not_called()
+                self.assertEqual(
+                    report["provider"],
+                    "single-active-fpga-capacity-selection-v1",
+                )
+                self.assertEqual(report["requested_provider"], "patron")
+                self.assertFalse(report["partition_decision"]["executed"])
+                self.assertEqual(report["validation"]["used_fpgas"], 1)
 
     def test_explicit_active_subset_rejects_inactive_fixed_instance(self) -> None:
         with self.assertRaisesRegex(ValidationError, "inactive FPGAs"):
@@ -826,6 +895,42 @@ class Phase3Test(unittest.TestCase):
             report["requested_balance_percent_by_dimension"]["bram"], 50.0
         )
 
+    def test_balance_validation_consumes_cluster_records_once(self) -> None:
+        class SinglePassClusters(list):
+            iterations = 0
+
+            def __iter__(self):
+                self.iterations += 1
+                if self.iterations > 1:
+                    raise AssertionError("cluster records were scanned twice")
+                return super().__iter__()
+
+        clusters = SinglePassClusters(
+            [
+                {
+                    "id": f"cluster_{index}",
+                    "instances": [f"instance_{index}"],
+                    "resources": {"lut": 1, "ff": 1},
+                    "fixed_fpga": None,
+                }
+                for index in range(4)
+            ]
+        )
+        report = validate_cluster_assignment_balance(
+            self.platform,
+            clusters,
+            {
+                "cluster_0": "fpga0",
+                "cluster_1": "fpga0",
+                "cluster_2": "fpga1",
+                "cluster_3": "fpga1",
+            },
+            requested_tolerance=0.25,
+        )
+        self.assertEqual(clusters.iterations, 1)
+        self.assertEqual(report["balance_loads"]["fpga0"]["cells"], 2)
+        self.assertEqual(report["balance_loads"]["fpga1"]["cells"], 2)
+
     def test_dimension_specific_balance_rejects_unknown_resource(self) -> None:
         with self.assertRaisesRegex(ValidationError, "unknown dimensions"):
             normalize_partition_constraints(
@@ -882,12 +987,12 @@ class Phase3Test(unittest.TestCase):
             ir_path.write_text(
                 json.dumps(self.ir.to_dict()), encoding="utf-8"
             )
-            report = run_phase3(
+            report = run_phase3_fixture(
                 ir_path=ir_path,
                 platform_path=PLATFORM_PATH,
                 output_dir=output / "phase3",
                 seed=11,
-                provider="greedy",
+                provider="tritonpart",
                 cut_mode="sequential-only",
             )
             self.assertEqual(report["status"], "pass")
@@ -942,7 +1047,7 @@ class Phase3Test(unittest.TestCase):
             self.ir,
             self.platform,
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         assignment = assign_clusters(
             self.ir,
             self.platform,
@@ -990,7 +1095,7 @@ class Phase3Test(unittest.TestCase):
             self.ir,
             self.platform,
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         assignment = assign_clusters(
             self.ir,
             self.platform,
@@ -1021,7 +1126,7 @@ class Phase3Test(unittest.TestCase):
         constraints = normalize_partition_constraints(
             None, self.ir, self.platform
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         cluster_by_instance = {
             instance: cluster["id"]
             for cluster in clusters["clusters"]
@@ -1066,7 +1171,7 @@ class Phase3Test(unittest.TestCase):
             self.ir,
             platform,
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         with self.assertRaisesRegex(ValidationError, "cannot fit any FPGA"):
             assign_clusters(
                 self.ir,
@@ -1086,7 +1191,7 @@ class Phase3Test(unittest.TestCase):
             self.ir,
             self.platform,
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         assignment = build_partition_assignment(
             self.ir,
             self.platform,

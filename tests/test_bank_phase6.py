@@ -1,31 +1,29 @@
 """Phase 6 cannot turn direction-fixed banks into independently reusable wires."""
+
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 import copy
 from types import SimpleNamespace
 
 import pytest
 
-from emuflow.bsp import build_bsp_requirements
 from emuflow.chimew_phase6 import (
-    CHIMEW_PHASE6_BINDING_PROVIDER, CHIMEW_PHASE6_BINDING_SCHEMA_V1,
+    CHIMEW_PHASE6_BINDING_PROVIDER,
     _canonical_sha256, validate_chimew_phase6_binding,
 )
+from emuflow.chimew_fixed_wiring import FIXED_WIRING_BINDING_SCHEMA, FixedWiringChannels
 from emuflow.default_platform import research_platform_path
 from emuflow.errors import ValidationError
 from emuflow.netlist import build_split_artifacts
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow.pin_planning import (
-    CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA, PIN_PLAN_PROVIDER,
+    CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA,
     SIGNAL_POSITION_HINTS_SCHEMA, _assignment_metrics, _baseline_assignment,
     validate_bank_pin_assignment, validate_pin_plan,
 )
 from emuflow.pin_plan_storage import write_pin_plan_storage
 from emuflow.platform import Platform
 from emuflow.tdm import TDM_SCHEDULE_SCHEMA
-from emuflow.tdm_schedule_storage import (
-    canonical_tdm_schedule_sha256,
-    read_tdm_schedule,
-    write_tdm_schedule_storage,
-)
+from emuflow.tdm_schedule_storage import (canonical_tdm_schedule_sha256, read_tdm_schedule)
 
 
 def fixture():
@@ -40,7 +38,10 @@ def fixture():
             [("fpga0", "fpga1", 7, 0), ("fpga1", "fpga0", 11, 140)]
         ],
         "entries": [
-            {"id": f"e{i}", "link": link.id, "from": source, "to": sink,
+            {"id": f"e{i}", "demand": f"d{i}", "net": f"n{i}",
+             "hop": 0, "link": link.id, "from": source, "to": sink,
+             "capacity_key": f"{link.id}:{source}:{sink}",
+             "ready_slot": i, "arrival_slot": i + 1,
              "lane": lane, "slot": i, "tdm_ratio": 1}
             for i, (source, sink, lane) in enumerate(
                 [("fpga0", "fpga1", 0), ("fpga1", "fpga0", 140)])
@@ -60,7 +61,7 @@ def fixture():
                                    _baseline_assignment(schedule), 1, 1)
     plan = {
         "schema": PIN_PLAN_SCHEMA, "design": "banks", "platform": platform.name,
-        "provider": PIN_PLAN_PROVIDER, "configuration": {"refinement_iterations": 0},
+        "provider": CHIMEW_PIN_PLAN_PROVIDER, "configuration": {"refinement_iterations": 0},
         "weights": {"crossing": 1, "position": 1},
         "metrics": {"signals": 2, "groups": 2, **metrics,
                     **{f"baseline_logical_lane_{key}": value for key, value in baseline.items()}},
@@ -176,7 +177,9 @@ def test_chimew_electrical_validator_rejects_bidirectional_bank_bundle():
     plan["provider"] = CHIMEW_PIN_PLAN_PROVIDER
     plan["configuration"].update(schedule_sha256=digest, electrical_map_sha256="a" * 64)
     binding = {
-        "schema": CHIMEW_PHASE6_BINDING_SCHEMA_V1, "status": "pass",
+        "schema": FIXED_WIRING_BINDING_SCHEMA,
+        "fixed_wiring": FixedWiringChannels(platform).source,
+        "fpga_y_bounds": [{"fpga": f.id, "y_min": 0.0, "y_max": 100.0} for f in platform.fpgas], "status": "pass",
         "integration_status": "phase6-pin-plan", "provider": CHIMEW_PHASE6_BINDING_PROVIDER,
         "design": "banks", "platform": platform.name, "paper_provider": "test",
         "provenance": {"producer": "test", "producer_version": "1",
@@ -210,7 +213,9 @@ def test_indexed_chimew_electrical_validator_preserves_bank_budget(tmp_path):
     plan["entries"][1]["physical_lane"] = 18
     indexed_plan = write_pin_plan_storage(tmp_path / "pin_plan.json", plan)
     binding = {
-        "schema": CHIMEW_PHASE6_BINDING_SCHEMA_V1,
+        "schema": FIXED_WIRING_BINDING_SCHEMA,
+        "fixed_wiring": FixedWiringChannels(platform).source,
+        "fpga_y_bounds": [{"fpga": f.id, "y_min": 0.0, "y_max": 100.0} for f in platform.fpgas],
         "status": "pass",
         "integration_status": "phase6-pin-plan",
         "provider": CHIMEW_PHASE6_BINDING_PROVIDER,
@@ -232,14 +237,3 @@ def test_indexed_chimew_electrical_validator_preserves_bank_budget(tmp_path):
         validate_chimew_phase6_binding(
             indexed_schedule, platform, indexed_plan, binding
         )
-
-
-def test_phase8a_refuses_independent_direction_pin_requirements_for_shared_banks():
-    from tests.test_phase8a import Phase8ATest
-    platform, release, phase6, anchors = Phase8ATest()._inputs()
-    value = platform.to_dict()
-    value["links"][0].update(bank_count=2, wires_per_bank=1,
-                             capacity_sharing="shared_bidirectional")
-    platform = Platform.from_dict(value)
-    with pytest.raises(ValidationError, match="schedule-aware physical BSP"):
-        build_bsp_requirements(release, "b" * 64, phase6, platform, anchors)

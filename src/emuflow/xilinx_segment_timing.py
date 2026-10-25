@@ -15,6 +15,7 @@ from .boundary_timing import (
 from .boundary_identity_storage import read_boundary_identity_storage
 from .boundary_timing_storage import write_boundary_timing_storage
 from .errors import ValidationError
+from .store_publication import bind_view_sources
 from .emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
 from .io import read_json, write_json
 from .logic_segment_timing import (
@@ -24,6 +25,7 @@ from .logic_segment_timing import (
 )
 from .local_path_timing import (
     local_path_timing_header,
+    read_local_path_identity,
     validate_local_path_identity,
     validate_local_path_timing,
 )
@@ -403,6 +405,7 @@ def build_xilinx_boundary_timing(
         output_path,
         header,
         records(),
+        source_bindings=bind_view_sources((identity, "boundary-identity-store-v1")),
     ) as database:
         validation = validate_boundary_timing_database(database, identity)
     close_identity = getattr(identity, "close", None)
@@ -480,6 +483,9 @@ def build_xilinx_logic_segment_timing(
             header=header,
             segments=records(),
             unsupported_member_paths=identity["unsupported_member_paths"],
+            source_bindings=bind_view_sources(
+                (identity, "logic-segment-identity-store-v1")
+            ),
         )
         try:
             validation = view.validate_timing()
@@ -501,33 +507,42 @@ def build_xilinx_local_path_timing(
     _timing_graph: Optional[_TimingGraph] = None,
 ) -> Dict[str, Any]:
     """Measure all original same-FPGA paths on the routed Xilinx graph."""
-    identity = read_json(identity_path)
-    validate_local_path_identity(identity)
-    graph = (
-        _timing_graph
-        if _timing_graph is not None
-        else _graph(mapped_path, timing_path)
-    )
-    for path in identity["paths"]:
-        delay, _actual_start = graph.longest(
-            [path["start_pin"]], path["end_pin"]
+    identity = read_local_path_identity(identity_path)
+    try:
+        validate_local_path_identity(identity)
+        graph = (
+            _timing_graph
+            if _timing_graph is not None
+            else _graph(mapped_path, timing_path)
         )
-        # The loaded identity is private to this producer.  Extend each record
-        # in place instead of retaining an equally large timing-record list.
-        path["delay_ns"] = delay
-    header = local_path_timing_header(
-        identity,
-        provider="rapidwright-lightweight-local-path-graph-v1",
-        qualification=(
-            "source-bound-routed-endpoint-longest-path-upper-bound-"
-            "with-launch-clock-to-q-and-capture-setup"
-        ),
-    )
-    with write_local_path_timing_storage(
-        output_path, header, identity["paths"]
-    ) as database:
-        validation = validate_local_path_timing(database)
-    return {**validation, "output": str(output_path)}
+        header = local_path_timing_header(
+            identity,
+            provider="rapidwright-lightweight-local-path-graph-v1",
+            qualification=(
+                "source-bound-routed-endpoint-longest-path-upper-bound-"
+                "with-launch-clock-to-q-and-capture-setup"
+            ),
+        )
+
+        def records() -> Iterator[Mapping[str, Any]]:
+            for path in identity["paths"]:
+                delay, _actual_start = graph.longest(
+                    [path["start_pin"]], path["end_pin"]
+                )
+                yield {**path, "delay_ns": delay}
+
+        with write_local_path_timing_storage(
+            output_path,
+            header,
+            records(),
+            source_bindings=bind_view_sources((identity, "local-path-timing-store-v1")),
+        ) as database:
+            validation = validate_local_path_timing(database)
+        return {**validation, "output": str(output_path)}
+    finally:
+        close = getattr(identity, "close", None)
+        if callable(close):
+            close()
 
 
 def build_xilinx_segment_timing_bundle(

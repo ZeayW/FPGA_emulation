@@ -1,3 +1,4 @@
+from contextlib import closing
 import copy
 import hashlib
 import io
@@ -9,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.errors import ValidationError
+from emuflow.tdm_schedule_storage import TDM_SCHEDULE_LOGICAL_SCHEMA
 from emuflow.chimew_binding_storage import (
     ChimewBindingEntrySequence,
     write_chimew_binding_storage,
@@ -22,11 +24,8 @@ from emuflow.multi_fpga_physical_flow import (
     _indexed_emuir_resource_totals,
     _open_position_hint_lookup,
     _partition_has_physical_work,
-    _partition_declares_dut_clock,
-    _physical_clock_delays,
     _record_chimew_fixed_io_target,
     _validate_transport_resource_reservation,
-    _write_vpr_runtime_sdc,
     run_multi_fpga_physical_flow,
     validate_multi_fpga_physical_report,
 )
@@ -173,7 +172,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
     def test_backend_specific_implementation_stage_owner(self):
         item = {
             "stages": {
-                "local_path_timing": {"owner": "open"},
+                "local_path_timing": {"owner": "inactive"},
                 "rapidwright_implementation": {
                     "local_path_timing": {"owner": "rapidwright"}
                 },
@@ -182,12 +181,8 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 },
             }
         }
-        self.assertEqual(
-            _implementation_stage(item, "open", "local_path_timing")[
-                "owner"
-            ],
-            "open",
-        )
+        with self.assertRaisesRegex(ValidationError, "unsupported physical backend"):
+            _implementation_stage(item, "open", "local_path_timing")
         self.assertEqual(
             _implementation_stage(item, "rapidwright", "local_path_timing")[
                 "owner"
@@ -340,149 +335,6 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
         ):
             validate_multi_fpga_physical_report(report)
 
-    def test_partition_dut_clock_requirement_comes_from_split_ports(self):
-        self.assertTrue(
-            _partition_declares_dut_clock(
-                {"ports": [{"id": "clk", "clock": True}]}
-            )
-        )
-        self.assertFalse(
-            _partition_declares_dut_clock(
-                {"ports": [{"id": "data", "clock": False}]}
-            )
-        )
-        with self.assertRaisesRegex(ValidationError, "ports are invalid"):
-            _partition_declares_dut_clock({"ports": None})
-
-    def test_runtime_sdc_allows_clockless_combinational_dut_partition(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "runtime.sdc"
-            report = _write_vpr_runtime_sdc(
-                path,
-                {
-                    "clock_nets": {
-                        "fabric_clk": "fabric_clock_net",
-                        "virtual_clock_enable": "enable_net",
-                    }
-                },
-                fabric_period_ns=20.0,
-                dut_periods_ns={"dut_clk": 200.0},
-                cross_period_ns=180.0,
-                dut_clock_required=False,
-            )
-
-            self.assertFalse(report["dut_clock_present"])
-            self.assertFalse(report["dut_clock_required"])
-            self.assertEqual(report["dut_clocks"], [])
-            self.assertEqual(
-                path.read_text(encoding="utf-8"),
-                "# EmuFlow endpoint-complete Phase 7 timing contract.\n"
-                "create_clock -name emuflow_fabric_clk -period 20.000000000 "
-                "[get_ports {fabric_clock_net}]\n",
-            )
-
-    def test_clockless_partition_does_not_treat_enable_as_dut_clock(self):
-        delays, presence = _physical_clock_delays(
-            {
-                "metrics": {
-                    "critical_path_ns": 7.0,
-                    "clock_domain_cpd_ns": {"fabric_net->fabric_net": 3.0},
-                }
-            },
-            {
-                "clock_nets": {
-                    "fabric_clk": "fabric_net",
-                    "virtual_clock_enable": "enable_net",
-                }
-            },
-        )
-
-        self.assertEqual(delays["fabric"], 3.0)
-        self.assertEqual(delays["dut"], 0.0)
-        self.assertEqual(delays["cross"], 0.0)
-        self.assertEqual(
-            presence, {"fabric": True, "dut": False, "cross": False}
-        )
-
-    def test_runtime_sdc_caps_long_virtual_clock_for_vpr_only(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "runtime.sdc"
-            report = _write_vpr_runtime_sdc(
-                path,
-                {
-                    "clock_nets": {
-                        "fabric_clk": "fabric_clock_net",
-                        "dut_clk": "dut_clock_net",
-                    }
-                },
-                fabric_period_ns=20.0,
-                dut_periods_ns={"dut_clk": 2_238_160.0},
-                cross_period_ns=2_237_980.0,
-            )
-
-            self.assertEqual(
-                report["requested_periods_ns"]["dut"],
-                {"dut_clk": 2_238_160.0},
-            )
-            self.assertEqual(report["requested_periods_ns"]["cross"], 2_237_980.0)
-            self.assertEqual(
-                report["effective_vpr_periods_ns"]["dut"],
-                {"dut_clk": 2_000_000.0},
-            )
-            self.assertEqual(
-                report["effective_vpr_periods_ns"]["cross"],
-                {"dut_clk": 1_999_820.0},
-            )
-            self.assertTrue(report["vpr_sdc_time_capped"])
-            self.assertEqual(report["sha256"], _sha256(path))
-            self.assertEqual(
-                path.read_text(encoding="utf-8"),
-                "# EmuFlow endpoint-complete Phase 7 timing contract.\n"
-                "create_clock -name emuflow_fabric_clk -period 20.000000000 "
-                "[get_ports {fabric_clock_net}]\n"
-                "create_clock -name emuflow_dut_clk_0 -period 2000000.000000000 "
-                "[get_ports {dut_clock_net}]\n"
-                "set_max_delay 1999820.000000000 -from "
-                "[get_clocks {emuflow_fabric_clk}] -to "
-                "[get_clocks {emuflow_dut_clk_0}]\n"
-                "set_max_delay 1999820.000000000 -from "
-                "[get_clocks {emuflow_dut_clk_0}] -to "
-                "[get_clocks {emuflow_fabric_clk}]\n",
-            )
-
-    def test_runtime_sdc_preserves_each_dut_clock_period(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "runtime.sdc"
-            report = _write_vpr_runtime_sdc(
-                path,
-                {
-                    "clock_nets": {
-                        "fabric_clk": "fabric_clock_net",
-                        "core_clk": "core_clock_net",
-                        "csb_clk": "csb_clock_net",
-                    }
-                },
-                fabric_period_ns=20.0,
-                dut_periods_ns={"core_clk": 200.0, "csb_clk": 400.0},
-                cross_period_ns=180.0,
-            )
-
-            self.assertEqual(
-                report["effective_vpr_periods_ns"]["dut"],
-                {"core_clk": 200.0, "csb_clk": 400.0},
-            )
-            text = path.read_text(encoding="utf-8")
-            self.assertIn(
-                "create_clock -name emuflow_dut_clk_0 -period 200.000000000 "
-                "[get_ports {core_clock_net}]",
-                text,
-            )
-            self.assertIn(
-                "create_clock -name emuflow_dut_clk_1 -period 400.000000000 "
-                "[get_ports {csb_clock_net}]",
-                text,
-            )
-
     def test_chimew_fixed_io_targets_allow_only_intragroup_tdm_sharing(self):
         targets = {}
         packed_groups = {}
@@ -574,7 +426,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             # required to follow the BoardDB order even under concurrency.
             manifest["fpgas"].reverse()
             write_json(split / "manifest.json", manifest)
-            write_json(root / "schedule.json", {})
+            write_json(root / "schedule.json", {"schema": TDM_SCHEDULE_LOGICAL_SCHEMA})
             architecture = root / "architecture.xml"
             architecture.write_text("<architecture/>\n", encoding="utf-8")
 
@@ -594,8 +446,15 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 worker_barrier.wait()
                 return consumer(io.StringIO(""))
 
-            def fake_indexed_import(_source, output, **_kwargs):
-                _merged_ir("transport").save(output)
+            def fake_indexed_import(_source, output, **kwargs):
+                from emuflow.emuir_storage import write_emuir_sqlite
+
+                write_emuir_sqlite(
+                    output,
+                    _merged_ir("transport").value,
+                    source_bindings=kwargs.get("source_bindings", ()),
+                    _finalize=kwargs.get("_finalize_emuir"),
+                )
 
             def fake_lower(netlist, _transport, _transport_ir, output, report):
                 fpga = netlist["instances"][0]["id"].removesuffix("_original")
@@ -651,92 +510,42 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 write_json(report, result)
                 return result
 
-            def fake_pack(arch, circuit, output_dir, **_kwargs):
-                output_dir.mkdir(parents=True, exist_ok=True)
-                netlist = output_dir / "partition.net"
-                placement = output_dir / "partition.place"
-                netlist.write_text("<block/>\n", encoding="utf-8")
-                placement.write_text(
-                    "Array size: 8 x 9 logic blocks\n", encoding="utf-8"
-                )
-                return {
-                    "status": "pass",
-                    "architecture": {"sha256": _sha256(arch)},
-                    "circuit": {"sha256": _sha256(circuit)},
-                    "artifacts": {
-                        "packed_netlist": {"path": str(netlist)},
-                        "placement": {"path": str(placement)},
-                    },
-                }
+            def fake_mapped_verilog(_ir, output, _report):
+                output.write_text("// mocked mapped Verilog; no vendor execution\n")
+                return {"status": "pass", "output": str(output)}
 
-            def fake_eblif(_ir, output, _report):
-                output.write_text(".model partition\n.end\n", encoding="utf-8")
-                return {
-                    "status": "pass",
-                    "output": str(output),
-                    "output_sha256": _sha256(output),
-                    "emitted_atoms": 2,
-                    "source_instances": 2,
-                    "top_ports": [],
-                    "clock_nets": {
-                        "fabric_clk": "fabric_clk",
-                        "clk": "clk",
-                        "virtual_clock_enable": "virtual_clock_enable",
-                    },
+            def fake_vivado(**kwargs):
+                from emuflow.boundary_identity_storage import read_boundary_identity_storage
+                from emuflow.boundary_timing import boundary_timing_header
+                from emuflow.boundary_timing_storage import write_boundary_timing_storage
+                from emuflow.resource_budget import validate_device_resource_usage
+                output = kwargs["output_dir"]
+                output.mkdir(parents=True)
+                timing_path = output / "boundary-timing.json"
+                with read_boundary_identity_storage(kwargs["boundary_identity_path"]) as identity:
+                    header = boundary_timing_header(identity, provider="test", qualification="mocked")
+                    write_boundary_timing_storage(timing_path, header, ()).close()
+                result = {
+                    "schema": "emuflow.physical-partition-result/v1", "status": "pass",
+                    "identity": {"backend": "vivado", "fpga": kwargs["fpga"], "part": kwargs["part"]},
+                    "cell_accounting": {"original_cells": 1, "transport_cells": 1,
+                        "routed_cells": 2, "physical_cells": 2, "infrastructure_cells": 0,
+                        "optimization_cells": 0},
+                    "closure": {"unrouted_nets": 0, "drc_violations": 0},
+                    "clocks": {"fabric_period_ns": 4.0, "dut_period_ns": 128.0},
+                    "timing": {"wns_ns": -14.0, "tns_ns": -14.0,
+                        "failing_endpoints": 1, "failing_endpoint_constraints": 1,
+                        "timing_met": False, "dut_wns_ns": 110.0, "fabric_wns_ns": -14.0,
+                        "fabric_to_dut_wns_ns": -10.0, "critical_path_ns": 18.0},
+                    "resource_usage": {"physical": validate_device_resource_usage(
+                        {**{field: 0 for field in kwargs["runtime"]["resource_budget"]["capacity"]}, "lut": 2}, kwargs["runtime"]["resource_budget"], stage="post-physical-materialization")},
+                    "artifacts": {"boundary_timing": {"path": str(timing_path), "sha256": _sha256(timing_path)}},
                 }
-
-            def fake_architecture(**kwargs):
-                write_json(kwargs["architecture_output_path"], {})
-                write_json(kwargs["timing_output_path"], {})
-                return {"status": "pass"}
-
-            def fake_packed(netlist, output, **_kwargs):
-                write_json(output, {})
-                return {"status": "pass", "design": "partition"}
-
-            def fake_placement(_packed, _arch, output_dir, **_kwargs):
-                output_dir.mkdir(parents=True, exist_ok=True)
-                placement = output_dir / "partition.place"
-                placement.write_text(
-                    "Array size: 8 x 9 logic blocks\n", encoding="utf-8"
-                )
-                return {
-                    "status": "pass",
-                    "artifacts": {"vpr_placement": str(placement)},
-                }
-
-            def fake_route(arch, circuit, *_args, **_kwargs):
-                _kwargs["boundary_output"].parent.mkdir(
-                    parents=True, exist_ok=True
-                )
-                _kwargs["boundary_output"].write_text(
-                    "endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n",
-                    encoding="utf-8",
-                )
-                metrics = {
-                    "critical_path_ns": 1.0,
-                    "setup_wns_ns": 0.0,
-                    "setup_worst_slack_ns": 3.0,
-                    "setup_tns_ns": 0.0,
-                    "setup_failing_endpoint_constraints": 0,
-                    "setup_failing_endpoints": 0,
-                }
-                return {
-                    "status": "pass",
-                    "architecture": {"sha256": _sha256(arch)},
-                    "circuit": {"sha256": _sha256(circuit)},
-                    "sdc_file": {
-                        "sha256": _sha256(_kwargs["sdc_file"]),
-                    },
-                    "metrics": metrics,
-                    "route_check": {"status": "pass"},
-                    "timing_summary": {
-                        "status": "pass",
-                        "metrics": metrics,
-                    },
-                }
+                return {"status": "pass", "result": result,
+                    "boundary_timing": {"status": "pass", "import": {"output": str(timing_path)}}}
 
             with (
+                patch("emuflow.multi_fpga_physical_flow.emit_vivado_mapped_verilog", side_effect=fake_mapped_verilog),
                 patch(
                     "emuflow.multi_fpga_physical_flow.build_virtual_runtime",
                     return_value=runtime,
@@ -757,32 +566,8 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     side_effect=fake_lower,
                 ),
                 patch(
-                    "emuflow.multi_fpga_physical_flow.run_vpr_pack_place",
-                    side_effect=fake_pack,
-                ),
-                patch(
-                    "emuflow.multi_fpga_physical_flow.emit_vtr_eblif",
-                    side_effect=fake_eblif,
-                ),
-                patch(
-                    "emuflow.multi_fpga_physical_flow.run_vtr_architecture_import",
-                    side_effect=fake_architecture,
-                ),
-                patch(
-                    "emuflow.multi_fpga_physical_flow.run_packed_netlist_import",
-                    side_effect=fake_packed,
-                ),
-                patch(
-                    "emuflow.multi_fpga_physical_flow.run_packed_openparf_placement",
-                    side_effect=fake_placement,
-                ),
-                patch(
-                    "emuflow.multi_fpga_physical_flow.validate_openparf_runtime",
-                    return_value={"status": "pass"},
-                ),
-                patch(
-                    "emuflow.multi_fpga_physical_flow.run_vpr_route_packed",
-                    side_effect=fake_route,
+                    "emuflow.multi_fpga_physical_flow.run_indexed_vivado_partition",
+                    side_effect=fake_vivado,
                 ),
             ):
                 report = run_multi_fpga_physical_flow(
@@ -790,9 +575,8 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     PLATFORM,
                     root / "schedule.json",
                     root / "physical",
-                    architecture=architecture,
                     workers=2,
-                    backend="open",
+                    backend="vivado",
                 )
                 physical_summary = read_json(
                     root / "physical/physical-summary.json"
@@ -816,21 +600,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     lazy_summary["boundary_timing"]["fpga0"]["schema"],
                     "emuflow.boundary-timing/v1",
                 )
-                self.assertEqual(
-                    (root / "physical/architecture/vtr-flagship.xml").read_bytes(),
-                    architecture.read_bytes(),
-                )
-                self.assertEqual(
-                    Path(report["architecture"]["path"]).resolve(),
-                    (root / "physical/architecture/vtr-flagship.xml").resolve(),
-                )
-                for item in report["fpgas"]:
-                    runtime_sdc = Path(item["stages"]["runtime_sdc"]["path"])
-                    self.assertNotIn(
-                        "virtual_clock_enable",
-                        runtime_sdc.read_text(encoding="utf-8"),
-                    )
-
+                lazy_summary.close()
                 # The same checked assembler must consume separately completed
                 # records without re-entering any synthesis/place/route tool.
                 assembly_inputs = dict(
@@ -846,7 +616,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     "run_generic_yosys_stream",
                     side_effect=AssertionError("synthesis rerun forbidden"),
                 ), patch(
-                    "emuflow.multi_fpga_physical_flow.run_vpr_route_packed",
+                    "emuflow.multi_fpga_physical_flow.run_indexed_vivado_partition",
                     side_effect=AssertionError("routing rerun forbidden"),
                 ):
                     assembled = _assemble_multi_fpga_physical_results(
@@ -870,7 +640,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 worker_barrier = threading.Barrier(1, timeout=5.0)
                 batch = run_multi_fpga_physical_flow(
                     split, PLATFORM, root / "schedule.json", root / "worker",
-                    architecture=architecture, workers=2, backend="open",
+                    workers=2, backend="vivado",
                     fpga_ids=["fpga1"],
                 )
                 self.assertEqual(batch["schema"], "emuflow.physical-partition-batch/v1")
@@ -917,7 +687,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             common = dict(
                 manifest={}, manifest_path=root / "manifest.json",
                 platform=Platform.load(PLATFORM), runtime={}, split_root=root,
-                output_dir=root / "out", backend_descriptor=physical_backend_descriptor("open"),
+                output_dir=root / "out", backend_descriptor=physical_backend_descriptor("vivado"),
                 architecture_source={}, execution={}, include_logic_timing=True,
             )
             for records in (
@@ -974,7 +744,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 {"fpga": fpga, "status": "pass", "stages": {}}
                 for fpga in ("fpga0", "fpga1")
             ]
-            for backend in ("open", "rapidwright"):
+            for backend in ("vivado", "rapidwright"):
                 with self.subTest(backend=backend), self.assertRaisesRegex(
                     ValidationError, "fixed differential I/O"
                 ), patch(
@@ -993,7 +763,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             split = root / "split"
             split.mkdir()
             write_json(split / "manifest.json", {"schema": "emuflow.split-manifest/v1"})
-            write_json(root / "schedule.json", {})
+            write_json(root / "schedule.json", {"schema": TDM_SCHEDULE_LOGICAL_SCHEMA})
             for selected in ([], ["unknown"], ["fpga0", "fpga0"], "fpga0"):
                 with self.subTest(selected=selected), self.assertRaisesRegex(
                     ValidationError, "FPGA selection"
@@ -1015,16 +785,16 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     workers=0,
                 )
 
-    def test_rejects_unknown_rapidwright_placer(self):
+    def test_retired_rapidwright_placer_is_not_a_python_api(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            with self.assertRaisesRegex(ValidationError, "RapidWright placer"):
+            with self.assertRaisesRegex(TypeError, "rapidwright_placer"):
                 run_multi_fpga_physical_flow(
                     root,
                     PLATFORM,
                     root / "schedule.json",
                     root / "physical",
-                    rapidwright_placer="invented",
+                    rapidwright_placer="legacy",
                 )
 
     def test_rapidwright_default_is_openparf_native_and_fail_closed(self):
@@ -1041,20 +811,31 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     backend="rapidwright",
                 )
 
-    def test_rejects_rapidwright_placer_for_other_backend(self):
+    def test_retired_arch_producers_are_not_cli_commands(self):
+        from contextlib import redirect_stderr
+        from io import StringIO
+        from emuflow.cli import _build_parser
+
+        parser = _build_parser()
+        for command in ("pack-xilinx", "place-xilinx", "guide-xilinx-openparf",
+                        "plan-xilinx-single-slr", "validate-xilinx-single-slr-plan"):
+            with self.subTest(command=command):
+                error = StringIO()
+                with redirect_stderr(error), self.assertRaises(SystemExit):
+                    parser.parse_args(["arch", command])
+                self.assertIn("invalid choice", error.getvalue())
+
+    def test_retired_rapidwright_placer_is_not_a_cli_option(self):
+        from emuflow.cli import _build_parser
+
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            with self.assertRaisesRegex(
-                ValidationError, "applies only to the RapidWright backend"
-            ):
-                run_multi_fpga_physical_flow(
-                    root,
-                    PLATFORM,
-                    root / "schedule.json",
-                    root / "physical",
-                    backend="open",
-                    rapidwright_placer="openparf-native",
-                )
+            with self.assertRaises(SystemExit):
+                _build_parser().parse_args([
+                    "multi-fpga", "physical", "--split", str(root),
+                    "--platform", str(PLATFORM), "--schedule", str(root / "schedule.json"),
+                    "--out", str(root / "physical"), "--rapidwright-placer", "legacy",
+                ])
 
     def test_rejects_partial_chimew_physical_anchor_inputs(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1071,14 +852,14 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             }
             write_json(split / "manifest.json", manifest)
             write_json(split / "electrical_binding.json", {"bindings": []})
-            write_json(root / "schedule.json", {})
+            write_json(root / "schedule.json", {"schema": TDM_SCHEDULE_LOGICAL_SCHEMA})
             with self.assertRaisesRegex(ValidationError, "position hints"):
                 run_multi_fpga_physical_flow(
                     split,
                     PLATFORM,
                     root / "schedule.json",
                     root / "physical",
-                    backend="open",
+                    backend="vivado",
                 )
 
     def test_indexed_chimew_selector_is_read_lazily_and_tamper_fails_closed(self):
@@ -1120,7 +901,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     ],
                 },
             )
-            write_json(root / "schedule.json", {})
+            write_json(root / "schedule.json", {"schema": TDM_SCHEDULE_LOGICAL_SCHEMA})
             with patch.object(
                 ChimewBindingEntrySequence,
                 "__iter__",
@@ -1131,10 +912,10 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     PLATFORM,
                     root / "schedule.json",
                     root / "physical",
-                    backend="open",
+                    backend="vivado",
                 )
 
-            with sqlite3.connect(indexed.store_path) as connection:
+            with closing(sqlite3.connect(indexed.store_path)) as connection, connection:
                 connection.execute(
                     "UPDATE members SET member='tampered' WHERE member='entry0'"
                 )
@@ -1144,7 +925,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     PLATFORM,
                     root / "schedule.json",
                     root / "physical-tampered",
-                    backend="open",
+                    backend="vivado",
                 )
 
     def test_nonempty_output_requires_explicit_resume(self):
@@ -1163,7 +944,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             output = root / "physical"
             output.mkdir()
             (output / "partial").write_text("partial\n", encoding="utf-8")
-            write_json(root / "schedule.json", {})
+            write_json(root / "schedule.json", {"schema": TDM_SCHEDULE_LOGICAL_SCHEMA})
             runtime = {
                 "fabric_clock": {"period_ns": 4.0},
                 "virtual_dut_clock": {"nominal_period_ns": 128.0},
@@ -1183,7 +964,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     PLATFORM,
                     root / "schedule.json",
                     output,
-                    backend="open",
+                    backend="vivado",
                 )
 
     def test_rejects_logic_database_without_complete_original_database(self):
@@ -1198,7 +979,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     root / "schedule.json",
                     root / "physical",
                     logic_path_database_path=root / "cut-paths.json",
-                    backend="open",
+                    backend="vivado",
                 )
 
 

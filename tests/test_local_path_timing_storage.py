@@ -6,7 +6,13 @@ from pathlib import Path
 import pytest
 
 from emuflow.errors import ValidationError
-from emuflow.local_path_timing import path_id_set_sha256, validate_local_path_timing
+from emuflow.local_path_timing import (
+    LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION,
+    path_id_set_sha256,
+    read_local_path_identity,
+    validate_local_path_identity,
+    validate_local_path_timing,
+)
 from emuflow.local_path_timing_storage import (
     LOCAL_PATH_TIMING_SCHEMA,
     LOCAL_PATH_TIMING_STORAGE_SCHEMA,
@@ -84,6 +90,37 @@ def test_local_path_typed_round_trip_and_relocation(tmp_path: Path) -> None:
         assert [item["id"] for item in evidence["fpga0"]["paths"]] == [
             "a", "b",
         ]
+
+
+def test_local_path_identity_is_a_zero_delay_typed_projection(
+    tmp_path: Path,
+) -> None:
+    selector = tmp_path / "local-path-identity.json"
+    header = {
+        **_header(),
+        "provider": "original-timing-pathdb-to-xilinx-endpoint-bound-v1",
+        "qualification": LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION,
+    }
+    records = [_record("a", 0.0), _record("b", 0.0)]
+    with write_local_path_timing_storage(selector, header, records):
+        pass
+    with read_local_path_identity(selector) as identity:
+        assert validate_local_path_identity(identity) == {
+            "status": "pass", "fpga": "fpga0", "local_paths": 2,
+        }
+        assert identity["schema"] == "emuflow.local-path-identity/v2"
+        assert [dict(item) for item in identity["paths"]] == [
+            {key: value for key, value in record.items() if key != "delay_ns"}
+            for record in records
+        ]
+
+    timing_selector = tmp_path / "ordinary-timing.json"
+    with write_local_path_timing_storage(
+        timing_selector, _header(), records
+    ):
+        pass
+    with pytest.raises(ValidationError, match="identity owner is invalid"):
+        read_local_path_identity(timing_selector)
 
 
 def test_local_path_typed_rejects_duplicate_identity(tmp_path: Path) -> None:

@@ -1,3 +1,6 @@
+from tests.schedule_store_fixture import write_tdm_schedule_storage
+from tests.pin_plan_fixture import make_pin_plan_fixture
+from contextlib import closing
 import copy
 import hashlib
 import json
@@ -21,8 +24,9 @@ from emuflow.chimew_binding_storage import (
 from emuflow.errors import ValidationError
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.ir import EmuIR
-from emuflow.io import read_json, write_json
+from emuflow.io import file_sha256, read_json, write_json
 from emuflow.lowering import (
+    _LoweringOverlaySpool,
     run_placement_ir_lowering_from_split,
     run_placement_ir_lowering_from_value,
 )
@@ -33,14 +37,13 @@ from emuflow.netlist import (
     validate_split_artifacts,
 )
 from emuflow.partition import (
-    assign_clusters,
     build_partition_assignment,
     build_clusters,
     normalize_partition_constraints,
 )
+from tests.partition_reference import assign_clusters
 from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.phase3_assignment_index import (
-    migrate_phase3_assignment_index,
     write_phase3_assignment_index,
 )
 from emuflow.split_netlist_storage import (
@@ -54,7 +57,6 @@ from emuflow.pin_planning import (
     CHIMEW_PIN_PLAN_PROVIDER,
     SIGNAL_POSITION_HINTS_SCHEMA,
     _assignment_metrics,
-    build_pin_plan,
 )
 from emuflow.pin_plan_storage import (
     PIN_PLAN_STORAGE_SCHEMA,
@@ -73,11 +75,8 @@ from emuflow.open_transport_characterization import (
     OPEN_TRANSPORT_PROVENANCE,
 )
 from emuflow.routing import normalize_route_constraints
-from emuflow.tdm import build_tdm_schedule
-from emuflow.tdm_schedule_storage import (
-    open_tdm_schedule_view,
-    write_tdm_schedule_storage,
-)
+from tests.schedule_reference import build_tdm_schedule
+from emuflow.tdm_schedule_storage import (open_tdm_schedule_view)
 from emuflow.transport_storage import (
     LANE_MAP_STORAGE_SCHEMA,
     TRANSPORT_STORAGE_SCHEMA,
@@ -105,7 +104,7 @@ class Phase6Test(unittest.TestCase):
         constraints = normalize_partition_constraints(
             None, self.ir, self.platform
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         self.assignment = assign_clusters(
             self.ir,
             self.platform,
@@ -123,6 +122,19 @@ class Phase6Test(unittest.TestCase):
             executable=str(tlr_router()),
         )
         self.schedule = build_tdm_schedule(self.routes, self.platform)
+        # The bounded legacy scheduling oracle still tests registered transport.
+        # Persist current typed completion facts, not its retired round record.
+        for route in self.schedule["routes"]:
+            route.pop("transport_round", None)
+        routes_by_id = {route["id"]: route for route in self.schedule["routes"]}
+        for completion in self.schedule["demand_completions"]:
+            completion.pop("transport_round", None)
+            sinks = routes_by_id[completion["demand"]]["sinks"]
+            completion["sink_arrival_slots"] = {
+                entry["to"]: entry["arrival_slot"]
+                for entry in self.schedule["entries"]
+                if entry["demand"] == completion["demand"] and entry["to"] in sinks
+            }
 
     def _chimew_certificate(self, schedule, positions, plan):
         chimew_plan = copy.deepcopy(plan)
@@ -273,9 +285,14 @@ class Phase6Test(unittest.TestCase):
                     writer_uri_modes.append(kwargs.get("uri", False))
                 return original_connect(database, *args, **kwargs)
 
-            with mock.patch(
-                "emuflow.transport_storage.sqlite3.connect",
-                side_effect=recording_connect,
+            with (
+                mock.patch(
+                    "emuflow.transport_storage.sqlite3.connect",
+                    side_effect=recording_connect,
+                ),
+                mock.patch(
+                    "emuflow.store_publication.file_sha256", wraps=file_sha256
+                ) as store_hash,
             ):
                 for run in range(2):
                     output = root / f"run-{run}"
@@ -288,6 +305,7 @@ class Phase6Test(unittest.TestCase):
                         clocks=self.ir.value["clocks"],
                     )
                     summaries.append(artifacts["summary"])
+                    self.assertEqual(store_hash.call_count, run + 1)
                     self.assertEqual(
                         len(artifacts["lane_map"]["entries"]), count
                     )
@@ -458,6 +476,7 @@ class Phase6Test(unittest.TestCase):
                 root / "pin-plan.json",
                 {
                     "schema": "emuflow.placement-aware-pin-plan/v1",
+                    "provider": CHIMEW_PIN_PLAN_PROVIDER,
                     "design": self.ir.value["design"],
                     "platform": self.platform.name,
                     "entries": [
@@ -590,7 +609,7 @@ class Phase6Test(unittest.TestCase):
                 clocks=self.ir.value["clocks"],
             )
             self.assertEqual(proof["status"], "pass")
-            with sqlite3.connect(split_path) as connection:
+            with closing(sqlite3.connect(split_path)) as connection, connection:
                 self.assertEqual(
                     connection.execute("PRAGMA user_version").fetchone()[0],
                     2,
@@ -657,6 +676,14 @@ class Phase6Test(unittest.TestCase):
             transport = control["transports"][fpga]
             transport_path = root / "transport.json"
             write_json(transport_path, transport)
+            typed_transport_path = write_transport_storage(
+                root / "typed-transport",
+                assignment_path,
+                self.schedule,
+                self.platform,
+                design=self.ir.value["design"],
+                clocks=self.ir.value["clocks"],
+            )["transports"][fpga].manifest_path
 
             ports = []
             instances = []
@@ -811,6 +838,24 @@ class Phase6Test(unittest.TestCase):
                 side_effect=AssertionError(
                     "production lowering must not iterate DUT nets"
                 ),
+            ), mock.patch.object(
+                SplitNetlistView,
+                "net_ids",
+                side_effect=AssertionError(
+                    "production lowering must not materialize net identities"
+                ),
+            ), mock.patch.object(
+                TransportView,
+                "iter_rx_signal_records",
+                side_effect=AssertionError(
+                    "production lowering must join typed RX signals"
+                ),
+            ), mock.patch.object(
+                TransportView,
+                "iter_expected_rx_bindings",
+                side_effect=AssertionError(
+                    "production lowering must join typed RX bindings"
+                ),
             ), mock.patch(
                 "emuflow.lowering.EmuIR.load",
                 side_effect=AssertionError(
@@ -820,7 +865,7 @@ class Phase6Test(unittest.TestCase):
                 run_placement_ir_lowering_from_split(
                     split_path,
                     fpga,
-                    transport_path,
+                    typed_transport_path,
                     transport_ir_path,
                     direct_output,
                     boundary_identity_path=direct_boundary,
@@ -844,25 +889,53 @@ class Phase6Test(unittest.TestCase):
                 }
             self.assertEqual(direct_value, read_json(legacy_boundary))
 
-    def test_legacy_assignment_migration_does_not_load_emuir_graph(self) -> None:
+    def test_lowering_overlay_spool_bounds_batches_and_preserves_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            ir_path = root / "design.emuir.sqlite"
-            assignment_path = root / "assignment.json"
-            index_path = root / "assignment.sqlite"
-            write_compact_emuir(ir_path, self.ir.to_dict())
-            assignment_path.write_text(
-                json.dumps(self.assignment), encoding="utf-8"
-            )
-            with mock.patch(
-                "emuflow.phase3_assignment_index.EmuIR.load",
-                side_effect=AssertionError("whole EmuIR must not load"),
-            ):
-                summary = migrate_phase3_assignment_index(
-                    index_path, ir_path, assignment_path
+            with _LoweringOverlaySpool(root) as spool:
+                spool.add_endpoints(
+                    "net0",
+                    1,
+                    2,
+                    (
+                        {
+                            "instance": f"u{index}", "port": "I0", "bit": 0,
+                            "tag": index,
+                        }
+                        for index in range(10_000)
+                    ),
                 )
-            self.assertEqual(summary["status"], "pass")
-            self.assertEqual(summary["source_instances"], 8)
+                self.assertLess(len(spool._added_batch), 4096)
+                spool.add_port_endpoints(
+                    "clock", 0,
+                    ({"instance": "u0", "port": "C", "bit": 0},),
+                )
+                spool.consume("transport0")
+                spool.consume("transport1")
+                spool.preserve("transport1")
+                spool.consume_interface("transport2")
+                spool.preserve("transport2")
+                spool.consume_interface("transport3")
+                spool.recompute_fanout("net0")
+                spool.expect_source("net0")
+                spool.finish_consumed()
+                rows = list(spool.added_endpoints())
+                self.assertEqual(len(rows), 10_000)
+                self.assertEqual(rows[0][:4], ("net0", 1, 2, 0))
+                self.assertEqual(rows[-1][:4], ("net0", 1, 2, 9_999))
+                self.assertEqual(
+                    list(spool.identities("consumed_nets")),
+                    ["transport0", "transport1", "transport3"],
+                )
+                self.assertEqual(
+                    list(spool.identities("fanout_nets")), ["net0"]
+                )
+                self.assertEqual(
+                    list(spool.identities("source_nets")), ["net0"]
+                )
+                self.assertEqual(len(list(spool.port_additions())), 1)
+                spool_path = spool.path
+            self.assertFalse(spool_path.exists())
 
     def test_large_sqlite_phase6_never_enters_python_graph_replay(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -872,7 +945,7 @@ class Phase6Test(unittest.TestCase):
             schedule_path = root / "schedule.json"
             output_path = root / "phase6"
             write_compact_emuir(ir_path, self.ir.to_dict())
-            with sqlite3.connect(ir_path) as connection:
+            with closing(sqlite3.connect(ir_path)) as connection, connection:
                 connection.execute(
                     "UPDATE metadata SET value=? "
                     "WHERE key='record_counts_json'",
@@ -1172,7 +1245,7 @@ class Phase6Test(unittest.TestCase):
             )
             self.assertEqual(replay["transport_cost_prediction"], prediction)
 
-    def test_phase6_materializes_validated_placement_aware_pin_plan(
+    def test_phase6_materializes_validated_chimew_pin_contract(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1180,22 +1253,6 @@ class Phase6Test(unittest.TestCase):
             schedule = copy.deepcopy(self.schedule)
             for entry in schedule["entries"]:
                 entry["tdm_ratio"] = schedule["metrics"]["frame_slots"]
-            executable = root / "emuflow_pin_planner"
-            subprocess.run(
-                [
-                    "c++",
-                    "-std=c++17",
-                    "-O2",
-                    "-pthread",
-                    str(
-                        ROOT
-                        / "src/native/placement_aware_pin_planner.cpp"
-                    ),
-                    "-o",
-                    str(executable),
-                ],
-                check=True,
-            )
             positions = {
                 "schema": SIGNAL_POSITION_HINTS_SCHEMA,
                 "design": schedule["design"],
@@ -1219,12 +1276,10 @@ class Phase6Test(unittest.TestCase):
                     for entry in schedule["entries"]
                 ],
             }
-            plan = build_pin_plan(
+            plan = make_pin_plan_fixture(
                 schedule,
                 self.platform,
                 positions,
-                executable=str(executable),
-                refinement_iterations=4,
             )
             paths = {
                 "ir": root / "design.emuir.sqlite",
@@ -1249,21 +1304,17 @@ class Phase6Test(unittest.TestCase):
                 path.write_text(
                     json.dumps(documents[name]), encoding="utf-8"
                 )
+            plan, binding = self._chimew_certificate(schedule, positions, plan)
+            write_json(paths["plan"], plan)
+            binding_path = root / "initial-electrical-binding.json"
+            write_json(binding_path, binding)
             output = root / "phase6"
             report = run_phase6(
-                paths["ir"],
-                paths["assignment"],
-                paths["schedule"],
-                PLATFORM_PATH,
-                output,
-                equivalence_cycles=4,
-                pin_plan_path=paths["plan"],
-                position_hints_path=paths["positions"],
+                paths["ir"], paths["assignment"], paths["schedule"], PLATFORM_PATH, output,
+                equivalence_cycles=4, pin_plan_path=paths["plan"],
+                position_hints_path=paths["positions"], electrical_binding_path=binding_path,
             )
-            self.assertEqual(
-                report["provider"],
-                "placement-aware-pin-split-v1",
-            )
+            self.assertEqual(report["provider"], "chimew-electrical-pin-split-v1")
             self.assertEqual(
                 report["pin_plan_validation"]["status"], "pass"
             )
@@ -1420,7 +1471,7 @@ class Phase6Test(unittest.TestCase):
         constraints = normalize_partition_constraints(
             None, self.ir, self.platform
         )
-        clusters = build_clusters(self.ir, constraints)
+        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
         cluster_by_instance = {
             instance: cluster["id"]
             for cluster in clusters["clusters"]

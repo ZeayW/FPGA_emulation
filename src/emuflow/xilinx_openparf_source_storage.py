@@ -20,7 +20,15 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .errors import ValidationError
+from .store_publication import (
+    StoreSource,
+    bind_store_source,
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+)
 from .io import file_sha256, read_json, write_json
+from .native_tools import native_file_generation
 from .xilinx_netlist import open_xilinx_mapped_index, is_xilinx_mapped_index
 from .xilinx_packing import (
     CONSTANT_TYPES,
@@ -195,12 +203,13 @@ def _validate_selector_envelope(value: Any) -> dict[str, Any]:
 
 def _resolve_sealed_store(
     selector_path: Path, selector: Mapping[str, Any]
-) -> Path:
+) -> tuple[Path, StoreSource]:
     """Resolve and byte-validate only the selector-owned immutable sidecar."""
 
     store_path = selector_path.resolve().with_name(str(selector["artifact"]))
     try:
         stat = store_path.stat()
+        store_source = bind_store_source(store_path, "openparf-atomic-source-store-v1")
     except OSError as error:
         raise ValidationError("OpenPARF atomic-source store is missing") from error
     if (
@@ -208,7 +217,8 @@ def _resolve_sealed_store(
         or file_sha256(store_path) != selector["store_sha256"]
     ):
         raise ValidationError("OpenPARF atomic-source store seal disagrees")
-    return store_path
+    require_store_sources_unchanged((store_source,))
+    return store_path, store_source
 
 
 def _previous_source_store(path: Path) -> Optional[Path]:
@@ -228,7 +238,7 @@ def _previous_source_store(path: Path) -> Optional[Path]:
     ):
         return None
     selector = _validate_selector_envelope(previous)
-    return _resolve_sealed_store(path, selector)
+    return _resolve_sealed_store(path, selector)[0]
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -502,10 +512,14 @@ class XilinxOpenparfAtomicSourceView(Mapping[str, Any]):
         mapped_sha256: Optional[str] = None,
     ):
         self.selector_path = selector_path.resolve()
+        self.selector_generation = native_file_generation(self.selector_path)
         selector = _validate_selector_envelope(read_json(self.selector_path))
         header = selector["header"]
         counts_value = selector["counts"]
-        self.store_path = _resolve_sealed_store(self.selector_path, selector)
+        self.store_path, store_source = _resolve_sealed_store(
+            self.selector_path, selector
+        )
+        self.store_generation = store_source.generation
 
         mapped_descriptor = selector["mapped"]
         mapped_artifact = mapped_descriptor["artifact"]
@@ -515,7 +529,13 @@ class XilinxOpenparfAtomicSourceView(Mapping[str, Any]):
             if mapped_path is not None
             else self.selector_path.with_name(mapped_artifact)
         )
+        self.mapped_schema = (
+            "xilinx-mapped-index-v2"
+            if is_xilinx_mapped_index(self.mapped_path)
+            else "xilinx-mapped-json-v1"
+        )
         try:
+            self.mapped_generation = native_file_generation(self.mapped_path)
             mapped_stat = self.mapped_path.stat()
         except OSError as error:
             raise ValidationError("OpenPARF atomic-source mapped input is missing") from error
@@ -722,6 +742,38 @@ class XilinxOpenparfAtomicSourceView(Mapping[str, Any]):
             self.store_path, int(selector["counts"]["constant_cells"])
         )
         self._validate_mapped_ownership()
+        self.require_sources_unchanged()
+
+    def bound_store_sources(self):
+        self.require_sources_unchanged()
+        return (
+            StoreSource(
+                self.selector_path,
+                "openparf-atomic-source-selector-v1",
+                self.selector_generation,
+            ),
+            StoreSource(
+                self.store_path,
+                "openparf-atomic-source-store-v1",
+                self.store_generation,
+            ),
+            StoreSource(self.mapped_path, self.mapped_schema, self.mapped_generation),
+        )
+
+    def require_sources_unchanged(self) -> None:
+        try:
+            for path, generation in (
+                (self.selector_path, self.selector_generation),
+                (self.store_path, self.store_generation),
+                (self.mapped_path, self.mapped_generation),
+            ):
+                if native_file_generation(path) != generation:
+                    raise ValidationError("OpenPARF atomic source generation changed")
+            require = getattr(self._mapped_owner, "require_source_unchanged", None)
+            if callable(require):
+                require()
+        except OSError as error:
+            raise ValidationError("OpenPARF atomic source generation changed") from error
 
     def _validate_mapped_ownership(self) -> None:
         connection = _connect(self.store_path)
@@ -932,6 +984,17 @@ def write_xilinx_openparf_atomic_source_storage(
         )
     if not _valid_digest(mapped_sha256):
         raise ValidationError("OpenPARF atomic-source mapped seal is invalid")
+    require_mapped = getattr(mapped_value, "require_source_unchanged", None)
+    if callable(require_mapped):
+        require_mapped()
+    mapped_schema = (
+        "xilinx-mapped-index-v2"
+        if is_xilinx_mapped_index(mapped_path)
+        else "xilinx-mapped-json-v1"
+    )
+    source_bindings = validate_store_destination(
+        path, (bind_store_source(mapped_path, mapped_schema),)
+    )
     modules = mapped_value.get("modules")
     module = modules.get(top) if isinstance(modules, Mapping) else None
     cells = module.get("cells") if isinstance(module, Mapping) else None
@@ -1108,10 +1171,11 @@ def write_xilinx_openparf_atomic_source_storage(
         connection.commit()
         connection.close()
         connection = None
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
         store_sha = file_sha256(temporary)
         published_store = path.with_name(_store_name(store_sha))
+        require_store_sources_unchanged(source_bindings)
+        if callable(require_mapped):
+            require_mapped()
         if published_store.is_file():
             if file_sha256(published_store) != store_sha:
                 raise ValidationError(
@@ -1119,7 +1183,12 @@ def write_xilinx_openparf_atomic_source_storage(
                 )
             temporary.unlink()
         else:
-            os.replace(temporary, published_store)
+            publish_sqlite_store(
+                temporary,
+                published_store,
+                "openparf-atomic-source-store-v1",
+                sources=source_bindings,
+            )
             created_store = True
         selector = {
             **selector_base,
@@ -1132,9 +1201,18 @@ def write_xilinx_openparf_atomic_source_storage(
             selector_temporary, mapped_path=mapped_path, mapped_value=mapped_value,
             mapped_sha256=mapped_sha256,
         )
+        view.require_sources_unchanged()
+        require_store_sources_unchanged(source_bindings)
         os.replace(selector_temporary, path)
         selector_committed = True
         view.selector_path = path.resolve()
+        # Rename may change ctime even though the verified inode/content remain
+        # the same. Bind the returned view to its committed selector, while
+        # retaining the original mapped/store generations.
+        committed_generation = native_file_generation(view.selector_path)
+        if committed_generation[:5] != view.selector_generation[:5]:
+            raise ValidationError("OpenPARF atomic source selector changed at publication")
+        view.selector_generation = committed_generation
         if (
             old_store is not None
             and old_store.resolve() != published_store.resolve()

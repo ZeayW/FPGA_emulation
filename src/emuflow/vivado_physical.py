@@ -136,12 +136,19 @@ def run_indexed_vivado_partition(
     continuation = (synthesized_checkpoint,synthesized_checkpoint_sha256,continuation_source_report)
     if any(value is not None for value in continuation) and not all(value is not None for value in continuation):
         raise ValidationError("synthesized continuation requires checkpoint, digest and source report together")
+    from .emuir_storage import is_emuir_sqlite
+    from .emuir_compact import is_compact_emuir
+
+    if not is_emuir_sqlite(ir_path) or not is_compact_emuir(ir_path):
+        raise ValidationError("Vivado physical implementation requires current indexed EmuIR")
     if not re.fullmatch(r"xc[a-z0-9-]+", part):
         raise ValidationError("Vivado requires a concrete Xilinx part")
     for kind, identity, query in (("logic", logic_identity_path, logic_query_path),
                                   ("local", local_identity_path, local_query_path)):
         if (identity is None) != (query is None):
             raise ValidationError(f"Vivado {kind} timing requires identity and query together")
+    from .native_tools import require_native_schema
+    require_native_schema("vivado-lineage-store-v2")
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     if any((output_dir/name).exists() for name in ("native-session.json","mapped_cells.tsv","vivado-implementation.log")):
@@ -228,6 +235,8 @@ def run_indexed_vivado_partition(
         raise ValidationError("native routed query preparation did not pass")
     coverage, proof_report = preparation["coverage"], preparation["optimization_proofs"]
     proof_path = output_dir/"optimization-proofs.sqlite"
+    if coverage["stages"]["routed"]["placed_objects"] != _integer(metrics, "routed_cells"):
+        raise ValidationError("Vivado lineage placement coverage differs from physical mapped cells")
     aggregate = parse_timing_summary(output_dir / "timing_summary.rpt")
     if abs(aggregate["wns_ns"] - _number(metrics, "wns_ns")) > 0.002:
         raise ValidationError("Vivado timing aggregate and worst path disagree")

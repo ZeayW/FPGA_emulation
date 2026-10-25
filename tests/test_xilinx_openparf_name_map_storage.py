@@ -1,3 +1,4 @@
+from contextlib import closing
 import json
 import os
 import shutil
@@ -162,7 +163,7 @@ class XilinxOpenparfNameMapStorageTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "store is missing"):
                 read_xilinx_openparf_atomic_name_map(missing_root / path.name)
 
-            with sqlite3.connect(view.store_path) as database:
+            with closing(sqlite3.connect(view.store_path)) as database, database:
                 database.execute(
                     "UPDATE atoms SET resource='BROKEN' WHERE seq=0"
                 )
@@ -186,7 +187,7 @@ class XilinxOpenparfNameMapStorageTest(unittest.TestCase):
             view = _write(path)
             store_path = view.store_path
             view.close()
-            with sqlite3.connect(store_path) as database:
+            with closing(sqlite3.connect(store_path)) as database, database:
                 database.execute("UPDATE atoms SET openparf='a9' WHERE seq=0")
             selector = read_json(path)
             digest = file_sha256(store_path)
@@ -198,8 +199,41 @@ class XilinxOpenparfNameMapStorageTest(unittest.TestCase):
                 "store_sha256": digest,
             })
             path.write_text(json.dumps(selector), encoding="utf-8")
-            with self.assertRaisesRegex(ValidationError, "atom sequence is invalid"):
-                read_xilinx_openparf_atomic_name_map(path)
+            # Keep the rejected reader's traceback alive: cleanup must not wait
+            # for exception frames or SQLite objects to be garbage-collected.
+            from emuflow import xilinx_openparf_name_map_storage as storage
+            connections = []
+            leases = []
+            connect = storage._connect
+            make_lease = storage._NameMapLease
+
+            def track_connection(*args, **kwargs):
+                connection = connect(*args, **kwargs)
+                connections.append(connection)
+                return connection
+
+            def track_lease(*args, **kwargs):
+                lease = make_lease(*args, **kwargs)
+                leases.append(lease)
+                return lease
+
+            retained_error = None
+            with mock.patch.object(storage, "_connect", track_connection), mock.patch.object(
+                storage, "_NameMapLease", track_lease
+            ):
+                try:
+                    read_xilinx_openparf_atomic_name_map(path)
+                except ValidationError as error:
+                    retained_error = error
+            self.assertIsNotNone(retained_error)
+            self.assertRegex(str(retained_error), "atom sequence is invalid")
+            self.assertIsNotNone(retained_error.__traceback__)
+            self.assertTrue(connections)
+            self.assertTrue(leases)
+            self.assertTrue(all(lease.closed for lease in leases))
+            for connection in connections:
+                with self.assertRaises(sqlite3.ProgrammingError):
+                    connection.execute("SELECT 1")
 
     def test_failed_selector_commit_preserves_previous_generation(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -399,7 +433,7 @@ class XilinxOpenparfNameMapStorageTest(unittest.TestCase):
             view = _write(path, atoms=_carry_atoms(), cascades=[_cascade()])
             store = view.store_path
             view.close()
-            with sqlite3.connect(store) as database:
+            with closing(sqlite3.connect(store)) as database, database:
                 record = _cascade()
                 record["instances"] = ["carry0", "carry0"]
                 database.execute(

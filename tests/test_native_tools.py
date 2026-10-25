@@ -8,7 +8,6 @@ from unittest.mock import patch
 
 from emuflow.errors import EmuFlowError
 from emuflow.native_tools import (
-    native_stage_command,
     resolve_native_executable,
     resolve_native_stage_command,
 )
@@ -120,7 +119,7 @@ class NativeToolsTest(unittest.TestCase):
             root = Path(temp_dir)
             path_bin = root / "path-bin"
             path_bin.mkdir()
-            executable = path_bin / "repart"
+            executable = path_bin / "emuflow-native"
             executable.write_text("#!/bin/sh\n", encoding="utf-8")
             executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
 
@@ -135,15 +134,131 @@ class NativeToolsTest(unittest.TestCase):
                 "emuflow.native_tools.REPO_ROOT", root / "empty-repo"
             ):
                 with self.assertRaisesRegex(
-                    EmuFlowError, "in-tree repart build product"
+                    EmuFlowError, "in-tree emuflow-native build product"
                 ):
-                    resolve_native_executable("repart")
+                    resolve_native_executable("emuflow-native")
 
     def test_explicit_override_is_preserved_for_comparison_runs(self) -> None:
         self.assertEqual(
             resolve_native_executable("openroad", "/comparison/openroad"),
             "/comparison/openroad",
         )
+
+    def test_thin_runtime_rebuilds_unified_entry_from_exact_source(self) -> None:
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "scripts/validation/deploy_stream_runtime.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'unified="$runtime_dir/bin/emuflow-native"', script
+        )
+        self.assertIn("-DEMUFLOW_NATIVE_STAGE_LIBRARY=1", script)
+        manifest = (Path(__file__).resolve().parents[1] / "src/native/emuflow_core/sources.txt").read_text()
+        self.assertIn('emuflow_core/sources.txt', script)
+        for source in (
+            "static_exact_analyzer.cpp",
+            "tlr_router.cpp",
+            "tdm_exact_scheduler.cpp",
+            "chimew_bank_channel_assigner.cpp",
+            "chimew_rudy.cpp",
+            "chimew_signal_grouper.cpp",
+            "chimew_position_refiner.cpp",
+            "emuflow_core/artifact_io.cpp",
+            "emuflow_core/sqlite.cpp",
+        ):
+            self.assertIn(source, manifest)
+        self.assertIn('emuflow_native.cpp', script)
+        self.assertIn('"$archive"', script)
+        # Retired analyzer/Chimew shells have no main; deployment must not
+        # compile a second executable from those shared kernel sources.
+        link_helpers = script[
+            script.index('archive="$runtime_dir/lib/libemuflow_core.a"') : script.index(
+                '"$unified" check-runtime'
+            )
+        ]
+        for retired in ("static_exact_analyzer", "chimew_signal_grouper", "chimew_position_refiner",
+                        "chimew_rudy", "chimew_bank_channel_assigner"):
+            self.assertNotIn(retired, link_helpers)
+
+    def test_thin_runtime_borrows_only_maintained_dependency_programs(self) -> None:
+        import subprocess
+        root = Path(__file__).resolve().parents[1]
+        script = (root / "scripts/validation/deploy_stream_runtime.sh").read_text()
+        block = script[script.index('for binary in "$native_base"/bin/*; do'):script.index("sqlite_flags=()")]
+        kept = {
+            "openroad",
+            "sta",
+            "yosys",
+            "yosys-abc",
+            "emuflow_bsp_pin_solver",
+            "emuflow_fpgaif_arch_importer",
+            "emuflow_eda2025_topology_optimizer",
+        }
+        retired = {
+            "emuflow_hop_partition_refiner",
+            "emuflow-native",
+            "emuflow_static_exact_analyzer",
+            "emuflow_chimew_signal_grouper",
+            "emuflow_chimew_position_refiner",
+            "emuflow_chimew_rudy",
+            "emuflow_chimew_bank_channel_assigner",
+            "emuflow_vpr_packed_netlist_importer",
+            "emuflow_vpr_route_checker",
+            "emuflow_pin_planner",
+            "emuflow_tlr_router",
+            "emuflow_patron_refiner",
+            "emuflow_tdm_exact_scheduler",
+            "emuflow_tdm_ratio_optimizer",
+            "repart",
+            "emuflow_mfspart_old",
+            "unknown-experiment",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            base, runtime = Path(temporary)/"base", Path(temporary)/"runtime"
+            (base/"bin").mkdir(parents=True); (runtime/"bin").mkdir(parents=True)
+            for name in kept | retired:
+                (base/"bin"/name).write_text("immutable dependency")
+            (base/"bin"/"broken-link").symlink_to(base/"missing")
+            result = subprocess.run(["/bin/bash", "-c", 'set -eu\nnative_base=$1\nruntime_dir=$2\n'+block,
+                                     "borrow-runtime", str(base), str(runtime)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual({path.name for path in (runtime/"bin").iterdir()}, kept)
+            for name in kept:
+                self.assertTrue((runtime/"bin"/name).is_symlink())
+                self.assertEqual((runtime/"bin"/name).resolve(), (base/"bin"/name).resolve())
+            for name in kept | retired:
+                self.assertEqual((base/"bin"/name).read_text(), "immutable dependency")
+
+    def test_shared_core_build_owners_use_one_complete_manifest(self) -> None:
+        from tests.native_build import _NATIVE_STAGE_SOURCES
+        root = Path(__file__).resolve().parents[1]
+        expected = {str(path.relative_to(root / "src/native"))
+                    for path in (root / "src/native/emuflow_core").glob("*.cpp")}
+        self.assertTrue(expected.issubset(set(_NATIVE_STAGE_SOURCES)))
+        self.assertEqual(len(_NATIVE_STAGE_SOURCES), len(set(_NATIVE_STAGE_SOURCES)))
+        cmake = (root / "CMakeLists.txt").read_text()
+        self.assertIn('file(STRINGS "${EMUFLOW_CORE_MANIFEST}" EMUFLOW_CORE_SOURCE_NAMES)', cmake)
+        self.assertIn('add_library(emuflow_core STATIC ${EMUFLOW_CORE_SOURCE_FILES})', cmake)
+        self.assertNotIn('target_sources(emuflow_core', cmake)
+
+    def test_actual_deployment_manifest_reader_under_strict_bash(self) -> None:
+        import subprocess
+        from tests.native_build import _NATIVE_STAGE_SOURCES
+        root = Path(__file__).resolve().parents[1]
+        script = (root / "scripts/validation/deploy_stream_runtime.sh").read_text()
+        block = script[script.index("core_sources=()"):script.index("objects=()")]
+        command = 'set -eu\nsource_dir=$1\n' + block + '\nprintf "%s\\n" "${core_sources[@]}"\n'
+        result = subprocess.run(['/bin/bash', '-c', command, 'manifest-reader', str(root)], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), list(_NATIVE_STAGE_SOURCES))
+        with tempfile.TemporaryDirectory() as temp:
+            source = Path(temp); manifest = source / 'src/native/emuflow_core/sources.txt'
+            manifest.parent.mkdir(parents=True); (source / 'src/native/demo.cpp').write_text('')
+            for invalid in ('demo.cpp\ndemo.cpp\n', '../escape.cpp\n', 'missing.cpp\n', '# no sources\n'):
+                with self.subTest(manifest=invalid):
+                    manifest.write_text(invalid)
+                    failed = subprocess.run(['/bin/bash', '-c', command, 'manifest-reader', str(source)], capture_output=True, text=True)
+                    self.assertNotEqual(failed.returncode, 0)
 
     def test_relative_override_is_bound_before_backend_changes_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -161,29 +276,6 @@ class NativeToolsTest(unittest.TestCase):
                 os.chdir(previous)
         self.assertEqual(resolved, str(executable.resolve()))
 
-    def test_native_stage_prefers_unified_sibling(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            legacy = root / "bin" / "emuflow_static_exact_analyzer"
-            unified = root / "bin" / "emuflow-native"
-            legacy.parent.mkdir()
-            for executable in (legacy, unified):
-                executable.write_text("#!/bin/sh\n", encoding="utf-8")
-                executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
-            self.assertEqual(
-                native_stage_command(str(legacy), "phase3", "analyze"),
-                [str(unified.resolve()), "phase3", "analyze"],
-            )
-
-    def test_native_stage_retains_legacy_without_unified_sibling(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            legacy = Path(temp_dir) / "emuflow_tdm_exact_scheduler"
-            legacy.write_text("#!/bin/sh\n", encoding="utf-8")
-            self.assertEqual(
-                native_stage_command(str(legacy), "phase5", "schedule"),
-                [str(legacy.resolve())],
-            )
-
     def test_resolved_stage_does_not_require_legacy_when_unified_exists(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -196,9 +288,22 @@ class NativeToolsTest(unittest.TestCase):
             ), patch("emuflow.native_tools.REPO_ROOT", root / "missing"):
                 self.assertEqual(
                     resolve_native_stage_command(
-                        "missing-legacy", "phase6", "assign-banks"
+                        "phase6", "assign-banks"
                     ),
                     [str(unified.resolve()), "phase6", "assign-banks"],
+                )
+
+    def test_explicit_unified_entry_and_symlink_keep_stage_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            unified = root / "emuflow-native"
+            unified.write_text("#!/bin/sh\n")
+            alias = root / "alias"
+            alias.symlink_to(unified)
+            for explicit in (unified, alias):
+                self.assertEqual(
+                    resolve_native_stage_command("phase3", "refine-patron", str(explicit)),
+                    [str(unified.resolve()), "phase3", "refine-patron"],
                 )
 
     def test_resolved_stage_preserves_explicit_comparison_tool(self) -> None:
@@ -211,27 +316,45 @@ class NativeToolsTest(unittest.TestCase):
                 executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
             self.assertEqual(
                 resolve_native_stage_command(
-                    "legacy", "phase5", "schedule", str(explicit)
+                    "phase5", "build-schedule", str(explicit)
                 ),
                 [str(explicit.resolve())],
             )
 
-    def test_resolved_stage_falls_back_to_older_standalone_install(self) -> None:
+    def test_standalone_only_install_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            legacy = root / "bin" / "legacy-stage"
+            legacy = root / "bin/emuflow_static_exact_analyzer"
             legacy.parent.mkdir()
             legacy.write_text("#!/bin/sh\n", encoding="utf-8")
             legacy.chmod(legacy.stat().st_mode | stat.S_IXUSR)
-            with patch.dict(
-                "os.environ", {"EMUFLOW_NATIVE_ROOT": str(root)}, clear=True
-            ), patch("emuflow.native_tools.REPO_ROOT", root / "missing"):
-                self.assertEqual(
-                    resolve_native_stage_command(
-                        "legacy-stage", "phase3", "analyze"
-                    ),
-                    [str(legacy.resolve())],
-                )
+            with patch.dict(os.environ, {"EMUFLOW_NATIVE_ROOT": str(root)}, clear=True):
+                with self.assertRaisesRegex(EmuFlowError, "in-tree emuflow-native build product"):
+                    resolve_native_stage_command("phase3", "analyze")
+
+    def test_configured_install_cannot_borrow_another_install(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            other = root / "other/build/native/install/bin/emuflow-native"
+            other.parent.mkdir(parents=True)
+            other.write_text("#!/bin/sh\n", encoding="utf-8")
+            other.chmod(other.stat().st_mode | stat.S_IXUSR)
+            with patch.dict(os.environ, {"EMUFLOW_NATIVE_ROOT": str(root / "incomplete")}, clear=True), \
+                    patch("emuflow.native_tools.REPO_ROOT", root / "other"):
+                with self.assertRaisesRegex(EmuFlowError, "in-tree emuflow-native build product"):
+                    resolve_native_stage_command("phase5", "build-schedule")
+
+    def test_nonexecutable_unified_entry_does_not_select_standalone(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "bin").mkdir()
+            (root / "bin/emuflow-native").write_text("not executable")
+            legacy = root / "bin/emuflow_tdm_exact_scheduler"
+            legacy.write_text("#!/bin/sh\n")
+            legacy.chmod(legacy.stat().st_mode | stat.S_IXUSR)
+            with patch.dict(os.environ, {"EMUFLOW_NATIVE_ROOT": str(root)}, clear=True):
+                with self.assertRaisesRegex(EmuFlowError, "in-tree emuflow-native build product"):
+                    resolve_native_stage_command("phase5", "build-schedule")
 
 
 if __name__ == "__main__":

@@ -1,12 +1,15 @@
+from tests.schedule_store_fixture import write_tdm_schedule_storage
+from contextlib import closing
 import copy
 import hashlib
 import shutil
 import sqlite3
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+
+from tests.native_build import chimew_bank_channel_assigner
 
 from emuflow.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
@@ -53,11 +56,10 @@ from emuflow.pin_plan_storage import (
 from emuflow.platform import Platform
 from emuflow.tdm_schedule_storage import (
     ScheduleRecordSequence,
-    TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+    TDM_SCHEDULE_STORAGE_SCHEMA,
     TypedScheduleEntrySequence,
     canonical_tdm_schedule_sha256,
     read_tdm_schedule,
-    write_tdm_schedule_storage,
 )
 
 
@@ -67,27 +69,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class ChimewPhase6AdapterTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.temporary_directory = tempfile.TemporaryDirectory()
-        compiler = shutil.which("c++") or shutil.which("clang++")
-        if compiler is None:
-            raise RuntimeError("a C++17 compiler is required")
-        cls.executable = Path(cls.temporary_directory.name) / "chimew-assignment"
-        subprocess.run(
-            [
-                compiler,
-                "-std=c++17",
-                "-O2",
-                "-pthread",
-                str(ROOT / "src/native/chimew_bank_channel_assigner.cpp"),
-                "-o",
-                str(cls.executable),
-            ],
-            check=True,
-        )
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls.temporary_directory.cleanup()
+        cls.executable = chimew_bank_channel_assigner()
 
     def setUp(self) -> None:
         self.platform_document = {
@@ -127,6 +109,9 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             "entries": [
                 {
                     "id": "s0",
+                    "demand": "demand0", "net": "net0",
+                    "hop": 0, "capacity_key": "AB_link:A:B",
+                    "ready_slot": 0, "arrival_slot": 1,
                     "link": "AB_link",
                     "from": "A",
                     "to": "B",
@@ -136,6 +121,9 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 },
                 {
                     "id": "s1",
+                    "demand": "demand1", "net": "net1",
+                    "hop": 0, "capacity_key": "AB_link:B:A",
+                    "ready_slot": 0, "arrival_slot": 1,
                     "link": "AB_link",
                     "from": "B",
                     "to": "A",
@@ -536,7 +524,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             self.assertEqual(len(observed_connections), 1)
             self.assertEqual(observed_connections[0].close_calls, 1)
 
-    def test_static_exact_v3_binding_validation_uses_typed_relation(self) -> None:
+    def test_static_exact_v4_binding_validation_uses_typed_relation(self) -> None:
         result = build_chimew_phase6_pin_plan(
             self.schedule,
             self.platform,
@@ -560,7 +548,12 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
         schedule_document = {
             **self.schedule,
             "provider": "deterministic-dependency-earliest-slot-v1",
-            "routes": [{"id": entry["demand"]} for entry in entries],
+            "routes": [
+                {"id": entry["demand"], "net": entry["net"],
+                 "source": entry["from"], "sinks": [entry["to"]],
+                 "tree_edges": [{"link": entry["link"], "from": entry["from"], "to": entry["to"]}]}
+                for entry in entries
+            ],
             "entries": entries,
             "demand_completions": [],
             "domain_schedules": [],
@@ -572,7 +565,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 schedule_path, schedule_document
             )
             self.assertEqual(
-                manifest["schema"], TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+                manifest["schema"], TDM_SCHEDULE_STORAGE_SCHEMA
             )
             indexed_schedule = read_tdm_schedule(schedule_path)
             schedule_sha256 = canonical_tdm_schedule_sha256(indexed_schedule)
@@ -592,7 +585,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 TypedScheduleEntrySequence,
                 "__iter__",
                 side_effect=AssertionError(
-                    "Chimew v3 validation expanded typed schedule entries"
+                    "Chimew v4 validation expanded typed schedule entries"
                 ),
             ):
                 with mock.patch.object(
@@ -627,7 +620,12 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
         schedule_document = {
             **self.schedule,
             "provider": "deterministic-dependency-earliest-slot-v1",
-            "routes": [{"id": entry["demand"]} for entry in entries],
+            "routes": [
+                {"id": entry["demand"], "net": entry["net"],
+                 "source": entry["from"], "sinks": [entry["to"]],
+                 "tree_edges": [{"link": entry["link"], "from": entry["from"], "to": entry["to"]}]}
+                for entry in entries
+            ],
             "entries": entries,
             "demand_completions": [],
             "domain_schedules": [],
@@ -741,7 +739,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 ChimewBindingView(selector)
 
             write_json(selector, manifest, compact=True)
-            with sqlite3.connect(indexed.store_path) as connection:
+            with closing(sqlite3.connect(indexed.store_path)) as connection, connection:
                 connection.execute(
                     "UPDATE members SET member='tampered' WHERE member='s0'"
                 )
@@ -1262,7 +1260,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             pragma_only = root / "pragma-only"
             shutil.copytree(output, pragma_only)
             original_store = pragma_only / report["artifacts"]["pin_plan_store"]
-            with sqlite3.connect(original_store) as connection:
+            with closing(sqlite3.connect(original_store)) as connection, connection:
                 application_id = connection.execute(
                     "PRAGMA application_id"
                 ).fetchone()[0]
@@ -1270,7 +1268,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                     "PRAGMA user_version"
                 ).fetchone()[0]
             fake_store = pragma_only / "pin_plan.incomplete.sqlite"
-            with sqlite3.connect(fake_store) as connection:
+            with closing(sqlite3.connect(fake_store)) as connection, connection:
                 connection.execute(f"PRAGMA application_id={application_id}")
                 connection.execute(f"PRAGMA user_version={user_version}")
             fake_store_digest = hashlib.sha256(fake_store.read_bytes()).hexdigest()

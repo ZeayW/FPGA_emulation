@@ -44,9 +44,10 @@ from emuflow.contest_iccad2019 import (
     materialize_iccad2019_rtl_boarddb,
 )
 from emuflow.io import read_json, write_json
-from emuflow.phase3 import run_phase3
+from tests.partition_fixture import run_phase3_fixture as run_phase3
 from emuflow.phase4 import run_phase4
 from emuflow.phase5 import run_phase5
+from emuflow.tdm_schedule_storage import read_tdm_schedule
 from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.phase7c import run_phase7c
 from emuflow.platform import Platform
@@ -460,8 +461,8 @@ class ContestChimewCrossFlowTest(unittest.TestCase):
                 ir_path,
                 platform_path,
                 phase3_root,
-                provider="greedy",
-                cut_mode="sequential-only",
+                provider="tritonpart",
+                cut_mode="static-exact-combinational",
                 min_used_fpgas=2,
                 balance_tolerance=1.0,
             )
@@ -470,15 +471,16 @@ class ContestChimewCrossFlowTest(unittest.TestCase):
                 platform_path,
                 phase4_root,
                 router=str(tlr_router()),
+                timing_driven=False,
             )
             phase5 = run_phase5(
                 phase4_root / "routes.json",
                 platform_path,
                 phase5_root,
-                simulation_frames=3,
+                assignment_path=phase3_root / "assignment.json",
             )
             schedule_path = phase5_root / "schedule.json"
-            schedule = read_json(schedule_path)
+            schedule = read_tdm_schedule(schedule_path, materialize=True)
             (
                 crossings,
                 positions,

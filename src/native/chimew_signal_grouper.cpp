@@ -37,39 +37,7 @@ int popcount(std::uint64_t value) {
   return __builtin_popcountll(value);
 }
 
-std::vector<Signal> read_text_input(const std::string& path) {
-  std::ifstream stream(path);
-  std::string header;
-  if (!(stream >> header) || header != "EMUFLOW_CHIMEW_GROUPER_INPUT_V2") {
-    throw std::runtime_error("invalid Chimew grouper input header");
-  }
-  std::vector<Signal> signals;
-  std::string record;
-  while (stream >> record) {
-    if (record != "SIGNAL") {
-      throw std::runtime_error("invalid Chimew grouper record");
-    }
-    Signal signal;
-    int declared_index = -1;
-    int legacy_domain = -1;
-    unsigned long long legacy_encoding = 0;
-    if (!(stream >> declared_index >> legacy_domain >> signal.ratio >> signal.slot >>
-          legacy_encoding)) {
-      throw std::runtime_error("malformed Chimew signal record");
-    }
-    signal.domain = legacy_domain;
-    signal.encoding = legacy_encoding;
-    if (declared_index != static_cast<int>(signals.size()) ||
-        signal.domain < 0 || signal.ratio <= 0 || signal.slot < 0) {
-      throw std::runtime_error("invalid Chimew signal identity");
-    }
-    signals.push_back(signal);
-  }
-  if (signals.empty()) {
-    throw std::runtime_error("Chimew grouper requires at least one signal");
-  }
-  return signals;
-}
+
 
 void read_exact(std::istream& stream, void* destination, std::size_t size,
                 const char* label) {
@@ -319,7 +287,7 @@ void group_bucket(std::vector<Signal>& signals,
   }
 }
 
-void run(std::vector<Signal> signals, const std::string& output_path) {
+void run(std::vector<Signal> signals, std::ostream& output) {
   // Algorithm 1 still requires fixed-width signal and ordering arrays.  The
   // former graph-sized vector<vector<int>> is gone, and completed group IDs
   // overwrite the no-longer-needed domain column so a separate assignment
@@ -350,57 +318,17 @@ void run(std::vector<Signal> signals, const std::string& output_path) {
     throw std::runtime_error("incomplete Chimew grouping assignment");
   }
 
-  std::ofstream output_file;
-  std::ostream* output = &std::cout;
-  if (output_path != "-") {
-    output_file.open(output_path);
-    if (!output_file) {
-      throw std::runtime_error("cannot open Chimew grouper output");
-    }
-    output = &output_file;
-  }
-  *output << "EMUFLOW_CHIMEW_GROUPER_OUTPUT_V2\n";
-  *output << "METRIC " << group_id << " " << crossing_bits << "\n";
+  output << "EMUFLOW_CHIMEW_GROUPER_OUTPUT_V2\n";
+  output << "METRIC " << group_id << " " << crossing_bits << "\n";
   for (int index = 0; index < static_cast<int>(signals.size()); ++index) {
-    *output << "ASSIGN " << index << " " << signals[index].domain << "\n";
+    output << "ASSIGN " << index << " " << signals[index].domain << "\n";
   }
 }
 
 }  // namespace
 
 void emuflow::native::GroupChimewSignals(
-    const std::string& input_path, const std::string& output_path,
-    bool typed_input, const std::string& expected_sha256) {
-  run(typed_input ? read_typed_input(input_path, parse_digest(expected_sha256))
-                  : read_text_input(input_path),
-      output_path);
+    const std::string& input_path, std::ostream& output,
+    const std::string& expected_sha256) {
+  run(read_typed_input(input_path, parse_digest(expected_sha256)), output);
 }
-
-#if !defined(EMUFLOW_NATIVE_STAGE_LIBRARY)
-int main(int argc, char** argv) {
-  if (argc == 2 && std::string(argv[1]) == "--help") {
-    std::cout << "usage: emuflow_chimew_signal_grouper "
-                 "--typed-input INPUT OUTPUT EXPECTED_SHA256 | "
-                 "--legacy-text INPUT OUTPUT\n";
-    return 0;
-  }
-  const bool typed_input =
-      argc == 5 && std::string(argv[1]) == "--typed-input";
-  const bool legacy_text =
-      argc == 4 && std::string(argv[1]) == "--legacy-text";
-  if (!typed_input && !legacy_text) {
-    std::cerr << "usage: emuflow_chimew_signal_grouper "
-                 "--typed-input INPUT OUTPUT EXPECTED_SHA256 | "
-                 "--legacy-text INPUT OUTPUT\n";
-    return 2;
-  }
-  try {
-    emuflow::native::GroupChimewSignals(
-        argv[2], argv[3], typed_input, typed_input ? argv[4] : "");
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << "emuflow_chimew_signal_grouper: " << error.what() << "\n";
-    return 1;
-  }
-}
-#endif

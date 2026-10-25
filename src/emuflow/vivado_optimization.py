@@ -16,6 +16,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .errors import ValidationError
+from .store_publication import (
+    bind_store_source,
+    publish_sqlite_store,
+    validate_store_destination,
+)
 from .xilinx_netlist import open_xilinx_mapped_index
 
 OPTIMIZATION_PROOF_SCHEMA = "emuflow.vivado-optimization-proofs/v1"
@@ -84,6 +89,13 @@ def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Pat
         if (confirmation["mapped_index_sha256"] != mapped_sha256 or confirmation["fpga"] != fpga
                 or confirmation["synthesized_checkpoint_sha256"] != synthesized_checkpoint_sha256):
             raise ValidationError("constant confirmation source, FPGA, or synthesized checkpoint differs")
+    source_bindings = validate_store_destination(
+        output,
+        (
+            bind_store_source(mapped_path, "xilinx-mapped-index-v2"),
+            bind_store_source(lineage_path, "vivado-lineage-store-v2"),
+        ),
+    )
     temporary = output.with_name(f".{output.name}.{uuid.uuid4().hex}.tmp")
     db = sqlite3.connect(temporary, uri=True)
     try:
@@ -269,7 +281,9 @@ def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Pat
         db.executemany("INSERT INTO metadata VALUES (?,?)", ((key,json.dumps(value,separators=(",",":"))) for key,value in header.items()))
         db.commit()
         db.close()
-        os.replace(temporary, output)
+        publish_sqlite_store(
+            temporary, output, "vivado-optimization-proofs-v1", sources=source_bindings
+        )
         return {"status": "pass", **header, "output": str(output)}
     except BaseException:
         db.close()

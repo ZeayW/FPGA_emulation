@@ -1,3 +1,4 @@
+from contextlib import closing
 import csv
 import json
 import sqlite3
@@ -20,20 +21,22 @@ class VivadoLineageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             report,mapped,functions,inventory = self.prepare(root)
-            with sqlite3.connect(mapped) as connection:
+            with closing(sqlite3.connect(mapped)) as connection, connection:
                 origin = connection.execute("SELECT seq FROM cells WHERE id='capture'").fetchone()[0]
             before = root/"before.tsv"
             with before.open("w") as stream:
                 writer = csv.writer(stream,delimiter="\t",lineterminator="\n",quoting=csv.QUOTE_NONE)
                 writer.writerow(INVENTORY_HEADER)
                 for index in range(100000):
-                    writer.writerow([f"partition/long_repeated_source_name/replica_{index:06d}","FDRE",f"s{origin}",""])
+                    writer.writerow([f"partition/long_repeated_source_name/replica_{index:06d}","FDRE",f"s{origin}","", "", "", "", "", ""])
             output = root/"lineage.sqlite"
-            with patch.object(Path,"read_text",side_effect=AssertionError("whole inventory read")):
+            with patch.object(Path,"read_text",side_effect=AssertionError("whole inventory read")), patch(
+                "emuflow.vivado_lineage.csv.reader", side_effect=AssertionError("Python census parser called")
+            ):
                 summary = import_cell_lineage(mapped,functions,{"synthesized":before,"routed":inventory},output,
                                               mapped_sha256=report["mapped_index"]["sha256"])
             self.assertEqual(summary["stages"]["synthesized"]["observed_objects"],100000)
-            with sqlite3.connect(output) as connection:
+            with closing(sqlite3.connect(output)) as connection, connection:
                 self.assertEqual(connection.execute("SELECT DISTINCT stage FROM objects").fetchall(),[("routed",)])
                 self.assertEqual(connection.execute("SELECT count(*) FROM objects").fetchone()[0],3)
 
@@ -146,7 +149,7 @@ proc get_timing_paths {args} {
         self.assertEqual(report["optimization_policy"], LINEAGE_POLICY)
         self.assertNotIn("DONT_TOUCH", (root/"dut.v").read_text())
         mapped, functions = Path(report["mapped_index"]["path"]), Path(report["source_functions"]["path"])
-        with sqlite3.connect(mapped) as connection:
+        with closing(sqlite3.connect(mapped)) as connection, connection:
             origins = dict(connection.execute("SELECT id,seq FROM cells"))
         inventory = root/"routed.tsv"
         self.write_inventory(inventory, [
@@ -160,8 +163,8 @@ proc get_timing_paths {args} {
         with path.open("w") as stream:
             writer = csv.writer(stream, delimiter="\t", lineterminator="\n", quoting=csv.QUOTE_NONE)
             writer.writerow(INVENTORY_HEADER)
-            for name, relative, ref, origin in rows:
-                writer.writerow([name, ref, origin, ""])
+            for index, (name, relative, ref, origin) in enumerate(rows):
+                writer.writerow([name, ref, origin, "", f"SLICE_X{index}Y0", "AFF", str(index), "0", "LEAF"])
 
     def test_merge_and_replication_keep_original_query_population(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -201,11 +204,11 @@ proc get_timing_paths {args} {
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             report,mapped,functions,inventory = self.prepare(root)
-            with sqlite3.connect(mapped) as connection:
+            with closing(sqlite3.connect(mapped)) as connection, connection:
                 origin = connection.execute("SELECT seq FROM cells WHERE id='alias'").fetchone()[0]
             with inventory.open("a") as stream:
                 csv.writer(stream,delimiter="\t",lineterminator="\n").writerow([
-                    "partition/alias","FDRE",f"s{origin}",""])
+                    "partition/alias","FDRE",f"s{origin}","", "SLICE_X3Y0", "AFF", "3", "0", "LEAF"])
             lineage = root/"lineage.sqlite"
             import_cell_lineage(mapped,functions,{"routed":inventory},lineage,mapped_sha256=report["mapped_index"]["sha256"])
             query = root/"query.tsv"
@@ -264,7 +267,7 @@ proc get_timing_paths {args} {
             report,mapped,functions,inventory = self.prepare(root)
             with inventory.open() as stream:
                 rows = list(csv.reader(stream,delimiter="\t"))
-            rows[-1][-1] = "RETIMING".encode().hex()
+            rows[-1][3] = "RETIMING".encode().hex()
             with inventory.open("w") as stream:
                 csv.writer(stream,delimiter="\t",lineterminator="\n").writerows(rows)
             lineage = root/"lineage.sqlite"
@@ -293,7 +296,7 @@ proc get_timing_paths {args} {
             with inventory.open("a") as stream:
                 writer=csv.writer(stream,delimiter="\t",lineterminator="\n",quoting=csv.QUOTE_NONE)
                 for index in range(25000):
-                    writer.writerow([f"partition/unrelated_launch_{index:05d}","FDRE",f"s{origin}",""])
+                    writer.writerow([f"partition/unrelated_launch_{index:05d}","FDRE",f"s{origin}","", f"SLICE_X{index+4}Y0", "AFF", str(index+4), "0", "LEAF"])
             lineage=root/"lineage.sqlite"
             import_cell_lineage(mapped,functions,{"routed":inventory},lineage,mapped_sha256=report["mapped_index"]["sha256"])
             query=root/"query.tsv"

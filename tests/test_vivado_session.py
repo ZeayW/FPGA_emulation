@@ -35,7 +35,12 @@ def session_fixture(tmp_path, *, require_constant=True, dependent=False):
     out = tmp_path/"native";out.mkdir()
     (out/"synthesized.dcp").write_bytes(b"checked synthetic native snapshot")
     shutil.copyfile(inventory, out/"mapped_cells.tsv")
-    shutil.copyfile(inventory, out/"routed_mapped_cells.tsv")
+    with inventory.open() as source, (out/"routed_mapped_cells.tsv").open("w") as target:
+        rows = csv.reader(source, delimiter="\t")
+        writer = csv.writer(target, delimiter="\t", lineterminator="\n")
+        writer.writerow(next(rows))
+        for index, row in enumerate(rows):
+            writer.writerow(row[:4]+[f"SLICE_X{index}Y0", "AFF", str(index), "0", "LEAF"])
     query = tmp_path/"queries.tsv"
     end = "conditional/D" if require_constant else "front/I1"
     query.write_text("endpoint_hex\tkind\tstart_kind\tstart_object_hex\tend_kind\tend_object_hex\tcone_anchor_kind\tcone_anchor_object_hex\n"+

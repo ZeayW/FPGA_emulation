@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gc
 import math
+import os
 import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -8,9 +10,11 @@ from typing import Any, Dict, Optional
 from .io import read_json, write_json
 from .ir import EmuIR
 from .partition import (
+    DEFAULT_PARTITION_CUT_MODE,
+    DEFAULT_PATRON_ALGORITHM_VERSION,
     CUT_MODE_SEQUENTIAL_ONLY,
     CUT_MODE_STATIC_EXACT,
-    assign_clusters,
+    _PackedClusterAssignment,
     build_clusters,
     build_partition_assignment,
     load_partition_constraints,
@@ -19,24 +23,17 @@ from .partition import (
     validate_partition_artifacts_online,
 )
 from .errors import ValidationError
+from .native_tools import is_unified_native_executable
 from .partition_hops import refine_partition_hops, validate_assignment_hops
 from .partition_pressure import (
     build_partition_pressure_model,
     run_partition_pressure_native,
     validate_partition_pressure_native_bundle,
 )
-from .partition_physical_feedback import (
-    build_partition_physical_feedback,
-    validate_partition_physical_feedback,
-)
 from .platform import Platform
 from .partition_limits import planning_resource_capacities, strict_balance_limits
 from .resource_budget import validate_device_resource_usage
 from .resources import RESOURCE_FIELDS
-from .repart import run_repart
-from .mfspart_provider import refine_mfspart_partition, run_mfspart
-from .mfspart_refine import DEFAULT_BOTTLENECK_BETA, DEFAULT_TIMING_PATH_BETA
-from .sta import validate_sta_path_database
 from .tritonpart import (
     load_partition_net_weights,
     run_tritonpart,
@@ -48,13 +45,14 @@ from .combinational_cut import (
     static_exact_analysis_engine,
 )
 from .phase3_storage import (
-    COMPRESSED_CLUSTERS_SCHEMA,
+    INDEXED_CLUSTERS_SCHEMA,
     PACKED_ASSIGNMENT_SCHEMA,
     pack_phase3_assignment,
-    write_compressed_phase3_clusters,
+    write_indexed_phase3_clusters,
 )
 from .phase3_assignment_index import (
     ASSIGNMENT_INDEX_SCHEMA,
+    CUT_RECORDS_SCHEMA,
     validate_phase3_assignment_index_against_emuir,
     write_phase3_assignment_index,
 )
@@ -285,34 +283,10 @@ def _rebase_patron_initial_assignment(
     return rebased
 
 
-def _mfspart_report_summary(report: Optional[Dict[str, Any]]) -> Any:
-    if report is None:
-        return None
-    refinement = report["refinement"]
-    return {
-        key: value
-        for key, value in report.items()
-        if key != "refinement"
-    } | {
-        "refinement": {
-            "schema": refinement["schema"],
-            "provider": refinement["provider"],
-            "claim_scope": refinement["claim_scope"],
-            "metrics": refinement["metrics"],
-            "validation": refinement["validation"],
-            "runtime": refinement.get("runtime"),
-            "path_safe_selection": refinement.get("path_safe_selection"),
-            "artifacts": refinement["artifacts"],
-        }
-    }
-
-
 def _hop_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        key: value
-        for key, value in report.items()
-        if key not in {"moves", "input"}
-    } | {"move_count": len(report.get("moves", []))}
+        key: value for key, value in report.items() if key not in {"moves", "input"}
+    } | {"move_count": report.get("move_count", len(report.get("moves", [])))}
 
 
 def _patron_hop_audit_report(
@@ -378,22 +352,9 @@ def run_phase3(
     tritonpart_num_best_initial_solutions: int = 10,
     tritonpart_repair_min_used_fpgas: bool = True,
     tritonpart_run_unweighted_baseline: bool = False,
-    repart: Optional[str] = None,
-    repart_solution: Optional[Path] = None,
-    repart_timeout_seconds: int = 3600,
     route_constraints_path: Optional[Path] = None,
     hop_refiner: Optional[str] = None,
-    mfspart_coarsener: Optional[str] = None,
-    mfspart_initializer: Optional[str] = None,
-    mfspart_refiner: Optional[str] = None,
-    mfspart_refiner_checker: Optional[str] = None,
-    mfspart_legalizer: Optional[str] = None,
-    mfspart_post_refinement: Optional[bool] = None,
-    mfspart_post_refinement_early_stop: int = 1000,
-    mfspart_post_refinement_bottleneck_beta: float = DEFAULT_BOTTLENECK_BETA,
-    timing_path_database_path: Optional[Path] = None,
-    mfspart_post_refinement_timing_path_beta: float = DEFAULT_TIMING_PATH_BETA,
-    cut_mode: str = CUT_MODE_SEQUENTIAL_ONLY,
+    cut_mode: str = DEFAULT_PARTITION_CUT_MODE,
     max_cross_fpga_dependency_depth: int = (
         STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
     ),
@@ -401,15 +362,16 @@ def run_phase3(
     timing_database_path: Optional[Path] = None,
     patron_refiner: Optional[str] = None,
     patron_max_moves: Optional[int] = None,
-    patron_flow_refinement: bool = False,
-    patron_algorithm_version: int = 6,
+    patron_algorithm_version: int = DEFAULT_PATRON_ALGORITHM_VERSION,
     patron_initial_assignment_path: Optional[Path] = None,
     patron_initial_clusters_path: Optional[Path] = None,
-    patron_physical_system_timing_path: Optional[Path] = None,
-    patron_physical_feedback_scale: float = 0.0,
     retain_diagnostics: bool = False,
     retain_patron_baseline: bool = False,
 ) -> Dict[str, Any]:
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValidationError("partition seed: expected a non-negative integer")
+    if provider not in {"patron", "tritonpart"}:
+        raise ValidationError(f"unsupported Phase 3 provider {provider!r}")
     if patron_initial_clusters_path is not None and (
         provider != "patron"
         or patron_initial_assignment_path is None
@@ -426,62 +388,19 @@ def run_phase3(
         raise ValidationError(
             "Phase 3 retain_patron_baseline requires provider='patron'"
         )
-    if not isinstance(patron_flow_refinement, bool):
-        raise ValidationError("PATRON flow refinement flag is invalid")
     if (
         isinstance(patron_algorithm_version, bool)
         or not isinstance(patron_algorithm_version, int)
-        or patron_algorithm_version not in {6, 9, 10, 11, 14}
+        or patron_algorithm_version not in {14}
     ):
         raise ValidationError("PATRON algorithm version is invalid")
-    if provider == "patron":
-        if patron_physical_system_timing_path is not None:
-            if patron_algorithm_version == 6 and patron_flow_refinement:
-                patron_algorithm_version = 11
-        elif patron_algorithm_version == 6 and patron_flow_refinement:
-            patron_algorithm_version = 10
-        patron_flow_refinement = patron_algorithm_version != 6
-    else:
-        patron_flow_refinement = False
+    patron_flow_refinement = provider == "patron"
+
     if (
-        provider == "patron"
-        and patron_algorithm_version == 14
-        and cut_mode != CUT_MODE_STATIC_EXACT
+        (provider == "patron" and cut_mode != CUT_MODE_STATIC_EXACT)
     ):
         raise ValidationError(
             "PATRON v14 requires generalized Static Exact mode"
-        )
-    if patron_flow_refinement and provider != "patron":
-        raise ValidationError(
-            "PATRON flow refinement requires provider='patron'"
-        )
-    if patron_physical_system_timing_path is not None and (
-        provider != "patron"
-        or patron_algorithm_version != 11
-        or patron_initial_assignment_path is None
-        or patron_physical_feedback_scale <= 0.0
-    ):
-        raise ValidationError(
-            "PATRON physical feedback requires provider='patron', algorithm "
-            "v11, a frozen initial assignment, and a positive scale"
-        )
-    if (
-        patron_algorithm_version == 11
-        and patron_physical_system_timing_path is None
-    ):
-        raise ValidationError("PATRON v11 requires physical system timing")
-    if (
-        patron_physical_system_timing_path is None
-        and patron_physical_feedback_scale != 0.0
-    ):
-        raise ValidationError(
-            "PATRON physical feedback scale has no system timing source"
-        )
-    if mfspart_post_refinement is None:
-        mfspart_post_refinement = False
-    if mfspart_post_refinement and provider != "tritonpart":
-        raise ValueError(
-            "MFSPart post-refinement requires provider='tritonpart'"
         )
     # Explicit qualification mode may request full canonical source seals and
     # replay artifacts.  Production keeps only the partition facts resident.
@@ -500,22 +419,6 @@ def run_phase3(
         min_used_fpgas=min_used_fpgas,
         balance_tolerance=balance_tolerance,
     )
-    if (
-        len(constraints["active_fpgas"]) != len(platform.fpgas)
-        and (
-            provider in {"mfspart", "repart", "repart-replication"}
-            or mfspart_post_refinement
-        )
-    ):
-        feature = (
-            "MFSPart post-refinement"
-            if mfspart_post_refinement
-            else f"Phase 3 provider {provider!r}"
-        )
-        raise ValidationError(
-            f"{feature} does not yet support a selected "
-            "assignment-target subset; use greedy, tritonpart, or patron"
-        )
     route_constraints = phase3_runtime_call(
         "load_route_constraints",
         load_route_constraints,
@@ -534,6 +437,10 @@ def run_phase3(
             ),
             static_exact_candidate_policy=static_exact_candidate_policy,
             _stream_eligible_policy_names=True,
+            _native_compact_clusters=(
+                not retain_diagnostics
+                and (patron_refiner is None or is_unified_native_executable(patron_refiner))
+            ),
         )
     else:
         clusters = phase3_runtime_call(
@@ -555,6 +462,14 @@ def run_phase3(
         clusters=len(clusters["clusters"]),
         active_fpgas=len(constraints["active_fpgas"]),
     )
+    cluster_implementation = getattr(clusters["clusters"], "implementation_id", None)
+    packed_cluster_payload_bytes = getattr(
+        clusters["clusters"], "packed_payload_bytes", None
+    )
+    if packed_cluster_payload_bytes is not None:
+        phase3_runtime_observe(
+            cluster_compact_payload_bytes=int(packed_cluster_payload_bytes)
+        )
     if cut_mode == CUT_MODE_STATIC_EXACT:
         phase3_runtime_observe(
             static_exact_native=int(
@@ -564,18 +479,24 @@ def run_phase3(
         )
     patron_validation = None
     patron_initialization = None
+    patron_initial_derived_records_deferred = False
     single_active_selection = len(constraints["active_fpgas"]) == 1
     if single_active_selection:
         assignment = phase3_runtime_call(
             "provider.single_active_assignment",
-            assign_clusters,
+            build_partition_assignment,
             ir,
             platform,
             clusters,
             constraints,
+            _PackedClusterAssignment(
+                (constraints["active_fpgas"][0],),
+                (0 for _ in range(len(clusters["clusters"]))),
+            ),
+            provider="single-active-fpga-capacity-selection-v1",
             seed=seed,
-            route_constraints=route_constraints,
             _include_semantic_contract=retain_diagnostics,
+            _stream_semantic_records=not retain_diagnostics,
         )
         assignment["provider"] = "single-active-fpga-capacity-selection-v1"
         assignment["provider_metadata"] = {
@@ -583,18 +504,6 @@ def run_phase3(
             "reason": "no partition decision exists with one active target",
             "active_fpgas": list(constraints["active_fpgas"]),
         }
-    elif provider == "greedy":
-        assignment = phase3_runtime_call(
-            "provider.greedy_assignment",
-            assign_clusters,
-            ir,
-            platform,
-            clusters,
-            constraints,
-            seed=seed,
-            route_constraints=route_constraints,
-            _include_semantic_contract=retain_diagnostics,
-        )
     elif provider == "tritonpart":
         tritonpart_assignment = phase3_runtime_call(
             "provider.tritonpart",
@@ -620,39 +529,6 @@ def run_phase3(
             persist_input_manifest=retain_diagnostics,
         )
         assignment = tritonpart_assignment
-    elif provider in {"repart", "repart-replication"}:
-        assignment = phase3_runtime_call(
-            "provider.repart",
-            run_repart,
-            ir,
-            platform,
-            clusters,
-            constraints,
-            output_dir / "repart",
-            executable=repart,
-            solution_input=repart_solution,
-            net_weights_path=net_weights_path,
-            timeout_seconds=repart_timeout_seconds,
-            enable_replication=provider == "repart-replication",
-        )
-    elif provider == "mfspart":
-        assignment = phase3_runtime_call(
-            "provider.mfspart",
-            run_mfspart,
-            ir,
-            platform,
-            clusters,
-            constraints,
-            route_constraints,
-            output_dir / "mfspart",
-            seed=seed,
-            net_weights=load_partition_net_weights(net_weights_path),
-            coarsener=mfspart_coarsener,
-            initializer=mfspart_initializer,
-            refiner=mfspart_refiner,
-            refiner_checker=mfspart_refiner_checker,
-            legalizer=mfspart_legalizer,
-        )
     elif provider == "patron":
         if timing_database_path is None:
             raise ValueError(
@@ -672,6 +548,11 @@ def run_phase3(
                 patron_initialization = (
                     "caller-supplied-generalized-tritonpart-solution-v1"
                 )
+            patron_initial_derived_records_deferred = (
+                not retain_diagnostics
+                and cut_mode == CUT_MODE_STATIC_EXACT
+                and route_constraints.get("max_route_hops") is None
+            )
             tritonpart_initial = phase3_runtime_call(
                 "patron.initialize_tritonpart",
                 run_tritonpart,
@@ -695,6 +576,9 @@ def run_phase3(
                     tritonpart_run_unweighted_baseline
                 ),
                 defer_semantic_contract=True,
+                _defer_derived_records=(
+                    patron_initial_derived_records_deferred
+                ),
                 persist_input_manifest=retain_diagnostics,
             )
             initial = tritonpart_initial
@@ -708,9 +592,13 @@ def run_phase3(
                 clusters,
                 constraints,
                 read_json(patron_initial_assignment_path),
-                include_semantic_contract=(patron_algorithm_version != 14),
+                include_semantic_contract=False,
             )
-        patron_feedback_source_assignment = initial
+        phase3_runtime_observe(
+            patron_initial_derived_records_deferred=int(
+                patron_initial_derived_records_deferred
+            )
+        )
         if patron_initial_assignment_path is not None:
             # A frozen assignment is an exact PATRON input, not a request to
             # silently optimize it again. Fail closed if it is not already
@@ -736,10 +624,19 @@ def run_phase3(
                 route_constraints_path=route_constraints_path,
                 net_weights_path=net_weights_path,
                 executable=hop_refiner,
+                retain_diagnostics=retain_diagnostics,
                 defer_semantic_contract=True,
             )
         timing_database = phase3_runtime_call(
             "patron.load_timing_database", read_json, timing_database_path
+        )
+        from .phase3_pressure_native import supports_native_pressure_model
+        native_store_model = (
+            not retain_diagnostics
+            and patron_initial_clusters_path is None
+            and (patron_refiner is None or is_unified_native_executable(patron_refiner))
+            and not os.environ.get("EMUFLOW_PATRON_INPUT_COPY")
+            and supports_native_pressure_model(ir, clusters, timing_database)
         )
         model = phase3_runtime_call(
             "patron.build_pressure_model",
@@ -752,12 +649,20 @@ def run_phase3(
             route_constraints,
             independent_validation=retain_diagnostics,
             timing_database_path=timing_database_path,
+            native_store_model=native_store_model,
         )
-        phase3_runtime_observe(
-            pressure_clusters=len(model.get("clusters", [])),
-            pressure_nets=len(model.get("nets", [])),
-            pressure_paths=len(model.get("paths", [])),
-        )
+        patron_model_counts = {
+            "clusters": len(model.get("clusters", [])),
+            "nets": len(model.get("nets", [])),
+            "paths": len(model.get("paths", [])),
+            "capacity_domains": len(model.get("capacities", [])),
+        }
+        if not native_store_model:
+            phase3_runtime_observe(
+                pressure_clusters=patron_model_counts["clusters"],
+                pressure_nets=patron_model_counts["nets"],
+                pressure_paths=patron_model_counts["paths"],
+            )
         if hasattr(model.get("nets"), "payload_bytes"):
             phase3_runtime_observe(
                 # Packed net identity/member/ordinal storage only.  This does
@@ -767,28 +672,20 @@ def run_phase3(
                     model["nets"].construction_identity_bytes
                 ),
             )
-        patron_physical_feedback = None
-        patron_physical_feedback_validation = None
-        if patron_physical_system_timing_path is not None:
-            patron_physical_system_timing = phase3_runtime_call(
-                "patron.load_physical_feedback",
-                read_json,
-                patron_physical_system_timing_path,
-            )
-            patron_physical_feedback = phase3_runtime_call(
-                "patron.build_physical_feedback",
-                build_partition_physical_feedback,
-                model,
-                patron_feedback_source_assignment,
-                patron_physical_system_timing,
-            )
-            patron_physical_feedback_validation = phase3_runtime_call(
-                "patron.validate_physical_feedback",
-                validate_partition_physical_feedback,
-                model,
-                patron_feedback_source_assignment,
-                patron_physical_system_timing,
-                patron_physical_feedback,
+        if hasattr(model.get("paths"), "payload_bytes"):
+            phase3_runtime_observe(
+                pressure_compact_path_payload_bytes=(
+                    model["paths"].payload_bytes
+                ),
+                pressure_indexed_sql_projection=int(
+                    bool(
+                        getattr(
+                            model["paths"],
+                            "indexed_sql_projection",
+                            False,
+                        )
+                    )
+                ),
             )
         assignment, patron_trace = phase3_runtime_call(
             "patron.native_refinement",
@@ -802,15 +699,23 @@ def run_phase3(
             initial,
             executable=patron_refiner,
             max_moves=patron_max_moves,
-            flow_refinement=patron_flow_refinement,
             algorithm_version=patron_algorithm_version,
-            physical_feedback=patron_physical_feedback,
-            physical_feedback_scale=patron_physical_feedback_scale,
             output_validation=("full" if retain_diagnostics else "caller"),
             retain_trace_seals=retain_diagnostics,
             stream_semantic_records=not retain_diagnostics,
             timeout_seconds=tritonpart_timeout_seconds,
+            _release_model_before_assignment=not retain_diagnostics,
+            _defer_candidate_derived_records=(
+                not retain_diagnostics
+                and cut_mode == CUT_MODE_STATIC_EXACT
+            ),
         )
+        if native_store_model:
+            if patron_trace.get("model_implementation_id") != model.implementation_id:
+                raise ValidationError("PATRON native model implementation disagrees")
+            patron_model_counts = patron_trace["model_counts"]
+            phase3_runtime_observe(pressure_clusters=patron_model_counts["clusters"],
+                pressure_nets=patron_model_counts["nets"], pressure_paths=patron_model_counts["paths"])
         if retain_diagnostics:
             write_json(output_dir / "patron" / "pressure_model.json", model)
             write_json(
@@ -827,17 +732,6 @@ def run_phase3(
                 output_dir / "patron" / "initial_hop_refinement.json",
                 patron_initial_hop,
             )
-            if patron_physical_feedback is not None:
-                write_json(
-                    output_dir / "patron" / "physical_feedback.json",
-                    patron_physical_feedback,
-                )
-                write_json(
-                    output_dir
-                    / "patron"
-                    / "physical_feedback_source_assignment.json",
-                    patron_feedback_source_assignment,
-                )
             patron_validation = phase3_runtime_call(
                 "patron.validate_diagnostic_bundle",
                 validate_partition_pressure_native_bundle,
@@ -851,8 +745,6 @@ def run_phase3(
                 initial,
                 assignment,
                 patron_trace,
-                patron_physical_feedback,
-                patron_physical_feedback_scale,
                 timing_database_path=timing_database_path,
             )
         else:
@@ -873,6 +765,12 @@ def run_phase3(
             move_count = patron_trace.get("move_count")
             batch_count = patron_trace.get("batch_count")
             change_count = patron_trace.get("change_count")
+            native_input_transport = patron_trace.get(
+                "native_input_transport"
+            )
+            native_input_bytes = patron_trace.get("native_input_bytes")
+            native_input_records = patron_trace.get("native_input_records")
+            native_input_crc32 = patron_trace.get("native_input_crc32")
             native_output_bytes = patron_trace.get("native_output_bytes")
             if (
                 isinstance(move_count, bool)
@@ -884,6 +782,23 @@ def run_phase3(
                 or isinstance(change_count, bool)
                 or not isinstance(change_count, int)
                 or change_count < 0
+                or native_input_transport
+                not in {"typed-binary-pipe", "atomic-binary-file", "native-primary-store-model-v2"}
+                or isinstance(native_input_bytes, bool)
+                or not isinstance(native_input_bytes, int)
+                or native_input_bytes <= 0
+                or isinstance(native_input_records, bool)
+                or not isinstance(native_input_records, int)
+                or native_input_records <= 0
+                or (
+                    native_input_transport in {"typed-binary-pipe", "atomic-binary-file"}
+                    and (
+                        isinstance(native_input_crc32, bool)
+                        or not isinstance(native_input_crc32, int)
+                        or native_input_crc32 < 0
+                        or native_input_crc32 > 0xFFFFFFFF
+                    )
+                )
                 or isinstance(native_output_bytes, bool)
                 or not isinstance(native_output_bytes, int)
                 or native_output_bytes <= 0
@@ -897,64 +812,53 @@ def run_phase3(
                 "deep_replay": "deferred-to-offline-qualification",
                 "initial_assignment": initial_validation,
                 "candidate_assignment": candidate_validation,
-                "model": {
-                    "clusters": len(model.get("clusters", [])),
-                    "nets": len(model.get("nets", [])),
-                    "paths": len(model.get("paths", [])),
-                    "capacity_domains": len(model.get("capacities", [])),
-                },
+                "model": patron_model_counts,
                 "moves": move_count,
                 "batches": batch_count,
                 "batch_changes": change_count,
+                "native_input_transport": native_input_transport,
+                "native_input_bytes": native_input_bytes,
+                "native_input_records": native_input_records,
+                "native_input_crc32": native_input_crc32,
                 "native_output_bytes": native_output_bytes,
             }
-        if patron_physical_feedback_validation is not None:
-            patron_validation["physical_feedback"] = (
-                patron_physical_feedback_validation
+            if native_store_model:
+                patron_validation["model_implementation_id"] = patron_trace["model_implementation_id"]
+                patron_validation["native_model_metrics"] = patron_trace["native_model_metrics"]
+        assignment, candidate_selection = phase3_runtime_call(
+            "patron.select_candidate",
+            _select_patron_timing_assignment,
+            initial,
+            assignment,
+            patron_trace,
+        )
+        patron_validation["candidate_selection"] = candidate_selection
+        if not retain_diagnostics:
+            # The pressure graph, timing source and native trace are no longer
+            # inputs after online validation and v14 candidate selection.  In
+            # production they used to remain live while the final Static Exact
+            # semantic contract and assignment index built their own graph-scale
+            # state.  Release that complete lifetime before either publication
+            # stage begins; diagnostics retain it explicitly for offline replay.
+            del model
+            del timing_database
+            del patron_trace
+            if not retain_patron_baseline:
+                del initial
+                del patron_initial_hop
+            phase3_runtime_call(
+                "patron.release_post_selection_state", gc.collect
             )
-        if patron_algorithm_version == 14:
-            assignment, candidate_selection = phase3_runtime_call(
-                "patron.select_candidate",
-                _select_patron_timing_assignment,
-                initial,
-                assignment,
-                patron_trace,
+            phase3_runtime_observe(
+                pressure_model_released_before_candidate_assignment=1,
+                patron_candidate_derived_records_deferred=int(
+                    cut_mode == CUT_MODE_STATIC_EXACT
+                ),
             )
-            patron_validation["candidate_selection"] = candidate_selection
     else:
         raise ValueError(
             f"unknown Phase 3 provider {provider!r}; "
-            "expected 'repart-replication', 'repart', 'tritonpart', "
-            "'mfspart', 'patron', or 'greedy'"
-        )
-    mfspart_post_refinement_report = None
-    if mfspart_post_refinement and not single_active_selection:
-        if timing_path_database_path is not None and retain_diagnostics:
-            phase3_runtime_call(
-                "post_refinement.validate_timing_database",
-                validate_sta_path_database,
-                timing_path_database_path,
-                ir_path,
-            )
-        assignment, mfspart_post_refinement_report = phase3_runtime_call(
-            "post_refinement.mfspart",
-            refine_mfspart_partition,
-            ir,
-            platform,
-            clusters,
-            constraints,
-            route_constraints,
-            assignment,
-            output_dir / "mfspart-post-refinement",
-            net_weights=load_partition_net_weights(net_weights_path),
-            early_stop=mfspart_post_refinement_early_stop,
-            bottleneck_beta=mfspart_post_refinement_bottleneck_beta,
-            timing_path_database_path=timing_path_database_path,
-            timing_path_beta=mfspart_post_refinement_timing_path_beta,
-            refiner=mfspart_refiner,
-            refiner_checker=mfspart_refiner_checker,
-            defer_semantic_contract=True,
-            online_validation=True,
+            "expected 'tritonpart' or 'patron'"
         )
     if single_active_selection:
         hop_refinement = phase3_runtime_call(
@@ -965,6 +869,28 @@ def run_phase3(
             route_constraints,
         )
     elif provider == "patron":
+        if (
+            cut_mode == CUT_MODE_STATIC_EXACT
+            and assignment.get("semantic_contract") is None
+        ):
+            # Native v14 selection is complete and the pressure graph plus
+            # unselected candidate have already been released.  Build the
+            # cut relation and Static Exact contract exactly once for the
+            # selected assignment before the independent hop audit consumes
+            # those cut records.
+            assignment = phase3_runtime_call(
+                "static_exact.build_semantic_contract",
+                build_partition_assignment,
+                ir,
+                platform,
+                clusters,
+                constraints,
+                assignment["cluster_assignment"],
+                provider=str(assignment["provider"]),
+                seed=int(assignment["seed"]),
+                provider_metadata=assignment.get("provider_metadata"),
+                _stream_semantic_records=not retain_diagnostics,
+            )
         # PATRON already evaluates reachability and max-hop legality for every
         # native candidate. A second topology FM pass duplicates a large input
         # and obscures the exact assignment PATRON selected.
@@ -988,6 +914,7 @@ def run_phase3(
             route_constraints_path=route_constraints_path,
             net_weights_path=net_weights_path,
             executable=hop_refiner,
+            retain_diagnostics=retain_diagnostics,
             defer_semantic_contract=True,
         )
     if (
@@ -1013,7 +940,7 @@ def run_phase3(
             provider_metadata=assignment.get("provider_metadata"),
             _stream_semantic_records=not retain_diagnostics,
         )
-    if retain_diagnostics or provider == "repart-replication":
+    if retain_diagnostics:
         validation = phase3_runtime_call(
             "validate_final_assignment_full",
             validate_partition_artifacts,
@@ -1046,9 +973,6 @@ def run_phase3(
         "seed": assignment["seed"],
         "validation": validation,
         "hop_refinement": persisted_hop_refinement,
-        "mfspart_post_refinement": _mfspart_report_summary(
-            mfspart_post_refinement_report
-        ),
         "patron_initial_clusters_reused": (
             patron_initial_clusters_path is not None
         ),
@@ -1069,6 +993,13 @@ def run_phase3(
             "runtime_breakdown": "phase3-runtime.json",
         },
     }
+    if cluster_implementation is not None:
+        report["cluster_implementation_id"] = cluster_implementation
+        report["native_cluster_metrics"] = clusters["clusters"].native_metrics
+    candidate_implementation = getattr(clusters["clusters"], "candidate_implementation_id", None)
+    if candidate_implementation is not None:
+        report["candidate_implementation_id"] = candidate_implementation
+        report["native_candidate_metrics"] = clusters["clusters"].candidate_native_metrics
     if cut_mode != CUT_MODE_SEQUENTIAL_ONLY:
         report["cut_mode"] = cut_mode
         report["static_exact_candidate_policy"] = (
@@ -1090,16 +1021,6 @@ def run_phase3(
             report["artifacts"]["tritonpart"] = (
                 "tritonpart/tritonpart_input.json"
             )
-        if mfspart_post_refinement_report is not None:
-            report["artifacts"]["mfspart_post_refinement"] = (
-                "mfspart-post-refinement/post_refinement.json"
-            )
-    elif provider in {"repart", "repart-replication"}:
-        report["artifacts"]["repart"] = "repart/repart_input.json"
-        if provider == "repart-replication":
-            report["artifacts"]["replication"] = "replication.json"
-    elif provider == "mfspart":
-        report["artifacts"]["mfspart"] = "mfspart/hierarchy.json"
     elif provider == "patron":
         report["patron_algorithm_version"] = patron_algorithm_version
         report["patron_initialization"] = patron_initialization
@@ -1136,19 +1057,9 @@ def run_phase3(
                 "storage": "not-persisted",
                 "reason": "production-hot-path",
                 "offline_qualification": (
-                    "available-via-partition-pressure-reference"
+                    "independent-current-model-validator"
                 ),
             }
-        if (
-            patron_physical_system_timing_path is not None
-            and retain_diagnostics
-        ):
-            report["artifacts"]["patron_physical_feedback"] = (
-                "patron/physical_feedback.json"
-            )
-            report["artifacts"][
-                "patron_physical_feedback_source_assignment"
-            ] = "patron/physical_feedback_source_assignment.json"
         if patron_initial_assignment_path is None and retain_diagnostics:
             report["artifacts"]["tritonpart"] = (
                 "patron/tritonpart/tritonpart_input.json"
@@ -1159,7 +1070,7 @@ def run_phase3(
         )
     if not retain_diagnostics:
         report["artifact_storage"] = {
-            "clusters": COMPRESSED_CLUSTERS_SCHEMA,
+            "clusters": INDEXED_CLUSTERS_SCHEMA,
             "assignment": PACKED_ASSIGNMENT_SCHEMA,
             "assignment_index": ASSIGNMENT_INDEX_SCHEMA,
             "static_exact_data": EXACT_BINARY_SCHEMA,
@@ -1173,6 +1084,7 @@ def run_phase3(
         shutil.rmtree(output_dir / "patron", ignore_errors=True)
     if not retain_diagnostics and hop_refinement["enabled"]:
         shutil.rmtree(output_dir / "hop-refinement", ignore_errors=True)
+    indexed_clusters = None
     if retain_diagnostics:
         phase3_runtime_call(
             "publish.write_clusters",
@@ -1182,12 +1094,13 @@ def run_phase3(
             compact=True,
         )
     else:
-        phase3_runtime_call(
+        indexed_clusters = phase3_runtime_call(
             "publish.write_clusters",
-            write_compressed_phase3_clusters,
+            write_indexed_phase3_clusters,
             output_dir / "clusters.json",
             clusters,
         )
+        report["artifacts"]["clusters_data"] = indexed_clusters["artifact"]
     phase3_runtime_call(
         "publish.write_constraints",
         write_json,
@@ -1197,13 +1110,16 @@ def run_phase3(
     # Publish the typed semantic relation before the lightweight JSON
     # descriptor that names it.  A failed index write can therefore never
     # leave a completed assignment document pointing at a missing sidecar.
-    phase3_runtime_call(
+    assignment_index_summary = phase3_runtime_call(
         "publish.write_assignment_index",
         write_phase3_assignment_index,
         output_dir / "assignment.sqlite",
         ir,
         assignment,
     )
+    report["assignment_index_writer_implementation_id"] = assignment_index_summary["writer_implementation"]
+    if "native_writer_metrics" in assignment_index_summary:
+        report["native_assignment_index_metrics"] = assignment_index_summary["native_writer_metrics"]
     persisted_assignment = (
         assignment
         if retain_diagnostics
@@ -1212,6 +1128,12 @@ def run_phase3(
             pack_phase3_assignment,
             assignment,
             clusters,
+            cut_nets_index={
+                "artifact": "assignment.sqlite",
+                "schema": CUT_RECORDS_SCHEMA,
+                "records": assignment_index_summary["cut_records"],
+                "sha256": assignment_index_summary["cut_records_sha256"],
+            },
         )
     )
     phase3_runtime_call(
@@ -1247,6 +1169,11 @@ def run_phase3(
         )
     phase3_runtime_observe(
         clusters_artifact_bytes=(output_dir / "clusters.json").stat().st_size,
+        clusters_data_bytes=(
+            (output_dir / indexed_clusters["artifact"]).stat().st_size
+            if indexed_clusters is not None
+            else 0
+        ),
         assignment_artifact_bytes=(output_dir / "assignment.json").stat().st_size,
         assignment_index_bytes=(output_dir / "assignment.sqlite").stat().st_size,
         static_exact_binary_bytes=(

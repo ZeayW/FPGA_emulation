@@ -15,6 +15,7 @@ import weakref
 
 from .errors import ValidationError
 from .io import file_sha256, json_writes_are_durable, write_json
+from .store_publication import publish_sqlite_store
 from .timing_disposition import OPTIMIZED_AWAY, PATH_POPULATION_POLICY, is_optimized_away, validate_optimization_record
 
 SCHEMA = "emuflow.system-qor-storage/v1"
@@ -232,7 +233,7 @@ def write_system_qor(path: Path, qor: Mapping):
             if json_writes_are_durable():
                 with temporary.open("rb") as stream:
                     os.fsync(stream.fileno())
-            os.replace(temporary, payload)
+            publish_sqlite_store(temporary, payload, "system-qor-store-v1")
             created = True
         selector = {"schema": SCHEMA, "logical_schema": header["schema"], "header": header,
                     "counts": counts, "logical_sha256": logical_sha, "artifact": payload.name,

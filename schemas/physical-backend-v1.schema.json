@@ -15,7 +15,7 @@
   ],
   "properties": {
     "schema": {"const": "emuflow.physical-backend/v1"},
-    "id": {"enum": ["open", "vivado"]},
+    "id": {"enum": ["rapidwright", "vivado"]},
     "implementation_engine": {"type": "string", "minLength": 1},
     "timing_engine": {"type": "string", "minLength": 1},
     "architecture_class": {"type": "string", "minLength": 1},

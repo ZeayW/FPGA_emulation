@@ -9,23 +9,17 @@ from emuflow.ir import EmuIR
 from emuflow.logic_segment_identity_storage import (
     write_logic_segment_identity_storage,
 )
-from emuflow.sta import VIVADO_PATH_DATABASE_TSV_HEADER
-from emuflow.vtr_netlist import normalize_vtr_hard_block_json
 from emuflow.yosys import import_yosys_json
 from emuflow.vivado_backend import (
-    _run_vivado,
-    import_vivado_boundary_timing,
-    run_vivado_partition_backend,
-    run_vivado_timing_path_database,
-    validate_vivado_cell_coverage,
     vivado_runtime_xdc,
     write_vivado_boundary_timing_query,
 )
+from emuflow.vivado_physical import execute_vivado
+from emuflow.vivado_physical_timing import import_indexed_vivado_boundary
 from emuflow.vivado_netlist import (
     emit_vivado_mapped_verilog,
     lower_vivado_primitives,
 )
-from tests.test_vtr_netlist import _raw_vtr_json
 
 
 def _ir():
@@ -108,6 +102,65 @@ RUNTIME = {
 
 
 class VivadoBackendTest(unittest.TestCase):
+    def test_whole_emuir_export_and_physical_execution_are_rejected(self):
+        from emuflow.vivado_physical import run_indexed_vivado_partition
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, output = root / "ir.json", root / "physical"
+            write_json(source, _ir().to_dict())
+            with patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("whole graph")), \
+                 patch("emuflow.vivado_backend._resolve_vivado", side_effect=AssertionError("tool lookup")):
+                with self.assertRaisesRegex(ValidationError, "current indexed EmuIR"):
+                    emit_vivado_mapped_verilog(source, root / "partition.v")
+                with self.assertRaisesRegex(ValidationError, "current indexed EmuIR"):
+                    run_indexed_vivado_partition(
+                        fpga="fpga0", part="xcvu19p-fsva3824-2-e", ir_path=source,
+                        mapped_verilog_path=root / "partition.v", mapped_report={},
+                        runtime=RUNTIME, original_cells=2, transport_cells=0,
+                        output_dir=output,
+                    )
+            self.assertFalse((root / "partition.v").exists())
+            self.assertFalse(output.exists())
+
+    def test_retired_timing_and_sampled_controls_are_not_public_interfaces(self):
+        from contextlib import redirect_stderr
+        from io import StringIO
+        from emuflow.cli import _build_parser
+        from emuflow.multi_fpga_flow import run_multi_fpga_flow
+        from emuflow.multi_fpga_physical_flow import run_multi_fpga_physical_flow
+        from emuflow.native_compile import _request
+        from emuflow.native_compile_adapter import _initial_context
+
+        parser = _build_parser()
+        compile_args = ["multi-fpga", "compile", "design.v", "--out", "out"]
+        physical_args = ["multi-fpga", "physical", "--split", "split", "--platform", "board",
+                         "--schedule", "schedule", "--out", "out"]
+        cases = [(compile_args, "--timing-backend", "vivado"),
+                 (compile_args, "--timing-vivado", "vivado"),
+                 (compile_args, "--physical-vivado-max-timing-paths", "1"),
+                 (physical_args, "--vivado-max-timing-paths", "1")]
+        for args, option, value in cases:
+            with self.subTest(option=option), redirect_stderr(StringIO()), self.assertRaises(SystemExit):
+                parser.parse_args([*args, option, value])
+        for command in ("emit-vivado-cut-map", "import-vivado-tsv",
+                        "emit-vivado-net-map", "import-vivado-path-database"):
+            error = StringIO()
+            with self.subTest(command=command), redirect_stderr(error), self.assertRaises(SystemExit):
+                parser.parse_args(["sta", command])
+            self.assertIn("invalid choice", error.getvalue())
+        for option in ("timing_backend", "timing_vivado", "physical_vivado_max_timing_paths"):
+            with self.subTest(option=option), self.assertRaises(TypeError):
+                run_multi_fpga_flow(**{option: "retired"})
+            with self.subTest(native_option=option), self.assertRaises(TypeError):
+                _request((), {"output_dir": Path("out"), option: "retired"})
+            with self.subTest(adapter_option=option), self.assertRaises(TypeError):
+                _initial_context({"options": {"output_dir": str(Path("out").absolute()),
+                                              option: "retired"}})
+        with self.assertRaises(TypeError):
+            run_multi_fpga_physical_flow(Path("split"), Path("board"), Path("schedule"),
+                                         Path("out"), vivado_max_timing_paths=1)
+
     def test_vivado_boundary_timing_uses_stable_endpoint_identities(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -184,7 +237,7 @@ class VivadoBackendTest(unittest.TestCase):
                 + "\n",
                 encoding="utf-8",
             )
-            imported = import_vivado_boundary_timing(
+            imported = import_indexed_vivado_boundary(
                 timing_path, identity_path, output_path
             )
 
@@ -192,42 +245,6 @@ class VivadoBackendTest(unittest.TestCase):
         self.assertIn("__emuflow_net_0".encode().hex(), query_text)
         self.assertEqual(imported["maximum_delay_ns"], 1.75)
 
-    def test_vtr_dsp_and_bram_macros_emit_synthesizable_models(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            raw = root / "raw.json"
-            normalized = root / "normalized.json"
-            ir_path = root / "hard-blocks.emuir.json"
-            verilog = root / "hard-blocks.v"
-            write_json(raw, _raw_vtr_json())
-            normalize_vtr_hard_block_json(raw, normalized, top="top")
-            ir = import_yosys_json(normalized, top="top", clocks=["clk"])
-            write_json(ir_path, ir.to_dict())
-            report = emit_vivado_mapped_verilog(ir_path, verilog)
-            text = verilog.read_text(encoding="utf-8")
-
-        self.assertEqual(
-            report["hard_macro_models"],
-            ["VTR_MULTIPLY", "VTR_SP_RAM"],
-        )
-        self.assertIn("module VTR_MULTIPLY", text)
-        self.assertIn("module VTR_SP_RAM", text)
-        self.assertIn("ram_style = \"block\"", text)
-        dp_ram = text.split("module VTR_DP_RAM", 1)[1].split(
-            "endmodule", 1
-        )[0]
-        self.assertEqual(dp_ram.count("always @(posedge clk)"), 2)
-        self.assertNotIn(
-            "if (we1)\n      memory[addr1] <= data1;\n    if (we2)",
-            dp_ram,
-        )
-        self.assertIn(".\\ADDR_WIDTH (2)", text)
-        self.assertNotIn(".\\ADDR_WIDTH (2'b10)", text)
-        self.assertIn("{__emuflow_net_", text)
-        self.assertIn("EMUFLOW_MAPPED = \"yes\"", text)
-        self.assertIn(
-            'KEEP_HIERARCHY = "yes", EMUFLOW_MAPPED = "yes"', text
-        )
 
     def test_vivado_critical_warning_is_a_hard_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -240,14 +257,18 @@ class VivadoBackendTest(unittest.TestCase):
                     "stdout": "CRITICAL WARNING: ignored constraint\n",
                 },
             )()
+            def run(*args, **kwargs):
+                kwargs["stdout"].write(completed.stdout)
+                return completed
+
             with patch(
-                "emuflow.vivado_backend.subprocess.run",
-                return_value=completed,
+                "emuflow.vivado_physical.subprocess.run",
+                side_effect=run,
             ):
                 with self.assertRaisesRegex(
-                    EmuFlowError, "1 critical warning"
+                    EmuFlowError, "critical_warnings=1"
                 ):
-                    _run_vivado(
+                    execute_vivado(
                         "vivado",
                         root / "provider.tcl",
                         [],
@@ -255,7 +276,7 @@ class VivadoBackendTest(unittest.TestCase):
                         "vivado.log",
                     )
 
-    def test_generic_logic_is_lowered_to_vivado_primitives(self):
+    def test_shared_xilinx_reference_conversion_retains_generic_cell_semantics(self):
         value = _ir().to_dict()
         value["instances"][0]["type"] = "$lut"
         value["instances"][0]["parameters"] = {
@@ -296,318 +317,12 @@ class VivadoBackendTest(unittest.TestCase):
         self.assertNotIn("emuflow_dut_clk", xdc)
         self.assertIn("emuflow_fabric_clk", xdc)
 
-    def test_vivado_outputs_the_same_partition_result_contract(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            ir_path = root / "ir.json"
-            mapped = root / "partition.v"
-            output = root / "out"
-            logic_identity = root / "logic-identity.json"
-            logic_query = root / "logic-query.tsv"
-            write_json(ir_path, _ir().to_dict())
-            mapped.write_text("module partition; endmodule\n", encoding="utf-8")
-            logic_identity_value = {
-                    "schema": "emuflow.logic-segment-identity/v1",
-                    "system_routes_sha256": "a" * 64,
-                    "tdm_schedule_sha256": "b" * 64,
-                    "status": "pass",
-                    "design": "partition",
-                    "platform": "board",
-                    "fpga": "fpga0",
-                    "provider": "test",
-                    "coverage": {
-                        "segments": 1,
-                        "system_paths": 1,
-                        "member_paths": 1,
-                        "unsupported_member_paths": 0,
-                    },
-                    "unsupported_member_paths": [],
-                    "segments": [
-                        {
-                            "id": "logic0",
-                            "kind": "launch",
-                            "system_path": "path0",
-                            "member_path": "member0",
-                            "cut_index": 0,
-                            "fpga": "fpga0",
-                            "replace_tx_endpoint": "tx0",
-                            "start_pin": "dut/O",
-                            "end_pin": "tx[0]",
-                            "start_object_kind": "pin",
-                            "end_object_kind": "port",
-                        }
-                    ],
-                }
-            identity_view = write_logic_segment_identity_storage(
-                logic_identity,
-                header={
-                    key: value for key, value in logic_identity_value.items()
-                    if key not in {"segments", "unsupported_member_paths"}
-                },
-                segments=logic_identity_value["segments"],
-                unsupported_member_paths=logic_identity_value[
-                    "unsupported_member_paths"
-                ],
-            )
-            identity_view.close()
-            logic_query.write_text("query\n", encoding="utf-8")
-
-            def fake_run(_exe, script, _arguments, out, log_name):
-                out.mkdir(parents=True, exist_ok=True)
-                (out / log_name).write_text("pass\n", encoding="utf-8")
-                if script.name == "implement_partition.tcl":
-                    metrics = {
-                        "vivado_version": "2025.2",
-                        "part": "xcvu9p-flga2104-2L-e",
-                        "mapped_cells": "2",
-                        "physical_cells": "3",
-                        "infrastructure_cells": "1",
-                        "optimization_cells": "0",
-                        "dsp48_cells": "0",
-                        "ramb18_cells": "0",
-                        "ramb36_cells": "0",
-                        "nets": "10",
-                        "unrouted_nets": "0",
-                        "drc_violations": "0",
-                        "drc_warnings": "5",
-                        "dut_period_ns": "100.0",
-                        "fabric_period_ns": "4.0",
-                        "wns_ns": "0.25",
-                        "critical_path_ns": "3.75",
-                        "dut_wns_ns": "96.25",
-                        "dut_delay_ns": "3.75",
-                        "fabric_wns_ns": "0.25",
-                        "fabric_delay_ns": "3.75",
-                        "fabric_to_dut_wns_ns": "4.25",
-                        "fabric_to_dut_delay_ns": "3.75",
-                    }
-                    (out / "implementation_metrics.tsv").write_text(
-                        "metric\tvalue\n"
-                        + "\n".join(
-                            f"{name}\t{value}" for name, value in metrics.items()
-                        )
-                        + "\n",
-                        encoding="utf-8",
-                    )
-                    inventory = (
-                        "name\tref_name\n"
-                        "dut\tLUT1\n"
-                        "transport\tLUT1\n"
-                    )
-                    (out / "mapped_cells.tsv").write_text(
-                        inventory, encoding="utf-8"
-                    )
-                    (out / "routed_mapped_cells.tsv").write_text(
-                        inventory, encoding="utf-8"
-                    )
-                    for name in (
-                        "synthesized.dcp",
-                        "placed.dcp",
-                        "routed.dcp",
-                        "route_status.rpt",
-                        "drc.rpt",
-                        "timing_summary.rpt",
-                        "utilization.rpt",
-                    ):
-                        (out / name).write_text("artifact\n", encoding="utf-8")
-                elif script.name == "export_logic_segment_timing.tcl":
-                    (out / "logic-segment-timing.tsv").write_text(
-                        "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\t"
-                        "end_object_hex\tmeasurement\tactual_start_object_hex\t"
-                        "actual_end_object_hex\n"
-                        + "\t".join(
-                            (
-                                "logic0".encode().hex(),
-                                "launch",
-                                "2.25",
-                                "dut/O".encode().hex(),
-                                "tx[0]".encode().hex(),
-                                "endpoint-exact",
-                                "dut/O".encode().hex(),
-                                "tx[0]".encode().hex(),
-                            )
-                        )
-                        + "\n",
-                        encoding="utf-8",
-                    )
-                else:
-                    (out / "timing-paths.tsv").write_text(
-                        VIVADO_PATH_DATABASE_TSV_HEADER
-                        + "\n"
-                        + "\t".join(
-                            (
-                                "path0".encode().hex(),
-                                "clk".encode().hex(),
-                                "100.0",
-                                "96.25",
-                                "3.75",
-                                "n0".encode().hex(),
-                            )
-                        )
-                        + "\n",
-                        encoding="utf-8",
-                    )
-                return {
-                    "status": "pass",
-                    "command": ["vivado"],
-                    "log": str(out / log_name),
-                    "log_sha256": "0" * 64,
-                }
-
-            with (
-                patch(
-                    "emuflow.vivado_backend._resolve_vivado",
-                    return_value="vivado",
-                ),
-                patch(
-                    "emuflow.vivado_backend._run_vivado",
-                    side_effect=fake_run,
-                ),
-            ):
-                report = run_vivado_partition_backend(
-                    fpga="fpga0",
-                    part="xcvu9p-flga2104-2L-e",
-                    ir_path=ir_path,
-                    mapped_verilog_path=mapped,
-                    runtime=RUNTIME,
-                    original_cells=1,
-                    transport_cells=1,
-                    output_dir=output,
-                    logic_identity_path=logic_identity,
-                    logic_query_path=logic_query,
-                )
-
-        result = report["result"]
-        self.assertEqual(result["identity"]["backend"], "vivado")
-        self.assertEqual(result["cell_accounting"]["physical_cells"], 3)
-        self.assertEqual(result["hard_resources"]["dsp48_cells"], 0)
-        self.assertEqual(result["closure"]["drc_warnings"], 5)
-        self.assertEqual(
-            report["validation"]["physical_cells"], 3
-        )
-        self.assertEqual(result["timing"]["fabric_wns_ns"], 0.25)
-        self.assertEqual(report["timing_path_validation"]["paths"], 1)
-        self.assertEqual(report["cell_coverage"]["logical_cells"], 2)
-        self.assertEqual(
-            report["logic_segment_timing"]["import"]["maximum_delay_ns"],
-            2.25,
-        )
-
-    def test_vivado_cell_coverage_uses_stable_mapped_identity(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            synthesized = root / "mapped.tsv"
-            routed = root / "routed.tsv"
-            value = _ir().to_dict()
-            value["instances"][0]["id"] = r"hier\dut"
-            value["instances"][0]["name"] = r"hier\dut"
-            value["nets"][0]["sinks"][0]["instance"] = r"hier\dut"
-            inventory = (
-                "name\tref_name\n"
-                "hier\\\\dut\tLUT1\n"
-                "transport\tLUT1\n"
-            )
-            synthesized.write_text(inventory, encoding="utf-8")
-            routed.write_text(
-                inventory.replace("hier\\\\dut\tLUT1", "hier\\\\dut\tLUT2"),
-                encoding="utf-8",
-            )
-            report = validate_vivado_cell_coverage(
-                EmuIR(value), synthesized, routed
-            )
-
-        self.assertEqual(report["status"], "pass")
-        self.assertEqual(report["logical_cells"], 2)
-        self.assertEqual(report["reference_type_changes"], 1)
-
-    def test_vivado_cell_coverage_rejects_a_missing_logical_cell(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            synthesized = root / "mapped.tsv"
-            routed = root / "routed.tsv"
-            synthesized.write_text(
-                "name\tref_name\ndut\tLUT1\ntransport\tLUT1\n",
-                encoding="utf-8",
-            )
-            routed.write_text(
-                "name\tref_name\ndut\tLUT1\n",
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(
-                ValidationError, "routed logical-cell coverage disagrees"
-            ):
-                validate_vivado_cell_coverage(
-                    _ir(), synthesized, routed
-                )
-
-    def test_vivado_timing_produces_the_common_sta_path_database(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            ir_path = root / "ir.json"
-            output = root / "path-database.json"
-            write_json(ir_path, _ir().to_dict())
-
-            def fake_run(_exe, script, _arguments, out, log_name):
-                (out / log_name).write_text("pass\n", encoding="utf-8")
-                if script.name == "analyze_timing.tcl":
-                    (out / "timing.dcp").write_text(
-                        "checkpoint\n", encoding="utf-8"
-                    )
-                    (out / "timing_summary.rpt").write_text(
-                        "timing\n", encoding="utf-8"
-                    )
-                    (out / "timing_metrics.tsv").write_text(
-                        "metric\tvalue\n"
-                        "vivado_version\t2025.2\n"
-                        "part\txcvu9p-flga2104-2L-e\n"
-                        "mapped_cells\t2\n"
-                        "clocks\t1\n",
-                        encoding="utf-8",
-                    )
-                else:
-                    (out / "vivado-timing-paths.tsv").write_text(
-                        VIVADO_PATH_DATABASE_TSV_HEADER
-                        + "\n"
-                        + "\t".join(
-                            (
-                                "path0".encode().hex(),
-                                "clk".encode().hex(),
-                                "10.0",
-                                "1.0",
-                                "9.0",
-                                "n0".encode().hex(),
-                            )
-                        )
-                        + "\n",
-                        encoding="utf-8",
-                    )
-                return {
-                    "status": "pass",
-                    "command": ["vivado"],
-                    "log": str(out / log_name),
-                    "log_sha256": "0" * 64,
-                }
-
-            with (
-                patch(
-                    "emuflow.vivado_backend._resolve_vivado",
-                    return_value="vivado",
-                ),
-                patch(
-                    "emuflow.vivado_backend._run_vivado",
-                    side_effect=fake_run,
-                ),
-            ):
-                report = run_vivado_timing_path_database(
-                    ir_path=ir_path,
-                    output_path=output,
-                    clocks={"clk": 10.0},
-                    part="xcvu9p-flga2104-2L-e",
-                )
-
-        self.assertEqual(report["mode"], "vivado-post-synthesis")
-        self.assertEqual(report["validation"]["paths"], 1)
-
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_mapped_name_preserves_vivado_backslash_identity():
+    from emuflow.vivado_backend import _vivado_mapped_name
+    assert _vivado_mapped_name("$flatten\\cpu") == "$flatten\\\\cpu"
+    assert _vivado_mapped_name("dut/路径[0]") == "dut/路径[0]"

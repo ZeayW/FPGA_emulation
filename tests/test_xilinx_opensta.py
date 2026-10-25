@@ -274,7 +274,7 @@ def test_indexed_routed_opensta_staging_matches_graph_semantics(tmp_path):
     }
 
 
-def test_routed_opensta_stages_directly_from_mapped_sqlite(tmp_path):
+def _indexed_routed_fixture(tmp_path):
     mapped = {
         "creator": "fixture",
         "modules": {"top": {
@@ -347,6 +347,11 @@ def test_routed_opensta_stages_directly_from_mapped_sqlite(tmp_path):
             "intra_site_endpoints": 0, "maximum_route_delay_ns": 0.123,
         },
     }), encoding="utf-8")
+    return mapped_index, timing_path
+
+
+def test_routed_opensta_stages_directly_from_mapped_sqlite(tmp_path):
+    mapped_index, timing_path = _indexed_routed_fixture(tmp_path)
     routed_path = tmp_path / "routed.emuir.sqlite"
     model, metadata = build_xilinx_routed_opensta_indexed_inputs(
         mapped_index, timing_path, routed_path, clocks={"clk": 10.0}

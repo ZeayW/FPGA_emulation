@@ -1,6 +1,6 @@
 """Indexed storage for the Chimew Phase 6 electrical binding.
 
-The logical v1/v2 binding remains readable.  Production artifacts keep their
+The logical v1/v2 binding remains readable; v3 seals fixed LVDS P/N wiring.  Production artifacts keep their
 small header in a JSON selector and normalize group records and schedule-entry
 membership into a sealed SQLite sidecar.  A schedule entry is therefore stored
 once instead of being embedded in one graph-sized JSON array.
@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -19,7 +18,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .errors import ValidationError
-from .io import file_sha256, read_json, write_json
+from .io import file_sha256, read_json
+from .store_publication import (
+    publish_sqlite_store,
+    commit_store_selector,
+    require_store_sources_unchanged,
+    bind_store_source,
+)
 
 
 CHIMEW_BINDING_STORAGE_SCHEMA = "emuflow.chimew-binding-storage/v1"
@@ -28,6 +33,7 @@ CHIMEW_BINDING_USER_VERSION = 1
 _LOGICAL_SCHEMAS = {
     "emuflow.chimew-phase6-electrical-binding/v1",
     "emuflow.chimew-phase6-electrical-binding/v2",
+    "emuflow.chimew-phase6-electrical-binding/v3",
 }
 
 
@@ -199,6 +205,9 @@ class ChimewBindingEntrySequence(Sequence[Mapping[str, Any]]):
 class ChimewBindingView(Mapping[str, Any]):
     def __init__(self, manifest_path: Path):
         self.manifest_path = Path(manifest_path).resolve()
+        selector_source = bind_store_source(
+            self.manifest_path, "chimew-binding-selector-v1"
+        )
         manifest = read_json(self.manifest_path)
         header = manifest.get("header")
         entries = manifest.get("entries")
@@ -247,6 +256,7 @@ class ChimewBindingView(Mapping[str, Any]):
             raise ValidationError("Chimew binding storage path is invalid")
         store_path = self.manifest_path.with_name(artifact)
         try:
+            store_source = bind_store_source(store_path, "chimew-binding-store-v1")
             stat = store_path.stat()
         except OSError as error:
             raise ValidationError("Chimew binding SQLite store is missing") from error
@@ -324,6 +334,13 @@ class ChimewBindingView(Mapping[str, Any]):
         self.canonical_sha256 = manifest["canonical_sha256"]
         self.member_count = members["records"]
 
+        self._source_bindings = (selector_source, store_source)
+        require_store_sources_unchanged(self._source_bindings)
+
+    def bound_store_sources(self):
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
+
     def __getitem__(self, key: str) -> Any:
         if key == "entries":
             return self._entries
@@ -394,10 +411,12 @@ class ChimewBindingView(Mapping[str, Any]):
 
 
 def write_chimew_binding_storage(
-    path: Path, binding: Mapping[str, Any]
+    path: Path, binding: Mapping[str, Any], *, source_bindings=()
 ) -> ChimewBindingView:
     if binding.get("schema") not in _LOGICAL_SCHEMAS:
         raise ValidationError("Chimew binding has an unsupported schema")
+    source_bindings = tuple(source_bindings)
+    require_store_sources_unchanged(source_bindings)
     records = binding.get("entries")
     if not isinstance(records, Iterable) or isinstance(records, (str, bytes)):
         raise ValidationError("Chimew binding entries must be iterable")
@@ -550,8 +569,6 @@ def write_chimew_binding_storage(
         )
         connection.commit()
         connection.close()
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
     except sqlite3.IntegrityError as error:
         try:
             connection.close()
@@ -566,16 +583,22 @@ def write_chimew_binding_storage(
         finally:
             temporary.unlink(missing_ok=True)
         raise
-    store_sha256 = file_sha256(temporary)
-    artifact = path.with_name(f"{path.stem}.{store_sha256}.sqlite")
-    created_artifact = not artifact.exists()
-    if created_artifact:
-        os.replace(temporary, artifact)
-    else:
-        if file_sha256(artifact) != store_sha256:
-            temporary.unlink(missing_ok=True)
-            raise ValidationError("Chimew binding artifact digest collision")
-        temporary.unlink()
+    try:
+        store_sha256 = file_sha256(temporary)
+        artifact = path.with_name(f"{path.stem}.{store_sha256}.sqlite")
+        created_artifact = not artifact.exists()
+        if created_artifact:
+            publish_sqlite_store(
+                temporary, artifact, "chimew-binding-store-v1", sources=source_bindings
+            )
+        else:
+            require_store_sources_unchanged(source_bindings)
+            if file_sha256(artifact) != store_sha256:
+                raise ValidationError("Chimew binding artifact digest collision")
+            temporary.unlink()
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     manifest = {
         "schema": CHIMEW_BINDING_STORAGE_SCHEMA,
         "logical_schema": header["schema"],
@@ -590,13 +613,14 @@ def write_chimew_binding_storage(
         "logical_sha256": logical_sha256,
         "canonical_sha256": canonical_sha256,
     }
-    try:
-        write_json(path, manifest, compact=True)
-    except BaseException:
-        if created_artifact and artifact != previous_artifact:
-            artifact.unlink(missing_ok=True)
-        raise
-    view = ChimewBindingView(path)
+    view = commit_store_selector(
+        path,
+        manifest,
+        source_bindings,
+        artifact,
+        created_artifact,
+        validate=lambda: ChimewBindingView(path),
+    )
     if previous_artifact is not None and previous_artifact != artifact:
         previous_artifact.unlink(missing_ok=True)
     return view

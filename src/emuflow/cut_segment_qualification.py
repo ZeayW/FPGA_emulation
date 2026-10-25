@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import ValidationError
 from .io import read_json
 from .ir import EmuIR
@@ -206,7 +207,7 @@ def _build_indexed_cut_segment_qualification(
     alias = "cut_timing_assignment"
     ir.connection.execute(
         f"ATTACH DATABASE ? AS {alias}",
-        (f"file:{assignment_index_path.resolve()}?mode=ro&immutable=1",),
+        (immutable_sqlite_uri(assignment_index_path),),
     )
     try:
         unknown = int(

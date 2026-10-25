@@ -18,7 +18,10 @@ from typing import Any, Mapping
 from .errors import ValidationError
 
 LINEAGE_POLICY = "vivado-optimized-source-lineage-v1"
-INVENTORY_HEADER = ["name", "ref_name", "source_origin", "transformations_hex"]
+LINEAGE_SCHEMA = "emuflow.vivado-cell-lineage/v2"
+PLACEMENT_COORDINATE_SYSTEM = "native-device-tile-column-row-v1"
+INVENTORY_HEADER = ["name", "ref_name", "source_origin", "transformations_hex",
+                    "site", "bel", "tile_column", "tile_row", "primitive_level"]
 
 
 class _UnassociatedTimingSource(ValidationError):
@@ -44,74 +47,34 @@ def primitive_function_signature(cell: Mapping[str, Any]) -> str:
 def import_cell_lineage(mapped: Path, functions: Path, inventories: Mapping[str, Path],
                         output: Path, *, mapped_sha256: str,
                         retain_stage: str = "routed") -> dict[str, Any]:
-    """Stream all observed tags, allowing deletion, replication and type changes."""
+    """Import tool observations in the shared core; host traffic stays bounded."""
+    import tempfile
+    import subprocess
+    from .io import read_json, write_json
+    from .native_tools import resolve_native_stage_command
+
     if retain_stage not in inventories:
         raise ValidationError("Vivado retained lineage stage is absent")
-    connection = sqlite3.connect(output, uri=True)
-    try:
-        connection.execute("ATTACH DATABASE ? AS mapped", (f"file:{mapped.resolve()}?mode=ro&immutable=1",))
-        connection.execute("ATTACH DATABASE ? AS functions", (f"file:{functions.resolve()}?mode=ro&immutable=1",))
-        owner = connection.execute("SELECT value FROM functions.metadata WHERE key='mapped_index_sha256'").fetchone()
-        if owner != (mapped_sha256,):
-            raise ValidationError("Vivado function signatures belong to a different mapped input")
-        source_count = connection.execute("SELECT count(*) FROM mapped.cells").fetchone()[0]
-        if connection.execute("SELECT count(*) FROM functions.signatures").fetchone()[0] != source_count or connection.execute(
-            "SELECT 1 FROM mapped.cells c LEFT JOIN functions.signatures f ON c.seq=f.seq WHERE f.seq IS NULL LIMIT 1"
-        ).fetchone():
-            raise ValidationError("Vivado function-signature source coverage disagrees")
-        connection.executescript("""
-            CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL) WITHOUT ROWID;
-            CREATE TABLE objects(stage TEXT,name TEXT,ref TEXT,origin INTEGER,transformations TEXT,
-                                 PRIMARY KEY(stage,name)) WITHOUT ROWID;
-            CREATE INDEX objects_origin ON objects(stage,origin);
-        """)
-        stages = {}
-        for stage, path in inventories.items():
-            inventory_digest = hashlib.sha256()
-            with path.open("rb") as stream:
-                def inventory_lines():
-                    for raw in stream:
-                        inventory_digest.update(raw)
-                        yield raw.decode("utf-8")
-                rows = csv.reader(inventory_lines(), delimiter="\t", quoting=csv.QUOTE_NONE)
-                if next(rows, None) != INVENTORY_HEADER:
-                    raise ValidationError("Vivado lineage inventory header is invalid")
-                for row in rows:
-                    try:
-                        if len(row) != 4 or not row[1] or not row[2].startswith("s"):
-                            raise ValueError("invalid row")
-                        origin = int(row[2][1:])
-                        name = row[0]
-                        if not name or origin < 0:
-                            raise ValueError("invalid identity")
-                        transformations = bytes.fromhex(row[3]).decode("utf-8")
-                        connection.execute("INSERT INTO objects VALUES (?,?,?,?,?)", (stage,name,row[1],origin,transformations))
-                    except (ValueError, UnicodeError, sqlite3.IntegrityError) as error:
-                        raise ValidationError("Vivado lineage contains invalid or duplicate objects") from error
-            if connection.execute("SELECT 1 FROM objects a LEFT JOIN mapped.cells c ON a.origin=c.seq WHERE a.stage=? AND c.seq IS NULL LIMIT 1", (stage,)).fetchone():
-                raise ValidationError("Vivado lineage contains an unknown source origin")
-            objects, observed = connection.execute("SELECT count(*),count(DISTINCT origin) FROM objects WHERE stage=?", (stage,)).fetchone()
-            replicated = connection.execute("SELECT count(*) FROM (SELECT origin FROM objects WHERE stage=? GROUP BY origin HAVING count(*)>1)", (stage,)).fetchone()[0]
-            changed = connection.execute("SELECT count(*) FROM objects a JOIN mapped.cells c ON c.seq=a.origin WHERE a.stage=? AND a.ref!=c.type", (stage,)).fetchone()[0]
-            stages[stage] = {"observed_objects": objects, "source_cells_with_lineage": observed,
-                             "unretained_source_cells": source_count-observed,
-                             "source_cells_with_multiple_objects": replicated, "changed_type_objects": changed,
-                             "inventory_sha256": inventory_digest.hexdigest()}
-            # Only routed objects have a downstream name-resolution consumer.
-            # Reuse these SQLite pages instead of retaining two full snapshots.
-            if stage != retain_stage:
-                connection.execute("DELETE FROM objects WHERE stage=?", (stage,))
-        connection.executemany("INSERT INTO metadata VALUES (?,?)", (
-            ("mapped_index_sha256", mapped_sha256),
-            ("stages_json", json.dumps(stages, sort_keys=True)),
-            ("retained_stage", retain_stage),
-        ))
-        connection.commit()
-        return {"status": "pass", "provider": LINEAGE_POLICY, "source_cells": source_count,
-                "stages": stages, "output": str(output),
-                "qualification": "observed-source-dispositions; not-an-equivalence-proof"}
-    finally:
-        connection.close()
+    output = Path(output).resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".vivado-lineage-", dir=output.parent) as temporary:
+        root = Path(temporary)
+        request, summary = root / "request.json", root / "summary.json"
+        write_json(request, {"schema": "emuflow.vivado-lineage-import/v1",
+            "mapped_sha256": mapped_sha256, "retain_stage": retain_stage,
+            "stages": list(inventories)})
+        completed = subprocess.run([
+            *resolve_native_stage_command("phase7", "import-vivado-lineage"),
+            str(Path(mapped).resolve()), str(Path(functions).resolve()), str(request),
+            str(output), str(summary), *(str(Path(p).resolve()) for p in inventories.values()),
+        ], capture_output=True, text=True)
+        if completed.returncode:
+            raise ValidationError("native Vivado lineage import failed: " + completed.stderr.strip())
+        result = read_json(summary)
+    if (result.get("schema") != LINEAGE_SCHEMA or result.get("coordinate_system") != PLACEMENT_COORDINATE_SYSTEM
+            or result.get("mapped_index_sha256") != mapped_sha256 or result.get("status") != "pass"):
+        raise ValidationError("native Vivado lineage summary identity is invalid")
+    return result
 
 
 def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: Path,

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import os
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+import sqlite3
+import tempfile
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .boundary_timing import (
     boundary_identity_header,
@@ -12,9 +15,10 @@ from .boundary_timing import (
 )
 from .boundary_identity_storage import write_boundary_identity_storage
 from .errors import ValidationError
+from .store_publication import bind_view_sources
 from .io import read_json, write_json
 from .ir import EMUIR_SCHEMA, EmuIR
-from .emuir_storage import open_emuir_sqlite_read_only
+from .emuir_storage import _extras, open_emuir_sqlite_read_only
 from .indexed_physical_ir import IndexedPhysicalIR
 from .netlist import FPGA_NETLIST_SCHEMA, TRANSPORT_ENDPOINTS_SCHEMA
 from .placement_ir_storage import write_placement_emuir_from_split
@@ -23,6 +27,390 @@ from .transport_storage import read_transport
 
 
 PLACEMENT_IR_REPORT_SCHEMA = "emuflow.placement-ir-report/v1"
+
+
+class _LoweringOverlaySpool:
+    """Own Phase 7 additions and cross-store joins outside the Python heap."""
+
+    def __init__(
+        self,
+        directory: Path,
+        *,
+        split_path: Optional[Path] = None,
+        part_index: Optional[int] = None,
+        transport_ir_path: Optional[Path] = None,
+        transport_store_path: Optional[Path] = None,
+        fpga: Optional[str] = None,
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+        descriptor, name = tempfile.mkstemp(
+            prefix=".placement-overlay-", suffix=".sqlite", dir=directory
+        )
+        os.close(descriptor)
+        self.path = Path(name)
+        self.connection = sqlite3.connect(self.path, uri=True)
+        self.connection.executescript(
+            """
+            PRAGMA journal_mode=OFF;
+            PRAGMA synchronous=OFF;
+            PRAGMA temp_store=FILE;
+            CREATE TABLE added_endpoints(
+              seq INTEGER PRIMARY KEY,
+              net_id TEXT NOT NULL,
+              role INTEGER NOT NULL,
+              priority INTEGER NOT NULL,
+              instance_id TEXT,
+              port TEXT NOT NULL,
+              bit INTEGER NOT NULL,
+              extras_json TEXT NOT NULL
+            );
+            CREATE TABLE port_additions(
+              seq INTEGER PRIMARY KEY,
+              driver_port TEXT NOT NULL,
+              driver_bit INTEGER NOT NULL,
+              instance_id TEXT,
+              port TEXT NOT NULL,
+              bit INTEGER NOT NULL,
+              extras_json TEXT NOT NULL
+            );
+            CREATE TABLE consumed_nets(id TEXT PRIMARY KEY) WITHOUT ROWID;
+            CREATE TABLE interface_nets(id TEXT PRIMARY KEY) WITHOUT ROWID;
+            CREATE TABLE preserved_nets(id TEXT PRIMARY KEY) WITHOUT ROWID;
+            CREATE TABLE fanout_nets(id TEXT PRIMARY KEY) WITHOUT ROWID;
+            CREATE TABLE source_nets(id TEXT PRIMARY KEY) WITHOUT ROWID;
+            """
+        )
+        self._part_index = part_index
+        self._fpga = fpga
+        self._has_split_store = split_path is not None
+        self._has_transport_store = transport_store_path is not None
+        if self._has_split_store:
+            if part_index is None:
+                raise ValueError("split part index is required")
+            self.connection.execute(
+                "ATTACH DATABASE ? AS split_store",
+                (f"{Path(split_path).resolve().as_uri()}?mode=ro",),
+            )
+        if transport_ir_path is not None:
+            self.connection.execute(
+                "ATTACH DATABASE ? AS transport_ir_store",
+                (f"{Path(transport_ir_path).resolve().as_uri()}?mode=ro",),
+            )
+        if self._has_transport_store:
+            if fpga is None:
+                raise ValueError("transport FPGA identity is required")
+            self.connection.execute(
+                "ATTACH DATABASE ? AS transport_store",
+                (f"{Path(transport_store_path).resolve().as_uri()}?mode=ro",),
+            )
+        self._added_seq = 0
+        self._port_seq = 0
+        self._added_batch: list[tuple[Any, ...]] = []
+        self._port_batch: list[tuple[Any, ...]] = []
+        self._identity_batches: Dict[str, list[str]] = {
+            "consumed_nets": [],
+            "interface_nets": [],
+            "preserved_nets": [],
+            "fanout_nets": [],
+            "source_nets": [],
+        }
+
+    def top_net_id(self, port: str, bit: int, collection: str) -> str:
+        role = {"drivers": 0, "sinks": 1}.get(collection)
+        if role is None:
+            raise ValueError(f"invalid endpoint collection {collection!r}")
+        row = self.connection.execute(
+            """SELECT count(*),min(n.id)
+            FROM transport_ir_store.pin_names pin
+            JOIN transport_ir_store.endpoint_records e INDEXED BY endpoint_owner
+              ON e.port_seq=pin.seq
+            JOIN transport_ir_store.net_records n ON n.seq=e.net_seq
+            WHERE e.instance_seq IS NULL AND pin.name=?
+              AND e.bit=? AND e.role=?""",
+            (port, bit, role),
+        ).fetchone()
+        count = int(row[0])
+        if count != 1:
+            raise ValidationError(
+                f"transport EmuIR {port}[{bit}] expected one "
+                f"{collection[:-1]} net, found {count}"
+            )
+        return str(row[1])
+
+    def is_local_net(self, net_id: str) -> bool:
+        if not self._has_split_store or self._part_index is None:
+            raise RuntimeError("split store is not attached")
+        return self.connection.execute(
+            """SELECT 1
+            FROM split_store.source_nets n
+            JOIN split_store.net_segments s
+              ON s.source_net_seq=n.source_net_seq
+            WHERE n.original_net=? AND s.part_index=?""",
+            (net_id, self._part_index),
+        ).fetchone() is not None
+
+    def iter_rx_overlays(self):
+        if not self._has_transport_store or self._fpga is None:
+            raise RuntimeError("typed transport store is not attached")
+        extra = self.connection.execute(
+            """SELECT count(*)
+            FROM transport_store.endpoints e
+            LEFT JOIN transport_store.signals s
+              ON s.fpga=e.fpga AND s.kind='shadow' AND s.signal=e.signal
+            WHERE e.fpga=? AND e.kind='rx' AND s.signal IS NULL""",
+            (self._fpga,),
+        ).fetchone()[0]
+        if extra:
+            raise ValidationError(
+                "transport RX endpoints contain an unindexed shadow signal"
+            )
+        for row in self.connection.execute(
+            """WITH rx AS (
+              SELECT signal,count(DISTINCT net) AS net_count,min(net) AS net
+              FROM transport_store.endpoints
+              WHERE fpga=? AND kind='rx' GROUP BY signal
+            ), top AS (
+              SELECT e.bit,count(*) AS net_count,min(n.id) AS net_id
+              FROM transport_ir_store.endpoint_records e
+                   INDEXED BY endpoint_owner
+              JOIN transport_ir_store.pin_names pin ON pin.seq=e.port_seq
+              JOIN transport_ir_store.net_records n ON n.seq=e.net_seq
+              WHERE e.instance_seq IS NULL AND e.role=1
+                AND pin.name='shadow_values'
+              GROUP BY e.bit
+            )
+            SELECT s.signal,s.seq,rx.net,coalesce(rx.net_count,0),
+                   coalesce(top.net_count,0),top.net_id,
+                   CASE WHEN segment.source_net_seq IS NULL THEN 0 ELSE 1 END
+            FROM transport_store.signals s
+            LEFT JOIN rx ON rx.signal=s.signal
+            LEFT JOIN top ON top.bit=s.seq
+            LEFT JOIN split_store.source_nets net ON net.original_net=rx.net
+            LEFT JOIN split_store.net_segments segment
+              ON segment.source_net_seq=net.source_net_seq
+             AND segment.part_index=?
+            WHERE s.fpga=? AND s.kind='shadow'
+            ORDER BY s.seq""",
+            (self._fpga, self._part_index, self._fpga),
+        ):
+            signal, index = str(row[0]), int(row[1])
+            rx_count, top_count = int(row[3]), int(row[4])
+            if rx_count != 1:
+                raise ValidationError(
+                    f"transport shadow signal {signal!r} maps to "
+                    f"{rx_count} logical nets"
+                )
+            if top_count != 1:
+                raise ValidationError(
+                    f"transport EmuIR shadow_values[{index}] expected one "
+                    f"sink net, found {top_count}"
+                )
+            yield (
+                signal,
+                index,
+                str(row[2]),
+                bool(row[6]),
+                str(row[5]),
+            )
+
+    def iter_source_overlays(self):
+        if not self._has_transport_store or self._fpga is None:
+            raise RuntimeError("typed transport store is not attached")
+        for row in self.connection.execute(
+            """WITH top AS (
+              SELECT e.bit,count(*) AS net_count,min(n.id) AS net_id
+              FROM transport_ir_store.endpoint_records e
+                   INDEXED BY endpoint_owner
+              JOIN transport_ir_store.pin_names pin ON pin.seq=e.port_seq
+              JOIN transport_ir_store.net_records n ON n.seq=e.net_seq
+              WHERE e.instance_seq IS NULL AND e.role=0
+                AND pin.name='source_values'
+              GROUP BY e.bit
+            ), source AS (
+              SELECT seq,signal,
+                     CASE WHEN substr(signal,1,4)='net:'
+                          THEN substr(signal,5) ELSE signal END AS net
+              FROM transport_store.signals
+              WHERE fpga=? AND kind='source'
+            )
+            SELECT source.signal,source.seq,source.net,
+                   CASE WHEN segment.source_net_seq IS NULL THEN 0 ELSE 1 END,
+                   coalesce(top.net_count,0),top.net_id
+            FROM source
+            LEFT JOIN top ON top.bit=source.seq
+            LEFT JOIN split_store.source_nets net ON net.original_net=source.net
+            LEFT JOIN split_store.net_segments segment
+              ON segment.source_net_seq=net.source_net_seq
+             AND segment.part_index=?
+            ORDER BY source.seq""",
+            (self._fpga, self._part_index),
+        ):
+            signal, index, net_id = str(row[0]), int(row[1]), str(row[2])
+            if not row[3]:
+                raise ValidationError(
+                    f"transport source net {net_id!r} is not local"
+                )
+            count = int(row[4])
+            if count != 1:
+                raise ValidationError(
+                    f"transport EmuIR source_values[{index}] expected one "
+                    f"driver net, found {count}"
+                )
+            yield signal, index, net_id, str(row[5])
+
+    def iter_local_rx_bindings(self):
+        if (
+            not self._has_transport_store
+            or not self._has_split_store
+            or self._fpga is None
+            or self._part_index is None
+        ):
+            raise RuntimeError("typed transport and split stores are required")
+        for row in self.connection.execute(
+            """SELECT e.net,e.id
+            FROM transport_store.endpoints e
+            JOIN split_store.source_nets n ON n.original_net=e.net
+            JOIN split_store.net_segments s
+              ON s.source_net_seq=n.source_net_seq
+             AND s.part_index=?
+            WHERE e.fpga=? AND e.kind='rx'
+            ORDER BY e.net,e.id""",
+            (self._part_index, self._fpga),
+        ):
+            yield str(row[0]), str(row[1])
+
+    @staticmethod
+    def _fields(endpoint: Mapping[str, Any]) -> tuple[Optional[str], str, int, str]:
+        return (
+            endpoint.get("instance"), str(endpoint["port"]),
+            int(endpoint["bit"]),
+            _extras(endpoint, {"instance", "port", "bit"}),
+        )
+
+    def add_endpoints(
+        self,
+        net_id: str,
+        role: int,
+        priority: int,
+        endpoints: Iterable[Mapping[str, Any]],
+    ) -> None:
+        for endpoint in endpoints:
+            seq = self._added_seq
+            self._added_seq += 1
+            self._added_batch.append(
+                (seq, net_id, role, priority, *self._fields(endpoint))
+            )
+            if len(self._added_batch) >= 4096:
+                self._flush_added()
+
+    def _flush_added(self) -> None:
+        if self._added_batch:
+            self.connection.executemany(
+                "INSERT INTO added_endpoints VALUES (?,?,?,?,?,?,?,?)",
+                self._added_batch,
+            )
+            self._added_batch.clear()
+
+    def add_port_endpoints(
+        self,
+        driver_port: str,
+        driver_bit: int,
+        endpoints: Iterable[Mapping[str, Any]],
+    ) -> None:
+        for endpoint in endpoints:
+            seq = self._port_seq
+            self._port_seq += 1
+            self._port_batch.append(
+                (seq, driver_port, driver_bit, *self._fields(endpoint))
+            )
+            if len(self._port_batch) >= 4096:
+                self._flush_port()
+
+    def _flush_port(self) -> None:
+        if self._port_batch:
+            self.connection.executemany(
+                "INSERT INTO port_additions VALUES (?,?,?,?,?,?,?)",
+                self._port_batch,
+            )
+            self._port_batch.clear()
+
+    def _identity(self, table: str, identity: str) -> None:
+        batch = self._identity_batches[table]
+        batch.append(identity)
+        if len(batch) >= 4096:
+            self._flush_identities(table)
+
+    def _flush_identities(self, table: str) -> None:
+        batch = self._identity_batches[table]
+        if batch:
+            self.connection.executemany(
+                f"INSERT OR IGNORE INTO {table} VALUES (?)",
+                ((identity,) for identity in batch),
+            )
+            batch.clear()
+
+    def consume(self, net_id: str) -> None:
+        self._identity("consumed_nets", net_id)
+
+    def preserve(self, net_id: str) -> None:
+        self._identity("preserved_nets", net_id)
+
+    def consume_interface(self, net_id: str) -> None:
+        self._identity("interface_nets", net_id)
+
+    def recompute_fanout(self, net_id: str) -> None:
+        self._identity("fanout_nets", net_id)
+
+    def expect_source(self, net_id: str) -> None:
+        self._identity("source_nets", net_id)
+
+    def finish_consumed(self) -> None:
+        self._flush_added()
+        self._flush_port()
+        for table in self._identity_batches:
+            self._flush_identities(table)
+        self.connection.execute(
+            """INSERT OR IGNORE INTO consumed_nets
+               SELECT id FROM interface_nets
+                WHERE id NOT IN (SELECT id FROM preserved_nets)"""
+        )
+        self.connection.commit()
+
+    def added_endpoints(self):
+        for row in self.connection.execute(
+            """SELECT net_id,role,priority,seq,instance_id,port,bit,extras_json
+                 FROM added_endpoints ORDER BY seq"""
+        ):
+            yield (
+                str(row[0]), int(row[1]), int(row[2]), int(row[3]),
+                None if row[4] is None else str(row[4]), str(row[5]),
+                int(row[6]), str(row[7]),
+            )
+
+    def port_additions(self):
+        for row in self.connection.execute(
+            """SELECT driver_port,driver_bit,seq,instance_id,port,bit,
+                      extras_json
+                 FROM port_additions ORDER BY seq"""
+        ):
+            yield (
+                str(row[0]), int(row[1]), int(row[2]),
+                None if row[3] is None else str(row[3]), str(row[4]),
+                int(row[5]), str(row[6]),
+            )
+
+    def identities(self, table: str):
+        for row in self.connection.execute(
+            f"SELECT id FROM {table} ORDER BY id"
+        ):
+            yield str(row[0])
+
+    def __enter__(self) -> "_LoweringOverlaySpool":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.connection.close()
+        self.path.unlink(missing_ok=True)
 
 
 def _top_net(
@@ -452,31 +840,6 @@ def _run_placement_ir_lowering_from_split_indexed(
     transport = read_transport(transport_path)
     if transport.get("schema") != TRANSPORT_ENDPOINTS_SCHEMA:
         raise ValidationError("invalid transport endpoint schema")
-    top_net_index: Dict[
-        Tuple[str, int, str], List[str]
-    ] = {}
-    for row in transport_ir.connection.execute(
-        """SELECT pin.name,e.bit,e.role,n.id
-        FROM endpoint_records e
-        JOIN pin_names pin ON pin.seq=e.port_seq
-        JOIN net_records n ON n.seq=e.net_seq
-        WHERE e.instance_seq IS NULL
-        ORDER BY pin.name,e.bit,e.role,n.seq"""
-    ):
-        collection = ("drivers", "sinks")[int(row[2])]
-        top_net_index.setdefault(
-            (str(row[0]), int(row[1]), collection), []
-        ).append(str(row[3]))
-
-    def top_net(port: str, bit: int, collection: str) -> Dict[str, Any]:
-        matches = top_net_index.get((port, bit, collection), [])
-        if len(matches) != 1:
-            raise ValidationError(
-                f"transport EmuIR {port}[{bit}] expected one "
-                f"{collection[:-1]} net, found {len(matches)}"
-            )
-        return transport_ir.nets[matches[0]]
-
     namespace = "__emuflow_transport__/"
 
     def remap_endpoint(endpoint: Mapping[str, Any]) -> Dict[str, Any]:
@@ -485,12 +848,9 @@ def _run_placement_ir_lowering_from_split_indexed(
             value["instance"] = f"{namespace}{value['instance']}"
         return value
 
-    indexed_rx_signals = getattr(transport, "iter_rx_signal_records", None)
-    indexed_rx_bindings = getattr(
-        transport, "iter_expected_rx_bindings", None
-    )
+    transport_store_path = getattr(transport, "store_path", None)
     legacy_rx_by_signal: Dict[str, Tuple[str, List[str]]] = {}
-    if indexed_rx_signals is None:
+    if transport_store_path is None:
         for endpoint in transport["endpoints"]:
             if endpoint["kind"] != "rx":
                 continue
@@ -505,7 +865,17 @@ def _run_placement_ir_lowering_from_split_indexed(
             endpoint_ids.append(endpoint["id"])
     removed_ports = {"source_values", "shadow_values"}
 
-    with SplitNetlistView(split_path, fpga) as split:
+    with (
+        SplitNetlistView(split_path, fpga) as split,
+        _LoweringOverlaySpool(
+            output_path.parent,
+            split_path=split_path,
+            part_index=split.part_index,
+            transport_ir_path=transport_ir_path,
+            transport_store_path=transport_store_path,
+            fpga=fpga,
+        ) as overlay,
+    ):
         if split.metadata.get("schema") != "emuflow.split-netlists-sqlite/v2":
             raise ValidationError("invalid split-netlist storage schema")
         if split.fpga != transport.get("fpga"):
@@ -527,50 +897,80 @@ def _run_placement_ir_lowering_from_split_indexed(
                 )
             shared_input_ports[port["id"]] = port
 
-        consumed_transport_nets = set()
-        preserved_shadow_nets = set()
-        shadow_internal_sinks: Dict[str, List[Dict[str, Any]]] = {}
-        rx_internal_drivers: Dict[str, List[Dict[str, Any]]] = {}
-        local_net_ids = split.net_ids()
+        def top_net(port: str, bit: int, collection: str) -> Dict[str, Any]:
+            return transport_ir.nets[
+                overlay.top_net_id(port, bit, collection)
+            ]
+
+        rx_overlay_records = iter(overlay.iter_rx_overlays()) if (
+            transport_store_path is not None
+        ) else None
         rx_signal_records = iter(
-            indexed_rx_signals()
-            if indexed_rx_signals is not None
-            else (
-                (signal, value[0])
-                for signal, value in sorted(legacy_rx_by_signal.items())
-            )
-        )
+            (signal, value[0])
+            for signal, value in sorted(legacy_rx_by_signal.items())
+        ) if rx_overlay_records is None else None
         for item in transport["shadow_signals"]:
             signal = item["signal"]
             index = item["index"]
             try:
-                rx_signal, logical_net = next(rx_signal_records)
+                if rx_overlay_records is not None:
+                    (
+                        rx_signal,
+                        rx_index,
+                        logical_net,
+                        local_net,
+                        top_net_id,
+                    ) = next(rx_overlay_records)
+                else:
+                    rx_signal, logical_net = next(rx_signal_records)
+                    rx_index = index
+                    local_net = (
+                        logical_net is not None
+                        and overlay.is_local_net(logical_net)
+                    )
+                    top_net_id = overlay.top_net_id(
+                        "shadow_values", index, "sinks"
+                    )
             except StopIteration as error:
                 raise ValidationError(
                     "transport shadow signal coverage is incomplete"
                 ) from error
-            if rx_signal != signal:
+            if rx_signal != signal or rx_index != index:
                 raise ValidationError(
                     "transport shadow signal order disagrees with RX endpoints"
                 )
-            top_net_record = top_net("shadow_values", index, "sinks")
-            internal = [
-                remap_endpoint(endpoint)
-                for endpoint in top_net_record["sinks"]
-                if endpoint["instance"] is not None
-            ]
-            if logical_net is not None and logical_net in local_net_ids:
-                shadow_internal_sinks[logical_net] = internal
-                rx_internal_drivers[logical_net] = [
-                    remap_endpoint(endpoint)
-                    for endpoint in top_net_record["drivers"]
-                    if endpoint["instance"] is not None
-                ]
-                consumed_transport_nets.add(top_net_record["id"])
+            top_net_record = transport_ir.nets[top_net_id]
+            if logical_net is not None and local_net:
+                overlay.add_endpoints(
+                    logical_net,
+                    0,
+                    0,
+                    (
+                        remap_endpoint(endpoint)
+                        for endpoint in top_net_record["drivers"]
+                        if endpoint["instance"] is not None
+                    ),
+                )
+                overlay.add_endpoints(
+                    logical_net,
+                    1,
+                    2,
+                    (
+                        remap_endpoint(endpoint)
+                        for endpoint in top_net_record["sinks"]
+                        if endpoint["instance"] is not None
+                    ),
+                )
+                overlay.recompute_fanout(logical_net)
+                overlay.consume(top_net_record["id"])
             else:
-                preserved_shadow_nets.add(top_net_record["id"])
+                overlay.preserve(top_net_record["id"])
         try:
-            next(rx_signal_records)
+            next(
+                rx_overlay_records
+                if rx_overlay_records is not None
+                else rx_signal_records
+            )
         except StopIteration:
             pass
         else:
@@ -578,33 +978,74 @@ def _run_placement_ir_lowering_from_split_indexed(
                 "transport RX endpoints contain an unindexed shadow signal"
             )
 
-        source_internal_sinks: Dict[str, List[Dict[str, Any]]] = {}
+        source_overlay_records = iter(overlay.iter_source_overlays()) if (
+            transport_store_path is not None
+        ) else None
         for item in transport["source_signals"]:
             signal = item["signal"]
             original_net = signal[4:] if signal.startswith("net:") else signal
             index = item["index"]
-            if original_net not in local_net_ids:
-                raise ValidationError(
-                    f"transport source net {original_net!r} is not local"
+            if source_overlay_records is not None:
+                try:
+                    source_signal, source_index, source_net, top_net_id = next(
+                        source_overlay_records
+                    )
+                except StopIteration as error:
+                    raise ValidationError(
+                        "transport source signal coverage is incomplete"
+                    ) from error
+                if (
+                    source_signal != signal
+                    or source_index != index
+                    or source_net != original_net
+                ):
+                    raise ValidationError(
+                        "transport source signal order disagrees"
+                    )
+                top_net_record = transport_ir.nets[top_net_id]
+            else:
+                if not overlay.is_local_net(original_net):
+                    raise ValidationError(
+                        f"transport source net {original_net!r} is not local"
+                    )
+                top_net_record = top_net(
+                    "source_values", index, "drivers"
                 )
-            top_net_record = top_net("source_values", index, "drivers")
-            consumed_transport_nets.add(top_net_record["id"])
-            source_internal_sinks[original_net] = [
-                remap_endpoint(endpoint)
-                for endpoint in top_net_record["sinks"]
-                if endpoint["instance"] is not None
-            ]
-
-        shared_sinks: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
-        for port_id, port in shared_input_ports.items():
-            for bit in range(port["width"]):
-                top_net_record = top_net(port_id, bit, "drivers")
-                consumed_transport_nets.add(top_net_record["id"])
-                shared_sinks[(port_id, bit)] = [
+            overlay.consume(top_net_record["id"])
+            overlay.expect_source(original_net)
+            overlay.add_endpoints(
+                original_net,
+                1,
+                1,
+                (
                     remap_endpoint(endpoint)
                     for endpoint in top_net_record["sinks"]
                     if endpoint["instance"] is not None
-                ]
+                ),
+            )
+        if source_overlay_records is not None:
+            try:
+                next(source_overlay_records)
+            except StopIteration:
+                pass
+            else:
+                raise ValidationError(
+                    "transport source signals contain an unindexed signal"
+                )
+
+        for port_id, port in shared_input_ports.items():
+            for bit in range(port["width"]):
+                top_net_record = top_net(port_id, bit, "drivers")
+                overlay.consume(top_net_record["id"])
+                overlay.add_port_endpoints(
+                    port_id,
+                    bit,
+                    (
+                        remap_endpoint(endpoint)
+                        for endpoint in top_net_record["sinks"]
+                        if endpoint["instance"] is not None
+                    ),
+                )
 
         for row in transport_ir.connection.execute(
             """SELECT DISTINCT n.id FROM endpoint_records e
@@ -614,38 +1055,8 @@ def _run_placement_ir_lowering_from_split_indexed(
               AND pin.name IN ('source_values','shadow_values')
             ORDER BY n.seq"""
         ):
-            net_id = str(row[0])
-            if net_id not in preserved_shadow_nets:
-                consumed_transport_nets.add(net_id)
-
-        added_endpoints = []
-        endpoint_orders: Dict[Tuple[str, int], int] = {}
-
-        def add_endpoints(
-            net_id: str,
-            role: int,
-            endpoints: List[Dict[str, Any]],
-        ) -> None:
-            key = (net_id, role)
-            order = endpoint_orders.get(key, 0)
-            for endpoint in endpoints:
-                added_endpoints.append((net_id, role, order, endpoint))
-                order += 1
-            endpoint_orders[key] = order
-
-        for net_id, endpoints in rx_internal_drivers.items():
-            add_endpoints(net_id, 0, endpoints)
-        for net_id, endpoints in source_internal_sinks.items():
-            add_endpoints(net_id, 1, endpoints)
-        for net_id, endpoints in shadow_internal_sinks.items():
-            add_endpoints(net_id, 1, endpoints)
-
-        port_added_endpoints = []
-        for (port_id, bit), endpoints in shared_sinks.items():
-            for order, endpoint in enumerate(endpoints):
-                port_added_endpoints.append(
-                    (port_id, bit, order, endpoint)
-                )
+            overlay.consume_interface(str(row[0]))
+        overlay.finish_consumed()
 
         ports = list(split.ports)
         ports_by_id = {port["id"]: port for port in ports}
@@ -678,22 +1089,18 @@ def _run_placement_ir_lowering_from_split_indexed(
             clocks=clocks,
             warnings=list(transport_ir.value.get("warnings", [])),
             transport_ir_path=transport_ir_path,
-            consumed_transport_nets=consumed_transport_nets,
-            added_endpoints=added_endpoints,
-            port_added_endpoints=port_added_endpoints,
-            recompute_fanout=shadow_internal_sinks,
-            expected_source_nets=source_internal_sinks,
+            consumed_transport_nets=overlay.identities("consumed_nets"),
+            added_endpoints=overlay.added_endpoints(),
+            port_added_endpoints=overlay.port_additions(),
+            recompute_fanout=overlay.identities("fanout_nets"),
+            expected_source_nets=overlay.identities("source_nets"),
             expected_rx_bindings=(
-                (
-                    (net_id, endpoint_id)
-                    for net_id, endpoint_id in indexed_rx_bindings()
-                    if net_id in local_net_ids
-                )
-                if indexed_rx_bindings is not None
+                overlay.iter_local_rx_bindings()
+                if transport_store_path is not None
                 else (
                     (net_id, endpoint_id)
                     for net_id, endpoint_ids in legacy_rx_by_signal.values()
-                    if net_id in local_net_ids
+                    if overlay.is_local_net(net_id)
                     for endpoint_id in endpoint_ids
                 )
             ),
@@ -710,6 +1117,11 @@ def _run_placement_ir_lowering_from_split_indexed(
             boundary_path,
             boundary_identity_header(transport),
             iter_boundary_identity_records(transport, result, transport_ir),
+            source_bindings=bind_view_sources(
+                (transport, "transport-store-v1"),
+                (transport_ir, "emuir-compact-v2"),
+                (result, "emuir-compact-v2"),
+            ),
         ) as boundary_database:
             boundary_validation = validate_boundary_identity_database(
                 boundary_database, transport

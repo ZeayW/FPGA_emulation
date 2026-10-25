@@ -340,7 +340,7 @@ def _run_native(
     with tempfile.TemporaryDirectory(prefix="emuflow-chimew-rudy-") as temporary:
         stderr_path = Path(temporary) / "stderr.txt"
         command = resolve_native_stage_command(
-            "emuflow_chimew_rudy", "phase6", "rudy", explicit=executable
+            "phase6", "rudy", explicit=executable
         )
         with stderr_path.open("w+", encoding="utf-8") as stderr_stream:
             process = subprocess.Popen(

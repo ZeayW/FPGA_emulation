@@ -1,4 +1,5 @@
 """Phase 6 materializes and independently replays the declared virtual board."""
+from contextlib import closing
 import copy
 import hashlib
 import json
@@ -14,11 +15,12 @@ from emuflow.ir import EmuIR
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.phase3_assignment_index import write_phase3_assignment_index
 from emuflow.io import read_json, write_json
-from emuflow.partition import assign_clusters, build_clusters, normalize_partition_constraints
+from emuflow.partition import (build_clusters, normalize_partition_constraints)
+from tests.partition_reference import assign_clusters
 from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints
-from emuflow.tdm import build_tdm_schedule
+from tests.schedule_reference import build_tdm_schedule
 from emuflow.timing_routing import route_system_native
 from emuflow.transport_storage import (
     VIRTUAL_BINDING_STORAGE_SCHEMA,
@@ -42,7 +44,7 @@ def inputs():
     ir=import_yosys_json(ROOT/'examples/yosys/counter.json',top='counter',clocks=['clk'])
     platform=Platform.load(research_platform_path(2))
     constraints=normalize_partition_constraints(None,ir,platform)
-    clusters=build_clusters(ir,constraints)
+    clusters=build_clusters(ir,constraints, cut_mode="sequential-only")
     assignment=assign_clusters(ir,platform,clusters,constraints,seed=20260727)
     routes=route_system_native(assignment,platform,normalize_route_constraints(None,platform,frame_slots=32),executable=str(tlr_router()))
     schedule=build_tdm_schedule(routes,platform)
@@ -171,7 +173,7 @@ def test_indexed_physical_contract_rejects_resealed_membership_tamper(
     selector_path = out / 'virtual_board_binding.json'
     selector = json.loads(selector_path.read_text(encoding='utf-8'))
     store = out / selector['artifact']
-    with sqlite3.connect(store) as connection:
+    with closing(sqlite3.connect(store)) as connection, connection:
         row = connection.execute(
             'SELECT fpga,p_port,schedule_entry_count,schedule_entries_sha256 '
             'FROM binding_physical_ports ORDER BY fpga,p_port LIMIT 1'

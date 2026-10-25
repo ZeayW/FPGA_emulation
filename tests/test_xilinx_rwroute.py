@@ -3,10 +3,12 @@ import hashlib
 import json
 import tempfile
 import unittest
+from collections.abc import Mapping
 from unittest import mock
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.rwroute_reference import export_rwroute_reference, _qualified_lut_clock_gates
 from emuflow.errors import ValidationError
 from emuflow.xilinx_netlist import (
     emit_xilinx_mapped_index,
@@ -33,6 +35,92 @@ SHA = "0" * 64
 
 
 class XilinxRWRouteTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from tests.native_build import emuflow_native
+        cls.native_exporter = emuflow_native()
+
+    def setUp(self):
+        native = mock.patch(
+            "emuflow.rwroute_native.resolve_native_executable",
+            return_value=str(self.native_exporter),
+        )
+        native.start()
+        self.addCleanup(native.stop)
+
+    def test_large_typed_export_never_reloads_cells_by_net(self):
+        net_count = 100_000
+
+        class NoCellAccess(Mapping):
+            def __getitem__(self, _key):
+                raise AssertionError("typed exporter reloaded a mapped cell")
+
+            def __iter__(self):
+                raise AssertionError("typed exporter scanned compatibility cells")
+
+            def __len__(self):
+                return 2 * net_count
+
+        class TypedMapped(dict):
+            def iter_physical_cells(self, _handoff):
+                for index in range(net_count):
+                    name = f"s{index:06d}"
+                    yield name, "LUT1", f"SLICE_X0Y{2 * index}", "A6LUT"
+                for index in range(net_count):
+                    name = f"z{index:06d}"
+                    yield name, "FDRE", f"SLICE_X0Y{2 * index + 1}", "AFF"
+
+            def iter_physical_pins_by_net(self, _handoff):
+                return iter(())
+
+            def iter_physical_route_endpoints_by_net(
+                self, _handoff, *, ordinal_offset=0,
+            ):
+                for index in range(net_count):
+                    bit = index + 2
+                    yield (
+                        bit, f"s{index:06d}", "LUT1", "O", 0, 1,
+                        "output", f"SLICE_X0Y{2 * index}",
+                        ordinal_offset + index, "O",
+                    )
+                    yield (
+                        bit, f"z{index:06d}", "FDRE", "D", 0, 1,
+                        "input", f"SLICE_X0Y{2 * index + 1}",
+                        ordinal_offset + net_count + index, "D",
+                    )
+
+            def iter_qualified_lut_clock_gates(self, *_args, **_kwargs):
+                return iter(())
+
+        mapped = TypedMapped({
+            "modules": {"top": {"ports": {}, "cells": NoCellAccess()}},
+        })
+        packed = {
+            "schema": "emuflow.packed-site-netlist/v1", "top": "top",
+            "clusters": [],
+        }
+        placement = {
+            "schema": "emuflow.xilinx-placement/v1", "part": "xcvu19p-test",
+            "clusters": [],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            handoff = root / "physical-handoff.sqlite"
+            output = root / "route.tsv"
+            report = export_rwroute_reference(
+                root / "mapped.sqlite", handoff, handoff, output,
+                mapped_value=mapped, packed_value=packed,
+                placement_value=placement,
+                source_sha256={
+                    "mapped_sha256": "1" * 64,
+                    "packed_sha256": "2" * 64,
+                    "placement_sha256": "2" * 64,
+                },
+            )
+            self.assertGreater(output.stat().st_size, 10_000_000)
+        self.assertEqual(report["logical_cells"], 2 * net_count)
+        self.assertEqual(report["routable_nets"], net_count)
+
     def test_typed_handoff_streams_route_ordinals_without_safe_map(self):
         mapped = {"modules": {"top": {
             "attributes": {"top": "1"}, "ports": {},
@@ -116,30 +204,32 @@ class XilinxRWRouteTest(unittest.TestCase):
                     wraps=indexed.iter_physical_cells,
                 ) as physical_cells,
                 mock.patch(
-                    "emuflow.xilinx_rwroute.heapq.merge",
+                    "tests.rwroute_reference.heapq.merge",
                     side_effect=AssertionError("safe-name map was built"),
                 ),
                 mock.patch.object(
                     type(indexed.cells), "items",
                     side_effect=AssertionError("all mapped cells were scanned"),
                 ),
+                mock.patch.object(
+                    type(indexed.cells), "__getitem__",
+                    side_effect=AssertionError("mapped cell JSON was decoded"),
+                ),
             ):
-                report = export_rwroute_input(
-                    mapped_index, handoff, handoff, output,
-                    mapped_value=indexed, packed_value=packed_view,
-                    placement_value=placement_view,
+                report = export_rwroute_input(mapped_index,
+                    handoff,
+                    output,
                     source_sha256={
                         "mapped_sha256": "1" * 64,
                         "packed_sha256": "2" * 64,
                         "placement_sha256": "2" * 64,
-                    },
-                )
-                self.assertEqual(physical_cells.call_count, 1)
+                    })
+                self.assertEqual(physical_cells.call_count, 0)
             rows = output.read_text(encoding="utf-8").splitlines()
 
         self.assertEqual(
             report["runtime_breakdown"]["dataflow"]["safe_names"],
-            "typed-ordinal-cursor",
+            "native-ordinal-cursor",
         )
         self.assertIn("CELL\tc0\ta_src\tLUT1\tSLICE_X0Y0\tA6LUT", rows)
         self.assertIn("CELL\tc1\tz_sink\tFDRE\tSLICE_X0Y1\tAFF", rows)
@@ -201,7 +291,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             for path, value in zip(paths, (mapped, packed, placement)):
                 path.write_text(json.dumps(value), encoding="utf-8")
             output = root / "route.tsv"
-            report = export_rwroute_input(
+            report = export_rwroute_reference(
                 *paths, output, virtual_io_contract=contract,
                 source_sha256={
                     "mapped_sha256": SHA,
@@ -216,7 +306,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             emit_xilinx_mapped_index(ir_path, mapped_index)
             indexed_output = root / "route-indexed.tsv"
             with open_xilinx_mapped_index(mapped_index) as indexed:
-                indexed_report = export_rwroute_input(
+                indexed_report = export_rwroute_reference(
                     mapped_index, paths[1], paths[2], indexed_output,
                     mapped_value=indexed,
                     virtual_io_contract=contract,
@@ -474,6 +564,56 @@ class XilinxRWRouteTest(unittest.TestCase):
             with self.assertRaises(ValidationError):
                 validate_xilinx_route_db(path)
 
+    def test_indexed_checker_counts_cell_types_without_rebuilding_pins(self):
+        mapped = {
+            "modules": {"top": {"cells": {
+                "src": {
+                    "type": "LUT1", "port_directions": {"O": "output"},
+                    "connections": {"O": [1]},
+                },
+                "sink_a": {
+                    "type": "FDRE", "port_directions": {"D": "input"},
+                    "connections": {"D": [1]},
+                },
+                "sink_b": {
+                    "type": "FDRE", "port_directions": {"D": "input"},
+                    "connections": {"D": [1]},
+                },
+            }}}
+        }
+        packed = {"schema": "emuflow.packed-site-netlist/v1", "top": "top"}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped_json = root / "mapped.json"
+            mapped_ir = root / "mapped.emuir.sqlite"
+            mapped_index = root / "mapped.sqlite"
+            packed_path = root / "packed.json"
+            route_path = root / "route.json"
+            mapped_json.write_text(json.dumps(mapped), encoding="utf-8")
+            packed_path.write_text(json.dumps(packed), encoding="utf-8")
+            route_path.write_text(json.dumps(self._route()), encoding="utf-8")
+            import_yosys_json(mapped_json).save(mapped_ir)
+            emit_xilinx_mapped_index(mapped_ir, mapped_index)
+            with (
+                open_xilinx_mapped_index(mapped_index) as indexed,
+                mock.patch.object(
+                    type(indexed.cells), "values",
+                    side_effect=AssertionError("mapped pins were rebuilt"),
+                ),
+            ):
+                report = validate_xilinx_route_db(
+                    route_path,
+                    mapped_path=mapped_index,
+                    packed_path=packed_path,
+                    mapped_value=indexed,
+                    packed_value=packed,
+                    source_sha256={
+                        "mapped_sha256": SHA,
+                        "packed_sha256": SHA,
+                    },
+                )
+        self.assertEqual(report["status"], "pass")
+
     def test_checker_seals_exact_rwroute_input_for_resume(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -666,20 +806,48 @@ class XilinxRWRouteTest(unittest.TestCase):
             },
         ]
         packed = {
-            "schema": "emuflow.packed-site-netlist/v1", "top": "top",
-            "clusters": [{"assignments": assignments}],
+            "schema": "emuflow.packed-site-netlist/v1", "status": "pass",
+            "mapping_profile": "test", "top": "top", "source": {},
+            "policy": {}, "cascade_chains": [], "unplaced_constants": [],
+            "clusters": [
+                {
+                    "id": "cluster0", "kind": "slice",
+                    "site_templates": ["SLICEL"], "control_set": None,
+                    "assignments": assignments[:2],
+                },
+                {
+                    "id": "cluster1", "kind": "slice",
+                    "site_templates": ["SLICEL"], "control_set": None,
+                    "assignments": assignments[2:3],
+                },
+                {
+                    "id": "cluster2", "kind": "bram",
+                    "site_templates": ["RAMB18"], "control_set": None,
+                    "assignments": assignments[3:],
+                },
+            ],
+            "summary": {"clusters": 3},
         }
         placement = {
-            "schema": "emuflow.xilinx-placement/v1", "part": "xcvu19p-test",
-            "clusters": [{"site": "SLICE_X0Y0", "assignments": [
-                {"instance": "enable", "bel": "AFF", "site": "SLICE_X0Y0"},
-                {"instance": "gate", "bel": "B6LUT", "site": "SLICE_X0Y0"},
-                {"instance": "sink", "bel": "CFF", "site": "SLICE_X0Y1"},
+            "schema": "emuflow.xilinx-placement/v1", "status": "pass",
+            "part": "xcvu19p-test", "provider": "test", "policy": {},
+            "source": {},
+            "clusters": [
                 {
-                    "instance": "ram", "bel": "RAMB18E2_L",
-                    "site": "RAMB18_X0Y0",
-                },
-            ]}],
+                    "cluster": f"cluster{index}", "site": site,
+                    "site_type": "SLICEL", "x": 0, "y": index,
+                    "fixed": False, "physical_region": None,
+                    "assignments": [{
+                        **assignment, "site": site,
+                        "placement_mode": "SLICEL",
+                    } for assignment in cluster_assignments],
+                }
+                for index, (cluster_assignments, site) in enumerate(zip(
+                    (assignments[:2], assignments[2:3], assignments[3:]),
+                    ("SLICE_X0Y0", "SLICE_X0Y1", "RAMB18_X0Y0"),
+                ))
+            ],
+            "summary": {"clusters": 3},
         }
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -688,12 +856,159 @@ class XilinxRWRouteTest(unittest.TestCase):
             )]
             for path, value in zip(paths, (mapped, packed, placement)):
                 path.write_text(json.dumps(value), encoding="utf-8")
-            report = export_rwroute_input(*paths, root / "route.tsv")
+            source_sha256 = {
+                "mapped_sha256": "1" * 64,
+                "packed_sha256": "2" * 64,
+                "placement_sha256": "2" * 64,
+            }
+            report = export_rwroute_reference(
+                *paths, root / "route.tsv", source_sha256=source_sha256
+            )
             text = (root / "route.tsv").read_text(encoding="utf-8")
+            ir_path = root / "mapped.emuir.sqlite"
+            mapped_index = root / "mapped.sqlite"
+            handoff = root / "physical-handoff.sqlite"
+            indexed_output = root / "route-indexed.tsv"
+            import_yosys_json(paths[0]).save(ir_path)
+            emit_xilinx_mapped_index(ir_path, mapped_index)
+            write_xilinx_physical_handoff(handoff, packed, placement)
+            packed_view, placement_view = open_xilinx_physical_handoff(handoff)
+            with (
+                open_xilinx_mapped_index(mapped_index) as indexed,
+                mock.patch.object(
+                    indexed, "iter_qualified_lut_clock_gates",
+                    wraps=indexed.iter_qualified_lut_clock_gates,
+                ) as qualify,
+                mock.patch.object(
+                    indexed, "iter_physical_route_endpoints_by_net",
+                    wraps=indexed.iter_physical_route_endpoints_by_net,
+                ) as routed_pins,
+                mock.patch(
+                    "tests.rwroute_reference._lut_clock_candidate_pins",
+                    side_effect=AssertionError(
+                        "typed qualification rebuilt Python candidates"
+                    ),
+                ),
+            ):
+                indexed_report = export_rwroute_input(mapped_index,
+                    handoff,
+                    indexed_output,
+                    source_sha256=source_sha256)
+                self.assertEqual(qualify.call_count, 0)
+                self.assertEqual(routed_pins.call_count, 0)
+            indexed_text = indexed_output.read_text(encoding="utf-8")
         self.assertEqual(report["qualified_clock_gates"], 1)
+        self.assertEqual(indexed_report["qualified_clock_gates"], 1)
+        self.assertEqual(indexed_report["routable_nets"], report["routable_nets"])
+        self.assertEqual(indexed_report["excluded_nets"], report["excluded_nets"])
+        self.assertEqual(indexed_text.count("\nCLOCK_GATE\t"), 1)
         self.assertIn("\nCLOCK_GATE\t", text)
         self.assertIn("\nNET\tn3\tclock\n", text)
         self.assertIn("\nNET\tn2\tsignal\n", text)
+
+    def test_typed_clock_gate_qualification_preserves_closed_chain_pruning(self):
+        for add_invalid_sink in (False, True):
+            with self.subTest(add_invalid_sink=add_invalid_sink):
+                cells = {
+                    "enable0": {
+                        "type": "FDRE", "port_directions": {"Q": "output"},
+                        "connections": {"Q": [10]},
+                    },
+                    "enable1": {
+                        "type": "FDRE", "port_directions": {"Q": "output"},
+                        "connections": {"Q": [11]},
+                    },
+                    "gate0": {
+                        "type": "LUT2", "parameters": {"INIT": "1000"},
+                        "port_directions": {
+                            "I0": "input", "I1": "input", "O": "output",
+                        },
+                        "connections": {"I0": [20], "I1": [10], "O": [21]},
+                    },
+                    "gate1": {
+                        "type": "LUT2", "parameters": {"INIT": "1000"},
+                        "port_directions": {
+                            "I0": "input", "I1": "input", "O": "output",
+                        },
+                        "connections": {"I0": [21], "I1": [11], "O": [22]},
+                    },
+                    "clock_sink": {
+                        "type": "FDRE", "port_directions": {"C": "input"},
+                        "connections": {"C": [22]},
+                    },
+                }
+                if add_invalid_sink:
+                    cells["invalid_sink"] = {
+                        "type": "FDRE", "port_directions": {"D": "input"},
+                        "connections": {"D": [21]},
+                    }
+                endpoints = {}
+                for name, cell in cells.items():
+                    for port, bits in cell["connections"].items():
+                        role = (
+                            "driver"
+                            if cell["port_directions"][port] in {"output", "inout"}
+                            else "sink"
+                        )
+                        for index, bit in enumerate(bits):
+                            pin = port if len(bits) == 1 else f"{port}[{index}]"
+                            endpoints.setdefault(bit, []).append((name, pin, role))
+                expected = _qualified_lut_clock_gates(cells, endpoints)
+                self.assertEqual(
+                    expected, set() if add_invalid_sink else {"gate0", "gate1"}
+                )
+
+                bels = ("AFF", "BFF", "A6LUT", "B6LUT", "CFF", "DFF")
+                assignments = [
+                    {"instance": name, "cell_type": cell["type"], "bel": bel}
+                    for (name, cell), bel in zip(cells.items(), bels)
+                ]
+                packed = {
+                    "schema": "emuflow.packed-site-netlist/v1",
+                    "status": "pass", "mapping_profile": "test", "top": "top",
+                    "source": {}, "policy": {}, "cascade_chains": [],
+                    "unplaced_constants": [],
+                    "clusters": [{
+                        "id": "cluster0", "kind": "slice",
+                        "site_templates": ["SLICEL"], "control_set": None,
+                        "assignments": assignments,
+                    }],
+                    "summary": {"clusters": 1},
+                }
+                placement = {
+                    "schema": "emuflow.xilinx-placement/v1", "status": "pass",
+                    "part": "xcvu19p-test", "provider": "test", "policy": {},
+                    "source": {},
+                    "clusters": [{
+                        "cluster": "cluster0", "site": "SLICE_X0Y0",
+                        "site_type": "SLICEL", "x": 0, "y": 0,
+                        "fixed": False, "physical_region": None,
+                        "assignments": [{
+                            **assignment, "site": "SLICE_X0Y0",
+                            "placement_mode": "SLICEL",
+                        } for assignment in assignments],
+                    }],
+                    "summary": {"clusters": 1},
+                }
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    source = root / "mapped.json"
+                    ir_path = root / "mapped.emuir.sqlite"
+                    mapped_index = root / "mapped.sqlite"
+                    handoff = root / "handoff.sqlite"
+                    source.write_text(
+                        json.dumps({"modules": {"top": {"cells": cells}}}),
+                        encoding="utf-8",
+                    )
+                    import_yosys_json(source).save(ir_path)
+                    emit_xilinx_mapped_index(ir_path, mapped_index)
+                    write_xilinx_physical_handoff(handoff, packed, placement)
+                    with open_xilinx_mapped_index(mapped_index) as indexed:
+                        actual = {
+                            name for name, _ordinal in
+                            indexed.iter_qualified_lut_clock_gates(handoff)
+                        }
+                self.assertEqual(actual, expected)
 
     def test_rapidwright_input_is_parsed_in_two_streaming_passes(self):
         source = (
@@ -952,7 +1267,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             for path, value in zip(paths, (mapped, packed, placement)):
                 path.write_text(json.dumps(value), encoding="utf-8")
             output = root / "route.tsv"
-            report = export_rwroute_input(*paths, output)
+            report = export_rwroute_reference(*paths, output)
             text = output.read_text(encoding="utf-8")
         self.assertEqual(report["routable_nets"], 0)
         self.assertIn("EXCLUDED\tn1\tintra_site", text)
@@ -1005,7 +1320,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 ValidationError, "CARRY8 shared site exit is multiply driven"
             ):
-                export_rwroute_input(*paths, root / "route.tsv")
+                export_rwroute_reference(*paths, root / "route.tsv")
 
     def test_exporter_qualifies_driverless_boundary_clock(self):
         mapped = {
@@ -1034,7 +1349,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             for path, value in zip(paths, (mapped, packed, placement)):
                 path.write_text(json.dumps(value), encoding="utf-8")
             output = root / "route.tsv"
-            export_rwroute_input(*paths, output)
+            export_rwroute_reference(*paths, output)
             text = output.read_text(encoding="utf-8")
         self.assertIn(
             "EXCLUDED\tn1\tboundary_clock\tideal-boundary-clock", text
@@ -1068,7 +1383,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                 "emuflow.xilinx_rwroute.read_json",
                 side_effect=AssertionError("preloaded objects were reparsed"),
             ):
-                report = export_rwroute_input(
+                report = export_rwroute_reference(
                     root / "mapped.json",
                     root / "packed.json",
                     root / "placement.json",
@@ -1153,7 +1468,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             for path, value in zip(paths, (mapped, packed, placement)):
                 path.write_text(json.dumps(value), encoding="utf-8")
             output = root / "route.tsv"
-            report = export_rwroute_input(*paths, output)
+            report = export_rwroute_reference(*paths, output)
             rows = [line.split("\t") for line in output.read_text().splitlines()]
         cell_rows = {row[2]: row for row in rows if row[0] == "CELL"}
         o5 = cell_rows["adapter$physical_o5"]
@@ -1215,7 +1530,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             for path, value in zip(paths, (mapped, packed, placement)):
                 path.write_text(json.dumps(value), encoding="utf-8")
             output = root / "route.tsv"
-            report = export_rwroute_input(*paths, output)
+            report = export_rwroute_reference(*paths, output)
             rows = [line.split("\t") for line in output.read_text().splitlines()]
         dsp_rows = [row for row in rows if row[0] == "CELL" and row[3] == "DSP48E2"]
         self.assertEqual(len(dsp_rows), 1)
@@ -1277,7 +1592,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             for path, value in zip(paths, (mapped, packed, placement)):
                 path.write_text(json.dumps(value), encoding="utf-8")
             output = root / "route.tsv"
-            export_rwroute_input(*paths, output)
+            export_rwroute_reference(*paths, output)
             rows = [line.split("\t") for line in output.read_text().splitlines()]
         memory_safe = next(
             row[1] for row in rows if row[0] == "CELL" and row[2] == "memory"
@@ -1346,7 +1661,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             for path, value in zip(paths, (mapped, packed, placement)):
                 path.write_text(json.dumps(value), encoding="utf-8")
             output = root / "route.tsv"
-            export_rwroute_input(*paths, output)
+            export_rwroute_reference(*paths, output)
             rows = [line.split("\t") for line in output.read_text().splitlines()]
         memory_safe = next(
             row[1] for row in rows if row[0] == "CELL" and row[2] == "memory"

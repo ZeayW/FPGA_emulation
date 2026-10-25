@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .architecture import ArchitectureDB
+from .native_tools import native_file_generation
 from .errors import ValidationError
 from .emuir_compact import source_metadata
 from .emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
@@ -21,10 +22,8 @@ from .resource_budget import validate_device_resource_usage, validate_materializ
 from .sta import iter_sta_path_database_paths
 from .xilinx_netlist import (
     emit_xilinx_mapped_index,
-    emit_xilinx_mapped_json,
     open_xilinx_mapped_index,
 )
-from .xilinx_openparf import run_xilinx_openparf_guidance
 from .xilinx_openparf_atomic import (
     build_xilinx_openparf_atomic_source,
     run_xilinx_openparf_atomic_qualification,
@@ -33,8 +32,8 @@ from .xilinx_openparf_bridge import (
     materialize_xilinx_openparf_atomic_contract,
 )
 from .xilinx_opensta import run_xilinx_routed_opensta
-from .xilinx_packing import pack_xilinx_sites, validate_xilinx_packing
-from .xilinx_placement import place_xilinx_clusters, validate_xilinx_placement
+from .xilinx_packing import validate_xilinx_packing
+from .xilinx_placement import validate_xilinx_placement
 from .xilinx_rwroute import (
     export_rwroute_input,
     run_rwroute,
@@ -291,13 +290,7 @@ def _run_rapidwright_routed_backend_tail(
     }
     rwroute_input = output_dir / "rwroute.tsv"
     route_input_report = export_rwroute_input(
-        mapped_path,
-        packed_path,
-        placement_path,
-        rwroute_input,
-        mapped_value=mapped_value,
-        packed_value=packed_value,
-        placement_value=placement_value,
+        mapped_path, packed_path, rwroute_input,
         source_sha256=source_sha256,
         virtual_io_contract=virtual_io_contract,
         resource_limits=runtime.get("resource_budget", {}).get("effective_capacity"),
@@ -686,159 +679,6 @@ def _finish_rapidwright_routed_backend(
     }
 
 
-def run_rapidwright_partition_backend(
-    *,
-    fpga: str,
-    part: str,
-    merged_ir_path: Path,
-    architecture_path: Path,
-    runtime: Mapping[str, Any],
-    original_cells: int,
-    transport_cells: int,
-    output_dir: Path,
-    boundary_identity_path: Path,
-    rapidwright_jar: Path,
-    java: Path,
-    classes_dir: Path,
-    java_source: Path,
-    device_data_root: Path,
-    timing_data_dir: Path,
-    openparf_install: Optional[Path] = None,
-    openparf_python: Optional[Path] = None,
-    openparf_native_constraints: Optional[Path] = None,
-    openparf_provider_manifest: Optional[Path] = None,
-    opensta: Optional[str] = None,
-    logic_identity_path: Optional[Path] = None,
-    local_identity_path: Optional[Path] = None,
-    virtual_io_contract: Optional[Mapping[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Pack, place, route, time, and independently check one partition."""
-
-    architecture = ArchitectureDB.load(architecture_path)
-    if architecture.part != part:
-        raise ValidationError(
-            f"RapidWright architecture part {architecture.part!r} does not "
-            f"match BoardDB part {part!r}"
-        )
-    output_dir.mkdir(parents=True, exist_ok=True)
-    mapped_path = output_dir / "partition.mapped.json"
-    mapped_index_path = output_dir / "partition.mapped.sqlite"
-    mapped_report = emit_xilinx_mapped_json(
-        merged_ir_path,
-        mapped_path,
-        output_dir / "mapped-netlist-report.json",
-        index_path=mapped_index_path,
-    )
-    if "resource_budget" in runtime:
-        validate_device_resource_usage(
-            mapped_report["audit"]["resource_totals"], runtime["resource_budget"],
-            stage="post-transport-mapping",
-        )
-    mapped_value = (
-        open_xilinx_mapped_index(mapped_index_path)
-        if mapped_report.get("index") == str(mapped_index_path)
-        and mapped_index_path.is_file()
-        else read_json(mapped_path)
-    )
-    mapped_sha256 = mapped_report.get("output_sha256") or _sha256(mapped_path)
-    packed_path = output_dir / "packed-sites.json"
-    packed = pack_xilinx_sites(
-        mapped_path,
-        packed_path,
-        mapped_value=mapped_value,
-        mapped_sha256=mapped_sha256,
-    )
-    packing_check = validate_xilinx_packing(
-        mapped_path,
-        packed_path,
-        architecture_path=architecture_path,
-        mapped_value=mapped_value,
-        mapped_sha256=mapped_sha256,
-        packed_value=packed,
-        architecture=architecture.value,
-    )
-    selected_slrs = _select_xilinx_slr_window(
-        packed_path,
-        architecture_path,
-        packed_value=packed,
-        architecture=architecture,
-    )
-    region_path = output_dir / "placement-region.json"
-    write_json(region_path, {
-        "schema": "emuflow.xilinx-placement-constraints/v1",
-        "global": {"allowed_slrs": list(selected_slrs)},
-        "clusters": [],
-    }, compact=True)
-    guidance_root = output_dir / "openparf-guidance"
-    guidance_report = run_xilinx_openparf_guidance(
-        mapped_path,
-        packed_path,
-        architecture_path,
-        guidance_root,
-        top=mapped_report["top"],
-        openparf_install=openparf_install,
-        openparf_python=openparf_python,
-        native_constraints_path=openparf_native_constraints,
-        provider_manifest_path=openparf_provider_manifest,
-        slrs=selected_slrs,
-    )
-    guidance_path = guidance_root / "guidance.json"
-    placement_path = output_dir / "placement.json"
-    placement = place_xilinx_clusters(
-        packed_path,
-        architecture_path,
-        placement_path,
-        guidance_path=guidance_path,
-        constraints_path=region_path,
-    )
-    placement_check = validate_xilinx_placement(
-        packed_path,
-        architecture_path,
-        placement_path,
-        constraints_path=region_path,
-    )
-    return _run_rapidwright_routed_backend_tail(
-        fpga=fpga,
-        part=part,
-        merged_ir_path=merged_ir_path,
-        mapped_path=mapped_path,
-        mapped_report=mapped_report,
-        packed_path=packed_path,
-        placement_path=placement_path,
-        mapped_value=mapped_value,
-        packed_value=packed,
-        placement_value=placement,
-        runtime=runtime,
-        original_cells=original_cells,
-        transport_cells=transport_cells,
-        output_dir=output_dir,
-        boundary_identity_path=boundary_identity_path,
-        rapidwright_jar=rapidwright_jar,
-        java=java,
-        classes_dir=classes_dir,
-        java_source=java_source,
-        device_data_root=device_data_root,
-        timing_data_dir=timing_data_dir,
-        opensta=opensta,
-        logic_identity_path=logic_identity_path,
-        local_identity_path=local_identity_path,
-        provider="rapidwright-rwroute-research-backend-v1",
-        packing_stage={
-            "result": packed["summary"], "validation": packing_check,
-        },
-        placement_stage={
-            "region": {
-                "scope": "contiguous-slr-window",
-                "allowed_slrs": list(selected_slrs),
-            },
-            "global_guidance": guidance_report,
-            "result": placement["summary"],
-            "validation": placement_check,
-        },
-        placement_artifacts={"placement_region": region_path},
-        mapped_sha256=mapped_sha256,
-        virtual_io_contract=virtual_io_contract,
-    )
 
 
 def run_rapidwright_openparf_native_candidate_backend(
@@ -870,6 +710,8 @@ def run_rapidwright_openparf_native_candidate_backend(
 ) -> Dict[str, Any]:
     """Run the fail-closed native OpenPARF placement candidate backend."""
 
+    from .native_tools import require_native_schema
+    require_native_schema("rwroute-export-request-v2")
     architecture = ArchitectureDB.load(architecture_path)
     if architecture.part != part:
         raise ValidationError(
@@ -977,8 +819,7 @@ def run_rapidwright_openparf_native_candidate_backend(
         mapped_path,
         architecture_path,
         certificate_path,
-        packed_path,
-        placement_path,
+        physical_handoff_path,
         top=mapped_report["top"],
         source_packed_path=atomic_source_path,
         source_packed_value=atomic_source,
@@ -990,7 +831,6 @@ def run_rapidwright_openparf_native_candidate_backend(
         architecture=architecture,
         packed_value_sink=packed,
         placement_value_sink=placement,
-        physical_handoff_path=physical_handoff_path,
     )
     # The source view and shared physical handoff were already independently
     # validated before atomic publication. Reuse their lazy indexed views
@@ -1032,6 +872,13 @@ def run_rapidwright_openparf_native_candidate_backend(
             "validation": packing_check,
         },
         placement_stage={
+            "site_database": {
+                "schema": "emuflow.openparf-atomic-site-database/v1",
+                "path": str((qualification_root / "site-map.sqlite3").resolve()),
+                "generation": list(native_file_generation(
+                    qualification_root / "site-map.sqlite3")),
+                "sha256": compact_qualification["manifest"]["site_database"]["sha256"],
+            },
             "region": {
                 "scope": "full-device",
                 "allowed_slrs": list(selected_slrs),

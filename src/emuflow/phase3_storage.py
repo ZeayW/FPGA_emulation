@@ -14,16 +14,190 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping
 
-from .io import json_writes_are_durable
+from .io import file_sha256, json_writes_are_durable, write_json
+from .store_publication import (
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+    commit_store_selector,
+)
 
 
 PACKED_CLUSTERS_SCHEMA = "emuflow.phase3-clusters-storage/v1"
 COMPRESSED_CLUSTERS_SCHEMA = "emuflow.phase3-clusters-storage/v2"
+INDEXED_CLUSTERS_SCHEMA = "emuflow.phase3-clusters-storage/v3"
 LEGACY_PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v1"
-PREVIOUS_PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v2"
-PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v3"
+OLDER_PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v2"
+PREVIOUS_PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v3"
+PACKED_ASSIGNMENT_SCHEMA = "emuflow.phase3-assignment-storage/v4"
 _COMPRESSED_JSON_CODEC = "zlib-level-1-base64-canonical-json"
 _COMPRESSED_INDEX_CODEC = "zlib-level-1-base64-unsigned-index"
+CLUSTERS_SQLITE_APPLICATION_ID = 0x454D5543  # ASCII "EMUC"
+CLUSTERS_SQLITE_USER_VERSION = 1
+CLUSTERS_SQLITE_FORMAT = "sqlite-phase3-clusters/v1"
+CLUSTERS_STORE_NAME = "clusters.sqlite"
+
+
+_CLUSTERS_DDL = (Path(__file__).parent / "data/schema/phase3_clusters.sql").read_text(
+    encoding="utf-8"
+)
+
+_CLUSTER_SECTION_CODEC = "zlib-level-1-typed-columns"
+_CLUSTER_SECTION_CHUNK_BYTES = 1024 * 1024
+_CLUSTER_SECTIONS = {
+    "cluster_ids",
+    "member_counts",
+    "member_names",
+    "resource_counts",
+    "resource_names",
+    "resource_values",
+    "fixed_indices",
+    "fixed_values",
+    "group_counts",
+    "group_values",
+    "extra_values",
+    "eligible_nets",
+    "document",
+}
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+class _ClusterSectionWriter:
+    """Bounded-memory zlib stream stored as ordered SQLite BLOB chunks."""
+
+    def __init__(self, connection: sqlite3.Connection, section: str):
+        self.connection = connection
+        self.section = section
+        self.compressor = zlib.compressobj(level=1)
+        self.pending = bytearray()
+        self.records = 0
+        self.raw_bytes = 0
+        self.compressed_bytes = 0
+        self.chunks = 0
+
+    def _accept(self, payload: bytes) -> None:
+        if not payload:
+            return
+        self.pending.extend(payload)
+        self.compressed_bytes += len(payload)
+        while len(self.pending) >= _CLUSTER_SECTION_CHUNK_BYTES:
+            chunk = bytes(self.pending[:_CLUSTER_SECTION_CHUNK_BYTES])
+            del self.pending[:_CLUSTER_SECTION_CHUNK_BYTES]
+            self.connection.execute(
+                "INSERT INTO section_chunks VALUES (?,?,?)",
+                (self.section, self.chunks, sqlite3.Binary(chunk)),
+            )
+            self.chunks += 1
+
+    def write_bytes(self, payload: bytes) -> None:
+        self.records += 1
+        self.raw_bytes += len(payload)
+        self._accept(self.compressor.compress(payload))
+
+    def write_u32(self, value: int) -> None:
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < 2**32:
+            raise ValueError(f"{self.section}: value exceeds uint32 storage")
+        self.write_bytes(value.to_bytes(4, "little"))
+
+    def write_string(self, value: str) -> None:
+        if not isinstance(value, str):
+            raise ValueError(f"{self.section}: expected a string")
+        encoded = value.encode("utf-8")
+        if len(encoded) >= 2**32:
+            raise ValueError(f"{self.section}: string exceeds uint32 storage")
+        self.write_bytes(len(encoded).to_bytes(4, "little") + encoded)
+
+    def finish(self) -> None:
+        self._accept(self.compressor.flush())
+        if self.pending:
+            self.connection.execute(
+                "INSERT INTO section_chunks VALUES (?,?,?)",
+                (self.section, self.chunks, sqlite3.Binary(bytes(self.pending))),
+            )
+            self.chunks += 1
+            self.pending.clear()
+        self.connection.execute(
+            "INSERT INTO sections VALUES (?,?,?,?,?,?)",
+            (
+                self.section,
+                _CLUSTER_SECTION_CODEC,
+                self.records,
+                self.raw_bytes,
+                self.compressed_bytes,
+                self.chunks,
+            ),
+        )
+
+
+def _decode_u32_section(raw: bytes, records: int, context: str) -> List[int]:
+    if len(raw) != records * 4:
+        raise ValueError(f"{context}: uint32 section length is invalid")
+    return [
+        int.from_bytes(raw[offset : offset + 4], "little")
+        for offset in range(0, len(raw), 4)
+    ]
+
+
+def _decode_string_section(raw: bytes, records: int, context: str) -> List[str]:
+    result: List[str] = []
+    offset = 0
+    try:
+        for _ in range(records):
+            if offset + 4 > len(raw):
+                raise ValueError("missing string length")
+            length = int.from_bytes(raw[offset : offset + 4], "little")
+            offset += 4
+            end = offset + length
+            if end > len(raw):
+                raise ValueError("truncated string")
+            result.append(raw[offset:end].decode("utf-8"))
+            offset = end
+    except UnicodeDecodeError as error:
+        raise ValueError(f"{context}: string section is not UTF-8") from error
+    if offset != len(raw):
+        raise ValueError(f"{context}: string section has trailing data")
+    return result
+
+
+def _load_cluster_section(
+    connection: sqlite3.Connection, section: str
+) -> tuple[bytes, int]:
+    row = connection.execute(
+        "SELECT codec,records,raw_bytes,compressed_bytes,chunks "
+        "FROM sections WHERE section=?",
+        (section,),
+    ).fetchone()
+    if row is None or row["codec"] != _CLUSTER_SECTION_CODEC:
+        raise ValueError(f"indexed clusters section {section!r} is missing")
+    decompressor = zlib.decompressobj()
+    output = bytearray()
+    observed_chunks = 0
+    observed_compressed = 0
+    for chunk in connection.execute(
+        "SELECT chunk_seq,payload FROM section_chunks "
+        "WHERE section=? ORDER BY chunk_seq",
+        (section,),
+    ):
+        if chunk["chunk_seq"] != observed_chunks:
+            raise ValueError(f"indexed clusters section {section!r} is sparse")
+        payload = bytes(chunk["payload"])
+        observed_compressed += len(payload)
+        output.extend(decompressor.decompress(payload))
+        observed_chunks += 1
+    output.extend(decompressor.flush())
+    if (
+        observed_chunks != row["chunks"]
+        or observed_compressed != row["compressed_bytes"]
+        or len(output) != row["raw_bytes"]
+        or not decompressor.eof
+        or decompressor.unused_data
+        or decompressor.unconsumed_tail
+    ):
+        raise ValueError(f"indexed clusters section {section!r} is corrupt")
+    return bytes(output), int(row["records"])
 
 
 def _compress_json(value: Mapping[str, Any]) -> Dict[str, Any]:
@@ -246,6 +420,477 @@ def write_compressed_phase3_clusters(
         raise
 
 
+def _cluster_store_path(selector_path: Path, selector: Mapping[str, Any]) -> Path:
+    artifact = selector.get("artifact")
+    if (
+        not isinstance(artifact, str)
+        or Path(artifact).name != artifact
+        or artifact
+        not in {CLUSTERS_STORE_NAME, f"clusters.{selector.get('store_sha256')}.sqlite"}
+    ):
+        raise ValueError(f"{selector_path}: indexed clusters artifact is invalid")
+    return selector_path.with_name(artifact)
+
+
+def _open_cluster_store(path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(
+        f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+    )
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def _read_cluster_store_metadata(
+    selector_path: Path,
+    selector: Mapping[str, Any],
+) -> tuple[Path, Dict[str, Any]]:
+    if (
+        selector.get("schema") != INDEXED_CLUSTERS_SCHEMA
+        or selector.get("logical_schema") != "emuflow.clusters/v1"
+        or selector.get("format") != CLUSTERS_SQLITE_FORMAT
+        or selector.get("application_id") != CLUSTERS_SQLITE_APPLICATION_ID
+        or selector.get("user_version") != CLUSTERS_SQLITE_USER_VERSION
+        or isinstance(selector.get("store_bytes"), bool)
+        or not isinstance(selector.get("store_bytes"), int)
+        or selector["store_bytes"] < 0
+        or not isinstance(selector.get("store_sha256"), str)
+        or len(selector["store_sha256"]) != 64
+        or any(character not in "0123456789abcdef" for character in selector["store_sha256"])
+        or not isinstance(selector.get("counts"), dict)
+    ):
+        raise ValueError(f"{selector_path}: indexed clusters header is malformed")
+    counts = selector["counts"]
+    if set(counts) != {"clusters", "instances", "eligible_nets"} or any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in counts.values()
+    ):
+        raise ValueError(f"{selector_path}: indexed clusters counts are malformed")
+    store_path = _cluster_store_path(selector_path, selector)
+    try:
+        stat = store_path.stat()
+    except FileNotFoundError as error:
+        raise ValueError(
+            f"{selector_path}: indexed clusters artifact is missing"
+        ) from error
+    if stat.st_size != selector["store_bytes"] or file_sha256(store_path) != selector[
+        "store_sha256"
+    ]:
+        raise ValueError(f"{selector_path}: indexed clusters seal disagrees")
+    connection = _open_cluster_store(store_path)
+    try:
+        if (
+            connection.execute("PRAGMA application_id").fetchone()[0]
+            != CLUSTERS_SQLITE_APPLICATION_ID
+            or connection.execute("PRAGMA user_version").fetchone()[0]
+            != CLUSTERS_SQLITE_USER_VERSION
+        ):
+            raise ValueError(
+                f"{selector_path}: indexed clusters SQLite identity is invalid"
+            )
+        metadata = {
+            row["key"]: json.loads(row["value"])
+            for row in connection.execute(
+                "SELECT key,value FROM metadata ORDER BY key"
+            )
+        }
+        if (
+            set(metadata) != {"counts", "eligible_nets_present"}
+            or metadata.get("counts") != counts
+            or not isinstance(metadata.get("eligible_nets_present"), bool)
+            or (
+                not metadata["eligible_nets_present"]
+                and counts["eligible_nets"] != 0
+            )
+        ):
+            raise ValueError(
+                f"{selector_path}: indexed clusters metadata is invalid"
+            )
+        sections = {
+            row["section"]: row
+            for row in connection.execute(
+                "SELECT section,codec,records,raw_bytes,compressed_bytes,chunks "
+                "FROM sections ORDER BY section"
+            )
+        }
+        if set(sections) != _CLUSTER_SECTIONS or any(
+            row["codec"] != _CLUSTER_SECTION_CODEC
+            or any(
+                isinstance(row[field], bool)
+                or not isinstance(row[field], int)
+                or row[field] < 0
+                for field in (
+                    "records", "raw_bytes", "compressed_bytes", "chunks"
+                )
+            )
+            or row["chunks"] == 0
+            for row in sections.values()
+        ):
+            raise ValueError(
+                f"{selector_path}: indexed cluster sections are invalid"
+            )
+        expected_records = {
+            "cluster_ids": counts["clusters"],
+            "member_counts": counts["clusters"],
+            "member_names": counts["instances"],
+            "resource_counts": counts["clusters"],
+            "group_counts": counts["clusters"],
+            "extra_values": counts["clusters"],
+            "eligible_nets": counts["eligible_nets"],
+            "document": 1,
+        }
+        if any(
+            sections[name]["records"] != amount
+            for name, amount in expected_records.items()
+        ) or (
+            sections["fixed_indices"]["records"]
+            != sections["fixed_values"]["records"]
+        ) or (
+            sections["resource_names"]["records"]
+            != sections["resource_values"]["records"]
+        ):
+            raise ValueError(
+                f"{selector_path}: indexed cluster section counts disagree"
+            )
+        for name in ("member_counts", "resource_counts", "fixed_indices", "group_counts"):
+            if sections[name]["raw_bytes"] != sections[name]["records"] * 4:
+                raise ValueError(
+                    f"{selector_path}: indexed cluster integer columns are invalid"
+                )
+        chunk_summaries = {
+            row["section"]: (row["amount"], row["size"])
+            for row in connection.execute(
+                "SELECT section,count(*) AS amount,sum(length(payload)) AS size "
+                "FROM section_chunks GROUP BY section ORDER BY section"
+            )
+        }
+        if set(chunk_summaries) != _CLUSTER_SECTIONS or any(
+            chunk_summaries[name]
+            != (sections[name]["chunks"], sections[name]["compressed_bytes"])
+            for name in _CLUSTER_SECTIONS
+        ):
+            raise ValueError(
+                f"{selector_path}: indexed cluster chunks disagree"
+            )
+    except (json.JSONDecodeError, sqlite3.DatabaseError) as error:
+        raise ValueError(
+            f"{selector_path}: indexed clusters SQLite is corrupt"
+        ) from error
+    finally:
+        connection.close()
+    return store_path, metadata
+
+
+def _build_reference_cluster_store(
+    temporary, value, clusters, eligible_nets, eligible_present, document
+):
+    connection = sqlite3.connect(temporary)
+    cluster_count = 0
+    instance_count = 0
+    eligible_count = 0
+    try:
+        connection.executescript(
+            f"""
+            PRAGMA journal_mode=OFF;
+            PRAGMA synchronous=OFF;
+            PRAGMA temp_store=FILE;
+            PRAGMA cache_size=-65536;
+            PRAGMA application_id={CLUSTERS_SQLITE_APPLICATION_ID};
+            PRAGMA user_version={CLUSTERS_SQLITE_USER_VERSION};
+            {_CLUSTERS_DDL}
+            """
+        )
+        writers = {
+            name: _ClusterSectionWriter(connection, name)
+            for name in sorted(_CLUSTER_SECTIONS)
+        }
+
+        required = {"id", "instances", "resources", "fixed_fpga", "groups"}
+        for cluster_seq, cluster in enumerate(clusters):
+            if not isinstance(cluster, dict) or not required <= set(cluster):
+                raise ValueError(
+                    f"clusters[{cluster_seq}]: unsupported cluster record"
+                )
+            cluster_id = cluster["id"]
+            instances = cluster["instances"]
+            resources = cluster["resources"]
+            fixed_fpga = cluster["fixed_fpga"]
+            groups = cluster["groups"]
+            if (
+                not isinstance(cluster_id, str)
+                or not isinstance(instances, list)
+                or not all(isinstance(item, str) for item in instances)
+                or not isinstance(resources, dict)
+                or not all(isinstance(name, str) for name in resources)
+                or (fixed_fpga is not None and not isinstance(fixed_fpga, str))
+                or not isinstance(groups, list)
+                or not all(isinstance(item, str) for item in groups)
+            ):
+                raise ValueError(f"clusters[{cluster_seq}]: malformed cluster record")
+            extra = {key: item for key, item in cluster.items() if key not in required}
+            writers["cluster_ids"].write_string(cluster_id)
+            writers["member_counts"].write_u32(len(instances))
+            for instance_id in instances:
+                writers["member_names"].write_string(instance_id)
+            writers["resource_counts"].write_u32(len(resources))
+            for name in sorted(resources):
+                writers["resource_names"].write_string(name)
+                writers["resource_values"].write_string(
+                    _canonical_json(resources[name])
+                )
+            if fixed_fpga is not None:
+                writers["fixed_indices"].write_u32(cluster_seq)
+                writers["fixed_values"].write_string(fixed_fpga)
+            writers["group_counts"].write_u32(len(groups))
+            for group_id in groups:
+                writers["group_values"].write_string(group_id)
+            writers["extra_values"].write_string(_canonical_json(extra))
+            cluster_count += 1
+            instance_count += len(instances)
+
+        for net_id in eligible_nets:
+            if not isinstance(net_id, str):
+                raise ValueError(
+                    "clusters.policy.eligible_combinational_cut_nets is malformed"
+                )
+            writers["eligible_nets"].write_string(net_id)
+            eligible_count += 1
+        writers["document"].write_string(_canonical_json(document))
+        for writer in writers.values():
+            writer.finish()
+        counts = {
+            "clusters": cluster_count,
+            "instances": instance_count,
+            "eligible_nets": eligible_count,
+        }
+        declared_instances = value.get("instances")
+        if declared_instances != instance_count:
+            raise ValueError("clusters instance count is inconsistent")
+        connection.executemany(
+            "INSERT INTO metadata(key,value) VALUES (?,?)",
+            (
+                ("counts", _canonical_json(counts)),
+                ("eligible_nets_present", _canonical_json(eligible_present)),
+            ),
+        )
+        connection.commit()
+        connection.close()
+        return counts
+    finally:
+        connection.close()
+
+
+def write_indexed_phase3_clusters(
+    path: Path,
+    value: Mapping[str, Any],
+    *,
+    durable: bool | None = None,
+    source_bindings=(),
+) -> Dict[str, Any]:
+    """Publish one final catalog; native columns never expand into host rows."""
+    clusters = value.get("clusters")
+    if not isinstance(clusters, list):
+        raise ValueError("clusters.clusters: expected an array")
+    policy = value.get("policy")
+    if not isinstance(policy, dict):
+        raise ValueError("clusters.policy: expected an object")
+    eligible_present = "eligible_combinational_cut_nets" in policy
+    eligible_nets = policy.get("eligible_combinational_cut_nets", [])
+    if not isinstance(eligible_nets, list):
+        raise ValueError(
+            "clusters.policy.eligible_combinational_cut_nets: expected an array"
+        )
+    stored_policy = {
+        key: item
+        for key, item in policy.items()
+        if key != "eligible_combinational_cut_nets"
+    }
+    document = {
+        key: item for key, item in value.items() if key not in {"clusters", "policy"}
+    }
+    document["policy"] = stored_policy
+
+    from .phase3_cluster_catalog import catalog_sources, build_native_cluster_catalog
+
+    native_sources = catalog_sources(clusters, eligible_nets)
+    sources = tuple(source_bindings) + native_sources
+    sources = validate_store_destination(path, sources)
+    if path.is_symlink():
+        raise ValueError("cluster selector is a symbolic link")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.sqlite.tmp")
+    try:
+        if getattr(clusters, "native_artifact", None) is not None:
+            counts = build_native_cluster_catalog(
+                temporary,
+                value,
+                document,
+                eligible_nets,
+                eligible_present,
+                native_sources,
+            )
+        else:
+            counts = _build_reference_cluster_store(
+                temporary, value, clusters, eligible_nets, eligible_present, document
+            )
+        if value.get("instances") != counts["instances"]:
+            raise ValueError("clusters instance count is inconsistent")
+        require_store_sources_unchanged(sources)
+        digest = file_sha256(temporary)
+        store_path = path.with_name(f"clusters.{digest}.sqlite")
+        validate_store_destination(store_path, sources)
+        if store_path.is_symlink():
+            raise ValueError("cluster payload generation is a symbolic link")
+        created = not store_path.exists()
+        if created:
+            publish_sqlite_store(
+                temporary, store_path, "phase3-cluster-catalog-v3", sources=sources
+            )
+        else:
+            if file_sha256(store_path) != digest:
+                raise ValueError("cluster payload generation seal disagrees")
+            temporary.unlink()
+        selector = {
+            "schema": INDEXED_CLUSTERS_SCHEMA,
+            "logical_schema": value.get("schema"),
+            "format": CLUSTERS_SQLITE_FORMAT,
+            "application_id": CLUSTERS_SQLITE_APPLICATION_ID,
+            "user_version": CLUSTERS_SQLITE_USER_VERSION,
+            "artifact": store_path.name,
+            "store_bytes": store_path.stat().st_size,
+            "store_sha256": digest,
+            "counts": counts,
+        }
+        commit_store_selector(
+            path, selector, sources, store_path, created, durable=durable
+        )
+        return selector
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def expand_indexed_phase3_clusters(
+    value: Mapping[str, Any], path: Path
+) -> Dict[str, Any]:
+    store_path, metadata = _read_cluster_store_metadata(path, value)
+    connection = _open_cluster_store(store_path)
+    try:
+        def strings(name: str) -> List[str]:
+            raw, records = _load_cluster_section(connection, name)
+            return _decode_string_section(raw, records, f"{path}:{name}")
+
+        def integers(name: str) -> List[int]:
+            raw, records = _load_cluster_section(connection, name)
+            return _decode_u32_section(raw, records, f"{path}:{name}")
+
+        document_values = strings("document")
+        if len(document_values) != 1:
+            raise ValueError(f"{path}: indexed cluster document is invalid")
+        document = json.loads(document_values[0])
+        if (
+            not isinstance(document, dict)
+            or document.get("schema") != value["logical_schema"]
+            or "clusters" in document
+            or document.get("instances") != value["counts"]["instances"]
+        ):
+            raise ValueError(f"{path}: indexed cluster document is invalid")
+
+        cluster_ids = strings("cluster_ids")
+        member_counts = integers("member_counts")
+        member_names = strings("member_names")
+        resource_counts = integers("resource_counts")
+        resource_names = strings("resource_names")
+        resource_values = strings("resource_values")
+        fixed_indices = integers("fixed_indices")
+        fixed_values = strings("fixed_values")
+        group_counts = integers("group_counts")
+        group_values = strings("group_values")
+        extra_values = strings("extra_values")
+        eligible_nets = strings("eligible_nets")
+        cluster_count = value["counts"]["clusters"]
+        if (
+            len(cluster_ids) != cluster_count
+            or len(set(cluster_ids)) != cluster_count
+            or len(member_counts) != cluster_count
+            or len(resource_counts) != cluster_count
+            or len(group_counts) != cluster_count
+            or len(extra_values) != cluster_count
+            or sum(member_counts) != len(member_names)
+            or len(member_names) != value["counts"]["instances"]
+            or len(set(member_names)) != len(member_names)
+            or sum(resource_counts) != len(resource_names)
+            or len(resource_names) != len(resource_values)
+            or sum(group_counts) != len(group_values)
+            or len(fixed_indices) != len(fixed_values)
+            or fixed_indices != sorted(set(fixed_indices))
+            or any(index >= cluster_count for index in fixed_indices)
+            or len(eligible_nets) != value["counts"]["eligible_nets"]
+            or len(set(eligible_nets)) != len(eligible_nets)
+        ):
+            raise ValueError(f"{path}: indexed cluster columns disagree")
+        fixed_by_cluster = dict(zip(fixed_indices, fixed_values))
+        clusters: List[Dict[str, Any]] = []
+        member_offset = resource_offset = group_offset = 0
+        for cluster_seq, cluster_id in enumerate(cluster_ids):
+            next_member = member_offset + member_counts[cluster_seq]
+            next_resource = resource_offset + resource_counts[cluster_seq]
+            next_group = group_offset + group_counts[cluster_seq]
+            names = resource_names[resource_offset:next_resource]
+            if len(set(names)) != len(names):
+                raise ValueError(f"{path}: indexed cluster resources repeat")
+            groups = group_values[group_offset:next_group]
+            if len(set(groups)) != len(groups):
+                raise ValueError(f"{path}: indexed cluster groups repeat")
+            extra = json.loads(extra_values[cluster_seq])
+            if not isinstance(extra, dict):
+                raise ValueError(f"{path}: indexed cluster extras are invalid")
+            resources = {
+                name: json.loads(encoded)
+                for name, encoded in zip(
+                    names, resource_values[resource_offset:next_resource]
+                )
+            }
+            clusters.append(
+                {
+                    "id": cluster_id,
+                    "instances": member_names[member_offset:next_member],
+                    "resources": resources,
+                    "fixed_fpga": fixed_by_cluster.get(cluster_seq),
+                    "groups": groups,
+                    **extra,
+                }
+            )
+            member_offset = next_member
+            resource_offset = next_resource
+            group_offset = next_group
+        if metadata["eligible_nets_present"]:
+            policy = document.get("policy")
+            if not isinstance(policy, dict):
+                raise ValueError(f"{path}: indexed cluster policy is invalid")
+            policy["eligible_combinational_cut_nets"] = eligible_nets
+    except (IndexError, json.JSONDecodeError, sqlite3.DatabaseError, zlib.error) as error:
+        raise ValueError(f"{path}: indexed clusters payload is corrupt") from error
+    finally:
+        connection.close()
+    return {**document, "clusters": clusters}
+
+def phase3_clusters_store_path(selector_path: Path) -> Path | None:
+    """Resolve and validate the typed cluster owner named by a selector."""
+
+    with selector_path.open("r", encoding="utf-8") as stream:
+        value = json.load(stream)
+    if not isinstance(value, dict):
+        raise ValueError(f"{selector_path}: expected a JSON object")
+    schema = value.get("schema")
+    if schema != INDEXED_CLUSTERS_SCHEMA:
+        if isinstance(schema, str) and schema.startswith(
+            "emuflow.phase3-clusters-storage/"
+        ) and schema not in {PACKED_CLUSTERS_SCHEMA, COMPRESSED_CLUSTERS_SCHEMA}:
+            raise ValueError(f"{selector_path}: unsupported clusters storage schema")
+        return None
+    store_path, _ = _read_cluster_store_metadata(selector_path, value)
+    return store_path
+
+
 def expand_compressed_phase3_clusters(value: Mapping[str, Any]) -> Dict[str, Any]:
     if value.get("schema") != COMPRESSED_CLUSTERS_SCHEMA:
         raise ValueError("not a compressed Phase 3 clusters document")
@@ -457,6 +1102,8 @@ def expand_phase3_clusters(value: Mapping[str, Any]) -> Dict[str, Any]:
 def pack_phase3_assignment(
     value: Mapping[str, Any],
     clusters_artifact: Mapping[str, Any],
+    *,
+    cut_nets_index: Mapping[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Store only the irreducible cluster-to-FPGA vector for Phase 3."""
 
@@ -466,8 +1113,8 @@ def pack_phase3_assignment(
     partitions = value.get("partitions")
     if (
         not isinstance(clusters, list)
-        or not isinstance(cluster_assignment, dict)
-        or not isinstance(instance_assignment, dict)
+        or not isinstance(cluster_assignment, Mapping)
+        or not isinstance(instance_assignment, Mapping)
         or not isinstance(partitions, list)
     ):
         raise ValueError("assignment cannot be packed: required mappings are absent")
@@ -486,34 +1133,59 @@ def pack_phase3_assignment(
     part_ids = sorted(partition_ids)
     part_index = {part: index for index, part in enumerate(part_ids)}
     observed_instances = 0
+    cluster_id_at = getattr(clusters, "cluster_id_at", None)
+    if callable(cluster_id_at):
+        cluster_ids = lambda: (cluster_id_at(index) for index in range(len(clusters)))
+    else:
+        cluster_ids = lambda: (cluster.get("id") for cluster in clusters)
     sequential_cluster_ids = all(
-        cluster.get("id") == f"c{index:06d}"
-        for index, cluster in enumerate(clusters)
+        identity == f"c{index:06d}" for index, identity in enumerate(cluster_ids())
     )
-    stored_cluster_ids = (
-        None
-        if sequential_cluster_ids
-        else [cluster.get("id") for cluster in clusters]
-    )
+    stored_cluster_ids = None if sequential_cluster_ids else list(cluster_ids())
 
     def cluster_part_indices() -> Iterator[int]:
         nonlocal observed_instances
-        for cluster in clusters:
-            cluster_id = cluster.get("id")
-            if (
-                not isinstance(cluster_id, str)
-                or cluster_id not in cluster_assignment
-            ):
+        compact_cluster_part = getattr(
+            instance_assignment, "cluster_part", None
+        )
+        compact_member_count = getattr(
+            instance_assignment, "cluster_member_count", None
+        )
+        for cluster_index in range(len(clusters)):
+            cluster = None if callable(cluster_id_at) else clusters[cluster_index]
+            cluster_id = (
+                cluster_id_at(cluster_index) if cluster is None else cluster.get("id")
+            )
+            if not isinstance(cluster_id, str) or cluster_id not in cluster_assignment:
                 raise ValueError(
                     "assignment cannot be packed: cluster coverage differs"
                 )
             part = cluster_assignment[cluster_id]
-            for instance in cluster.get("instances", []):
-                if instance_assignment.get(instance) != part:
+            if callable(compact_cluster_part) and callable(compact_member_count):
+                if compact_cluster_part(cluster_index) != part:
                     raise ValueError(
                         "assignment cannot be packed: cluster is split"
                     )
-                observed_instances += 1
+                member_count = compact_member_count(cluster_index)
+                expected_count = (
+                    clusters.cluster_member_count(cluster_index)
+                    if cluster is None
+                    else len(cluster.get("instances", []))
+                )
+                if member_count != expected_count:
+                    raise ValueError(
+                        "assignment cannot be packed: cluster coverage differs"
+                    )
+                observed_instances += member_count
+            else:
+                if cluster is None:
+                    cluster = clusters[cluster_index]
+                for instance in cluster.get("instances", []):
+                    if instance_assignment.get(instance) != part:
+                        raise ValueError(
+                            "assignment cannot be packed: cluster is split"
+                        )
+                    observed_instances += 1
             yield part_index[part]
 
     cluster_parts = _compress_indices(
@@ -552,19 +1224,47 @@ def pack_phase3_assignment(
             # Compatibility for non-structural test/legacy contracts that the
             # assignment index does not know how to reconstruct.
             compressed_semantic_contract = _compress_json(semantic_contract)
+    excluded_document_fields = {
+        "cluster_assignment",
+        "instance_assignment",
+        "partitions",
+        "semantic_contract",
+    }
+    if cut_nets_index is not None:
+        excluded_document_fields.add("cut_nets")
     document = {
         key: item
         for key, item in value.items()
-        if key
-        not in {
-            "cluster_assignment",
-            "instance_assignment",
-            "partitions",
-            "semantic_contract",
-        }
+        if key not in excluded_document_fields
     }
-    return {
-        "schema": PACKED_ASSIGNMENT_SCHEMA,
+    schema = PREVIOUS_PACKED_ASSIGNMENT_SCHEMA
+    indexed_cuts = None
+    if cut_nets_index is not None:
+        raw_cuts = value.get("cut_nets")
+        if not isinstance(cut_nets_index, Mapping):
+            raise ValueError("assignment cut-record index is malformed")
+        indexed_cuts = dict(cut_nets_index)
+        if (
+            not isinstance(raw_cuts, list)
+            or set(indexed_cuts)
+            != {"artifact", "schema", "records", "sha256"}
+            or indexed_cuts.get("artifact") != "assignment.sqlite"
+            or indexed_cuts.get("schema")
+            != "emuflow.phase3-cut-records/v1"
+            or isinstance(indexed_cuts.get("records"), bool)
+            or not isinstance(indexed_cuts.get("records"), int)
+            or indexed_cuts["records"] != len(raw_cuts)
+            or not isinstance(indexed_cuts.get("sha256"), str)
+            or len(indexed_cuts["sha256"]) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in indexed_cuts["sha256"]
+            )
+        ):
+            raise ValueError("assignment cut-record index is malformed")
+        schema = PACKED_ASSIGNMENT_SCHEMA
+    packed = {
+        "schema": schema,
         "document": document,
         "cluster_count": len(clusters),
         "cluster_ids": stored_cluster_ids,
@@ -574,6 +1274,83 @@ def pack_phase3_assignment(
         "semantic_contract": compressed_semantic_contract,
         "semantic_contract_index": indexed_semantic_contract,
     }
+    if indexed_cuts is not None:
+        packed["cut_nets_index"] = indexed_cuts
+    return packed
+
+
+class IndexedCutNetRecords(list):
+    """Repeatable list-compatible view of the sealed typed cut relation."""
+
+    def __init__(self, path: Path, descriptor: Mapping[str, Any]):
+        super().__init__()
+        self.path = path.resolve()
+        self.descriptor = dict(descriptor)
+        if (
+            set(self.descriptor)
+            != {"artifact", "schema", "records", "sha256"}
+            or self.descriptor.get("artifact") != self.path.name
+            or self.descriptor.get("schema")
+            != "emuflow.phase3-cut-records/v1"
+            or isinstance(self.descriptor.get("records"), bool)
+            or not isinstance(self.descriptor.get("records"), int)
+            or self.descriptor["records"] < 0
+            or not isinstance(self.descriptor.get("sha256"), str)
+            or len(self.descriptor["sha256"]) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in self.descriptor["sha256"]
+            )
+            or not self.path.is_file()
+        ):
+            raise ValueError("packed assignment cut-record index is malformed")
+        connection = sqlite3.connect(
+            f"file:{self.path}?mode=ro&immutable=1", uri=True
+        )
+        try:
+            metadata = {
+                str(row[0]): json.loads(row[1])
+                for row in connection.execute(
+                    "SELECT key,value FROM metadata WHERE key IN "
+                    "('schema','cut_records_schema','cut_records',"
+                    "'cut_records_sha256')"
+                )
+            }
+        finally:
+            connection.close()
+        if (
+            metadata.get("schema") != "emuflow.phase3-assignment-sqlite/v4"
+            or metadata.get("cut_records_schema") != self.descriptor["schema"]
+            or metadata.get("cut_records") != self.descriptor["records"]
+            or metadata.get("cut_records_sha256") != self.descriptor["sha256"]
+        ):
+            raise ValueError("packed assignment cut-record identity disagrees")
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        from .phase3_assignment_index import iter_phase3_cut_records
+
+        return iter_phase3_cut_records(self.path, self.descriptor)
+
+    def __len__(self) -> int:
+        return int(self.descriptor["records"])
+
+    def __getitem__(self, key: int | slice) -> Any:
+        if isinstance(key, slice):
+            return list(self)[key]
+        if isinstance(key, bool) or not isinstance(key, int):
+            raise TypeError("cut-record index must be an integer or slice")
+        index = key if key >= 0 else len(self) + key
+        if index < 0 or index >= len(self):
+            raise IndexError("cut-record index out of range")
+        for ordinal, record in enumerate(self):
+            if ordinal == index:
+                return record
+        raise IndexError("cut-record index out of range")
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, list):
+            return list(self) == list(other)
+        return NotImplemented
 
 
 def expand_phase3_assignment(
@@ -584,6 +1361,7 @@ def expand_phase3_assignment(
     schema = value.get("schema")
     if schema not in {
         LEGACY_PACKED_ASSIGNMENT_SCHEMA,
+        OLDER_PACKED_ASSIGNMENT_SCHEMA,
         PREVIOUS_PACKED_ASSIGNMENT_SCHEMA,
         PACKED_ASSIGNMENT_SCHEMA,
     }:
@@ -595,6 +1373,12 @@ def expand_phase3_assignment(
     partitions = value.get("partitions")
     compressed_semantic_contract = value.get("semantic_contract")
     indexed_semantic_contract = value.get("semantic_contract_index")
+    indexed_cut_nets = value.get("cut_nets_index")
+    if schema == PACKED_ASSIGNMENT_SCHEMA:
+        if not isinstance(indexed_cut_nets, Mapping) or "cut_nets" in document:
+            raise ValueError("packed assignment cut storage is ambiguous")
+    elif indexed_cut_nets is not None:
+        raise ValueError("legacy packed assignment has a cut-record index")
     if (
         compressed_semantic_contract is not None
         and indexed_semantic_contract is not None
@@ -681,6 +1465,14 @@ def expand_phase3_assignment(
         "instance_assignment": dict(sorted(instance_assignment.items())),
         "partitions": expanded_partitions,
     }
+    if indexed_cut_nets is not None:
+        artifact = indexed_cut_nets.get("artifact")
+        if not isinstance(artifact, str) or Path(artifact).name != artifact:
+            raise ValueError("packed assignment cut-record index is malformed")
+        index_path = path.with_name(artifact)
+        result["cut_nets"] = list(
+            IndexedCutNetRecords(index_path, indexed_cut_nets)
+        )
     if semantic_contract is not None:
         result["semantic_contract"] = semantic_contract
     if indexed_semantic_contract is not None:
@@ -717,10 +1509,10 @@ class IndexedInstanceAssignment(Mapping[str, str]):
 
     def __init__(self, path: Path):
         self.path = path.resolve()
-        self.connection = sqlite3.connect(
-            f"file:{self.path}?mode=ro&immutable=1",
-            uri=True,
-            check_same_thread=False,
+        from .phase3_assignment_index import open_phase3_assignment_index
+
+        self.connection = open_phase3_assignment_index(
+            self.path, check_same_thread=False
         )
         row = self.connection.execute(
             "SELECT value FROM metadata WHERE key='source_instance_count'"
@@ -923,6 +1715,7 @@ def read_phase3_assignment_view(
         raise ValueError(f"{path}: expected a JSON object")
     if value.get("schema") not in {
         LEGACY_PACKED_ASSIGNMENT_SCHEMA,
+        OLDER_PACKED_ASSIGNMENT_SCHEMA,
         PREVIOUS_PACKED_ASSIGNMENT_SCHEMA,
         PACKED_ASSIGNMENT_SCHEMA,
     }:
@@ -941,6 +1734,20 @@ def read_phase3_assignment_view(
     if not isinstance(document, dict) or not isinstance(partitions, list):
         raise ValueError("packed assignment downstream view is malformed")
     result = {**document, "partitions": partitions}
+    indexed_cut_nets = value.get("cut_nets_index")
+    if value.get("schema") == PACKED_ASSIGNMENT_SCHEMA:
+        if not isinstance(indexed_cut_nets, Mapping) or "cut_nets" in document:
+            raise ValueError("packed assignment cut storage is ambiguous")
+        artifact = indexed_cut_nets.get("artifact")
+        if not isinstance(artifact, str) or Path(artifact).name != artifact:
+            raise ValueError("packed assignment cut-record index is malformed")
+        index_path = path.with_name(artifact)
+        result["cut_nets"] = IndexedCutNetRecords(
+            index_path, indexed_cut_nets
+        )
+        result["cut_records_indexed"] = True
+    elif indexed_cut_nets is not None:
+        raise ValueError("legacy packed assignment has a cut-record index")
     compressed = value.get("semantic_contract")
     indexed = value.get("semantic_contract_index")
     if compressed is not None and indexed is not None:
@@ -1007,13 +1814,17 @@ def read_phase3_assignment_view(
                 schema = clusters_value.get("schema")
                 if schema == COMPRESSED_CLUSTERS_SCHEMA:
                     return expand_compressed_phase3_clusters(clusters_value)
+                if schema == INDEXED_CLUSTERS_SCHEMA:
+                    return expand_indexed_phase3_clusters(
+                        clusters_value, candidate
+                    )
                 if schema == PACKED_CLUSTERS_SCHEMA:
                     return expand_phase3_clusters(clusters_value)
                 return clusters_value
 
             return expand_phase3_assignment(value, path, read_clusters)
         result["instance_assignment"] = IndexedInstanceAssignment(index_path)
-    if enrich_indexed_contract:
+    if enrich_indexed_contract and indexed_cut_nets is None:
         # Drop the potentially gigabyte-scale base64 string before scanning
         # the indexed dependency relations.  The route view retains only the
         # cut records that Phase 4 actually consumes.
@@ -1070,10 +1881,9 @@ def _enrich_indexed_cut_dependencies(
     predecessors: List[List[int]] = [[] for _ in cuts]
     successors: List[List[int]] = [[] for _ in cuts]
     segment_sinks = array("i")
-    connection = sqlite3.connect(
-        f"file:{index_path.resolve()}?mode=ro&immutable=1",
-        uri=True,
-    )
+    from .phase3_assignment_index import open_phase3_assignment_index
+
+    connection = open_phase3_assignment_index(index_path)
     try:
         metadata = {
             str(row[0]): json.loads(row[1])
@@ -1111,21 +1921,7 @@ def _enrich_indexed_cut_dependencies(
                 if isinstance(segment.get("source_cut_net"), str)
             )
         else:
-            node_rows = (
-                (str(row[0]), [
-                    _segment_number(item[0])
-                    for item in connection.execute(
-                        "SELECT segment_id FROM exact_cut_sources "
-                        "WHERE net_id=? ORDER BY ordinal", (row[0],)
-                    )
-                ])
-                for row in connection.execute(
-                    "SELECT net_id FROM exact_cut_nodes ORDER BY net_id"
-                )
-            )
-            segment_rows = connection.execute(
-                "SELECT source_cut_net,segment_id FROM exact_logic_segments"
-            )
+            raise ValueError("assignment index lacks its Static Exact binary descriptor")
 
         exact_nodes = set()
         for net_id, segment_numbers in node_rows:
@@ -1223,10 +2019,21 @@ def read_phase3_cut_timing_view(
             include_instance_assignment=include_instance_assignment,
         )
 
-    connection = sqlite3.connect(
-        f"file:{index_path.resolve()}?mode=ro&immutable=1",
-        uri=True,
-    )
+    with path.open("r", encoding="utf-8") as stream:
+        selector = json.load(stream)
+    if (
+        isinstance(selector, dict)
+        and selector.get("schema") == PACKED_ASSIGNMENT_SCHEMA
+    ):
+        return read_phase3_assignment_view(
+            path,
+            include_instance_assignment=include_instance_assignment,
+            include_semantic_contract=False,
+        )
+
+    from .phase3_assignment_index import open_phase3_assignment_index
+
+    connection = open_phase3_assignment_index(index_path)
     connection.row_factory = sqlite3.Row
     try:
         metadata = {
@@ -1234,9 +2041,8 @@ def read_phase3_cut_timing_view(
             for row in connection.execute("SELECT key,value FROM metadata")
         }
         if metadata.get("schema") not in {
-            "emuflow.phase3-assignment-sqlite/v1",
-            "emuflow.phase3-assignment-sqlite/v2",
             "emuflow.phase3-assignment-sqlite/v3",
+            "emuflow.phase3-assignment-sqlite/v4",
         }:
             raise ValueError("assignment index schema is invalid")
         parts = {
@@ -1292,12 +2098,7 @@ def read_phase3_cut_timing_view(
                     )
                 ]
             else:
-                exact_nets = [
-                    str(row["net_id"])
-                    for row in connection.execute(
-                        "SELECT net_id FROM exact_cut_nodes ORDER BY net_id"
-                    )
-                ]
+                raise ValueError("assignment index lacks its Static Exact binary descriptor")
             if exact_nets != sorted(cut_records):
                 raise ValueError(
                     "assignment index exact-cut coverage is inconsistent"

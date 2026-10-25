@@ -1,0 +1,89 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <memory>
+
+struct sqlite3;
+struct sqlite3_stmt;
+
+namespace emuflow::core {
+struct SqliteConnection;
+
+class SqliteStatement {
+ public:
+  explicit SqliteStatement(sqlite3_stmt* statement = nullptr,
+                          std::shared_ptr<SqliteConnection> connection = {});
+  ~SqliteStatement();
+
+  SqliteStatement(const SqliteStatement&) = delete;
+  SqliteStatement& operator=(const SqliteStatement&) = delete;
+  SqliteStatement(SqliteStatement&& other) noexcept;
+  SqliteStatement& operator=(SqliteStatement&& other) noexcept;
+
+  void BindInteger(int index, std::int64_t value);
+  void BindReal(int index, double value);
+  void BindText(int index, const std::string& value);
+  void BindBlob(int index, const void* data, std::size_t size);
+  void BindNull(int index);
+  void Execute();
+  bool Step();
+  void Reset();
+
+  std::int64_t Integer(int column) const;
+  std::int64_t TypedInteger(int column) const;
+  double Real(int column) const;
+  std::string Text(int column) const;
+  std::string TypedText(int column) const;
+  bool IsNull(int column) const;
+  std::string Blob(int column) const;
+
+ private:
+  sqlite3_stmt* statement_ = nullptr;
+  std::shared_ptr<SqliteConnection> connection_;
+};
+
+class SqliteDatabase {
+ public:
+  enum class Mode { kCreateExclusive, kReadOnly, kImmutableReadOnly };
+
+  SqliteDatabase(const std::string& path, Mode mode);
+  ~SqliteDatabase();
+
+  SqliteDatabase(const SqliteDatabase&) = delete;
+  SqliteDatabase& operator=(const SqliteDatabase&) = delete;
+
+  void Execute(const std::string& sql);
+  SqliteStatement Prepare(const std::string& sql);
+  void Close();
+  bool InTransaction() const;
+  // The connection closes before the last borrowed cursor releases its guard.
+  void KeepAlive(std::shared_ptr<void> owner);
+
+ private:
+  sqlite3* database_ = nullptr;
+  std::shared_ptr<SqliteConnection> connection_;
+};
+
+// Compatibility URI normalization uses SQLite's own URI parser, never a
+// second percent-decoder. Plain paths require no database open here.
+std::string SqliteFilePath(const std::string& path_or_uri);
+std::string SqliteImmutableUri(const std::string& path);
+
+class SqliteTransaction {
+ public:
+  explicit SqliteTransaction(SqliteDatabase& database);
+  ~SqliteTransaction();
+
+  SqliteTransaction(const SqliteTransaction&) = delete;
+  SqliteTransaction& operator=(const SqliteTransaction&) = delete;
+
+  void Commit();
+
+ private:
+  SqliteDatabase* database_ = nullptr;
+  bool committed_ = false;
+};
+
+}  // namespace emuflow::core

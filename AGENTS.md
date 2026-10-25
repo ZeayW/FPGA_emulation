@@ -233,168 +233,6 @@ phase, even when a run is expensive or an earlier result appears reusable.
   confirming that no live task uses them; never delete another task's active
   input or source tree.
 
-## Historical checkpoint design (documentation only; never execute)
-
-The remainder of this section records the old checkpoint system so legacy code
-and tests can be understood while it is retired. It does **not** authorize any
-new cache, checkpoint DAG, stage publication, evidence replay bundle, farm
-state, GC inventory, or archived run. Do not follow its operational steps,
-even if a user asks for faster iteration; use a fresh isolated one-shot full
-flow and retain only its compact terminal summary.
-
-Historically, the retired design covered the complete selected experiment:
-correctness and determinism validation, benchmark qualification, algorithm A/B
-and ablation studies, scalability and performance measurements, public-contest
-evaluation, synthesis and partitioning runs, routing and scheduling studies,
-Phase 6 provider comparisons, physical implementation, timing closure, and
-complete Phase 1--7 flows. Phase 6 is only one application of this opt-in
-policy.
-
-- Before starting any repeated, multistage, expensive, or evidence-producing
-  run, express it as a content-addressed DAG through `experiment-cache`.  A
-  cheap one-off diagnostic may run outside the DAG only when it will not be
-  used as benchmark, qualification, completion, performance, or QoR evidence.
-- Decompose the DAG at real reusable boundaries.  Phase 1--5 is not a universal
-  cache node: frontend/synthesis, timing preparation, partitioning, system
-  routing, and TDM scheduling are separate nodes whenever their implementations
-  or inputs can change independently.  Each node must declare exact dependency
-  keys, input SHA-256 values, configuration, command/environment contract,
-  seed/worker count where relevant, expected artifacts, a measured peak and
-  retained-byte estimate, and an independent semantic validator.
-- A Git commit is provenance, not cache identity.  Every v2 node must carry a
-  portable implementation closure containing the exact source, script, and
-  binary files used by execution, and a separate closure for its validator.
-  An implementation change invalidates that node and descendants; a validator-
-  only change triggers independent revalidation without recomputing output.
-  Versioned install and input paths are runtime bindings, not identity: the
-  portable command identity replaces each such path with the label of its
-  byte-sealed input.  Moving identical bytes must preserve the execution key;
-  changing those bytes must change it.  Keep stage-specific producer and
-  validator code in stage-specific closure components so a Phase 3-only edit
-  cannot invalidate Phase 1 merely because both once shared a source file.
-  When independent stage entry points must remain in one Python module, seal a
-  recursive canonical-AST symbol closure (`path.py::entrypoint,...`), not the
-  whole module.  The closure must include referenced module helpers, constants,
-  and imports; unrelated symbols and formatting must not invalidate the stage.
-- The DAG implementation and experiment spec must support arbitrary named
-  stages and multiple dependencies; it must not hard-code one current flow's
-  phase sequence.  Physical lookahead, source preparation, qualification, and
-  aggregation are explicit reusable nodes whenever they are shared or have a
-  different invalidation boundary.
-- Plan before execution.  Inventory existing caches and repository-external
-  archives, independently validate compatible prior artifacts, and import
-  valid results before submitting work.  A new branch, report, experiment
-  label, comparison arm, directory layout, or downstream objective is never by
-  itself a reason to recompute an unchanged node.
-- Execute only the smallest missing frontier.  A changed input, option, tool,
-  or dependency invalidates that node and its descendants, not unrelated
-  nodes or valid ancestors.  Never delete or bypass a whole cache as a shortcut
-  for targeted invalidation, and never restart completed ancestors merely to
-  recover from or resume a downstream failure.
-- Cache reuse is authorized only by the complete content identity plus a
-  passing independent validator and sealed artifacts.  Names, paths, mtimes,
-  logs, a declared `pass` status, or visually similar results are insufficient.
-  If a stage has no adequate validator, its result is not reusable evidence
-  until that validation gap is repaired.
-- Publishing and importing perform the strong content hash and semantic
-  validation once.  A cache-resident output must then be read-only and its
-  checkpoint manifest non-writable; routine planning may validate that managed
-  object from its sealed digest table plus immutable-tree metadata instead of
-  rereading multi-gigabyte content.  Explicit checkpoint/evidence validation
-  always rehashes content.  External references remain mutable and therefore
-  must be strongly rehashed on every reuse boundary.  When a validated import
-  already resides under the object store, promote it to a managed immutable
-  alias rather than retaining the repeatedly hashed external-reference mode.
-- Fair A/B and ablation experiments must share the exact validated upstream
-  checkpoints and differ only in the intended variable.  Compute each unique
-  baseline once.  Reuse a valid baseline in every later comparison rather than
-  rerunning it for symmetry or presentation.
-- Preserve failed and partial run evidence outside the repository, then
-  re-plan from the last valid checkpoint.  Do not overwrite another attempt's
-  artifacts, silently turn a failed attempt into a fresh run directory, or
-  publish a partial checkpoint as complete.
-- If a stage supports independently validated internal checkpoints, recover in
-  a new attempt by copy-on-write materializing the failed tree and resuming
-  only from those checked boundaries.  Keep the original failure immutable.
-  Finish and independently validate the complete stage artifact before using
-  `experiment-cache import`; never register an internal or partial checkpoint
-  directly.  Physical-lookahead recovery uses `multi-fpga physical --resume`
-  followed by `experiment-stage lookahead-resume`.
-- Keep three storage classes physically separate: immutable content-addressed
-  checkpoints, append-only per-execution attempts, and self-contained final
-  evidence bundles.  Each retry gets a new `attempt-NNNN` directory.  Logs,
-  scratch, and failed partial output never become checkpoint artifacts merely
-  because they share a parent directory.
-- Every declared artifact has a semantic role.  `consumer-checkpoint`,
-  `source-input`, and `evidence-critical` are required retention;
-  `diagnostic` and `failure-diagnostic` are optional evidence; only
-  `regenerable-scratch` is prunable.  File size alone never decides retention.
-  In particular, 64 MiB is not a replay limit.
-- Every canonical Phase 7 terminal retains its runtime/QoR bundle,
-  `physical-summary.json`, and `multi-fpga-physical-flow-report.json` as
-  evidence-critical artifacts. The complete per-FPGA placement/routing work
-  directory remains diagnostic and may be collected after those reports and
-  their independent validation certificate are sealed.
-- HPC farms may submit only `ready` cache misses.  Re-plan after every completed
-  frontier; skip `reuse` nodes and keep `waiting` nodes blocked on their exact
-  dependency keys.  Concurrent tasks require isolated output directories and
-  immutable source/tool identities.  Parallelism changes scheduling, not the
-  evidence contract, unless the worker count is explicitly part of identity.
-  If the whole ready frontier exceeds quota or desired concurrency, use the
-  farm compiler's explicit experiment-node subset; never edit a plan or task
-  command by hand. Deferred ready nodes retain the same identity for a later
-  batch.
-- Farm workers use leases and heartbeats.  A silent or expired task is not
-  automatically dead: reconciliation must probe its recorded PID on its pinned
-  node.  Only an expired lease plus a confirmed-absent process can become
-  `retryable`, and the retry must use a new attempt directory.
-- A cached checkpoint proves only that one node completed its declared gate.
-  It does not by itself prove an end-to-end claim.  Report completion or QoR
-  only when every required terminal node and claim-specific validator exists;
-  otherwise retain an explicit planned, running, incomplete, or blocked state.
-- Experiment specs, plans, farm state, logs, transient paths, and large
-  artifacts stay outside the source repository.  Check in only reusable
-  schemas, policies, small lawful fixtures, and canonical benchmark registries.
-- Force-rerunning an otherwise valid checkpoint is exceptional.  Record the
-  explicit reason (for example, nondeterminism replication or measurement
-  noise study) and give the repeated run a distinct declared identity; never
-  make force-rerun the default behavior of an automation or validation task.
-- Cache reclamation is mark-and-sweep, never age/name-based deletion.  Root all
-  active v2 plans and explicit pins, inventory and validate objects, then
-  generate a sealed GC plan.  Apply it only by the exact approved plan SHA-256;
-  abort if any candidate changed or became referenced.  Legacy runs first get
-  a read-only migration inventory, then independent validation/import or an
-  explicit diagnostic-retention decision.  When a noncanonical legacy case is
-  deliberately retired, use `retirement-plan` followed by `retirement-apply`:
-  the apply step requires the exact plan SHA-256, rehashes every selected tree
-  before any mutation, refuses evidence/archive candidates, and preserves
-  marker tombstones plus a non-evidence receipt outside `runs`.  Direct
-  age/name/glob-based deletion remains forbidden.
-- Legacy validation farms remain retirement-protected while any task state can
-  still run or retry, is malformed, or has not been reconciled. An expired
-  lease alone never permits cleanup. Only farms whose task states are all final
-  `pass` or `failed` may enter a retirement plan, and the planner/apply path
-  must hold every farm `launch.lock` while sealing and committing an explicit
-  retirement marker. Launchers must refuse that marker before and after lock
-  acquisition. Close all lock descriptors before tree removal so NFS cannot
-  retain `.nfs*` lock files; the marker, not an open descriptor, protects the
-  transaction. While still locked, atomically rename each selected top-level
-  tree into its sealed quarantine path; recursively remove only that path after
-  closing locks. A partial removal must never restore the original launch path.
-- A final evidence bundle recursively contains every required artifact for its
-  terminal nodes and ancestors and must validate after the source cache is
-  unavailable.  A legacy archive containing any hash-only run file is not
-  replay-complete and must never authorize deletion of its source run.
-- Validate experiment-management semantics on a small deterministic design
-  first.  That gate must exercise cache hits and misses, selective
-  invalidation, relocation of byte-identical tools, validator-only changes,
-  tampering, failed attempts, lease expiry/reconciliation, storage blocking,
-  evidence replay without the cache, and reference-aware GC.  Do not use a
-  large design to debug these control-plane rules.  After the small-design gate
-  passes, run one canonical medium/large complete flow to validate production
-  scale, long leases, large checkpoints, cross-node recovery, quota estimates,
-  and final Phase 7 QoR; reuse its validated ancestors for all comparisons.
-
 ## Mandatory experiment storage boundary
 
 - Every EmuFlow-controlled writable path on the validation servers must be
@@ -711,7 +549,7 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   providers, physical seeds, gates, global timing metrics, DRC, and unrouted-net
   checks. Persistent replay checkpoints are not required. Repository
   configuration must never contain transient server paths.
-- Baseline, placement-aware, and Chimew Phase 6 arms must use identical frozen
+- Baseline and Chimew Phase 6 arms must use identical frozen
   source, BoardDB, Phase 1/3/4/5 artifacts, physical backend/options, worker
   count, and physical seed.  The default acceptance seed is fixed to 1; seeds
   2/3 are an explicit statistical-robustness opt-in and are not a routine
@@ -727,7 +565,7 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   diagnostics and must not be substituted for the primary metrics.
 - Canonical provider studies finish at a terminal `qor-comparison` certificate,
   not at an individual Phase 7 arm. It compares every
-  baseline/placement-aware/Chimew arm for the configured physical seed set,
+  baseline/Chimew arm for the configured physical seed set,
   rechecks their common frozen Phase 1/3/4/5 hashes, and preserves paired
   target-clock WNS/TNS deltas and per-provider statistics in final evidence.
   Use seed 1 alone by default; request multiple seeds only when measuring
@@ -743,8 +581,8 @@ substitute sampled paths, WNS, critical path, or a Phase 6 proxy for TNS.
   removes its Phase 1→7 intermediates after terminal validation. Arms may share
   immutable source inputs during the active comparison, but must not publish a
   persistent intermediate DAG. Baseline Phase 6 consumes Phase 5 directly. The
-  fixed physical lookahead consumes baseline Phase 6; placement-aware and
-  Chimew consume Phase 5 plus that lookahead. Never coerce an incompatible
+  fixed physical lookahead consumes baseline Phase 6; Chimew consumes Phase 5
+  plus that lookahead. Never coerce an incompatible
   communication-only artifact into a fake physical netlist.
 - Run canonical validation through the one-command full-flow interface in an
   isolated directory; do not decompose an ordinary run into published

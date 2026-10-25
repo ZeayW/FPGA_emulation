@@ -123,6 +123,8 @@ def build_split_artifacts(
     if pin_plan is not None:
         if pin_plan.get("schema") != "emuflow.placement-aware-pin-plan/v1":
             raise ValidationError("pin plan has an unsupported schema")
+        if pin_plan.get("provider") != "chimew-paper-plus-emuflow-electrical-slot-v1":
+            raise ValidationError("pin plan has a retired or unsupported provider")
         physical_lane_by_entry = {
             item["schedule_entry"]: item["physical_lane"]
             for item in pin_plan.get("entries", [])
@@ -513,12 +515,7 @@ def build_split_artifacts(
         "design": ir.value["design"]["name"],
         "platform": platform.name,
         "provider": (
-            (
-                "chimew-electrical-pin-split-v1"
-                if pin_plan.get("provider")
-                == "chimew-paper-plus-emuflow-electrical-slot-v1"
-                else "placement-aware-pin-split-v1"
-            )
+            "chimew-electrical-pin-split-v1"
             if pin_plan is not None
             else "deterministic-cut-shadow-split-v1"
         ),

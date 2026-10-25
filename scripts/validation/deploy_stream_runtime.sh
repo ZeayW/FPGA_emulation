@@ -81,49 +81,65 @@ trap - EXIT
 echo "RUNTIME_CXX=$selected_cxx"
 "$selected_cxx" --version
 
+# Borrow only dependencies of the maintained runtime. An old installation is
+# not an inventory of current providers; unknown/retired programs stay out.
 for binary in "$native_base"/bin/*; do
   test -e "$binary" || continue
-  # Retired provider binaries must not leak in through an older native base.
-  if test "$(basename "$binary")" = emuflow_tritonpart_balance_legalizer; then
-    continue
-  fi
-  ln -s "$binary" "$runtime_dir/bin/$(basename "$binary")"
+  case "$(basename "$binary")" in
+    openroad|sta|yosys|yosys-abc|emuflow_bsp_pin_solver|emuflow_fpgaif_arch_importer|emuflow_eda2025_topology_optimizer)
+      ln -s "$binary" "$runtime_dir/bin/$(basename "$binary")" ;;
+  esac
 done
-for tool in \
-  tlr_router \
-  patron_refiner \
-  static_exact_analyzer \
-  tdm_exact_scheduler \
-  tdm_ratio_optimizer \
-  tdm_slot_optimizer \
-  tdm_timing_dag_optimizer
-do
-  target="$runtime_dir/bin/emuflow_$tool"
-  rm -f "$target"
-  if test "$tool" = static_exact_analyzer || \
-      test "$tool" = tdm_exact_scheduler; then
-    "$selected_cxx" -std=c++17 -O3 -pthread \
-      -static-libstdc++ -static-libgcc \
-      -I"$source_dir/src/native" \
-      "$source_dir/src/native/$tool.cpp" \
-      "$source_dir/src/native/emuflow_core/artifact_io.cpp" \
-      -o "$target"
-  else
-    "$selected_cxx" -std=c++17 -O3 -pthread \
-      -static-libstdc++ -static-libgcc \
-      "$source_dir/src/native/$tool.cpp" -o "$target"
-  fi
-done
-target="$runtime_dir/bin/emuflow_xilinx_bookshelf_exporter"
-rm -f "$target"
 sqlite_flags=()
 if test -n "${SQLITE3_PREFIX:-}"; then
   sqlite_flags=("-I$SQLITE3_PREFIX/include" "-L$SQLITE3_PREFIX/lib"
     "-Wl,-rpath,$SQLITE3_PREFIX/lib")
 fi
-"$selected_cxx" -std=c++17 -O3 -static-libstdc++ -static-libgcc \
-  "${sqlite_flags[@]}" \
-  "$source_dir/src/native/xilinx_bookshelf_exporter.cpp" -lsqlite3 -o "$target"
+# Production adapters require the unified entry. A thin
+# runtime must therefore rebuild that entry from the same exact source commit;
+# retaining the native base's older emuflow-native while refreshing only the
+# standalone binaries would silently execute stale stage code.
+unified="$runtime_dir/bin/emuflow-native"
+rm -f "$unified"
+# The unified entry links the shared archive, including hop legalization.
+# Compile the native core once rather than embedding an independent parser /
+# SQLite / lifecycle implementation in each executable.
+object_dir="$runtime_dir/tmp/core-objects"
+mkdir -p "$object_dir" "$runtime_dir/lib"
+core_sources=()
+core_seen=" "
+while IFS= read -r source || test -n "$source"; do
+  case "$source" in ''|\#*) continue ;; esac
+  case "$source" in /*|*..*|*[!a-zA-Z0-9_/.-]*) echo "invalid shared native source: $source" >&2; exit 2 ;; esac
+  test -f "$source_dir/src/native/$source"
+  # Bash 3/4 can treat an empty array as unset under `set -u`.
+  case "$core_seen" in *" $source "*) echo "repeated shared native source: $source" >&2; exit 2 ;; esac
+  core_seen="$core_seen$source "
+  core_sources+=("$source")
+done < "$source_dir/src/native/emuflow_core/sources.txt"
+test "$core_seen" != " " || { echo "empty shared native source manifest" >&2; exit 2; }
+objects=()
+generated_dir="$object_dir/generated"
+python3 "$source_dir/scripts/generate_store_schema_headers.py" \
+  "$generated_dir/emuflow_core"
+for source in "${core_sources[@]}"; do
+  object="$object_dir/${source//\//_}.o"
+  "$selected_cxx" -std=c++17 -O3 -pthread -DEMUFLOW_NATIVE_STAGE_LIBRARY=1 \
+    ${sqlite_flags[@]+"${sqlite_flags[@]}"} -I"$source_dir/src/native" \
+    -I"$generated_dir" -c "$source_dir/src/native/$source" -o "$object"
+  objects+=("$object")
+done
+archive="$runtime_dir/lib/libemuflow_core.a"
+"$("$selected_cxx" -print-prog-name=ar)" rcs "$archive" "${objects[@]}"
+"$selected_cxx" -std=c++17 -O3 -pthread -static-libstdc++ -static-libgcc \
+  ${sqlite_flags[@]+"${sqlite_flags[@]}"} -I"$source_dir/src/native" \
+  "$source_dir/src/native/emuflow_native.cpp" "$archive" -lsqlite3 -lz -o "$unified"
+rm -rf "$object_dir"
+# Do not publish a runtime whose unified core cannot even
+# load its linked dependencies in the deployment environment. The run launcher
+# must repeat these probes inside its actual execution environment.
+"$unified" check-runtime >/dev/null
+"$unified" --help >/dev/null
 printf '%s\n' "$expected_commit" > "$runtime_dir/SOURCE_COMMIT"
 printf '%s\n' "$native_base" > "$runtime_dir/NATIVE_BASE_INSTALL"
 printf '%s\n' "$source_dir/src" > "$runtime_dir/PYTHON_SOURCE_PATH"

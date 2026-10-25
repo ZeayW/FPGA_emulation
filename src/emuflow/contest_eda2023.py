@@ -16,8 +16,6 @@ from .io import read_json, write_json
 from .native_tools import resolve_native_executable
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
 from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA, SYSTEM_ROUTES_SCHEMA
-from .tdm_timing_dag import optimize_prepared_timing_dag
-
 
 EDA2023_INSTANCE_SCHEMA = "emuflow.contest-eda2023-instance/v1"
 EDA2023_HIERARCHY_SCHEMA = "emuflow.die-hierarchy/v1"
@@ -35,7 +33,6 @@ EDA2023_SOURCE_URL = (
 _FPGA = re.compile(r"FPGA([0-9]+)\Z")
 _DIE = re.compile(r"Die([0-9]+)\Z")
 
-
 def _nonempty_lines(path: Path) -> Iterator[Tuple[int, str]]:
     with path.open("r", encoding="utf-8") as stream:
         for number, raw in enumerate(stream, 1):
@@ -43,20 +40,17 @@ def _nonempty_lines(path: Path) -> Iterator[Tuple[int, str]]:
             if line:
                 yield number, line
 
-
 def _split_mapping(path: Path, number: int, line: str) -> Tuple[str, List[str]]:
     key, separator, values = line.partition(":")
     if not separator or not key.strip():
         raise ValidationError(f"{path}:{number}: expected '<name>: <values>'")
     return key.strip(), values.split()
 
-
 def _numeric_id(value: str, pattern: re.Pattern[str], context: str) -> int:
     match = pattern.fullmatch(value)
     if match is None:
         raise ValidationError(f"{context}: invalid identifier {value!r}")
     return int(match.group(1))
-
 
 def _parse_fpga_dies(path: Path) -> Tuple[List[str], List[str], Dict[str, str]]:
     fpgas: List[str] = []
@@ -82,7 +76,6 @@ def _parse_fpga_dies(path: Path) -> Tuple[List[str], List[str], Dict[str, str]]:
     if ordered != [f"Die{index}" for index in range(len(ordered))]:
         raise ValidationError(f"{path}: Die IDs must be contiguous from Die0")
     return fpgas, ordered, die_to_fpga
-
 
 def _parse_positions(path: Path, dies: Iterable[str]) -> Dict[str, str]:
     known = set(dies)
@@ -110,7 +103,6 @@ def _parse_positions(path: Path, dies: Iterable[str]) -> Dict[str, str]:
         raise ValidationError(f"{path}: missing Die rows {missing}")
     return positions
 
-
 def _parse_network(path: Path, count: int) -> List[List[int]]:
     matrix: List[List[int]] = []
     for number, line in _nonempty_lines(path):
@@ -130,7 +122,6 @@ def _parse_network(path: Path, count: int) -> List[List[int]]:
             if matrix[left][right] != matrix[right][left]:
                 raise ValidationError(f"{path}: network matrix must be symmetric")
     return matrix
-
 
 def _parse_nets(path: Path, positions: Mapping[str, str]) -> List[Dict[str, Any]]:
     nets: List[Dict[str, Any]] = []
@@ -173,7 +164,6 @@ def _parse_nets(path: Path, positions: Mapping[str, str]) -> List[Dict[str, Any]
     if not nets or any(not net["sink_nodes"] for net in nets):
         raise ValidationError(f"{path}: every net must have one or more loads")
     return nets
-
 
 def parse_eda2023_case(case_dir: Path, name: str) -> Dict[str, Any]:
     if not name.strip():
@@ -236,10 +226,8 @@ def parse_eda2023_case(case_dir: Path, name: str) -> Dict[str, Any]:
         "nets": nets,
     }
 
-
 def _net_name(net_id: int) -> str:
     return f"net_{net_id:07d}"
-
 
 def _physical_fpga_diameter(instance: Mapping[str, Any]) -> int:
     adjacency = {fpga: set() for fpga in instance["fpgas"]}
@@ -267,14 +255,12 @@ def _physical_fpga_diameter(instance: Mapping[str, Any]) -> int:
         diameter = max(diameter, max(distance.values(), default=0))
     return diameter
 
-
 def _timing_weight_for_fpga_diameter(diameter: int) -> float:
     if diameter <= 1:
         return 0.0
     if diameter == 2:
         return 0.5
     return 4.0
-
 
 def import_eda2023_case(case_dir: Path, output_dir: Path, name: str) -> Dict[str, Any]:
     instance = parse_eda2023_case(case_dir, name)
@@ -431,13 +417,11 @@ def import_eda2023_case(case_dir: Path, output_dir: Path, name: str) -> Dict[str
         "artifacts": {key: str(path) for key, path in artifacts.items()},
     }
 
-
 def _load_instance(path: Path) -> Dict[str, Any]:
     instance = read_json(path)
     if instance.get("schema") != EDA2023_INSTANCE_SCHEMA:
         raise ValidationError(f"instance.schema: expected {EDA2023_INSTANCE_SCHEMA!r}")
     return instance
-
 
 def materialize_eda2023_rtl_boarddb(
     instance_path: Path,
@@ -577,7 +561,6 @@ def materialize_eda2023_rtl_boarddb(
         "route_constraints": str(constraints_output),
     }
 
-
 def _route_model(instance: Mapping[str, Any], routes: Mapping[str, Any]) -> Dict[str, Any]:
     if routes.get("schema") != SYSTEM_ROUTES_SCHEMA:
         raise ValidationError(f"routes.schema: expected {SYSTEM_ROUTES_SCHEMA!r}")
@@ -689,171 +672,6 @@ def _route_model(instance: Mapping[str, Any], routes: Mapping[str, Any]) -> Dict
         "sll_usage": dict(sll_usage),
     }
 
-
-def optimize_eda2023_tdm(
-    instance_path: Path,
-    routes_path: Path,
-    output_dir: Path,
-    *,
-    optimizer: Optional[str] = None,
-    timing_dag_optimizer: Optional[str] = None,
-    provider: str = EDA2023_TDM_PROVIDER,
-    max_iterations: int = 100,
-    post_refinement_iterations: int = 2000,
-    exact_domain_limit: int = 2048,
-) -> Dict[str, Any]:
-    if provider not in {EDA2023_TDM_PROVIDER, EDA2023_TIMING_DAG_PROVIDER}:
-        raise ValidationError(f"unsupported EDA 2023 TDM provider {provider!r}")
-    instance = _load_instance(instance_path)
-    model = _route_model(instance, read_json(routes_path))
-    wire_links = [link for link in instance["links"] if link["kind"] == "wire"]
-    domain_by_link = {link["id"]: index for index, link in enumerate(wire_links)}
-    max_ratio = max(4, 4 * math.ceil(max(1, len(model["hops"])) / 4))
-    period = float(max(1, len(instance["dies"]) - 1) * (max_ratio + 0.5))
-    metrics: Dict[str, Any] = {}
-    timing_dag_evidence = None
-    if model["hops"]:
-        continuous_seed = None
-        if provider == EDA2023_TIMING_DAG_PROVIDER:
-            prepared_model = {
-                "domains": [
-                    {
-                        "index": domain_by_link[link["id"]],
-                        "lanes": link["capacity"],
-                    }
-                    for link in wire_links
-                ],
-                "hops": [
-                    {
-                        "index": hop["index"],
-                        "domain": domain_by_link[hop["link"]],
-                        "base_delay_ns": 1.5,
-                        "beta_ns": 1.0,
-                    }
-                    for hop in model["hops"]
-                ],
-                "timing_paths": [
-                    {
-                        "index": index,
-                        "fixed_delay_ns": path["fixed_delay"],
-                        "hops": list(path["hops"]),
-                    }
-                    for index, path in enumerate(model["paths"])
-                ],
-            }
-            timing_dag_evidence = optimize_prepared_timing_dag(
-                prepared_model,
-                executable=timing_dag_optimizer,
-                max_iterations=max_iterations,
-                min_ratio=4.0,
-                max_ratio=float(max_ratio),
-                convergence=1.0e-9,
-            )
-            continuous_seed = timing_dag_evidence["continuous_ratios"]
-        resolved = resolve_native_executable("emuflow_tdm_ratio_optimizer", optimizer)
-        with tempfile.TemporaryDirectory(prefix="emuflow-eda2023-tdm-") as temporary:
-            native_input = Path(temporary) / "ratio.in"
-            native_output = Path(temporary) / "ratio.out"
-            with native_input.open("w", encoding="utf-8") as stream:
-                stream.write(
-                    "EMUFLOW_TDM_RATIO_INPUT_V5\n"
-                    if continuous_seed is not None
-                    else "EMUFLOW_TDM_RATIO_INPUT_V3\n"
-                )
-                stream.write(
-                    "PARAM "
-                    f"{max_iterations} {max_ratio} 4 4 0 "
-                    f"{post_refinement_iterations} {exact_domain_limit} "
-                    f"1e-9 1 1 {period:.17g}\n"
-                )
-                for link in wire_links:
-                    stream.write(
-                        f"DOMAIN {domain_by_link[link['id']]} "
-                        f"{link['capacity']}\n"
-                    )
-                for hop in model["hops"]:
-                    stream.write(
-                        f"HOP {hop['index']} {domain_by_link[hop['link']]} "
-                        f"{hop['direction']} 1.5 1\n"
-                    )
-                for index, path in enumerate(model["paths"]):
-                    hop_list = ",".join(str(hop) for hop in path["hops"])
-                    stream.write(
-                        f"PATH {index} {period:.17g} "
-                        f"{path['fixed_delay']:.17g} {hop_list}\n"
-                    )
-                if continuous_seed is not None:
-                    for index, ratio in enumerate(continuous_seed):
-                        stream.write(f"SEED {index} {ratio:.17g}\n")
-            completed = subprocess.run(
-                [resolved, str(native_input), str(native_output)],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if completed.returncode:
-                detail = completed.stderr.strip() or completed.stdout.strip()
-                raise EmuFlowError(
-                    f"EDA 2023 TDM optimizer failed with exit code {completed.returncode}: {detail}"
-                )
-            ratio_count = 0
-            with native_output.open("r", encoding="utf-8") as stream:
-                if stream.readline().strip() != "EMUFLOW_TDM_RATIO_OUTPUT_V1":
-                    raise EmuFlowError("EDA 2023 TDM optimizer output header is invalid")
-                for line in stream:
-                    fields = line.split()
-                    if fields[:1] == ["HOP"] and len(fields) == 5:
-                        index = int(fields[1])
-                        if index != ratio_count:
-                            raise EmuFlowError(
-                                "EDA 2023 TDM optimizer HOP records are not contiguous"
-                            )
-                        model["hops"][index].update(
-                            {
-                                "continuous_ratio": float(fields[2]),
-                                "ratio": int(fields[3]),
-                                "lane": int(fields[4]),
-                            }
-                        )
-                        ratio_count += 1
-                    elif fields[:1] == ["METRIC"] and len(fields) == 3:
-                        metrics[fields[1]] = float(fields[2])
-        if ratio_count != len(model["hops"]):
-            raise EmuFlowError("EDA 2023 TDM optimizer omitted hop records")
-    model["paths"].clear()
-    plan = {
-        "schema": EDA2023_TDM_SCHEMA,
-        "instance": instance["name"],
-        "provider": provider,
-        "hops": model["hops"],
-    }
-    if timing_dag_evidence is not None:
-        plan["algorithm"] = {
-            "provider": timing_dag_evidence["provider"],
-            "equations": timing_dag_evidence["equations"],
-            "metrics": timing_dag_evidence["metrics"],
-            "validation": timing_dag_evidence["validation"],
-        }
-    output_dir.mkdir(parents=True, exist_ok=True)
-    plan_path = output_dir / "tdm_plan.json"
-    write_json(plan_path, plan)
-    evaluation = _evaluate_eda2023_model(instance, model, plan)
-    _write_official_outputs(output_dir, instance, model, plan, evaluation)
-    return {
-        "status": "pass",
-        "provider": plan["provider"],
-        "routed_nets": evaluation["metrics"]["routed_nets"],
-        "wire_hops": len(plan["hops"]),
-        "max_routing_weight": evaluation["metrics"]["max_routing_weight"],
-        "native_metrics": metrics,
-        "artifacts": {
-            "tdm_plan": str(plan_path),
-            "route_output": str(output_dir / "design.route.out"),
-            "tdm_output": str(output_dir / "design.tdm.out"),
-        },
-    }
-
-
 def _validate_plan(
     model: Mapping[str, Any], plan: Mapping[str, Any]
 ) -> Tuple[List[Mapping[str, Any]], int]:
@@ -898,7 +716,6 @@ def _validate_plan(
             raise ValidationError(f"Wire {key}: {count} signals exceed ratio {ratio}")
     return cast(List[Mapping[str, Any]], by_index), len(groups)
 
-
 def _evaluate_eda2023_model(
     instance: Mapping[str, Any],
     model: Mapping[str, Any],
@@ -939,7 +756,6 @@ def _evaluate_eda2023_model(
         },
     }
 
-
 def evaluate_eda2023_solution(
     instance_path: Path,
     routes_path: Path,
@@ -949,7 +765,6 @@ def evaluate_eda2023_solution(
     model = _route_model(instance, read_json(routes_path))
     plan = read_json(tdm_plan_path)
     return _evaluate_eda2023_model(instance, model, plan)
-
 
 def materialize_eda2023_official_outputs(
     instance_path: Path,
@@ -977,10 +792,8 @@ def materialize_eda2023_official_outputs(
     _write_official_outputs(output_dir, instance, model, plan, evaluation)
     return evaluation
 
-
 def _format_weight(value: float) -> str:
     return str(int(value)) if value.is_integer() else f"{value:.1f}"
-
 
 def _write_official_outputs(
     output_dir: Path,

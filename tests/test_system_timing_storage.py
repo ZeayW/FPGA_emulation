@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from emuflow.errors import ValidationError
-from emuflow.global_sta import _PathMetadataBuilder, _IndexedTimingResults, build_opensta_timing
+from emuflow.global_sta import _PathMetadataBuilder, _IndexedSystemTimingPaths, build_opensta_timing
 from emuflow.io import file_sha256, read_json
 from emuflow.local_path_timing import path_id_set_sha256
 from emuflow.system_timing_storage import (
@@ -37,8 +37,8 @@ def result(*, all_eliminated=False, count=3):
 @pytest.mark.parametrize("all_eliminated", [False, True])
 def test_typed_results_roundtrip_null_dispositions_and_original_coverage(tmp_path, all_eliminated):
     qor = result(all_eliminated=all_eliminated)
-    assert isinstance(qor["timing"]["paths"], _IndexedTimingResults)
-    assert qor["timing"]["paths"].typed_payload_bytes == 41*3
+    assert isinstance(qor["timing"]["paths"], _IndexedSystemTimingPaths)
+    assert qor["timing"]["paths"].typed_payload_bytes == 40*3
     selector = write_system_qor(tmp_path/"qor_report.json", qor)
     assert selector["schema"] == SCHEMA
     assert "paths" not in selector["header"]["timing"]
@@ -161,7 +161,7 @@ def test_missing_original_measurements_and_interleaved_indexed_bundles_fail_clos
     runtime = {"virtual_dut_clocks": {"core": {"nominal_period_ns": 100}}}
     rows = [dict(path=path, role=role, event="capture", arrival_ns=1, required_ns=10, slack_ns=9)
             for path, role in (("p", "target"), ("q", "target"), ("p", "runtime"), ("q", "runtime"))]
-    with pytest.raises(ValidationError, match="not ordered"):
+    with pytest.raises(ValidationError, match="contiguous original-path"):
         build_opensta_timing(runtime, metadata, rows)
     with pytest.raises(ValidationError, match="measurement population"):
         build_opensta_timing(runtime, metadata, (rows[0], rows[2]))
@@ -170,7 +170,7 @@ def test_missing_original_measurements_and_interleaved_indexed_bundles_fail_clos
 def test_large_path_population_keeps_summary_bounded_and_scalar_columns_typed(tmp_path):
     qor = result(count=25000)
     paths = qor["timing"]["paths"]
-    assert paths.typed_payload_bytes == 41*25000
+    assert paths.typed_payload_bytes == 40*25000
     assert not isinstance(paths, list)
     selector = write_system_qor(tmp_path/"qor_report.json", qor)
     assert (tmp_path/"qor_report.json").stat().st_size < 10000

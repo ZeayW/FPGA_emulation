@@ -545,15 +545,15 @@ def probe_xilinx_openparf_carry_native_support(
         "remaining_qualification_steps": [
             {
                 "id": "compiled-openparf-carry8-run",
-                "component": "src/emuflow/xilinx_openparf_carry8.py",
+                "component": "src/emuflow/xilinx_openparf_atomic.py",
                 "requirement": (
-                    "build the modified core and execute unplaced GP through "
-                    "native chain legalization and detailed placement"
+                    "build the modified core and execute mixed-resource GP through "
+                    "native directed-macro legalization and detailed placement"
                 ),
             },
             {
                 "id": "rapidwright-native-legality",
-                "component": "src/emuflow/xilinx_openparf_carry8.py",
+                "component": "src/emuflow/xilinx_openparf_atomic.py",
                 "requirement": (
                     "independently prove same-site CARRY8/LUT6_2 roles and "
                     "CARRY_NEXT adjacency against certified device constraints"
@@ -648,10 +648,9 @@ def probe_openparf_native_capabilities(
 ) -> Dict[str, Any]:
     """Build a design-specific native-OpenPARF capability matrix.
 
-    A status describes the complete EmuFlow-to-OpenPARF contract, not merely
-    whether a similarly named upstream class exists.  In particular, the
-    atomic LUT/FF legalizer and ISM detailed placer are not compatible with
-    the current one-node-per-packed-site representation.
+    A status describes the EmuFlow-to-OpenPARF atomic placement contract, not
+    merely whether a similarly named upstream class exists. Source inspection
+    does not substitute for compiled placement and independent device checks.
     """
 
     mapped = read_json(mapped_path)
@@ -796,7 +795,7 @@ def probe_openparf_native_capabilities(
                 "evidence": [
                     "openparf/custom_data/chain_info/src/chain_info.cpp",
                     "openparf/ops/chain_legalizer/src/chain_legalizer.cpp",
-                    "src/emuflow/xilinx_openparf_carry8.py",
+                    "src/emuflow/xilinx_openparf_atomic.py",
                 ],
                 **(
                     {"adapter_validation": "missing"}
@@ -832,11 +831,11 @@ def probe_openparf_native_capabilities(
             "single_site_resource_mcf_legalization",
             "adapter_required" if generic_dispatch and mcf else "core_missing",
             (
-                "the core MCF legalizer exists, but the current dense-grid "
-                "adapter deliberately makes X_SLICE multi-resource and merges "
-                "coincident physical sites into one Bookshelf site"
+                "the atomic adapter dispatches singleton DSP/BRAM/URAM "
+                "resources to native SSSIR MCF; LUT/FF and dedicated macros "
+                "retain their separate native legalization contracts"
             ),
-            ("openparf/ops/mcf_lg/mcf_lg.py", "src/emuflow/xilinx_openparf.py"),
+            ("openparf/ops/mcf_lg/mcf_lg.py", "src/emuflow/xilinx_openparf_atomic.py"),
         ),
         feature(
             "atomic_lut_ff_legalization",
@@ -910,7 +909,7 @@ def probe_openparf_native_capabilities(
             "clock_region_half_column_constraints",
             "adapter_required",
             "the core has clock-aware operators, but the current Bookshelf adapter emits no clock-region or instance-clock binding",
-            ("openparf/placement/op_collections.py", "src/emuflow/xilinx_openparf.py"),
+            ("openparf/placement/op_collections.py", "src/emuflow/xilinx_openparf_atomic.py"),
         ),
         feature(
             "multi_slr_constraints",
@@ -931,16 +930,6 @@ def probe_openparf_native_capabilities(
             ),
         ),
     ]
-
-    smoke_reasons = []
-    if not (generic_dispatch and mcf):
-        smoke_reasons.append("pinned generic-cluster MCF dispatch is unavailable")
-    if ambiguous_coordinates:
-        smoke_reasons.append("used physical tile coordinates are not one-site/one-resource")
-    if cascades:
-        smoke_reasons.append("independent MCF placement cannot preserve dedicated cascades")
-    if any(item["status"] == "unverified" for item in primitive_matrix):
-        smoke_reasons.append("mapped design contains an unaudited primitive")
 
     stage_capabilities = {
         "global_placement": {
@@ -1009,7 +998,7 @@ def probe_openparf_native_capabilities(
             "evidence": [
                 "openparf/custom_data/chain_info/src/chain_info.cpp",
                 "openparf/ops/chain_legalizer/src/chain_legalizer.cpp",
-                "src/emuflow/xilinx_openparf_carry8.py",
+                "src/emuflow/xilinx_openparf_atomic.py",
             ],
             **(
                 {"adapter_validation": "missing"}
@@ -1036,8 +1025,8 @@ def probe_openparf_native_capabilities(
         "primitives": primitive_capabilities,
         "constraints": constraint_capabilities,
         "current_production_path": (
-            "fixed-site-prepack -> OpenPARF-continuous-global-guidance -> "
-            "EmuFlow-greedy-exact-legalizer"
+            "mapped-index -> native-OpenPARF-atomic-placement -> "
+            "independent-site-BEL-check -> typed-physical-handoff -> RWRoute"
         ),
         "source_audit": source_audit,
         "carry_source_audit": carry_source_audit,
@@ -1047,32 +1036,9 @@ def probe_openparf_native_capabilities(
             "dedicated_cascade_chains": len(cascades),
             "ambiguous_physical_coordinates": ambiguous_coordinates,
         },
-        "native_packed_cluster_smoke": {
-            "status": "unverified" if not smoke_reasons else "adapter_required",
-            "eligible": not smoke_reasons,
-            "reasons": smoke_reasons,
-            "scope": (
-                "single-site resource MCF core smoke only; this is not "
-                "production detailed placement or UltraScale+ BEL signoff"
-            ),
-        },
         "native_atomic_lut_ff": atomic_adapter,
     }
     validate_xilinx_placer_capability_report(result)
     if output_path is not None:
         write_json(output_path, result, compact=True)
     return result
-
-
-def require_native_packed_cluster_smoke(matrix: Mapping[str, Any]) -> None:
-    """Reject unsupported probes instead of falling back to the greedy route."""
-
-    if matrix.get("schema") != OPENPARF_NATIVE_CAPABILITY_SCHEMA:
-        raise ValidationError("OpenPARF native capability matrix is invalid")
-    smoke = matrix.get("native_packed_cluster_smoke")
-    if not isinstance(smoke, Mapping) or smoke.get("eligible") is not True:
-        reasons = smoke.get("reasons", []) if isinstance(smoke, Mapping) else []
-        detail = "; ".join(str(reason) for reason in reasons) or "unknown capability"
-        raise ValidationError(
-            "OpenPARF native packed-cluster smoke is unsupported: " + detail
-        )

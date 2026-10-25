@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EmuFlow external engine result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "operation",
+    "started",
+    "returncode",
+    "spawn_errno",
+    "timed_out",
+    "cancelled_signal",
+    "diagnostic_tail_hex",
+    "diagnostic_bytes",
+    "engine_metrics"
+  ],
+  "properties": {
+    "schema": {
+      "const": "emuflow.external-tool-result/v1"
+    },
+    "operation": {
+      "$ref": "native-stage-result-v1.schema.json"
+    },
+    "started": {
+      "type": "boolean"
+    },
+    "returncode": {
+      "type": "integer",
+      "minimum": -128,
+      "maximum": 255
+    },
+    "spawn_errno": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "timed_out": {
+      "type": "boolean"
+    },
+    "cancelled_signal": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "diagnostic_tail_hex": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{2})*$",
+      "maxLength": 4194304
+    },
+    "diagnostic_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "engine_metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "wall_seconds",
+        "user_cpu_seconds",
+        "system_cpu_seconds",
+        "maximum_process_rss_kib",
+        "cpu_scope",
+        "rss_scope"
+      ],
+      "properties": {
+        "wall_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "user_cpu_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "system_cpu_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "maximum_process_rss_kib": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cpu_scope": {
+          "const": "wait4-child-and-reaped-descendants"
+        },
+        "rss_scope": {
+          "const": "wait4-maximum-process-high-water"
+        }
+      }
+    }
+  }
+}

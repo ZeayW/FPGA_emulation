@@ -18,6 +18,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import ValidationError
 from .io import file_sha256, write_json
 from .netlist import (
@@ -32,6 +33,15 @@ from .phase3_assignment_index import open_phase3_assignment_index
 from .platform import Platform
 from .tdm import TDM_SCHEDULE_SCHEMA, is_sampled_virtual_wire_schedule
 from .tdm_schedule_storage import canonical_tdm_schedule_sha256
+from .store_publication import (
+    StoreSource,
+    VerifiedStoreFile,
+    bind_view_sources,
+    bind_store_source,
+    require_store_sources_unchanged,
+    publish_sqlite_store,
+)
+from .native_tools import native_file_generation
 
 
 TRANSPORT_STORAGE_SCHEMA = "emuflow.transport-storage/v1"
@@ -272,7 +282,7 @@ def _validate_manifest(
 
 def _connect(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(
-        f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+        immutable_sqlite_uri(path), uri=True
     )
     connection.row_factory = sqlite3.Row
     return connection
@@ -490,6 +500,10 @@ class _BaseView(Mapping[str, Any]):
         self._header: dict[str, Any] = {}
         self._sections: dict[str, Sequence[Mapping[str, Any]]] = {}
 
+    def bound_store_sources(self):
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
+
     def __getitem__(self, key: str) -> Any:
         if key in self._sections:
             return self._sections[key]
@@ -536,7 +550,9 @@ def _open_and_validate(
     schema: str,
     logical_schema: str,
     sections: set[str],
-) -> tuple[dict[str, Any], Path]:
+    store_owner: VerifiedStoreFile | None = None,
+) -> tuple[dict[str, Any], Path, tuple[StoreSource, StoreSource]]:
+    selector_source = bind_store_source(path, "transport-selector-v1")
     manifest = _raw_manifest(path)
     store_path = _validate_manifest(
         manifest,
@@ -547,12 +563,21 @@ def _open_and_validate(
     )
     try:
         stat = store_path.stat()
+        store_source = bind_store_source(store_path, "transport-store-v1")
     except OSError as error:
         raise ValidationError("transport SQLite store is missing") from error
     if stat.st_size != manifest["store_bytes"]:
         raise ValidationError("transport SQLite store size disagrees")
-    if file_sha256(store_path) != manifest["store_sha256"]:
-        raise ValidationError("transport SQLite store digest disagrees")
+    if store_owner is None:
+        if file_sha256(store_path) != manifest["store_sha256"]:
+            raise ValidationError("transport SQLite store digest disagrees")
+    else:
+        store_owner.require(
+            store_path,
+            "transport-store-v1",
+            manifest["store_bytes"],
+            manifest["store_sha256"],
+        )
     connection = _connect(store_path)
     try:
         if (
@@ -576,17 +601,23 @@ def _open_and_validate(
         raise ValidationError("transport SQLite metadata is corrupt") from error
     finally:
         connection.close()
-    return manifest, store_path
+    sources = (selector_source, store_source)
+    require_store_sources_unchanged(sources)
+    return manifest, store_path, sources
 
 
 class TransportView(_BaseView):
-    def __init__(self, manifest_path: Path):
+
+    def __init__(
+        self, manifest_path: Path, *, store_owner: VerifiedStoreFile | None = None
+    ):
         super().__init__(manifest_path)
-        manifest, store_path = _open_and_validate(
+        manifest, store_path, self._source_bindings = _open_and_validate(
             self.manifest_path,
             schema=TRANSPORT_STORAGE_SCHEMA,
             logical_schema=TRANSPORT_ENDPOINTS_SCHEMA,
             sections={"source_signals", "shadow_signals", "endpoints"},
+            store_owner=store_owner,
         )
         self.manifest = manifest
         self.store_path = store_path
@@ -716,13 +747,17 @@ class TransportView(_BaseView):
 
 
 class LaneMapView(_BaseView):
-    def __init__(self, manifest_path: Path):
+
+    def __init__(
+        self, manifest_path: Path, *, store_owner: VerifiedStoreFile | None = None
+    ):
         super().__init__(manifest_path)
-        manifest, store_path = _open_and_validate(
+        manifest, store_path, self._source_bindings = _open_and_validate(
             self.manifest_path,
             schema=LANE_MAP_STORAGE_SCHEMA,
             logical_schema=LOGICAL_LANE_MAP_SCHEMA,
             sections={"entries"},
+            store_owner=store_owner,
         )
         self.manifest = manifest
         self.store_path = store_path
@@ -740,13 +775,17 @@ class LaneMapView(_BaseView):
 
 
 class AnchorView(_BaseView):
-    def __init__(self, manifest_path: Path):
+
+    def __init__(
+        self, manifest_path: Path, *, store_owner: VerifiedStoreFile | None = None
+    ):
         super().__init__(manifest_path)
-        manifest, store_path = _open_and_validate(
+        manifest, store_path, self._source_bindings = _open_and_validate(
             self.manifest_path,
             schema=ANCHOR_STORAGE_SCHEMA,
             logical_schema=VIRTUAL_IO_ANCHORS_SCHEMA,
             sections={"anchors"},
+            store_owner=store_owner,
         )
         self.manifest = manifest
         self.store_path = store_path
@@ -778,13 +817,17 @@ class AnchorView(_BaseView):
 
 
 class VirtualBindingView(_BaseView):
-    def __init__(self, manifest_path: Path):
+
+    def __init__(
+        self, manifest_path: Path, *, store_owner: VerifiedStoreFile | None = None
+    ):
         super().__init__(manifest_path)
-        manifest, store_path = _open_and_validate(
+        manifest, store_path, self._source_bindings = _open_and_validate(
             self.manifest_path,
             schema=VIRTUAL_BINDING_STORAGE_SCHEMA,
             logical_schema=VIRTUAL_BINDING_LOGICAL_SCHEMA,
             sections={"entries"},
+            store_owner=store_owner,
         )
         self.manifest = manifest
         self.store_path = store_path
@@ -1324,23 +1367,25 @@ def _manifest(
     artifact: str,
     header: Mapping[str, Any],
     sections: Mapping[str, Mapping[str, Any]],
-    store_path: Path,
+    store_owner: VerifiedStoreFile,
     canonical_sha256: str | None = None,
 ) -> dict[str, Any]:
+    store_owner.require_unchanged()
     return {
         "schema": schema,
         "logical_schema": logical_schema,
         "artifact": artifact,
         "application_id": TRANSPORT_APPLICATION_ID,
         "user_version": TRANSPORT_USER_VERSION,
-        "store_bytes": store_path.stat().st_size,
-        "store_sha256": file_sha256(store_path),
+        "store_bytes": store_owner.bytes,
+        "store_sha256": store_owner.sha256,
         "header": dict(header),
         "sections": dict(sections),
         "logical_sha256": _logical_digest(header, sections),
         **(
             {"canonical_sha256": canonical_sha256}
-            if canonical_sha256 is not None else {}
+            if canonical_sha256 is not None
+            else {}
         ),
     }
 
@@ -1427,6 +1472,11 @@ def write_transport_storage(
     if schedule.get("platform") != platform.name:
         raise ValidationError("schedule platform disagrees with BoardDB")
 
+    assignment_generation = native_file_generation(assignment_index_path)
+    source_bindings = bind_view_sources(
+        (schedule, "tdm-schedule-store-v4"),
+        (pin_plan, "pin-plan-store-v1"),
+    )
     assignment = open_phase3_assignment_index(assignment_index_path)
     try:
         assignment_metadata = {
@@ -1440,6 +1490,16 @@ def write_transport_storage(
         )
     finally:
         assignment.close()
+    source_bindings += (
+        StoreSource(
+            Path(assignment_index_path).resolve(),
+            {
+                "emuflow.phase3-assignment-sqlite/v3": "assignment-index-v3",
+                "emuflow.phase3-assignment-sqlite/v4": "assignment-index-v4",
+            }[assignment_metadata["schema"]],
+            assignment_generation,
+        ),
+    )
     if assignment_metadata.get("design") != design_name:
         raise ValidationError("assignment index design disagrees with EmuIR")
     if assignment_metadata.get("platform") != platform.name:
@@ -1464,6 +1524,8 @@ def write_transport_storage(
     if pin_plan is not None:
         if pin_plan.get("schema") != "emuflow.placement-aware-pin-plan/v1":
             raise ValidationError("pin plan has an unsupported schema")
+        if pin_plan.get("provider") != "chimew-paper-plus-emuflow-electrical-slot-v1":
+            raise ValidationError("pin plan has a retired or unsupported provider")
         lane_records = getattr(pin_plan, "iter_lane_records", None)
         if lane_records is not None:
             pin_lane_iterator = iter(lane_records())
@@ -1534,7 +1596,7 @@ def write_transport_storage(
         )
         connection.execute(
             "ATTACH DATABASE ? AS assignment",
-            (f"file:{assignment_index_path.resolve()}?mode=ro&immutable=1",),
+            (immutable_sqlite_uri(assignment_index_path),),
         )
 
         typed_records = getattr(schedule, "iter_transport_records", None)
@@ -2149,9 +2211,9 @@ def write_transport_storage(
                 "anchors": _anchor_relation_section(connection, fpga)
             }
         connection.close()
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
-        os.replace(temporary, store_path)
+        publish_sqlite_store(
+            temporary, store_path, "transport-store-v1", sources=source_bindings
+        )
     except sqlite3.IntegrityError as error:
         try:
             connection.close()
@@ -2167,13 +2229,14 @@ def write_transport_storage(
             temporary.unlink(missing_ok=True)
         raise
 
+    store_owner = VerifiedStoreFile(store_path, "transport-store-v1")
     lane_manifest = _manifest(
         schema=LANE_MAP_STORAGE_SCHEMA,
         logical_schema=LOGICAL_LANE_MAP_SCHEMA,
         artifact=TRANSPORT_STORE_NAME,
         header=lane_header,
         sections=lane_sections,
-        store_path=store_path,
+        store_owner=store_owner,
         canonical_sha256=lane_canonical_sha256,
     )
     write_json(output_dir / "lane_map.json", lane_manifest, compact=True)
@@ -2185,7 +2248,7 @@ def write_transport_storage(
             artifact=TRANSPORT_STORE_NAME,
             header=binding_header,
             sections=binding_sections,
-            store_path=store_path,
+            store_owner=store_owner,
             canonical_sha256=binding_canonical_sha256,
         )
         write_json(
@@ -2203,7 +2266,7 @@ def write_transport_storage(
                 artifact=f"../{TRANSPORT_STORE_NAME}",
                 header=transport_headers[fpga],
                 sections=transport_sections[fpga],
-                store_path=store_path,
+                store_owner=store_owner,
             ),
             compact=True,
         )
@@ -2215,32 +2278,39 @@ def write_transport_storage(
                 artifact=f"../{TRANSPORT_STORE_NAME}",
                 header=anchor_headers[fpga],
                 sections=anchor_sections[fpga],
-                store_path=store_path,
+                store_owner=store_owner,
             ),
             compact=True,
         )
 
     transports = {
-        fpga: TransportView(output_dir / fpga / "transport.json")
+        fpga: TransportView(
+            output_dir / fpga / "transport.json", store_owner=store_owner
+        )
         for fpga in fpga_ids
     }
     anchors = {
-        fpga: AnchorView(output_dir / fpga / "virtual_anchors.json")
+        fpga: AnchorView(
+            output_dir / fpga / "virtual_anchors.json", store_owner=store_owner
+        )
         for fpga in fpga_ids
     }
     return {
-        "lane_map": LaneMapView(output_dir / "lane_map.json"),
+        "lane_map": LaneMapView(output_dir / "lane_map.json", store_owner=store_owner),
         "transports": transports,
         "anchors": anchors,
         "binding": (
-            VirtualBindingView(output_dir / "virtual_board_binding.json")
-            if binding_manifest is not None else None
+            VirtualBindingView(
+                output_dir / "virtual_board_binding.json", store_owner=store_owner
+            )
+            if binding_manifest is not None
+            else None
         ),
         "summary": {
             "schema": TRANSPORT_STORAGE_SCHEMA,
             "artifact": TRANSPORT_STORE_NAME,
-            "bytes": store_path.stat().st_size,
-            "sha256": file_sha256(store_path),
+            "bytes": store_owner.bytes,
+            "sha256": store_owner.sha256,
             "scheduled_hops": entry_count,
             "transport_endpoints": 2 * entry_count,
             "lane_entries": entry_count,

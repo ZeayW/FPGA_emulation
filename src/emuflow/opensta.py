@@ -6,7 +6,6 @@ import hashlib
 import math
 import os
 import re
-import subprocess
 import sys
 import tempfile
 from collections import defaultdict
@@ -19,6 +18,7 @@ from .errors import EmuFlowError, ValidationError
 from .io import file_sha256, read_json, write_json
 from .ir import EmuIR
 from .native_tools import resolve_native_executable
+from .process_output import run_with_bounded_output
 from .sta import (
     import_sta_path_database_tsv,
     import_sta_path_database_tsv_streaming,
@@ -26,10 +26,6 @@ from .sta import (
     write_emuir_net_map,
 )
 from .verilog import write_mapped_verilog
-from .vtr_architecture import (
-    ARCHITECTURE_TIMING_DB_SCHEMA,
-    validate_vtr_timing_db,
-)
 from .xilinx_preplacement_timing import (
     XILINX_PREPLACEMENT_TIMING_SCHEMA,
     validate_xilinx_preplacement_timing_db,
@@ -122,13 +118,7 @@ def check_opensta_engine_version(executable: str) -> str:
     invocation still calls :func:`require_opensta_engine` once, where the
     executable is content-sealed for retained evidence.
     """
-    version_result = subprocess.run(
-        [executable, "-version"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
+    version_result = run_with_bounded_output([executable, "-version"])
     version_match = re.search(
         r"(?:^|\s)(\d+)\.(\d+)\.(\d+)(?:\s|$)",
         version_result.stdout,
@@ -144,9 +134,8 @@ def check_opensta_engine_version(executable: str) -> str:
         raise ValidationError(
             f"OpenSTA {actual} is unsupported; EmuFlow requires {minimum} or newer"
         )
-    runtime_result = subprocess.run(
-        [executable, "-no_init", "-exit", str(OPENSTA_RUNTIME_CHECK_SCRIPT)],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False,
+    runtime_result = run_with_bounded_output(
+        [executable, "-no_init", "-exit", str(OPENSTA_RUNTIME_CHECK_SCRIPT)]
     )
     if (runtime_result.returncode != 0 or
             "EMUFLOW_OPENSTA_RUNTIME status=pass" not in runtime_result.stdout):
@@ -610,30 +599,6 @@ def render_opensta_liberty(model: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _matrix_max_seconds(value: Any) -> float:
-    if not isinstance(value, str) or not value.strip():
-        return 0.0
-    numbers = []
-    for token in value.split():
-        try:
-            number = float(token)
-        except ValueError as error:
-            raise ValidationError(
-                f"VTR timing matrix contains invalid number {token!r}"
-            ) from error
-        if not math.isfinite(number) or number < 0.0:
-            raise ValidationError("VTR timing matrix contains invalid delay")
-        numbers.append(number)
-    return max(numbers, default=0.0)
-
-
-def _arc_max_seconds(arc: Mapping[str, Any]) -> float:
-    return max(
-        float(arc.get("max_seconds", 0.0)),
-        _matrix_max_seconds(arc.get("matrix", "")),
-    )
-
-
 def _instance_pin_sets(
     ir: EmuIR,
     *,
@@ -701,302 +666,6 @@ def _integer_parameter(
         except ValueError:
             return fallback
     return fallback
-
-
-def _vtr_timing_cell_type(
-    instance: Mapping[str, Any],
-    pins: Mapping[str, set[tuple[str, int]]],
-) -> str:
-    kind = instance["type"]
-    all_pins = pins["inputs"] | pins["outputs"]
-
-    def width(port: str) -> int:
-        return max(
-            (bit + 1 for candidate, bit in all_pins if candidate == port),
-            default=0,
-        )
-    if kind == "$lut":
-        lut_width = _integer_parameter(instance, "WIDTH", width("A"))
-        return f"EMUFLOW_VTR_LUT{lut_width}"
-    if kind.startswith("LUT") and kind[3:].isdigit():
-        return f"EMUFLOW_VTR_LUT{int(kind[3:])}"
-    if kind.startswith("$_DFF_"):
-        return "EMUFLOW_VTR_DFF"
-    if kind in {"FDCE", "FDPE", "FDRE", "FDSE"}:
-        # Keep control-pin variants as distinct Liberty cells.  They share
-        # the public VTR DFF setup/clock-to-Q characterization, but merging
-        # them would create an inconsistent pin contract (CLR/PRE/R/S).
-        return f"EMUFLOW_VTR_{kind}"
-    if kind == "VTR_MULTIPLY":
-        return (
-            "EMUFLOW_VTR_MULTIPLY_"
-            f"{_integer_parameter(instance, 'A_WIDTH', width('a'))}_"
-            f"{_integer_parameter(instance, 'B_WIDTH', width('b'))}_"
-            f"{_integer_parameter(instance, 'Y_WIDTH', width('out'))}"
-        )
-    if kind in {"VTR_SP_RAM", "VTR_DP_RAM"}:
-        prefix = "SP" if kind == "VTR_SP_RAM" else "DP"
-        return (
-            f"EMUFLOW_VTR_{prefix}_RAM_"
-            f"A{_integer_parameter(instance, 'ADDR_WIDTH', width('addr'))}_"
-            f"D{_integer_parameter(instance, 'DATA_WIDTH', width('data'))}"
-        )
-    raise ValidationError(
-        "VTR academic timing conversion does not cover mapped primitive "
-        f"{kind!r}"
-    )
-
-
-def _vtr_sink_interconnect_delay_seconds(
-    timing_db: Mapping[str, Any],
-) -> float:
-    """Derive a placement-independent sink delay from public VTR data.
-
-    The estimate is one worst internal block arc plus the fastest ordinary
-    routing switch and its segment RC. It is architecture-sourced but remains
-    explicitly pre-placement; VPR later replaces it with routed timing.
-    """
-    block_delay = max(
-        (_arc_max_seconds(arc)
-         for arc in timing_db["block_interconnect_arcs"]),
-        default=0.0,
-    )
-    switches = timing_db["routing"]["switches"]
-    switch_by_name = {switch["name"]: switch for switch in switches}
-    candidates = []
-    for segment in timing_db["routing"]["segments"]:
-        switch = switch_by_name.get(segment.get("mux"))
-        if switch is None:
-            continue
-        segment_resistance = (
-            float(segment["metal_resistance_ohm"]) * int(segment["length"])
-        )
-        segment_capacitance = (
-            float(segment["metal_capacitance_f"]) * int(segment["length"])
-        )
-        switch_capacitance = float(switch["output_capacitance_f"])
-        rc_delay = (
-            float(switch["resistance_ohm"])
-            * (segment_capacitance + switch_capacitance)
-            + 0.5 * segment_resistance * segment_capacitance
-        )
-        candidates.append(float(switch["intrinsic_delay_seconds"]) + rc_delay)
-    if not candidates:
-        candidates = [
-            float(switch["intrinsic_delay_seconds"]) for switch in switches
-        ]
-    return block_delay + min(candidates, default=0.0)
-
-
-def build_vtr_opensta_timing_model(
-    ir: EmuIR,
-    timing_db_path: Path,
-    output_path: Optional[Path] = None,
-) -> tuple[Dict[str, Any], Dict[str, str]]:
-    """Translate an open VTR TimingDB to design-specialized OpenSTA cells."""
-    timing_db = read_json(timing_db_path)
-    if timing_db.get("schema") != ARCHITECTURE_TIMING_DB_SCHEMA:
-        raise ValidationError("VTR OpenSTA conversion requires TimingDB v1")
-    validate_vtr_timing_db(timing_db)
-
-    primitive_by_scope = {
-        primitive["path"]: primitive for primitive in timing_db["primitives"]
-    }
-    delays_by_cell: DefaultDict[str, list[float]] = defaultdict(list)
-    setup_by_cell: DefaultDict[str, list[float]] = defaultdict(list)
-    clock_to_q_by_cell: DefaultDict[str, list[float]] = defaultdict(list)
-    model_by_cell: DefaultDict[str, set[str]] = defaultdict(set)
-    for primitive in timing_db["primitives"]:
-        model_by_cell[primitive["cell"]].add(primitive["model"])
-    for arc in timing_db["primitive_arcs"]:
-        primitive = primitive_by_scope.get(arc["scope"])
-        if primitive is None:
-            raise ValidationError(
-                f"VTR timing arc has unknown primitive scope {arc['scope']!r}"
-            )
-        delay = _arc_max_seconds(arc)
-        kind = arc["kind"]
-        if kind in {"delay_constant", "delay_matrix"}:
-            delays_by_cell[primitive["cell"]].append(delay)
-        elif kind == "T_setup":
-            setup_by_cell[primitive["cell"]].append(delay)
-        elif kind == "T_clock_to_Q":
-            clock_to_q_by_cell[primitive["cell"]].append(delay)
-
-    interconnect_seconds = _vtr_sink_interconnect_delay_seconds(timing_db)
-    pin_sets = _instance_pin_sets(ir)
-    instance_cell_types = {
-        instance["id"]: _vtr_timing_cell_type(
-            instance, pin_sets[instance["id"]]
-        )
-        for instance in ir.value["instances"]
-    }
-    groups: DefaultDict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for instance in ir.value["instances"]:
-        groups[instance_cell_types[instance["id"]]].append(instance)
-
-    def maximum(values: Iterable[float], context: str) -> float:
-        items = list(values)
-        if not items:
-            raise ValidationError(
-                f"VTR TimingDB has no usable {context} timing arc"
-            )
-        return max(items)
-
-    lut_cells = {
-        int(cell[3:]): cell
-        for cell in delays_by_cell
-        if cell.startswith("LUT") and cell[3:].isdigit()
-    }
-    multiply_cells = {
-        cell for cell, models in model_by_cell.items()
-        if ".subckt multiply" in models
-    }
-    memory_cells = {
-        cell for cell, models in model_by_cell.items()
-        if models & {".subckt single_port_ram", ".subckt dual_port_ram"}
-    }
-    cells: Dict[str, Dict[str, Any]] = {}
-    for timing_type, instances in sorted(groups.items()):
-        representative = instances[0]
-        representative_pins = pin_sets[representative["id"]]
-        inputs = _scalar_pin_names(representative_pins["inputs"])
-        outputs = _scalar_pin_names(representative_pins["outputs"])
-        if any(
-            _scalar_pin_names(pin_sets[instance["id"]]["inputs"]) != inputs
-            or _scalar_pin_names(pin_sets[instance["id"]]["outputs"]) != outputs
-            for instance in instances[1:]
-        ):
-            raise ValidationError(
-                f"VTR timing cell {timing_type!r} has inconsistent pin widths"
-            )
-        kind = representative["type"]
-        if kind == "$lut" or (
-            kind.startswith("LUT") and kind[3:].isdigit()
-        ):
-            width = (
-                int(kind[3:])
-                if kind != "$lut"
-                else _integer_parameter(
-                    representative,
-                    "WIDTH",
-                    len([pin for pin in inputs if pin.startswith("A")]),
-                )
-            )
-            compatible = [
-                cell for candidate_width, cell in lut_cells.items()
-                if candidate_width >= width
-            ]
-            if not compatible:
-                compatible = list(lut_cells.values())
-            cell_delay = maximum(
-                (
-                    delay
-                    for cell in compatible
-                    for delay in delays_by_cell[cell]
-                ),
-                f"LUT{width}",
-            )
-            cells[timing_type] = {
-                "kind": "combinational",
-                "inputs": inputs,
-                "outputs": outputs,
-                "delay_ns": (cell_delay + interconnect_seconds) * 1.0e9,
-            }
-        elif kind.startswith("$_DFF_") or kind in {
-            "FDCE",
-            "FDPE",
-            "FDRE",
-            "FDSE",
-        }:
-            setup = maximum(setup_by_cell["DFF"], "DFF setup")
-            clock_to_q = maximum(
-                clock_to_q_by_cell["DFF"], "DFF clock-to-Q"
-            )
-            clock = next(
-                (pin for pin in inputs if pin in {"C", "CLK", "clk"}),
-                None,
-            )
-            data = next((pin for pin in inputs if pin == "D"), None)
-            if clock is None or data is None or len(outputs) != 1:
-                raise ValidationError("VTR DFF mapped pin contract is invalid")
-            cells[timing_type] = {
-                "kind": "rising_edge_ff",
-                "clock": clock,
-                "data": data,
-                "output": outputs[0],
-                "controls": [
-                    pin for pin in inputs if pin not in {clock, data}
-                ],
-                "setup_ns": (setup + interconnect_seconds) * 1.0e9,
-                "clock_to_q_ns": clock_to_q * 1.0e9,
-            }
-        elif kind == "VTR_MULTIPLY":
-            cell_delay = maximum(
-                (
-                    delay
-                    for cell in multiply_cells
-                    for delay in delays_by_cell[cell]
-                ),
-                "multiply",
-            )
-            cells[timing_type] = {
-                "kind": "combinational",
-                "inputs": inputs,
-                "outputs": outputs,
-                "delay_ns": (cell_delay + interconnect_seconds) * 1.0e9,
-            }
-        else:
-            setup = maximum(
-                (
-                    delay
-                    for cell in memory_cells
-                    for delay in setup_by_cell[cell]
-                ),
-                "memory setup",
-            )
-            clock_to_q = maximum(
-                (
-                    delay
-                    for cell in memory_cells
-                    for delay in clock_to_q_by_cell[cell]
-                ),
-                "memory clock-to-Q",
-            )
-            clock = next(
-                (pin for pin in inputs if pin in {"C", "CLK", "clk"}),
-                None,
-            )
-            if clock is None:
-                raise ValidationError("VTR RAM mapped clock pin is absent")
-            cells[timing_type] = {
-                "kind": "rising_edge_bank",
-                "clock": clock,
-                "inputs": [pin for pin in inputs if pin != clock],
-                "outputs": outputs,
-                "setup_ns": (setup + interconnect_seconds) * 1.0e9,
-                "clock_to_q_ns": clock_to_q * 1.0e9,
-            }
-
-    model = {
-        "schema": FPGA_TIMING_MODEL_SCHEMA_V2,
-        "name": f"{timing_db['name']}-opensta-preplacement",
-        "family": f"vtr:{timing_db['name']}",
-        "source": {
-            "provider": "vtr-timingdb-opensta-translator-v1",
-            "qualification": "academic_open_model",
-            "architecture": timing_db["architecture"],
-            "architecture_timing_db": str(timing_db_path),
-            "architecture_source_sha256": timing_db["source"]["sha256"],
-            "interconnect_model": "vtr-preplacement-sink-delay-v1",
-            "sink_interconnect_delay_ns": interconnect_seconds * 1.0e9,
-        },
-        "cells": cells,
-    }
-    if output_path is not None:
-        write_json(output_path, model)
-    load_timing_model(output_path) if output_path is not None else None
-    return model, instance_cell_types
 
 
 def build_xilinx_preplacement_opensta_timing_model(
@@ -1155,8 +824,6 @@ def build_architecture_opensta_timing_model(
     """Dispatch an Architecture TimingDB without guessing its provider."""
 
     schema = read_json(timing_db_path).get("schema")
-    if schema == ARCHITECTURE_TIMING_DB_SCHEMA:
-        return build_vtr_opensta_timing_model(ir, timing_db_path, output_path)
     if schema == XILINX_PREPLACEMENT_TIMING_SCHEMA:
         return build_xilinx_preplacement_opensta_timing_model(
             ir, timing_db_path, output_path
@@ -1768,13 +1435,9 @@ def _run_opensta_path_database(
                 ),
             }
         )
-        completed = subprocess.run(
+        completed = run_with_bounded_output(
             [opensta, "-exit", str(OPENSTA_EXPORT_SCRIPT)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            check=False,
-            env=environment,
+            environment=environment,
         )
         if log_path is not None:
             log_path.parent.mkdir(parents=True, exist_ok=True)

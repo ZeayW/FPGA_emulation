@@ -9,6 +9,7 @@ export remains explicit for external tools which still require the old JSON.
 
 from __future__ import annotations
 
+from contextlib import closing
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 import fcntl
 import hashlib
@@ -21,6 +22,13 @@ from typing import Any, Optional
 import weakref
 
 from .errors import ValidationError
+from .store_publication import (
+    StoreSource,
+    bind_store_source,
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+)
 from .io import file_sha256, read_json, write_json
 
 
@@ -216,7 +224,9 @@ def _validate_selector(value: Any) -> dict[str, Any]:
     return value
 
 
-def _resolve_store(selector_path: Path, selector: Mapping[str, Any]) -> Path:
+def _resolve_store(
+    selector_path: Path, selector: Mapping[str, Any]
+) -> tuple[Path, StoreSource]:
     selector_parent = _validate_selector_location(selector_path)
     unresolved = selector_path.parent / str(selector["artifact"])
     if unresolved.is_symlink():
@@ -224,6 +234,7 @@ def _resolve_store(selector_path: Path, selector: Mapping[str, Any]) -> Path:
     try:
         store_path = unresolved.resolve(strict=True)
         stat = store_path.stat()
+        store_source = bind_store_source(store_path, "openparf-name-map-store-v1")
     except OSError as error:
         raise ValidationError("OpenPARF atomic name-map store is missing") from error
     if store_path.parent != selector_parent:
@@ -233,7 +244,8 @@ def _resolve_store(selector_path: Path, selector: Mapping[str, Any]) -> Path:
         or file_sha256(store_path) != selector["store_sha256"]
     ):
         raise ValidationError("OpenPARF atomic name-map store seal disagrees")
-    return store_path
+    require_store_sources_unchanged((store_source,))
+    return store_path, store_source
 
 
 def _previous_store(path: Path) -> Optional[Path]:
@@ -249,7 +261,7 @@ def _previous_store(path: Path) -> Optional[Path]:
     ):
         return None
     selector = _validate_selector(value)
-    return _resolve_store(path, selector)
+    return _resolve_store(path, selector)[0]
 
 
 def _collect_stale_stores(path: Path, keep: Path) -> None:
@@ -334,7 +346,7 @@ class _AtomSequence(Sequence[Mapping[str, str]]):
 
     def __iter__(self) -> Iterator[Mapping[str, str]]:
         self._ensure_open()
-        with _connect(self.store_path) as connection:
+        with closing(_connect(self.store_path)) as connection, connection:
             for row in connection.execute(
                 "SELECT openparf,instance,cell_type,source_cluster,resource "
                 "FROM atoms ORDER BY seq"
@@ -349,7 +361,7 @@ class _AtomSequence(Sequence[Mapping[str, str]]):
             index += self.count
         if not 0 <= index < self.count:
             raise IndexError(index)
-        with _connect(self.store_path) as connection:
+        with closing(_connect(self.store_path)) as connection, connection:
             row = connection.execute(
                 "SELECT openparf,instance,cell_type,source_cluster,resource "
                 "FROM atoms WHERE seq=?", (index,),
@@ -376,7 +388,7 @@ class _CascadeSequence(Sequence[Mapping[str, Any]]):
 
     def __iter__(self) -> Iterator[Mapping[str, Any]]:
         self._ensure_open()
-        with _connect(self.store_path) as connection:
+        with closing(_connect(self.store_path)) as connection, connection:
             for row in connection.execute(
                 "SELECT record_json FROM carry_cascades ORDER BY seq"
             ):
@@ -390,7 +402,7 @@ class _CascadeSequence(Sequence[Mapping[str, Any]]):
             index += self.count
         if not 0 <= index < self.count:
             raise IndexError(index)
-        with _connect(self.store_path) as connection:
+        with closing(_connect(self.store_path)) as connection, connection:
             row = connection.execute(
                 "SELECT record_json FROM carry_cascades WHERE seq=?", (index,),
             ).fetchone()
@@ -416,6 +428,9 @@ class XilinxOpenparfAtomicNameMapView(Mapping[str, Any]):
         self._closed = False
         try:
             self.selector_path = selector_path.resolve()
+            selector_source = bind_store_source(
+                self.selector_path, "openparf-name-map-selector-v1"
+            )
             selector = _validate_selector(read_json(selector_path))
             for key, expected in (
                 ("mapped_sha256", mapped_sha256),
@@ -427,8 +442,10 @@ class XilinxOpenparfAtomicNameMapView(Mapping[str, Any]):
                         f"OpenPARF atomic name-map {key[:-7]} source seal disagrees"
                     )
             self.selector = selector
-            self.store_path = _resolve_store(selector_path, selector)
+            self.store_path, store_source = _resolve_store(selector_path, selector)
+            self._source_bindings = (selector_source, store_source)
             self._validate_store()
+            require_store_sources_unchanged(self._source_bindings)
             self._atoms = _AtomSequence(
                 self.store_path, selector["counts"]["atoms"], self
             )
@@ -455,6 +472,10 @@ class XilinxOpenparfAtomicNameMapView(Mapping[str, Any]):
         value.selector_path = selector_path.resolve()
         value.selector = selector
         value.store_path = store_path.resolve()
+        value._source_bindings = (
+            bind_store_source(value.selector_path, "openparf-name-map-selector-v1"),
+            bind_store_source(value.store_path, "openparf-name-map-store-v1"),
+        )
         value._atoms = _AtomSequence(
             value.store_path, selector["counts"]["atoms"], value
         )
@@ -462,6 +483,11 @@ class XilinxOpenparfAtomicNameMapView(Mapping[str, Any]):
             value.store_path, selector["counts"]["carry_cascade_chains"], value
         )
         return value
+
+    def bound_store_sources(self):
+        self._ensure_open()
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -488,7 +514,7 @@ class XilinxOpenparfAtomicNameMapView(Mapping[str, Any]):
         atom_digest = hashlib.sha256()
         cascade_digest = hashlib.sha256()
         try:
-            with _connect(self.store_path) as connection:
+            with closing(_connect(self.store_path)) as connection, connection:
                 application_id = int(connection.execute(
                     "PRAGMA application_id"
                 ).fetchone()[0])
@@ -639,6 +665,7 @@ def write_xilinx_openparf_atomic_name_map_storage(
     mapped_sha256: str,
     packed_sha256: str,
     architecture_sha256: str,
+    source_bindings=(),
 ) -> XilinxOpenparfAtomicNameMapView:
     """Publish a typed atom map and commit it with a bounded selector."""
 
@@ -650,6 +677,7 @@ def write_xilinx_openparf_atomic_name_map_storage(
     }
     if not all(_valid_digest(value) for value in source.values()):
         raise ValidationError("OpenPARF atomic name-map source seal is invalid")
+    source_bindings = validate_store_destination(path, source_bindings)
     path.parent.mkdir(parents=True, exist_ok=True)
     _validate_selector_location(path)
     lease: Optional[_NameMapLease] = _NameMapLease(path, exclusive=True)
@@ -765,14 +793,13 @@ def write_xilinx_openparf_atomic_name_map_storage(
         connection.commit()
         connection.close()
         connection = None
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
         store_sha = file_sha256(temporary)
         published_store = path.with_name(_store_name(store_sha))
         if published_store.is_symlink():
             raise ValidationError(
                 "existing OpenPARF atomic name-map store is a symbolic link"
             )
+        require_store_sources_unchanged(source_bindings)
         if published_store.is_file():
             if file_sha256(published_store) != store_sha:
                 raise ValidationError(
@@ -780,9 +807,13 @@ def write_xilinx_openparf_atomic_name_map_storage(
                 )
             temporary.unlink()
         else:
-            os.replace(temporary, published_store)
+            publish_sqlite_store(
+                temporary,
+                published_store,
+                "openparf-name-map-store-v1",
+                sources=source_bindings,
+            )
             created_store = True
-            _fsync_directory(path.parent)
         selector = {
             "schema": OPENPARF_ATOMIC_NAME_MAP_STORAGE_SCHEMA,
             "logical_schema": OPENPARF_ATOMIC_NAME_MAP_SCHEMA,
@@ -802,6 +833,7 @@ def write_xilinx_openparf_atomic_name_map_storage(
         write_json(selector_temporary, selector, compact=True)
         with selector_temporary.open("rb") as stream:
             os.fsync(stream.fileno())
+        require_store_sources_unchanged(source_bindings)
         os.replace(selector_temporary, path)
         selector_committed = True
         _fsync_directory(path.parent)

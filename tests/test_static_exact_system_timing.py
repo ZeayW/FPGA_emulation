@@ -1,3 +1,4 @@
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 import copy
 import json
 import tempfile
@@ -20,19 +21,16 @@ from emuflow.static_exact_timing import (
     validate_static_exact_segment_deadlines,
 )
 from emuflow.runtime import build_virtual_runtime
-from emuflow.system_timing import (
+from tests.system_timing_oracle import (
     _fixed_slot_transport_path_delay,
     build_system_timing,
 )
-from emuflow.tdm import (
-    build_tdm_schedule,
-    reconstruct_tdm_schedule_timing,
-    validate_tdm_schedule,
-)
+from emuflow.tdm import reconstruct_tdm_schedule_timing, validate_tdm_schedule
+from tests.schedule_reference import build_tdm_schedule
 from emuflow.tdm_schedule_storage import (
     ScheduleRecordSequence,
+    TypedScheduleEntrySequence,
     read_tdm_schedule,
-    write_tdm_schedule_storage,
 )
 from tests import test_combinational_cut as combinational_fixture
 
@@ -519,6 +517,43 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             self.physical,
             self.platform,
         )
+        self.assertEqual(validation["status"], "pass")
+
+    def test_indexed_deadline_build_and_validation_do_not_decode_hop_rows(
+        self,
+    ):
+        expected = build_static_exact_segment_deadlines(
+            self.schedule,
+            self.assignment["semantic_contract"],
+            self.physical,
+            self.platform,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "schedule.json"
+            write_tdm_schedule_storage(path, self.schedule)
+            indexed = read_tdm_schedule(path)
+            with mock.patch.object(
+                TypedScheduleEntrySequence,
+                "__iter__",
+                side_effect=AssertionError(
+                    "static exact deadline path decoded all schedule hops"
+                ),
+            ):
+                actual = build_static_exact_segment_deadlines(
+                    indexed,
+                    self.assignment["semantic_contract"],
+                    self.physical,
+                    self.platform,
+                )
+                validation = validate_static_exact_segment_deadlines(
+                    actual,
+                    indexed,
+                    self.assignment["semantic_contract"],
+                    self.physical,
+                    self.platform,
+                )
+
+        self.assertEqual(actual, expected)
         self.assertEqual(validation["status"], "pass")
 
     def test_schedule_references_semantics_without_duplicating_contract(self):

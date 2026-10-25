@@ -23,7 +23,12 @@ from typing import (
     Tuple,
 )
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import ImportError
+from .store_publication import (
+    bind_store_source,
+    validate_store_destination,
+)
 from .emuir_storage import write_emuir_sqlite
 from .io import read_json
 from .ir import EMUIR_SCHEMA, EmuIR
@@ -931,6 +936,8 @@ def import_yosys_json_indexed(
     _source_stream: Optional[TextIO] = None,
     _source_index_path: Optional[Path] = None,
     _expand_hierarchy: bool = False,
+    source_bindings=(),
+    _finalize_emuir: Optional[Callable[[sqlite3.Connection], None]] = None,
     staging_transform: Optional[
         Callable[
             [sqlite3.Connection, Mapping[str, Any], Path, str],
@@ -949,6 +956,14 @@ def import_yosys_json_indexed(
     same graph through a temporary JSON document.
     """
 
+    source_bindings = tuple(source_bindings)
+    if _source_index_path is not None:
+        source_bindings += (
+            bind_store_source(_source_index_path, "xilinx-mapped-index-v2"),
+        )
+    elif _source_value is None and _source_stream is None:
+        source_bindings += (bind_store_source(path, "yosys-source-document-v1"),)
+    source_bindings = validate_store_destination(output, source_bindings)
     warnings: List[str] = []
     ports: List[Dict[str, Any]] = []
     creator = "unknown"
@@ -970,7 +985,7 @@ def import_yosys_json_indexed(
     staging_path.unlink(missing_ok=True)
     connection: Optional[sqlite3.Connection] = None
     try:
-        connection = sqlite3.connect(staging_path)
+        connection = sqlite3.connect(staging_path, uri=True)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=OFF")
         connection.execute("PRAGMA synchronous=OFF")
@@ -1067,7 +1082,7 @@ def import_yosys_json_indexed(
                 )
             connection.execute(
                 "ATTACH DATABASE ? AS mapped_source",
-                (str(_source_index_path.resolve()),),
+                (immutable_sqlite_uri(_source_index_path),),
             )
             index_metadata = dict(
                 connection.execute(
@@ -1666,7 +1681,9 @@ def import_yosys_json_indexed(
             ],
             "warnings": sorted(set(warnings)),
         }
-        write_emuir_sqlite(output, value)
+        write_emuir_sqlite(
+            output, value, source_bindings=source_bindings, _finalize=_finalize_emuir
+        )
     finally:
         if connection is not None:
             connection.close()

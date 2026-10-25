@@ -11,11 +11,13 @@ from emuflow.routing_candidates import (
     exact_route_candidate_selection,
     validate_route_candidate_pool,
 )
-from emuflow.routing_batches import build_route_refinement_batches
-from emuflow.routing_oracle import exact_route_tree_selection
+from emuflow.routing_batches import (
+    build_compact_route_refinement_batches,
+    build_route_refinement_batches,
+)
+from tests.routing_reference import exact_route_tree_selection
 from emuflow.timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
-    ROUTE_TDM_PROVIDER,
     compress_sta_paths,
     normalize_sta_paths,
     route_system_native,
@@ -93,6 +95,31 @@ class RouteCandidatePoolTest(unittest.TestCase):
         )
         return platform, assignment, timing, constraints
 
+    def test_native_route_publication_replaces_only_a_complete_result(self) -> None:
+        import subprocess
+        from emuflow.timing_routing import _prepare_native_model, _write_native_input
+
+        platform, assignment, timing, constraints = self._fixture()
+        nodes, model = _prepare_native_model(assignment, platform, constraints, timing)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, output = root / "request", root / "route.sqlite"
+            _write_native_input(source, len(nodes), model, constraints, GLOBAL_CANDIDATE_PROVIDER)
+            output.write_bytes(b"previous-generation")
+            command = [str(tlr_router()), "phase4", "route", "--typed-output", str(source), str(output)]
+            subprocess.run(command, check=True, capture_output=True)
+            published = output.read_bytes()
+            self.assertTrue(published.startswith(b"SQLite format 3"))
+            subprocess.run(command, check=True, capture_output=True)
+            self.assertEqual(output.read_bytes(), published)
+            original = source.read_text()
+            for rejected in (original + "PRICE 0 1\n", "invalid-input"):
+                source.write_text(rejected)
+                failed = subprocess.run(command, capture_output=True)
+                self.assertNotEqual(failed.returncode, 0)
+                self.assertEqual(output.read_bytes(), published)
+                self.assertFalse(list(root.glob("*.stage.*")))
+
     def test_pool_is_deterministic_and_contains_exact_small_tree(self) -> None:
         platform, assignment, timing, constraints = self._fixture()
         with tempfile.TemporaryDirectory() as temporary:
@@ -107,7 +134,7 @@ class RouteCandidatePoolTest(unittest.TestCase):
                         constraints,
                         timing,
                         executable=str(tlr_router()),
-                        provider=ROUTE_TDM_PROVIDER,
+                        provider=GLOBAL_CANDIDATE_PROVIDER,
                         candidate_pool_path=path,
                     )
                 )
@@ -126,6 +153,9 @@ class RouteCandidatePoolTest(unittest.TestCase):
                     "shortest-path-tree",
                     "delay-demand-balanced",
                     "nearest-terminal-steiner",
+                    "directed-metric-closure",
+                    "shallow-light-tree",
+                    "adaptive-hop-tree",
                     "refined-final",
                 },
             )
@@ -152,7 +182,7 @@ class RouteCandidatePoolTest(unittest.TestCase):
                 constraints,
                 timing,
                 executable=str(tlr_router()),
-                provider=ROUTE_TDM_PROVIDER,
+                provider=GLOBAL_CANDIDATE_PROVIDER,
                 candidate_pool_path=path,
             )
             import json
@@ -284,6 +314,15 @@ class RouteCandidatePoolTest(unittest.TestCase):
                 provider=GLOBAL_CANDIDATE_PROVIDER,
                 candidate_pool_path=path,
             )
+            compact_routes = route_system_native(
+                assignment,
+                platform,
+                constraints,
+                timing,
+                executable=str(tlr_router()),
+                provider=GLOBAL_CANDIDATE_PROVIDER,
+            )
+            self.assertEqual(compact_routes, routes)
             import json
 
             pool = json.loads(path.read_text(encoding="utf-8"))
@@ -447,6 +486,19 @@ class RouteCandidatePoolTest(unittest.TestCase):
         certificate = build_route_refinement_batches(
             assignment, platform, candidate_pool, timing_paths
         )
+        compact_certificate = build_compact_route_refinement_batches(
+            [
+                {
+                    "clock_period_ns": 1.0,
+                    "baseline_slack_ns": 1.0,
+                    "demands": [index],
+                }
+                for index in range(path_count)
+            ],
+            timing_paths["normalization"],
+            [1] * path_count,
+        )
+        self.assertEqual(compact_certificate, certificate)
         self.assertEqual(certificate["batch_count"], path_count)
         self.assertEqual(certificate["maximum_parallel_batch"], 1)
         self.assertEqual(certificate["batches"][0], [0])

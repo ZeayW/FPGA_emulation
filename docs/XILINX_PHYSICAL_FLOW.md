@@ -11,8 +11,30 @@ different device models and implementation engines:
 | Backend | Device model and implementation |
 | --- | --- |
 | RapidWright | Supported Xilinx device resources and site/BEL connectivity, native OpenPARF placement, validated site/BEL binding, and RWRoute detailed routing |
-| VTR | VTR architecture XML, VPR packing and routing-resource graph, and either OpenPARF or VPR placement |
 | Vivado | Optional vendor synthesis and implementation integration for supported inputs |
+
+The maintained Xilinx implementation routes are OpenPARF/RWRoute and Vivado.
+The unused AMF and DREAMPlaceFPGA feasibility adapters, candidate runners and
+AMF certificate policy and unused multi-candidate comparator are removed.
+Retired placer certificates are not
+accepted by Xilinx placement validation. Common packing, capability reporting,
+site/BEL ownership, cascade and typed physical-handoff validation remain part
+of the retained routes. VTR/open execution, its standalone architecture/packing/
+routing/timing adapters and engine build/install dependencies are retired.
+Chimew consumes only the maintained Xilinx physical owners.
+
+The RapidWright backend has one placement chain: native OpenPARF atomic
+placement, independent site/BEL and macro checks, typed physical handoff, then
+RWRoute. There is no `--rapidwright-placer` or
+`--physical-rapidwright-placer` selector. The old packed-cluster guidance and
+greedy legalizer flow, its JSON pack/place producers, native packed-cluster
+smoke runner, and single-SLR planner are retired. Their `arch pack-xilinx`,
+`place-xilinx`, `guide-xilinx-openparf`, `plan-xilinx-single-slr` and
+`validate-xilinx-single-slr-plan` commands are removed. Independent packing,
+site/BEL/cascade validators remain available. Small bounded packing and site
+oracles live only in tests and are not installed; they do not launch a flow.
+The obsolete JSON schema for the original exact-legalizer provider is removed;
+current handoff schemas and semantic validators retain their existing contracts.
 
 RapidWright device data describes a device, not the multi-FPGA board around it.
 Board topology, fixed package-pin connections, link capacity, and inter-FPGA
@@ -31,18 +53,108 @@ insertion, then bulk-builds the auxiliary pin indexes before atomic publication.
 No consumer can observe a partially indexed netlist. This avoids per-pin random
 updates to the net-order index during large physical input generation.
 
-For mapped index v2, `emuflow_xilinx_bookshelf_exporter` reads the typed cell,
-pin, and validated atom relations directly. C++ checks atom ownership and types,
+For mapped index v2, `emuflow-native phase7 export-bookshelf` reads the typed
+cell, pin, and validated atom relations directly through `libemuflow_core`.
+C++ checks atom ownership and types,
 contiguous port bits, pin directions, and multiple drivers, then streams nets in
 numeric net order with drivers first. Constants remain in primitive pin
 signatures but do not become net endpoints; single-endpoint nets are omitted.
 Only primitive pin signatures and aggregate counts return to Python, which
 renders the small library and atomically publishes the net file. The exporter
-opens its frozen input relations with explicit immutable read-only URIs and
+uses two ordered cursors over one endpoint index instead of retaining one net's
+fanout. It binds input generations, rejects aliased destinations, stages text
+through the shared atomic writer, publishes the summary last, and retires its
+owned scratch relation on success or failure. It opens its frozen input
+relations with explicit immutable read-only URIs and
 uses the SQLite 3.22+ development library at build time. Materialized JSON callers
 retain the reference exporter for explicit compatibility and differential tests.
 This removes one graph-sized Python traversal; mapped lowering, physical macro
 preparation, and timing-query preparation are separate stages.
+
+The separate CARRY8/LUT6_2-only exporter, runtime adapter, certificate and JSON
+bridge are retired. Mixed-resource atomic placement owns carry macro and directed
+chain validation. Shared native carry kernels and current legality tests remain.
+
+## Typed placement handoff
+
+`materialize_xilinx_openparf_atomic_contract(mapped, architecture, certificate,
+physical_handoff, ...)` has one required SQLite output. The former pair of JSON
+output arguments and optional typed-mode selector are retired. Production requires
+the typed placement certificate and streams each validated site group directly to
+the handoff builder; no complete physical-cluster tree is returned by the validator.
+Packing and placement remain lazy views for independent circuit/site/BEL checks.
+
+The publisher binds the declared source files and certificate/atomic-source
+sidecars before consuming their records. It rejects aliased outputs, including hard
+links, and checks bound generations immediately before atomic replacement. A source
+change or failed independent validation preserves the previous published handoff.
+Bridge source checks and header assembly reuse the same operation-local digests,
+while publication checks bound generations. Independent native-device validation
+retains its own source checks.
+Small JSON validation fixtures are snapshots of this same typed producer under
+`tests/openparf_bridge_fixture.py`; this bounded helper is not installed and does
+not implement a second bridge algorithm.
+
+## Native RWRoute export
+
+The production API is `export_rwroute_input(mapped_index, physical_handoff, output)`.
+Its CLI is `emuflow arch export-xilinx-rwroute-input --mapped-index MAPPED.sqlite
+--physical-handoff PHYSICAL.sqlite --output INPUT.tsv`. The former separate
+`--packed`/`--placement` JSON export inputs and Python-object API are retired.
+The v2 bounded native request carries source identities, I/O and resource limits;
+top and part come directly from the authoritative stores. It never opens Python
+packing/placement views or copies their graph populations. Standalone export hashes
+the physical handoff once; managed callers reuse the sealed source digests.
+The independent Python TSV oracle lives in `tests/rwroute_reference.py` for explicit
+qualification and is not installed or selected by production failures.
+
+For mapped index v2 and a single typed physical handoff, the production bridge
+requires `emuflow-native phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY`.
+The shared-core operation reads both immutable stores directly. The checked
+request contains their file generations, source digests and resource
+limits and fixed differential I/O configuration; it contains no placed-cell,
+safe-name, gate or net population. A selected native failure stops the export.
+The noninstalled test oracle remains available for explicit differential checks;
+legacy JSON inputs are limited to qualification fixtures.
+
+C++ emits the complete existing RapidWright TSV contract: resource/source META,
+CELL, selected RAM PARAM, IOB, CLOCK_GATE, NET/PIN and EXCLUDED rows. Lexical cell
+order, numeric net order and driver-first pin order are unchanged. LUT6_2 still
+occupies the same two physical LUTs; unsupported routable pins reject. RAM binary
+strings and arbitrarily large integer parameters retain their exact decimal
+meaning. Large INIT payloads are not exported. DSP physical-count expansion and
+CARRY8 shared-exit conflict checks retain their existing meanings.
+
+The `native-rwroute-export-v2` implementation builds a source-scoped cell catalog
+during CELL emission: route ordinal, interned site ID and primitive/gate flags
+occupy 16 bytes per source cell. Sparse nonnegative mapped sequences use an
+additional ordered integer ID column; identities never cross artifact boundaries.
+The temporary site-name interner is released before clock and net processing.
+Clock qualification reduces distinct enable nets once, then distinct root/output
+nets once. A reverse-dependency queue computes the existing closed-gate-chain
+policy, including cycles; private SQLite scratch contains selected net IDs rather
+than endpoint copies. There is no full physical-cell window computation or
+candidate-by-candidate fanout scan.
+
+The pin cursor checks source sequence/name agreement and consumes the integer
+catalog directly. Only one live net's endpoints retain port names; cell/site/type
+strings are not copied per pin. Emitted nets restore canonical cell/port/bit and
+driver-first order. CARRY8 exit conflicts use per-cell flags rather than a second
+SQL relation. The summary records catalog bytes, visited pin rows, sparse clock
+work and maximum live net endpoints. These are implementation metrics; the
+logical TSV, clock policy and summary envelope remain unchanged. No gate or
+safe-name map returns to Python. Top-port direction/width/bit bindings, duplicate physical I/O bits,
+source cell/type ownership, schema versions, request CRC and source generations
+are checked before publication. Physical handoff readers use the common escaped
+immutable URI, including paths containing `?`, `#`, `%` or Unicode.
+
+The common stage API owns artifact binding, structured errors/metrics and
+aliased-destination rejection. TSV publication uses the common atomic writer;
+the bounded `emuflow.rwroute-export-summary/v1` is published last. Java/RWRoute
+still owns actual routing,
+and the independent site/BEL/connectivity, resource, DRC and timing gates remain
+required. Native export parity alone does not qualify physical implementation
+or complete the native data-plane migration.
 
 Atomic-source construction, Bookshelf export, and placement validation reuse
 the physical macro derivation owned by the same live immutable mapped reader.
@@ -112,6 +224,14 @@ per-FPGA utilization limit is a whole-device capacity contract and does not
 implicitly create a pblock. Using the whole device lets the placer trade
 wirelength for lower local density and better routability.
 
+Clock-region/site-type buckets expose their complete nonoverlapping physical
+capacity. Analytical density reserves whitespace without deleting a fraction of
+qualified sites. Site/BEL uniqueness and whole-device resource limits remain hard
+checks; local utilization is diagnostic within physical capacity. RWRoute must
+still establish routability. The site-domain contract records
+`full-qualified-site-domain`; the routability policy is
+`openparf-rudy-pin-stable-feasible-full-sites-v8`.
+
 ## Detailed routing and validation
 
 The validated placement is passed to RWRoute. Routing is complete only when
@@ -163,10 +283,27 @@ Fixed data pads are implemented, while external clock sources remain abstract;
 absolute clock insertion/skew and board signoff are not qualified. This scope
 is retained in each physical result and its summary projection. The common
 physical-result schema accepts the native resource dimensions, resource-budget
-evidence, and explicit OOC analysis scope. The retired whole-EmuIR adapter
-remains only for explicit legacy inputs. This integration is undergoing
+evidence, and explicit OOC analysis scope. The whole-EmuIR execution adapter,
+independent pre-placement Vivado TimingPathDB producer, and sampled-export
+controls are removed. Current Vivado export and physical execution reject JSON
+EmuIR inputs; there is one indexed implementation chain. Shared primitive
+conversion remains for explicit Xilinx reference exports, and the board timing
+consumer uses the current streaming log and indexed boundary owners.
+Board-top generation reads only indexed design metadata and ports, releasing
+the view before implementation; it does not load a circuit merely to connect
+the already mapped partition.
+CMake replaces its managed Vivado script directory so deleted scripts cannot
+remain executable in an updated install. This integration is undergoing
 real-device qualification; unit tests alone do not establish routed or global
 STA success.
+
+The standalone `sta emit-vivado-cut-map`, `import-vivado-tsv`,
+`emit-vivado-net-map` and `import-vivado-path-database` commands, their vendor
+path-provider policy and cut-path script are removed with the old timing
+producer. Current OpenSTA net maps, path import/projection and original-path
+validation remain; Phase 7 vendor boundary, local and logic measurements use
+their dedicated indexed owners. Historical vendor TimingPathDB artifacts must
+be examined with the matching Git version.
 
 The exporter declares actual SQL net ordinals, including one-based or sparse
 keys. Disconnected input identities start beyond the maximum source ordinal,
@@ -189,6 +326,27 @@ replicate, or change cells. Indexed inventories record observed source lineage
 and unretained source tags; this census does not certify functional equivalence.
 The explicit `vivado-optimized-source-lineage-v1` policy separates this source
 census from actual routed physical components and inserted infrastructure.
+
+The current census protocol explicitly records native primitive level and,
+for physical leaf/internal objects, site, BEL, tile column and tile row. Macro
+wrappers remain lineage observations but do not occupy a second BEL. Tile
+coordinates use [the shared RapidWright/Vivado column/row definition](https://www.rapidwright.io/javadoc/com/xilinx/rapidwright/device/Tile.html),
+not the numbers embedded in site names or OpenPARF's site-stride x encoding.
+The native importer validates unique site/BEL occupancy and complete placement
+for routed physical objects, checks source origins against the mapped owner,
+and atomically publishes logical `emuflow.vivado-cell-lineage/v2`. The retained
+SQLite owner contains both observed provenance and placement facts. Objects
+reference integer site IDs; each site's native coordinates are stored once,
+rather than repeated for every packed cell. There is no separate full placement
+JSON. Tcl caches geometry only for sites reached in the frozen census. Its placed-object count must agree with the
+independent physical mapped-cell census. Consumed raw pre/post-route TSV
+snapshots are removed after import; their byte hashes remain in the owner.
+These are placement/provenance checks, not a device-geometry or functional
+proof. Source tags that disappear remain explicitly unretained; no zero-delay
+or fabricated-location fallback is introduced. The Chimew lookahead queries
+this same owner by source identity; missing active source/boundary placement
+remains an error.
+
 Timing queries resolve the original source's typed descendants first, without
 broadening a retained source to other equivalent cells. A removed object may
 alias another source only when the primitive, parameters, pin interfaces and
@@ -232,8 +390,8 @@ Cross-FPGA binding consumes every original logic segment and scheduled boundary,
 then excludes an original member from numerical STA only when a required segment
 or interface has a checked elimination proof. Missing segments, events, interfaces,
 and conditional initialization candidates still make qualification incomplete.
-The explicit Python comparison composer rejects optimization dispositions; this
-population contract currently requires the global OpenSTA engine.
+The global OpenSTA engine consumes this population contract; the retired Python
+production composer is not a fallback.
 Whole-device resource budgets also apply to the final physical cell population.
 Resource accounting excludes MACRO wrappers while retaining LEAF and INTERNAL
 implementation components. LUT capacity is counted by occupied site/LUT letter

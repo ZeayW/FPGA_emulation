@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -13,6 +14,7 @@ from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_PROVIDER,
     CHIMEW_BANK_CHANNEL_REPORT_SCHEMA,
@@ -26,6 +28,8 @@ from .chimew_bank_channel_report_storage import (
     write_chimew_bank_channel_report_storage,
 )
 from .chimew_grouping import _tdm_ratio
+from .store_publication import bind_view_sources
+from .native_tools import require_native_schema
 from .chimew_binding_storage import (
     CHIMEW_BINDING_STORAGE_SCHEMA,
     ChimewBindingView,
@@ -43,6 +47,10 @@ from .chimew_qualification import (
     validate_chimew_qualification_seal,
 )
 from .errors import ValidationError
+from .chimew_fixed_wiring import (
+    FIXED_WIRING_MAP_SCHEMA, FIXED_WIRING_BINDING_SCHEMA, FIXED_WIRING_CLASS,
+    FixedWiringChannels, electrical_channel_pin_keys,
+)
 from .io import read_json, write_json
 from .pin_planning import (
     CHIMEW_PHYSICAL_POSITION_PROVIDER,
@@ -414,7 +422,7 @@ def _open_chimew_build_index(
 ) -> tuple[sqlite3.Connection, int]:
     """Expose schedule entries through a bounded file-backed relation."""
 
-    connection = sqlite3.connect("")
+    connection = sqlite3.connect("", uri=True)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA temp_store=FILE")
     try:
@@ -422,7 +430,7 @@ def _open_chimew_build_index(
         if isinstance(store_path, Path):
             connection.execute(
                 "ATTACH DATABASE ? AS schedule_store",
-                (f"file:{store_path.resolve()}?mode=ro&immutable=1",),
+                (immutable_sqlite_uri(store_path),),
             )
             schedule_count = _install_indexed_schedule_entry_relation(connection)
         else:
@@ -626,22 +634,20 @@ def _open_indexed_chimew_validation(
 ) -> tuple[sqlite3.Connection, int]:
     """Open sealed schedule/plan relations and validate exact coverage."""
 
-    connection = sqlite3.connect("")
+    connection = sqlite3.connect("", uri=True)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA temp_store=FILE")
     try:
         connection.execute(
             "ATTACH DATABASE ? AS schedule_store",
             (
-                f"file:{schedule.store_path.resolve()}"
-                "?mode=ro&immutable=1",
+                immutable_sqlite_uri(schedule.store_path),
             ),
         )
         connection.execute(
             "ATTACH DATABASE ? AS pin_store",
             (
-                f"file:{pin_plan.store_path.resolve()}"
-                "?mode=ro&immutable=1",
+                immutable_sqlite_uri(pin_plan.store_path),
             ),
         )
         schedule_count = _install_indexed_schedule_entry_relation(connection)
@@ -702,8 +708,7 @@ def _open_indexed_chimew_validation(
             connection.execute(
                 "ATTACH DATABASE ? AS binding_store",
                 (
-                    f"file:{binding.store_path.resolve()}"
-                    "?mode=ro&immutable=1",
+                    immutable_sqlite_uri(binding.store_path),
                 ),
             )
             connection.execute(
@@ -933,7 +938,13 @@ def _digest(value: Any, label: str) -> str:
 def _number(value: Any, label: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValidationError(f"{label}: expected a number")
-    return float(value)
+    try:
+        number = float(value)
+    except OverflowError as error:
+        raise ValidationError(f"{label}: expected a finite number") from error
+    if not math.isfinite(number):
+        raise ValidationError(f"{label}: expected a finite number")
+    return number
 
 
 def _canonical_sha256(value: Mapping[str, Any]) -> str:
@@ -951,8 +962,13 @@ def validate_chimew_electrical_map(
     """Check concrete lanes, banks, package pins, and electrical identity."""
 
     schema = document.get("schema")
-    if schema not in {CHIMEW_ELECTRICAL_MAP_SCHEMA_V1, CHIMEW_ELECTRICAL_MAP_SCHEMA}:
+    if schema not in {CHIMEW_ELECTRICAL_MAP_SCHEMA_V1, CHIMEW_ELECTRICAL_MAP_SCHEMA, FIXED_WIRING_MAP_SCHEMA}:
         raise ValidationError("Chimew electrical channel-map schema is invalid")
+    fixed = FixedWiringChannels(platform) if schema == FIXED_WIRING_MAP_SCHEMA else None
+    if platform.virtual_board_model is not None and fixed is None:
+        raise ValidationError("fixed LVDS BoardDB requires a differential Chimew electrical map")
+    if fixed is not None:
+        fixed.validate_source(document.get("fixed_wiring"))
     if document.get("provider") != CHIMEW_ELECTRICAL_MAP_PROVIDER:
         raise ValidationError("Chimew electrical channel map is not source-qualified")
     if (
@@ -1030,7 +1046,7 @@ def validate_chimew_electrical_map(
             raise ValidationError("Chimew electrical channel link/domain mismatch")
         lane = record.get("physical_lane")
         raw_direction = record.get("direction")
-        if schema == CHIMEW_ELECTRICAL_MAP_SCHEMA:
+        if schema in {CHIMEW_ELECTRICAL_MAP_SCHEMA, FIXED_WIRING_MAP_SCHEMA}:
             if raw_direction not in {"a_to_b", "b_to_a", "either"}:
                 raise ValidationError(
                     "Chimew electrical channel direction is invalid"
@@ -1051,7 +1067,7 @@ def validate_chimew_electrical_map(
             raise ValidationError("Chimew electrical concrete lane is invalid")
         uses = lane_uses.setdefault(lane_key, [])
         direction_qualified_reuse = (
-            schema == CHIMEW_ELECTRICAL_MAP_SCHEMA
+            schema in {CHIMEW_ELECTRICAL_MAP_SCHEMA, FIXED_WIRING_MAP_SCHEMA}
             and link.direction == "full_duplex"
             and link.capacity_sharing == "per_direction"
         )
@@ -1079,7 +1095,10 @@ def validate_chimew_electrical_map(
         pin_b = _string(
             record.get("package_pin_b"), f"electrical.{channel_id}.package_pin_b"
         )
-        pin_keys = ((domain["fpga_a"], pin_a), (domain["fpga_b"], pin_b))
+        differential = (fixed.validate_channel(record, domain["fpga_a"], domain["fpga_b"])
+                        if fixed is not None else {})
+        pin_keys = electrical_channel_pin_keys({**record, "fpga_a": domain["fpga_a"],
+                                               "fpga_b": domain["fpga_b"]}, fixed)
         if any(key in used_pins for key in pin_keys):
             raise ValidationError("Chimew electrical package-pin collision")
         used_pins.update(pin_keys)
@@ -1100,14 +1119,14 @@ def validate_chimew_electrical_map(
         placement_anchor = record.get("placement_anchor", True)
         if not isinstance(placement_anchor, bool):
             raise ValidationError("Chimew electrical placement anchor is invalid")
-        if record.get("electrical_class") != "single_ended_parallel":
+        if fixed is None and record.get("electrical_class") != "single_ended_parallel":
             raise ValidationError(
                 "Chimew electrical maps require single-ended parallel channels"
             )
         voltage = _number(
             record.get("bank_voltage"), f"electrical.{channel_id}.bank_voltage"
         )
-        expected_voltage = _IOSTANDARD_VOLTAGES.get(iostandard)
+        expected_voltage = 1.8 if fixed is not None else _IOSTANDARD_VOLTAGES.get(iostandard)
         if expected_voltage is None or abs(voltage - expected_voltage) > 1.0e-9:
             raise ValidationError("Chimew electrical bank voltage/IOSTANDARD mismatch")
         channels[channel_id] = {
@@ -1123,8 +1142,9 @@ def validate_chimew_electrical_map(
             "iostandard": iostandard,
             "supported_iostandards": sorted(supported),
             "bank_voltage": voltage,
-            "electrical_class": "single_ended_parallel",
+            "electrical_class": FIXED_WIRING_CLASS if fixed is not None else "single_ended_parallel",
             "placement_anchor": placement_anchor,
+            **differential,
             # Preserve the optimizer's physical site coordinates all the way
             # into the sealed Phase-6 binding.  The concrete lane number is
             # an electrical identity, not a device-placement coordinate.
@@ -1155,6 +1175,7 @@ def validate_chimew_electrical_map(
         "channels": channels,
         "metrics": expected_metrics,
         "map_sha256": _canonical_sha256(document),
+        "fixed_wiring": fixed.source if fixed is not None else None,
     }
 
 
@@ -1191,6 +1212,12 @@ def build_chimew_phase6_pin_plan(
 
     if not 1 <= region_count <= 31:
         raise ValueError("region_count must be in [1, 31]")
+    if pin_plan_output_path is not None or electrical_binding_output_path is not None:
+        require_native_schema("sqlite-publication-request-v1")
+    publication_sources = bind_view_sources(
+        (schedule, "tdm-schedule-store-v4"),
+        (bank_channel_input, "chimew-bank-input-store-v1"),
+    )
     problem = validate_chimew_bank_channel_input(bank_channel_input)
     qualification_validation = None
     if qualification_document is not None:
@@ -1200,6 +1227,7 @@ def build_chimew_phase6_pin_plan(
     electrical = validate_chimew_electrical_map(
         electrical_map, platform, problem
     )
+    fixed = FixedWiringChannels(platform) if electrical["fixed_wiring"] is not None else None
     if (
         qualification_validation is not None
         and qualification_validation["qualification_scope"]
@@ -1244,6 +1272,7 @@ def build_chimew_phase6_pin_plan(
     ):
         raise ValidationError("Chimew assignment does not match schedule identity")
     indexed_report = isinstance(report, BankChannelReportView)
+    publication_sources += bind_view_sources((report, "chimew-bank-report-store-v1"))
     report_assignment = None
     if not indexed_report:
         report_assignment = {row["group"]: row for row in report["assignments"]}
@@ -1350,10 +1379,7 @@ def build_chimew_phase6_pin_plan(
                 and member_directions != {group_direction}
             ):
                 raise ValidationError("Chimew group violates schedule TDM capacity")
-            package_pin_keys = (
-                (channel["fpga_a"], channel["package_pin_a"]),
-                (channel["fpga_b"], channel["package_pin_b"]),
-            )
+            package_pin_keys = electrical_channel_pin_keys(channel, fixed)
             pending_package_pins.extend(package_pin_keys)
             if len(pending_package_pins) >= 4096:
                 try:
@@ -1484,7 +1510,9 @@ def build_chimew_phase6_pin_plan(
         }
         positions = (
             write_position_hints_storage(
-                position_hints_output_path, positions_document
+                position_hints_output_path,
+                positions_document,
+                source_bindings=publication_sources,
             )
             if position_hints_output_path is not None
             else {
@@ -1542,7 +1570,9 @@ def build_chimew_phase6_pin_plan(
             "entries": plan_records,
         }
         plan = (
-            write_pin_plan_storage(pin_plan_output_path, plan_document)
+            write_pin_plan_storage(
+                pin_plan_output_path, plan_document, source_bindings=publication_sources
+            )
             if pin_plan_output_path is not None
             else {**plan_document, "entries": list(plan_records)}
         )
@@ -1590,7 +1620,9 @@ def build_chimew_phase6_pin_plan(
                 }
 
         binding_document = {
-            "schema": CHIMEW_PHASE6_BINDING_SCHEMA,
+            "schema": (FIXED_WIRING_BINDING_SCHEMA if electrical["fixed_wiring"] is not None
+                       else CHIMEW_PHASE6_BINDING_SCHEMA),
+            **({"fixed_wiring": electrical["fixed_wiring"]} if electrical["fixed_wiring"] is not None else {}),
             "status": "pass",
             "integration_status": "phase6-pin-plan",
             "design": schedule["design"],
@@ -1639,7 +1671,10 @@ def build_chimew_phase6_pin_plan(
         }
         binding = (
             write_chimew_binding_storage(
-                electrical_binding_output_path, binding_document
+                electrical_binding_output_path,
+                binding_document,
+                source_bindings=publication_sources
+                + bind_view_sources((plan, "pin-plan-store-v1")),
             )
             if electrical_binding_output_path is not None
             else {**binding_document, "entries": list(iter_binding_entries())}
@@ -1672,8 +1707,14 @@ def _validate_chimew_phase6_binding(
     if binding_schema not in {
         CHIMEW_PHASE6_BINDING_SCHEMA_V1,
         CHIMEW_PHASE6_BINDING_SCHEMA,
+        FIXED_WIRING_BINDING_SCHEMA,
     }:
         raise ValidationError("Chimew Phase 6 electrical binding schema is invalid")
+    fixed = FixedWiringChannels(platform) if binding_schema == FIXED_WIRING_BINDING_SCHEMA else None
+    if platform.virtual_board_model is not None and fixed is None:
+        raise ValidationError("fixed LVDS BoardDB requires a differential Chimew binding")
+    if fixed is not None:
+        fixed.validate_source(binding.get("fixed_wiring"))
     if (
         binding.get("status") != "pass"
         or binding.get("integration_status") != "phase6-pin-plan"
@@ -1822,7 +1863,7 @@ def _validate_chimew_phase6_binding(
     groups = set()
     link_by_id = {link.id: link for link in platform.links}
     binding_bounds = {}
-    if binding_schema == CHIMEW_PHASE6_BINDING_SCHEMA:
+    if binding_schema in {CHIMEW_PHASE6_BINDING_SCHEMA, FIXED_WIRING_BINDING_SCHEMA}:
         raw_bounds = binding.get("fpga_y_bounds")
         if not isinstance(raw_bounds, list):
             raise ValidationError("Chimew electrical binding FPGA bounds are missing")
@@ -1971,10 +2012,11 @@ def _validate_chimew_phase6_binding(
                 raise ValidationError(
                     "Chimew electrical binding TDM bundle is invalid"
                 )
-        pin_keys = (
-            (fpga_a, _string(record.get("package_pin_a"), "package_pin_a")),
-            (fpga_b, _string(record.get("package_pin_b"), "package_pin_b")),
-        )
+        _string(record.get("package_pin_a"), "package_pin_a")
+        _string(record.get("package_pin_b"), "package_pin_b")
+        if fixed is not None:
+            fixed.validate_channel(record, fpga_a, fpga_b)
+        pin_keys = electrical_channel_pin_keys(record, fixed)
         if any(key in pins for key in pin_keys):
             raise ValidationError("Chimew electrical binding reuses a package pin")
         pins.update(pin_keys)
@@ -1996,12 +2038,12 @@ def _validate_chimew_phase6_binding(
             record.get("bank_voltage"), "electrical_binding.bank_voltage"
         )
         if (
-            record.get("electrical_class") != "single_ended_parallel"
-            or iostandard not in _IOSTANDARD_VOLTAGES
-            or abs(voltage - _IOSTANDARD_VOLTAGES[iostandard]) > 1.0e-9
+            (fixed is None and record.get("electrical_class") != "single_ended_parallel")
+            or (fixed is None and iostandard not in _IOSTANDARD_VOLTAGES)
+            or abs(voltage - (1.8 if fixed is not None else _IOSTANDARD_VOLTAGES[iostandard])) > 1.0e-9
         ):
             raise ValidationError("Chimew electrical binding voltage is invalid")
-        if binding_schema == CHIMEW_PHASE6_BINDING_SCHEMA:
+        if binding_schema in {CHIMEW_PHASE6_BINDING_SCHEMA, FIXED_WIRING_BINDING_SCHEMA}:
             for endpoint, fpga in (("a", fpga_a), ("b", fpga_b)):
                 point = record.get(f"pin_{endpoint}_point")
                 if not isinstance(point, dict) or fpga not in binding_bounds:
@@ -2191,7 +2233,11 @@ def _run_chimew_phase6_adapter_with_input(
             indexed_bank_report = result_bank_report
         else:
             indexed_bank_report = write_chimew_bank_channel_report_storage(
-                report_selector_path, result_bank_report
+                report_selector_path,
+                result_bank_report,
+                source_bindings=bind_view_sources(
+                    (result_bank_report, "chimew-bank-report-store-v1")
+                ),
             )
         if qualification is not None:
             write_json(staging_root / "qualification_certificate.json", qualification)

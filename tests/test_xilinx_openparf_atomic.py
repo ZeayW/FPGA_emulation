@@ -1,3 +1,5 @@
+from tests.openparf_bridge_fixture import materialize_bridge_fixture as materialize_xilinx_openparf_atomic_contract
+from contextlib import closing
 import json
 import fcntl
 import os
@@ -42,16 +44,21 @@ from emuflow.xilinx_openparf_atomic import (
 from emuflow.xilinx_openparf_source_storage import (
     OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA,
 )
-from emuflow.xilinx_openparf_bridge import (
-    materialize_xilinx_openparf_atomic_contract,
-)
-from emuflow.xilinx_packing import pack_xilinx_sites, validate_xilinx_packing
+from emuflow.xilinx_packing import validate_xilinx_packing
+from tests.xilinx_site_reference import pack_xilinx_sites
 from emuflow.xilinx_placement import validate_xilinx_placement
 from tests.openparf_runtime_fixture import (
     write_openparf_hardblock_cascade_fixture,
     write_openparf_ramb18_fixture,
     write_openparf_runtime_fixture,
 )
+
+
+def _fixture_name_map(path):
+    # Unit fixtures deliberately retain their small reference records after
+    # the temporary publication disappears. Never retain its lazy reader lease.
+    with read_xilinx_openparf_atomic_name_map(path) as view:
+        return view.materialize()
 
 
 def _cell(cell_type, connections):
@@ -318,7 +325,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(contract["FF"]["movable_area"], 1 / 16)
         self.assertEqual(sites[0][1]["LUT"], 16)
 
-    def test_clock_region_site_headroom_is_reserved_before_placement(self):
+    def test_all_clock_region_sites_remain_available_to_placement(self):
         sites = []
         for x in range(2):
             for y in range(4):
@@ -330,18 +337,19 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                     },
                 }, {"LUT": 16, "FF": 16}))
 
-        available, contract = atomic_adapter._derate_clock_region_sites(sites)
+        available, contract = atomic_adapter._expose_all_clock_region_sites(sites)
 
         self.assertEqual(contract["status"], "pass")
-        self.assertEqual(contract["limit"], 0.75)
+        self.assertEqual(contract["limit"], 1.0)
+        self.assertEqual(contract["policy"], "full-qualified-site-domain")
         self.assertEqual(contract["original_sites"], 8)
-        self.assertEqual(contract["available_sites"], 6)
-        self.assertEqual(contract["reserved_sites"], 2)
+        self.assertEqual(contract["available_sites"], 8)
+        self.assertEqual(contract["reserved_sites"], 0)
         by_x = {}
         for site, _resources in available:
             by_x.setdefault(site["x"], []).append(site["y"])
-        self.assertEqual(sorted(by_x[0]), [0, 1, 2])
-        self.assertEqual(sorted(by_x[1]), [1, 2, 3])
+        self.assertEqual(sorted(by_x[0]), [0, 1, 2, 3])
+        self.assertEqual(sorted(by_x[1]), [0, 1, 2, 3])
 
     def test_site_geometry_preserves_empty_physical_rows(self):
         sites = [
@@ -637,7 +645,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 mapped, packed, architecture, output
             )
             config = json.loads((output / "openparf.json").read_text())
-            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            names = _fixture_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -750,7 +758,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["gp_adjust_area_max_pin_opt_adjust_rate"], 1.6)
         self.assertEqual(config["gp_adjust_resource_area"], 0)
         self.assertEqual(manifest["routability_contract"], {
-            "provider": "openparf-rudy-pin-stable-feasible-v7",
+            "provider": "openparf-rudy-pin-stable-feasible-full-sites-v8",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": 0.10,
             "diagnostic_legalization_handoff": {
@@ -1014,7 +1022,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 load_xilinx_openparf_atomic_sites(name_map_path)
 
             export_xilinx_openparf_atomic(mapped, packed, architecture, output)
-            with sqlite3.connect(output / "site-map.sqlite3") as database:
+            with closing(sqlite3.connect(output / "site-map.sqlite3")) as database, database:
                 database.execute(
                     "UPDATE metadata SET value = 'wrong' WHERE key = 'schema'"
                 )
@@ -1147,7 +1155,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 mapped, packed, architecture, output
             )
             config = json.loads((output / "openparf.json").read_text())
-            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            names = _fixture_name_map(output / "name_map.json")
             hard_atoms = [
                 atom for atom in names["atoms"]
                 if atom["resource"] in {"DSP48E2", "RAMB36E2", "URAM288"}
@@ -1221,7 +1229,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             architecture.write_text(json.dumps(value), encoding="utf-8")
             output = root / "output"
             export_xilinx_openparf_atomic(mapped, packed, architecture, output)
-            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            names = _fixture_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -1278,7 +1286,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             export_xilinx_openparf_atomic(
                 mapped, packed, architecture, output
             )
-            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            names = _fixture_name_map(output / "name_map.json")
             sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -1625,7 +1633,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             self.assertEqual(certificate_path.read_bytes(), selector_bytes)
             self.assertTrue(first_store.is_file())
             self.assertEqual(
-                len(list(output.glob("placement-certificate.*.sqlite"))), 2
+                len(list(output.glob("placement-certificate.*.sqlite"))), 1
             )
             self.assertEqual(
                 len(list(iter_xilinx_openparf_atomic_placement_clusters(
@@ -1679,7 +1687,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             old_store = output / certificate["cluster_storage"]["file"]
             mutated = output / "mutated.sqlite"
             shutil.copy2(old_store, mutated)
-            with sqlite3.connect(mutated) as database:
+            with closing(sqlite3.connect(mutated)) as database, database:
                 database.execute("CREATE TABLE injected(value TEXT)")
             digest = atomic_adapter._sha256(mutated)
             new_store = output / f"placement-certificate.{digest}.sqlite"
@@ -1748,7 +1756,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 original = root / value["cluster_storage"]["file"]
                 mutated = root / "mutated.sqlite"
                 shutil.copy2(original, mutated)
-                with sqlite3.connect(mutated) as database:
+                with closing(sqlite3.connect(mutated)) as database, database:
                     database.executescript(statement)
                 digest = atomic_adapter._sha256(mutated)
                 store = root / f"certificate.{digest}.sqlite"
@@ -1794,7 +1802,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             descriptor["assignments"] = 2
             header = dict(value)
             header.pop("cluster_storage")
-            with sqlite3.connect(mutated) as database:
+            with closing(sqlite3.connect(mutated)) as database, database:
                 database.execute(
                     "INSERT INTO assignments VALUES (?,?,?,?,?,?,?,?,?)",
                     (7, 0, "orphan", "LUT6", "B6LUT", "SLICE_X0Y1",
@@ -1848,7 +1856,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
 
             layout = root / "layout.sqlite"
             shutil.copy2(original, layout)
-            with sqlite3.connect(layout) as database:
+            with closing(sqlite3.connect(layout)) as database, database:
                 database.execute("PRAGMA page_size=4096")
                 database.execute("VACUUM")
             layout_sha = atomic_adapter._sha256(layout)
@@ -1876,7 +1884,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
 
             tampered = root / "tampered.sqlite"
             shutil.copy2(original, tampered)
-            with sqlite3.connect(tampered) as database:
+            with closing(sqlite3.connect(tampered)) as database, database:
                 database.execute(
                     "UPDATE assignments SET cell_type='LUT5' WHERE instance='u0'"
                 )
@@ -1919,7 +1927,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             current_store = root / certificate["cluster_storage"]["file"]
             legacy_store = root / "certificate.sqlite3"
             shutil.copy2(current_store, legacy_store)
-            with sqlite3.connect(legacy_store) as database:
+            with closing(sqlite3.connect(legacy_store)) as database, database:
                 database.execute("PRAGMA application_id = 0")
                 database.execute("PRAGMA user_version = 0")
                 database.execute(
@@ -1977,7 +1985,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             )
             persisted = json.loads(certificate_path.read_text(encoding="utf-8"))
             database_path = output / persisted["cluster_storage"]["file"]
-            with sqlite3.connect(database_path) as database:
+            with closing(sqlite3.connect(database_path)) as database, database:
                 encoded = database.execute(
                     "SELECT bram_tile_group FROM assignments "
                     "WHERE bram_tile_group IS NOT NULL"
@@ -2217,7 +2225,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             mapped, packed, architecture = _fixture(root, mixed=True)
             output = root / "output"
             export_xilinx_openparf_atomic(mapped, packed, architecture, output)
-            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            names = _fixture_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -2342,7 +2350,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 if window[0]["anchor"] == lo_window["anchor"]
                 and window[0]["z"] != lo_window["z"]
             )
-            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            names = _fixture_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )
@@ -2500,7 +2508,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 [member["z"] for member in group["window_template"]["members"]],
                 [1, 3, 0],
             )
-            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            names = _fixture_name_map(output / "name_map.json")
             openparf = {atom["instance"]: atom["openparf"] for atom in names["atoms"]}
             sites = load_xilinx_openparf_atomic_sites(output / "name_map.json")
             slice_sites = [site for site in sites if "LUT" in site["resources"]]
@@ -2631,7 +2639,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                         f"{instance} {macro_site_entry['dense_x']} "
                         f"{macro_site_entry['dense_y']} {entry['z']}"
                     )
-                names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+                names = _fixture_name_map(output / "name_map.json")
                 ff = next(atom for atom in names["atoms"] if atom["instance"] == "ff")
                 macro_site = macro_site_entry["site"]
                 ff_site = next(site for site in sites.values()
@@ -3043,7 +3051,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 [site["site"] for site in chain["windows"][0]],
                 ["DSP48E2_X0Y0", "DSP48E2_X1Y0"],
             )
-            names = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            names = _fixture_name_map(output / "name_map.json")
             coordinate_sites = load_xilinx_openparf_atomic_sites(
                 output / "name_map.json"
             )

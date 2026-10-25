@@ -11,59 +11,16 @@
 #include <utility>
 #include <vector>
 
-#include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/native_stages.hpp"
+#include "emuflow_core/schedule_model.hpp"
 
 namespace {
 
-constexpr std::uint64_t kInputMagic = 0x3149534d44544545ULL;
-constexpr std::uint64_t kOutputMagic = 0x314f534d44544545ULL;
-constexpr std::uint32_t kInputVersion = 1;
-constexpr std::uint32_t kOutputVersion = 2;
-constexpr emuflow::core::ArtifactSchema kInputSchema{
-    kInputMagic, kInputVersion, "exact schedule input"};
 constexpr std::uint32_t kUnassignedLane =
     std::numeric_limits<std::uint32_t>::max();
 
-struct Hop {
-  std::uint32_t depth;
-  std::uint32_t capacity;
-  std::uint32_t link;
-  std::uint32_t from;
-  std::uint32_t to;
-  std::uint32_t lane_offset;
-  std::uint32_t lane_budget;
-  std::uint32_t assigned_lane;
-  std::uint32_t ratio;
-  std::uint32_t latency;
-};
-
-struct Route {
-  std::uint32_t source;
-  std::uint32_t dependency_level;
-  std::uint32_t maximum_depth;
-  std::uint32_t demand_rank;
-  std::vector<std::uint32_t> sinks;
-  std::vector<std::uint32_t> predecessors;
-  std::vector<Hop> hops;
-};
-
-struct Entry {
-  std::uint32_t route;
-  std::uint32_t hop;
-  std::uint32_t sequence;
-  std::uint32_t slot;
-  std::uint32_t lane;
-  std::uint32_t ready;
-  std::uint32_t arrival;
-};
-
-struct Completion {
-  std::uint32_t route;
-  std::uint32_t ready;
-  std::uint32_t completion;
-  std::vector<std::pair<std::uint32_t, std::uint32_t>> sink_arrivals;
-};
+using Entry = emuflow::core::ExactScheduleEntry;
+using Completion = emuflow::core::ExactScheduleCompletion;
 
 class AvailableSlots {
  public:
@@ -101,77 +58,13 @@ class AvailableSlots {
   std::uint32_t lane_budget_;
 };
 
-void RunImpl(const std::string& input_path, const std::string& output_path) {
-  emuflow::core::BinaryReader input(input_path);
-  emuflow::core::ReadAndValidateHeader(input, kInputSchema);
-  const auto frame_slots = input.Read<std::uint32_t>();
-  const auto barrier_slots = input.Read<std::uint32_t>();
-  const auto settle_slots = input.Read<std::uint32_t>();
-  const auto fpga_count = input.Read<std::uint32_t>();
-  const auto capacity_count = input.Read<std::uint32_t>();
-  const auto route_count = input.Read<std::uint32_t>();
-  if (frame_slots <= barrier_slots || fpga_count == 0) {
-    throw std::runtime_error("exact schedule dimensions are invalid");
-  }
-
-  std::vector<std::uint32_t> capacity_lanes(capacity_count);
-  for (auto& lanes : capacity_lanes) {
-    lanes = input.Read<std::uint32_t>();
-    if (lanes == 0) throw std::runtime_error("capacity has no lanes");
-  }
-  std::vector<Route> routes(route_count);
-  for (std::uint32_t route_index = 0; route_index < route_count; ++route_index) {
-    auto& route = routes[route_index];
-    route.source = input.Read<std::uint32_t>();
-    const auto sink_count = input.Read<std::uint32_t>();
-    const auto predecessor_count = input.Read<std::uint32_t>();
-    const auto hop_count = input.Read<std::uint32_t>();
-    route.dependency_level = input.Read<std::uint32_t>();
-    route.maximum_depth = input.Read<std::uint32_t>();
-    route.demand_rank = input.Read<std::uint32_t>();
-    if (route.source >= fpga_count || route.demand_rank >= route_count) {
-      throw std::runtime_error("exact schedule route identity is invalid");
-    }
-    route.sinks.resize(sink_count);
-    for (auto& sink : route.sinks) {
-      sink = input.Read<std::uint32_t>();
-      if (sink >= fpga_count) throw std::runtime_error("route sink is invalid");
-    }
-    route.predecessors.resize(predecessor_count);
-    for (auto& predecessor : route.predecessors) {
-      predecessor = input.Read<std::uint32_t>();
-      if (predecessor >= route_count || predecessor == route_index) {
-        throw std::runtime_error("route predecessor is invalid");
-      }
-    }
-    auto unique_predecessors = route.predecessors;
-    std::sort(unique_predecessors.begin(), unique_predecessors.end());
-    if (std::adjacent_find(unique_predecessors.begin(),
-                           unique_predecessors.end()) !=
-        unique_predecessors.end()) {
-      throw std::runtime_error("route predecessors are duplicated");
-    }
-    if (route.sinks.empty()) throw std::runtime_error("route has no sinks");
-    route.hops.resize(hop_count);
-    for (auto& hop : route.hops) {
-      hop.depth = input.Read<std::uint32_t>();
-      hop.capacity = input.Read<std::uint32_t>();
-      hop.link = input.Read<std::uint32_t>();
-      hop.from = input.Read<std::uint32_t>();
-      hop.to = input.Read<std::uint32_t>();
-      hop.lane_offset = input.Read<std::uint32_t>();
-      hop.lane_budget = input.Read<std::uint32_t>();
-      hop.assigned_lane = input.Read<std::uint32_t>();
-      hop.ratio = input.Read<std::uint32_t>();
-      hop.latency = input.Read<std::uint32_t>();
-      if (hop.capacity >= capacity_count || hop.from >= fpga_count ||
-          hop.to >= fpga_count || hop.lane_budget == 0 || hop.ratio == 0) {
-        throw std::runtime_error("exact schedule hop is invalid");
-      }
-    }
-  }
-  input.RequireEnd();
-
+emuflow::core::ExactScheduleSolution Compute(const emuflow::core::ExactScheduleModel& model) {
+  const auto frame_slots = model.frame_slots, barrier_slots = model.barrier_slots, settle_slots = model.settle_slots;
+  const auto fpga_count = model.fpga_count;
+  const auto capacity_count = static_cast<std::uint32_t>(model.capacity_lanes.size());
+  const auto route_count = static_cast<std::uint32_t>(model.routes.size());
+  const auto& capacity_lanes = model.capacity_lanes;
+  const auto& routes = model.routes;
   std::vector<std::vector<std::uint32_t>> successors(route_count);
   std::vector<std::uint32_t> indegree(route_count);
   for (std::uint32_t route = 0; route < route_count; ++route) {
@@ -231,7 +124,9 @@ void RunImpl(const std::string& input_path, const std::string& output_path) {
       route_count, std::vector<std::int64_t>(fpga_count, missing));
   std::vector<Entry> entries;
   std::vector<Completion> completions;
-  entries.reserve(input.size() / 36);
+  std::size_t hop_count = 0;
+  for (const auto& route : routes) hop_count += route.hops.size();
+  entries.reserve(hop_count);
   completions.reserve(route_count);
 
   for (const auto route_index : order) {
@@ -345,59 +240,12 @@ void RunImpl(const std::string& input_path, const std::string& output_path) {
     return routes[lhs.route].demand_rank < routes[rhs.route].demand_rank;
   });
 
-  emuflow::core::AtomicBinaryWriter output(output_path);
-  output.Write(kOutputMagic);
-  output.Write(kOutputVersion);
-  output.Write(static_cast<std::uint64_t>(entries.size()));
-  output.Write(route_count);
-  for (const auto route : order) output.Write(route);
-  for (const auto& entry : entries) {
-    const auto& hop = routes[entry.route].hops[entry.hop];
-    output.Write(entry.route);
-    output.Write(entry.sequence);
-    output.Write(hop.depth);
-    output.Write(hop.capacity);
-    output.Write(hop.link);
-    output.Write(hop.from);
-    output.Write(hop.to);
-    output.Write(entry.slot);
-    output.Write(entry.lane);
-    output.Write(entry.ready);
-    output.Write(entry.arrival);
-    output.Write(hop.assigned_lane == kUnassignedLane ? 0u : hop.ratio);
-  }
-  for (const auto& completion : completions) {
-    output.Write(completion.route);
-    output.Write(completion.ready);
-    output.Write(completion.completion);
-    output.Write(static_cast<std::uint32_t>(completion.sink_arrivals.size()));
-    for (const auto& [sink, arrival] : completion.sink_arrivals) {
-      output.Write(sink);
-      output.Write(arrival);
-    }
-  }
-  output.Commit();
+  return {std::move(order),std::move(entries),std::move(completions)};
 }
 
 }  // namespace
 
-void emuflow::native::ScheduleStaticExact(const std::string& input_path,
-                                          const std::string& output_path) {
-  RunImpl(input_path, output_path);
+emuflow::core::ExactScheduleSolution emuflow::native::ComputeStaticExactSchedule(
+    const emuflow::core::ExactScheduleModel& model) {
+  return Compute(model);
 }
-
-#if !defined(EMUFLOW_NATIVE_STAGE_LIBRARY)
-int main(int argc, char** argv) {
-  try {
-    if (argc != 3) {
-      std::cerr << "usage: emuflow_tdm_exact_scheduler INPUT OUTPUT\n";
-      return 2;
-    }
-    emuflow::native::ScheduleStaticExact(argv[1], argv[2]);
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << error.what() << '\n';
-    return 1;
-  }
-}
-#endif

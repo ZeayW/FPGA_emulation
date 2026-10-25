@@ -9,45 +9,28 @@ on the production path.
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import uuid
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .emuir_compact import DDL
 from .emuir_storage import (
     EMUIR_COMPACT_STORAGE_SCHEMA,
     EMUIR_SQLITE_APPLICATION_ID,
-    _extras,
     _json,
 )
 from .errors import ValidationError
+from .store_publication import (
+    bind_store_source,
+    publish_sqlite_store,
+    validate_store_destination,
+)
+
+
 def _sqlite_uri(path: Path) -> str:
-    return f"file:{path.resolve()}?mode=ro&immutable=1"
-
-
-def _endpoint_row(
-    net_id: str,
-    role: int,
-    order_group: int,
-    order_a: int,
-    order_b: int,
-    order_c: int,
-    endpoint: Mapping[str, Any],
-) -> tuple[Any, ...]:
-    return (
-        net_id,
-        role,
-        order_group,
-        order_a,
-        order_b,
-        order_c,
-        endpoint.get("instance"),
-        endpoint["port"],
-        int(endpoint["bit"]),
-        _extras(endpoint, {"instance", "port", "bit"}),
-    )
+    return immutable_sqlite_uri(path)
 
 
 def write_placement_emuir_from_split(
@@ -61,9 +44,11 @@ def write_placement_emuir_from_split(
     warnings: Sequence[Any],
     transport_ir_path: Path,
     consumed_transport_nets: Iterable[str],
-    added_endpoints: Sequence[tuple[str, int, int, Mapping[str, Any]]],
-    port_added_endpoints: Sequence[
-        tuple[str, int, int, Mapping[str, Any]]
+    added_endpoints: Iterable[
+        tuple[str, int, int, int, Optional[str], str, int, str]
+    ],
+    port_added_endpoints: Iterable[
+        tuple[str, int, int, Optional[str], str, int, str]
     ],
     recompute_fanout: Iterable[str],
     expected_source_nets: Iterable[str],
@@ -71,11 +56,19 @@ def write_placement_emuir_from_split(
 ) -> None:
     """Materialize one FPGA without decoding the DUT in Python.
 
-    ``added_endpoints`` records are ``(net, role, order, endpoint)``.  Port
-    additions are ``(driver_port, driver_bit, order, endpoint)`` and are bound
-    to their one DUT net inside SQLite.
+    ``added_endpoints`` records carry net, role, order and normalized endpoint
+    columns. Port additions carry driver port/bit, order and the same endpoint
+    columns; they are bound to their one DUT net inside SQLite. Both inputs may
+    be one-shot cursors so lowering never needs an endpoint-sized Python list.
     """
 
+    source_bindings = validate_store_destination(
+        output_path,
+        (
+            bind_store_source(split_path, "split-netlists-v2"),
+            bind_store_source(transport_ir_path, "emuir-compact-v2"),
+        ),
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_name(
         f".{output_path.name}.{uuid.uuid4().hex}.tmp"
@@ -372,24 +365,27 @@ def write_placement_emuir_from_split(
         connection.executemany(
             "INSERT INTO stage_endpoints VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
-                _endpoint_row(net, role, 1, 0, 0, order, endpoint)
-                for net, role, order, endpoint in added_endpoints
+                (
+                    net, role, 1, priority, 0, order, instance, port, bit,
+                    extras_json,
+                )
+                for (
+                    net, role, priority, order, instance, port, bit,
+                    extras_json,
+                ) in added_endpoints
             ),
         )
         connection.executemany(
             "INSERT INTO port_additions VALUES (?,?,?,?,?,?,?)",
             (
                 (
-                    driver_port,
-                    driver_bit,
-                    order,
-                    endpoint.get("instance"),
-                    endpoint["port"],
-                    int(endpoint["bit"]),
-                    _extras(endpoint, {"instance", "port", "bit"}),
+                    driver_port, driver_bit, order, instance, port, bit,
+                    extras_json,
                 )
-                for driver_port, driver_bit, order, endpoint
-                in port_added_endpoints
+                for (
+                    driver_port, driver_bit, order, instance, port, bit,
+                    extras_json,
+                ) in port_added_endpoints
             ),
         )
         connection.execute(
@@ -645,9 +641,9 @@ def write_placement_emuir_from_split(
         )
         connection.commit()
         connection.close()
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
-        os.replace(temporary, output_path)
+        publish_sqlite_store(
+            temporary, output_path, "emuir-compact-v2", sources=source_bindings
+        )
     except BaseException:
         connection.close()
         temporary.unlink(missing_ok=True)

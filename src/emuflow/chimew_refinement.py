@@ -117,6 +117,7 @@ def _validate_initial_groups(
     schedule: Mapping[str, Any],
     initial: Mapping[str, Any],
     encodings: Mapping[str, int],
+    *, crossing_document: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, int]:
     if initial.get("schema") != CHIMEW_GROUPING_SCHEMA:
         raise ValidationError("Chimew initial grouping schema is invalid")
@@ -146,6 +147,17 @@ def _validate_initial_groups(
     entries = {entry["id"]: entry for entry in schedule.get("entries", [])}
     if set(groups) != set(entries):
         raise ValidationError("Chimew initial groups must cover schedule exactly")
+    if crossing_document is not None:
+        from .chimew_grouping import _crossing_timing_guard
+        protected = _crossing_timing_guard(schedule, crossing_document)
+        if protected is not None:
+            lane_key = lambda entry: (entry["link"],entry["from"],entry["to"],entry["lane"])
+            guarded_lanes = {lane_key(entry) for entry in entries.values() if entry["id"] in protected}
+            for record in raw_entries:
+                lane = lane_key(entries[record["schedule_entry"]])
+                expected = list(lane) if lane in guarded_lanes else None
+                if record.get("timing_guard_lane") != expected:
+                    raise ValidationError("Chimew initial groups do not preserve declared lookahead guards")
     grouped: Dict[int, list[str]] = defaultdict(list)
     for entry_id, group in groups.items():
         grouped[group].append(entry_id)
@@ -436,31 +448,6 @@ def _typed_refinement_sha256(
     return digest.hexdigest()
 
 
-def _serialize_legacy_refinement(
-    entries: Sequence[Mapping[str, Any]],
-    encodings: Mapping[str, int],
-    positions: Mapping[str, float],
-    initial: Mapping[str, int],
-    guards: Mapping[str, Optional[tuple[Any, ...]]],
-    path: Path,
-) -> None:
-    """Write the historical text protocol for explicit differential tests."""
-
-    domain_index = _refinement_domains(entries, guards)
-    with path.open("w", encoding="utf-8") as stream:
-        stream.write("EMUFLOW_CHIMEW_REFINER_INPUT_V1\n")
-        for index, entry in enumerate(entries):
-            entry_id = entry["id"]
-            domain = (
-                _domain(entry),
-                guards.get(entry_id),
-                _tdm_slot(entry, index) if "slot" in entry else None,
-            )
-            stream.write(
-                f"SIGNAL {index} {domain_index[domain]} "
-                f"{_tdm_ratio(entry)} {encodings[entry_id]} "
-                f"{initial[entry_id]} {positions[entry_id]:.17g}\n"
-            )
 
 
 def _serialize_typed_refinement(
@@ -591,7 +578,6 @@ def _run_native(
         root = Path(temporary)
         stderr_path = root / "stderr.txt"
         native_command = resolve_native_stage_command(
-            "emuflow_chimew_position_refiner",
             "phase6",
             "refine-groups",
             explicit=executable,
@@ -687,7 +673,7 @@ def refine_chimew_groups(
 
     encodings = validate_chimew_crossings(schedule, crossing_document)
     positions = validate_chimew_positions(schedule, position_document)
-    initial = _validate_initial_groups(schedule, initial_grouping, encodings)
+    initial = _validate_initial_groups(schedule, initial_grouping, encodings, crossing_document=crossing_document)
     guards = _timing_guards(schedule, initial_grouping)
     entries = sorted(schedule["entries"], key=lambda entry: entry["id"])
     native = _run_native(entries, encodings, positions, initial, guards, executable)

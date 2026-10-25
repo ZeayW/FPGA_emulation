@@ -19,7 +19,7 @@ from emuflow.platform import Platform
 from emuflow.local_path_timing import path_id_set_sha256
 from emuflow.runtime import (
     PHYSICAL_SUMMARY_SCHEMA,
-    aggregate_qor,
+    aggregate_qor as _aggregate_qor,
     build_virtual_runtime,
     estimate_runtime_timing,
     runtime_controller_testbench,
@@ -30,6 +30,21 @@ from emuflow.runtime import (
 )
 from emuflow.tdm import TDM_SCHEDULE_SCHEMA
 from emuflow.tdm import reconstruct_tdm_schedule_timing
+
+
+def aggregate_qor(runtime, phase3, phase4, phase5, phase6, physical, platform, **kwargs):
+    """Explicit small-fixture oracle injection; never a production fallback."""
+    from tests.system_timing_oracle import build_system_timing
+    if physical is not None and "system_timing_result" not in kwargs:
+        kwargs["system_timing_result"] = build_system_timing(
+            runtime, kwargs.get("routes"), kwargs.get("schedule"), phase5,
+            physical, platform,
+            routes_artifact_sha256=kwargs.get("routes_artifact_sha256"),
+            semantic_contract=kwargs.get("semantic_contract"),
+        )
+    for name in ("routes", "schedule", "routes_artifact_sha256", "semantic_contract"):
+        kwargs.pop(name, None)
+    return _aggregate_qor(runtime, phase3, phase4, phase5, phase6, physical, platform, **kwargs)
 
 
 class Phase7CTest(unittest.TestCase):
@@ -1208,7 +1223,7 @@ class Phase7CTest(unittest.TestCase):
         )
         self.assertEqual(path["fixed_slot_event_timing_status"], "pass")
 
-    def test_phase7c_writes_generated_then_physically_closed_report(self):
+    def test_phase7c_generates_runtime_and_rejects_retired_physical_engine(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             paths = {}
@@ -1300,40 +1315,24 @@ class Phase7CTest(unittest.TestCase):
                     routes_path=paths["routes"],
                     allow_legacy_phase5_generation=True,
                 )
-            closed = run_phase7c(
-                paths["schedule"],
-                paths["platform"],
-                paths["phase3"],
-                paths["phase4"],
-                paths["phase5"],
-                paths["phase6"],
-                root / "closed",
-                physical_summary_path=paths["physical"],
-                global_timing_engine="python",
-                routes_path=paths["routes"],
-                board_link_timing_path=paths["link_timing"],
-                allow_legacy_phase5_generation=True,
-            )
-            self.assertEqual(closed["status"], "incomplete")
-            self.assertNotIn("system_timing", closed)
-            self.assertIn("system_timing_summary", closed)
-            self.assertFalse((root / "closed/system_timing.json").exists())
-            self.assertFalse((root / "closed/physical_summary.json").exists())
-            closed_timing = read_json(root / "closed/qor_report.json")["timing"]
-            self.assertEqual(
-                closed_timing["paths"][0][
-                    "scheduled_link_tdm_model"
-                ],
-                "board-link-timing-db",
-            )
-            for filename in closed["artifacts"].values():
-                self.assertTrue((root / "closed" / filename).is_file())
-            self.assertLess(
-                (root / "closed/phase7c_report.json").stat().st_size,
-                (root / "closed/qor_report.json").stat().st_size,
-            )
+            with self.assertRaisesRegex(ValidationError, "only the OpenSTA"):
+                run_phase7c(
+                    paths["schedule"],
+                    paths["platform"],
+                    paths["phase3"],
+                    paths["phase4"],
+                    paths["phase5"],
+                    paths["phase6"],
+                    root / "closed",
+                    physical_summary_path=paths["physical"],
+                    global_timing_engine="python",
+                    routes_path=paths["routes"],
+                    board_link_timing_path=paths["link_timing"],
+                    allow_legacy_phase5_generation=True,
+                )
+            self.assertFalse((root / "closed").exists())
 
-    def test_phase7c_binds_local_timing_to_compact_route_artifact(self):
+    def test_phase7c_rejects_python_for_compact_local_timing(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             route_bytes = json.dumps(
@@ -1407,30 +1406,21 @@ class Phase7CTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            closed = run_phase7c(
-                paths["schedule"],
-                paths["platform"],
-                paths["phase3"],
-                paths["phase4"],
-                paths["phase5"],
-                paths["phase6"],
-                root / "closed",
-                physical_summary_path=paths["physical"],
-                global_timing_engine="python",
-                routes_path=paths["routes"],
-                allow_legacy_phase5_generation=True,
-            )
-            self.assertEqual(closed["status"], "incomplete")
-            self.assertEqual(
-                closed["physical_evidence_completeness"]["status"],
-                "incomplete",
-            )
-            self.assertEqual(
-                read_json(root / "closed/qor_report.json")["timing"][
-                    "source_binding"
-                ]["routes_sha256"],
-                source["routes_sha256"],
-            )
+            with self.assertRaisesRegex(ValidationError, "only the OpenSTA"):
+                run_phase7c(
+                    paths["schedule"],
+                    paths["platform"],
+                    paths["phase3"],
+                    paths["phase4"],
+                    paths["phase5"],
+                    paths["phase6"],
+                    root / "closed",
+                    physical_summary_path=paths["physical"],
+                    global_timing_engine="python",
+                    routes_path=paths["routes"],
+                    allow_legacy_phase5_generation=True,
+                )
+            self.assertFalse((root / "closed").exists())
 
     def test_heterogeneous_fabric_clocks_are_outside_v1(self):
         value = self.platform.to_dict()

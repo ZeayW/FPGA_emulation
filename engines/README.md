@@ -6,7 +6,6 @@ participate directly in the EmuFlow root build:
 - `yosys`: logic synthesis and ABC technology mapping;
 - `openroad`: OpenROAD and TritonPart, including its API-coupled OpenSTA copy;
 - `opensta`: standalone OpenSTA 3.1 used by EmuFlow timing flows;
-- `repart`: multilevel FPGA-aware hypergraph partitioning and replication;
 - `openparf`: FPGA placement operators and flow; and
 - `vtr`: VPR exact architecture packing, placement, and detailed routing; and
 - `cudd`: the decision-diagram dependency required by OpenSTA.

@@ -8,6 +8,7 @@ writers publish the selector last while holding the exclusive lease.
 
 from __future__ import annotations
 
+from contextlib import closing
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 import fcntl
 from functools import lru_cache
@@ -15,14 +16,21 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import sqlite3
 import tempfile
 from typing import Any, Optional
 import weakref
 
 from .errors import ValidationError
-from .io import file_sha256, read_json, write_json
+from .store_publication import (
+    StoreSource,
+    bind_store_source,
+    commit_store_selector,
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+)
+from .io import file_sha256, read_json
 
 
 LOGIC_SEGMENT_IDENTITY_SCHEMA = "emuflow.logic-segment-identity/v1"
@@ -402,7 +410,7 @@ class _SegmentSequence(Sequence[Mapping[str, Any]]):
         if owner is None:
             raise ValidationError("logic segment identity view is closed")
         owner._ensure_open()
-        with _connect(owner.store_path) as connection:
+        with closing(_connect(owner.store_path)) as connection, connection:
             for row in connection.execute("SELECT * FROM segments ORDER BY seq"):
                 yield segment_from_row(row)
 
@@ -417,7 +425,7 @@ class _SegmentSequence(Sequence[Mapping[str, Any]]):
         if owner is None:
             raise ValidationError("logic segment identity view is closed")
         owner._ensure_open()
-        with _connect(owner.store_path) as connection:
+        with closing(_connect(owner.store_path)) as connection, connection:
             row = connection.execute(
                 "SELECT * FROM segments WHERE seq=?", (index,)
             ).fetchone()
@@ -439,7 +447,7 @@ class _UnsupportedSequence(Sequence[Mapping[str, Any]]):
         if owner is None:
             raise ValidationError("logic segment identity view is closed")
         owner._ensure_open()
-        with _connect(owner.store_path) as connection:
+        with closing(_connect(owner.store_path)) as connection, connection:
             for row in connection.execute(
                 "SELECT path,reason FROM unsupported_members ORDER BY seq"
             ):
@@ -456,7 +464,7 @@ class _UnsupportedSequence(Sequence[Mapping[str, Any]]):
         if owner is None:
             raise ValidationError("logic segment identity view is closed")
         owner._ensure_open()
-        with _connect(owner.store_path) as connection:
+        with closing(_connect(owner.store_path)) as connection, connection:
             row = connection.execute(
                 "SELECT path,reason FROM unsupported_members WHERE seq=?", (index,)
             ).fetchone()
@@ -502,7 +510,9 @@ def _validate_selector(raw: Any) -> dict[str, Any]:
     return raw
 
 
-def _resolve_store(selector_path: Path, selector: Mapping[str, Any]) -> Path:
+def _resolve_store(
+    selector_path: Path, selector: Mapping[str, Any]
+) -> tuple[Path, StoreSource]:
     if selector_path.is_symlink():
         raise ValidationError("logic segment identity selector is a symbolic link")
     candidate = selector_path.parent / str(selector["artifact"])
@@ -513,6 +523,7 @@ def _resolve_store(selector_path: Path, selector: Mapping[str, Any]) -> Path:
     try:
         resolved = candidate.resolve(strict=True)
         stat = resolved.stat()
+        store_source = bind_store_source(resolved, "logic-segment-identity-store-v1")
     except OSError as error:
         raise ValidationError("logic segment identity store is missing") from error
     if resolved.parent != selector_path.parent.resolve():
@@ -522,7 +533,8 @@ def _resolve_store(selector_path: Path, selector: Mapping[str, Any]) -> Path:
         or file_sha256(resolved) != selector["store_sha256"]
     ):
         raise ValidationError("logic segment identity store seal disagrees")
-    return resolved
+    require_store_sources_unchanged((store_source,))
+    return resolved, store_source
 
 
 class LogicSegmentIdentityView(Mapping[str, Any]):
@@ -544,6 +556,9 @@ class LogicSegmentIdentityView(Mapping[str, Any]):
             if selector_path.is_symlink() or not selector_path.is_file():
                 raise ValidationError("logic segment identity selector is missing")
             self.selector_path = selector_path.resolve()
+            selector_source = bind_store_source(
+                self.selector_path, "logic-segment-identity-selector-v1"
+            )
             self.selector = _validate_selector(read_json(selector_path))
             expected = {
                 "design": expected_design, "platform": expected_platform,
@@ -557,8 +572,10 @@ class LogicSegmentIdentityView(Mapping[str, Any]):
                     raise ValidationError(
                         f"logic segment identity {key} source seal disagrees"
                     )
-            self.store_path = _resolve_store(selector_path, self.selector)
+            self.store_path, store_source = _resolve_store(selector_path, self.selector)
+            self._source_bindings = (selector_source, store_source)
             self._validate_store()
+            require_store_sources_unchanged(self._source_bindings)
             self._segments = _SegmentSequence(self, self.selector["counts"]["segments"])
             self._unsupported = _UnsupportedSequence(
                 self, self.selector["counts"]["unsupported_member_paths"]
@@ -578,11 +595,22 @@ class LogicSegmentIdentityView(Mapping[str, Any]):
         value.selector_path = selector_path.resolve()
         value.selector = selector
         value.store_path = store_path.resolve()
+        value._source_bindings = (
+            bind_store_source(
+                value.selector_path, "logic-segment-identity-selector-v1"
+            ),
+            bind_store_source(value.store_path, "logic-segment-identity-store-v1"),
+        )
         value._segments = _SegmentSequence(value, selector["counts"]["segments"])
         value._unsupported = _UnsupportedSequence(
             value, selector["counts"]["unsupported_member_paths"]
         )
         return value
+
+    def bound_store_sources(self):
+        self._ensure_open()
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -608,7 +636,7 @@ class LogicSegmentIdentityView(Mapping[str, Any]):
         segment_digest = hashlib.sha256()
         unsupported_digest = hashlib.sha256()
         try:
-            with _connect(self.store_path) as connection:
+            with closing(_connect(self.store_path)) as connection, connection:
                 _exact_sqlite_envelope(connection)
                 metadata_rows = list(connection.execute(
                     "SELECT key,value FROM metadata ORDER BY key"
@@ -691,7 +719,7 @@ class LogicSegmentIdentityView(Mapping[str, Any]):
     def canonical_segments(self) -> Iterator[Mapping[str, Any]]:
         """Yield the timing-store join order without materializing an index."""
         self._ensure_open()
-        with _connect(self.store_path) as connection:
+        with closing(_connect(self.store_path)) as connection, connection:
             for row in connection.execute(
                 "SELECT * FROM segments "
                 "ORDER BY system_path,member_path,cut_index,segment_id"
@@ -1088,20 +1116,20 @@ def write_logic_segment_identity_storage(
     segments: Iterable[Mapping[str, Any]],
     unsupported_member_paths: Iterable[Mapping[str, Any]] = (),
     sidecar_publication: Optional[tuple[Path, Path]] = None,
+    source_bindings=(),
 ) -> LogicSegmentIdentityView:
     normalized_header = _validate_header(
         header, require_exact_coverage=False
     )
+    source_bindings = validate_store_destination(path, source_bindings)
     path.parent.mkdir(parents=True, exist_ok=True)
     lease: Optional[_Lease] = _Lease(path, exclusive=True)
     temporary: Optional[Path] = None
-    selector_temporary: Optional[Path] = None
     connection: Optional[sqlite3.Connection] = None
     published_store: Optional[Path] = None
     created_store = False
     selector_committed = False
-    selector_published = False
-    selector_backup: Optional[Path] = None
+    selector_commit_started = False
     sidecar_published = False
     sidecar_backup: Optional[Path] = None
     sidecar_temporary = (
@@ -1122,11 +1150,6 @@ def write_logic_segment_identity_storage(
         )
         os.close(descriptor)
         temporary = Path(name)
-        descriptor, name = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".selector.tmp", dir=path.parent
-        )
-        os.close(descriptor)
-        selector_temporary = Path(name)
         connection = sqlite3.connect(temporary)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=OFF")
@@ -1224,29 +1247,29 @@ def write_logic_segment_identity_storage(
         connection.commit()
         connection.close()
         connection = None
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
         store_sha = file_sha256(temporary)
         published_store = path.with_name(_store_name(path, store_sha))
         if published_store.is_symlink():
             raise ValidationError("logic segment identity generation is a symlink")
+        require_store_sources_unchanged(source_bindings)
         if published_store.is_file():
             if file_sha256(published_store) != store_sha:
                 raise ValidationError("logic segment identity generation seal disagrees")
             temporary.unlink()
         else:
-            os.replace(temporary, published_store)
+            publish_sqlite_store(
+                temporary,
+                published_store,
+                "logic-segment-identity-store-v1",
+                sources=source_bindings,
+            )
             created_store = True
-            _fsync_directory(path.parent)
         selector.update({
             "artifact": published_store.name,
             "store_bytes": published_store.stat().st_size,
             "store_sha256": store_sha,
         })
         _validate_selector(selector)
-        write_json(selector_temporary, selector, compact=True)
-        with selector_temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
         if sidecar_temporary is not None and sidecar_target is not None:
             if (
                 sidecar_temporary.is_symlink()
@@ -1271,21 +1294,18 @@ def write_logic_segment_identity_storage(
             os.replace(sidecar_temporary, sidecar_target)
             sidecar_published = True
             _fsync_directory(sidecar_target.parent)
-        if path.exists():
-            descriptor, backup_name = tempfile.mkstemp(
-                prefix=f".{path.name}.", suffix=".rollback.tmp", dir=path.parent
-            )
-            os.close(descriptor)
-            selector_backup = Path(backup_name)
-            shutil.copyfile(path, selector_backup)
-            with selector_backup.open("rb") as stream:
-                os.fsync(stream.fileno())
-        os.replace(selector_temporary, path)
-        selector_published = True
-        _fsync_directory(path.parent)
+        # The common commit owns selector backup and SQL generation recovery.
+        # Once entered, its retained payloads must survive a failed rollback.
+        selector_commit_started = True
+        commit_store_selector(
+            path,
+            selector,
+            source_bindings,
+            published_store,
+            created_store,
+            durable=True,
+        )
         selector_committed = True
-        if selector_backup is not None:
-            selector_backup.unlink(missing_ok=True)
         if sidecar_backup is not None:
             sidecar_backup.unlink(missing_ok=True)
             _fsync_directory(sidecar_target.parent)
@@ -1305,17 +1325,13 @@ def write_logic_segment_identity_storage(
             connection.close()
         if temporary is not None:
             temporary.unlink(missing_ok=True)
-        if selector_temporary is not None:
-            selector_temporary.unlink(missing_ok=True)
-        if published_store is not None and created_store and not selector_committed:
+        if (
+            published_store is not None
+            and created_store
+            and not selector_committed
+            and not selector_commit_started
+        ):
             published_store.unlink(missing_ok=True)
-        if not selector_committed:
-            if selector_backup is not None and selector_backup.is_file():
-                os.replace(selector_backup, path)
-                _fsync_directory(path.parent)
-            elif selector_published:
-                path.unlink(missing_ok=True)
-                _fsync_directory(path.parent)
         if not selector_committed and sidecar_target is not None:
             if sidecar_backup is not None and sidecar_backup.is_file():
                 os.replace(sidecar_backup, sidecar_target)
@@ -1331,8 +1347,6 @@ def write_logic_segment_identity_storage(
             sidecar_temporary.unlink(missing_ok=True)
         if sidecar_backup is not None and selector_committed:
             sidecar_backup.unlink(missing_ok=True)
-        if selector_backup is not None:
-            selector_backup.unlink(missing_ok=True)
         if lease is not None:
             lease.close()
 

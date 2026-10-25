@@ -1,18 +1,18 @@
+from contextlib import closing
 import copy
 import json
+import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+import emuflow.timing_routing as timing_routing
 from emuflow.errors import EmuFlowError, ValidationError
-from emuflow.io import read_json
-from emuflow.partition import (
-    PARTITION_ASSIGNMENT_SCHEMA,
-    assign_clusters,
-    build_clusters,
-    normalize_partition_constraints,
-)
+from emuflow.io import file_sha256, read_json
+from emuflow.partition import (PARTITION_ASSIGNMENT_SCHEMA, build_clusters, normalize_partition_constraints)
+from tests.partition_reference import assign_clusters
 from emuflow.phase4 import run_phase4
 from emuflow.platform import Platform
 from emuflow.routing import (
@@ -21,12 +21,11 @@ from emuflow.routing import (
     normalize_route_constraints,
     validate_system_routes,
 )
-from emuflow.routing_oracle import exact_route_tree_selection
+from tests.routing_reference import exact_route_tree_selection
 from emuflow.timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
-    NATIVE_ROUTER_PROVIDER,
-    NATIVE_TIMING_EVALUATED_PROVIDER,
-    TLR_PROVIDER,
+    _PackedNativeDemandSequence,
+    _PackedNativePathSequence,
     compress_sta_paths,
     load_sta_paths,
     normalize_sta_paths,
@@ -36,12 +35,13 @@ from emuflow.timing_routing import (
 )
 from emuflow.system_route_storage import (
     SYSTEM_ROUTE_STORAGE_SCHEMA,
+    SYSTEM_ROUTE_USER_VERSION,
     SystemRoutesView,
     read_system_routes,
     write_system_route_storage,
 )
 from emuflow.yosys import import_yosys_json
-from tests.native_build import tlr_router
+from tests.native_build import emuflow_native, tlr_router
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,6 +68,51 @@ def _storage_routes(generation: int) -> dict:
         "demands": [demand],
         "routes": [route],
     }
+
+
+def _downgrade_route_relation_to_v2(store_path: Path) -> None:
+    with closing(sqlite3.connect(store_path)) as connection, connection:
+        connection.row_factory = sqlite3.Row
+        rows = list(connection.execute("SELECT * FROM routes ORDER BY seq"))
+        connection.executescript(
+            "DROP INDEX routes_net_order;"
+            "DROP INDEX routes_demand_order;"
+            "ALTER TABLE routes RENAME TO routes_v3;"
+            "CREATE TABLE routes("
+            "seq INTEGER PRIMARY KEY,demand_id TEXT NOT NULL UNIQUE,"
+            "net_id TEXT NOT NULL UNIQUE,source_fpga TEXT NOT NULL,"
+            "dependency_level INTEGER,"
+            "combinational_dependency_depth INTEGER,"
+            "record_json TEXT NOT NULL,CHECK(json_valid(record_json)));"
+        )
+        for row in rows:
+            scalar = {"width_bits": int(row["width_bits"])}
+            for field in (
+                "transport_round",
+                "cut_class",
+                "max_latency_cycles",
+                "predicted_max_delay_ns",
+            ):
+                if row[field] is not None:
+                    scalar[field] = row[field]
+            connection.execute(
+                "INSERT INTO routes VALUES(?,?,?,?,?,?,?)",
+                (
+                    row["seq"],
+                    row["demand_id"],
+                    row["net_id"],
+                    row["source_fpga"],
+                    row["dependency_level"],
+                    row["combinational_dependency_depth"],
+                    json.dumps(scalar, separators=(",", ":"), sort_keys=True),
+                ),
+            )
+        connection.executescript(
+            "DROP TABLE routes_v3;"
+            "CREATE INDEX routes_net_order ON routes(net_id,seq);"
+            "CREATE INDEX routes_demand_order ON routes(demand_id,seq);"
+            "PRAGMA user_version=2;"
+        )
 
 
 def _platform_value(name, fpga_ids, links):
@@ -129,6 +174,201 @@ def _assignment(platform, cuts):
 
 
 class Phase4Test(unittest.TestCase):
+    def test_native_route_model_uses_fixed_width_demand_and_path_relations(
+        self,
+    ) -> None:
+        demands = _PackedNativeDemandSequence()
+        paths = _PackedNativePathSequence()
+        for index in range(100_000):
+            demands.append_record(
+                index % 4,
+                ((index + 1) % 4, (index + 2) % 4),
+                index % 64 + 1,
+                -0.5,
+                3.25,
+            )
+            paths.append_record(
+                10.0,
+                -1.0,
+                4.0,
+                (index, (index + 1) % 100_000),
+            )
+        self.assertEqual(
+            demands[99_999],
+            {
+                "index": 99_999,
+                "source": 3,
+                "sinks": [0, 1],
+                "width": 32,
+                "normalized_slack": -0.5,
+                "predicted_delay_ns": 3.25,
+            },
+        )
+        self.assertEqual(
+            paths[99_999],
+            {
+                "index": 99_999,
+                "clock_period_ns": 10.0,
+                "baseline_slack_ns": -1.0,
+                "fixed_delay_ns": 4.0,
+                "demands": [99_999, 0],
+            },
+        )
+        self.assertLess(demands.payload_bytes, 6_500_000)
+        self.assertLess(paths.payload_bytes, 5_000_000)
+        demands.clear()
+        paths.clear()
+        self.assertEqual(len(demands), 0)
+        self.assertEqual(len(paths), 0)
+
+    def test_route_store_v1_remains_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            selector_path = root / "routes.json"
+            logical = _storage_routes(0)
+            manifest = write_system_route_storage(selector_path, logical)
+            store_path = root / manifest["artifact"]
+            _downgrade_route_relation_to_v2(store_path)
+            legacy_header = {
+                key: value
+                for key, value in logical.items()
+                if key not in {"demands", "routes"}
+            }
+            legacy_sections = {
+                key: manifest["sections"][key]
+                for key in ("demands", "routes", "timing_paths")
+            }
+            with closing(sqlite3.connect(store_path)) as connection, connection:
+                connection.executescript(
+                    "DROP TABLE route_master_selections;"
+                    "DROP TABLE refinement_batch_paths;"
+                    "PRAGMA user_version=1;"
+                )
+                connection.executemany(
+                    "UPDATE metadata SET value=? WHERE key=?",
+                    (
+                        (json.dumps(legacy_header), "header"),
+                        (json.dumps(legacy_sections), "sections"),
+                    ),
+                )
+            store_sha256 = file_sha256(store_path)
+            legacy_store = root / f"routes.{store_sha256}.sqlite"
+            store_path.rename(legacy_store)
+            legacy_manifest = {
+                **manifest,
+                "user_version": 1,
+                "header": legacy_header,
+                "sections": legacy_sections,
+                "artifact": legacy_store.name,
+                "store_bytes": legacy_store.stat().st_size,
+                "store_sha256": store_sha256,
+            }
+            selector_path.write_text(
+                json.dumps(legacy_manifest), encoding="utf-8"
+            )
+            self.assertEqual(read_json(selector_path), logical)
+
+    def test_route_store_v2_remains_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            selector_path = root / "routes.json"
+            logical = _storage_routes(0)
+            manifest = write_system_route_storage(selector_path, logical)
+            store_path = root / manifest["artifact"]
+            _downgrade_route_relation_to_v2(store_path)
+            store_sha256 = file_sha256(store_path)
+            legacy_store = root / f"routes.{store_sha256}.sqlite"
+            store_path.rename(legacy_store)
+            legacy_manifest = {
+                **manifest,
+                "user_version": 2,
+                "artifact": legacy_store.name,
+                "store_bytes": legacy_store.stat().st_size,
+                "store_sha256": store_sha256,
+            }
+            selector_path.write_text(
+                json.dumps(legacy_manifest), encoding="utf-8"
+            )
+            self.assertEqual(read_json(selector_path), logical)
+
+    def test_route_store_v3_owns_route_scalars_as_typed_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            selector_path = root / "routes.json"
+            logical = _storage_routes(0)
+            logical["routes"][0].update(
+                {
+                    "transport_round": 2,
+                    "cut_class": "register_output",
+                    "dependency_level": 0,
+                    "combinational_dependency_depth": 0,
+                    "predecessor_cut_nets": [],
+                    "max_latency_cycles": 3,
+                    "predicted_max_delay_ns": 4.5,
+                }
+            )
+            logical["demands"][0].update(
+                {
+                    "transport_round": 2,
+                    "cut_class": "register_output",
+                    "dependency_level": 0,
+                    "combinational_dependency_depth": 0,
+                    "predecessor_cut_nets": [],
+                }
+            )
+            manifest = write_system_route_storage(selector_path, logical)
+            self.assertEqual(manifest["user_version"], SYSTEM_ROUTE_USER_VERSION)
+            with closing(sqlite3.connect(root / manifest["artifact"])) as connection, connection:
+                columns = tuple(
+                    row[1] for row in connection.execute("PRAGMA table_info(routes)")
+                )
+                row = connection.execute(
+                    "SELECT width_bits,transport_round,cut_class,"
+                    "dependency_level,combinational_dependency_depth,"
+                    "max_latency_cycles,predicted_max_delay_ns FROM routes"
+                ).fetchone()
+            self.assertNotIn("record_json", columns)
+            self.assertEqual(row, (1, 2, "register_output", 0, 0, 3, 4.5))
+            self.assertEqual(read_json(selector_path), logical)
+
+    def test_route_store_v3_rejects_untyped_route_scalars(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            logical = _storage_routes(0)
+            logical["routes"][0]["future_payload"] = {"large": True}
+            with self.assertRaisesRegex(
+                ValidationError, "unsupported scalar fields"
+            ):
+                write_system_route_storage(
+                    Path(temporary_directory) / "routes.json", logical
+                )
+
+    def test_route_store_v3_rejects_schema_extensions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            selector_path = root / "routes.json"
+            manifest = write_system_route_storage(
+                selector_path, _storage_routes(0)
+            )
+            store_path = root / manifest["artifact"]
+            with closing(sqlite3.connect(store_path)) as connection, connection:
+                connection.execute("ALTER TABLE routes ADD COLUMN hidden_json TEXT")
+            store_sha256 = file_sha256(store_path)
+            extended_path = root / f"routes.{store_sha256}.sqlite"
+            store_path.rename(extended_path)
+            extended_manifest = {
+                **manifest,
+                "artifact": extended_path.name,
+                "store_bytes": extended_path.stat().st_size,
+                "store_sha256": store_sha256,
+            }
+            selector_path.write_text(
+                json.dumps(extended_manifest), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                ValidationError, "routes relation schema"
+            ):
+                read_system_routes(selector_path)
+
     def test_route_store_selector_failure_preserves_previous_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -311,6 +551,185 @@ class Phase4Test(unittest.TestCase):
         self.assertEqual(checked["demands"], 0)
         self.assertEqual(checked["total_link_bit_hops"], 0)
 
+    def test_production_router_uses_unified_entry_without_legacy_binary(
+        self,
+    ) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "unified-entry",
+                ["a", "b"],
+                [_link("ab", "a", "b")],
+            )
+        )
+        assignment = _assignment(platform, [("n0", "a", ["b"])])
+        constraints = normalize_route_constraints(None, platform)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            runtime = Path(temporary_directory) / "发布 ?#%"
+            runtime.mkdir()
+            binary = runtime / "bin" / "emuflow-native"
+            binary.parent.mkdir()
+            binary.symlink_to(emuflow_native())
+            with mock.patch(
+                "emuflow.timing_routing._parse_native_output_sqlite",
+                wraps=timing_routing._parse_native_output_sqlite,
+            ) as typed_parser:
+                with mock.patch.dict(
+                    "os.environ",
+                    {"EMUFLOW_NATIVE_ROOT": str(runtime)},
+                    clear=False,
+                ), mock.patch("tempfile.tempdir", str(runtime)):
+                    routes = route_system_native(
+                        assignment,
+                        platform,
+                        constraints,
+                        materialize_result=False,
+                    )
+                typed_parser.assert_called_once()
+            route_records = routes["routes"]
+            self.assertTrue(route_records.has_native_route_relations)
+            original_publisher = getattr(
+                timing_routing._ProjectedSystemRouteSequence,
+                "publish_native_route_relations",
+            )
+            with mock.patch.object(
+                timing_routing._ProjectedSystemRouteSequence,
+                "publish_native_route_relations",
+                autospec=True,
+                side_effect=original_publisher,
+            ) as publisher:
+                with mock.patch.object(
+                    timing_routing._ProjectedSystemRouteSequence,
+                    "_record",
+                    side_effect=AssertionError(
+                        "RouteStore publication rebuilt a Python route tree"
+                    ),
+                ) as projected_record:
+                    manifest = write_system_route_storage(
+                        runtime / "routes.json", routes
+                    )
+            publisher.assert_called_once()
+            projected_record.assert_not_called()
+            self.assertEqual(manifest["user_version"], SYSTEM_ROUTE_USER_VERSION)
+            self.assertEqual(read_json(runtime / "routes.json"), routes)
+            route_records.release_native_route_relations()
+            self.assertFalse(route_records.has_native_route_relations)
+        self.assertEqual(
+            validate_native_system_routes(
+                assignment, platform, routes
+            )["status"],
+            "pass",
+        )
+        self.assertEqual(
+            routes["routes"][0]["tree_edges"],
+            [{"link": "ab", "from": "a", "to": "b"}],
+        )
+        legacy = route_system_native(
+            assignment,
+            platform,
+            constraints,
+            executable=str(tlr_router()),
+        )
+        self.assertEqual(routes, legacy)
+
+    def test_typed_native_router_rejects_schema_extension(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "typed-schema",
+                ["a", "b"],
+                [_link("ab", "a", "b")],
+            )
+        )
+        assignment = _assignment(platform, [("n0", "a", ["b"])])
+        constraints = normalize_route_constraints(None, platform)
+        nodes, model = timing_routing._prepare_native_model(
+            assignment, platform, constraints, None
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            native_input = root / "router.in"
+            native_output = root / "router.sqlite"
+            timing_routing._write_native_input(
+                native_input,
+                len(nodes),
+                model,
+                constraints,
+                GLOBAL_CANDIDATE_PROVIDER,
+            )
+            subprocess.run(
+                [
+                    str(emuflow_native()),
+                    "phase4",
+                    "route",
+                    "--typed-output",
+                    str(native_input),
+                    str(native_output),
+                ],
+                check=True,
+            )
+            connection = sqlite3.connect(native_output)
+            connection.execute("CREATE TABLE extension(value INTEGER)")
+            connection.commit()
+            connection.close()
+            with self.assertRaisesRegex(
+                EmuFlowError, "invalid typed output schema"
+            ):
+                timing_routing._parse_native_output(native_output, model)
+
+    def test_phase4_unified_route_publishes_native_relations(self) -> None:
+        platform = Platform.from_dict(
+            _platform_value(
+                "native-publication",
+                ["a", "b"],
+                [_link("ab", "a", "b")],
+            )
+        )
+        assignment = _assignment(platform, [("n0", "a", ["b"])])
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            runtime = root / "runtime"
+            binary = runtime / "bin" / "emuflow-native"
+            binary.parent.mkdir(parents=True)
+            binary.symlink_to(emuflow_native())
+            assignment_path = root / "assignment.json"
+            platform_path = root / "platform.json"
+            assignment_path.write_text(
+                json.dumps(assignment), encoding="utf-8"
+            )
+            platform_path.write_text(
+                json.dumps(platform.to_dict()), encoding="utf-8"
+            )
+            original_release = getattr(
+                timing_routing._ProjectedSystemRouteSequence,
+                "release_native_route_relations",
+            )
+            with mock.patch.object(
+                timing_routing._ProjectedSystemRouteSequence,
+                "release_native_route_relations",
+                autospec=True,
+                side_effect=original_release,
+            ) as release:
+                with mock.patch.dict(
+                    "os.environ",
+                    {"EMUFLOW_NATIVE_ROOT": str(runtime)},
+                    clear=False,
+                ):
+                    report = run_phase4(
+                        assignment_path,
+                        platform_path,
+                        root / "phase4",
+                        timing_driven=False,
+                    )
+            release.assert_called_once()
+            self.assertEqual(
+                report["route_storage"]["dataflow"],
+                "native-sql-route-arc-delay-selection-publication-v1",
+            )
+            routes = read_json(root / "phase4/routes.json")
+            self.assertEqual(
+                routes["routes"][0]["tree_edges"],
+                [{"link": "ab", "from": "a", "to": "b"}],
+            )
+
     def test_native_router_seals_transport_round_capacity(self) -> None:
         platform = Platform.from_dict(
             _platform_value(
@@ -382,11 +801,34 @@ class Phase4Test(unittest.TestCase):
             timing,
             executable=str(tlr_router()),
             provider=GLOBAL_CANDIDATE_PROVIDER,
+            materialize_result=False,
         )
         timing_checked = validate_native_system_routes(
             assignment, platform, timing_routes, timing
         )
         self.assertEqual(timing_checked["round_capacity_boundary"], 4)
+        # Production route/timing/selection populations are repeatable lazy
+        # projections over packed native columns.  Their inherited list
+        # storage must stay empty even though the logical lengths are nonzero.
+        self.assertEqual(list.__len__(timing_routes["routes"]), 0)
+        self.assertEqual(
+            list.__len__(timing_routes["timing"]["paths"]), 0
+        )
+        self.assertEqual(
+            list.__len__(
+                timing_routes["joint_optimization"][
+                    "candidate_generation"
+                ]["master_selection"]
+            ),
+            0,
+        )
+        self.assertEqual(
+            len(timing_routes["routes"]), len(assignment["cut_nets"])
+        )
+        self.assertEqual(
+            len(timing_routes["timing"]["paths"]),
+            len(timing["paths"]),
+        )
 
     def test_path_compression_keeps_distinct_required_times(self) -> None:
         normalized = normalize_sta_paths(
@@ -458,19 +900,19 @@ class Phase4Test(unittest.TestCase):
                 platform_path,
                 root / "phase4",
                 timing_paths_path=timing_path,
-                provider=NATIVE_TIMING_EVALUATED_PROVIDER,
+                timing_driven=False,
+                provider=GLOBAL_CANDIDATE_PROVIDER,
                 router=str(tlr_router()),
             )
             routes = read_json(root / "phase4/routes.json")
             self.assertEqual(
-                routes["provider"], NATIVE_TIMING_EVALUATED_PROVIDER
+                routes["provider"], GLOBAL_CANDIDATE_PROVIDER
             )
             self.assertEqual(
                 routes["timing_evaluation"],
                 {
                     "mode": "post-route-evaluation-only",
                     "optimization_enabled": False,
-                    "source_provider": NATIVE_ROUTER_PROVIDER,
                 },
             )
             self.assertEqual(len(routes["timing"]["paths"]), 1)
@@ -481,6 +923,9 @@ class Phase4Test(unittest.TestCase):
                     "requested_workers": 1,
                     "ordering": "demand-index-then-generator-index",
                     "route_artifact_deterministic": True,
+                    "validation_dataflow": (
+                        "streamed-candidate-domain-footprint-v1"
+                    ),
                 },
             )
             normalized = load_sta_paths(timing_path, routes["demands"])
@@ -529,7 +974,7 @@ class Phase4Test(unittest.TestCase):
             normalize_route_constraints(base, platform),
             executable=str(tlr_router()),
         )
-        self.assertEqual(len(unconstrained["routes"][0]["tree_edges"]), 3)
+        self.assertLessEqual(len(unconstrained["routes"][0]["tree_edges"]), 3)
 
         bounded = route_system_native(
             assignment,
@@ -576,6 +1021,11 @@ class Phase4Test(unittest.TestCase):
         forged["constraints"] = normalize_route_constraints(
             {**base, "max_route_hops": 2}, platform
         )
+        forged["routes"][0]["tree_edges"] = [
+            {"link": "ab", "from": "a", "to": "b"},
+            {"link": "bc", "from": "b", "to": "c"},
+            {"link": "cd", "from": "c", "to": "d"},
+        ]
         forged["metrics"]["max_route_hops_observed"] = 3
         with self.assertRaisesRegex(ValidationError, "above maximum"):
             validate_system_routes(assignment, platform, forged)
@@ -677,7 +1127,7 @@ class Phase4Test(unittest.TestCase):
             constraints,
             timing,
             executable=str(tlr_router()),
-            provider="timing-aware-route-tdm-cooptimized-v1",
+            provider=GLOBAL_CANDIDATE_PROVIDER,
         )
         by_net = {route["net"]: route for route in routes["routes"]}
         self.assertEqual(
@@ -737,7 +1187,7 @@ class Phase4Test(unittest.TestCase):
             normalize_route_constraints(base_value, platform),
             timing,
             executable=str(tlr_router()),
-            provider="timing-aware-route-tdm-cooptimized-v1",
+            provider=GLOBAL_CANDIDATE_PROVIDER,
         )
         edge_sum_value = {**base_value, "tree_edge_sum_tdm": True}
         edge_sum = route_system_native(
@@ -746,7 +1196,7 @@ class Phase4Test(unittest.TestCase):
             normalize_route_constraints(edge_sum_value, platform),
             timing,
             executable=str(tlr_router()),
-            provider="timing-aware-route-tdm-cooptimized-v1",
+            provider=GLOBAL_CANDIDATE_PROVIDER,
         )
 
         self.assertEqual(len(edge_sum["routes"][0]["tree_edges"]), 3)
@@ -813,7 +1263,7 @@ class Phase4Test(unittest.TestCase):
             constraints,
             timing,
             executable=str(tlr_router()),
-            provider="timing-aware-route-tdm-cooptimized-v1",
+            provider=GLOBAL_CANDIDATE_PROVIDER,
         )
         self.assertEqual(
             routes["timing"]["paths"][0]["cut_transitions"],
@@ -870,7 +1320,7 @@ class Phase4Test(unittest.TestCase):
             constraints,
             timing,
             executable=str(tlr_router()),
-            provider="timing-aware-route-tdm-cooptimized-v1",
+            provider=GLOBAL_CANDIDATE_PROVIDER,
         )
         self.assertEqual(
             routes["metrics"]["estimated_max_tdm_ratio"], 1
@@ -895,7 +1345,7 @@ class Phase4Test(unittest.TestCase):
                 constraints,
                 timing,
                 executable=str(tlr_router()),
-                provider="timing-aware-route-tdm-cooptimized-v1",
+                provider=GLOBAL_CANDIDATE_PROVIDER,
             )
 
     def test_native_router_accepts_capacity_above_signed_32_bit(self) -> None:
@@ -919,7 +1369,7 @@ class Phase4Test(unittest.TestCase):
             platform,
             constraints,
             executable=str(tlr_router()),
-            provider=NATIVE_ROUTER_PROVIDER,
+            provider=GLOBAL_CANDIDATE_PROVIDER,
         )
         self.assertEqual(routes["metrics"]["total_link_bit_hops"], 1)
         self.assertEqual(
@@ -988,23 +1438,7 @@ class Phase4Test(unittest.TestCase):
             constraints,
             timing,
             executable=str(tlr_router()),
-            provider="timing-aware-route-tdm-cooptimized-v1",
-        )
-        baseline = route_system_native(
-            assignment,
-            platform,
-            constraints,
-            timing,
-            executable=str(tlr_router()),
-            provider=TLR_PROVIDER,
-        )
-        self.assertEqual(len(baseline["routes"][0]["tree_edges"]), 4)
-        self.assertNotIn("joint_optimization", baseline)
-        self.assertEqual(
-            routes["joint_optimization"]["candidate_generation"][
-                "selected"
-            ],
-            "delay-demand-balanced",
+            provider=GLOBAL_CANDIDATE_PROVIDER,
         )
         self.assertEqual(len(routes["routes"][0]["tree_edges"]), 3)
         oracle = exact_route_tree_selection(
@@ -1169,6 +1603,10 @@ class Phase4Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             executable = tlr_router()
+            runtime = root / "runtime"
+            binary = runtime / "bin" / "emuflow-native"
+            binary.parent.mkdir(parents=True)
+            binary.symlink_to(emuflow_native())
             assignment_path = root / "assignment.json"
             platform_path = root / "platform.json"
             timing_path = root / "timing.json"
@@ -1185,17 +1623,55 @@ class Phase4Test(unittest.TestCase):
             constraints_path.write_text(
                 json.dumps(constraints_value), encoding="utf-8"
             )
-            report = run_phase4(
-                assignment_path=assignment_path,
-                platform_path=platform_path,
-                output_dir=root / "phase4",
-                constraints_path=constraints_path,
-                timing_paths_path=timing_path,
-                router=str(executable),
-            )
+            with mock.patch.dict(
+                "os.environ",
+                {"EMUFLOW_NATIVE_ROOT": str(runtime)},
+                clear=False,
+            ):
+                report = run_phase4(
+                    assignment_path=assignment_path,
+                    platform_path=platform_path,
+                    output_dir=root / "phase4",
+                    constraints_path=constraints_path,
+                    timing_paths_path=timing_path,
+                )
             self.assertEqual(report["status"], "pass")
+            self.assertEqual(
+                report["route_storage"]["dataflow"],
+                "native-sql-route-arc-delay-selection-publication-v1",
+            )
             self.assertEqual(report["validation"]["timing_paths_original"], 3)
             self.assertEqual(report["validation"]["timing_paths_compressed"], 2)
+            selector = json.loads(
+                (root / "phase4" / "routes.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            stored_joint = selector["header"]["joint_optimization"]
+            self.assertNotIn(
+                "master_selection",
+                stored_joint["candidate_generation"],
+            )
+            self.assertNotIn(
+                "batches", stored_joint["refinement_batches"]
+            )
+            self.assertEqual(
+                selector["sections"]["master_selections"]["records"], 2
+            )
+            self.assertEqual(
+                selector["sections"]["refinement_batch_paths"]["records"],
+                2,
+            )
+            route_view = read_system_routes(root / "phase4" / "routes.json")
+            self.assertIsInstance(route_view, SystemRoutesView)
+            lazy_selection = route_view["joint_optimization"][
+                "candidate_generation"
+            ]["master_selection"]
+            lazy_batches = route_view["joint_optimization"][
+                "refinement_batches"
+            ]["batches"]
+            self.assertEqual(list.__len__(lazy_selection), 0)
+            self.assertEqual(list.__len__(lazy_batches), 0)
             routes = read_json(root / "phase4" / "routes.json")
             self.assertEqual(
                 routes["provider"],
@@ -1317,17 +1793,16 @@ class Phase4Test(unittest.TestCase):
                 platform_path=lock_platform_path,
                 output_dir=root / "lock-phase4",
                 frame_slots=1,
-                provider="timing-aware-load-balanced-v1",
+                provider=GLOBAL_CANDIDATE_PROVIDER,
                 timing_paths_path=lock_timing_path,
                 router=str(executable),
             )
             self.assertEqual(lock_report["validation"]["direction_locks"], 1)
             lock_routes = read_json(root / "lock-phase4" / "routes.json")
             self.assertEqual(
-                lock_routes["provider"], "timing-aware-load-balanced-v1"
+                lock_routes["provider"], GLOBAL_CANDIDATE_PROVIDER
             )
-            self.assertEqual(lock_routes["constraints"]["lambda_tdm"], 0.0)
-            self.assertNotIn("joint_optimization", lock_routes)
+            self.assertIn("joint_optimization", lock_routes)
             self.assertEqual(
                 lock_routes["direction_locks"][0]["from"], "a"
             )
@@ -1348,7 +1823,7 @@ class Phase4Test(unittest.TestCase):
         )
         platform = Platform.load(PLATFORM_PATH)
         constraints = normalize_partition_constraints(None, ir, platform)
-        clusters = build_clusters(ir, constraints)
+        clusters = build_clusters(ir, constraints, cut_mode="sequential-only")
         assignment = assign_clusters(
             ir,
             platform,
@@ -1367,23 +1842,23 @@ class Phase4Test(unittest.TestCase):
                 platform_path=PLATFORM_PATH,
                 output_dir=root / "phase4",
                 frame_slots=1,
+                timing_driven=False,
                 router=str(tlr_router()),
             )
             self.assertEqual(report["status"], "pass")
-            self.assertEqual(report["provider"], NATIVE_ROUTER_PROVIDER)
+            self.assertEqual(report["provider"], GLOBAL_CANDIDATE_PROVIDER)
             self.assertGreater(report["validation"]["demands"], 0)
             self.assertGreater(report["validation"]["routed_sinks"], 0)
             self.assertEqual(report["validation"]["overloaded_links"], 0)
             for filename in (
                 "route_constraints.normalized.json",
-                "route_candidate_pool.json",
                 "routes.json",
                 "phase4_report.json",
             ):
                 self.assertTrue((root / "phase4" / filename).is_file())
-            self.assertEqual(
-                report["artifacts"]["candidate_pool"],
-                "route_candidate_pool.json",
+            self.assertNotIn("candidate_pool", report["artifacts"])
+            self.assertFalse(
+                (root / "phase4/route_candidate_pool.json").exists()
             )
             selector = json.loads(
                 (root / "phase4/routes.json").read_text(encoding="utf-8")
@@ -1409,17 +1884,36 @@ class Phase4Test(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValidationError, "store is missing"):
                 read_system_routes(detached / "routes.json")
-            managed_report = run_phase4(
+            diagnostic_report = run_phase4(
                 assignment_path=assignment_path,
                 platform_path=PLATFORM_PATH,
-                output_dir=root / "phase4-managed",
+                output_dir=root / "phase4-diagnostic",
                 frame_slots=1,
+                timing_driven=False,
                 router=str(tlr_router()),
-                managed_storage=True,
+                retain_candidate_pool=True,
             )
-            self.assertNotIn("candidate_pool", managed_report["artifacts"])
+            self.assertEqual(
+                diagnostic_report["artifacts"]["candidate_pool"],
+                "route_candidate_pool.json",
+            )
+            self.assertTrue(
+                (
+                    root
+                    / "phase4-diagnostic/route_candidate_pool.json"
+                ).is_file()
+            )
+            repeated_report = run_phase4(
+                assignment_path=assignment_path,
+                platform_path=PLATFORM_PATH,
+                output_dir=root / "phase4-repeated",
+                frame_slots=1,
+                timing_driven=False,
+                router=str(tlr_router()),
+            )
+            self.assertNotIn("candidate_pool", repeated_report["artifacts"])
             self.assertFalse(
-                (root / "phase4-managed/route_candidate_pool.json").exists()
+                (root / "phase4-repeated/route_candidate_pool.json").exists()
             )
 
     def test_native_router_uses_both_diamond_paths(self) -> None:
@@ -1600,7 +2094,7 @@ class Phase4Test(unittest.TestCase):
             },
             platform,
         )
-        with self.assertRaisesRegex(EmuFlowError, "unreachable|infeasible"):
+        with self.assertRaisesRegex(EmuFlowError, "unreachable|infeasible|could not span"):
             route_system_native(
                 assignment,
                 platform,

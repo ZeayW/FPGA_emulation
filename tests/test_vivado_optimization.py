@@ -1,3 +1,4 @@
+from contextlib import closing
 import csv
 import json
 import sqlite3
@@ -66,14 +67,14 @@ class VivadoOptimizationTests(unittest.TestCase):
         import_yosys_json(source).save(ir)
         report = emit_vivado_mapped_verilog(ir, root / "dut.v")
         mapped, functions = Path(report["mapped_index"]["path"]), Path(report["source_functions"]["path"])
-        with sqlite3.connect(mapped) as db:
+        with closing(sqlite3.connect(mapped)) as db, db:
             origins = dict(db.execute("SELECT id,seq FROM cells"))
         inventory = root / "inventory.tsv"
         with inventory.open("w") as stream:
             writer = csv.writer(stream, delimiter="\t",lineterminator="\n")
             writer.writerow(INVENTORY_HEADER)
             if not empty:
-                writer.writerow(["partition/kept", "FDRE", f"s{origins['kept']}", ""])
+                writer.writerow(["partition/kept", "FDRE", f"s{origins['kept']}", "", "SLICE_X0Y0", "AFF", "0", "0", "LEAF"])
         lineage = root / "lineage.sqlite"
         import_cell_lineage(mapped, functions, {stage:inventory}, lineage,
                             mapped_sha256=report["mapped_index"]["sha256"], retain_stage=stage)
@@ -82,9 +83,14 @@ class VivadoOptimizationTests(unittest.TestCase):
     def proofs(self, root):
         mapped, lineage, digest, origins = self.prepare(root)
         output = root / "proofs.sqlite"
-        with patch.object(Path, "read_text", side_effect=AssertionError("whole-document read")):
+        read_text = Path.read_text
+        def control_document_only(path, *args, **kwargs):
+            if path in (mapped, lineage, output) or path.stat().st_size > 256 * 1024:
+                raise AssertionError("whole-document read")
+            return read_text(path, *args, **kwargs)
+        with patch.object(Path, "read_text", control_document_only):
             report = build_optimization_proofs(mapped, lineage, output, mapped_sha256=digest)
-        with sqlite3.connect(output) as db:
+        with closing(sqlite3.connect(output)) as db, db:
             rows = {name:db.execute("SELECT reason,constant_value,initialization FROM eliminated_sources WHERE origin=?", (origin,)).fetchone()
                     for name,origin in origins.items()}
             report["conditional_candidates"] = {name: db.execute("SELECT constant_value,initialization FROM constant_candidates WHERE origin=?", (origin,)).fetchone()
@@ -306,7 +312,7 @@ proc get_timing_paths {args} {error "eliminated path was numerically measured"}
         from emuflow.boundary_identity_storage import write_boundary_identity_storage
         from emuflow.boundary_timing_storage import read_boundary_timing_storage
         from emuflow.vivado_physical_timing import import_indexed_vivado_boundary
-        from emuflow.system_timing import _endpoint_delay_database
+        from emuflow.physical_timing_inputs import _endpoint_delay_database
         from tests.test_boundary_identity_storage import _header, _record
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

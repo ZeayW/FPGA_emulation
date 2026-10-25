@@ -25,7 +25,15 @@ from typing import Any, Dict
 import fcntl
 
 from .errors import ValidationError
-from .io import file_sha256, read_json, write_json
+from .io import file_sha256, read_json
+from .store_publication import (
+    bind_store_source,
+    bind_view_sources,
+    require_store_sources_unchanged,
+    publish_sqlite_store,
+    commit_store_selector,
+    validate_store_destination,
+)
 
 
 BANK_CHANNEL_STORAGE_SCHEMA = "emuflow.chimew-bank-channel-storage/v1"
@@ -442,6 +450,9 @@ class BankChannelInputView(Mapping[str, Any]):
         _verified_store_sha256: str | None,
     ) -> None:
         self.manifest_path = selector_path.resolve(strict=True)
+        selector_source = bind_store_source(
+            self.manifest_path, "chimew-bank-input-selector-v1"
+        )
         manifest = read_json(self.manifest_path)
         from .chimew_bank_channel import (
             CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
@@ -494,6 +505,9 @@ class BankChannelInputView(Mapping[str, Any]):
             raise ValidationError("Chimew bank/channel store path is invalid")
         self.store_path = self.manifest_path.with_name(artifact)
         try:
+            store_source = bind_store_source(
+                self.store_path, "chimew-bank-input-store-v1"
+            )
             store_lstat = self.store_path.lstat()
             resolved_store = self.store_path.resolve(strict=True)
         except OSError as error:
@@ -654,6 +668,15 @@ class BankChannelInputView(Mapping[str, Any]):
             lease_state=self._lease_state,
         )
         self._validated: Dict[str, Any] | None = None
+
+        self._source_bindings = (selector_source, store_source)
+        require_store_sources_unchanged(self._source_bindings)
+
+    def bound_store_sources(self):
+        if self._closed:
+            raise ValidationError("Chimew bank/channel view is closed")
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
 
     def __getitem__(self, key: str) -> Any:
         if self._closed:
@@ -910,19 +933,26 @@ def _open_validated_view(
 
 
 def _write_chimew_bank_channel_storage_locked(
-    path: Path, document: Mapping[str, Any]
+    path: Path, document: Mapping[str, Any], *, source_bindings
 ) -> BankChannelInputView:
     """Validate and atomically publish one logical input as selector + store."""
 
     from .chimew_bank_channel import validate_chimew_bank_channel_input
 
-    if isinstance(document, BankChannelInputView):
-        document = document.materialize()
     raw_groups = document.get("groups")
     raw_banks = document.get("bank_pairs")
-    if not isinstance(raw_banks, list) or not raw_banks:
+    indexed = isinstance(document, BankChannelInputView)
+    if (
+        not isinstance(raw_banks, (Sequence if indexed else list))
+        or isinstance(raw_banks, (str, bytes))
+        or not raw_banks
+    ):
         raise ValidationError("Chimew bank pairs are missing")
-    if not isinstance(raw_groups, list) or not raw_groups:
+    if (
+        not isinstance(raw_groups, (Sequence if indexed else list))
+        or isinstance(raw_groups, (str, bytes))
+        or not raw_groups
+    ):
         raise ValidationError("Chimew signal groups are missing")
     problem = validate_chimew_bank_channel_input(document)
     header = {
@@ -935,12 +965,10 @@ def _write_chimew_bank_channel_storage_locked(
         for key, value in problem.items()
         if key not in {"banks", "groups"}
     }
-    logical_sha256 = hashlib.sha256(
-        _canonical(document).encode("utf-8")
-    ).hexdigest()
+    logical_sha256 = canonical_bank_channel_input_sha256(document)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    previous_selector = path.read_bytes() if path.is_file() else None
+    had_previous = path.is_file()
     previous_artifact: Path | None = None
     if path.is_file():
         try:
@@ -1035,8 +1063,6 @@ def _write_chimew_bank_channel_storage_locked(
         )
         connection.commit()
         connection.close()
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
     except sqlite3.IntegrityError as error:
         try:
             connection.close()
@@ -1049,21 +1075,25 @@ def _write_chimew_bank_channel_storage_locked(
         finally:
             temporary.unlink(missing_ok=True)
         raise
-    store_sha256 = file_sha256(temporary)
-    artifact = path.with_name(f"{path.stem}.{store_sha256}.sqlite")
-    created = not artifact.exists()
-    if created:
-        os.replace(temporary, artifact)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    else:
-        if file_sha256(artifact) != store_sha256:
-            temporary.unlink(missing_ok=True)
-            raise ValidationError("Chimew bank/channel artifact digest collision")
-        temporary.unlink()
+    try:
+        store_sha256 = file_sha256(temporary)
+        artifact = path.with_name(f"{path.stem}.{store_sha256}.sqlite")
+        created = not artifact.exists()
+        if created:
+            publish_sqlite_store(
+                temporary,
+                artifact,
+                "chimew-bank-input-store-v1",
+                sources=source_bindings,
+            )
+        else:
+            require_store_sources_unchanged(source_bindings)
+            if file_sha256(artifact) != store_sha256:
+                raise ValidationError("Chimew bank/channel artifact digest collision")
+            temporary.unlink()
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     manifest = {
         "schema": BANK_CHANNEL_STORAGE_SCHEMA,
         "logical_schema": header["schema"],
@@ -1078,41 +1108,40 @@ def _write_chimew_bank_channel_storage_locked(
         "groups": {"records": len(raw_groups), "sha256": groups_sha256},
         "logical_sha256": logical_sha256,
     }
-    try:
-        write_json(path, manifest, compact=True)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-        view = _open_validated_view(path, acquire_lease=False)
-    except BaseException:
-        if previous_selector is None:
-            path.unlink(missing_ok=True)
-        else:
-            restore = path.with_name(f".{path.name}.{uuid.uuid4().hex}.restore")
-            restore.write_bytes(previous_selector)
-            with restore.open("rb") as stream:
-                os.fsync(stream.fileno())
-            os.replace(restore, path)
-        if created and artifact != previous_artifact:
-            artifact.unlink(missing_ok=True)
-        raise
+    view = commit_store_selector(
+        path,
+        manifest,
+        source_bindings,
+        artifact,
+        created,
+        durable=True,
+        validate=lambda: _open_validated_view(path, acquire_lease=False),
+    )
     if previous_artifact is not None and previous_artifact != artifact:
         previous_artifact.unlink(missing_ok=True)
     return view
 
 
 def write_chimew_bank_channel_storage(
-    path: Path, document: Mapping[str, Any]
+    path: Path, document: Mapping[str, Any], *, source_bindings=()
 ) -> BankChannelInputView:
     """Publish under an exclusive lease and return a leased new view."""
 
     path = Path(path)
+    if getattr(document, "manifest_path", None) == path.resolve(strict=False):
+        raise ValidationError(
+            "cannot replace a Chimew bank/channel input from its active view"
+        )
+    source_bindings = tuple(source_bindings) + bind_view_sources(
+        (document, "chimew-bank-input-store-v1")
+    )
+    require_store_sources_unchanged(source_bindings)
     lease = _bank_channel_lease(path, exclusive=True)
     descriptor = lease.__enter__()
     try:
-        checked = _write_chimew_bank_channel_storage_locked(path, document)
+        checked = _write_chimew_bank_channel_storage_locked(
+            path, document, source_bindings=source_bindings
+        )
         checked.close()
         # Atomically downgrade the writer lease.  No replacement can enter
         # between selector commit and construction of the returned view.
@@ -1193,6 +1222,11 @@ def copy_chimew_bank_channel_storage(
                 temporary.unlink(missing_ok=True)
         return
     with BankChannelInputView(source) as view:
+        if source.resolve() == destination.resolve():
+            return
+        source_bindings = validate_store_destination(
+            destination, view.bound_store_sources()
+        )
         with _bank_channel_lease(destination, exclusive=True):
             previous_selector = (
                 destination.read_bytes() if destination.is_file() else None
@@ -1220,44 +1254,40 @@ def copy_chimew_bank_channel_storage(
                 )
                 try:
                     shutil.copy2(view.store_path, temporary)
-                    with temporary.open("rb") as stream:
-                        os.fsync(stream.fileno())
-                    os.replace(temporary, sidecar)
-                    _fsync_directory(destination.parent)
+                    publish_sqlite_store(
+                        temporary,
+                        sidecar,
+                        "chimew-bank-input-store-v1",
+                        sources=source_bindings,
+                    )
                 finally:
                     temporary.unlink(missing_ok=True)
             elif file_sha256(sidecar) != view.manifest["store_sha256"]:
                 raise ValidationError("copied Chimew bank/channel sidecar collides")
             selector = dict(view.manifest)
             selector["artifact"] = sidecar.name
-            try:
-                write_json(destination, selector, compact=True)
-                _fsync_directory(destination.parent)
-                copied = BankChannelInputView(
-                    destination, _acquire_lease=False
-                )
+            def validate_copy():
+                copied = BankChannelInputView(destination, _acquire_lease=False)
                 try:
                     if copied.store_path != sidecar.resolve():
                         raise ValidationError(
                             "copied Chimew bank/channel sidecar differs"
                         )
-                finally:
+                except BaseException:
                     copied.close()
-            except BaseException:
-                if previous_selector is None:
-                    destination.unlink(missing_ok=True)
-                else:
-                    restore = destination.with_name(
-                        f".{destination.name}.{uuid.uuid4().hex}.restore"
-                    )
-                    restore.write_bytes(previous_selector)
-                    with restore.open("rb") as stream:
-                        os.fsync(stream.fileno())
-                    os.replace(restore, destination)
-                    _fsync_directory(destination.parent)
-                if created_sidecar:
-                    sidecar.unlink(missing_ok=True)
-                raise
+                    raise
+                return copied
+
+            copied = commit_store_selector(
+                destination,
+                selector,
+                source_bindings,
+                sidecar,
+                created_sidecar,
+                durable=True,
+                validate=validate_copy,
+            )
+            copied.close()
             if previous_artifact is not None and previous_artifact != sidecar:
                 previous_artifact.unlink(missing_ok=True)
                 _fsync_directory(destination.parent)

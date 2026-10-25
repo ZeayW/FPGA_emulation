@@ -14,7 +14,7 @@ from emuflow.pin_plan_storage import (
     read_pin_plan,
     write_pin_plan_storage,
 )
-from emuflow.pin_planning import PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA
+from emuflow.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA
 
 
 def _plan():
@@ -22,7 +22,7 @@ def _plan():
         "schema": PIN_PLAN_SCHEMA,
         "design": "indexed-pin-plan",
         "platform": "test-platform",
-        "provider": PIN_PLAN_PROVIDER,
+        "provider": CHIMEW_PIN_PLAN_PROVIDER,
         "configuration": {"refinement_iterations": 4},
         "weights": {"crossing": 1.0, "position": 2.0},
         "metrics": {"signals": 2, "groups": 2},
@@ -128,7 +128,7 @@ def test_pin_plan_selector_failure_preserves_previous_generation(
     def fail_selector(*_args, **_kwargs):
         raise OSError("injected selector failure")
 
-    monkeypatch.setattr(pin_storage, "write_json", fail_selector)
+    monkeypatch.setattr("emuflow.store_publication.write_json", fail_selector)
     updated = copy.deepcopy(expected)
     updated["design"] = "updated"
     with pytest.raises(OSError, match="injected"):

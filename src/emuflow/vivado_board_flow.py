@@ -11,6 +11,7 @@ from typing import Any, Dict, Mapping, Sequence
 from .errors import EmuFlowError, ValidationError
 from .io import read_json, write_json
 from .ir import EmuIR
+from .indexed_physical_ir import IndexedPhysicalIR
 from .multi_fpga_bsp_flow import validate_multi_fpga_bsp_flow_report
 from .multi_fpga_flow import validate_multi_fpga_flow_report
 from .multi_fpga_physical_flow import validate_multi_fpga_physical_report
@@ -104,7 +105,7 @@ def _port_declaration(port: Mapping[str, Any]) -> str:
 
 
 def build_vivado_board_top(
-    ir: EmuIR,
+    ir: EmuIR | IndexedPhysicalIR,
     fpga_record: Mapping[str, Any],
 ) -> str:
     """Connect an already lowered DUT+transport partition to Phase 6C."""
@@ -843,7 +844,6 @@ def run_vivado_board_flow(
         required_paths = [ir_path, wrapper, gt_tcl]
         if any(not path.is_file() for path in required_paths):
             raise ValidationError(f"{fpga_id}: board implementation input is missing")
-        ir = EmuIR.load(ir_path)
         fpga_out = output_dir / fpga_id
         fpga_out.mkdir(parents=True)
         source_mapped_verilog = physical_root / "partition.v"
@@ -864,9 +864,12 @@ def run_vivado_board_flow(
                 vivado_runtime_xdc(ir_path, runtime), encoding="utf-8"
             )
         board_top = output_dir / f"{fpga_id}.board_top.sv"
-        board_top.write_text(
-            build_vivado_board_top(ir, record), encoding="utf-8"
-        )
+        # The wrapper uses only design metadata and top ports. Release this
+        # indexed view before starting the external implementation engine.
+        with IndexedPhysicalIR(ir_path) as ir:
+            board_top.write_text(
+                build_vivado_board_top(ir, record), encoding="utf-8"
+            )
         top = f"emuflow_board_top_{_sv_name(fpga_id)}"
         board_xdc = phase6c_root / f"{fpga_id}.board_services.xdc"
         xdc_sources = [runtime_xdc]

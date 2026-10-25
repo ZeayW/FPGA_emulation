@@ -13,13 +13,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mmap
+from pathlib import Path
 import struct
+import subprocess
+import tempfile
 from array import array
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from json.encoder import encode_basestring_ascii
 from typing import Any
 
 from .errors import ValidationError
+from .native_columns import _ColumnOwner
+from .native_tools import native_file_generation
 
 
 STATIC_EXACT_RECORD_STREAM_SCHEMA = "emuflow.static-exact-record-stream/v1"
@@ -97,6 +103,31 @@ class StaticExactRecordSequence(list):
             if ordinal == resolved:
                 return record
         raise ValidationError("Static Exact record stream ended early")
+
+    def _bind_native_mapping(self, owner) -> None:
+        self._native_mapping_owner = owner
+        self._native_mapping = (owner.data, owner.views)
+        for name in ("_factory", "_indexer", "_binary_decoder", "_binary_factory",
+                     "_binary_indexer", "native_launch_flag", "native_dependency_indices"):
+            function = getattr(self, name, None)
+            if callable(function):
+                setattr(self, name, owner.retain(
+                    function, iterator=name in {"_factory", "_binary_factory"},
+                ))
+
+    def adopt_native_scratch(self, scratch) -> None:
+        """Give the mapping owner sole responsibility for unmap then retirement."""
+        owner = getattr(self, "_native_mapping_owner", None)
+        if owner is None or owner.data.closed or owner.scratch is not None:
+            raise ValidationError("native record scratch ownership disagrees")
+        owner.scratch = scratch
+
+    def close(self) -> None:
+        """Explicit close invalidates borrowed cursors before file retirement."""
+        owner = getattr(self, "_native_mapping_owner", None)
+        if owner is not None:
+            owner.close()
+            self._native_mapping = None
 
     def _immutable(self, *args, **kwargs):
         raise TypeError("Static Exact record streams are immutable")
@@ -201,6 +232,13 @@ class StaticExactCaptureSequence(StaticExactRecordSequence):
         super().__init__("capture_requirements", count, factory)
         self._binary_factory = binary_factory
 
+    def binary_capture(self, index: int):
+        if index < 0 or index >= len(self):
+            raise IndexError(index)
+        if hasattr(self, "_binary_indexer"):
+            return self._binary_indexer(index)
+        return next(row for seq, row in enumerate(self.iter_binary_captures()) if seq == index)
+
     def iter_binary_captures(
         self,
     ) -> Iterator[tuple[bytes, bytes, int, bytes, bytes, bytes]]:
@@ -252,6 +290,29 @@ class StaticExactDirectBinarySource:
         self.logic_segments = logic_segments
         self.launch_count = sum(flag != 0 for flag in self.launch_flags)
         self.dependency_count = dependency_count
+        paths = (getattr(cut_nodes, "native_semantic_artifact_path", None),
+                 getattr(captures, "native_capture_artifact_path", None))
+        self._native_record_refs = tuple(_native_record_identity(path) for path in paths) if all(path is not None for path in paths) else None
+
+    def native_record_paths(self):
+        paths = (getattr(self.cut_nodes, "native_semantic_artifact_path", None),
+                 getattr(self.captures, "native_capture_artifact_path", None))
+        if self._native_record_refs is None:
+            if all(path is not None for path in paths):
+                raise ValidationError("native semantic generation is mixed")
+            return None
+        if any(path is None for path in paths) or tuple(_native_record_identity(path) for path in paths) != self._native_record_refs:
+            raise ValidationError("native semantic generation is mixed")
+        return tuple(reference[0] for reference in self._native_record_refs)
+
+
+def _native_record_identity(path):
+    try:
+        path = Path(path).resolve()
+        metadata = path.stat()
+        return path, metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns
+    except OSError as error:
+        raise ValidationError("native semantic generation is unavailable") from error
 
 
 def build_static_exact_cut_node_stream(
@@ -340,10 +401,67 @@ def build_static_exact_cut_node_stream(
             for value in values:
                 append_string(value)
 
+    return _decode_cut_node_stream(encoded, offsets)
+
+
+def read_native_static_exact_cut_node_stream(path: Path) -> StaticExactCutNodeSequence:
+    """Map final native-owned node bytes without repacking their records."""
+
+    owner = None
+    views = []
+    result = None
+    try:
+        generation = native_file_generation(path)
+        with path.open("rb") as stream:
+            data = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
+        owner = _ColumnOwner(data)
+        views = owner.views
+        if len(data) < 32:
+            raise ValidationError("native semantic node header is truncated")
+        magic, version, count, size = struct.unpack_from("<QIIQ", data)
+        start = 24 + 8 * (count + 1)
+        if magic != 0x314E4553464D5545 or version not in (1, 2) or start + size != len(data):
+            raise ValidationError("native semantic node envelope is invalid")
+        offsets = memoryview(data)[24:start].cast("Q")
+        views.append(offsets)
+        if offsets[0] != 0 or offsets[-1] != size or any(
+            offsets[index] >= offsets[index + 1] for index in range(count)
+        ):
+            raise ValidationError("native semantic node offsets are invalid")
+        encoded, node_offsets = memoryview(data)[start:], offsets[:-1]
+        views.extend((encoded, node_offsets))
+        result = _decode_cut_node_stream(encoded, node_offsets, with_flags=version == 2)
+        result.native_semantic_version = version
+        if version == 2:
+            result.native_launch_flag = lambda index: data[start + offsets[index + 1] - 1]
+            raw_decoder = result._binary_decoder
+            def dependency_indices(index):
+                predecessor_count = len(raw_decoder(index)[6])
+                end = start + offsets[index + 1] - 1
+                return struct.unpack_from(f"<{predecessor_count}I", data, end - 4 * predecessor_count)
+            result.native_dependency_indices = dependency_indices
+        result.native_semantic_artifact_path = path
+        if native_file_generation(path) != generation:
+            raise ValidationError(
+                "native semantic record generation changed while mapping"
+            )
+        result.native_semantic_generation = generation
+        result._bind_native_mapping(owner)
+        return result
+    except (OSError, ValueError, struct.error) as error:
+        raise ValidationError("native semantic node artifact is invalid") from error
+
+    finally:
+        if result is None or getattr(result, "_native_mapping", None) is None:
+            if owner is not None:
+                owner.close()
+
+
+def _decode_cut_node_stream(encoded, offsets, *, with_flags=False) -> StaticExactCutNodeSequence:
     count = len(offsets)
 
     def decode_fields(index: int, *, raw: bool) -> tuple[Any, ...]:
-        view = memoryview(encoded)
+        view = encoded
         offset = offsets[index]
         end = offsets[index + 1] if index + 1 < count else len(view)
 
@@ -391,6 +509,22 @@ def build_static_exact_cut_node_stream(
         predecessors = read_strings(predecessor_count)
         source_segments = read_strings(source_count)
         capture_segments = read_strings(capture_count)
+        if with_flags:
+            if offset + 4 * predecessor_count + 1 != end:
+                raise ValidationError("native semantic coordinates are truncated")
+            previous = -1
+            for _ in range(predecessor_count):
+                ordinal = _STRING_LENGTH.unpack_from(view, offset)[0]
+                if ordinal >= count or ordinal <= previous:
+                    raise ValidationError("native semantic predecessor coordinate is invalid")
+                previous = ordinal
+                offset += 4
+            flag = view[offset]
+            offset += 1
+            if flag not in (0, 1, 2) or source_count != predecessor_count + int(flag != 0) or (
+                flag == 2 and predecessor_count != 0
+            ) or (flag == 0 and predecessor_count == 0):
+                raise ValidationError("native semantic launch flag disagrees")
         if offset != end:
             raise ValidationError("Static Exact cut-node stream has trailing data")
         return (
@@ -584,6 +718,89 @@ def build_static_exact_capture_stream(
     return StaticExactCaptureSequence(
         count, capture_requirements, binary_captures
     )
+
+
+def read_native_static_exact_capture_stream(path: Path) -> StaticExactCaptureSequence:
+    """Map native canonical captures with direct indexed access for validation."""
+
+    owner = None
+    result = None
+    try:
+        generation = native_file_generation(path)
+        with path.open("rb") as stream:
+            data = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
+        owner = _ColumnOwner(data)
+        if len(data) < 32:
+            raise ValidationError("native capture header is truncated")
+        magic, version, count, size = struct.unpack_from("<QIIQ", data)
+        start = 24 + 8 * (count + 1)
+        if magic != 0x31434553464D5545 or version != 1 or start + size != len(data):
+            raise ValidationError("native capture envelope is invalid")
+        offsets = memoryview(data)[24:start].cast("Q")
+        owner.views.append(offsets)
+        if offsets[0] != 0 or offsets[-1] != size or any(
+            offsets[index] >= offsets[index + 1] for index in range(count)
+        ):
+            raise ValidationError("native capture offsets are invalid")
+        def binary(index):
+            offset, end = start + offsets[index], start + offsets[index + 1]
+            if offset + _CAPTURE_HEADER.size > end:
+                raise ValidationError("native capture record is truncated")
+            kind, *lengths = _CAPTURE_HEADER.unpack_from(data, offset)
+            offset += _CAPTURE_HEADER.size
+            if offset + sum(lengths) != end:
+                raise ValidationError("native capture field lengths disagree")
+            fields = []
+            for length in lengths:
+                fields.append(bytes(data[offset:offset + length]))
+                offset += length
+            if kind not in (0, 1) or any(not value for value in fields[:3]) or (
+                kind == 0 and (fields[3] or fields[4])
+            ) or (kind == 1 and (not fields[3] or not fields[4] or
+                len(fields[4]) > STATIC_EXACT_CAPTURE_BIT_MAX_BYTES or
+                (len(fields[4]) > 1 and fields[4][0] == 0))):
+                raise ValidationError("native capture fields are invalid")
+            try:
+                for value in fields[:4]:
+                    value.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise ValidationError("native capture identity is invalid") from error
+            return fields[0], fields[1], kind, fields[2], fields[3], fields[4]
+        def binaries():
+            previous = None
+            for index in range(count):
+                row = binary(index)
+                key = (row[0], row[1], b"top-output" if row[2] == 0 else b"architectural-state",
+                       row[3], row[4], len(row[5]), row[5])
+                if previous is not None and key <= previous:
+                    raise ValidationError("native capture canonical order is invalid")
+                previous = key
+                yield row
+        def records():
+            for index, (net, fpga, kind, endpoint, port, bit) in enumerate(binaries()):
+                yield {
+                    "id": f"capture{index:06d}", "cut_net": net.decode("utf-8"),
+                    "fpga": fpga.decode("utf-8"),
+                    "kind": "top-output" if kind == 0 else "architectural-state",
+                    "endpoint": endpoint.decode("utf-8"),
+                    **({"port": port.decode("utf-8"), "bit": int.from_bytes(bit, "big")} if kind == 1 else {}),
+                }
+        result = StaticExactCaptureSequence(count, records, binaries)
+        result._binary_indexer = binary
+        result.native_capture_artifact_path = path
+        if native_file_generation(path) != generation:
+            raise ValidationError(
+                "native semantic record generation changed while mapping"
+            )
+        result.native_capture_generation = generation
+        result._bind_native_mapping(owner)
+        return result
+    except (OSError, ValueError, struct.error) as error:
+        raise ValidationError("native capture artifact is invalid") from error
+
+    finally:
+        if owner is not None and (result is None or not hasattr(result, "_native_mapping_owner")):
+            owner.close()
 
 
 def build_static_exact_record_streams(
@@ -1104,6 +1321,54 @@ def _emit_direct_logic_segments(
     writer.write("]")
 
 
+def _native_semantic_contract_sha256(value, source, keys, special_keys, paths) -> str:
+    from .native_tools import resolve_native_stage_command
+
+    tags = {"capture_requirements": 1, "cut_nodes": 2, "dependency_edges": 3, "logic_segments": 4}
+    class HeaderText(_CanonicalDigestWriter):
+        def __init__(self):
+            self.parts = []
+        def write(self, text):
+            self.parts.append(text)
+    with tempfile.TemporaryDirectory(prefix="emuflow-exact-hash-") as temporary:
+        root = Path(temporary)
+        request, output = root / "header.bin", root / "digest.txt"
+        with request.open("wb") as stream:
+            stream.write(struct.pack("<QII", 0x31484553464D5545, 1, len(keys)))
+            def write_string(text):
+                raw = text.encode("utf-8")
+                if not raw or len(raw) >= 2**32:
+                    raise ValidationError("native canonical header field is invalid")
+                stream.write(struct.pack("<I", len(raw)))
+                stream.write(raw)
+            for key in keys:
+                write_string(key)
+                stream.write(struct.pack("<B", tags.get(key, 0)))
+                if key not in special_keys:
+                    # Header fields are bounded. Preserve the exact Python
+                    # formatting contract while C++ walks the large relations.
+                    formatted = HeaderText()
+                    formatted.value(value[key], 1)
+                    write_string("".join(formatted.parts))
+        command = resolve_native_stage_command(
+            "phase3", "hash-semantics"
+        )
+        if len(command) == 1:
+            command = [*command, "--hash-semantics"]
+        completed = subprocess.run(
+            [*command, str(paths[0]), str(paths[1]), str(request), str(output)],
+            capture_output=True, text=True, check=False,
+        )
+        if completed.returncode:
+            raise ValidationError("native canonical hashing failed: " + completed.stderr.strip())
+        digest = output.read_text(encoding="ascii")
+        if len(digest) != 65 or digest[-1] != "\n" or any(
+            character not in "0123456789abcdef" for character in digest[:-1]
+        ):
+            raise ValidationError("native canonical digest is invalid")
+        return digest[:-1]
+
+
 def direct_static_exact_semantic_contract_sha256(
     value: Mapping[str, Any],
 ) -> str | None:
@@ -1152,6 +1417,9 @@ def direct_static_exact_semantic_contract_sha256(
             continue
         for chunk in standard_encoder.iterencode(value[key]):
             chunk.encode("utf-8")
+    native_paths = source.native_record_paths()
+    if native_paths is not None:
+        return _native_semantic_contract_sha256(value, source, keys, special_keys, native_paths)
     writer.write("{")
     for index, key in enumerate(keys):
         writer.write(("," if index else "") + "\n  ")

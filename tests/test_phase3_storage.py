@@ -1,3 +1,5 @@
+from contextlib import closing
+import hashlib
 import json
 import sqlite3
 import tempfile
@@ -5,17 +7,21 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.phase3_index_fixture import write_assignment_v3_fixture
 from emuflow.io import read_json, write_json
 from emuflow.phase3_storage import (
+    CLUSTERS_SQLITE_APPLICATION_ID,
     COMPRESSED_CLUSTERS_SCHEMA,
-    PACKED_ASSIGNMENT_SCHEMA,
+    INDEXED_CLUSTERS_SCHEMA,
     PACKED_CLUSTERS_SCHEMA,
+    PREVIOUS_PACKED_ASSIGNMENT_SCHEMA,
     compress_phase3_clusters,
     pack_phase3_assignment,
     pack_phase3_clusters,
     read_phase3_assignment_view,
     read_phase3_cut_timing_view,
     write_compressed_phase3_clusters,
+    write_indexed_phase3_clusters,
 )
 
 
@@ -80,6 +86,75 @@ def _large_artifacts(count: int = 1000):
 
 
 class Phase3StorageTest(unittest.TestCase):
+    def test_indexed_clusters_round_trip_and_seal_typed_population(self) -> None:
+        clusters, _ = _large_artifacts(32)
+        clusters["design"] = "large-设计-µ"
+        clusters["policy"]["eligible_combinational_cut_nets"] = [
+            "top/net_β",
+            "top/net_γ",
+        ]
+        clusters["clusters"][0]["qualification"] = {"kind": "fixture"}
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            selector_path = root / "clusters.json"
+            selector = write_indexed_phase3_clusters(selector_path, clusters)
+            stored = json.loads(selector_path.read_text())
+            self.assertEqual(stored, selector)
+            self.assertEqual(stored["schema"], INDEXED_CLUSTERS_SCHEMA)
+            self.assertEqual(
+                stored["application_id"], CLUSTERS_SQLITE_APPLICATION_ID
+            )
+            self.assertEqual(stored["counts"]["clusters"], 32)
+            self.assertEqual(stored["counts"]["instances"], 64)
+            self.assertEqual(stored["counts"]["eligible_nets"], 2)
+            store = root / stored["artifact"]
+            self.assertTrue(store.is_file())
+            self.assertLess(selector_path.stat().st_size, 1024)
+            with closing(sqlite3.connect(store)) as connection, connection:
+                self.assertEqual(
+                    connection.execute("PRAGMA application_id").fetchone()[0],
+                    CLUSTERS_SQLITE_APPLICATION_ID,
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT records FROM sections "
+                        "WHERE section='member_names'"
+                    ).fetchone()[0],
+                    64,
+                )
+            self.assertEqual(read_json(selector_path), clusters)
+
+            with store.open("r+b") as stream:
+                stream.seek(128)
+                byte = stream.read(1)
+                stream.seek(128)
+                stream.write(bytes([byte[0] ^ 1]))
+            with self.assertRaisesRegex(ValueError, "seal disagrees"):
+                read_json(selector_path)
+
+    def test_indexed_clusters_reject_resealed_section_count_corruption(self) -> None:
+        clusters, _ = _large_artifacts(4)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            selector_path = root / "clusters.json"
+            selector = write_indexed_phase3_clusters(selector_path, clusters)
+            store = root / selector["artifact"]
+            with closing(sqlite3.connect(store)) as connection, connection:
+                connection.execute(
+                    "UPDATE sections SET records=records+1 "
+                    "WHERE section='cluster_ids'"
+                )
+            selector["store_sha256"] = hashlib.sha256(
+                store.read_bytes()
+            ).hexdigest()
+            selector["store_bytes"] = store.stat().st_size
+            renamed = store.with_name(f"clusters.{selector['store_sha256']}.sqlite")
+            store.rename(renamed)
+            selector["artifact"] = renamed.name
+            selector_path.write_text(json.dumps(selector), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "section counts disagree"):
+                read_json(selector_path)
+
     def test_compressed_clusters_round_trip_without_column_copy(self) -> None:
         clusters, _ = _large_artifacts()
         compressed = compress_phase3_clusters(clusters)
@@ -123,7 +198,9 @@ class Phase3StorageTest(unittest.TestCase):
         packed_clusters = pack_phase3_clusters(clusters)
         packed_assignment = pack_phase3_assignment(assignment, clusters)
         self.assertEqual(packed_clusters["schema"], PACKED_CLUSTERS_SCHEMA)
-        self.assertEqual(packed_assignment["schema"], PACKED_ASSIGNMENT_SCHEMA)
+        self.assertEqual(
+            packed_assignment["schema"], PREVIOUS_PACKED_ASSIGNMENT_SCHEMA
+        )
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             write_json(root / "clusters.json", packed_clusters, compact=True)
@@ -281,9 +358,11 @@ class Phase3StorageTest(unittest.TestCase):
                 pack_phase3_assignment(assignment, clusters),
                 compact=True,
             )
-            with sqlite3.connect(root / "assignment.sqlite") as connection:
+            with closing(sqlite3.connect(root / "assignment.sqlite")) as connection, connection:
                 connection.executescript(
                     """
+                    PRAGMA application_id=0x454D5541;
+                    PRAGMA user_version=3;
                     CREATE TABLE metadata(
                       key TEXT PRIMARY KEY,
                       value TEXT NOT NULL
@@ -299,6 +378,10 @@ class Phase3StorageTest(unittest.TestCase):
                       is_replica INTEGER NOT NULL
                     );
                     """
+                )
+                connection.execute(
+                    "INSERT INTO metadata VALUES (?,?)",
+                    ("schema", json.dumps("emuflow.phase3-assignment-sqlite/v3")),
                 )
                 connection.execute(
                     "INSERT INTO metadata VALUES (?,?)",
@@ -358,60 +441,33 @@ class Phase3StorageTest(unittest.TestCase):
                 "data": "invalid-on-purpose",
             }
             write_json(root / "assignment.json", packed, compact=True)
-            with sqlite3.connect(root / "assignment.sqlite") as connection:
-                connection.executescript(
-                    """
-                    CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-                    CREATE TABLE parts(part_index INTEGER PRIMARY KEY,fpga TEXT NOT NULL);
-                    CREATE TABLE copies(source_instance_seq INTEGER,part_index INTEGER,copy_id TEXT,is_replica INTEGER);
-                    CREATE TABLE cut_sinks(net_id TEXT,source_part_index INTEGER,sink_part_index INTEGER);
-                    CREATE TABLE exact_cut_nodes(net_id TEXT PRIMARY KEY);
-                    CREATE TABLE exact_cut_sources(net_id TEXT,ordinal INTEGER,segment_id TEXT);
-                    CREATE TABLE exact_logic_segments(source_cut_net TEXT,part_index INTEGER,segment_id TEXT);
-                    """
-                )
-                metadata = {
-                    "schema": "emuflow.phase3-assignment-sqlite/v1",
-                    "design": "large",
-                    "platform": "four",
-                    "provider": "test",
-                    "seed": 1,
-                    "constraints": {"balance_tolerance": 0.25},
-                    "source_instance_count": 8,
-                    "semantic_contract_sha256": "a" * 64,
-                }
-                connection.executemany(
-                    "INSERT INTO metadata VALUES (?,?)",
-                    ((key, json.dumps(value)) for key, value in metadata.items()),
-                )
-                connection.executemany(
-                    "INSERT INTO parts VALUES (?,?)",
-                    [(0, "fpga0"), (1, "fpga1")],
-                )
-                connection.executemany(
-                    "INSERT INTO copies VALUES (?,?,?,0)",
-                    [(0, 0, "i0"), (1, 1, "i1")],
-                )
-                connection.executemany(
-                    "INSERT INTO cut_sinks VALUES (?,?,?)",
-                    [("n0", 0, 1), ("n1", 1, 0)],
-                )
-                connection.executemany(
-                    "INSERT INTO exact_cut_nodes VALUES (?)",
-                    [("n0",), ("n1",)],
-                )
-                connection.executemany(
-                    "INSERT INTO exact_cut_sources VALUES (?,?,?)",
-                    [("n0", 0, "segment000000"), ("n1", 0, "segment000001")],
-                )
-                connection.executemany(
-                    "INSERT INTO exact_logic_segments VALUES (?,?,?)",
-                    [
-                        ("n0", 1, "segment000001"),
-                        ("n0", 1, "segment000002"),
-                        ("n1", 0, "segment000003"),
+            write_assignment_v3_fixture(
+                root / "assignment.sqlite", parts=("fpga0", "fpga1"),
+                metadata={
+                    "design": "large", "platform": "four", "provider": "test",
+                    "seed": 1, "constraints": {"balance_tolerance": 0.25},
+                    "source_instance_count": 2, "semantic_contract_sha256": "a" * 64,
+                },
+                copies=[(0, 0, "i0", 0), (1, 1, "i1", 0)],
+                cut_sinks=[("n0", 0, 1), ("n1", 1, 0)],
+                semantic={
+                    "schema": "emuflow.static-exact-combinational-cut/v3",
+                    "cut_nodes": [
+                        {"net": "n0", "source_segment_ids": ["segment000000"]},
+                        {"net": "n1", "source_segment_ids": ["segment000001"]},
                     ],
-                )
+                    "logic_segments": [
+                        {"id": "segment000000", "kind": "launch_to_tx", "fpga": "fpga0", "sink_cut_net": "n0"},
+                        {"id": "segment000001", "kind": "rx_to_tx", "fpga": "fpga1", "source_cut_net": "n0", "sink_cut_net": "n1"},
+                        {"id": "segment000002", "kind": "rx_to_capture", "fpga": "fpga1", "source_cut_net": "n0", "capture_requirement": "capture000000"},
+                        {"id": "segment000003", "kind": "rx_to_capture", "fpga": "fpga0", "source_cut_net": "n1", "capture_requirement": "capture000001"},
+                    ],
+                    "capture_requirements": [
+                        {"id": "capture000000", "cut_net": "n0", "fpga": "fpga1", "kind": "top-output", "endpoint": "o0"},
+                        {"id": "capture000001", "cut_net": "n1", "fpga": "fpga0", "kind": "top-output", "endpoint": "o1"},
+                    ],
+                },
+            )
             view = read_phase3_cut_timing_view(
                 root / "assignment.json",
                 include_instance_assignment=True,

@@ -486,7 +486,7 @@ def _prepare_constant_frontier_query_once(mapped_path: Path, candidates_path: Pa
             if next(rows, None) != INVENTORY_HEADER:
                 raise ValidationError("constant confirmation inventory header differs")
             for row in rows:
-                if len(row) != 4 or not re.fullmatch(r"s(?:0|[1-9][0-9]*)", row[2]):
+                if len(row) != len(INVENTORY_HEADER) or not re.fullmatch(r"s(?:0|[1-9][0-9]*)", row[2]):
                     raise ValidationError("constant confirmation inventory row is invalid")
                 origin = int(row[2][1:])
                 if origin in selected_origins:

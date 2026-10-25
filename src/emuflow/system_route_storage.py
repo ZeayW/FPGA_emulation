@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -20,14 +21,22 @@ from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import ValidationError
+from .store_publication import (
+    bind_store_source,
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+)
 from .io import file_sha256, write_json
 from .routing import SYSTEM_ROUTES_SCHEMA
 
 
 SYSTEM_ROUTE_STORAGE_SCHEMA = "emuflow.system-route-storage/v1"
 SYSTEM_ROUTE_APPLICATION_ID = 0x454D5552  # ASCII "EMUR"
-SYSTEM_ROUTE_USER_VERSION = 1
+SYSTEM_ROUTE_USER_VERSION = 3
+_SUPPORTED_SYSTEM_ROUTE_USER_VERSIONS = {1, 2, SYSTEM_ROUTE_USER_VERSION}
 SYSTEM_ROUTE_STORE_PREFIX = "routes."
 SYSTEM_ROUTE_STORE_SUFFIX = ".sqlite"
 
@@ -52,10 +61,34 @@ CREATE TABLE routes(
   demand_id TEXT NOT NULL UNIQUE,
   net_id TEXT NOT NULL UNIQUE,
   source_fpga TEXT NOT NULL,
+  width_bits INTEGER NOT NULL,
+  transport_round INTEGER,
+  cut_class TEXT,
   dependency_level INTEGER,
   combinational_dependency_depth INTEGER,
-  record_json TEXT NOT NULL,
-  CHECK(json_valid(record_json))
+  max_latency_cycles INTEGER,
+  predicted_max_delay_ns REAL,
+  CHECK(length(demand_id)>0),
+  CHECK(length(net_id)>0),
+  CHECK(length(source_fpga)>0),
+  CHECK(typeof(width_bits)='integer' AND width_bits>0),
+  CHECK(transport_round IS NULL OR (
+    typeof(transport_round)='integer' AND transport_round>=0
+  )),
+  CHECK(cut_class IS NULL OR cut_class IN (
+    'combinational','register_input','register_output'
+  )),
+  CHECK((dependency_level IS NULL AND combinational_dependency_depth IS NULL)
+    OR (typeof(dependency_level)='integer' AND dependency_level>=0
+      AND typeof(combinational_dependency_depth)='integer'
+      AND combinational_dependency_depth>=0)),
+  CHECK(max_latency_cycles IS NULL OR (
+    typeof(max_latency_cycles)='integer' AND max_latency_cycles>=0
+  )),
+  CHECK(predicted_max_delay_ns IS NULL OR (
+    typeof(predicted_max_delay_ns) IN ('integer','real')
+    AND predicted_max_delay_ns>=0
+  ))
 );
 CREATE TABLE route_sinks(
   route_seq INTEGER NOT NULL,
@@ -85,6 +118,18 @@ CREATE TABLE timing_paths(
   path_id TEXT NOT NULL UNIQUE,
   record_json TEXT NOT NULL,
   CHECK(json_valid(record_json))
+);
+CREATE TABLE route_master_selections(
+  seq INTEGER PRIMARY KEY,
+  demand_id TEXT NOT NULL UNIQUE,
+  generator TEXT NOT NULL
+);
+CREATE TABLE refinement_batch_paths(
+  seq INTEGER PRIMARY KEY,
+  batch_index INTEGER NOT NULL,
+  position INTEGER NOT NULL,
+  path_index INTEGER NOT NULL UNIQUE,
+  UNIQUE(batch_index,position)
 );
 CREATE INDEX routes_net_order ON routes(net_id,seq);
 CREATE INDEX routes_demand_order ON routes(demand_id,seq);
@@ -167,7 +212,7 @@ def _previous_route_artifact(path: Path) -> Path | None:
 
 def _connect(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(
-        f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
+        immutable_sqlite_uri(path), uri=True
     )
     connection.row_factory = sqlite3.Row
     return connection
@@ -186,11 +231,29 @@ def _decode_json(payload: str, context: str) -> dict[str, Any]:
 class _JsonRecordSequence(list):
     """List-compatible lazy view over one ordered JSON-record relation."""
 
-    def __init__(self, store_path: Path, table: str, count: int):
+    def __init__(
+        self,
+        store_path: Path,
+        table: str,
+        count: int,
+        order: str = "seq",
+    ):
         super().__init__()
         self.store_path = store_path
         self.table = table
         self._count = count
+        if order not in {"seq", "path"} or (
+            order == "path" and table != "timing_paths"
+        ):
+            raise ValueError(f"unsupported {table} record order {order!r}")
+        self.order = order
+
+    def ordered(self, order: str) -> "_JsonRecordSequence":
+        """Return another lazy view with a store-owned stable order."""
+
+        return _JsonRecordSequence(
+            self.store_path, self.table, self._count, order
+        )
 
     def __len__(self) -> int:
         return self._count
@@ -199,8 +262,9 @@ class _JsonRecordSequence(list):
         connection = _connect(self.store_path)
         try:
             observed = 0
+            order_sql = "path_id,seq" if self.order == "path" else "seq"
             for row in connection.execute(
-                f"SELECT record_json FROM {self.table} ORDER BY seq"
+                f"SELECT record_json FROM {self.table} ORDER BY {order_sql}"
             ):
                 observed += 1
                 yield _decode_json(row[0], self.table)
@@ -218,9 +282,17 @@ class _JsonRecordSequence(list):
             raise IndexError(index)
         connection = _connect(self.store_path)
         try:
-            row = connection.execute(
-                f"SELECT record_json FROM {self.table} WHERE seq=?", (index,)
-            ).fetchone()
+            if self.order == "seq":
+                row = connection.execute(
+                    f"SELECT record_json FROM {self.table} WHERE seq=?",
+                    (index,),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    f"SELECT record_json FROM {self.table} "
+                    "ORDER BY path_id,seq LIMIT 1 OFFSET ?",
+                    (index,),
+                ).fetchone()
             if row is None:
                 raise ValidationError(f"{self.table} sequence is not contiguous")
             return _decode_json(row[0], self.table)
@@ -238,25 +310,288 @@ class _JsonRecordSequence(list):
         return not self == other
 
 
-def _route_from_row(
-    connection: sqlite3.Connection, row: sqlite3.Row
-) -> dict[str, Any]:
-    route = _decode_json(row["record_json"], "system route")
-    route_seq = int(row["seq"])
-    if any(
-        key in route
-        for key in (
-            "id",
-            "net",
-            "source",
-            "sinks",
-            "tree_edges",
-            "predecessor_cut_nets",
-            "dependency_level",
-            "combinational_dependency_depth",
+class _MasterSelectionSequence(list):
+    """Lazy master-candidate selections stored outside the route header."""
+
+    def __init__(self, store_path: Path, count: int):
+        super().__init__()
+        self.store_path = store_path
+        self._count = count
+
+    def __len__(self) -> int:
+        return self._count
+
+    def __iter__(self) -> Iterator[dict[str, str]]:
+        connection = _connect(self.store_path)
+        try:
+            observed = 0
+            for row in connection.execute(
+                "SELECT demand_id,generator FROM route_master_selections "
+                "ORDER BY seq"
+            ):
+                observed += 1
+                yield {"demand": str(row[0]), "generator": str(row[1])}
+            if observed != self._count:
+                raise ValidationError(
+                    "route master-selection count disagrees"
+                )
+        finally:
+            connection.close()
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return list(self)[index]
+        if index < 0:
+            index += self._count
+        if index < 0 or index >= self._count:
+            raise IndexError(index)
+        connection = _connect(self.store_path)
+        try:
+            row = connection.execute(
+                "SELECT demand_id,generator FROM route_master_selections "
+                "WHERE seq=?",
+                (index,),
+            ).fetchone()
+            if row is None:
+                raise ValidationError(
+                    "route master-selection sequence is not contiguous"
+                )
+            return {"demand": str(row[0]), "generator": str(row[1])}
+        finally:
+            connection.close()
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, Sequence)
+            and not isinstance(other, (str, bytes))
+            and len(self) == len(other)
+            and all(left == right for left, right in zip(self, other))
         )
-    ):
-        raise ValidationError("system route scalar payload is malformed")
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+
+class _RefinementBatchSequence(list):
+    """Lazy nested path-index batches stored as one ordered relation."""
+
+    def __init__(self, store_path: Path, batch_count: int, record_count: int):
+        super().__init__()
+        self.store_path = store_path
+        self._count = batch_count
+        self._record_count = record_count
+
+    def __len__(self) -> int:
+        return self._count
+
+    def __iter__(self) -> Iterator[list[int]]:
+        connection = _connect(self.store_path)
+        try:
+            cursor = iter(
+                connection.execute(
+                    "SELECT batch_index,position,path_index "
+                    "FROM refinement_batch_paths "
+                    "ORDER BY batch_index,position"
+                )
+            )
+            row = next(cursor, None)
+            observed = 0
+            for batch_index in range(self._count):
+                batch: list[int] = []
+                position = 0
+                while row is not None and int(row[0]) == batch_index:
+                    if int(row[1]) != position:
+                        raise ValidationError(
+                            "route refinement batch position is not contiguous"
+                        )
+                    batch.append(int(row[2]))
+                    position += 1
+                    observed += 1
+                    row = next(cursor, None)
+                yield batch
+            if row is not None or observed != self._record_count:
+                raise ValidationError(
+                    "route refinement-batch coverage disagrees"
+                )
+        finally:
+            connection.close()
+
+    def __getitem__(self, index: int | slice) -> Any:
+        if isinstance(index, slice):
+            return list(self)[index]
+        if index < 0:
+            index += self._count
+        if index < 0 or index >= self._count:
+            raise IndexError(index)
+        connection = _connect(self.store_path)
+        try:
+            rows = connection.execute(
+                "SELECT position,path_index FROM refinement_batch_paths "
+                "WHERE batch_index=? ORDER BY position",
+                (index,),
+            )
+            batch = []
+            for position, path_index in rows:
+                if int(position) != len(batch):
+                    raise ValidationError(
+                        "route refinement batch position is not contiguous"
+                    )
+                batch.append(int(path_index))
+            return batch
+        finally:
+            connection.close()
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, Sequence)
+            and not isinstance(other, (str, bytes))
+            and len(self) == len(other)
+            and all(left == right for left, right in zip(self, other))
+        )
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+
+_LEGACY_ROUTE_COLUMNS = (
+    "seq",
+    "demand_id",
+    "net_id",
+    "source_fpga",
+    "dependency_level",
+    "combinational_dependency_depth",
+    "record_json",
+)
+_TYPED_ROUTE_COLUMNS = (
+    "seq",
+    "demand_id",
+    "net_id",
+    "source_fpga",
+    "width_bits",
+    "transport_round",
+    "cut_class",
+    "dependency_level",
+    "combinational_dependency_depth",
+    "max_latency_cycles",
+    "predicted_max_delay_ns",
+)
+_ROUTE_STRUCTURAL_FIELDS = {
+    "id",
+    "net",
+    "source",
+    "sinks",
+    "tree_edges",
+    "predecessor_cut_nets",
+    "dependency_level",
+    "combinational_dependency_depth",
+}
+_ROUTE_SCALAR_FIELDS = {
+    "width_bits",
+    "transport_round",
+    "cut_class",
+    "max_latency_cycles",
+    "predicted_max_delay_ns",
+}
+
+
+def _nonnegative_integer(value: Any, context: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValidationError(f"{context} must be a non-negative integer")
+    return value
+
+
+def _typed_route_scalar_values(route: Mapping[str, Any]) -> tuple[Any, ...]:
+    unexpected = set(route) - _ROUTE_STRUCTURAL_FIELDS - _ROUTE_SCALAR_FIELDS
+    if unexpected:
+        raise ValidationError(
+            f"system route has unsupported scalar fields: {sorted(unexpected)}"
+        )
+    width_bits = _nonnegative_integer(
+        route.get("width_bits"), "system route width_bits"
+    )
+    if width_bits == 0:
+        raise ValidationError("system route width_bits must be positive")
+    transport_round = route.get("transport_round")
+    if "transport_round" in route:
+        transport_round = _nonnegative_integer(
+            transport_round, "system route transport_round"
+        )
+    cut_class = route.get("cut_class")
+    if cut_class is not None and cut_class not in {
+        "combinational",
+        "register_input",
+        "register_output",
+    }:
+        raise ValidationError("system route cut_class is invalid")
+    has_level = "dependency_level" in route
+    has_depth = "combinational_dependency_depth" in route
+    if has_level != has_depth:
+        raise ValidationError("system route dependency metadata is incomplete")
+    dependency_level = route.get("dependency_level")
+    dependency_depth = route.get("combinational_dependency_depth")
+    if has_level:
+        dependency_level = _nonnegative_integer(
+            dependency_level, "system route dependency_level"
+        )
+        dependency_depth = _nonnegative_integer(
+            dependency_depth, "system route combinational_dependency_depth"
+        )
+    predecessors = route.get("predecessor_cut_nets", [])
+    if not has_level and predecessors:
+        raise ValidationError("non-exact route has predecessor records")
+    max_latency_cycles = route.get("max_latency_cycles")
+    if "max_latency_cycles" in route:
+        max_latency_cycles = _nonnegative_integer(
+            max_latency_cycles, "system route max_latency_cycles"
+        )
+    predicted_delay = route.get("predicted_max_delay_ns")
+    if "predicted_max_delay_ns" in route:
+        if (
+            isinstance(predicted_delay, bool)
+            or not isinstance(predicted_delay, float)
+            or not math.isfinite(predicted_delay)
+            or predicted_delay < 0.0
+        ):
+            raise ValidationError(
+                "system route predicted_max_delay_ns must be a finite "
+                "non-negative float"
+            )
+    return (
+        width_bits,
+        transport_round,
+        cut_class,
+        dependency_level,
+        dependency_depth,
+        max_latency_cycles,
+        predicted_delay,
+    )
+
+
+def _route_scalars_from_row(
+    row: sqlite3.Row, user_version: int
+) -> dict[str, Any]:
+    if user_version < 3:
+        route = _decode_json(row["record_json"], "system route")
+        if any(key in route for key in _ROUTE_STRUCTURAL_FIELDS):
+            raise ValidationError("system route scalar payload is malformed")
+        return route
+    route = {"width_bits": int(row["width_bits"])}
+    if row["transport_round"] is not None:
+        route["transport_round"] = int(row["transport_round"])
+    if row["cut_class"] is not None:
+        route["cut_class"] = str(row["cut_class"])
+    if row["max_latency_cycles"] is not None:
+        route["max_latency_cycles"] = int(row["max_latency_cycles"])
+    if row["predicted_max_delay_ns"] is not None:
+        route["predicted_max_delay_ns"] = float(row["predicted_max_delay_ns"])
+    return route
+
+
+def _route_from_row(
+    connection: sqlite3.Connection, row: sqlite3.Row, user_version: int
+) -> dict[str, Any]:
+    route = _route_scalars_from_row(row, user_version)
+    route_seq = int(row["seq"])
     route.update(
         {
             "id": str(row["demand_id"]),
@@ -321,23 +656,28 @@ def _demand_from_route(route: Mapping[str, Any]) -> dict[str, Any]:
 class SystemDemandSequence(list):
     """Logical demands projected from their authoritative routed records."""
 
-    def __init__(self, store_path: Path, count: int):
+    def __init__(self, store_path: Path, count: int, user_version: int):
         super().__init__()
         self.store_path = store_path
         self._count = count
+        self._user_version = user_version
 
     def __len__(self) -> int:
         return self._count
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
-        for route in SystemRouteSequence(self.store_path, self._count):
+        for route in SystemRouteSequence(
+            self.store_path, self._count, self._user_version
+        ):
             yield _demand_from_route(route)
 
     def __getitem__(self, index: int | slice) -> Any:
         if isinstance(index, slice):
             return list(self)[index]
         return _demand_from_route(
-            SystemRouteSequence(self.store_path, self._count)[index]
+            SystemRouteSequence(
+                self.store_path, self._count, self._user_version
+            )[index]
         )
 
     def __eq__(self, other: object) -> bool:
@@ -351,13 +691,54 @@ class SystemDemandSequence(list):
         return not self == other
 
 
+class SystemRouteNetIndex:
+    """Read individual normalized routes by net without owning a graph map."""
+
+    def __init__(self, store_path: Path, user_version: int):
+        self.store_path = store_path
+        self._user_version = user_version
+        self._connection = _connect(store_path)
+
+    def __enter__(self) -> "SystemRouteNetIndex":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
+
+    def close(self) -> None:
+        connection = self._connection
+        if connection is not None:
+            connection.close()
+            self._connection = None
+
+    def get(
+        self, net: str, default: Any = None
+    ) -> dict[str, Any] | Any:
+        connection = self._connection
+        if connection is None:
+            raise RuntimeError("system-route net index is closed")
+        row = connection.execute(
+            "SELECT * FROM routes WHERE net_id=?", (net,)
+        ).fetchone()
+        if row is None:
+            return default
+        return _route_from_row(connection, row, self._user_version)
+
+
 class SystemRouteSequence(list):
     """List-compatible route-tree cursor with stable SQL ordering."""
 
-    def __init__(self, store_path: Path, count: int, order: str = "seq"):
+    def __init__(
+        self,
+        store_path: Path,
+        count: int,
+        user_version: int,
+        order: str = "seq",
+    ):
         super().__init__()
         self.store_path = store_path
         self._count = count
+        self._user_version = user_version
         if order not in {"seq", "net", "demand"}:
             raise ValueError(f"unsupported route order {order!r}")
         self.order = order
@@ -366,21 +747,38 @@ class SystemRouteSequence(list):
         return self._count
 
     def ordered(self, order: str) -> "SystemRouteSequence":
-        return SystemRouteSequence(self.store_path, self._count, order)
+        return SystemRouteSequence(
+            self.store_path, self._count, self._user_version, order
+        )
+
+    def open_net_index(self) -> "SystemRouteNetIndex":
+        """Open a bounded-lifetime net lookup over the normalized store.
+
+        The returned view owns one read-only SQLite connection.  It fetches
+        only the requested route and its child relations, so consumers that
+        walk timing paths do not need an R-sized ``net -> route`` dictionary.
+        """
+
+        return SystemRouteNetIndex(self.store_path, self._user_version)
 
     def validate_indexed_exact_metadata(self) -> None:
         """Validate indexed-exact scalar shape without decoding route trees."""
 
         connection = _connect(self.store_path)
         try:
+            cut_class_sql = (
+                "cut_class"
+                if self._user_version >= 3
+                else "json_extract(record_json,'$.cut_class')"
+            )
             malformed = connection.execute(
                 "SELECT seq FROM routes WHERE length(demand_id)=0 "
                 "OR length(net_id)=0 OR length(source_fpga)=0 "
                 "OR dependency_level IS NULL OR dependency_level<0 "
                 "OR combinational_dependency_depth IS NULL "
                 "OR combinational_dependency_depth<0 "
-                "OR json_extract(record_json,'$.cut_class') IS NULL "
-                "OR json_extract(record_json,'$.cut_class') NOT IN "
+                f"OR {cut_class_sql} IS NULL "
+                f"OR {cut_class_sql} NOT IN "
                 "('combinational','register_input','register_output') LIMIT 1"
             ).fetchone()
             unknown = connection.execute(
@@ -445,21 +843,7 @@ class SystemRouteSequence(list):
             observed = 0
             for row in route_cursor:
                 route_seq = int(row["seq"])
-                route = _decode_json(row["record_json"], "system route")
-                if any(
-                    key in route
-                    for key in (
-                        "id",
-                        "net",
-                        "source",
-                        "sinks",
-                        "tree_edges",
-                        "predecessor_cut_nets",
-                        "dependency_level",
-                        "combinational_dependency_depth",
-                    )
-                ):
-                    raise ValidationError("system route scalar payload is malformed")
+                route = _route_scalars_from_row(row, self._user_version)
                 route.update(
                     {
                         "id": str(row["demand_id"]),
@@ -507,6 +891,45 @@ class SystemRouteSequence(list):
                 or predecessor_row is not None
             ):
                 raise ValidationError("system route count disagrees")
+        finally:
+            connection.close()
+
+    def iter_native_exact_metadata(self) -> Iterator[tuple[dict[str, Any], int, list[int]]]:
+        """Compatibility metadata only; native ingress owns all tree edges."""
+        connection = _connect(self.store_path)
+        try:
+            rows = connection.execute(
+                "SELECT seq,demand_id,net_id,source_fpga,dependency_level,"
+                "combinational_dependency_depth,row_number() OVER "
+                "(ORDER BY demand_id,seq)-1 AS demand_rank FROM routes ORDER BY net_id,seq"
+            )
+            sinks = iter(connection.execute(
+                "SELECT r.seq,s.sink_fpga FROM route_sinks s JOIN routes r ON r.seq=s.route_seq "
+                "ORDER BY r.net_id,r.seq,s.seq"
+            ))
+            predecessors = iter(connection.execute(
+                "WITH ranked AS (SELECT seq,net_id,row_number() OVER (ORDER BY net_id,seq)-1 AS rank FROM routes) "
+                "SELECT r.seq,p.predecessor_net,parent.rank FROM route_predecessors p "
+                "JOIN routes r ON r.seq=p.route_seq LEFT JOIN ranked parent ON parent.net_id=p.predecessor_net "
+                "ORDER BY r.net_id,r.seq,p.seq"
+            ))
+            sink, predecessor = next(sinks,None), next(predecessors,None)
+            observed = 0
+            for row in rows:
+                route_sinks, names, ranks = [], [], []
+                while sink is not None and sink[0] == row[0]:
+                    route_sinks.append(str(sink[1])); sink = next(sinks,None)
+                while predecessor is not None and predecessor[0] == row[0]:
+                    if predecessor[2] is None:
+                        raise ValidationError("system route has an unknown predecessor net")
+                    names.append(str(predecessor[1])); ranks.append(int(predecessor[2]))
+                    predecessor = next(predecessors,None)
+                observed += 1
+                yield ({"id":str(row[1]),"net":str(row[2]),"source":str(row[3]),"sinks":route_sinks,
+                        "predecessor_cut_nets":names,"dependency_level":int(row[4]),
+                        "combinational_dependency_depth":int(row[5])},int(row[6]),ranks)
+            if observed != self._count or sink is not None or predecessor is not None:
+                raise ValidationError("system-route metadata coverage disagrees")
         finally:
             connection.close()
 
@@ -696,31 +1119,15 @@ class SystemRouteSequence(list):
             predecessor_row = next(predecessor_cursor, None)
             observed = 0
             for row in route_cursor:
-                position = int(row[0])
-                net_rank = int(row[1])
-                route_seq = int(row[2])
-                route = _decode_json(row[8], "system route")
-                if any(
-                    key in route
-                    for key in (
-                        "id",
-                        "net",
-                        "source",
-                        "sinks",
-                        "tree_edges",
-                        "predecessor_cut_nets",
-                        "dependency_level",
-                        "combinational_dependency_depth",
-                    )
-                ):
-                    raise ValidationError(
-                        "system route scalar payload is malformed"
-                    )
+                position = int(row["position"])
+                net_rank = int(row["net_rank"])
+                route_seq = int(row["seq"])
+                route = _route_scalars_from_row(row, self._user_version)
                 route.update(
                     {
-                        "id": str(row[3]),
-                        "net": str(row[4]),
-                        "source": str(row[5]),
+                        "id": str(row["demand_id"]),
+                        "net": str(row["net_id"]),
+                        "source": str(row["source_fpga"]),
                     }
                 )
                 sinks: list[str] = []
@@ -763,13 +1170,18 @@ class SystemRouteSequence(list):
                     predecessor_row = next(predecessor_cursor, None)
                 route["sinks"] = sinks
                 route["tree_edges"] = edges
-                if row[6] is None or row[7] is None:
+                if (
+                    row["dependency_level"] is None
+                    or row["combinational_dependency_depth"] is None
+                ):
                     raise ValidationError(
                         "indexed exact route dependency metadata is invalid"
                     )
                 route["predecessor_cut_nets"] = predecessors
-                route["dependency_level"] = int(row[6])
-                route["combinational_dependency_depth"] = int(row[7])
+                route["dependency_level"] = int(row["dependency_level"])
+                route["combinational_dependency_depth"] = int(
+                    row["combinational_dependency_depth"]
+                )
                 observed += 1
                 yield net_rank, route, tuple(predecessor_ranks)
             if (
@@ -861,7 +1273,7 @@ class SystemRouteSequence(list):
             ).fetchone()
             if row is None:
                 raise ValidationError("system route sequence is not contiguous")
-            return _route_from_row(connection, row)
+            return _route_from_row(connection, row, self._user_version)
         finally:
             connection.close()
 
@@ -881,23 +1293,36 @@ class SystemRoutesView(dict):
 
     def __init__(self, manifest_path: Path):
         self.manifest_path = Path(manifest_path).resolve()
+        selector_source = bind_store_source(
+            self.manifest_path, "system-route-selector-v1"
+        )
         with self.manifest_path.open("r", encoding="utf-8") as stream:
             manifest = json.load(stream)
         if not isinstance(manifest, dict):
             raise ValidationError("system-route selector is not an object")
         header = manifest.get("header")
         sections = manifest.get("sections")
+        user_version = manifest.get("user_version")
         if (
             manifest.get("schema") != SYSTEM_ROUTE_STORAGE_SCHEMA
             or manifest.get("logical_schema") != SYSTEM_ROUTES_SCHEMA
             or manifest.get("application_id") != SYSTEM_ROUTE_APPLICATION_ID
-            or manifest.get("user_version") != SYSTEM_ROUTE_USER_VERSION
+            or user_version not in _SUPPORTED_SYSTEM_ROUTE_USER_VERSIONS
             or not isinstance(header, dict)
             or header.get("schema") != SYSTEM_ROUTES_SCHEMA
             or any(key in header for key in ("demands", "routes"))
             or not isinstance(sections, dict)
         ):
             raise ValidationError("system-route storage manifest is malformed")
+        expected_sections = {"demands", "routes", "timing_paths"}
+        if user_version >= 2:
+            expected_sections.update(
+                {"master_selections", "refinement_batch_paths"}
+            )
+        if set(sections) != expected_sections:
+            raise ValidationError(
+                "system-route storage section coverage is malformed"
+            )
         for section in ("demands", "routes", "timing_paths"):
             value = sections.get(section)
             if (
@@ -909,6 +1334,29 @@ class SystemRoutesView(dict):
             ):
                 raise ValidationError(
                     f"system-route {section} seal is malformed"
+                )
+        if user_version >= 2:
+            selection_section = sections["master_selections"]
+            batch_section = sections["refinement_batch_paths"]
+            if (
+                not isinstance(selection_section, dict)
+                or set(selection_section) != {"records", "sha256"}
+                or isinstance(selection_section.get("records"), bool)
+                or not isinstance(selection_section.get("records"), int)
+                or selection_section["records"] < 0
+                or not _valid_digest(selection_section.get("sha256"))
+                or not isinstance(batch_section, dict)
+                or set(batch_section) != {"records", "batches", "sha256"}
+                or any(
+                    isinstance(batch_section.get(key), bool)
+                    or not isinstance(batch_section.get(key), int)
+                    or batch_section[key] < 0
+                    for key in ("records", "batches")
+                )
+                or not _valid_digest(batch_section.get("sha256"))
+            ):
+                raise ValidationError(
+                    "system-route optimization relation seal is malformed"
                 )
         artifact = manifest.get("artifact")
         store_sha256 = manifest.get("store_sha256")
@@ -927,6 +1375,9 @@ class SystemRoutesView(dict):
             )
         store_path = self.manifest_path.with_name(artifact)
         try:
+            store_source = bind_store_source(
+                store_path, f"system-route-store-v{user_version}"
+            )
             store_size = store_path.stat().st_size
         except OSError as error:
             raise ValidationError("system-route store is missing") from error
@@ -942,9 +1393,22 @@ class SystemRoutesView(dict):
                 connection.execute("PRAGMA application_id").fetchone()[0]
                 != SYSTEM_ROUTE_APPLICATION_ID
                 or connection.execute("PRAGMA user_version").fetchone()[0]
-                != SYSTEM_ROUTE_USER_VERSION
+                != user_version
             ):
                 raise ValidationError("unsupported system-route SQLite artifact")
+            route_columns = tuple(
+                str(row[1])
+                for row in connection.execute("PRAGMA table_info(routes)")
+            )
+            expected_route_columns = (
+                _TYPED_ROUTE_COLUMNS
+                if user_version >= 3
+                else _LEGACY_ROUTE_COLUMNS
+            )
+            if route_columns != expected_route_columns:
+                raise ValidationError(
+                    "unsupported system-route routes relation schema"
+                )
             metadata = {
                 str(row[0]): json.loads(row[1])
                 for row in connection.execute("SELECT key,value FROM metadata")
@@ -954,12 +1418,31 @@ class SystemRoutesView(dict):
                     f"SELECT count(*),min(seq),max(seq) FROM {table}"
                 ).fetchone()
                 expected = sections[table]["records"]
-                if count != expected or minimum != (0 if expected else None) or maximum != (
-                    expected - 1 if expected else None
+                if (
+                    count != expected
+                    or minimum != (0 if expected else None)
+                    or maximum != (expected - 1 if expected else None)
                 ):
                     raise ValidationError(
                         f"system-route {table} sequence coverage disagrees"
                     )
+            if user_version >= 2:
+                for table, section in (
+                    ("route_master_selections", "master_selections"),
+                    ("refinement_batch_paths", "refinement_batch_paths"),
+                ):
+                    count, minimum, maximum = connection.execute(
+                        f"SELECT count(*),min(seq),max(seq) FROM {table}"
+                    ).fetchone()
+                    expected = sections[section]["records"]
+                    if (
+                        count != expected
+                        or minimum != (0 if expected else None)
+                        or maximum != (expected - 1 if expected else None)
+                    ):
+                        raise ValidationError(
+                            f"system-route {table} sequence coverage disagrees"
+                        )
             if metadata.get("header") != header or metadata.get(
                 "sections"
             ) != sections or metadata.get("logical_sha256") != manifest.get(
@@ -996,10 +1479,30 @@ class SystemRoutesView(dict):
                 "coalesce(json_extract(record_json,'$.path'),"
                 "json_extract(record_json,'$.id')) LIMIT 1"
             ).fetchone()
+            malformed_optimization = None
+            if user_version >= 2:
+                malformed_optimization = connection.execute(
+                    "SELECT s.seq FROM route_master_selections s "
+                    "LEFT JOIN routes r ON r.demand_id=s.demand_id "
+                    "WHERE r.seq IS NULL OR r.seq!=s.seq "
+                    "UNION ALL SELECT b.batch_index "
+                    "FROM refinement_batch_paths b "
+                    "WHERE b.batch_index<0 OR b.batch_index>=? "
+                    "OR b.path_index<0 OR b.path_index>=? "
+                    "UNION ALL SELECT batch_index "
+                    "FROM refinement_batch_paths GROUP BY batch_index "
+                    "HAVING min(position)!=0 OR max(position)!=count(*)-1 "
+                    "LIMIT 1",
+                    (
+                        sections["refinement_batch_paths"]["batches"],
+                        sections["timing_paths"]["records"],
+                    ),
+                ).fetchone()
             if (
                 orphan is not None
                 or noncontiguous is not None
                 or malformed_timing is not None
+                or malformed_optimization is not None
             ):
                 raise ValidationError("system-route typed relation is malformed")
         except (json.JSONDecodeError, sqlite3.DatabaseError) as error:
@@ -1008,10 +1511,10 @@ class SystemRoutesView(dict):
             connection.close()
         value = dict(header)
         value["demands"] = SystemDemandSequence(
-            store_path, sections["demands"]["records"]
+            store_path, sections["demands"]["records"], int(user_version)
         )
         value["routes"] = SystemRouteSequence(
-            store_path, sections["routes"]["records"]
+            store_path, sections["routes"]["records"], int(user_version)
         )
         timing_header = value.pop("timing", None)
         if timing_header is not None:
@@ -1027,9 +1530,75 @@ class SystemRoutesView(dict):
             }
         elif sections["timing_paths"]["records"]:
             raise ValidationError("system-route timing paths lack a header")
+        if user_version >= 2:
+            joint = value.get("joint_optimization")
+            has_optimization_relations = bool(
+                sections["master_selections"]["records"]
+                or sections["refinement_batch_paths"]["records"]
+                or sections["refinement_batch_paths"]["batches"]
+            )
+            if not isinstance(joint, dict):
+                if has_optimization_relations:
+                    raise ValidationError(
+                        "system-route optimization relations lack a header"
+                    )
+            elif has_optimization_relations:
+                joint = dict(joint)
+                candidate_generation_value = joint.get(
+                    "candidate_generation"
+                )
+                refinement_value = joint.get("refinement_batches")
+                candidate_generation = (
+                    dict(candidate_generation_value)
+                    if isinstance(candidate_generation_value, dict)
+                    else candidate_generation_value
+                )
+                refinement = (
+                    dict(refinement_value)
+                    if isinstance(refinement_value, dict)
+                    else refinement_value
+                )
+                if not isinstance(candidate_generation, dict) or not isinstance(
+                    refinement, dict
+                ):
+                    raise ValidationError(
+                        "system-route optimization header is malformed"
+                    )
+                if (
+                    "master_selection" in candidate_generation
+                    or "batches" in refinement
+                ):
+                    raise ValidationError(
+                        "system-route optimization header duplicates typed records"
+                    )
+                candidate_generation["master_selection"] = (
+                    _MasterSelectionSequence(
+                        store_path,
+                        sections["master_selections"]["records"],
+                    )
+                )
+                refinement["batches"] = _RefinementBatchSequence(
+                    store_path,
+                    sections["refinement_batch_paths"]["batches"],
+                    sections["refinement_batch_paths"]["records"],
+                )
+                joint["candidate_generation"] = candidate_generation
+                joint["refinement_batches"] = refinement
+                value["joint_optimization"] = joint
         super().__init__(value)
-        self.store_path = store_path
         self.storage_manifest = manifest
+        self.storage_user_version = int(user_version)
+        self.store_path = store_path.resolve()
+        self._source_bindings = (selector_source, store_source)
+        require_store_sources_unchanged(self._source_bindings)
+
+    def bound_store_sources(self):
+        if self.storage_manifest["user_version"] != SYSTEM_ROUTE_USER_VERSION:
+            raise ValidationError(
+                "typed publication requires the current RouteStore owner"
+            )
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
 
 
 def pretty_system_routes_sha256(routes: Mapping[str, Any]) -> str:
@@ -1081,6 +1650,25 @@ def expand_system_route_storage(
             **view["timing"],
             "paths": list(view["timing"]["paths"]),
         }
+    if view.storage_user_version >= 2 and "joint_optimization" in view:
+        joint = dict(view["joint_optimization"])
+        candidate_value = joint.get("candidate_generation")
+        refinement_value = joint.get("refinement_batches")
+        if (
+            isinstance(candidate_value, Mapping)
+            and "master_selection" in candidate_value
+            and isinstance(refinement_value, Mapping)
+            and "batches" in refinement_value
+        ):
+            candidate_generation = dict(candidate_value)
+            candidate_generation["master_selection"] = list(
+                candidate_generation["master_selection"]
+            )
+            refinement = dict(refinement_value)
+            refinement["batches"] = list(refinement["batches"])
+            joint["candidate_generation"] = candidate_generation
+            joint["refinement_batches"] = refinement
+            value["joint_optimization"] = joint
     if _pretty_sha256(value) != view.storage_manifest["logical_sha256"]:
         raise ValidationError("system-route logical reconstruction disagrees")
     return value
@@ -1097,9 +1685,54 @@ def write_system_route_storage(
         raise ValidationError("system routes demands must be an array")
     if not isinstance(raw_routes, Sequence) or isinstance(raw_routes, (str, bytes)):
         raise ValidationError("system routes routes must be an array")
+    bind_sources = getattr(raw_routes, "bound_store_sources", None)
+    source_bindings = bind_sources() if callable(bind_sources) else ()
+    bind_document = getattr(routes, "bound_store_sources", None)
+    if callable(bind_document):
+        source_bindings += bind_document()
+    source_bindings = validate_store_destination(manifest_path, source_bindings)
+    native_route_publisher = getattr(
+        raw_routes, "publish_native_route_relations", None
+    )
+    direct_native_routes = bool(
+        callable(native_route_publisher)
+        and getattr(raw_routes, "has_native_route_relations", False)
+    )
     header = dict(routes)
     del header["demands"]
     del header["routes"]
+    raw_master_selections: Sequence[Mapping[str, Any]] = []
+    raw_refinement_batches: Sequence[Sequence[int]] = []
+    joint = header.get("joint_optimization")
+    if isinstance(joint, Mapping):
+        joint_header = dict(joint)
+        candidate_generation = joint_header.get("candidate_generation")
+        if isinstance(candidate_generation, Mapping):
+            candidate_header = dict(candidate_generation)
+            raw_selection_value = candidate_header.pop(
+                "master_selection", []
+            )
+            if not isinstance(raw_selection_value, Sequence) or isinstance(
+                raw_selection_value, (str, bytes)
+            ):
+                raise ValidationError(
+                    "system-route master selection must be an array"
+                )
+            raw_master_selections = raw_selection_value
+            joint_header["candidate_generation"] = candidate_header
+        refinement = joint_header.get("refinement_batches")
+        if isinstance(refinement, Mapping):
+            refinement_header = dict(refinement)
+            raw_batch_value = refinement_header.pop("batches", [])
+            if not isinstance(raw_batch_value, Sequence) or isinstance(
+                raw_batch_value, (str, bytes)
+            ):
+                raise ValidationError(
+                    "system-route refinement batches must be an array"
+                )
+            raw_refinement_batches = raw_batch_value
+            joint_header["refinement_batches"] = refinement_header
+        header["joint_optimization"] = joint_header
     timing = header.get("timing")
     raw_timing_paths: Sequence[Mapping[str, Any]] = []
     if timing is not None:
@@ -1109,7 +1742,12 @@ def write_system_route_storage(
         if not isinstance(paths, Sequence) or isinstance(paths, (str, bytes)):
             raise ValidationError("system routes timing paths must be an array")
         raw_timing_paths = paths
-        header["timing"] = {key: value for key, value in timing.items() if key != "paths"}
+        header["timing"] = {
+            key: value for key, value in timing.items() if key != "paths"
+        }
+    direct_native_selections = bool(
+        direct_native_routes and len(raw_master_selections)
+    )
 
     # Normalize macOS /var -> /private/var aliases before any generation
     # comparison.  Mixing resolved previous paths with unresolved new paths can
@@ -1122,68 +1760,112 @@ def write_system_route_storage(
     )
     relation_digests = {
         name: hashlib.sha256()
-        for name in ("demands", "routes", "timing_paths")
+        for name in (
+            "demands",
+            "routes",
+            "timing_paths",
+            "master_selections",
+            "refinement_batch_paths",
+        )
     }
-    connection = sqlite3.connect(temporary)
+    connection = sqlite3.connect(temporary, uri=True)
     try:
         connection.execute("PRAGMA journal_mode=OFF")
         connection.execute("PRAGMA synchronous=OFF")
         connection.execute("PRAGMA temp_store=FILE")
+        if direct_native_routes:
+            connection.execute("PRAGMA cache_size=-2048")
+            connection.execute("PRAGMA temp.cache_size=-2048")
         connection.executescript(_DDL)
         connection.execute(f"PRAGMA application_id={SYSTEM_ROUTE_APPLICATION_ID}")
         connection.execute(f"PRAGMA user_version={SYSTEM_ROUTE_USER_VERSION}")
+        if direct_native_routes:
+            connection.execute(
+                "CREATE TEMP TABLE native_route_metadata("
+                "seq INTEGER PRIMARY KEY,demand_id TEXT NOT NULL UNIQUE,"
+                "net_id TEXT NOT NULL UNIQUE,source_fpga TEXT NOT NULL,"
+                "width_bits INTEGER NOT NULL,transport_round INTEGER,"
+                "cut_class TEXT,dependency_level INTEGER,"
+                "combinational_dependency_depth INTEGER,"
+                "max_latency_cycles INTEGER)"
+            )
+            if direct_native_selections:
+                connection.execute(
+                    "CREATE TEMP TABLE native_route_selection_requests("
+                    "seq INTEGER PRIMARY KEY,demand_id TEXT NOT NULL UNIQUE)"
+                )
         if len(raw_demands) != len(raw_routes):
             raise ValidationError("system-route demand/route coverage disagrees")
-        for seq, route in enumerate(raw_routes):
+        route_metadata_cursor = getattr(
+            raw_routes, "iter_route_storage_metadata", None
+        )
+        if direct_native_routes:
+            if not callable(route_metadata_cursor):
+                raise ValidationError("native route metadata cursor is missing")
+            route_records = (
+                ({**demand, "max_latency_cycles": latency}, True)
+                for demand, latency in route_metadata_cursor()
+            )
+        else:
+            route_records = ((route, False) for route in raw_routes)
+        written_routes = 0
+        for seq, (route, metadata_only) in enumerate(route_records):
             if not isinstance(route, Mapping):
                 raise ValidationError("system route is not an object")
             route_id = route.get("id")
             net = route.get("net")
             source = route.get("source")
             sinks = route.get("sinks")
-            edges = route.get("tree_edges")
+            edges = [] if metadata_only else route.get("tree_edges")
             predecessors = route.get("predecessor_cut_nets", [])
             if (
                 not isinstance(route_id, str)
+                or not route_id
                 or not isinstance(net, str)
+                or not net
                 or not isinstance(source, str)
+                or not source
                 or not isinstance(sinks, list)
+                or not all(isinstance(sink, str) and sink for sink in sinks)
                 or not isinstance(edges, list)
                 or not isinstance(predecessors, list)
+                or not all(
+                    isinstance(predecessor, str) and predecessor
+                    for predecessor in predecessors
+                )
             ):
                 raise ValidationError("system route typed fields are malformed")
-            payload = _canonical(route)
-            relation_digests["routes"].update(payload.encode("utf-8"))
-            relation_digests["routes"].update(b"\n")
-            scalar = {
-                key: value
-                for key, value in route.items()
-                if key
-                not in {
-                    "id",
-                    "net",
-                    "source",
-                    "sinks",
-                    "tree_edges",
-                    "predecessor_cut_nets",
-                    "dependency_level",
-                    "combinational_dependency_depth",
-                }
-            }
-            dependency_level = route.get("dependency_level")
-            dependency_depth = route.get("combinational_dependency_depth")
-            connection.execute(
-                "INSERT INTO routes VALUES(?,?,?,?,?,?,?)",
-                (
-                    seq,
-                    route_id,
-                    net,
-                    source,
-                    dependency_level,
-                    dependency_depth,
-                    _canonical(scalar),
-                ),
-            )
+            if not metadata_only:
+                payload = _canonical(route)
+                relation_digests["routes"].update(payload.encode("utf-8"))
+                relation_digests["routes"].update(b"\n")
+            scalar_values = list(_typed_route_scalar_values(route))
+            if direct_native_routes:
+                if scalar_values[-1] is not None:
+                    raise ValidationError(
+                        "native route metadata duplicated router-owned delay"
+                    )
+                connection.execute(
+                    "INSERT INTO native_route_metadata VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        seq,
+                        route_id,
+                        net,
+                        source,
+                        *scalar_values[:-1],
+                    ),
+                )
+            else:
+                connection.execute(
+                    "INSERT INTO routes VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        seq,
+                        route_id,
+                        net,
+                        source,
+                        *scalar_values,
+                    ),
+                )
             demand = raw_demands[seq]
             if not isinstance(demand, Mapping) or demand != _demand_from_route(route):
                 raise ValidationError(
@@ -1196,17 +1878,23 @@ def write_system_route_storage(
                 "INSERT INTO demands VALUES(?,?,?)",
                 (seq, demand["id"], seq),
             )
+            if direct_native_selections:
+                connection.execute(
+                    "INSERT INTO native_route_selection_requests VALUES(?,?)",
+                    (seq, demand["id"]),
+                )
             connection.executemany(
                 "INSERT INTO route_sinks VALUES(?,?,?)",
                 ((seq, index, sink) for index, sink in enumerate(sinks)),
             )
-            connection.executemany(
-                "INSERT INTO route_edges VALUES(?,?,?,?,?)",
-                (
-                    (seq, index, edge["link"], edge["from"], edge["to"])
-                    for index, edge in enumerate(edges)
-                ),
-            )
+            if not direct_native_routes:
+                connection.executemany(
+                    "INSERT INTO route_edges VALUES(?,?,?,?,?)",
+                    (
+                        (seq, index, edge["link"], edge["from"], edge["to"])
+                        for index, edge in enumerate(edges)
+                    ),
+                )
             connection.executemany(
                 "INSERT INTO route_predecessors VALUES(?,?,?)",
                 (
@@ -1214,6 +1902,9 @@ def write_system_route_storage(
                     for index, predecessor in enumerate(predecessors)
                 ),
             )
+            written_routes += 1
+        if written_routes != len(raw_routes):
+            raise ValidationError("system-route route cursor coverage disagrees")
         for seq, timing_path in enumerate(raw_timing_paths):
             if not isinstance(timing_path, Mapping):
                 raise ValidationError("system-route timing path is malformed")
@@ -1227,6 +1918,87 @@ def write_system_route_storage(
                 "INSERT INTO timing_paths VALUES(?,?,?)",
                 (seq, identity, payload),
             )
+        selection_records = (
+            () if direct_native_selections else raw_master_selections
+        )
+        for seq, selection in enumerate(selection_records):
+            if (
+                not isinstance(selection, Mapping)
+                or set(selection) != {"demand", "generator"}
+                or not isinstance(selection.get("demand"), str)
+                or not isinstance(selection.get("generator"), str)
+                or seq >= len(raw_routes)
+                or raw_demands[seq].get("id") != selection["demand"]
+            ):
+                raise ValidationError(
+                    "system-route master selection is malformed or unordered"
+                )
+            payload = _canonical(selection)
+            relation_digests["master_selections"].update(
+                payload.encode("utf-8")
+            )
+            relation_digests["master_selections"].update(b"\n")
+            connection.execute(
+                "INSERT INTO route_master_selections VALUES(?,?,?)",
+                (seq, selection["demand"], selection["generator"]),
+            )
+        batch_record_count = 0
+        seen_path_indices = bytearray(len(raw_timing_paths))
+        seen_path_count = 0
+        for batch_index, batch in enumerate(raw_refinement_batches):
+            if not isinstance(batch, Sequence) or isinstance(
+                batch, (str, bytes)
+            ):
+                raise ValidationError(
+                    "system-route refinement batch is not an array"
+                )
+            for position, path_index in enumerate(batch):
+                if (
+                    isinstance(path_index, bool)
+                    or not isinstance(path_index, int)
+                    or path_index < 0
+                    or path_index >= len(raw_timing_paths)
+                    or seen_path_indices[path_index]
+                ):
+                    raise ValidationError(
+                        "system-route refinement path coverage is malformed"
+                    )
+                seen_path_indices[path_index] = 1
+                seen_path_count += 1
+                record = {
+                    "batch": batch_index,
+                    "position": position,
+                    "path": path_index,
+                }
+                payload = _canonical(record)
+                relation_digests["refinement_batch_paths"].update(
+                    payload.encode("utf-8")
+                )
+                relation_digests["refinement_batch_paths"].update(b"\n")
+                connection.execute(
+                    "INSERT INTO refinement_batch_paths VALUES(?,?,?,?)",
+                    (
+                        batch_record_count,
+                        batch_index,
+                        position,
+                        path_index,
+                    ),
+                )
+                batch_record_count += 1
+        if raw_refinement_batches:
+            refinement_header = header["joint_optimization"][
+                "refinement_batches"
+            ]
+            if (
+                refinement_header.get("batch_count")
+                != len(raw_refinement_batches)
+                or refinement_header.get("maximum_parallel_batch")
+                != max(map(len, raw_refinement_batches), default=0)
+                or seen_path_count != len(raw_timing_paths)
+            ):
+                raise ValidationError(
+                    "system-route refinement batch summary disagrees"
+                )
         sections = {
             "demands": {
                 "records": len(raw_demands),
@@ -1240,16 +2012,42 @@ def write_system_route_storage(
                 "records": len(raw_timing_paths),
                 "sha256": relation_digests["timing_paths"].hexdigest(),
             },
+            "master_selections": {
+                "records": len(raw_master_selections),
+                "sha256": relation_digests[
+                    "master_selections"
+                ].hexdigest(),
+            },
+            "refinement_batch_paths": {
+                "records": batch_record_count,
+                "batches": len(raw_refinement_batches),
+                "sha256": relation_digests[
+                    "refinement_batch_paths"
+                ].hexdigest(),
+            },
         }
-        logical_sha256 = _pretty_sha256(routes)
-        connection.executemany(
-            "INSERT INTO metadata VALUES(?,?)",
-            (
-                ("header", _canonical(header)),
-                ("sections", _canonical(sections)),
-                ("logical_sha256", _canonical(logical_sha256)),
-            ),
-        )
+        if direct_native_routes:
+            # Seal the final typed rows, not their Python projection. Only
+            # bounded shape/header literals cross the native process boundary.
+            assert callable(native_route_publisher)
+            native_route_publisher(connection)
+            if direct_native_selections:
+                sections["master_selections"]["sha256"] = None
+            sections["routes"]["sha256"] = None
+            connection.executemany("INSERT INTO metadata VALUES(?,?)", (
+                ("header", _canonical(header)), ("sections", _canonical(sections))))
+            connection.commit()
+            connection.close()
+            from .route_seal_native import seal_native_system_routes
+            seal = seal_native_system_routes(temporary, routes)
+            logical_sha256, sections = seal["logical_sha256"], seal["sections"]
+            connection = sqlite3.connect(temporary, uri=True)
+            connection.execute("UPDATE metadata SET value=? WHERE key='sections'", (_canonical(sections),))
+        else:
+            logical_sha256 = _pretty_sha256(routes)
+            connection.executemany("INSERT INTO metadata VALUES(?,?)", (
+                ("header", _canonical(header)), ("sections", _canonical(sections))))
+        connection.execute("INSERT INTO metadata VALUES('logical_sha256',?)", (_canonical(logical_sha256),))
         connection.commit()
     except sqlite3.IntegrityError as error:
         connection.close()
@@ -1262,8 +2060,7 @@ def write_system_route_storage(
         temporary.unlink(missing_ok=True)
         raise
     connection.close()
-    with temporary.open("rb") as stream:
-        os.fsync(stream.fileno())
+    require_store_sources_unchanged(source_bindings)
     store_sha256 = file_sha256(temporary)
     store_name = _content_addressed_store_name(store_sha256)
     store_path = manifest_path.with_name(store_name)
@@ -1274,7 +2071,13 @@ def write_system_route_storage(
             raise ValidationError("existing system-route store seal disagrees")
         temporary.unlink()
     else:
-        os.replace(temporary, store_path)
+        try:
+            publish_sqlite_store(
+                temporary, store_path, "system-route-store-v3", sources=source_bindings
+            )
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
     manifest = {
         "schema": SYSTEM_ROUTE_STORAGE_SCHEMA,
         "logical_schema": SYSTEM_ROUTES_SCHEMA,
@@ -1305,6 +2108,7 @@ def write_system_route_storage(
                     store_path.unlink(missing_ok=True)
                 raise
     try:
+        require_store_sources_unchanged(source_bindings)
         write_json(manifest_path, manifest, compact=True)
         # The selector is the commit point, but old data remains recoverable
         # until a fresh reader has checked every selector, store and relation

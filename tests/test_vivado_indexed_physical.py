@@ -1,3 +1,4 @@
+from contextlib import closing
 import json
 import shutil
 import sqlite3
@@ -95,7 +96,7 @@ puts pass
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             ir = fixture(root)
-            with sqlite3.connect(ir) as db:
+            with closing(sqlite3.connect(ir)) as db, db:
                 net = db.execute("SELECT seq FROM net_records WHERE id='d'").fetchone()[0]
                 db.execute("DELETE FROM endpoint_records WHERE net_seq=? AND role=0", (net,))
                 db.execute("UPDATE net_records SET cut_class='undriven' WHERE seq=?", (net,))
@@ -115,7 +116,7 @@ puts pass
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             ir = fixture(root)
-            with sqlite3.connect(ir) as db:
+            with closing(sqlite3.connect(ir)) as db, db:
                 net = db.execute("SELECT seq FROM net_records WHERE id='d'").fetchone()[0]
                 db.execute("DELETE FROM endpoint_records WHERE net_seq=?", (net,))
                 db.execute("UPDATE net_records SET cut_class='undriven' WHERE seq=?", (net,))
@@ -128,7 +129,7 @@ puts pass
             with self.subTest(sparse=sparse), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 ir = fixture(root)
-                with sqlite3.connect(ir) as db:
+                with closing(sqlite3.connect(ir)) as db, db:
                     for table, column in (("net_records", "seq"), ("endpoint_records", "net_seq"), ("alias_records", "net_seq")):
                         db.execute(f"UPDATE {table} SET {column}={column}+100")
                         db.execute(f"UPDATE {table} SET {column}=" + (f"({column}-100)*10+10" if sparse else f"{column}-99"))
@@ -212,10 +213,23 @@ puts pass
             rows = ["\t".join((h(kind), kind, "1.25", h("start"), h("end"))) + "\n" for kind in ("tx", "rx")]
             measured.write_text(header + "".join(rows))
             output = root / "timing.json"
-            report = import_indexed_vivado_boundary(measured, identity, output, measurement_scope="board-integrated-interface")
+            original_read_text = Path.read_text
+            def reject_whole_measurement_read(path, *args, **kwargs):
+                if path == measured:
+                    raise AssertionError("boundary timing TSV was materialized")
+                return original_read_text(path, *args, **kwargs)
+
+            with patch.object(Path, "read_text", reject_whole_measurement_read):
+                report = import_indexed_vivado_boundary(
+                    measured, identity, output, measurement_scope="board-integrated-interface",
+                    provider="vivado-board-integrated-interface-path-v1",
+                    qualification="routed-board-integrated-interface-path",
+                )
             self.assertEqual(report["endpoints"], 2)
             with read_boundary_timing_storage(output) as view:
                 self.assertEqual(view["measurement_scope"], "board-integrated-interface")
+                self.assertEqual(view["provider"], "vivado-board-integrated-interface-path-v1")
+                self.assertEqual(view["qualification"], "routed-board-integrated-interface-path")
                 self.assertEqual(view["endpoints"][0]["measurement"],
                                  "interface-startpoint-through-rx-boundary-to-shadow-capture")
             for bad in (rows[:1], rows + rows[:1], [rows[0].replace("1.25", "nan"), rows[1]],

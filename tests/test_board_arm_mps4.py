@@ -8,7 +8,6 @@ from emuflow.board_arm_mps4 import (
     MPS4_B2B_REFCLK_DEFAULT_MHZ,
     materialize_arm_mps4_boarddb,
 )
-from emuflow.bsp import _link_channels, _physical_data_lanes, _validate_anchors
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.netlist import _build_virtual_anchors
@@ -117,52 +116,6 @@ class ArmMps4BoardTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValidationError, "duplicate"):
             Platform.from_dict(duplicate_service)
-        physical_lanes = _physical_data_lanes(platform)
-        self.assertEqual(len(physical_lanes), 3 * 12 * 4)
-        self.assertTrue(
-            all(item["lane_kind"] == "serial_transceiver" for item in physical_lanes)
-        )
-        self.assertTrue(
-            all(
-                set(item["required_binding_fields"])
-                == {
-                    "package_pin_p",
-                    "package_pin_n",
-                    "connector",
-                    "transceiver_site",
-                }
-                for item in physical_lanes
-            )
-        )
-        bound_tx = next(
-            item
-            for item in physical_lanes
-            if item["id"] == "mps4_b2b_1:mps4_1:tx:0"
-        )
-        self.assertEqual(bound_tx["binding_status"], "partially_bound")
-        self.assertEqual(bound_tx["connector"], "J49")
-        self.assertEqual(bound_tx["mgt_group"], "MGT0")
-        self.assertEqual(bound_tx["package_pin_p"], "BD42")
-        self.assertEqual(bound_tx["package_pin_n"], "BD43")
-        self.assertEqual(
-            bound_tx["unresolved_binding_fields"], ["transceiver_site"]
-        )
-        channels = _link_channels(platform)
-        self.assertEqual(len(channels), 6)
-        self.assertTrue(
-            all(
-                "transceiver_profile" in item["required_binding_fields"]
-                for item in channels
-            )
-        )
-        first_channel = next(
-            item
-            for item in channels
-            if item["id"] == "mps4_b2b_1:mps4_1-to-mps4_2"
-        )
-        self.assertEqual(first_channel["source_connector"], "J49")
-        self.assertEqual(first_channel["sink_connector"], "J48")
-        self.assertEqual(first_channel["configured_line_rate_gbps_per_lane"], 25.0)
         anchors = _build_virtual_anchors(
             "mps4_1",
             platform,
@@ -190,40 +143,6 @@ class ArmMps4BoardTest(unittest.TestCase):
                 "transceiver_site",
             ],
         )
-        anchor_documents = {
-            fpga.id: _build_virtual_anchors(
-                fpga.id,
-                platform,
-                (
-                    [
-                        {
-                            "id": "endpoint-0",
-                            "link": "mps4_b2b_1",
-                            "peer": "mps4_2",
-                            "kind": "tx",
-                            "lane": 767,
-                            "slot": 3,
-                        }
-                    ]
-                    if fpga.id == "mps4_1"
-                    else []
-                ),
-            )
-            for fpga in platform.fpgas
-        }
-        validated_anchors = _validate_anchors(
-            anchor_documents,
-            {
-                "validation": {
-                    "virtual_anchors": 1,
-                    "unbound_package_pins": 1,
-                }
-            },
-            platform,
-            physical_lanes,
-        )
-        self.assertEqual(validated_anchors[0]["physical_lane"], 11)
-        self.assertEqual(validated_anchors[0]["bit_within_physical_lane"], 63)
 
     def test_rejects_profile_above_documented_line_rate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

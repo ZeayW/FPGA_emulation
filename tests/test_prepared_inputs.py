@@ -1,4 +1,5 @@
 """Completed indexed boundaries stay read-only and skip synthesis/timing."""
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -53,6 +54,33 @@ def test_binds_payloads_without_copying_or_loading_graph(tmp_path, boundaries):
     assert read_json(tmp_path / "out/front/platform.normalized.json") == Platform.load(DEFAULT_PLATFORM_PATH).to_dict()
 
 
+def test_rebinds_legacy_platform_snapshot_without_parsing_obsolete_links(
+    tmp_path, boundaries
+):
+    front, timing = boundaries
+    legacy = read_json(front / "platform.normalized.json")
+    # Historical prepared inputs contribute only device identity. Make their
+    # saved link model deliberately invalid for today's full BoardDB reader to
+    # prove the binder does not infer or reuse obsolete interconnect semantics.
+    for link in legacy["links"]:
+        model = link.get("tdm_delay_model")
+        if model is not None:
+            model.pop("ratio_coefficient_ns")
+    write_json(front / "platform.normalized.json", legacy)
+
+    bind_prepared_inputs(
+        front,
+        timing,
+        tmp_path / "out/front",
+        tmp_path / "out/timing",
+        DEFAULT_PLATFORM_PATH,
+        {"clk": 10.0},
+        PROFILE,
+    )
+
+    assert read_json(tmp_path / "out/front/platform.normalized.json") == (
+        Platform.load(DEFAULT_PLATFORM_PATH).to_dict()
+    )
 def test_terminal_validation_accepts_only_the_declared_prepared_emuir(tmp_path, boundaries):
     root = tmp_path / "flow"
     front = root / "frontend/phase1"
@@ -136,7 +164,7 @@ def test_native_published_phase2_checks_clocks_and_counts_without_standalone_rep
         manifest = read_json(timing / name)
         payload = timing / next(iter(manifest["payloads"].values()))["path"]
         payload.unlink()
-        with sqlite3.connect(payload) as connection:
+        with closing(sqlite3.connect(payload)) as connection, connection:
             connection.executescript("PRAGMA user_version=1; " + sql)
         manifest["design"] = "counter"
         manifest["summary"] = {"paths" if table == "paths" else "weighted_nets": 1}

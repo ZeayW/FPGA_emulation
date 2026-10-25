@@ -1,17 +1,21 @@
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 import os
 import subprocess
 from array import array
 from collections.abc import Sequence
+from unittest import mock
 
 import pytest
+from tests.system_timing_oracle import compare_system_timing
 
 from emuflow.errors import ValidationError
 from emuflow.global_sta import (
     EventCheck, _EventCheckBuilder, _IndexedEventChecks,
-    _IndexedPathMetadata, _PathMetadataBuilder,
+    _IndexedMeasurements, _IndexedPathMetadata, _IndexedSystemTimingPaths,
+    _PathMetadataBuilder,
     _compress_path_equivalent_checks, _write_expanded_measurements,
-    adopt_opensta_results, bind_physical_checks, build_opensta_timing,
-    compare_system_timing, export_event_checks, read_engine_identity,
+    bind_physical_checks, build_opensta_timing,
+    export_event_checks, read_engine_identity,
     read_measurements, run_event_checks, validate_checks,
 )
 
@@ -75,6 +79,33 @@ def test_measurement_requires_canonical_endpoint_order(tmp_path):
     )
     with pytest.raises(ValidationError, match="endpoint"):
         read_measurements(path, rows, verify_arcs=False)
+
+
+def test_measurements_use_fixed_width_scalars(tmp_path):
+    rows = [
+        EventCheck(f"path-{index}", "target", "capture", 1.0, (2.0,), 4.0)
+        for index in range(20000)
+    ]
+    path = tmp_path / "measurements.tsv"
+    with path.open("w") as stream:
+        stream.write("endpoint\tarrival_ns\trequired_ns\tslack_ns\n")
+        for index in range(len(rows)):
+            stream.write(f"o{index}\t2\t3\t1\n")
+
+    measurements = read_measurements(path, rows)
+
+    assert isinstance(measurements, _IndexedMeasurements)
+    assert len(measurements) == len(rows)
+    assert measurements.typed_payload_bytes == len(rows) * 3 * 8
+    assert measurements[0] == {
+        "path": "path-0",
+        "role": "target",
+        "event": "capture",
+        "arrival_ns": 3.0,
+        "required_ns": 4.0,
+        "slack_ns": 1.0,
+    }
+    assert measurements[-1]["path"] == "path-19999"
 
 
 def test_engine_identity_from_existing_banner(tmp_path):
@@ -198,6 +229,17 @@ def test_indexed_check_builder_is_exact_compact_and_sealed(tmp_path):
     assert compact == rows
     assert len(compact._paths) == 20000
     assert compact._events == ["shared-tx", "capture"]
+    assert not isinstance(compact._paths, list)
+    assert not isinstance(compact._events, list)
+    assert compact.packed_identity_bytes == (
+        sum(len(value.encode("utf-8")) for value in compact._paths)
+        + (len(compact._paths) + 1) * 8
+        + sum(len(value.encode("utf-8")) for value in compact._events)
+        + (len(compact._events) + 1) * 8
+    )
+    assert not builder._event_cache
+    assert not builder._bundle_cache
+    assert not builder._database_path.exists()
     # 4-byte path ID, 1-byte role, 4-byte event ID, two 8-byte scalars,
     # one 8-byte arc end offset, three 8-byte arcs, one 8-byte numerical hash,
     # and one 4-byte representative ID per check; plus the initial arc offset
@@ -285,8 +327,17 @@ def test_indexed_path_metadata_is_sorted_compact_mapping():
         "physical_logic_segments_cone_bound": False,
     }
     assert metadata["path-z"]["interconnect_delay_model"] == "linear-ratio-v1"
-    assert metadata.typed_payload_bytes == 44
-    assert len(metadata._strings) == 4
+    # Path, representative, clock, and model identities share one packed pool.
+    # The fixed-width payload includes the path-to-string identity column.
+    assert metadata.typed_payload_bytes == 52
+    assert len(metadata._strings) == 5
+    assert metadata.packed_identity_bytes == (
+        sum(len(value.encode("utf-8")) for value in metadata._strings)
+        + (len(metadata._strings) + 1) * 8
+    )
+    assert not isinstance(metadata._paths, list)
+    assert not isinstance(metadata._strings, list)
+    assert not builder._database_path.exists()
     assert metadata.path_id_set_sha256() == path_id_set_sha256(
         ["path-z", "path-a"]
     )
@@ -320,38 +371,34 @@ def test_indexed_path_metadata_is_sorted_compact_mapping():
         duplicate.finish()
 
 
-def test_canonical_check_validation_does_not_build_interleaved_population(monkeypatch):
-    import emuflow.global_sta as sta
-
-    def forbidden(rows):
-        raise AssertionError("canonical checks used the interleaved compatibility path")
-
-    monkeypatch.setattr(sta, "_validate_interleaved_checks", forbidden)
-    rows = [EventCheck(f"p{i}", role, "capture", 0, (1,), deadline)
-            for i in range(20000)
-            for role, deadline in (("target", 2), ("runtime", 20))]
-    assert sta.validate_checks(rows) == rows
-
-
-def test_interleaved_check_validation_retains_legacy_compatibility(monkeypatch):
-    import emuflow.global_sta as sta
-
-    original = sta._validate_interleaved_checks
-    calls = []
-
-    def recording(rows):
-        calls.append(len(rows))
-        return original(rows)
-
-    monkeypatch.setattr(sta, "_validate_interleaved_checks", recording)
-    rows = [
-        EventCheck("p", "target", "capture", 0, (1,), 2),
-        EventCheck("q", "target", "capture", 0, (1,), 2),
-        EventCheck("p", "runtime", "capture", 0, (1,), 20),
-        EventCheck("q", "runtime", "capture", 0, (1,), 20),
+@pytest.mark.parametrize("indexed", [False, True])
+@pytest.mark.parametrize("incomplete", [False, True])
+def test_check_validation_rejects_interleaved_bundles(indexed, incomplete):
+    canonical = [
+        EventCheck(path, role, "capture", 0, (1,), deadline)
+        for path in ("p", "q")
+        for role, deadline in (("target", 2), ("runtime", 20))
     ]
-    assert sta.validate_checks(rows) == rows
-    assert calls == [4]
+    if indexed:
+        builder = _EventCheckBuilder()
+        for row in canonical:
+            builder.append(row)
+        if not incomplete:
+            for role, deadline in (("target", 2), ("runtime", 20)):
+                builder.append(EventCheck("r", role, "capture", 0, (1,), deadline))
+        rows = builder.finish()
+        # Model a separately supplied typed view; the production builder seals
+        # complete bundles and never emits this order.
+        rows._validated = False
+        if incomplete:
+            rows._path_indices = array("I", [0, 1, 0, 1])
+        else:
+            rows._path_indices = array("I", [0, 0, 1, 1, 0, 0])
+    else:
+        rows = ([canonical[index] for index in (0, 2, 1, 3)]
+                if incomplete else canonical + canonical[:2])
+    with pytest.raises(ValidationError, match="population|contiguous"):
+        validate_checks(rows)
 
 
 def test_exact_compression_uses_complete_path_bundles(tmp_path):
@@ -399,17 +446,80 @@ def test_exact_compression_does_not_trust_bundle_hash(monkeypatch):
 
     rows = [
         EventCheck(path, role, f"{path}-{role}", 0, (delay,), deadline)
-        for path, delay in (("p", 1.0), ("q", 2.0))
+        for path, delay in (("p", 1.0), ("q", 2.0), ("r", 1.0))
         for role, deadline in (("target", 4.0), ("runtime", 40.0))
     ]
     monkeypatch.setattr(sta, "_event_check_values_hash", lambda *args: 0)
     builder = _EventCheckBuilder()
+    builder._BUNDLE_CANDIDATE_CACHE_SIZE = 1
     for row in rows:
         builder.append(row)
     compact = validate_checks(builder.finish())
     representatives, mapping = _compress_path_equivalent_checks(compact)
+    assert representatives == rows[:4]
+    assert list(mapping) == [0, 1, 2, 3, 0, 1]
+
+
+def test_indexed_check_builder_reloads_evicted_bundle_exactly():
+    builder = _EventCheckBuilder()
+    builder._BUNDLE_CACHE_SIZE = 1
+    rows = []
+    for path, delay in (("p", 1.0), ("q", 2.0), ("r", 1.0)):
+        for role, deadline in (("target", 4.0), ("runtime", 40.0)):
+            row = EventCheck(path, role, f"{path}-{role}", 0, (delay,), deadline)
+            rows.append(row)
+            builder.append(row)
+    compact = builder.finish()
+    representatives, mapping = _compress_path_equivalent_checks(compact)
+    assert representatives == rows[:4]
+    assert list(mapping) == [0, 1, 2, 3, 0, 1]
+
+
+def test_indexed_check_builder_bounds_live_identity_caches():
+    builder = _EventCheckBuilder()
+    builder._EVENT_CACHE_SIZE = 2
+    builder._BUNDLE_CACHE_SIZE = 3
+    rows = []
+    for index in range(20):
+        for role, deadline in (("target", 40.0), ("runtime", 400.0)):
+            row = EventCheck(
+                f"path-{index}",
+                role,
+                f"event-{index}-{role}",
+                0.0,
+                (float(index + 1),),
+                deadline,
+            )
+            rows.append(row)
+            builder.append(row)
+        assert len(builder._event_cache) <= 2
+        assert len(builder._bundle_cache) <= 3
+    compact = builder.finish()
+    assert compact == rows
+    assert not builder._event_cache
+    assert not builder._bundle_cache
+    assert not hasattr(builder, "_path_ids")
+    assert not hasattr(builder, "_event_ids")
+
+
+def test_indexed_check_bundle_cache_keys_hash_and_count(monkeypatch):
+    import emuflow.global_sta as sta
+
+    monkeypatch.setattr(sta, "_event_check_values_hash", lambda *args: 0)
+    builder = _EventCheckBuilder()
+    rows = [
+        EventCheck("p", "target", "p-target", 0, (1,), 4),
+        EventCheck("p", "runtime", "p-runtime", 0, (1,), 40),
+        EventCheck("q", "tx", "q-tx", 0, (2,), 3),
+        EventCheck("q", "target", "q-target", 0, (2,), 4),
+        EventCheck("q", "runtime", "q-runtime", 0, (2,), 40),
+    ]
+    for row in rows:
+        builder.append(row)
+    compact = builder.finish()
+    representatives, mapping = _compress_path_equivalent_checks(compact)
     assert representatives == rows
-    assert list(mapping) == [0, 1, 2, 3]
+    assert list(mapping) == list(range(len(rows)))
 
 
 def test_exact_compression_scales_for_repeated_path_classes():
@@ -423,16 +533,15 @@ def test_exact_compression_scales_for_repeated_path_classes():
     assert set(mapping) == {0, 1}
 
 
-def test_exact_compression_preserves_interleaved_compatibility():
-    rows = validate_checks([
+def test_exact_compression_rejects_interleaved_bundles():
+    rows = [
         EventCheck("p", "target", "p-target", 0, (1,), 4),
         EventCheck("q", "target", "q-target", 0, (1,), 4),
         EventCheck("p", "runtime", "p-runtime", 0, (1,), 40),
         EventCheck("q", "runtime", "q-runtime", 0, (1,), 40),
-    ])
-    representatives, mapping = _compress_path_equivalent_checks(rows)
-    assert representatives == rows[:1] + rows[2:3]
-    assert list(mapping) == [0, 0, 1, 1]
+    ]
+    with pytest.raises(ValidationError, match="contiguous"):
+        _compress_path_equivalent_checks(rows)
 
 
 def test_lazy_expansion_is_reiterable_sliceable_and_fail_closed(tmp_path):
@@ -561,37 +670,10 @@ def test_comparison_rejects_corrupt_evidence(damage):
         compare_system_timing(values, reference)
 
 
-@pytest.mark.parametrize("initial_status,late", [("pass", False), ("incomplete", False),
-                                               ("fail", False), ("pass", True)])
-def test_authority_projection_updates_paths_and_every_scalar_alias(initial_status, late):
-    reference = {"status": initial_status, "timing_scope": "cross-fpga-subset",
-        "target_clock": {}, "runtime_clock": {}, "summary": {}, "paths": [{
-        "path": "p", "system_delay_bound_ns": 31.5,
-        "target_required_time_ns": 18, "runtime_required_time_ns": 100,
-        "target_clock_slack_bound_ns": -13.5, "runtime_clock_slack_bound_ns": 68.5}]}
-    measured = [{"path": r.path, "role": r.role, "event": r.event,
-                 "arrival_ns": r.launch_ns+sum(r.arcs_ns), "required_ns": r.required_ns,
-                 "slack_ns": r.required_ns-r.launch_ns-sum(r.arcs_ns)} for r in example()]
-    for row in measured:
-        if row["role"] in {"target", "runtime"}:
-            row["arrival_ns"] += 1e-5
-            row["slack_ns"] -= 1e-5
-    if late:
-        measured[0]["slack_ns"] = -0.5
-    gate = adopt_opensta_results(reference, measured)
-    assert gate["authority"] == "opensta"
-    assert reference["status"] == ("fail" if late else initial_status)
-    assert reference["paths"][0]["system_delay_bound_ns"] == measured[2]["arrival_ns"]
-    assert reference["summary"]["maximum_system_delay_bound_ns"] == measured[2]["arrival_ns"]
-    for role, row in (("target", measured[2]), ("runtime", measured[3])):
-        group = reference[f"{role}_clock"]
-        assert group["worst_slack_bound_ns"] == row["slack_ns"]
-        assert group["tns_bound_ns"] == group["total_negative_slack_bound_ns"]
-        assert group["tns_bound_ns"] == min(0.0, row["slack_ns"])
-        assert reference["paths"][0][f"{role}_clock_slack_bound_ns"] == row["slack_ns"]
 
 
-def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch):
+@pytest.mark.parametrize("saved", [False, True])
+def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch, saved):
     from tests.test_phase7c import Phase7CTest
     from emuflow.cross_layer_timing import build_cross_layer_timing_contract
     from emuflow.io import write_json, read_json
@@ -606,9 +688,9 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch):
                build_cross_layer_timing_contract(f.routes, f.schedule))
     def forbidden(*args, **kwargs):
         raise AssertionError("original Python timing calculator was called")
-    monkeypatch.setattr("emuflow.runtime.build_system_timing", forbidden)
-    monkeypatch.setattr(sta, "compare_system_timing", forbidden)
-    monkeypatch.setattr(sta, "adopt_opensta_results", forbidden)
+    monkeypatch.setattr("tests.system_timing_oracle.build_system_timing", forbidden)
+    monkeypatch.setattr("tests.system_timing_oracle.compare_system_timing", forbidden)
+    assert not hasattr(sta, "adopt_opensta_results")
     def bind(*args, metadata, **kwargs):
         builder = sta._PathMetadataBuilder()
         builder.append("p", representative_path="p", path_scope="cross-fpga", clock_domain="clk",
@@ -621,13 +703,30 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch):
         return [{"path": r.path, "role": r.role, "event": r.event,
                  "arrival_ns": r.launch_ns+sum(r.arcs_ns), "required_ns": r.required_ns,
                  "slack_ns": r.required_ns-r.launch_ns-sum(r.arcs_ns)} for r in checks]
-    monkeypatch.setattr(sta, "run_event_checks", engine)
+    if saved:
+        def read_saved(path, checks):
+            assert path == tmp_path / "saved/measurements.tsv"
+            return engine(checks, None, None, verify_arcs=False)
+        monkeypatch.setattr(sta, "run_event_checks", forbidden)
+        monkeypatch.setattr(sta, "read_measurements", read_saved)
+    else:
+        monkeypatch.setattr(sta, "run_event_checks", engine)
     monkeypatch.setattr(sta, "read_engine_identity", lambda p: {"name": "test-sta"})
     run_phase7c(*(tmp_path / f"{n}.json" for n in
                  ("schedule", "platform", "phase3", "phase4", "phase5", "phase6")),
                 tmp_path / "out", physical_summary_path=tmp_path / "physical.json",
                 routes_path=tmp_path / "routes.json",
+                global_sta_results_dir=tmp_path / "saved" if saved else None,
                 allow_legacy_phase5_generation=True)
+    report = read_json(tmp_path / "out/phase7c_report.json")
+    assert "system_timing" not in report and "system_timing_summary" in report
+    assert not (tmp_path / "out/system_timing.json").exists()
+    assert not (tmp_path / "out/physical_summary.json").exists()
+    import json
+    storage = json.loads((tmp_path / "out/qor_report.json").read_text())
+    assert storage["schema"] == "emuflow.system-qor-storage/v1"
+    assert (tmp_path / "out" / storage["artifact"]).is_file()
+    assert (tmp_path / "out/qor_report.json").stat().st_size < (tmp_path / "out/phase7c_report.json").stat().st_size
     timing = read_json(tmp_path / "out/qor_report.json")["timing"]
     assert timing["global_opensta"]["execution"] == "standalone"
     assert "cross_checker" not in timing["global_opensta"]
@@ -640,7 +739,7 @@ def test_standalone_report_preserves_event_gate_without_comparison(late, monkeyp
     import emuflow.global_sta as sta
     def forbidden(*args, **kwargs):
         raise AssertionError("comparison must not run")
-    monkeypatch.setattr(sta, "compare_system_timing", forbidden)
+    monkeypatch.setattr("tests.system_timing_oracle.compare_system_timing", forbidden)
     rows = [{"path": r.path, "role": r.role, "event": r.event,
              "arrival_ns": r.launch_ns+sum(r.arcs_ns), "required_ns": r.required_ns,
              "slack_ns": r.required_ns-r.launch_ns-sum(r.arcs_ns)} for r in example()]
@@ -671,7 +770,10 @@ def test_standalone_report_preserves_event_gate_without_comparison(late, monkeyp
         )
 
 
-def test_standalone_report_preserves_interleaved_measurement_compatibility():
+@pytest.mark.parametrize("indexed_metadata", [False, True])
+@pytest.mark.parametrize("repeated_complete_bundle", [False, True])
+def test_standalone_report_rejects_interleaved_measurements(
+        indexed_metadata, repeated_complete_bundle):
     import emuflow.global_sta as sta
 
     rows = [
@@ -684,6 +786,8 @@ def test_standalone_report_preserves_interleaved_measurement_compatibility():
         {"path": "q", "role": "runtime", "event": "capture",
          "arrival_ns": 4.0, "required_ns": 100.0, "slack_ns": 96.0},
     ]
+    if repeated_complete_bundle:
+        rows = [rows[index] for index in (0, 2, 1, 3, 0, 2)]
     metadata = {
         "paths": {
             path: {
@@ -695,17 +799,19 @@ def test_standalone_report_preserves_interleaved_measurement_compatibility():
         "source_binding": None,
         "compressed_representative_paths": 2,
     }
-    report = sta.build_opensta_timing(
-        {
-            "virtual_dut_clocks": {
-                "clk": {"nominal_period_ns": 100}
-            },
-            "virtual_dut_clock": {"nominal_period_ns": 100},
-        },
-        metadata,
-        rows,
-    )
-    assert [path["path"] for path in report["paths"]] == ["p", "q"]
+    if indexed_metadata:
+        builder = _PathMetadataBuilder()
+        for path, info in metadata["paths"].items():
+            builder.append(path, representative_path=path,
+                           clock_domain=None, target_period_ns=10.0, **info)
+        metadata["paths"] = builder.finish()
+    with pytest.raises(ValidationError, match="contiguous"):
+        sta.build_opensta_timing(
+            {"virtual_dut_clocks": {"clk": {"nominal_period_ns": 100}},
+             "virtual_dut_clock": {"nominal_period_ns": 100}},
+            metadata,
+            rows,
+        )
 
 
 @pytest.mark.parametrize("all_eliminated", [False, True])
@@ -741,13 +847,6 @@ def test_original_coverage_includes_eliminations_without_fake_slacks(all_elimina
     assert q["system_delay_bound_ns"] is None
     assert q["target_clock_slack_bound_ns"] is None
     assert report["global_opensta"]["checks"] == len(rows)
-    compared = compare_system_timing(rows, report)
-    assert compared["original_paths"] == 2
-    assert compared["optimized_away_paths"] == (2 if all_eliminated else 1)
-    assert compared["metrics"]["target"]["wns_ns"] == (None if all_eliminated else -3.0)
-    adopted = adopt_opensta_results(report, rows)
-    assert adopted["optimized_away_paths"] == (2 if all_eliminated else 1)
-    assert q["system_delay_bound_ns"] is None
     with pytest.raises(ValidationError, match="measurement population"):
         build_opensta_timing(runtime, metadata, rows+[
             {"path":"q","role":"target","event":"capture","arrival_ns":0.0,"required_ns":10.0,"slack_ns":10.0}])
@@ -761,7 +860,7 @@ def test_indexed_elimination_metadata_is_compact_and_checks_paired_references():
                        optimization_source="s7" if path == "q" else None,
                        optimization_fpga="fpga0" if path == "q" else None)
     metadata = builder.finish()
-    assert metadata.typed_payload_bytes == 60
+    assert metadata.typed_payload_bytes == 68
     assert "optimization_source" not in metadata["p"]
     assert metadata["q"]["optimization_fpga"] == "fpga0"
     with pytest.raises(ValidationError, match="source and FPGA together"):
@@ -772,7 +871,7 @@ def test_indexed_elimination_metadata_is_compact_and_checks_paired_references():
 
 def test_local_binding_requires_the_actual_endpoint_proof_and_keeps_full_population(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    import emuflow.system_timing as system
+    import emuflow.physical_timing_inputs as system
     import emuflow.tdm as tdm
     from tests.test_local_path_timing_storage import _header, _record
     from tests.test_vivado_optimization import VivadoOptimizationTests
@@ -785,7 +884,7 @@ def test_local_binding_requires_the_actual_endpoint_proof_and_keeps_full_populat
     monkeypatch.setattr(system,"_logic_segment_database",lambda physical: {})
     monkeypatch.setattr(system,"_board_link_delay_database",lambda physical,platform: {})
     monkeypatch.setattr(tdm,"is_fixed_slot_transport_schedule",lambda schedule: True)
-    monkeypatch.setattr(tdm,"reconstruct_tdm_schedule_timing_paths",lambda *args: [])
+    monkeypatch.setattr(tdm,"open_tdm_schedule_timing_path_stream",lambda *args, **kwargs: __import__("contextlib").nullcontext([]))
     eliminated = {**_record("b",2.0),"end_pin":"dead/D","measurement":OPTIMIZED_AWAY,
                   "path_pins":[],"delay_ns":None,"optimization_source":f"s{origins['dead']}"}
     physical = {"local_path_timing":{"fpga0":{**_header(),"paths":[_record("a",13.0),eliminated]}}}
@@ -814,7 +913,7 @@ def test_local_binding_requires_the_actual_endpoint_proof_and_keeps_full_populat
             bind()
 
 
-def test_engine_defaults_are_uniform_and_python_is_explicit():
+def test_only_opensta_engine_is_exposed():
     import inspect
     from emuflow.cli import _build_parser
     from emuflow.phase7c import run_phase7c
@@ -827,7 +926,8 @@ def test_engine_defaults_are_uniform_and_python_is_explicit():
                  "--phase3-report", "a", "--phase4-report", "b", "--phase5-report", "c", "--phase6-report", "d"]]
     for cmd in commands:
         assert parser.parse_args(cmd).global_timing_engine == "opensta"
-        assert parser.parse_args(cmd + ["--global-timing-engine", "python"]).global_timing_engine == "python"
+        with pytest.raises(SystemExit):
+            parser.parse_args(cmd + ["--global-timing-engine", "python"])
 
 
 def test_physical_binding_uses_raw_measurements():
@@ -855,6 +955,51 @@ def test_physical_binding_uses_raw_measurements():
                                 routes, fixture.schedule, physical, fixture.platform) == checks
 
 
+def test_indexed_metadata_produces_fixed_width_final_timing_paths():
+    builder = _PathMetadataBuilder()
+    for path in ("path-a", "path-b"):
+        builder.append(
+            path,
+            representative_path=path,
+            path_scope="cross-fpga",
+            clock_domain="clk",
+            target_period_ns=10.0,
+            physical_logic_segments_cone_bound=False,
+        )
+    metadata = {
+        "paths": builder.finish(),
+        "source_binding": None,
+        "compressed_representative_paths": 2,
+    }
+    measurements = [
+        {
+            "path": path,
+            "role": role,
+            "event": "capture",
+            "arrival_ns": 3.0,
+            "required_ns": required,
+            "slack_ns": required - 3.0,
+        }
+        for path in ("path-b", "path-a")
+        for role, required in (("target", 10.0), ("runtime", 100.0))
+    ]
+
+    timing = build_opensta_timing(
+        {
+            "virtual_dut_clocks": {"clk": {"nominal_period_ns": 100.0}},
+            "virtual_dut_clock": {"nominal_period_ns": 100.0},
+        },
+        metadata,
+        measurements,
+    )
+
+    assert isinstance(timing["paths"], _IndexedSystemTimingPaths)
+    assert timing["paths"].typed_payload_bytes == 2 * 5 * 8
+    assert [row["path"] for row in timing["paths"]] == ["path-a", "path-b"]
+    assert timing["target_clock"]["worst_slack_bound_ns"] == 7.0
+    assert timing["runtime_clock"]["tns_bound_ns"] == 0.0
+
+
 def test_indexed_logic_segments_are_exact_for_checks_and_system_timing(tmp_path):
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
     from emuflow.board_link_timing import build_board_link_timing_model
@@ -868,7 +1013,7 @@ def test_indexed_logic_segments_are_exact_for_checks_and_system_timing(tmp_path)
         read_physical_summary,
     )
     from emuflow.runtime import build_virtual_runtime
-    from emuflow.system_timing import build_system_timing
+    from tests.system_timing_oracle import build_system_timing
 
     fixture = StaticExactSystemTimingTest()
     fixture.setUp()
@@ -1091,6 +1236,108 @@ def test_physical_binding_does_not_reindex_schedule_entries():
     assert schedule["entries"].iterations == 1
 
 
+def test_indexed_physical_binding_streams_routes_paths_and_schedule(tmp_path):
+    from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
+    from emuflow.board_link_timing import build_board_link_timing_model
+    from emuflow.runtime import build_virtual_runtime
+    from emuflow.system_route_storage import (
+        SystemRouteSequence,
+        read_system_routes,
+        write_system_route_storage,
+    )
+    from emuflow.tdm_schedule_storage import (read_tdm_schedule)
+
+    fixture = StaticExactSystemTimingTest()
+    fixture.setUp()
+    _, routes, _ = fixture._system_inputs()
+    runtime = build_virtual_runtime(fixture.schedule, fixture.platform)
+    physical = fixture._system_physical()
+    physical["board_link_timing"] = build_board_link_timing_model(
+        fixture.platform
+    )
+    expected = bind_physical_checks(
+        runtime, routes, fixture.schedule, physical, fixture.platform
+    )
+
+    route_path = tmp_path / "routes.json"
+    schedule_path = tmp_path / "schedule.json"
+    write_system_route_storage(route_path, routes)
+    write_tdm_schedule_storage(schedule_path, fixture.schedule)
+    indexed_routes = read_system_routes(route_path)
+    indexed_schedule = read_tdm_schedule(schedule_path)
+    route_records = indexed_routes["routes"]
+    timing_records = indexed_routes["timing"]["paths"]
+
+    with mock.patch.object(
+        SystemRouteSequence,
+        "__iter__",
+        side_effect=AssertionError("decoded the complete route relation"),
+    ):
+        actual = bind_physical_checks(
+            runtime,
+            indexed_routes,
+            indexed_schedule,
+            physical,
+            fixture.platform,
+        )
+
+    assert actual == expected
+    assert list.__len__(route_records) == 0
+    assert list.__len__(timing_records) == 0
+
+
+def test_indexed_timing_stream_delegates_path_order_to_route_store(tmp_path):
+    import copy
+    from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
+    from emuflow.system_route_storage import (
+        SystemRouteSequence,
+        read_system_routes,
+        write_system_route_storage,
+    )
+    from emuflow.tdm import open_tdm_schedule_timing_path_stream
+    from emuflow.tdm_schedule_storage import (read_tdm_schedule)
+
+    fixture = StaticExactSystemTimingTest()
+    fixture.setUp()
+    _, routes, _ = fixture._system_inputs()
+    routes = copy.deepcopy(routes)
+    base = routes["timing"]["paths"][0]
+    routes["timing"]["paths"] = [
+        {**base, "path": "path-z"},
+        {**base, "path": "path-a"},
+    ]
+    route_path = tmp_path / "routes.json"
+    schedule_path = tmp_path / "schedule.json"
+    write_system_route_storage(route_path, routes)
+    write_tdm_schedule_storage(schedule_path, fixture.schedule)
+    indexed_routes = read_system_routes(route_path)
+    indexed_schedule = read_tdm_schedule(schedule_path)
+    timing_records = indexed_routes["timing"]["paths"]
+
+    assert timing_records.ordered("path")[0]["path"] == "path-a"
+    with mock.patch.object(
+        SystemRouteSequence,
+        "__iter__",
+        side_effect=AssertionError("decoded the complete route relation"),
+    ):
+        with open_tdm_schedule_timing_path_stream(
+            indexed_routes,
+            fixture.platform,
+            indexed_schedule,
+            path_order="path",
+        ) as records:
+            observed = [
+                (record["path"], record["_cut_demands"])
+                for record in records
+            ]
+
+    assert observed == [
+        ("path-a", ["d000001", "d000000"]),
+        ("path-z", ["d000001", "d000000"]),
+    ]
+    assert list.__len__(timing_records) == 0
+
+
 @pytest.mark.skipif(not os.environ.get("EMUFLOW_TEST_OPENSTA"), reason="real OpenSTA not configured")
 def test_real_opensta_fixed_events_and_late_tx(tmp_path):
     rows = example()
@@ -1133,7 +1380,7 @@ def test_real_opentimer_fixed_events(tmp_path, extra_paths):
 def test_real_opentimer_from_physical_binding(tmp_path):
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
     from emuflow.board_link_timing import build_board_link_timing_model
-    from emuflow.system_timing import build_system_timing
+    from tests.system_timing_oracle import build_system_timing
     fixture = StaticExactSystemTimingTest()
     fixture.setUp()
     runtime, routes, phase5 = fixture._system_inputs()
@@ -1236,7 +1483,7 @@ def test_eliminated_phase7c_publishes_header_only_results_and_replays_without_an
     write_json(tmp_path/"cross_layer_timing.json", build_cross_layer_timing_contract(fixture.routes, fixture.schedule))
     def forbidden(*args, **kwargs):
         raise AssertionError("eliminated population invoked a numerical engine or Python composer")
-    monkeypatch.setattr("emuflow.runtime.build_system_timing", forbidden)
+    assert not hasattr(__import__("emuflow.runtime", fromlist=["runtime"]), "build_system_timing")
     monkeypatch.setattr(sta, "run_event_checks", forbidden)
     monkeypatch.setattr(sta, "read_engine_identity", forbidden)
     def bind(*args, metadata, **kwargs):
@@ -1268,7 +1515,7 @@ def test_eliminated_phase7c_publishes_header_only_results_and_replays_without_an
 
 def test_measurements_keep_engine_columns_without_a_dictionary_per_check(tmp_path):
     import math
-    from emuflow.global_sta import _MeasurementScalars
+    from emuflow.global_sta import _IndexedMeasurements
     checks = example()
     path = tmp_path/"measurements.tsv"
     with path.open("w") as stream:
@@ -1278,7 +1525,7 @@ def test_measurements_keep_engine_columns_without_a_dictionary_per_check(tmp_pat
             required = row.required_ns-row.launch_ns
             stream.write(f"o{index}\t{arrival:.17g}\t{required:.17g}\t{required-arrival:.17g}\n")
     values = read_measurements(path, checks)
-    assert isinstance(values, _MeasurementScalars)
+    assert isinstance(values, _IndexedMeasurements)
     assert values._rows is checks
     assert values.typed_payload_bytes == 24*len(checks)
     assert values[-1] == list(values)[-1]

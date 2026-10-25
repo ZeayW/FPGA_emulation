@@ -56,12 +56,7 @@ def read_json(path: Path) -> Dict[str, Any]:
         from .managed_json_storage import expand_managed_json
 
         return expand_managed_json(value, path)
-    if schema in {
-        "emuflow.tdm-schedule-storage/v1",
-        "emuflow.tdm-schedule-storage/v2",
-        "emuflow.tdm-schedule-storage/v3",
-        "emuflow.tdm-schedule-storage/v4",
-    }:
+    if isinstance(schema, str) and schema.startswith("emuflow.tdm-schedule-storage/"):
         from .tdm_schedule_storage import expand_tdm_schedule_storage
 
         return expand_tdm_schedule_storage(value, path)
@@ -69,6 +64,10 @@ def read_json(path: Path) -> Dict[str, Any]:
         from .system_route_storage import expand_system_route_storage
 
         return expand_system_route_storage(value, path)
+    if schema == "emuflow.qor-report-storage/v1":
+        from .qor_storage import expand_qor_report_storage
+
+        return expand_qor_report_storage(value, path)
     if schema in {
         "emuflow.transport-storage/v1",
         "emuflow.logical-lane-map-storage/v1",
@@ -81,28 +80,36 @@ def read_json(path: Path) -> Dict[str, Any]:
     if schema in {
         "emuflow.phase3-clusters-storage/v1",
         "emuflow.phase3-clusters-storage/v2",
+        "emuflow.phase3-clusters-storage/v3",
         "emuflow.phase3-assignment-storage/v1",
         "emuflow.phase3-assignment-storage/v2",
         "emuflow.phase3-assignment-storage/v3",
+        "emuflow.phase3-assignment-storage/v4",
     }:
         from .phase3_storage import (
             COMPRESSED_CLUSTERS_SCHEMA,
+            INDEXED_CLUSTERS_SCHEMA,
             LEGACY_PACKED_ASSIGNMENT_SCHEMA,
+            OLDER_PACKED_ASSIGNMENT_SCHEMA,
             PACKED_ASSIGNMENT_SCHEMA,
             PREVIOUS_PACKED_ASSIGNMENT_SCHEMA,
             expand_compressed_phase3_clusters,
+            expand_indexed_phase3_clusters,
             expand_phase3_assignment,
             expand_phase3_clusters,
         )
 
         if schema in {
             LEGACY_PACKED_ASSIGNMENT_SCHEMA,
+            OLDER_PACKED_ASSIGNMENT_SCHEMA,
             PREVIOUS_PACKED_ASSIGNMENT_SCHEMA,
             PACKED_ASSIGNMENT_SCHEMA,
         }:
             return expand_phase3_assignment(value, path, read_json)
         if schema == COMPRESSED_CLUSTERS_SCHEMA:
             return expand_compressed_phase3_clusters(value)
+        if schema == INDEXED_CLUSTERS_SCHEMA:
+            return expand_indexed_phase3_clusters(value, path)
         return expand_phase3_clusters(value)
     return value
 
