@@ -936,6 +936,8 @@ def import_yosys_json_indexed(
     _source_stream: Optional[TextIO] = None,
     _source_index_path: Optional[Path] = None,
     _expand_hierarchy: bool = False,
+    source_bindings=(),
+    _finalize_emuir: Optional[Callable[[sqlite3.Connection], None]] = None,
     staging_transform: Optional[
         Callable[
             [sqlite3.Connection, Mapping[str, Any], Path, str],
@@ -954,13 +956,13 @@ def import_yosys_json_indexed(
     same graph through a temporary JSON document.
     """
 
-    source_bindings = ()
+    source_bindings = tuple(source_bindings)
     if _source_index_path is not None:
-        source_bindings = (
+        source_bindings += (
             bind_store_source(_source_index_path, "xilinx-mapped-index-v2"),
         )
     elif _source_value is None and _source_stream is None:
-        source_bindings = (bind_store_source(path, "yosys-source-document-v1"),)
+        source_bindings += (bind_store_source(path, "yosys-source-document-v1"),)
     source_bindings = validate_store_destination(output, source_bindings)
     warnings: List[str] = []
     ports: List[Dict[str, Any]] = []
@@ -1679,7 +1681,9 @@ def import_yosys_json_indexed(
             ],
             "warnings": sorted(set(warnings)),
         }
-        write_emuir_sqlite(output, value, source_bindings=source_bindings)
+        write_emuir_sqlite(
+            output, value, source_bindings=source_bindings, _finalize=_finalize_emuir
+        )
     finally:
         if connection is not None:
             connection.close()

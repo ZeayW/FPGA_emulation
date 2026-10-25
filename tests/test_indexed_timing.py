@@ -1,3 +1,4 @@
+from contextlib import closing
 import json
 import sqlite3
 import tracemalloc
@@ -137,7 +138,7 @@ def test_compact_corruption_is_not_silently_dropped(tmp_path, statement, pattern
     ir = import_yosys_json(ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"])
     path = tmp_path / "design.emuir.sqlite"
     ir.save(path)
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute(statement)
     with pytest.raises(ValueError, match=pattern):
         EmuIR.load(path)

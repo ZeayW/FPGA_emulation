@@ -81,6 +81,16 @@ global timing qualification.
 
 ## Native store publication qualification
 
+Private EmuIR finalization gates compare the deterministic transport topology and
+routed timing model with the independent reference. Observe that the prior public
+owner remains unchanged during finalization, then inject a completed-transform
+failure, changed named input and native rejection. Trace transport SQL to reject
+implicit integrity/quick checks while retaining electrical checks. Streamed routed
+endpoint payloads must retain their original generation along with their selector
+and mapped source. Typed Chimew relocation gates reject changed sources and failed
+selector commits while preserving the previous selector/payload pair; they prohibit
+logical graph materialization during the copy.
+
 Component gates exercise current upstream EmuIR, assignment, route, schedule,
 timing/weight, QoR and physical auxiliary owners. Inject native rejection and
 source replacement after row construction or independent validation; require the

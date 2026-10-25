@@ -28,7 +28,7 @@ from .chimew_binding_storage import (
     read_chimew_binding,
 )
 from .errors import EmuFlowError, ValidationError
-from .store_publication import bind_view_sources
+from .store_publication import bind_view_sources, bind_store_source
 from .io import read_json, write_json
 from .logic_segment_timing import (
     LOGIC_SEGMENT_TIMING_SCHEMA,
@@ -84,7 +84,7 @@ from .runtime import (
     validate_physical_summary,
 )
 from .synthesis import run_generic_yosys_stream
-from .transport_fanout import buffer_transport_high_fanout_store
+from .transport_fanout import buffer_transport_high_fanout_records
 from .tdm_schedule_storage import (
     canonical_tdm_schedule_sha256,
     read_tdm_schedule,
@@ -1224,12 +1224,22 @@ def run_multi_fpga_physical_flow(
             return record
 
         transport_rtl = split_root / item["transport_rtl"]
+        transport_sources = tuple(
+            bind_store_source(path, "yosys-source-document-v1")
+            for path in (runtime_controller, transport_rtl)
+        )
         module_match = _TRANSPORT_MODULE.search(
             transport_rtl.read_text(encoding="utf-8")
         )
         if module_match is None:
             raise ValidationError(f"cannot find transport top module for {fpga_id}")
         transport_ir_path = fpga_root / "transport.emuir.sqlite"
+        fanout_report = None
+
+        def finalize_transport_emuir(connection):
+            nonlocal fanout_report
+            fanout_report = buffer_transport_high_fanout_records(connection)
+
         run_generic_yosys_stream(
             [runtime_controller, transport_rtl],
             module_match.group(1),
@@ -1239,11 +1249,14 @@ def run_multi_fpga_physical_flow(
                 top=module_match.group(1),
                 clocks=("fabric_clk",),
                 _source_stream=stream,
+                _finalize_emuir=finalize_transport_emuir,
+                source_bindings=transport_sources,
             ),
             executable=yosys,
             log_path=fpga_root / "transport-yosys.log",
         )
-        fanout_report = buffer_transport_high_fanout_store(transport_ir_path)
+        if fanout_report is None:
+            raise ValidationError("transport EmuIR finalization did not complete")
         fanout_report_path = fpga_root / "transport-fanout-buffering.json"
         write_json(fanout_report_path, fanout_report, compact=True)
         transport_instances, transport_nets = _indexed_emuir_counts(

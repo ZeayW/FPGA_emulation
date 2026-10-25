@@ -1,4 +1,5 @@
 """Current ScheduleStore source/identity negatives, with no retired wire protocol."""
+from contextlib import closing
 
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 from dataclasses import replace
@@ -50,7 +51,7 @@ def test_complete_producer_rejects_invalid_sources_without_replacing_commit(tmp_
             path.write_bytes(data)
         monkeypatch.setattr(type(request), 'write_board_request', corrupt)
     else:
-        with sqlite3.connect(request.route_store) as db:
+        with closing(sqlite3.connect(request.route_store)) as db, db:
             if corruption == 'predecessor':db.execute("UPDATE route_predecessors SET predecessor_net='unknown'")
             elif corruption == 'dependency_cycle':
                 records = db.execute('SELECT seq,net_id FROM routes ORDER BY seq').fetchall()

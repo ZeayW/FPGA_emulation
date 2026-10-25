@@ -6,7 +6,7 @@ from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
 from emuflow.transport_fanout import (
     buffer_transport_high_fanout_nets,
-    buffer_transport_high_fanout_store,
+    buffer_transport_high_fanout_records,
 )
 from emuflow.xilinx_netlist import (
     emit_xilinx_mapped_index,
@@ -139,9 +139,17 @@ class TransportFanoutTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "transport.emuir.sqlite"
             actual = _transport_ir(17)
-            actual.save(path)
+            from emuflow.emuir_storage import write_emuir_sqlite
 
-            report = buffer_transport_high_fanout_store(path, max_fanout=4)
+            reports = []
+            write_emuir_sqlite(
+                path,
+                actual.value,
+                _finalize=lambda connection: reports.append(
+                    buffer_transport_high_fanout_records(connection, max_fanout=4)
+                ),
+            )
+            (report,) = reports
 
             self.assertEqual(report["summary"], expected_report["summary"])
             self.assertEqual(report["nets"], expected_report["nets"])

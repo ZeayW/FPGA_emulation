@@ -1,4 +1,5 @@
 """Phase 6 materializes and independently replays the declared virtual board."""
+from contextlib import closing
 import copy
 import hashlib
 import json
@@ -172,7 +173,7 @@ def test_indexed_physical_contract_rejects_resealed_membership_tamper(
     selector_path = out / 'virtual_board_binding.json'
     selector = json.loads(selector_path.read_text(encoding='utf-8'))
     store = out / selector['artifact']
-    with sqlite3.connect(store) as connection:
+    with closing(sqlite3.connect(store)) as connection, connection:
         row = connection.execute(
             'SELECT fpga,p_port,schedule_entry_count,schedule_entries_sha256 '
             'FROM binding_physical_ports ORDER BY fpga,p_port LIMIT 1'

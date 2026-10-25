@@ -94,7 +94,7 @@ class _Intern:
 
 
 def write_compact_emuir(
-    path: Path, value: Mapping[str, Any], *, source_bindings=()
+    path: Path, value: Mapping[str, Any], *, source_bindings=(), _finalize=None
 ) -> None:
     source_bindings = validate_store_destination(path, source_bindings)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -171,6 +171,10 @@ def write_compact_emuir(
             (seq, _json(record)) for seq, record in enumerate(value.get("clocks", []))
         ))
         c.execute("INSERT INTO metadata VALUES (?,?)", ("record_counts_json", _json(counts)))
+        # Normalization and transport buffering belong to the private generation.
+        # The shared writer owns commit, connection lifetime and publication.
+        if _finalize is not None:
+            _finalize(c)
         # Build the required reverse adjacency once from compact integer rows,
         # rather than randomly updating its B-tree on every pin insertion.
         c.execute("CREATE INDEX endpoint_owner ON endpoint_records(instance_seq,port_seq,bit)")

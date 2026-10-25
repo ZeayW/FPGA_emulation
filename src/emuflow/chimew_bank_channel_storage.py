@@ -31,6 +31,7 @@ from .store_publication import (
     bind_view_sources,
     require_store_sources_unchanged,
     publish_sqlite_store,
+    validate_store_destination,
 )
 
 
@@ -1231,6 +1232,11 @@ def copy_chimew_bank_channel_storage(
                 temporary.unlink(missing_ok=True)
         return
     with BankChannelInputView(source) as view:
+        if source.resolve() == destination.resolve():
+            return
+        source_bindings = validate_store_destination(
+            destination, view.bound_store_sources()
+        )
         with _bank_channel_lease(destination, exclusive=True):
             previous_selector = (
                 destination.read_bytes() if destination.is_file() else None
@@ -1258,10 +1264,12 @@ def copy_chimew_bank_channel_storage(
                 )
                 try:
                     shutil.copy2(view.store_path, temporary)
-                    with temporary.open("rb") as stream:
-                        os.fsync(stream.fileno())
-                    os.replace(temporary, sidecar)
-                    _fsync_directory(destination.parent)
+                    publish_sqlite_store(
+                        temporary,
+                        sidecar,
+                        "chimew-bank-input-store-v1",
+                        sources=source_bindings,
+                    )
                 finally:
                     temporary.unlink(missing_ok=True)
             elif file_sha256(sidecar) != view.manifest["store_sha256"]:
@@ -1269,6 +1277,7 @@ def copy_chimew_bank_channel_storage(
             selector = dict(view.manifest)
             selector["artifact"] = sidecar.name
             try:
+                require_store_sources_unchanged(source_bindings)
                 write_json(destination, selector, compact=True)
                 _fsync_directory(destination.parent)
                 copied = BankChannelInputView(

@@ -205,6 +205,17 @@ Assignment publication preserves its existing independent validation and exact
 binary rollback; the final SQL commit binds the newly installed binary as well
 as the original EmuIR and primary columns.
 
+EmuIR private-generation finalizers run after record insertion and before reverse
+adjacency construction, commit and common adoption. The writer retains transaction
+and connection ownership. Transport fanout buffering uses that existing connection
+while synthesis streams in; it never copies or reopens a published EmuIR. It keeps
+its deterministic buffer tree, endpoint coverage, orphan and row-accounting checks
+without an implicit database integrity scan. Routed OpenSTA performs timing-only
+resource, delay-net and warning normalization through the same boundary, using SQL
+sets instead of an expanded delay-net ID list. Original mapped/timing selector and
+endpoint payload generations stay bound through final replacement. Transport RTL
+and runtime sources are bound before invoking synthesis.
+
 TimingPathDB and net weights publish immutable, invocation-owned SQLite payloads
 named by their file digest, then commit the small selector. Consumers follow the
 payload descriptor rather than assume a fixed `.paths.sqlite` or `.weights.sqlite`
@@ -291,6 +302,11 @@ is rejected before acquiring its exclusive selector lease. Existing logical
 schemas, ordered records, independent legality/timing checks and the query
 sidecar rollback contract remain unchanged. This infrastructure adoption does
 not qualify the remaining phase algorithms or replace real-design acceptance.
+
+Typed Chimew input relocation also forwards its original selector/store bindings
+to the common publisher when adopting a copied closed sidecar, and checks those
+bindings before selector commit. It preserves its rollback and independent reader
+validation without reconstructing the logical group population.
 
 Indexed Chimew input republication streams its bank/group cursors and borrows
 the validated logical identity instead of materializing the complete input.

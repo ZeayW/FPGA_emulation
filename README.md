@@ -122,6 +122,8 @@ The shared native store API covers EmuIR v1/v2, assignment v3/v4 and split v2;
 artifact-scoped identities and one build manifest bind its readers and writers.
 Current upstream EmuIR, assignment, route, schedule and timing/weight stores,
 plus Vivado function/proof and final QoR stores, use the shared publisher.
+Transport buffering and routed OpenSTA normalization finish in the private
+EmuIR generation before its atomic publication.
 STA selectors reference immutable payload generations so a rejected selector
 commit preserves the previous result.
 Phase 6 split/transport, position/pin-plan and Chimew input/binding/report stores

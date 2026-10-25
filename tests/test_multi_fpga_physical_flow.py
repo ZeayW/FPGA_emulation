@@ -446,8 +446,15 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 worker_barrier.wait()
                 return consumer(io.StringIO(""))
 
-            def fake_indexed_import(_source, output, **_kwargs):
-                _merged_ir("transport").save(output)
+            def fake_indexed_import(_source, output, **kwargs):
+                from emuflow.emuir_storage import write_emuir_sqlite
+
+                write_emuir_sqlite(
+                    output,
+                    _merged_ir("transport").value,
+                    source_bindings=kwargs.get("source_bindings", ()),
+                    _finalize=kwargs.get("_finalize_emuir"),
+                )
 
             def fake_lower(netlist, _transport, _transport_ir, output, report):
                 fpga = netlist["instances"][0]["id"].removesuffix("_original")

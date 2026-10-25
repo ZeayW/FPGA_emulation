@@ -1,3 +1,4 @@
+from contextlib import closing
 import hashlib
 import gzip
 import io
@@ -60,7 +61,7 @@ class EmuIRStorageTest(unittest.TestCase):
                 self.assertEqual(EmuIR.load(artifact).to_dict(), self.ir.to_dict())
             # An explicit offline engine audit remains possible, but is not
             # invoked by a producer/consumer or needed for logical round-trip.
-            with connect(artifact) as connection:
+            with closing(connect(artifact)) as connection, connection:
                 self.assertEqual(connection.execute("PRAGMA integrity_check").fetchall(), [("ok",)])
 
     def test_duplicate_keys_reject_publication_and_preserve_previous_output(self) -> None:
@@ -128,7 +129,7 @@ class EmuIRStorageTest(unittest.TestCase):
                 with self.subTest(statement=statement):
                     artifact = Path(temporary_directory) / f"orphan{index}.emuir.sqlite"
                     _write_emuir_sqlite_v1(artifact, self.ir.value)
-                    with sqlite3.connect(artifact) as connection:
+                    with closing(sqlite3.connect(artifact)) as connection, connection:
                         connection.execute(statement)
                     with self.assertRaisesRegex(ValueError, "orphaned"):
                         EmuIR.load(artifact)
@@ -137,7 +138,7 @@ class EmuIRStorageTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             artifact = Path(temporary_directory) / "role.emuir.sqlite"
             _write_emuir_sqlite_v1(artifact, self.ir.value)
-            with sqlite3.connect(artifact) as connection:
+            with closing(sqlite3.connect(artifact)) as connection, connection:
                 connection.execute("UPDATE endpoints SET role = 2 WHERE net_seq = 0 AND role = 0")
             with self.assertRaisesRegex(ValueError, "endpoint role"):
                 EmuIR.load(artifact)
