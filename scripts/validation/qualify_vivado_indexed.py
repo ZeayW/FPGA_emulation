@@ -72,16 +72,16 @@ def main():
     contract = {"status": "pass", "adapter": {"path": str(adapter), "sha256": file_sha256(adapter), "module": "adapter"},
         "xdc": {"path": str(xdc), "sha256": file_sha256(xdc)}, "entries": entries,
         "metrics": {"physical_ports": 8, "differential_pairs": 4}}
-    runtime = {"fabric_clock": {"period_ns": 4.0},
+    runtime = {"fabric_clock": {"period_ns": 5.0},
         "virtual_dut_clock": {"nominal_period_ns": 20.0},
-        "virtual_dut_clocks": {"clk": {"nominal_period_ns": 20.0}, "clk2": {"nominal_period_ns": 30.0}},
+        "virtual_dut_clocks": {"clk": {"target_period_ns": 20.0, "nominal_period_ns": 20.0}, "clk2": {"target_period_ns": 30.0, "nominal_period_ns": 30.0}},
         "timing_model": {"dut_clock_ports": ["clk", "clk2"], "fabric_clock_port": "fabric_clk", "fabric_to_dut_max_delay_ns": 8.0}}
     paths = []
     for index, (start, end, clock, period) in enumerate((
             (("launch", "Q", 0), ("capture", "D", 0), "clk", 20.0),
             (("launch2", "Q", 0), ("capture2", "D", 0), "clk2", 30.0),
-            (("fabric_launch", "Q", 0), ("fabric_capture", "D", 0), "fabric_clk", 4.0),
-            (("capture2", "Q", 0), ("fabric_launch", "D", 0), "fabric_clk", 4.0),
+            (("fabric_launch", "Q", 0), ("fabric_capture", "D", 0), "fabric_clk", 5.0),
+            (("capture2", "Q", 0), ("fabric_launch", "D", 0), "fabric_clk", 5.0),
             ((None, "d", 0), ("launch", "D", 0), "clk", 20.0),
             (("capture", "Q", 0), (None, "q", 0), "clk", 20.0),
             (("launch", "Q", 0), ("capture_alias", "D", 0), "clk", 20.0))):
