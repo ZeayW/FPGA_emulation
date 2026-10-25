@@ -16,6 +16,13 @@ from .emuir_compact import compact_metadata, is_compact_emuir
 from .emuir_storage import _RowsForOwner, _decode, open_emuir_sqlite_read_only
 from .equivalence import _lut_definition
 from .errors import ValidationError
+from .store_publication import (
+    StoreSource,
+    bind_store_source,
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+)
 from .io import file_sha256, write_json
 from .native_tools import native_file_generation
 from .ir import EmuIR
@@ -293,6 +300,24 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
         except BaseException:
             self.connection.close()
             raise
+
+    @property
+    def store_path(self):
+        return self.path.resolve()
+
+    def bound_store_sources(self):
+        if self.connection is None:
+            raise ValidationError("Xilinx mapped index is closed")
+        self.require_source_unchanged()
+        if self.schema != XILINX_MAPPED_INDEX_SCHEMA:
+            raise ValidationError(
+                "typed publication requires the current mapped-index owner"
+            )
+        return (
+            StoreSource(
+                self.store_path, "xilinx-mapped-index-v2", self.source_generation
+            ),
+        )
 
     def require_source_unchanged(self) -> None:
         """A leased reader must still refer to the generation at its path."""
@@ -1406,6 +1431,13 @@ def _emit_compact_xilinx_mapped_artifacts(
     graph-sized serialization and I/O without adding information.
     """
 
+    source_bindings = validate_store_destination(
+        index_path, (bind_store_source(ir_path, "emuir-compact-v2"),)
+    )
+    if output_path is not None:
+        validate_store_destination(output_path, source_bindings)
+        if output_path.resolve() == index_path.resolve():
+            raise ValidationError("mapped JSON and index outputs alias")
     source: Optional[sqlite3.Connection] = open_emuir_sqlite_read_only(ir_path)
     output_temp = (
         output_path.with_name(f".{output_path.name}.{uuid.uuid4().hex}.tmp")
@@ -1738,11 +1770,12 @@ def _emit_compact_xilinx_mapped_artifacts(
         if output_temp is not None:
             with output_temp.open("rb") as stream:
                 os.fsync(stream.fileno())
-        with index_temp.open("rb") as stream:
-            os.fsync(stream.fileno())
+        require_store_sources_unchanged(source_bindings)
         if output_temp is not None and output_path is not None:
             os.replace(output_temp, output_path)
-        os.replace(index_temp, index_path)
+        publish_sqlite_store(
+            index_temp, index_path, "xilinx-mapped-index-v2", sources=source_bindings
+        )
 
         resources = ResourceVector.sum(
             ResourceVector.from_mapping(

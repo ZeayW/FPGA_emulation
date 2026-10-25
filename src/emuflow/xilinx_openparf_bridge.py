@@ -1259,7 +1259,7 @@ def _materialize_typed_physical_handoff(
         mapped.require_source_unchanged()
         if is_xilinx_mapped_index(mapped_path) and not os.path.samefile(mapped_path, mapped.path):
             raise ValidationError("OpenPARF bridge borrowed mapped owner disagrees with input")
-        handoff_builder.bind_sources([mapped.path])
+        handoff_builder.bind_store_sources(mapped.bound_store_sources())
     descriptor = certificate.get("cluster_storage")
     if isinstance(descriptor, Mapping):
         filename = descriptor.get("file")
@@ -1310,7 +1310,7 @@ def _materialize_typed_physical_handoff(
             source_packed.require_sources_unchanged()
             if read_json(source_packed_path) != source_packed.selector:
                 raise ValidationError("OpenPARF bridge borrowed atomic source selector disagrees")
-            handoff_builder.bind_sources([source_packed.selector_path, source_packed.store_path])
+            handoff_builder.bind_store_sources(source_packed.bound_store_sources())
     source = certificate.get("source")
     if (
         not isinstance(source, Mapping)
@@ -1372,6 +1372,7 @@ def _materialize_typed_physical_handoff(
         handoff_builder.close()
         raise
     assert certificate_view is not None
+    handoff_builder.bind_store_sources(certificate_view.bound_store_sources())
     certificate_clusters = certificate_view.iter_clusters()
     legalization_clusters: list[Dict[str, Any]] = []
 

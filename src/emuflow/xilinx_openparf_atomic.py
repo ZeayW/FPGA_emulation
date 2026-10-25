@@ -31,6 +31,12 @@ from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 from .sqlite_artifacts import immutable_sqlite_uri
 from .architecture import ArchitectureDB
 from .errors import ImportError, ValidationError
+from .store_publication import (
+    bind_store_source,
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+)
 from .io import file_sha256, read_json, write_json
 from .native_tools import native_file_generation, resolve_native_stage_command
 from .xilinx_netlist import _IndexedCells
@@ -558,6 +564,21 @@ def _bram_claims(tile: str, role: str) -> List[str]:
     raise ValidationError(f"unknown BRAM tile role {role!r}")
 
 
+def _physical_input_bindings(paths, *views):
+    """Keep raw input generations and borrow registered indexed owner scopes."""
+    sources = tuple(
+        bind_store_source(path, "physical-input-document-v1")
+        for path in paths
+        if path is not None
+    )
+    for view in views:
+        bind = getattr(view, "bound_store_sources", None)
+        if callable(bind):
+            sources += bind()
+    require_store_sources_unchanged(sources)
+    return sources
+
+
 def _sha256(path: Path) -> str:
     return file_sha256(path)
 
@@ -859,7 +880,10 @@ def _validate_placement_database_contract(
 
 
 def _validate_atomic_placement_descriptor(
-    path: Path, descriptor: Any,
+    path: Path,
+    descriptor: Any,
+    *,
+    source_bindings=None,
 ) -> Path:
     if (
         not isinstance(descriptor, Mapping)
@@ -911,6 +935,7 @@ def _validate_atomic_placement_descriptor(
     try:
         database_path = unresolved.resolve(strict=True)
         stat = database_path.stat()
+        source = bind_store_source(database_path, "openparf-placement-certificate-v3")
     except OSError as error:
         raise ValidationError(
             "OpenPARF atomic placement database is missing"
@@ -924,6 +949,9 @@ def _validate_atomic_placement_descriptor(
         or _sha256(database_path) != descriptor["sha256"]
     ):
         raise ValidationError("OpenPARF atomic placement database seal is invalid")
+    require_store_sources_unchanged((source,))
+    if source_bindings is not None:
+        source_bindings.append(source)
     return database_path
 
 
@@ -1020,11 +1048,17 @@ def _valid_unreferenced_certificate_store(
 class _AtomicPlacementCertificateBuilder:
     """Stream validated site groups into one typed certificate generation."""
 
-    def __init__(self, selector_path: Path) -> None:
+    def __init__(self, selector_path: Path, *, source_bindings=()) -> None:
+        self.closed = True
+        self.source_bindings = validate_store_destination(
+            selector_path, source_bindings
+        )
         selector_path.parent.mkdir(parents=True, exist_ok=True)
         self.selector_path = selector_path
         self.lease = _PlacementCertificateLease(selector_path, exclusive=True)
         self.closed = False
+        self.created_store = None
+        self.selector_committed = False
         self.temporary_path: Optional[Path] = None
         self.database: Optional[sqlite3.Connection] = None
         self.previous_store: Optional[Path] = None
@@ -1166,6 +1200,7 @@ class _AtomicPlacementCertificateBuilder:
             raise ValidationError("OpenPARF atomic placement clusters are invalid")
         if self.database is None or self.temporary_path is None:
             raise ValidationError("OpenPARF placement-certificate writer is closed")
+        require_store_sources_unchanged(self.source_bindings)
         compact = dict(header)
         compact.pop("clusters", None)
         compact.pop("cluster_storage", None)
@@ -1182,8 +1217,6 @@ class _AtomicPlacementCertificateBuilder:
         self.database.commit()
         self.database.close()
         self.database = None
-        with self.temporary_path.open("rb") as stream:
-            os.fsync(stream.fileno())
         digest = _sha256(self.temporary_path)
         store_path = self.selector_path.parent / _certificate_store_name(
             self.selector_path, digest
@@ -1192,6 +1225,7 @@ class _AtomicPlacementCertificateBuilder:
             raise ValidationError(
                 "OpenPARF atomic placement database is a symbolic link"
             )
+        require_store_sources_unchanged(self.source_bindings)
         if store_path.exists():
             if _sha256(store_path) != digest:
                 raise ValidationError(
@@ -1199,7 +1233,13 @@ class _AtomicPlacementCertificateBuilder:
                 )
             self.temporary_path.unlink()
         else:
-            os.replace(self.temporary_path, store_path)
+            publish_sqlite_store(
+                self.temporary_path,
+                store_path,
+                "openparf-placement-certificate-v3",
+                sources=self.source_bindings,
+            )
+            self.created_store = store_path
         descriptor = {
             "schema": OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA,
             "application_id": OPENPARF_ATOMIC_PLACEMENT_DATABASE_APPLICATION_ID,
@@ -1219,7 +1259,9 @@ class _AtomicPlacementCertificateBuilder:
             write_json(temporary_selector, compact, compact=True)
             with temporary_selector.open("rb") as stream:
                 os.fsync(stream.fileno())
+            require_store_sources_unchanged(self.source_bindings)
             os.replace(temporary_selector, self.selector_path)
+            self.selector_committed = True
             _fsync_directory(self.selector_path.parent)
             for candidate in self.selector_path.parent.glob(
                 f"{self.selector_path.stem}.*"
@@ -1259,6 +1301,8 @@ class _AtomicPlacementCertificateBuilder:
         self.temporary_path = None
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
+        if self.created_store is not None and not self.selector_committed:
+            self.created_store.unlink(missing_ok=True)
         self.lease.close()
 
     def __del__(self) -> None:
@@ -1266,14 +1310,14 @@ class _AtomicPlacementCertificateBuilder:
 
 
 def write_xilinx_openparf_atomic_placement_certificate(
-    path: Path, certificate: Mapping[str, Any]
+    path: Path, certificate: Mapping[str, Any], *, source_bindings=()
 ) -> Dict[str, Any]:
     """Write a compact certificate whose sidecar owns assignment rows."""
 
     clusters = certificate.get("clusters")
     if not isinstance(clusters, list) or not clusters:
         raise ValidationError("OpenPARF atomic placement clusters are invalid")
-    builder = _AtomicPlacementCertificateBuilder(path)
+    builder = _AtomicPlacementCertificateBuilder(path, source_bindings=source_bindings)
     try:
         for cluster in clusters:
             builder.append(cluster)
@@ -1369,6 +1413,9 @@ class XilinxOpenparfAtomicPlacementView(MappingABC[str, Any]):
                 raise ValidationError(
                     "OpenPARF atomic placement certificate is a symbolic link"
                 )
+            self._source_bindings = [
+                bind_store_source(path, "openparf-placement-selector-v2")
+            ]
             try:
                 selector = read_json(path)
             except (OSError, ValueError) as error:
@@ -1390,6 +1437,7 @@ class XilinxOpenparfAtomicPlacementView(MappingABC[str, Any]):
                 self.inline = inline
                 self.descriptor = None
                 self.legacy = True
+                self.require_source_unchanged()
                 return
             self.inline = None
             descriptor = selector.get("cluster_storage")
@@ -1431,6 +1479,9 @@ class XilinxOpenparfAtomicPlacementView(MappingABC[str, Any]):
                         "OpenPARF atomic placement database is a symbolic link"
                     )
                 database_path = unresolved.resolve(strict=True)
+                self._source_bindings.append(
+                    bind_store_source(database_path, "physical-input-document-v1")
+                )
                 if (
                     database_path.parent != path.parent.resolve()
                     or database_path.stat().st_size != descriptor["bytes"]
@@ -1441,12 +1492,12 @@ class XilinxOpenparfAtomicPlacementView(MappingABC[str, Any]):
                     )
             else:
                 database_path = _validate_atomic_placement_descriptor(
-                    path, descriptor
+                    path, descriptor, source_bindings=self._source_bindings
                 )
             assert isinstance(descriptor, Mapping)
             self.descriptor = descriptor
             self.store_path = database_path
-            self.store_generation = native_file_generation(database_path)
+            self.store_generation = self._source_bindings[-1].generation
             database = sqlite3.connect(
                 immutable_sqlite_uri(database_path), uri=True
             )
@@ -1462,15 +1513,14 @@ class XilinxOpenparfAtomicPlacementView(MappingABC[str, Any]):
             self.close()
             raise
 
+    def bound_store_sources(self):
+        self.require_source_unchanged()
+        return tuple(self._source_bindings)
+
     def require_source_unchanged(self) -> None:
         if self.closed:
             raise ValidationError("OpenPARF atomic placement view is closed")
-        if self.store_path is not None:
-            try:
-                if native_file_generation(self.store_path) != self.store_generation:
-                    raise ValidationError("OpenPARF placement certificate generation changed")
-            except OSError as error:
-                raise ValidationError("OpenPARF placement certificate generation changed") from error
+        require_store_sources_unchanged(self._source_bindings)
 
     def __getitem__(self, key: str) -> Any:
         return self.selector[key]
@@ -4363,6 +4413,17 @@ def export_xilinx_openparf_atomic(
 ) -> Dict[str, Any]:
     """Export the fail-closed native mixed-resource qualification subset."""
 
+    source_bindings = _physical_input_bindings(
+        (
+            mapped_path,
+            packed_path,
+            architecture_path,
+            native_constraints_path,
+            provider_manifest_path,
+        ),
+        mapped_value,
+        packed_value,
+    )
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
     if packed_value is None:
         candidate = read_json(packed_path)
@@ -4392,6 +4453,7 @@ def export_xilinx_openparf_atomic(
             or source.get("mapped_sha256") != _sha256(mapped_path)
         ):
             raise ValidationError("OpenPARF atomic source identity is invalid")
+    source_bindings += _physical_input_bindings((), mapped, packed)
     architecture_digest = _sha256(architecture_path)
     architecture = (
         ArchitectureDB.load(architecture_path)
@@ -5118,14 +5180,12 @@ def export_xilinx_openparf_atomic(
     name_map = write_xilinx_openparf_atomic_name_map_storage(
         output_dir / "name_map.json",
         header=name_map_header,
-        atoms=(
-            {"openparf": f"a{index}", **atom}
-            for index, atom in enumerate(atoms)
-        ),
+        atoms=({"openparf": f"a{index}", **atom} for index, atom in enumerate(atoms)),
         carry_cascade_chains=carry_cascade_chains,
         mapped_sha256=_sha256(mapped_path),
         packed_sha256=_sha256(packed_path),
         architecture_sha256=architecture_digest,
+        source_bindings=source_bindings,
     )
     name_map_selector = name_map.selector
     name_map_store_path = name_map.store_path
@@ -5286,6 +5346,19 @@ def validate_xilinx_openparf_atomic_placement(
 ) -> Dict[str, Any]:
     """Validate and aggregate native atom placement without fallback."""
 
+    source_bindings = _physical_input_bindings(
+        (
+            name_map_path,
+            mapped_path,
+            architecture_path,
+            packed_path,
+            native_constraints_path,
+            provider_manifest_path,
+        ),
+        mapped_value,
+    )
+    if output_path is not None:
+        validate_store_destination(output_path, source_bindings)
     mapped_digest = _sha256(mapped_path)
     packed_digest = _sha256(packed_path) if packed_path is not None else None
     architecture_digest = _sha256(architecture_path)
@@ -5314,6 +5387,7 @@ def validate_xilinx_openparf_atomic_placement(
                 "production OpenPARF placement validation requires the typed "
                 "atomic name map"
             )
+        source_bindings += _physical_input_bindings((placement_path,), name_map, mapped)
         name_map_top = name_map.get("top")
         hardblock_groups = _load_physical_macro_groups(name_map_path, name_map)
         carry_cascade_chains = list(name_map.get("carry_cascade_chains", []))
@@ -5787,7 +5861,9 @@ def validate_xilinx_openparf_atomic_placement(
 
         clusters: list[Dict[str, Any]] = []
         if output_path is not None and not materialize_result:
-            certificate_builder = _AtomicPlacementCertificateBuilder(output_path)
+            certificate_builder = _AtomicPlacementCertificateBuilder(
+                output_path, source_bindings=source_bindings
+            )
         for site_name, items in placement_index.iter_site_groups():
             if sum(item["resource"] == "LUT" for item in items) > 8:
                 raise ValidationError(f"site {site_name!r} exceeds physical LUT capacity")
@@ -5928,7 +6004,7 @@ def validate_xilinx_openparf_atomic_placement(
             result["clusters"] = clusters
             if output_path is not None:
                 write_xilinx_openparf_atomic_placement_certificate(
-                    output_path, result
+                    output_path, result, source_bindings=source_bindings
                 )
         return result
     finally:

@@ -219,7 +219,8 @@ hash cache or persistent catalog is introduced. Phase 6 row construction and
 electrical/RTL/XDC checks retain their existing semantic owners and still require
 their own data-plane migration and qualification.
 
-Phase 7 placement IR, OpenPARF atomic sources and boundary identity/timing,
+Phase 7 mapped indexes, placement IR, OpenPARF atomic sources/name maps,
+placement certificates, physical handoffs and boundary identity/timing,
 logic-segment identity/timing and local-path timing producers adopt the same
 closed-file publisher. Placement IR binds the source split and transport EmuIR;
 atomic sources bind their mapped owner before consuming its records. Physical
@@ -230,6 +231,26 @@ forward their existing owners instead of inventing new snapshots. RapidWright
 and Vivado timing consumers pass typed identity scopes; Vivado measurement
 imports also bind the input measurement file. These checks neither reconstruct
 the graph nor repeat a file hash.
+
+The mapped-index writer binds compact EmuIR before opening it. OpenPARF export
+and placement validation retain original document references and borrow the
+mapped/name-map/atomic-source store scopes instead of refreshing their
+identities after consuming records. The handoff builder keeps its existing
+source guards and forwards the registered mapped, source and certificate
+references into the shared publisher. This includes active SQL sidecar
+rejection; opaque documents continue to use their phase-specific semantic
+validators. The name-map and placement-certificate selectors commit after their
+SQL generation. A rejected selector commit removes only a newly adopted,
+uncommitted generation, preserving the previous selector and referenced store.
+This is single-file atomic publication; an explicitly requested companion JSON
+export is not a multi-file transaction.
+
+Chimew semantic validation releases owned typed report readers on exceptions as
+well as success, before discarded generation files are retired. The borrowed
+bank-input lease remains with its caller. Transaction contexts alone do not
+close SQLite connections; callers and qualification fixtures must explicitly
+close database and physical-evidence owners before removing their directories.
+Strict generation inventory validation still rejects unexpected files.
 
 Explicit timing-selector relocation copies into private same-directory staging,
 then uses the common publisher and checks the original input scope before

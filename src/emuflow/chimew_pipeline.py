@@ -7,7 +7,7 @@ import hashlib
 import os
 import shutil
 import tempfile
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterator, Mapping, Optional
 
@@ -423,7 +423,34 @@ def _validate_pipeline_artifact_semantics_with_bank_input(
     legacy_pre_scope: bool = False,
     verified_sha256: Mapping[str, str] | None = None,
 ) -> Dict[str, Any]:
+    """Close owned readers on both success and retained-traceback failures."""
+    with ExitStack() as resources:
+        return _validate_pipeline_artifact_semantics_records(
+            paths,
+            bank_input,
+            provider=provider,
+            legacy_pre_scope=legacy_pre_scope,
+            verified_sha256=verified_sha256,
+            resources=resources,
+        )
+
+
+def _validate_pipeline_artifact_semantics_records(
+    paths: Mapping[str, Path],
+    bank_input: Mapping[str, Any],
+    *,
+    provider: str,
+    legacy_pre_scope: bool = False,
+    verified_sha256: Mapping[str, str] | None = None,
+    resources: ExitStack,
+) -> Dict[str, Any]:
     """Validate every logical fact in one sealed pipeline generation."""
+
+    def own(value):
+        close = getattr(value, "close", None)
+        if callable(close):
+            resources.callback(close)
+        return value
 
     source_bound = provider == CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER
     expected_scope = (
@@ -431,7 +458,7 @@ def _validate_pipeline_artifact_semantics_with_bank_input(
         if source_bound
         else "declared-digest-artifact-chain"
     )
-    schedule = read_tdm_schedule(paths["schedule"])
+    schedule = own(read_tdm_schedule(paths["schedule"]))
     platform = Platform.load(paths["platform"])
     crossings = read_json(paths["crossings"])
     positions = read_json(paths["positions"])
@@ -445,13 +472,12 @@ def _validate_pipeline_artifact_semantics_with_bank_input(
         != paths["bank_channel_input_store"].resolve()
     ):
         raise ValidationError("Chimew bank/channel selector sidecar differs")
-    bank_report = (
+    bank_report = own(
         read_chimew_bank_channel_report(
             paths["bank_channel_report"],
             _verified_store_sha256=(
                 verified_sha256.get("bank_channel_report_store")
-                if verified_sha256 is not None
-                and "bank_channel_report_store" in paths
+                if verified_sha256 is not None and "bank_channel_report_store" in paths
                 else None
             ),
         )
@@ -516,7 +542,7 @@ def _validate_pipeline_artifact_semantics_with_bank_input(
         bank_report,
         source_binding=source_binding,
     )
-    adapter_bank_report = (
+    adapter_bank_report = own(
         read_chimew_bank_channel_report(
             paths["adapter_bank_channel_report"],
             _verified_store_sha256=(
@@ -544,11 +570,9 @@ def _validate_pipeline_artifact_semantics_with_bank_input(
         raise ValidationError("Chimew adapter bank/channel report differs")
     if read_json(paths["adapter_qualification_certificate"]) != qualification:
         raise ValidationError("Chimew adapter qualification certificate differs")
-    pin_plan = read_pin_plan(paths["adapter_pin_plan"])
-    position_hints = read_position_hints(paths["adapter_position_hints"])
-    electrical_binding = read_chimew_binding(
-        paths["adapter_electrical_binding"]
-    )
+    pin_plan = own(read_pin_plan(paths["adapter_pin_plan"]))
+    position_hints = own(read_position_hints(paths["adapter_position_hints"]))
+    electrical_binding = own(read_chimew_binding(paths["adapter_electrical_binding"]))
     pin_validation = validate_pin_plan(
         schedule, platform, position_hints, pin_plan
     )
@@ -625,10 +649,6 @@ def _validate_pipeline_artifact_semantics_with_bank_input(
         "pin_validation": pin_validation,
         "binding_validation": binding_validation,
     }
-    if isinstance(adapter_bank_report, BankChannelReportView):
-        adapter_bank_report.close()
-    if isinstance(bank_report, BankChannelReportView):
-        bank_report.close()
     return result
 
 

@@ -1633,7 +1633,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             self.assertEqual(certificate_path.read_bytes(), selector_bytes)
             self.assertTrue(first_store.is_file())
             self.assertEqual(
-                len(list(output.glob("placement-certificate.*.sqlite"))), 2
+                len(list(output.glob("placement-certificate.*.sqlite"))), 1
             )
             self.assertEqual(
                 len(list(iter_xilinx_openparf_atomic_placement_clusters(

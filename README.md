@@ -122,7 +122,8 @@ The shared native store API covers EmuIR v1/v2, assignment v3/v4 and split v2;
 artifact-scoped identities and one build manifest bind its readers and writers.
 Phase 6 split/transport, position/pin-plan and Chimew input/binding/report stores
 use the shared publisher, which adopts closed SQLite staging without copying it.
-Phase 7 placement IR, atomic sources and boundary/logic-segment/local-path timing
+Phase 7 mapped indexes, placement IR, atomic sources/name maps, placement
+certificates, physical handoffs and boundary/logic-segment/local-path timing
 stores use that same publication boundary and preserve bound input generations.
 Transport selectors and returned views share one file seal within the producer
 invocation; indexed Chimew inputs can be republished without restoring a Python graph.

@@ -1,3 +1,4 @@
+from contextlib import closing
 import copy
 import hashlib
 import io
@@ -592,6 +593,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     lazy_summary["boundary_timing"]["fpga0"]["schema"],
                     "emuflow.boundary-timing/v1",
                 )
+                lazy_summary.close()
                 # The same checked assembler must consume separately completed
                 # records without re-entering any synthesis/place/route tool.
                 assembly_inputs = dict(
@@ -906,7 +908,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     backend="vivado",
                 )
 
-            with sqlite3.connect(indexed.store_path) as connection:
+            with closing(sqlite3.connect(indexed.store_path)) as connection, connection:
                 connection.execute(
                     "UPDATE members SET member='tampered' WHERE member='entry0'"
                 )

@@ -1,3 +1,4 @@
+from contextlib import closing
 from tests.native_build import emuflow_native
 import copy
 import hashlib
@@ -592,7 +593,7 @@ class ChimewQualificationTest(unittest.TestCase):
                 output
                 / committed_report["artifacts"]["adapter_pin_plan_store"]["path"]
             )
-            with sqlite3.connect(real_pin_store) as connection:
+            with closing(sqlite3.connect(real_pin_store)) as connection, connection:
                 application_id = connection.execute(
                     "PRAGMA application_id"
                 ).fetchone()[0]
@@ -600,7 +601,10 @@ class ChimewQualificationTest(unittest.TestCase):
                     "PRAGMA user_version"
                 ).fetchone()[0]
             fake_sqlite_temporary = adapter_dir / "pin_plan.incomplete.sqlite"
-            with sqlite3.connect(fake_sqlite_temporary) as connection:
+            with (
+                closing(sqlite3.connect(fake_sqlite_temporary)) as connection,
+                connection,
+            ):
                 connection.execute(f"PRAGMA application_id={application_id}")
                 connection.execute(f"PRAGMA user_version={user_version}")
             fake_sqlite_digest = hashlib.sha256(

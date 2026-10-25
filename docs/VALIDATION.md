@@ -54,8 +54,9 @@ not assignments forced to make a feature appear exercised.
 
 ## Physical and timing store publication contracts
 
-Run `tests/test_physical_store_publication.py` with the built shared native
-entry, together with the boundary, logic-segment, local-path, OpenPARF source,
+Run `tests/test_physical_store_publication.py` and
+`tests/test_physical_owner_publication.py` with the built shared native entry,
+together with the boundary, logic-segment, local-path, OpenPARF source,
 Phase 6 lowering and both physical backend tests. Native rejection must not
 select a reference publisher. Changing a selector/store while a derived writer
 consumes records, or during independent reader validation, must fail without
@@ -66,6 +67,15 @@ prior selector, query sidecar and SQL owner and remove unpublished staging on
 failure. Exercise the full indexed placement lowering and mapped atomic-source
 producer with poisoned input generations; the normal differential tests still
 compare complete logical records and ownership with their independent oracles.
+Cover native rejection and input changes at mapped-index, name-map,
+placement-certificate and typed handoff publication. A live WAL on a registered
+source store must be rejected even when the main database generation has not
+changed. Readers must retain selector as well as SQL generations. Include
+`tests/test_chimew_pipeline_lifetime.py`: retain the validation exception and
+traceback while verifying that owned report lookups and leases have already
+closed and a new writer can proceed. Close corruption-fixture SQLite handles
+before rename/unlink and close physical summaries before directory retirement;
+do not ignore NFS artifacts or relax the exact inventory checks to pass.
 These component gates are required but do not constitute full NVDLA physical or
 global timing qualification.
 

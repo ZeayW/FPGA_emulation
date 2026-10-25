@@ -1,3 +1,4 @@
+from contextlib import closing
 import copy
 import hashlib
 import io
@@ -1281,7 +1282,7 @@ class ChimewBankChannelTest(unittest.TestCase):
             view = write_chimew_bank_channel_report_storage(path, report)
             store = view.store_path
             view.close()
-            with sqlite3.connect(store) as connection:
+            with closing(sqlite3.connect(store)) as connection, connection:
                 connection.execute("PRAGMA application_id=1")
             digest = hashlib.sha256(store.read_bytes()).hexdigest()
             replacement = root / f"report.{digest}.sqlite"
@@ -1319,7 +1320,7 @@ class ChimewBankChannelTest(unittest.TestCase):
                 view = write_chimew_bank_channel_report_storage(path, report)
                 store = view.store_path
                 view.close()
-                with sqlite3.connect(store) as connection:
+                with closing(sqlite3.connect(store)) as connection, connection:
                     connection.execute(
                         f"UPDATE assignments SET {column}=? WHERE seq=0", (value,)
                     )
