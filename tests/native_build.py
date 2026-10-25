@@ -13,6 +13,12 @@ ROOT = Path(__file__).resolve().parents[1]
 _BUILD_ROOT = tempfile.TemporaryDirectory(prefix="emuflow-native-tests-")
 
 
+def _runtime_link_flags() -> list[str]:
+    # Match the thin runtime: test tools must run with the compiler's C++
+    # runtime even when the host system libstdc++ predates that compiler.
+    return ["-static-libstdc++", "-static-libgcc"] if sys.platform.startswith("linux") else []
+
+
 def chimew_bank_channel_assigner() -> Path:
     return emuflow_native()
 
@@ -46,7 +52,7 @@ def _build_native_stage_program(entry: Path, executable: Path) -> Path:
     subprocess.run([sys.executable, str(ROOT / 'scripts/generate_assignment_schema_header.py'),
         str(generated / 'emuflow_core/assignment_schema.hpp')], check=True)
     subprocess.run(
-        [compiler, "-std=c++17", "-O2", "-pthread",
+        [compiler, "-std=c++17", *_runtime_link_flags(), "-O2", "-pthread",
          "-DEMUFLOW_NATIVE_STAGE_LIBRARY=1", str(entry),
          *(str(ROOT / "src/native" / source) for source in _NATIVE_STAGE_SOURCES),
          "-I", str(ROOT / "src/native"), "-I", str(generated), "-lsqlite3", "-o", str(executable)],
@@ -77,7 +83,7 @@ def native_json_record() -> Path:
     if compiler is None:
         raise RuntimeError("a C++17 compiler is required for JSON record tests")
     executable = Path(_BUILD_ROOT.name) / "native-json-record"
-    subprocess.run([compiler, "-std=c++17", "-O2", str(ROOT / "tests/native_json_record_test.cpp"),
+    subprocess.run([compiler, "-std=c++17", *_runtime_link_flags(), "-O2", str(ROOT / "tests/native_json_record_test.cpp"),
                     "-I", str(ROOT / "src/native"), "-o", str(executable)], check=True)
     return executable
 
@@ -106,6 +112,7 @@ def hop_partition_refiner() -> Path:
         [
             compiler,
             "-std=c++17",
+            *_runtime_link_flags(),
             "-O2",
             str(ROOT / "src/native/hop_partition_refiner.cpp"),
             "-o",
@@ -130,6 +137,7 @@ def eda2025_topology_optimizer() -> Path:
         [
             compiler,
             "-std=c++17",
+            *_runtime_link_flags(),
             "-O2",
             str(ROOT / "src/native/eda2025_topology_optimizer.cpp"),
             "-o",
