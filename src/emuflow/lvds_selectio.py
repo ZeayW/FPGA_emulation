@@ -62,8 +62,9 @@ def selectio_bank_recipe(bank: str, direction: str, *, inventory=None):
     if len(selected) != 21:
         raise ValidationError("SelectIO native pair positions overlap")
     settings=[("BANK",bank+"_(HP)"),("BUS_DIR","0"if direction=="tx"else"1"),
-        ("SERIALIZATION_FACTOR","8"),("PLL0_DATA_SPEED","1600"),
-        ("PLL0_INPUT_CLK_FREQ","200"if direction=="tx"else"800"),
+        ("SERIALIZATION_FACTOR","8"),("PLL0_DATA_SPEED","1600.00"),
+        # These wizard controls are enumerations, despite looking numeric.
+        ("PLL0_INPUT_CLK_FREQ","200.000"if direction=="tx"else"800.000"),
         ("PLL0_CLK_SOURCE","BUFG_TO_PLL"if direction=="tx"else"IBUF_TO_PLL"),
         ("DIFFERENTIAL_IO_STD","LVDS"),("APPEND_PIN_NO","1")]
     for byte in range(4):

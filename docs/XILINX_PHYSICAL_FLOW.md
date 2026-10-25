@@ -374,6 +374,8 @@ multiple-interface handshake. Resulting ports must be checked against the
 native products before connecting a physical top. The recipe does not supply
 training, reset sequencing, FIFO capture or the physical boundary latency.
 Configuration generation and IP synthesis remain intermediate PHY diagnostics.
+Frequency enumeration strings retain the wizard's canonical decimal spelling;
+numerical equality does not guarantee that a customization accepts an alias.
 
 The current fixed differential adapter supplies IBUFDS/OBUFDS boundaries; it
 does not implement the serializer/deserializer or forwarded-clock circuitry

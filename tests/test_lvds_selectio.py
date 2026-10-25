@@ -29,8 +29,8 @@ def test_all_supported_bank_recipes_keep_twenty_data_pairs_and_reserve_the_clock
         clock=recipe.clock_pair
         assert '_GC_QBC_'in pins[clock['p']['package_pin']]['pin_function']
         assert all(clock[polarity]['package_pin']not in used for polarity in ('p','n'))
-        assert settings['PLL0_INPUT_CLK_FREQ']==('200'if direction=='tx'else'800')
-        assert settings['PLL0_DATA_SPEED']=='1600'
+        assert settings['PLL0_INPUT_CLK_FREQ']==('200.000'if direction=='tx'else'800.000')
+        assert settings['PLL0_DATA_SPEED']=='1600.00'
         assert settings['SERIALIZATION_FACTOR']=='8'
         if direction=='tx':assert clock['word_value']=="8'h55"
         else:assert clock['p']['port']=='clk_p'and clock['n']['port']=='clk_n'
