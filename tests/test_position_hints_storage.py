@@ -129,7 +129,7 @@ def test_position_hints_selector_failure_preserves_previous_generation(
     def fail_selector(*_args, **_kwargs):
         raise OSError("injected selector failure")
 
-    monkeypatch.setattr(position_storage, "write_json", fail_selector)
+    monkeypatch.setattr("emuflow.store_publication.write_json", fail_selector)
     updated = copy.deepcopy(expected)
     updated["design"] = "updated"
     with pytest.raises(OSError, match="injected"):

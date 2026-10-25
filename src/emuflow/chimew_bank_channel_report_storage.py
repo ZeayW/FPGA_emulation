@@ -26,11 +26,12 @@ from typing import Any
 import fcntl
 
 from .errors import ValidationError
-from .io import file_sha256, read_json, write_json
+from .io import file_sha256, read_json
 from .store_publication import (
     bind_store_source,
     require_store_sources_unchanged,
     publish_sqlite_store,
+    commit_store_selector,
 )
 
 
@@ -657,9 +658,9 @@ def _write_locked(
     )
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    previous_selector = path.read_bytes() if path.is_file() else None
+    had_previous = path.is_file()
     previous_artifact: Path | None = None
-    if previous_selector is not None:
+    if had_previous:
         try:
             previous_view = BankChannelReportView(path, _acquire_lease=False)
         except (OSError, ValueError, ValidationError):
@@ -798,23 +799,15 @@ def _write_locked(
         },
         "logical_sha256": logical_sha256,
     }
-    try:
-        write_json(path, manifest, compact=True)
-        _fsync_directory(path.parent)
-        checked = BankChannelReportView(path, _acquire_lease=False)
-    except BaseException:
-        if previous_selector is None:
-            path.unlink(missing_ok=True)
-        else:
-            restore = path.with_name(f".{path.name}.{uuid.uuid4().hex}.restore")
-            restore.write_bytes(previous_selector)
-            with restore.open("rb") as stream:
-                os.fsync(stream.fileno())
-            os.replace(restore, path)
-            _fsync_directory(path.parent)
-        if created and artifact != previous_artifact:
-            artifact.unlink(missing_ok=True)
-        raise
+    checked = commit_store_selector(
+        path,
+        manifest,
+        source_bindings,
+        artifact,
+        created,
+        durable=True,
+        validate=lambda: BankChannelReportView(path, _acquire_lease=False),
+    )
     if previous_artifact is not None and previous_artifact != artifact:
         try:
             previous_artifact.unlink(missing_ok=True)

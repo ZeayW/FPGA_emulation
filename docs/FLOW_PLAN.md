@@ -165,6 +165,7 @@ SQLite handles and circuit-sized Python containers do not cross it.
 | Schema and source binding | `SchemaRegistry`, `ArtifactRef`, `SqliteStore` | Explicit versions, registered logical envelopes, immutable generations and mixed-source rejection; bounded metadata checks rather than integrity scans or recounts. |
 | Identity and order | `ArtifactScope`, `ArtifactId`, typed views | Cell/net/path/endpoint/FPGA/link identities retain their artifact namespace. Route source sequence and canonical net order are distinct coordinates. |
 | Storage and publication | SQLite connection/statement leases, `SqliteArtifactWriter`, `AtomicBinaryWriter` | Last borrowers retain connections and private staging. Close connections before retirement; reject active transactions/statements, input aliases and changed sources before atomic publication. |
+| Selector commit and recovery | `commit_store_selector` | Back up a bounded previous selector before replacement; preserve the original source bindings through independent post-write validation and directory sync. Close rejected returned views before retiring their SQL, and retain recovery files if closing or rollback fails. |
 | Common data structures | `ResourceView`, integer CSR helpers, source string/payload pools | Deterministic record order, bounded resource decoding and explicit extraction of kernel-local integers; no second persistent graph catalog. |
 | Failure and measurements | `StageError`, `RunStage`, `StageResult` | Shared error codes and bounded reports; wall/CPU/I/O intervals and process lifetime RSS retain their stated scopes. |
 | External engine lifecycle | `RunExternalTool`, `ToolRequest`, `ToolResult` | Literal arguments/environment, bounded diagnostics, limits, deadlines, cancellation and reaping; engines remain separate processes. |
@@ -175,6 +176,33 @@ v2 construction reads bounded metadata. Both expose the same cell-state and
 connectivity semantics. Interned pin IDs exist only in v2; validated v1 pins
 retain their original port/bit fields without inventing an integer string pool.
 No read silently rewrites or upgrades its input.
+
+The maintained owner boundary is below. Each public SQL owner uses the registered
+envelope, bound input generations and common closed-file publisher; phase-specific
+record construction and independent semantic validation remain with the named
+producer/consumer. This census does not imply that those algorithms have moved
+out of their Python adapters.
+
+| Artifact family | Producer owner | Maintained consumers |
+| --- | --- | --- |
+| Compact EmuIR v2; explicit indexed v1 reads | Yosys/EmuIR import and private-generation finalizers | Native EmuIR view, partitioning, timing, splitting and physical lowering |
+| Primary cluster columns v2, candidate IDs and final cluster catalog | Shared native cluster/candidate/catalog operations | PATRON, assignment and semantic publication |
+| Assignment v4; explicit v3 reads | Native assignment producer and indexed publisher | Routing, scheduling, split and transport |
+| Timing paths and net weights | OpenSTA import/weight adapters | Partitioning, routing and global timing |
+| RouteStore v3 and ScheduleStore v4 | Native route/seal and exact scheduling operations | Schedule generation, split, transport and global event binding |
+| Split v2 and transport v1 | Phase 6 split/transport adapters | Physical lowering and boundary/event identity |
+| Pin plans, position hints, electrical binding, Chimew bank input/report | Retained Phase 6 adapters and their shared selector commit | Transport/runtime generation and independent electrical/Chimew validators |
+| Placement EmuIR and mapped index | Lowering and Xilinx mapping adapters | OpenPARF, Vivado, physical ownership checks and timing export |
+| Atomic source, name map, site geometry, certificate and physical handoff | OpenPARF adapters/bridge and shared ownership helpers | OpenPARF host, native RWRoute export and Java implementation |
+| Vivado source functions, lineage and optimization proofs | Indexed exporter, shared lineage import and proof adapter | Vivado implementation, physical timing and source coverage validation |
+| Boundary identity/timing, logic-segment identity/timing, local-path timing | Physical measurement/query adapters | Global STA and terminal physical/timing checks |
+| QoR report | Typed report writer | Report consumers and terminal evidence validation |
+
+Private router results, atom indexes and Vivado local-query indexes are scoped
+scratch, consumed within their owning operation rather than additional published
+graph owners. EmuIR v1 writing remains an explicit offline handoff-qualification
+oracle; ordinary production writes compact v2. Primary cluster columns have one
+current native protocol, v2; the unconsumed v1 registry entry is retired.
 
 `AssignmentView` supports public assignment v3/v4 and checks primary coverage as
 its ordered copy cursor is consumed. Assignment v1/v2 and their migration writer
@@ -286,6 +314,11 @@ generation. Independent consumers still verify their input file; no global
 hash cache or persistent catalog is introduced. Phase 6 row construction and
 electrical/RTL/XDC checks retain their existing semantic owners and still require
 their own data-plane migration and qualification.
+Pin-plan, position-hint, electrical-binding and retained Chimew bank input/report
+selectors use the common commit helper. Their existing independent view validators
+remain active. Typed bank-input relocation uses the same helper and the original
+source bindings; it has no separate selector restoration implementation. A source
+change during selector replacement or validation rejects the whole operation.
 
 Phase 7 mapped indexes, placement IR, OpenPARF atomic sources/name maps,
 placement certificates, physical handoffs and boundary identity/timing,

@@ -157,6 +157,7 @@ def test_chimew_relocation_uses_original_input_bindings_and_preserves_previous_c
     tmp_path, failure
 ):
     from emuflow import chimew_bank_channel_storage as storage
+    from emuflow import store_publication as publication
     from tests.test_chimew_bank_channel import ChimewBankChannelTest
 
     case = ChimewBankChannelTest()
@@ -170,7 +171,7 @@ def test_chimew_relocation_uses_original_input_bindings_and_preserves_previous_c
     replacement = copy.deepcopy(case.document)
     replacement["provenance"]["grouping_sha256"] = "d" * 64
     storage.write_chimew_bank_channel_storage(source, replacement).close()
-    publish, write = storage.publish_sqlite_store, storage.write_json
+    publish, write = storage.publish_sqlite_store, publication.write_json
 
     def adopt(*args, **kwargs):
         assert len(kwargs["sources"]) == 2
@@ -188,7 +189,7 @@ def test_chimew_relocation_uses_original_input_bindings_and_preserves_previous_c
 
     with (
         patch.object(storage, "publish_sqlite_store", side_effect=adopt),
-        patch.object(storage, "write_json", side_effect=selector),
+        patch.object(publication, "write_json", side_effect=selector),
         patch.object(
             storage.BankChannelInputView,
             "materialize",

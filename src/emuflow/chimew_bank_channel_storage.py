@@ -25,12 +25,13 @@ from typing import Any, Dict
 import fcntl
 
 from .errors import ValidationError
-from .io import file_sha256, read_json, write_json
+from .io import file_sha256, read_json
 from .store_publication import (
     bind_store_source,
     bind_view_sources,
     require_store_sources_unchanged,
     publish_sqlite_store,
+    commit_store_selector,
     validate_store_destination,
 )
 
@@ -967,7 +968,7 @@ def _write_chimew_bank_channel_storage_locked(
     logical_sha256 = canonical_bank_channel_input_sha256(document)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    previous_selector = path.read_bytes() if path.is_file() else None
+    had_previous = path.is_file()
     previous_artifact: Path | None = None
     if path.is_file():
         try:
@@ -1107,26 +1108,15 @@ def _write_chimew_bank_channel_storage_locked(
         "groups": {"records": len(raw_groups), "sha256": groups_sha256},
         "logical_sha256": logical_sha256,
     }
-    try:
-        write_json(path, manifest, compact=True)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-        view = _open_validated_view(path, acquire_lease=False)
-    except BaseException:
-        if previous_selector is None:
-            path.unlink(missing_ok=True)
-        else:
-            restore = path.with_name(f".{path.name}.{uuid.uuid4().hex}.restore")
-            restore.write_bytes(previous_selector)
-            with restore.open("rb") as stream:
-                os.fsync(stream.fileno())
-            os.replace(restore, path)
-        if created and artifact != previous_artifact:
-            artifact.unlink(missing_ok=True)
-        raise
+    view = commit_store_selector(
+        path,
+        manifest,
+        source_bindings,
+        artifact,
+        created,
+        durable=True,
+        validate=lambda: _open_validated_view(path, acquire_lease=False),
+    )
     if previous_artifact is not None and previous_artifact != artifact:
         previous_artifact.unlink(missing_ok=True)
     return view
@@ -1276,35 +1266,28 @@ def copy_chimew_bank_channel_storage(
                 raise ValidationError("copied Chimew bank/channel sidecar collides")
             selector = dict(view.manifest)
             selector["artifact"] = sidecar.name
-            try:
-                require_store_sources_unchanged(source_bindings)
-                write_json(destination, selector, compact=True)
-                _fsync_directory(destination.parent)
-                copied = BankChannelInputView(
-                    destination, _acquire_lease=False
-                )
+            def validate_copy():
+                copied = BankChannelInputView(destination, _acquire_lease=False)
                 try:
                     if copied.store_path != sidecar.resolve():
                         raise ValidationError(
                             "copied Chimew bank/channel sidecar differs"
                         )
-                finally:
+                except BaseException:
                     copied.close()
-            except BaseException:
-                if previous_selector is None:
-                    destination.unlink(missing_ok=True)
-                else:
-                    restore = destination.with_name(
-                        f".{destination.name}.{uuid.uuid4().hex}.restore"
-                    )
-                    restore.write_bytes(previous_selector)
-                    with restore.open("rb") as stream:
-                        os.fsync(stream.fileno())
-                    os.replace(restore, destination)
-                    _fsync_directory(destination.parent)
-                if created_sidecar:
-                    sidecar.unlink(missing_ok=True)
-                raise
+                    raise
+                return copied
+
+            copied = commit_store_selector(
+                destination,
+                selector,
+                source_bindings,
+                sidecar,
+                created_sidecar,
+                durable=True,
+                validate=validate_copy,
+            )
+            copied.close()
             if previous_artifact is not None and previous_artifact != sidecar:
                 previous_artifact.unlink(missing_ok=True)
                 _fsync_directory(destination.parent)

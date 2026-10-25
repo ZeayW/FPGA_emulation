@@ -18,9 +18,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .errors import ValidationError
-from .io import file_sha256, read_json, write_json
+from .io import file_sha256, read_json
 from .store_publication import (
     publish_sqlite_store,
+    commit_store_selector,
     require_store_sources_unchanged,
     bind_store_source,
 )
@@ -612,13 +613,14 @@ def write_chimew_binding_storage(
         "logical_sha256": logical_sha256,
         "canonical_sha256": canonical_sha256,
     }
-    try:
-        write_json(path, manifest, compact=True)
-    except BaseException:
-        if created_artifact and artifact != previous_artifact:
-            artifact.unlink(missing_ok=True)
-        raise
-    view = ChimewBindingView(path)
+    view = commit_store_selector(
+        path,
+        manifest,
+        source_bindings,
+        artifact,
+        created_artifact,
+        validate=lambda: ChimewBindingView(path),
+    )
     if previous_artifact is not None and previous_artifact != artifact:
         previous_artifact.unlink(missing_ok=True)
     return view

@@ -16,10 +16,11 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ValidationError
-from .io import file_sha256, read_json, write_json
+from .io import file_sha256, read_json
 from .pin_planning import PIN_PLAN_SCHEMA
 from .store_publication import (
     publish_sqlite_store,
+    commit_store_selector,
     require_store_sources_unchanged,
     bind_store_source,
 )
@@ -394,13 +395,14 @@ def write_pin_plan_storage(
         "entries": {"records": count, "sha256": entries_sha256},
         "logical_sha256": logical_sha256,
     }
-    try:
-        write_json(path, manifest, compact=True)
-    except BaseException:
-        if created_artifact and artifact != previous_artifact:
-            artifact.unlink(missing_ok=True)
-        raise
-    view = PinPlanView(path)
+    view = commit_store_selector(
+        path,
+        manifest,
+        source_bindings,
+        artifact,
+        created_artifact,
+        validate=lambda: PinPlanView(path),
+    )
     if previous_artifact is not None and previous_artifact != artifact:
         previous_artifact.unlink(missing_ok=True)
     return view

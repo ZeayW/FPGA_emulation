@@ -161,12 +161,17 @@ def publish_sqlite_store(
         return result
 
 
-def commit_store_selector(path, artifact, sources, payload, created, *, durable=None):
+def commit_store_selector(
+    path, artifact, sources, payload, created, *, durable=None, validate=None
+):
     """Commit a bounded selector; a rejected commit preserves its prior payload.
 
     If rollback itself fails, retain both generations and the recovery selector
-    for diagnosis. An error never reports a passing complete artifact set.
+    for diagnosis. An optional independent validator returns the published view;
+    its close method, if any, runs before a rejected generation is retired.
+    An error never reports a passing complete artifact set.
     """
+    sources = tuple(sources)
     if path.resolve() == payload.resolve() or (
         path.exists() and payload.exists() and os.path.samefile(path, payload)
     ):
@@ -174,6 +179,7 @@ def commit_store_selector(path, artifact, sources, payload, created, *, durable=
     backup = None
     backup_ready = False
     retain_recovery = False
+    checked = None
     had_previous = path.exists()
     try:
         validate_store_destination(path, sources)
@@ -189,13 +195,25 @@ def commit_store_selector(path, artifact, sources, payload, created, *, durable=
             backup_ready = True
         require_store_sources_unchanged(sources)
         write_json(path, artifact, compact=True, durable=durable)
-        if json_writes_are_durable() if durable is None else durable:
+        if validate is not None:
+            checked = validate()
+        require_store_sources_unchanged(sources)
+        effective_durable = json_writes_are_durable() if durable is None else durable
+        if effective_durable:
             directory = os.open(path.parent, os.O_RDONLY)
             try:
                 os.fsync(directory)
             finally:
                 os.close(directory)
+        return checked
     except BaseException:
+        close = getattr(checked, "close", None)
+        if callable(close):
+            try:
+                close()
+            except BaseException:
+                retain_recovery = True
+                raise
         if backup_ready:
             try:
                 os.replace(backup, path)

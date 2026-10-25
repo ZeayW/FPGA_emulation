@@ -8,6 +8,23 @@ from tests.native_build import emuflow_native, native_pipeline_api_test
 
 
 class NativeStageRuntimeTest(unittest.TestCase):
+
+    def test_primary_cluster_runtime_rejects_the_retired_unconsumed_v1(self):
+        binary = str(emuflow_native())
+        current = subprocess.run(
+            [binary, "check-runtime", "partition-cluster-columns-v2"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(current.returncode, 0, current.stderr)
+        old = subprocess.run(
+            [binary, "check-runtime", "partition-cluster-columns-v1"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(old.returncode, 0)
+        self.assertIn("schema", old.stderr)
+
     def test_schedule_store_runtime_supports_only_the_current_owner(self):
         binary = str(emuflow_native())
         current = subprocess.run([binary, "check-runtime", "tdm-schedule-store-v4"],

@@ -109,6 +109,16 @@ replacement and at parent-directory sync. If selector restoration itself fails,
 retain both SQL generations and the previous-selector recovery file instead of
 deleting the SQL referenced by the visible selector. The stage must report failure.
 
+`tests/test_phase6_selector_publication.py` applies the same late-failure gates to
+pin plans, position hints, electrical binding and Chimew bank input/report owners.
+Fail after selector replacement, change a bound source during replacement, interrupt
+the previous-selector backup, and fail rollback. Require the prior pair or complete
+recovery generations respectively. Keep each existing independent view validator;
+after it returns, changed sources must still reject publication. A returned SQLite
+reader must close before rejected-payload removal. If reader close itself fails,
+preserve both generations and the recovery selector. Exercise typed bank-input
+relocation with the same source and rollback gates.
+
 
 The noninstalled `scripts/validation/qualify_phase6_publication.py` executes the
 complete production Phase 6 API. Its bounded JSON request uses

@@ -135,8 +135,10 @@ certificates, physical handoffs and boundary/logic-segment/local-path timing
 stores use that same publication boundary and preserve bound input generations.
 Transport selectors and returned views share one file seal within the producer
 invocation; indexed Chimew inputs can be republished without restoring a Python graph.
-Cluster, timing-path and logic-segment identity selectors share a commit helper
-that preserves prior publications on failure and retains recovery files if rollback fails.
+Cluster, timing-path, logic-segment identity and Phase 6 auxiliary selectors share
+a commit helper that preserves prior publications on failure and retains recovery
+files if rollback fails. Native primary cluster columns require their current v2
+protocol; the unused v1 registration is retired.
 Assignment v1/v2 readers and the old JSON-to-v2 migration writer are retired;
 historical artifacts require their matching Git revision.
 Thin deployments borrow only maintained tool dependencies; old installations

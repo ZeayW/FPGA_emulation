@@ -162,7 +162,6 @@ constexpr RegisteredSchema schemas[] = {
     {"candidate-policy-request-v1", ArtifactEncoding::kBinary, 0x31514543464d5545ULL, 1},
     {"candidate-id-columns-v1", ArtifactEncoding::kBinary, 0x31544343464d5545ULL, 1},
     {"partition-cluster-request-v1", ArtifactEncoding::kBinary, 0x31515243464d5545ULL, 1},
-    {"partition-cluster-columns-v1", ArtifactEncoding::kBinary, 0x314c4350464d5545ULL, 1},
     {"patron-input-v1", ArtifactEncoding::kBinary, 0x314e525441504d45ULL, 1},
     {"chimew-bank-input-v1", ArtifactEncoding::kBinary, 0x0033434248434d45ULL, 1},
     {"chimew-group-input-v1", ArtifactEncoding::kBinary, 0x0033524748434d45ULL, 1},
