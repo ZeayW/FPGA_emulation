@@ -781,7 +781,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["gp_adjust_area_max_pin_opt_adjust_rate"], 1.6)
         self.assertEqual(config["gp_adjust_resource_area"], 0)
         self.assertEqual(manifest["routability_contract"], {
-            "provider": "openparf-rudy-pin-feedback-handoff-v12",
+            "provider": "openparf-rudy-pin-feedback-handoff-v13",
             "area_types": ["LUT", "FF"],
             "target_density": {
                 "value": 0.525,
@@ -806,6 +806,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             "resource_area_adjustment": False,
             "density_filler_sampling": {
                 "provider": "density-bin-bounded-fillers-v2",
+                "area_budget_provider": "target-density-filler-budget-v1",
                 "preferred_maximum_rows_per_area_type": 65536,
                 "maximum_bin_span": [0.5, 0.5],
             },

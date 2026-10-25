@@ -5,6 +5,38 @@ from pathlib import Path
 
 
 class OpenPARFFillerTest(unittest.TestCase):
+    def test_charge_matches_target_with_fixed_cells_and_blockages(self):
+        # The electrostatic operator scales unavailable and fixed charge by
+        # tau. All charge, including fillers, must therefore sum to tau*A.
+        for tau in (0.4, 0.75, 1.0):
+            die, blocked, fixed, movable = 1000.0, 200.0, 50.0, 150.0
+            filler = self._module().compute_filler_area(
+                die - blocked - fixed, movable, tau
+            )
+            charge = tau * (blocked + fixed) + movable + filler
+            self.assertTrue(math.isclose(charge, tau * die))
+
+    def test_low_density_does_not_fill_whole_device(self):
+        module = self._module()
+        movable, capacity, tau = 98049.1171875, 510720.0, 0.4
+        area = module.compute_filler_area(capacity, movable, tau)
+        count, size = module.compute_filler_geometry(
+            area, (math.sqrt(0.125), math.sqrt(0.125)), 65536,
+            (0.876953125 / 2, 1.21484375 / 2),
+        )
+        self.assertAlmostEqual(movable + count * size[0] * size[1],
+                               capacity * tau)
+        self.assertAlmostEqual(area, 106238.8828125)
+
+    def test_overfull_target_has_no_negative_fillers(self):
+        self.assertEqual(self._module().compute_filler_area(100, 60, 0.4), 0)
+
+    def test_invalid_density_budget_rejected(self):
+        for args in [(1, 0, 0), (1, 0, 1.1), (-1, 0, 0.4),
+                     (1, -1, 0.4), (1, 0, float('nan'))]:
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                self._module().compute_filler_area(*args)
+
     @staticmethod
     def _module():
         source = (

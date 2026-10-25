@@ -4,6 +4,28 @@
 import math
 
 
+def compute_filler_area(placeable_area, movable_area, target_density):
+    """Match movable plus filler charge to the target-density capacity.
+
+    Fixed and unavailable density is already scaled by target_density in
+    ElectricOverflow.fixedForward (also inherited by ElectricPotential).
+    Filling all remaining physical capacity would instead make the charge
+    field optimize a different occupancy than the overflow evaluator.
+    """
+
+    placeable_area, movable_area, target_density = map(
+        float, (placeable_area, movable_area, target_density)
+    )
+    if not all(math.isfinite(x) for x in
+               (placeable_area, movable_area, target_density)):
+        raise ValueError("density area budget must be finite")
+    if placeable_area < 0 or movable_area < 0:
+        raise ValueError("density areas must be non-negative")
+    if not 0 < target_density <= 1:
+        raise ValueError("target density must be in (0, 1]")
+    return max(target_density * placeable_area - movable_area, 0.0)
+
+
 def compute_filler_geometry(
     total_area, hint_size, max_fillers=None, max_size=None
 ):

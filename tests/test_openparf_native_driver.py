@@ -95,19 +95,32 @@ class OpenparfNativeDriverTest(unittest.TestCase):
             params=SimpleNamespace(
                 logic_area_type_names=["LUT", "FF"],
                 gp_max_logic_filler_bin_span=0.5,
+                target_density=0.4,
             ),
             placedb=SimpleNamespace(
                 getAreaTypeIndexFromName=lambda name: {"LUT": 0, "FF": 1}[name]
             ),
             data_cls=SimpleNamespace(
-                num_fillers=[370000, 478000],
-                filler_sizes=[[0.4385, 0.4385], [0.4185, 0.4185]],
-                bin_map_sizes=[[0.877, 1.215], [0.877, 1.215]],
+                num_fillers=[4, 8],
+                filler_sizes=[[0.5, 0.5], [0.5, 0.5]],
+                bin_map_sizes=[[1.0, 1.0], [1.0, 1.0]],
+                total_area=12.0,
+                initial_density_maps=[torch.tensor([2.0]), torch.tensor([2.0])],
+                total_fixed_areas=[0.0, 0.0],
+                total_movable_areas=[3.0, 2.0],
+                total_filler_areas=[1.0, 2.0],
             ),
         )
         result = validate_native_filler_geometry(engine)
         self.assertEqual(result["status"], "pass")
         self.assertLessEqual(result["resources"]["LUT"]["bin_span"][0], 0.5)
+        self.assertEqual(result['area_budget_provider'], 'target-density-filler-budget-v1')
+        # Full physical capacity used to pass sampling checks while imposing
+        # 100% charge on a target of 40%. Reject that runtime before solving.
+        engine.data_cls.total_filler_areas[0] = 7.0
+        with self.assertRaisesRegex(RuntimeError, 'differs from target density'):
+            validate_native_filler_geometry(engine)
+        engine.data_cls.total_filler_areas[0] = 1.0
         engine.data_cls.filler_sizes[0][0] = 2.0
         with self.assertRaisesRegex(RuntimeError, "exceeds the density sampling span"):
             validate_native_filler_geometry(engine)
@@ -349,6 +362,17 @@ class OpenparfNativeDriverTest(unittest.TestCase):
             path = Path(temporary) / "metrics.json"
             path.write_text(json.dumps(value), encoding="utf-8")
             self.assertEqual(validate_openparf_native_metrics(path), value)
+            sampling = value['policy']['density_filler_sampling']
+            sampling['area_budget_provider'] = 'target-density-filler-budget-v1'
+            budget = dict(placeable_area=10.0, movable_area=3.0,
+                          filler_area=1.0, target_density=0.4)
+            sampling['resources']['LUT']['area_budget'] = budget
+            path.write_text(json.dumps(value), encoding='utf-8')
+            self.assertEqual(validate_openparf_native_metrics(path), value)
+            budget['filler_area'] = 7.0
+            path.write_text(json.dumps(value), encoding='utf-8')
+            with self.assertRaisesRegex(RuntimeError, 'differs from target density'):
+                validate_openparf_native_metrics(path)
 
     def test_accepts_bounded_feasible_maximum_iteration(self):
         value = {

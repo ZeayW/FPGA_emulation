@@ -87,7 +87,8 @@ is the sole analytical whitespace control, so site filtering cannot compound
 it or predetermine where whitespace appears. Empty physical rows retain zero
 placement capacity; the driver checks the parsed native density area before
 solving. Logic filler sampling preserves its
-exact total area and limits each LUT/FF sample to half a density bin so the
+target-density area budget (`target_density * placeable_area - movable_area`)
+and limits each LUT/FF sample to half a density bin so the
 density field retains enough spatial resolution before exact legalization.
 Clock-region/site-type occupancy may use the complete nonoverlapping physical
 site capacity; routing headroom is measured by RWRoute instead of enforced by

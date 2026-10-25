@@ -5126,7 +5126,7 @@ def export_xilinx_openparf_atomic(
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "routability_contract": {
-            "provider": "openparf-rudy-pin-feedback-handoff-v12",
+            "provider": "openparf-rudy-pin-feedback-handoff-v13",
             "area_types": ["LUT", "FF"],
             "target_density": {
                 "value": target_density,
@@ -5157,6 +5157,7 @@ def export_xilinx_openparf_atomic(
             "resource_area_adjustment": False,
             "density_filler_sampling": {
                 "provider": "density-bin-bounded-fillers-v2",
+                "area_budget_provider": "target-density-filler-budget-v1",
                 "preferred_maximum_rows_per_area_type": _LOGIC_FILLER_LIMIT,
                 "maximum_bin_span": [0.5, 0.5],
             },

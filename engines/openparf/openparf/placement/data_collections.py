@@ -11,7 +11,7 @@ import math
 import numpy as np
 import torch
 from .metric import array2str, array2d2str
-from .filler import compute_filler_geometry
+from .filler import compute_filler_area, compute_filler_geometry
 from ..custom_data.chain_info import chain_info_cpp
 from ..custom_data.ssr_chain_info import ssr_chain_info_cpp
 import pdb
@@ -262,9 +262,10 @@ class DataCollections(object):
                             self.bin_map_dims[area_type])).to(device)
                     total_placeable_area = self.total_area - initial_density_map.sum(
                     ) - total_fixed_areas[area_type]
-                    self.total_filler_areas[area_type] = max(
-                        total_placeable_area -
-                        total_movable_areas[area_type], 0.0)
+                    self.total_filler_areas[area_type] = compute_filler_area(
+                        total_placeable_area,
+                        total_movable_areas[area_type],
+                        params.target_density)
                     # indices of instances for this area type
                     inst_ids = self.area_type_inst_groups[area_type]
                     # define a hint filler size

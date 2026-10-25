@@ -126,18 +126,57 @@ def validate_native_filler_geometry(engine: Any) -> dict[str, Any]:
                 f"OpenPARF {name} filler exceeds the density sampling span: "
                 f"size={size}, bin={bin_size}"
             )
+        data = engine.data_cls
+        available = (
+            float(data.total_area)
+            - _number(data.initial_density_maps[index].sum())
+            - _number(data.total_fixed_areas[index])
+        )
+        movable = _number(data.total_movable_areas[index])
+        filler = float(data.total_filler_areas[index])
+        target = float(engine.params.target_density)
+        budget = dict(placeable_area=available, movable_area=movable,
+                      filler_area=filler, target_density=target)
+        _validate_filler_area_budget(budget, count * size[0] * size[1])
         resources[name] = {
             "count": count,
             "size": size,
             "bin_size": bin_size,
             "bin_span": span,
+            "area_budget": budget,
         }
     return {
         "provider": "density-bin-bounded-fillers-v2",
         "status": "pass",
         "maximum_bin_span": [maximum_span, maximum_span],
         "resources": resources,
+        "area_budget_provider": "target-density-filler-budget-v1",
     }
+
+
+def _validate_filler_area_budget(budget: Any, sampled_area: float) -> None:
+    if not isinstance(budget, dict) or any(
+        isinstance(budget.get(key), bool)
+        or not isinstance(budget.get(key), (int, float))
+        or not math.isfinite(float(budget[key]))
+        for key in ("placeable_area", "movable_area", "filler_area", "target_density")
+    ):
+        raise RuntimeError("OpenPARF filler area budget is invalid")
+    available, movable, filler, target = (
+        float(budget[key]) for key in
+        ("placeable_area", "movable_area", "filler_area", "target_density")
+    )
+    expected = max(target * available - movable, 0.0)
+    if (
+        min(available, movable, filler) < 0 or not 0 < target <= 1
+        or not math.isclose(filler, expected, rel_tol=1e-6, abs_tol=1e-6)
+        or not math.isclose(sampled_area, filler, rel_tol=1e-6, abs_tol=1e-6)
+    ):
+        raise RuntimeError(
+            "OpenPARF filler area budget differs from target density: "
+            f"target={target}, available={available}, movable={movable}, "
+            f"filler={filler}, sampled={sampled_area}, expected={expected}"
+        )
 
 
 def _active_overflow_is_feasible(engine: Any, metric: Any) -> bool:
@@ -710,6 +749,14 @@ def validate_openparf_native_metrics(
                 raise RuntimeError(
                     "OpenPARF native density filler policy is invalid"
                 )
+        # Old immutable certificates retain their recorded full-capacity
+        # budget. New producers independently qualify the target budget.
+        if "area_budget_provider" in filler_sampling:
+            if filler_sampling["area_budget_provider"] != "target-density-filler-budget-v1":
+                raise RuntimeError("OpenPARF filler area budget provider is invalid")
+            _validate_filler_area_budget(
+                geometry.get("area_budget"), count * size[0] * size[1]
+            )
     stop_reason = value.get("stop_reason")
     globally_feasible = value.get("status") == "pass" and stop_reason in {
         "feasible-hpwl-patience",

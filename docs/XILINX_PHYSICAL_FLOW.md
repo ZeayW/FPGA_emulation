@@ -78,6 +78,16 @@ at zero without disabling SLL optimization or relaxing placement checks.
 OpenPARF applies a bounded square-root weight to large nets in its analytical
 placement objective. This guides placement without changing connectivity.
 The preferred logic-filler row limit may be exceeded when necessary to keep
+each sample small enough for the density grid. The filler budget is
+`max(target_density * placeable_area - movable_area, 0)`, where placeable
+area excludes unavailable and fixed area. The electrostatic operator already
+scales unavailable/fixed charge by the same target. For a feasible target,
+this makes total charge equal to target density times die area. Filling to
+full physical capacity would optimize a different density than the overflow
+metric. Native startup independently checks both the budget and sampled
+area; new convergence certificates record the budget and its provider.
+Historical certificates remain readable with their recorded policy.
+The sampling constraint keeps
 each LUT/FF filler within half a density bin. Native startup validates the
 actual filler count, size, bin size, and span, and the convergence certificate
 records those values. Preserving total filler area alone is insufficient:

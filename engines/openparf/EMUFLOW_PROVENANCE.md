@@ -66,5 +66,10 @@ distinct integration milestone.
 The sparse-direct-legalizer experiment remains an optional source patch and is
 not part of the default monorepo build.
 
+The Python density initialization uses target-density capacity when budgeting
+fillers. This matches the existing target-scaled fixed/background charge and
+overflow operator. Filler geometry retains the half-bin sampling bound; the
+EmuFlow driver independently validates the initial area budget before solving.
+
 Large router example netlists are omitted because they are input data rather
 than implementation source.
