@@ -24,10 +24,10 @@ if {[catch {
   file mkdir $out
   set_param general.maxThreads $threads
   if {[llength [get_parts -quiet $part]] != 1} {error "target part is not installed: $part"}
+  if {$emuflow_word_phy_directory ne ""} {source [file join $emuflow_script_directory word_native_physical.tcl]}
   if {$emuflow_start_checkpoint eq ""} {
     create_project -in_memory -part $part emuflow_indexed_partition
     if {$emuflow_word_phy_directory ne ""} {
-      source [file join $emuflow_script_directory word_native_physical.tcl]
       emuflow_word_prepare $emuflow_word_phy_directory
     }
     read_verilog $netlist
@@ -92,6 +92,10 @@ if {[catch {
   if {$errors != 0} {error "post-route DRC has $errors blocking violations"}
   set incomplete [get_nets -quiet -hier -filter {ROUTE_STATUS == UNROUTED || ROUTE_STATUS == PARTIAL || ROUTE_STATUS == CONFLICTS}]
   if {[llength $incomplete] != 0} {error "post-route design contains incomplete nets"}
+  # Explicit debug/qualification scratch for checkpoint-based timing exporters.
+  # Keep the original clock/margin constraints, including a timing-failing
+  # infrastructure attempt; a checkpoint itself is not an acceptance result.
+  if {$emuflow_retain_routed_checkpoint} {write_checkpoint -force "$out/routed.dcp"}
   set pairs 0
   if {$io_query ne ""} {
     set stream [open $io_query r]

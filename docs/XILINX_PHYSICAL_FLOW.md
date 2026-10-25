@@ -484,6 +484,21 @@ transfer remains the external link model; routed serial-pad/board/SI signoff is
 outside this qualification. Full-flow word execution remains rejected until
 complete-fanin event projection and independent global timing are integrated.
 
+Native-word synthesized continuations additionally compare the complete
+preparation's file population, native IP configurations, pin/XDC sources,
+logical bindings and startup-service contract. Both saved preparation seals
+must exist; a changed or missing native source rejects continuation. The common
+mapped netlist/function and checkpoint checks still apply.
+
+The word physical qualification explicitly retains a routed debug DCP after
+route/DRC checks and before timing exports alter delay constraints. The original
+clock/margin environment is therefore available to the existing standalone
+checkpoint timing exporters. A checkpoint alone is not a timing acceptance
+result; infrastructure checks and complete source-bound exports must still
+pass. The indexed API's `retain_routed_checkpoint` is false by default and is
+restricted to explicit active-run debug/qualification retention. Remove this
+replay input when the active investigation finishes, retaining compact evidence.
+
 The current fixed differential adapter supplies IBUFDS/OBUFDS boundaries; it
 does not implement the serializer/deserializer or forwarded-clock circuitry
 of the [8:1 serial PHY reference](HARDWARE_PLATFORM.md#serial-phy-time-units).

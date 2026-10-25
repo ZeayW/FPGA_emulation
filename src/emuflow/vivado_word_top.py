@@ -21,6 +21,8 @@ from .verilog import _identifier
 from .virtual_board import WORD_MODEL,WORD_WIRING_SCHEMA,_digest
 
 SCHEMA='emuflow.vivado-word-top-preparation/v1'
+WORD_TOP_FILES=('physical_top.sv','native-word-banks.sv','native-word-ips.tsv',
+    'native-word-fixed-io.xdc','fixed-io-query.tsv','native-word-boundaries.tsv','native-word-clocks.tsv')
 SERVICE_INPUTS=('__emuflow_riu_clk','__emuflow_all_tx_ready',
     '__emuflow_all_plls_locked','__emuflow_alignment_enable','__emuflow_payload_enable')
 SERVICE_OUTPUTS=('__emuflow_local_tx_ready','__emuflow_local_rx_ready',
@@ -127,8 +129,7 @@ def write_vivado_word_top(ir_path:Path,output:Path,*,fpga,board,plan):
                 if name in ports or name in physical:raise ValidationError('native word physical port collides')
                 physical[name]=direction
     output.mkdir(parents=True,exist_ok=True)
-    names=('physical_top.sv','native-word-banks.sv','native-word-ips.tsv',
-        'native-word-fixed-io.xdc','fixed-io-query.tsv','native-word-boundaries.tsv','native-word-clocks.tsv')
+    names=WORD_TOP_FILES
     if any((output/name).exists()for name in names):raise ValidationError('native word top requires fresh output files')
     declarations=[]
     for name,port in ports.items():

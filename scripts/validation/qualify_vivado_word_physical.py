@@ -84,7 +84,7 @@ def main():
     args=parser.parse_args();root=args.out.resolve();root.mkdir(parents=True,exist_ok=False)
     inputs=prepare(root)
     report=run_indexed_vivado_partition(**inputs,output_dir=root/'physical',executable=args.vivado,
-        place_directive=args.place_directive,dut_frequency_mhz=10.0)
+        place_directive=args.place_directive,dut_frequency_mhz=10.0,retain_routed_checkpoint=True)
     write_json(root/'qualification.json',{'status':'pass','scope':'synthetic-native-word-physical-and-query-integration-only',
         'tool':report['tool'],'result':report['result'],'word_phy':report['word_phy_implementation'],
         'source_cell_coverage':report['cell_coverage'],'local_timing':report['local_path_timing']['import']})

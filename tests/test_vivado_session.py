@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 from emuflow.errors import ValidationError
-from emuflow.io import file_sha256, read_json
+from emuflow.io import file_sha256, read_json, write_json
 from emuflow.vivado_session import (
     SCHEMA, prepare_frontiers, confirm_frontiers, prepare_timing, prepare_manifest, _tcl_word,
 )
@@ -173,6 +173,36 @@ def test_continuation_rejects_changed_runtime_source_or_checkpoint(tmp_path):
     source_report.write_text(json.dumps(report))
     with pytest.raises(ValidationError, match="checkpoint digest"):
         validate_synthesized_continuation(checkpoint,"0"*64,source_report,report,verilog,new)
+    from emuflow.vivado_word_top import SCHEMA as WORD_TOP_SCHEMA,WORD_TOP_FILES
+    for root in (old,new):
+        artifacts={}
+        for name in (*WORD_TOP_FILES,'fixed-io-timing-map.tsv','bank19_tx.tsv'):
+            (root/name).write_text('frozen word input '+name)
+            if name!='fixed-io-timing-map.tsv':artifacts[name]={'sha256':file_sha256(root/name)}
+        write_json(root/'native-word-preparation.json',{'schema':WORD_TOP_SCHEMA,'status':'pass',
+            'fpga':'fpga0','part':'xcpart','top':'dut','native_phy':{'rx_alignment':'word-one-stage-v1'},
+            'source_board_sha256':'b'*64,'source_word_plan_sha256':'c'*64,'external_services':{},'artifacts':artifacts})
+    assert 'bank19_tx.tsv'in validate()['input_contracts']
+    (new/'bank19_tx.tsv').write_text('another PHY configuration')
+    with pytest.raises(ValidationError,match='native word continuation input file differs'):
+        validate()
+    changed=read_json(new/'native-word-preparation.json')
+    changed['artifacts']['bank19_tx.tsv']['sha256']=file_sha256(new/'bank19_tx.tsv')
+    write_json(new/'native-word-preparation.json',changed)
+    with pytest.raises(ValidationError,match='native word continuation input seal differs'):
+        validate()
+
+
+def test_routed_debug_checkpoint_is_explicit_and_keeps_the_native_control_contract(tmp_path):
+    runtime={'fabric_clock':{'period_ns':5},'virtual_dut_clocks':{'clk':{'target_period_ns':20,'nominal_period_ns':200}},
+        'timing_model':{'fabric_clock_port':'fabric_clk','dut_clock_ports':['clk']}}
+    args=dict(fpga='fpga0',part='xcpart',mapped_index=tmp_path/'mapped.sqlite',functions=tmp_path/'functions.sqlite',
+        mapped_sha256='a'*64,queries={},runtime=runtime,ports={'clk','fabric_clk'})
+    config=prepare_manifest(tmp_path,**args,retain_routed_checkpoint=True)
+    assert read_json(tmp_path/'native-session.json')['retain_routed_checkpoint']is True
+    assert 'set emuflow_retain_routed_checkpoint "true"'in config.read_text()
+    with pytest.raises(ValidationError,match='retention must be Boolean'):
+        prepare_manifest(tmp_path,**args,retain_routed_checkpoint=1)
 
 
 @pytest.mark.skipif(TCL86 is None, reason="native stage bridge requires Tcl 8.6")

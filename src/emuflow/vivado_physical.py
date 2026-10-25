@@ -124,6 +124,25 @@ def validate_synthesized_continuation(checkpoint: Path, expected_sha256: str, so
     expected_files = ["runtime.xdc"]
     if (prepared_output/"physical_top.sv").is_file():
         expected_files.extend(["physical_top.sv","fixed-io-query.tsv","fixed-io-timing-map.tsv"])
+    word_reports=[root/'native-word-preparation.json'for root in (checkpoint.parent,prepared_output)]
+    if any(path.exists()for path in word_reports):
+        from .vivado_word_top import SCHEMA as WORD_TOP_SCHEMA,WORD_TOP_FILES
+        if not all(path.is_file()and path.stat().st_size<=1024*1024 for path in word_reports):
+            raise ValidationError('native word continuation requires both bounded preparation seals')
+        old_word,new_word=(read_json(path)for path in word_reports)
+        fields=('schema','status','fpga','part','top','native_phy','source_board_sha256','source_word_plan_sha256','external_services')
+        if any(old_word.get(key)!=new_word.get(key)for key in fields)or old_word.get('schema')!=WORD_TOP_SCHEMA:
+            raise ValidationError('native word continuation PHY/source preparation differs')
+        old_artifacts,new_artifacts=old_word['artifacts'],new_word['artifacts']
+        if set(old_artifacts)!=set(new_artifacts)or not set(WORD_TOP_FILES)<=set(new_artifacts)or not len(new_artifacts)<=64:
+            raise ValidationError('native word continuation source-file population differs')
+        for name in sorted(new_artifacts):
+            if Path(name).name!=name or old_artifacts[name]['sha256']!=new_artifacts[name]['sha256']:
+                raise ValidationError('native word continuation input seal differs: '+name)
+            for root,owner in ((checkpoint.parent,old_artifacts),(prepared_output,new_artifacts)):
+                if not(root/name).is_file()or file_sha256(root/name)!=owner[name]['sha256']:
+                    raise ValidationError('native word continuation input file differs: '+name)
+            if name not in expected_files:expected_files.append(name)
     for name in expected_files:
         old, new = checkpoint.parent/name, prepared_output/name
         if not old.is_file() or file_sha256(old) != file_sha256(new):
@@ -144,6 +163,7 @@ def run_indexed_vivado_partition(
     synthesized_checkpoint: Path | None = None, synthesized_checkpoint_sha256: str | None = None,
     continuation_source_report: Path | None = None, dut_frequency_mhz: float | None = None,
     word_phy_plan_path:Path|None=None,word_wiring_path:Path|None=None,
+    retain_routed_checkpoint:bool=False,
 ) -> dict[str, Any]:
     from .vivado_backend import _resolve_vivado, _read_metrics, _integer, _number, vivado_runtime_xdc, write_vivado_boundary_timing_query
     from .vivado_physical_timing import import_indexed_vivado_boundary, import_vivado_local_timing
@@ -154,8 +174,7 @@ def run_indexed_vivado_partition(
     word_mode=word_phy_plan_path is not None or word_wiring_path is not None
     if word_mode and (word_phy_plan_path is None or word_wiring_path is None or virtual_io_contract is not None):
         raise ValidationError('native word implementation requires its plan and wiring together, without a bit-adapter contract')
-    if word_mode and any(value is not None for value in continuation):
-        raise ValidationError('native word synthesized continuation requires a dedicated source/IP admission contract')
+    if not isinstance(retain_routed_checkpoint,bool):raise ValidationError('routed-checkpoint retention must be explicit Boolean')
     if any(value is not None for value in continuation) and not all(value is not None for value in continuation):
         raise ValidationError("synthesized continuation requires checkpoint, digest and source report together")
     from .emuir_storage import is_emuir_sqlite
@@ -252,7 +271,8 @@ def run_indexed_vivado_partition(
     configuration = prepare_manifest(output_dir,fpga=fpga,part=part,mapped_index=index_path,functions=functions_path,
         mapped_sha256=mapped_report["mapped_index"]["sha256"],queries=queries,runtime=runtime,ports=ports,
         synthesized_checkpoint=synthesized_checkpoint,synthesized_checkpoint_sha256=synthesized_checkpoint_sha256,
-        dut_frequency_mhz=dut_frequency_mhz,word_phy_directory=output_dir if word_mode else None)
+        dut_frequency_mhz=dut_frequency_mhz,word_phy_directory=output_dir if word_mode else None,
+        retain_routed_checkpoint=retain_routed_checkpoint)
     threads = int(os.environ.get("EMUFLOW_VIVADO_THREADS", "2"))
     if threads < 1:
         raise ValidationError("Vivado thread count must be positive")
@@ -354,6 +374,10 @@ def run_indexed_vivado_partition(
         for name in ('native-word-preparation.json','native-word-clock-census.tsv'):
             path=output_dir/name
             artifacts[name]={'path':str(path),'sha256':file_sha256(path),'bytes':path.stat().st_size}
+    if retain_routed_checkpoint:
+        path=output_dir/'routed.dcp'
+        if not path.is_file():raise ValidationError('requested routed debug checkpoint is missing')
+        artifacts[path.name]={'path':str(path),'sha256':file_sha256(path),'bytes':path.stat().st_size}
     result = {"schema": PHYSICAL_PARTITION_RESULT_SCHEMA, "status": "pass",
         "identity": {"backend": "vivado", "fpga": fpga, "part": part},
         "analysis_scope": {"implementation_mode": "out-of-context",
@@ -385,7 +409,7 @@ def run_indexed_vivado_partition(
         "implementation": implementation, "continuation": continuation_validation, "input_identity": input_identity,
         "implementation_timing": implementation_timing,
         "implementation_options": {"place_directive": place_directive, "route_directive": route_directive,
-                                   "dut_frequency_mhz": dut_frequency_mhz},
+                                   "dut_frequency_mhz": dut_frequency_mhz,"retain_routed_checkpoint":retain_routed_checkpoint},
         "native_session": {"mode":"current-design-stage-exports-v1",
             "scripts_sha256": {name:file_sha256(_vivado_script(name)) for name in native_scripts},
             "planner_sha256":file_sha256(Path(__file__).with_name("vivado_session.py"))},
