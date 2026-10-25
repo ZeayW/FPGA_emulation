@@ -1,0 +1,176 @@
+"""The offline I/O oracle exercises the production API, never another flow."""
+
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import shutil
+import os
+import sqlite3
+from contextlib import closing
+
+import pytest
+
+from emuflow.emuir_compact import write_compact_emuir
+from emuflow.errors import ValidationError
+from emuflow.phase3_assignment_index import write_phase3_assignment_index
+from tests.native_build import emuflow_native
+from tests.schedule_store_fixture import write_tdm_schedule_storage
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location(
+    "phase6_publication_qualification",
+    ROOT / "scripts/validation/qualify_phase6_publication.py",
+)
+QUALIFY = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(QUALIFY)
+
+
+def prepare(root, monkeypatch):
+    from tests.test_phase6 import Phase6Test
+
+    case = Phase6Test()
+    case.setUp()
+    ir, assignment, schedule, platform = (
+        root / name
+        for name in (
+            "design.emuir.sqlite",
+            "assignment.sqlite",
+            "schedule.json",
+            "platform.json",
+        )
+    )
+    write_compact_emuir(ir, case.ir.to_dict())
+    write_phase3_assignment_index(assignment, case.ir, case.assignment)
+    (root / "assignment.json").write_text(json.dumps(case.assignment))
+    write_tdm_schedule_storage(schedule, case.schedule)
+    platform.write_text(json.dumps(case.platform.to_dict()))
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+    ).strip()
+    # An explicit unit-test installation; deployed qualification requires the
+    # real runtime's exact-source manifest, checked by the same code below.
+    runtime = root / "fixture-runtime"
+    (runtime / "bin").mkdir(parents=True)
+    (runtime / "bin/emuflow-native").symlink_to(emuflow_native())
+    (runtime / "SOURCE_COMMIT").write_text(commit + "\n")
+    monkeypatch.setenv("EMUFLOW_NATIVE_ROOT", str(runtime))
+    return {
+        "schema": "emuflow.phase6-publication-qualification/v1",
+        "source_commit": commit,
+        "workspace": str(root),
+        "clock_periods": {clock["id"]: 10.0 for clock in case.ir.value["clocks"]},
+        "expected_design": case.ir.value["design"]["name"],
+        "expected_platform": case.platform.name,
+        "minimum_instances": 1,
+        "expected_fpgas": sorted(fpga.id for fpga in case.platform.fpgas),
+        "inputs": {
+            "ir": str(ir),
+            "assignment": str(assignment),
+            "schedule": str(schedule),
+            "platform": str(platform),
+        },
+    }
+
+
+def test_both_qualification_modes_run_the_same_complete_api(tmp_path, monkeypatch):
+    request = prepare(tmp_path, monkeypatch)
+    results = []
+    for mode in ("python-reference", "native"):
+        path = tmp_path / f"{mode}.request.json"
+        path.write_text(
+            json.dumps({**request, "mode": mode, "output": str(tmp_path / mode)})
+        )
+        result = QUALIFY.qualify(path, tmp_path / f"{mode}.result.json")
+        assert result["status"] == "pass" and result["inputs_unchanged"]
+        assert result["api_wall_seconds"] > 0
+        assert result["design"] == request["expected_design"]
+        assert len(result["publications"]) == 2
+        assert all(
+            ("native_metrics" in item) == (mode == "native")
+            for item in result["publications"]
+        )
+        results.append(result)
+    for name in ("split", "transport"):
+        assert (
+            Path(results[0]["artifacts"][name]).read_bytes()
+            == Path(results[1]["artifacts"][name]).read_bytes()
+        )
+    assert all(
+        item["logical_identity"] for item in QUALIFY.compare_results(*results).values()
+    )
+
+
+def test_relation_comparison_accepts_page_layout_changes_and_rejects_record_changes(
+    tmp_path,
+):
+    first, second = tmp_path / "first.sqlite", tmp_path / "second.sqlite"
+    with closing(sqlite3.connect(first)) as db, db:
+        db.execute("CREATE TABLE records(seq INTEGER PRIMARY KEY,value TEXT)")
+        db.executemany("INSERT INTO records VALUES (?,?)", [(1, "one"), (2, "two")])
+    shutil.copyfile(first, second)
+    with closing(sqlite3.connect(second)) as db:
+        db.execute("PRAGMA page_size=16384")
+        db.execute("VACUUM")
+    result = QUALIFY.compare_sqlite_records(first, second)
+    assert not result["file_identity"] and result["logical_identity"]
+    with closing(sqlite3.connect(second)) as db, db:
+        db.execute("UPDATE records SET value='different' WHERE seq=2")
+    with pytest.raises(ValidationError, match="records differ"):
+        QUALIFY.compare_sqlite_records(first, second)
+
+
+def test_workspace_measurement_deduplicates_aliases_and_excludes_borrowed_symlinks(
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    borrowed = tmp_path / "borrowed"
+    borrowed.write_bytes(b"b" * 8192)
+    (workspace / "borrowed").symlink_to(borrowed)
+    owned = workspace / "owned"
+    with owned.open("w+b") as stream:
+        stream.write(b"a" * 4096)
+        stream.flush()
+        alias = workspace / "alias"
+        os.link(owned, alias)
+        assert QUALIFY.workspace_bytes(workspace)[0] == 4096
+        owned.unlink()
+        if Path("/proc/self/fd").is_dir():
+            alias.unlink()
+            assert QUALIFY.workspace_bytes(workspace)[0] == 4096
+
+
+def test_native_failure_never_selects_the_reference_publisher(tmp_path, monkeypatch):
+    from emuflow import split_netlist_storage
+
+    request = prepare(tmp_path, monkeypatch)
+    path = tmp_path / "request.json"
+    path.write_text(
+        json.dumps({**request, "mode": "native", "output": str(tmp_path / "native")})
+    )
+
+    def fail(*args, **kwargs):
+        raise ValidationError("injected native publisher failure")
+
+    monkeypatch.setattr(split_netlist_storage, "publish_sqlite_store", fail)
+    result_path = tmp_path / "result.json"
+    with pytest.raises(ValidationError, match="injected native publisher failure"):
+        QUALIFY.qualify(path, result_path)
+    assert not result_path.exists()
+
+
+def test_qualification_rejects_wrong_source_without_starting_a_flow(tmp_path):
+    request = tmp_path / "request.json"
+    request.write_text(
+        json.dumps(
+            {
+                "schema": "emuflow.phase6-publication-qualification/v1",
+                "mode": "native",
+                "source_commit": "0" * 40,
+            }
+        )
+    )
+    with pytest.raises(ValidationError, match="source commit"):
+        QUALIFY.qualify(request, tmp_path / "result.json")

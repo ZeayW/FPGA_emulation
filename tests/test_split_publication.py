@@ -11,13 +11,14 @@ from emuflow.errors import ValidationError
 from emuflow.phase3_assignment_index import write_phase3_assignment_index
 from emuflow.tdm_schedule_storage import read_tdm_schedule
 from tests.schedule_store_fixture import write_tdm_schedule_storage
-from tests.test_phase6 import Phase6Test
 
 
 @pytest.mark.parametrize("changed", ["none", "ir", "assignment", "schedule"])
 def test_split_publication_keeps_prior_generation_when_an_input_changes(
     tmp_path, changed
 ):
+    from tests.test_phase6 import Phase6Test
+
     case = Phase6Test()
     case.setUp()
     ir, assignment, selector = (

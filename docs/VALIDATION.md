@@ -52,6 +52,39 @@ A zero-combinational-cut flow is a compatibility test, not Static Exact
 feature evidence. Real-design qualification must use naturally selected cuts,
 not assignments forced to make a feature appear exercised.
 
+## Native store publication qualification
+
+The noninstalled `scripts/validation/qualify_phase6_publication.py` executes the
+complete production Phase 6 API. Its bounded JSON request uses
+`emuflow.phase6-publication-qualification/v1` and declares the source commit,
+workspace, fresh output directory, current typed schedule, compact EmuIR,
+assignment, BoardDB, explicit clock periods, expected design/platform/FPGA IDs
+and a positive instance floor. Static Exact requests also freeze the semantic
+contract identity. The selected native runtime must name the same
+source revision. Temporary files remain inside the invocation workspace.
+
+Both qualification modes use identical row construction and independent
+validators. `native` calls the shared publisher. `python-reference` replaces
+only closed-file fsync/rename with the prior I/O boundary inside that isolated
+qualification process. No production option or error fallback selects this
+reference. This comparison measures publication integration overhead, not a
+different scheduler, split algorithm or physical backend.
+
+Run each arm in a separate process. The tool measures complete API wall time,
+sampled process-tree RSS and workspace logical/allocated file bytes. Its Linux
+disk sampler includes the producer's unlinked workspace file descriptors and
+deduplicates hardlinked inodes; borrowed symlinks are excluded. Record sampling
+and CPU scopes explicitly; these samples are not guaranteed high-water values.
+`compare_results()` requires matching source/configuration, all generated RTL/XDC
+hashes and complete records in both SQLite owners. It hashes each store once;
+different page layouts require exact typed-field joins in both directions rather
+than being treated as semantic changes. Unknown column/key contracts and changed
+generations fail closed. Three alternating pairs must meet the shared-core
+integration threshold of at most 5% wall-time regression. Preserve compact
+identities, comparison and resource evidence, then retire the invocation's
+scratch after its processes exit. Component qualification does not establish
+complete Phase 1--7/7C, physical or global timing acceptance.
+
 ## Native producer differential
 
 The offline command
