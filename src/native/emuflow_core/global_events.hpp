@@ -6,4 +6,8 @@ namespace emuflow::core {
 // owners. The index contains offsets/identities, never another arc population.
 void IndexGlobalEvents(const ArtifactRef& events,const std::string& output);
 void ExportGlobalEvents(const std::vector<ArtifactRef>& inputs,const std::string& output);
+void ImportGlobalMeasurements(const std::vector<ArtifactRef>& inputs,const std::string& output);
+void AuditGlobalMeasurements(const std::vector<ArtifactRef>& inputs,const std::string& output);
+void PublishGlobalQor(const std::vector<ArtifactRef>& inputs,const std::string& output);
+void ValidateGlobalQor(const std::vector<ArtifactRef>& inputs,const std::string& output);
 }

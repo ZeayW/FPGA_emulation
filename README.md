@@ -407,7 +407,9 @@ baseline Phase 6, and OpenSTA global physical timing. Global timing consumes
 complete, contiguous original-path bundles with concrete scheduled events.
 Invocation-owned event stores feed shared-core validation, bundle compression
 and OpenSTA model export without retaining whole check/identity arrays in Python.
-Measurement import and final result aggregation still use Python adapters.
+The shared core imports representative engine scalars, restores all original
+identities, reduces WNS/TNS and publishes typed QoR records. Python still binds
+physical source facts and implements remaining phase adapters; W6/W7 are unfinished.
 Historical regrouping and schedule reconstruction fallbacks are retired. See the
 [global timing contract](docs/global-opensta-qualification.md#current-event-stream-contract).
 CLI, Python phase APIs and experiment configurations share these defaults;

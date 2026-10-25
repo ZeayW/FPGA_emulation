@@ -1118,16 +1118,15 @@ def validate_multi_fpga_flow_bundle(
                 flow_root, candidate_link_timing, "board-link timing"
             )
 
-    stored_qor = read_json(
-        _checked_flow_member(flow_root, Path("runtime/qor_report.json"), "QoR report")
-    )
-    standalone_sta = stored_qor.get("timing", {}).get("global_opensta", {}).get("execution") == "standalone"
+    from .qor_storage import qor_validation_proof
+    stored_qor_path = _checked_flow_member(flow_root, Path("runtime/qor_report.json"), "QoR report")
+    stored_proof, standalone_sta = qor_validation_proof(stored_qor_path)
     if physical_summary_path is not None and not standalone_sta:
         raise ValidationError(
             "physical terminal validation requires standalone OpenSTA evidence"
         )
     if standalone_sta:
-        for name in ("measurements.tsv", "opensta.log"):
+        for name in ("measurements.json", "opensta.log"):
             _checked_flow_member(flow_root, Path("runtime/global-opensta") / name,
                                  "standalone OpenSTA result")
     with tempfile.TemporaryDirectory(prefix="emuflow-flow-validate-") as temporary:
@@ -1146,8 +1145,8 @@ def validate_multi_fpga_flow_bundle(
             global_sta_results_dir=flow_root / "runtime/global-opensta" if standalone_sta else None,
             global_timing_engine="opensta",
         )
-        replay_qor = read_json(Path(temporary) / "qor_report.json")
-    if replay_qor != stored_qor:
+        replay_proof, _ = qor_validation_proof(Path(temporary) / "qor_report.json")
+    if replay_proof != stored_proof:
         raise ValidationError("independent Phase 7C QoR replay disagrees")
     if replay.get("status") != report["runtime"].get("status"):
         raise ValidationError("independent Phase 7C status replay disagrees")

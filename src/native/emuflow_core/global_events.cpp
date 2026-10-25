@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iomanip>
 #include <locale>
+#include <limits>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -141,7 +142,7 @@ void IndexGlobalEvents(const ArtifactRef& input,const std::string& output) {
     if(observed++)Hash(path_ids,",");Hash(path_ids,JsonQuoteUtf8(Text(path_rows,1)));
     Object record{{"seq",seq},{"path",Text(path_rows,1)}};
     if(mode&2) {
-      const auto scope=Number(path_rows,3),cone=Number(path_rows,6);const auto period=path_rows.Real(5);
+      const auto scope=Number(path_rows,3),cone=Number(path_rows,6);const auto period=path_rows.TypedReal(5);
       Check(scope<=1 && cone<=1 && (path_rows.Text(8)=="real" || path_rows.Text(8)=="integer") &&
           std::isfinite(period) && period>0,"path metadata period/scope is invalid");
       record.emplace("representative_path",Text(path_rows,2));record.emplace("path_scope",scope);
@@ -340,5 +341,279 @@ void ExportGlobalEvents(const std::vector<ArtifactRef>& inputs,const std::string
       {"implementation_id","native-global-event-export-v1"},{"directory",fs::absolute(final).string()},
       {"checks",count},{"delay_cells",delays.size()},{"logical_sha256",JsonText(index.database(),header,"$.logical_sha256")},{"files",std::move(files)}}).Encode();
   PublishTextArtifact(output,inputs,[&](std::ostream& stream){stream<<manifest<<'\n';});directory.committed=true;
+}
+}  // namespace emuflow::core
+
+namespace emuflow::core {
+namespace {
+using Scalars=std::array<double,3>;
+void AttachFacts(SqliteDatabase& db,const std::vector<ArtifactRef>& inputs) {
+  for(const auto& entry:std::array<std::pair<int,const char*>,2>{{{0,"facts"},{1,"idx"}}}) {
+    auto attach=db.Prepare("ATTACH DATABASE ? AS "+std::string(entry.second));
+    attach.BindText(1,SqliteImmutableUri(inputs[entry.first].path()));attach.Execute();
+  }
+  db.Execute("PRAGMA cache_size=-8192; PRAGMA facts.cache_size=-8192; PRAGMA idx.cache_size=-8192; PRAGMA temp_store=FILE");
+}
+std::string IndexHeader(const std::vector<ArtifactRef>& inputs) {
+  SqliteStore index(inputs[1]);RequireIndexSource(inputs[0],index.database());return Metadata(index.database(),"header");
+}
+Scalars ReadScalars(const std::string& bytes) {
+  Check(bytes.size()==24,"measurement payload is malformed");Scalars result;std::memcpy(result.data(),bytes.data(),24);
+  for(auto value:result)Check(std::isfinite(value),"measurement is nonfinite");return result;
+}
+std::string ScalarBytes(const Scalars& numbers) {return std::string(reinterpret_cast<const char*>(numbers.data()),24);}
+class ExactSum {
+ public:
+  void Add(double value) {
+    std::size_t used=0;
+    for(double partial:partials_) {
+      if(std::abs(value)<std::abs(partial))std::swap(value,partial);
+      const double high=value+partial,low=partial-(high-value);
+      Check(std::isfinite(high),"numerical sum overflows");if(low)partials_[used++]=low;value=high;
+    }
+    partials_.resize(used);if(value)partials_.push_back(value);
+  }
+  double Finish() const {
+    auto n=partials_.size();if(!n)return 0.0;double high=partials_[--n],low=0;
+    while(n) {const double x=high,y=partials_[--n];high=x+y;low=y-(high-x);if(low)break;}
+    if(n && ((low<0 && partials_[n-1]<0)||(low>0 && partials_[n-1]>0))) {
+      const double y=low*2,x=high+y;if(x-high==y)high=x;
+    }
+    Check(std::isfinite(high),"numerical sum overflows");return high;
+  }
+ private:
+  std::vector<double> partials_;
+};
+void VerifyScalars(const Numbers& source,const Scalars& actual) {
+  ExactSum sum;for(std::size_t i=2;i<source.size();++i)sum.Add(source.At(i));
+  const double arrival=sum.Finish(),required=source.At(1)-source.At(0);
+  const Scalars expected{arrival,required,required-arrival};
+  for(std::size_t i=0;i<3;++i)Check(std::isfinite(expected[i]) &&
+      std::abs(actual[i]-expected[i])<=std::max(1e-3,4*std::ldexp(1.0,-23)*std::abs(expected[i])),
+      "event binding disagrees with engine measurement");
+}
+class TsvInput {
+ public:
+  explicit TsvInput(const std::string& path):stream_(path,std::ios::binary) {
+    Check(bool(stream_),"cannot read engine measurements");std::string header;Check(Line(header) && header=="endpoint\tarrival_ns\trequired_ns\tslack_ns","invalid measurements header");
+  }
+  Scalars Take(Integer index) {
+    std::string line;Check(Line(line),"missing/unconstrained engine endpoints");
+    const auto split=line.find('\t');Check(split!=std::string::npos && line.substr(0,split)=="o"+std::to_string(index),"duplicate/malformed engine endpoint");
+    Scalars values;std::size_t begin=split+1;
+    for(int column=0;column<3;++column) {
+      const auto end=line.find('\t',begin);Check((end==std::string::npos)==(column==2),"malformed engine measurement columns");
+      const auto text=line.substr(begin,end==std::string::npos?end:end-begin);Check(!text.empty(),"empty engine measurement");
+      for(char c:text)Check((c>='0' && c<='9') || c=='e' || c=='E' || c=='+' || c=='-' || c=='.' || c==' ' || c=='\r' || c=='\v' || c=='\f',"invalid engine number");
+      static const locale_t locale=newlocale(LC_NUMERIC_MASK,"C",nullptr);Check(locale!=nullptr,"cannot create measurement numeric locale");
+      char* rest=nullptr;values[column]=strtod_l(text.c_str(),&rest,locale);
+      Check(rest!=text.c_str(),"invalid engine measurement");while(*rest==' ' || *rest=='\r' || *rest=='\v' || *rest=='\f')++rest;
+      Check(!*rest && std::isfinite(values[column]),"nonfinite/malformed engine measurement");begin=end+1;
+    }
+    return values;
+  }
+  std::string Finish() {std::string extra;Check(!Line(extra),"extra engine endpoints");return Hex(hash_);}
+ private:
+  bool Line(std::string& line) {
+    char buffer[4097];stream_.getline(buffer,sizeof(buffer));const auto size=stream_.gcount();
+    if(!size && stream_.eof())return false;
+    Check(!stream_.bad() && (stream_.good() || stream_.eof()),"oversized/unreadable engine measurement line");
+    line.assign(buffer,size-(stream_.eof()?0:1));Check(line.find('\0')==std::string::npos,"NUL in engine measurements");
+    Hash(hash_,line);if(!stream_.eof())Hash(hash_,"\n");if(!line.empty() && line.back()=='\r')line.pop_back();return true;
+  }
+  std::ifstream stream_;Sha256 hash_;
+};
+struct Metric {
+  double wns=std::numeric_limits<double>::infinity();std::string worst;Integer negative=0;ExactSum sum;
+  void Add(const std::string& path,double slack) {
+    if(slack<wns || (slack==wns && path<worst)){wns=slack;worst=path;}
+    if(slack<0){++negative;sum.Add(slack);}
+  }
+  JsonRecord Record() const {return Object{{"wns_ns",wns},{"worst_path",worst},{"negative_paths",negative},{"original_path_tns_ns",sum.Finish()}};}
+};
+struct Reduction {
+  Integer paths=0,checks=0,local=0,bounds=0,failures=0;double maximum=0;Metric target,runtime;std::string measurement_sha;
+  JsonRecord Record() const {return Object{{"paths",paths},{"checks",checks},{"local_paths",local},{"bounds_paths",bounds},{"event_failures",failures},
+      {"maximum_delay_ns",maximum},{"target",target.Record()},{"runtime",runtime.Record()},{"measurements_sha256",measurement_sha}};}
+};
+using PathConsumer=std::function<void(Integer,SqliteStatement&,const Scalars&,const Scalars&)>;
+Reduction ReduceMeasurements(SqliteDatabase& db,SqliteDatabase& index,const std::string& header,bool verify,const PathConsumer& consume={}) {
+  const auto expected_checks=JsonNumber(index,header,"$.checks"),expected_paths=JsonNumber(index,header,"$.paths"),expected_reps=JsonNumber(index,header,"$.representative_checks");
+  Sha256 digest;Hash(digest,"emuflow.global-measurements-logical-binary/v1\n");Hash(digest,JsonText(index,header,"$.logical_sha256"));
+  auto values=db.Prepare("SELECT seq,typeof(numbers),numbers FROM measurements ORDER BY seq");Integer seen=0;
+  while(values.Step()) {Check(Number(values,0)==seen++ && values.Text(1)=="blob","measurement sequence/type is invalid");const auto bytes=values.Blob(2);(void)ReadScalars(bytes);HashInteger(digest,seen-1);Hash(digest,bytes);}
+  Check(seen==expected_reps,"representative measurement coverage disagrees");
+  Reduction result;result.measurement_sha=Hex(digest);
+  auto paths=db.Prepare("SELECT p.seq,p.path,p.representative_path,p.path_scope,p.clock_domain,p.target_period_ns,p.cone_bound,p.interconnect_delay_model,i.first_check,i.check_count,i.representative_first_check,i.engine_first_check FROM facts.paths p JOIN idx.path_index i ON i.path_seq=p.seq ORDER BY p.path");
+  auto representative=db.Prepare("SELECT i.check_count,i.engine_first_check FROM facts.checks c JOIN idx.path_index i ON i.path_seq=c.path_seq WHERE c.seq=? AND i.first_check=c.seq AND i.representative_first_check=c.seq");
+  auto checks=db.Prepare("SELECT c.seq,c.role,c.numbers,r.role,r.numbers,m.numbers FROM facts.checks c JOIN facts.checks r ON r.seq=?3+c.seq-?1 JOIN measurements m ON m.seq=?4+c.seq-?1 WHERE c.seq>=?1 AND c.seq<?2 ORDER BY c.seq");
+  while(paths.Step()) {
+    const auto path=Text(paths,1);const auto first=Number(paths,8),count=Number(paths,9),rep=Number(paths,10),engine=Number(paths,11);
+    Check(count>0,"empty original-path measurement bundle");representative.BindInteger(1,rep);
+    Check(representative.Step() && Number(representative,0)==count && Number(representative,1)==engine && !representative.Step(),"representative whole-bundle span disagrees");representative.Reset();
+    checks.BindInteger(1,first);checks.BindInteger(2,first+count);checks.BindInteger(3,rep);checks.BindInteger(4,engine);
+    std::optional<Scalars> target,runtime;Integer ordinal=0;
+    while(checks.Step()) {
+      Check(Number(checks,0)==first+ordinal++ && Number(checks,1)==Number(checks,3),"measurement mapping role/order disagrees");
+      const auto role=Number(checks,1);auto source=ReadNumbers(checks,2),other=ReadNumbers(checks,4);
+      Check(NumericalEqual(source,other),"measurement expansion mapping disagrees");
+      auto measured=ReadScalars(checks.Blob(5));if(verify)VerifyScalars(source,measured);
+      measured[0]+=source.At(0);measured[1]+=source.At(0);
+      for(auto value:measured)Check(std::isfinite(value),"absolute measurement overflows");
+      if(role<2) {auto& observation=role==0?target:runtime;Check(!observation,"duplicate original-path observation");observation=measured;}
+      else {Check(role<=3,"invalid measurement role");if(measured[2]<-1e-3)++result.failures;}
+      ++result.checks;
+    }
+    Check(ordinal==count && target && runtime,"missing original-path measurements");checks.Reset();
+    Check((*target)[0]>=0,"negative measured system delay");
+    result.maximum=std::max(result.maximum,(*target)[0]);result.target.Add(path,(*target)[2]);result.runtime.Add(path,(*runtime)[2]);
+    if(!paths.IsNull(3))result.local+=Number(paths,3)==1;if(!paths.IsNull(6))result.bounds+=Number(paths,6)==1;
+    if(consume)consume(result.paths,paths,*target,*runtime);++result.paths;
+  }
+  Check(result.checks==expected_checks && result.paths==expected_paths,"original measurement coverage disagrees");return result;
+}
+std::string CheckMeasurementOwner(SqliteDatabase& db,SqliteDatabase& index,const std::string& header) {
+  ExactDDL(db,kGlobalMeasurementsDDL);const auto meta=Metadata(db,"header");Check(meta.size()<65536,"measurement header exceeds bound");
+  Check(JsonText(db,meta,"$.source_logical_sha256")==JsonText(index,header,"$.logical_sha256") &&
+        JsonNumber(db,meta,"$.checks")==JsonNumber(index,header,"$.checks") &&
+        JsonNumber(db,meta,"$.representative_checks")==JsonNumber(index,header,"$.representative_checks"),"measurement identity namespace disagrees");
+  Check(JsonText(db,meta,"$.implementation_id")=="native-global-measurements-v1","measurement implementation is unsupported");
+  auto fields=db.Prepare("SELECT count(*),count(DISTINCT key),sum(key IN ('schema','implementation_id','source_logical_sha256','source_tsv_sha256','checks','representative_checks','arcs_verified','reduction')) FROM json_each(?)");fields.BindText(1,meta);
+  Check(fields.Step() && fields.Integer(0)==8 && fields.Integer(1)==8 && fields.Integer(2)==8,"measurement metadata fields disagree");
+  return meta;
+}
+void CheckReduction(SqliteDatabase& db,const std::string& meta,const Reduction& reduction) {
+  auto summary=db.Prepare("SELECT json_extract(?,'$.reduction')");summary.BindText(1,meta);
+  Check(summary.Step() && summary.Text(0)==reduction.Record().Encode(),"measurement reduction/digest disagrees");
+}
+std::string BoundedHeader(CheckedRequestReader& reader,SqliteDatabase& db) {
+  const auto header=reader.ReadString32(false,8*1024*1024);
+  auto valid=db.Prepare("SELECT json_valid(?1),json_type(?1)");valid.BindText(1,header);
+  Check(valid.Step() && valid.Integer(0) && valid.Text(1)=="object","QoR header is not JSON object");
+  auto repeated=db.Prepare("SELECT 1 FROM json_tree(?) WHERE parent IS NOT NULL GROUP BY parent,key HAVING count(*)>1 LIMIT 1");repeated.BindText(1,header);Check(!repeated.Step(),"QoR header has duplicate keys");
+  return header;
+}
+JsonRecord PathRecord(SqliteStatement& path,const Scalars& target,const Scalars& runtime) {
+  const auto normalized=[](double n){return n==0?0.0:n;};
+  Object value{{"path",Text(path,1)},{"representative_path",Text(path,2)},
+    {"path_scope",Number(path,3)?"same-fpga-local":"cross-fpga"},{"clock_domain",path.IsNull(4)?JsonRecord():JsonRecord(Text(path,4))},
+    {"target_period_ns",path.TypedReal(5)},{"physical_logic_segments_cone_bound",bool(Number(path,6))},
+    {"system_delay_bound_ns",normalized(target[0])},{"target_required_time_ns",normalized(target[1])},
+    {"target_clock_slack_bound_ns",normalized(target[2])},{"runtime_required_time_ns",normalized(runtime[1])},{"runtime_clock_slack_bound_ns",normalized(runtime[2])}};
+  if(!path.IsNull(7))value.emplace("interconnect_delay_model",Text(path,7));return value;
+}
+void HeaderCoverage(SqliteDatabase& db,const std::string& header,Integer count) {
+  Check(JsonText(db,header,"$.schema")=="emuflow.qor-report/v4" && JsonText(db,header,"$.timing.schema")=="emuflow.system-timing/v2" &&
+      JsonText(db,header,"$.timing.global_opensta.implementation_id")=="native-global-measurements-v1" && JsonNumber(db,header,"$.timing.summary.timing_paths")==count,"QoR header schema/coverage disagrees");
+  auto paths=db.Prepare("SELECT json_type(?,'$.timing.paths')");paths.BindText(1,header);Check(paths.Step() && paths.IsNull(0),"QoR header contains path payload");
+}
+double JsonReal(SqliteDatabase& db,const std::string& object,const std::string& path) {
+  auto row=db.Prepare("SELECT json_type(?1,?2),json_extract(?1,?2)");row.BindText(1,object);row.BindText(2,path);
+  Check(row.Step() && (row.Text(0)=="real" || row.Text(0)=="integer"),"QoR header numerical field is invalid");
+  const auto value=row.TypedReal(1);Check(std::isfinite(value),"QoR header has nonfinite number");return value;
+}
+void HeaderReduction(SqliteDatabase& db,const std::string& header,const Reduction& result) {
+  Check(JsonNumber(db,header,"$.timing.summary.original_local_paths")==result.local &&
+      JsonNumber(db,header,"$.timing.summary.original_cross_fpga_paths")==result.paths-result.local &&
+      JsonNumber(db,header,"$.timing.path_exactness.cone_bound_logic_paths")==result.bounds &&
+      JsonNumber(db,header,"$.timing.path_exactness.fixed_slot_event_failures")==result.failures &&
+      JsonNumber(db,header,"$.timing.global_opensta.checks")==result.checks &&
+      JsonNumber(db,header,"$.timing.global_opensta.original_paths")==result.paths &&
+      JsonNumber(db,header,"$.timing.global_opensta.event_failures")==result.failures &&
+      JsonNumber(db,header,"$.timing.path_exactness.endpoint_exact_logic_paths")==result.paths-result.bounds &&
+      JsonReal(db,header,"$.timing.summary.maximum_system_delay_bound_ns")==result.maximum &&
+      JsonText(db,header,"$.timing.global_opensta.measurement_logical_sha256")==result.measurement_sha,
+      "QoR header reduction/counts disagree");
+  const auto status=(result.failures || result.runtime.wns<0)?"fail":"pass";
+  Check(JsonText(db,header,"$.timing.status")==status && JsonText(db,header,"$.timing.global_opensta.status")==status,"QoR header status disagrees");
+  for(const auto& entry:std::array<std::pair<const char*,const Metric*>,2>{{{"target",&result.target},{"runtime",&result.runtime}}}) {
+    const auto role=std::string(entry.first),prefix="$.timing."+role+"_clock.";const auto& value=*entry.second;
+    Check(JsonText(db,header,(prefix+"worst_path").c_str())==value.worst &&
+      JsonReal(db,header,prefix+"worst_slack_bound_ns")==value.wns &&
+      JsonReal(db,header,prefix+"tns_bound_ns")==value.sum.Finish() &&
+      JsonReal(db,header,prefix+"total_negative_slack_bound_ns")==value.sum.Finish() &&
+      JsonNumber(db,header,(prefix+"negative_slack_paths").c_str())==value.negative &&
+      JsonReal(db,header,"$.timing.global_opensta.metrics."+role+".wns_ns")==value.wns &&
+      JsonReal(db,header,"$.timing.global_opensta.metrics."+role+".original_path_tns_ns")==value.sum.Finish() &&
+      JsonNumber(db,header,("$.timing.global_opensta.metrics."+role+".negative_paths").c_str())==value.negative,"QoR clock metrics disagree");
+  }
+}
+std::string LogicalQor(const std::string& header,Integer count,const std::string& paths_sha) {
+  Sha256 hash;Hash(hash,"{\"counts\":{\"timing_paths\":"+std::to_string(count)+"},\"header\":"+header+",\"paths_sha256\":"+JsonQuote(paths_sha)+"}");return Hex(hash);
+}
+}  // namespace
+
+void ImportGlobalMeasurements(const std::vector<ArtifactRef>& inputs,const std::string& output) {
+  const auto header=IndexHeader(inputs);SqliteStore index(inputs[1]);
+  Check(JsonNumber(index.database(),header,"$.mode")&1,"measurement import requires timing checks");
+  CheckedRequestReader request(inputs[3].path(),4096);Check(request.Read<std::uint64_t>()==0x314d4947464d5545ULL && request.Read<std::uint32_t>()==1,"measurement import request version is invalid");
+  const auto representative=request.Read<std::uint32_t>(),verify=request.Read<std::uint32_t>();Check(representative<=1 && verify<=1,"measurement import flags are invalid");
+  for(int i=0;i<3;++i)ExpectedGeneration(request,inputs[i]);request.RequireEnd();
+  SqliteArtifactWriter writer(output,"global-measurements-store-v1",inputs);auto& db=writer.database();db.Execute(kGlobalMeasurementsDDL);AttachFacts(db,inputs);SqliteTransaction transaction(db);
+  TsvInput data(inputs[2].path());SqliteStore primary(inputs[0]);Selection rows(primary.database(),index.database(),representative);
+  const auto count=JsonNumber(index.database(),header,representative?"$.representative_checks":"$.checks");
+  auto mapping=db.Prepare("SELECT i.engine_first_check+c.seq-i.first_check FROM facts.checks c JOIN idx.path_index i ON i.path_seq=c.path_seq WHERE c.seq=?");
+  auto existing=db.Prepare("SELECT numbers FROM measurements WHERE seq=?"),append=db.Prepare("INSERT INTO measurements VALUES(?,?)");
+  rows.Visit(count,[&](Integer ordinal,const Numbers&) {
+    const auto value=data.Take(ordinal);Integer seq=ordinal;
+    if(!representative){mapping.BindInteger(1,ordinal);Check(mapping.Step(),"measurement mapping is missing");seq=Number(mapping,0);Check(!mapping.Step(),"measurement mapping repeats");mapping.Reset();}
+    existing.BindInteger(1,seq);
+    if(existing.Step()){Check(ReadScalars(existing.Blob(0))==value,"repeated representative engine scalars disagree");Check(!existing.Step(),"repeated representative index");existing.Reset();}
+    else {existing.Reset();append.BindInteger(1,seq);append.BindBlob(2,value.data(),24);append.Execute();}
+  });
+  const auto source_sha=data.Finish();const auto reduction=ReduceMeasurements(db,index.database(),header,verify);
+  PutMetadata(db,"header",Object{{"schema","emuflow.global-measurements/v1"},{"implementation_id","native-global-measurements-v1"},
+    {"source_logical_sha256",JsonText(index.database(),header,"$.logical_sha256")},{"source_tsv_sha256",source_sha},
+    {"checks",JsonNumber(index.database(),header,"$.checks")},{"representative_checks",JsonNumber(index.database(),header,"$.representative_checks")},
+    {"arcs_verified",bool(verify)},{"reduction",reduction.Record()}});
+  mapping=SqliteStatement{};existing=SqliteStatement{};append=SqliteStatement{};transaction.Commit();writer.Commit();
+}
+void AuditGlobalMeasurements(const std::vector<ArtifactRef>& inputs,const std::string& output) {
+  const auto header=IndexHeader(inputs);SqliteStore index(inputs[1]),measurements(inputs[2]);auto& db=measurements.database();const auto meta=CheckMeasurementOwner(db,index.database(),header);
+  CheckedRequestReader request(inputs[3].path(),4096);Check(request.Read<std::uint64_t>()==0x31415647464d5545ULL && request.Read<std::uint32_t>()==1,"measurement audit request version is invalid");
+  const auto verify=request.Read<std::uint32_t>();Check(verify<=1,"measurement audit flag is invalid");for(int i=0;i<3;++i)ExpectedGeneration(request,inputs[i]);request.RequireEnd();
+  AttachFacts(db,inputs);const auto reduction=ReduceMeasurements(db,index.database(),header,verify);CheckReduction(db,meta,reduction);
+  PublishTextArtifact(output,inputs,[&](std::ostream& out){out<<reduction.Record().Encode()<<'\n';});
+}
+void PublishGlobalQor(const std::vector<ArtifactRef>& inputs,const std::string& output) {
+  const auto index_header=IndexHeader(inputs);SqliteStore index(inputs[1]),measurements(inputs[2]);auto& db=measurements.database();const auto meta=CheckMeasurementOwner(db,index.database(),index_header);
+  CheckedRequestReader request(inputs[3].path(),8*1024*1024+4096);Check(request.Read<std::uint64_t>()==0x31515047464d5545ULL && request.Read<std::uint32_t>()==1,"QoR request version is invalid");
+  for(int i=0;i<3;++i)ExpectedGeneration(request,inputs[i]);const auto header=BoundedHeader(request,db);request.RequireEnd();
+  Check(JsonNumber(index.database(),index_header,"$.mode")==3,"QoR requires bound path metadata");HeaderCoverage(db,header,JsonNumber(index.database(),index_header,"$.paths"));AttachFacts(db,inputs);
+  SqliteArtifactWriter writer(output,"qor-report-store-v1",inputs);auto& final=writer.database();final.Execute(kGlobalQorDDL);SqliteTransaction transaction(final);Sha256 digest;
+  auto append=final.Prepare("INSERT INTO timing_paths VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+  const auto reduction=ReduceMeasurements(db,index.database(),index_header,false,[&](Integer seq,SqliteStatement& path,const Scalars& target,const Scalars& runtime) {
+    Hash(digest,PathRecord(path,target,runtime).EncodeUtf8()+"\n");append.BindInteger(1,seq);append.BindText(2,Text(path,1));append.BindInteger(3,path.IsNull(7)?31:63);
+    append.BindText(4,Text(path,2));append.BindText(5,Number(path,3)?"same-fpga-local":"cross-fpga");if(path.IsNull(4))append.BindNull(6);else append.BindText(6,Text(path,4));
+    append.BindReal(7,path.TypedReal(5));append.BindInteger(8,Number(path,6));if(path.IsNull(7))append.BindNull(9);else append.BindText(9,Text(path,7));
+    const std::array<double,5> values{target[0],target[1],target[2],runtime[1],runtime[2]};for(int i=0;i<5;++i)append.BindReal(10+i,values[i]);append.BindText(15,"{}");append.Execute();
+  });
+  CheckReduction(db,meta,reduction);HeaderReduction(db,header,reduction);
+  const auto logical=LogicalQor(header,reduction.paths,Hex(digest));PutMetadata(final,"counts",Object{{"timing_paths",reduction.paths}});
+  auto put=final.Prepare("INSERT INTO metadata VALUES('header',?)");put.BindText(1,header);put.Execute();put=SqliteStatement{};PutMetadata(final,"logical_sha256",logical);
+  append=SqliteStatement{};transaction.Commit();writer.Commit();
+}
+void ValidateGlobalQor(const std::vector<ArtifactRef>& inputs,const std::string& output) {
+  SqliteStore store(inputs[0]);auto& db=store.database();ExactDDL(db,kGlobalQorDDL);
+  CheckedRequestReader request(inputs[1].path(),8*1024*1024+4096);Check(request.Read<std::uint64_t>()==0x31565147464d5545ULL && request.Read<std::uint32_t>()==1,"QoR validation request version is invalid");ExpectedGeneration(request,inputs[0]);const auto header=BoundedHeader(request,db);const auto expected=request.ReadString32();request.RequireEnd();
+  auto metadata_count=db.Prepare("SELECT count(*) FROM metadata");Check(metadata_count.Step() && metadata_count.Integer(0)==3,"QoR metadata population disagrees");
+  Check(header==Metadata(db,"header"),"QoR header/selector disagree");auto count=db.Prepare("SELECT json_extract(value,'$.timing_paths') FROM metadata WHERE key='counts'");Check(count.Step(),"QoR count is missing");const auto total=Number(count,0);HeaderCoverage(db,header,total);
+  auto rows=db.Prepare("SELECT seq,path,representative_path,path_scope,clock_domain,target_period_ns,cone_bound,interconnect_delay_model,system_delay_bound_ns,target_required_time_ns,target_clock_slack_bound_ns,runtime_required_time_ns,runtime_clock_slack_bound_ns,typed_presence,extra_json FROM timing_paths ORDER BY seq");
+  Sha256 digest;Integer seen=0;std::string previous;
+  while(rows.Step()) {
+    Check(Number(rows,0)==seen++ && (seen==1 || previous<Text(rows,1)),"QoR path order/identity disagrees");previous=Text(rows,1);
+    // Adapt the existing typed QoR columns to the canonical event path record.
+    const auto scope=Text(rows,3);Check(scope=="same-fpga-local" || scope=="cross-fpga","QoR scope is invalid");
+    Object record{{"path",previous},{"representative_path",Text(rows,2)},{"path_scope",scope},
+      {"clock_domain",rows.IsNull(4)?JsonRecord():JsonRecord(Text(rows,4))},{"target_period_ns",rows.TypedReal(5)},
+      {"physical_logic_segments_cone_bound",bool(Number(rows,6))}};
+    Check(Number(rows,6)<=1 && rows.TypedReal(5)>0 && std::isfinite(rows.TypedReal(5)) && rows.TypedReal(8)>=0 && rows.TypedText(14)=="{}" && Number(rows,13)==(rows.IsNull(7)?31:63),"QoR typed fields disagree");
+    if(!rows.IsNull(7))record.emplace("interconnect_delay_model",Text(rows,7));
+    const char* names[]={"system_delay_bound_ns","target_required_time_ns","target_clock_slack_bound_ns","runtime_required_time_ns","runtime_clock_slack_bound_ns"};
+    for(int i=0;i<5;++i){const auto value=rows.TypedReal(8+i);Check(std::isfinite(value) && !rows.IsNull(8+i),"QoR number is invalid");record.emplace(names[i],value);}
+    Hash(digest,JsonRecord(std::move(record)).EncodeUtf8()+"\n");
+  }
+  const auto logical=LogicalQor(header,seen,Hex(digest));Check(seen==total && logical==expected && JsonText(db,Metadata(db,"logical_sha256"),"$")==logical,"QoR logical records disagree");
+  PublishTextArtifact(output,inputs,[&](std::ostream& out){out<<JsonRecord(Object{{"schema","emuflow.native-qor-validation/v1"},{"status","pass"},{"paths",seen},{"logical_sha256",logical}}).Encode()<<'\n';});
 }
 }  // namespace emuflow::core

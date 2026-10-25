@@ -34,6 +34,7 @@ class SqliteStatement {
   std::int64_t Integer(int column) const;
   std::int64_t TypedInteger(int column) const;
   double Real(int column) const;
+  double TypedReal(int column) const;
   std::string Text(int column) const;
   std::string TypedText(int column) const;
   bool IsNull(int column) const;

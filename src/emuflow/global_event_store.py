@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import sqlite3
 import struct
+import shutil
 import tempfile
 
 from .errors import ValidationError
@@ -42,8 +43,15 @@ class _Owner:
     CHECK_BATCH_SIZE = 4096
 
     def __init__(self, mode):
-        self._temporary = tempfile.TemporaryDirectory(prefix="emuflow-global-events-")
-        self.root = Path(self._temporary.name)
+        # Own retirement after SQLite closure. TemporaryDirectory's independent
+        # weak finalizer can run first during cyclic GC, leaving live NFS files.
+        self.closed = False
+        self._borrows = 0
+        self.connection = None
+        self.pending = []
+        self.event_cache = OrderedDict()
+        self._dependents = []
+        self.root = Path(tempfile.mkdtemp(prefix="emuflow-global-events-"))
         self.primary = self.root / "events.sqlite"
         self.index = self.root / "index.sqlite"
         self.mode = mode
@@ -75,12 +83,15 @@ class _Owner:
             self._dispose()
 
     def _dispose(self):
+        for dependent in self._dependents:
+            dependent.close()
+        self._dependents.clear()
         connection, self.connection = self.connection, None
         if connection is not None:
             connection.close()
         self.pending.clear()
         self.event_cache.clear()
-        self._temporary.cleanup()
+        shutil.rmtree(self.root)
 
     def __del__(self):
         try:

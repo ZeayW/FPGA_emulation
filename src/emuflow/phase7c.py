@@ -119,7 +119,7 @@ def run_phase7c(
         if physical_summary_path is not None
         else None
     )
-    checks = None
+    checks = measurements = None
     try:
         if physical_summary is not None and routes_path is None:
             raise ValidationError(
@@ -249,7 +249,8 @@ def run_phase7c(
                 sta_dir = global_sta_results_dir
                 # Explicit terminal artifact validation checks raw arcs, not the
                 # former system-timing composer, and never launches STA again.
-                measurements = read_measurements(sta_dir / "measurements.tsv", checks)
+                from .global_measurements import read_native_measurements
+                measurements = read_native_measurements(sta_dir / "measurements.json", checks)
             sta_timing = build_opensta_timing(runtime, metadata, measurements)
             sta_timing["global_opensta"]["engine"] = read_engine_identity(sta_dir / "opensta.log")
         qor = aggregate_qor(
@@ -398,6 +399,9 @@ def run_phase7c(
         write_json(output_dir / "phase7c_report.json", report)
         return report
     finally:
+        close_measurements = getattr(measurements, "close", None)
+        if callable(close_measurements):
+            close_measurements()
         close_checks = getattr(checks, "close", None)
         if callable(close_checks):
             close_checks()

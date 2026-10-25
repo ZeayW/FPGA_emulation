@@ -51,6 +51,10 @@ const char* StageName(Stage stage) {
     case Stage::kProjectScheduleTiming: return "phase5.timing-contract";
     case Stage::kIndexGlobalEvents: return "global-sta.index-events";
     case Stage::kExportGlobalEvents: return "global-sta.export-events";
+    case Stage::kImportGlobalMeasurements: return "global-sta.import-measurements";
+    case Stage::kAuditGlobalMeasurements: return "global-sta.audit-measurements";
+    case Stage::kPublishGlobalQor: return "global-sta.publish-qor";
+    case Stage::kValidateGlobalQor: return "global-sta.validate-qor";
     case Stage::kValidateSchedule: return "phase5.validate-schedule";
     case Stage::kAssignBanks: return "phase6.assign-banks";
     case Stage::kGroupSignals: return "phase6.group-signals";
@@ -117,6 +121,10 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
       throw core::StageError(core::ErrorCode::kInvalidRequest,"timing projection input coverage disagrees");
     }
     case Stage::kValidateSchedule: return {"system-route-store-v3", "exact-schedule-board-request-v1", "tdm-schedule-store-v4", "exact-schedule-validation-request-v1"};
+    case Stage::kImportGlobalMeasurements: return {"global-event-primary-v1","global-event-index-v1","global-measurement-tsv-v1","global-measurement-import-request-v1"};
+    case Stage::kAuditGlobalMeasurements: return {"global-event-primary-v1","global-event-index-v1","global-measurements-store-v1","global-measurement-audit-request-v1"};
+    case Stage::kPublishGlobalQor: return {"global-event-primary-v1","global-event-index-v1","global-measurements-store-v1","global-qor-request-v1"};
+    case Stage::kValidateGlobalQor: return {"qor-report-store-v1","global-qor-validation-request-v1"};
     case Stage::kIndexGlobalEvents: return {"global-event-primary-v1"};
     case Stage::kExportGlobalEvents: return {"global-event-primary-v1","global-event-index-v1","global-event-export-request-v1"};
     case Stage::kBuildSchedule: return {"system-route-store-v3", "exact-schedule-board-request-v1", "exact-schedule-generation-request-v1"};
@@ -275,6 +283,10 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kSealRoutes: core::SealSystemRoutes(inputs,output); break;
       case Stage::kBuildSchedule: core::BuildExactScheduleStore(inputs,output); break;
       case Stage::kProjectScheduleTiming: core::ProjectScheduleTiming(inputs,output); break;
+      case Stage::kImportGlobalMeasurements: core::ImportGlobalMeasurements(inputs,output); break;
+      case Stage::kAuditGlobalMeasurements: core::AuditGlobalMeasurements(inputs,output); break;
+      case Stage::kPublishGlobalQor: core::PublishGlobalQor(inputs,output); break;
+      case Stage::kValidateGlobalQor: core::ValidateGlobalQor(inputs,output); break;
       case Stage::kIndexGlobalEvents: core::IndexGlobalEvents(inputs[0],output); break;
       case Stage::kExportGlobalEvents: core::ExportGlobalEvents(inputs,output); break;
       case Stage::kValidateSchedule: core::ValidateExactSchedule(inputs,output); break;
@@ -313,6 +325,10 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kSealRoutes: schema = "system-route-seal-summary-v1"; break;
       case Stage::kBuildSchedule: schema = "tdm-schedule-store-v4"; break;
       case Stage::kProjectScheduleTiming: schema = "phase5-timing-summary-v1"; break;
+      case Stage::kImportGlobalMeasurements: schema = "global-measurements-store-v1"; break;
+      case Stage::kAuditGlobalMeasurements: schema = "global-measurement-summary-v1"; break;
+      case Stage::kPublishGlobalQor: schema = "qor-report-store-v1"; break;
+      case Stage::kValidateGlobalQor: schema = "global-qor-validation-summary-v1"; break;
       case Stage::kIndexGlobalEvents: schema = "global-event-index-v1"; break;
       case Stage::kExportGlobalEvents: schema = "global-event-export-summary-v1"; break;
       case Stage::kValidateSchedule: schema = "exact-schedule-validation-summary-v1"; break;

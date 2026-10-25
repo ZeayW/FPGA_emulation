@@ -1,0 +1,5 @@
+CREATE TABLE metadata(key TEXT PRIMARY KEY NOT NULL,value TEXT NOT NULL) WITHOUT ROWID;
+CREATE TABLE measurements(
+  seq INTEGER PRIMARY KEY NOT NULL CHECK(seq>=0),
+  numbers BLOB NOT NULL CHECK(length(numbers)=24)
+);

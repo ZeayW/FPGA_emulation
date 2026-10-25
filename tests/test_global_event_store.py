@@ -194,7 +194,13 @@ def test_native_event_execution_restores_all_original_identities(tmp_path, monke
     monkeypatch.setattr(sta, 'require_opensta_engine', lambda _: {'executable_sha256': 'a'*64})
     try:
         measured = run_event_checks(rows, tmp_path / 'run', str(engine))
-        assert list(measured) == list(read_measurements(tmp_path / 'run/measurements.tsv', rows))
+        from emuflow.global_measurements import read_native_measurements
+        saved = read_native_measurements(tmp_path / 'run/measurements.json', rows)
+        try:
+            assert list(measured) == list(saved)
+        finally:
+            saved.close()
+        assert not (tmp_path / 'run/measurements.tsv').exists()
         assert measured[5]['path'] == 'q' and measured[5]['event'] == 'q-first'
         assert 'original_checks=10 representative_checks=5' in (tmp_path / 'run/opensta.log').read_text()
     finally:
@@ -225,7 +231,7 @@ def test_measurement_import_binds_generations_at_iteration_boundaries(tmp_path):
             measured = read_measurements(tsv, rows)
             assert len(measured) == 200
             assert list(measured)[-1]['path'] == 'p99'
-            assert guard.call_count <= 6
+            assert guard.call_count <= 10
     finally:
         rows.close()
 

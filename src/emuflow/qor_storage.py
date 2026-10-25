@@ -47,30 +47,7 @@ _REQUIRED_NUMBERS = (
     "runtime_clock_slack_bound_ns",
 )
 
-_DDL = """
-CREATE TABLE metadata(
-  key TEXT PRIMARY KEY NOT NULL,
-  value TEXT NOT NULL
-) WITHOUT ROWID;
-CREATE TABLE timing_paths(
-  seq INTEGER PRIMARY KEY NOT NULL CHECK(seq >= 0),
-  path TEXT NOT NULL CHECK(length(path) > 0),
-  typed_presence INTEGER NOT NULL CHECK(typed_presence >= 0),
-  representative_path TEXT,
-  path_scope TEXT,
-  clock_domain TEXT,
-  target_period_ns REAL,
-  cone_bound INTEGER,
-  interconnect_delay_model TEXT,
-  system_delay_bound_ns REAL NOT NULL,
-  target_required_time_ns REAL NOT NULL,
-  target_clock_slack_bound_ns REAL NOT NULL,
-  runtime_required_time_ns REAL NOT NULL,
-  runtime_clock_slack_bound_ns REAL NOT NULL,
-  extra_json TEXT NOT NULL
-);
-CREATE UNIQUE INDEX timing_paths_identity ON timing_paths(path);
-"""
+_DDL = (Path(__file__).parent / "data/schema/qor_report.sql").read_text()
 
 
 def _canonical(value: Any) -> str:
@@ -151,6 +128,9 @@ def _validate_header(raw: Any, count: Optional[int] = None) -> dict[str, Any]:
     ):
         raise ValidationError("QoR report header is invalid")
     timing = dict(timing)
+    implementation = timing.get('global_opensta', {}).get('implementation_id')
+    if implementation not in (None, 'native-global-measurements-v1'):
+        raise ValidationError('unsupported native QoR implementation')
     header["timing"] = timing
     if count is not None and timing["summary"].get("timing_paths") != count:
         raise ValidationError("QoR report path count disagrees")
@@ -177,7 +157,7 @@ def _number(record: Mapping[str, Any], key: str, *, optional: bool = False):
         or not math.isfinite(float(value))
     ):
         raise ValidationError(f"QoR timing path {key} is invalid")
-    return float(value)
+    return 0.0 if value == 0 else float(value)
 
 
 def _normalize_record(raw: Any) -> dict[str, Any]:
@@ -447,6 +427,10 @@ class QorReportView(Mapping[str, Any]):
 
     def _validate_store(self) -> None:
         self._ensure_open()
+        if self.selector['header']['timing'].get('global_opensta', {}).get('implementation_id') == 'native-global-measurements-v1':
+            from .global_measurements import validate_native_qor
+            validate_native_qor(self.store_path, self.selector['header'], self.selector['logical_sha256'])
+            return
         assert self.connection is not None
         try:
             _exact_sqlite_envelope(self.connection)
@@ -581,82 +565,88 @@ def write_qor_report(
         )
         os.close(descriptor)
         selector_temporary = Path(name)
-        connection = sqlite3.connect(temporary)
-        connection.execute("PRAGMA journal_mode=OFF")
-        connection.execute("PRAGMA synchronous=OFF")
-        connection.execute(f"PRAGMA application_id={QOR_REPORT_APPLICATION_ID}")
-        connection.execute(f"PRAGMA user_version={QOR_REPORT_USER_VERSION}")
-        connection.executescript(_DDL)
-        pending = []
-        digest = hashlib.sha256()
-        previous = None
-        for seq, raw in enumerate(paths):
-            record = _normalize_record(raw)
-            if previous is not None and previous >= record["path"]:
-                raise ValidationError("QoR timing paths are not strictly ordered")
-            previous = record["path"]
-            digest.update(_canonical(record).encode("utf-8"))
-            digest.update(b"\n")
-            extra = {
-                key: value for key, value in record.items()
-                if key not in _TYPED_FIELDS
-            }
-            optional_fields = (
-                "representative_path", "path_scope", "clock_domain",
-                "target_period_ns", "physical_logic_segments_cone_bound",
-                "interconnect_delay_model",
-            )
-            presence = sum(
-                1 << bit for bit, key in enumerate(optional_fields)
-                if key in record
-            )
-            pending.append((
-                seq, record["path"], presence,
-                record.get("representative_path"),
-                record.get("path_scope"), record.get("clock_domain"),
-                record.get("target_period_ns"),
-                (
-                    None
-                    if record.get("physical_logic_segments_cone_bound") is None
-                    else int(record["physical_logic_segments_cone_bound"])
-                ),
-                record.get("interconnect_delay_model"),
-                record["system_delay_bound_ns"],
-                record["target_required_time_ns"],
-                record["target_clock_slack_bound_ns"],
-                record["runtime_required_time_ns"],
-                record["runtime_clock_slack_bound_ns"],
-                _canonical(extra),
-            ))
-            if len(pending) >= 8192:
+        from .global_measurements import NativeTimingPaths
+        native_paths = isinstance(paths, NativeTimingPaths)
+        if native_paths:
+            source_bindings = validate_store_destination(path, (*source_bindings, *paths.bound_store_sources()))
+            counts, logical_sha = paths.publish_store(temporary, header)
+        else:
+            connection = sqlite3.connect(temporary)
+            connection.execute("PRAGMA journal_mode=OFF")
+            connection.execute("PRAGMA synchronous=OFF")
+            connection.execute(f"PRAGMA application_id={QOR_REPORT_APPLICATION_ID}")
+            connection.execute(f"PRAGMA user_version={QOR_REPORT_USER_VERSION}")
+            connection.executescript(_DDL)
+            pending = []
+            digest = hashlib.sha256()
+            previous = None
+            for seq, raw in enumerate(paths):
+                record = _normalize_record(raw)
+                if previous is not None and previous >= record["path"]:
+                    raise ValidationError("QoR timing paths are not strictly ordered")
+                previous = record["path"]
+                digest.update(_canonical(record).encode("utf-8"))
+                digest.update(b"\n")
+                extra = {
+                    key: value for key, value in record.items()
+                    if key not in _TYPED_FIELDS
+                }
+                optional_fields = (
+                    "representative_path", "path_scope", "clock_domain",
+                    "target_period_ns", "physical_logic_segments_cone_bound",
+                    "interconnect_delay_model",
+                )
+                presence = sum(
+                    1 << bit for bit, key in enumerate(optional_fields)
+                    if key in record
+                )
+                pending.append((
+                    seq, record["path"], presence,
+                    record.get("representative_path"),
+                    record.get("path_scope"), record.get("clock_domain"),
+                    record.get("target_period_ns"),
+                    (
+                        None
+                        if record.get("physical_logic_segments_cone_bound") is None
+                        else int(record["physical_logic_segments_cone_bound"])
+                    ),
+                    record.get("interconnect_delay_model"),
+                    record["system_delay_bound_ns"],
+                    record["target_required_time_ns"],
+                    record["target_clock_slack_bound_ns"],
+                    record["runtime_required_time_ns"],
+                    record["runtime_clock_slack_bound_ns"],
+                    _canonical(extra),
+                ))
+                if len(pending) >= 8192:
+                    connection.executemany(
+                        "INSERT INTO timing_paths VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        pending,
+                    )
+                    pending.clear()
+            if pending:
                 connection.executemany(
                     "INSERT INTO timing_paths VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     pending,
                 )
-                pending.clear()
-        if pending:
-            connection.executemany(
-                "INSERT INTO timing_paths VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                pending,
-            )
-        counts = {"timing_paths": len(paths)}
-        logical_sha = hashlib.sha256(
-            _canonical({
-                "header": header,
-                "counts": counts,
-                "paths_sha256": digest.hexdigest(),
-            }).encode("utf-8")
-        ).hexdigest()
-        for key, value in (
-            ("counts", counts), ("header", header),
-            ("logical_sha256", logical_sha),
-        ):
-            connection.execute(
-                "INSERT INTO metadata VALUES (?,?)", (key, _canonical(value))
-            )
-        connection.commit()
-        connection.close()
-        connection = None
+            counts = {"timing_paths": len(paths)}
+            logical_sha = hashlib.sha256(
+                _canonical({
+                    "header": header,
+                    "counts": counts,
+                    "paths_sha256": digest.hexdigest(),
+                }).encode("utf-8")
+            ).hexdigest()
+            for key, value in (
+                ("counts", counts), ("header", header),
+                ("logical_sha256", logical_sha),
+            ):
+                connection.execute(
+                    "INSERT INTO metadata VALUES (?,?)", (key, _canonical(value))
+                )
+            connection.commit()
+            connection.close()
+            connection = None
         store_sha = file_sha256(temporary)
         published = path.with_name(_store_name(path, store_sha))
         if published.is_symlink():
@@ -697,7 +687,8 @@ def write_qor_report(
         assert lease is not None
         lease.downgrade_shared()
         view = QorReportView._from_publication(path, selector, published, lease)
-        view._validate_store()
+        if not native_paths:
+            view._validate_store()
         lease = None
         return view
     except sqlite3.IntegrityError as error:
@@ -736,3 +727,25 @@ def expand_qor_report_storage(
         timing["paths"] = list(view["timing"]["paths"])
         result["timing"] = timing
         return result
+
+
+def qor_validation_proof(path: Path):
+    """Bounded header plus independently validated ordered-record identity.
+
+    Current model-only reports have no per-path population. Physical reports
+    use the typed owner; a historical full JSON timing tree is not inferred.
+    """
+    if path.stat().st_size > 8 * 1024 * 1024:
+        raise ValidationError("QoR selector/header exceeds bound")
+    raw = _raw_json(path)
+    if raw.get('schema') == QOR_REPORT_STORAGE_SCHEMA:
+        with read_qor_report(path) as owner:
+            header = owner.selector['header']
+            proof = (header, owner.selector['counts'], owner.selector['logical_sha256'])
+    elif (raw.get('schema') == QOR_REPORT_SCHEMA and isinstance(raw.get('timing'), dict)
+          and 'paths' not in raw['timing']
+          and raw['timing'].get('global_opensta', {}).get('execution') != 'standalone'):
+        header, proof = raw, (raw, None, None)
+    else:
+        raise ValidationError("QoR path population requires the current typed owner")
+    return proof, header.get('timing', {}).get('global_opensta', {}).get('execution') == 'standalone'

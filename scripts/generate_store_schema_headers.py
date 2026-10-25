@@ -55,6 +55,8 @@ def generate(directory):
     for symbol, filename in (
         ("kGlobalEventsDDL", "global_events.sql"),
         ("kGlobalEventIndexDDL", "global_event_index.sql"),
+        ("kGlobalMeasurementsDDL", "global_measurements.sql"),
+        ("kGlobalQorDDL", "qor_report.sql"),
     ):
         ddl = (root / "src/emuflow/data/schema" / filename).read_text(encoding="utf-8")
         if ')EMUFLOW_SQL"' in ddl:

@@ -670,10 +670,10 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch, s
                  "slack_ns": r.required_ns-r.launch_ns-sum(r.arcs_ns)} for r in checks]
     if saved:
         def read_saved(path, checks):
-            assert path == tmp_path / "saved/measurements.tsv"
+            assert path == tmp_path / "saved/measurements.json"
             return engine(checks, None, None, verify_arcs=False)
         monkeypatch.setattr(sta, "run_event_checks", forbidden)
-        monkeypatch.setattr(sta, "read_measurements", read_saved)
+        monkeypatch.setattr("emuflow.global_measurements.read_native_measurements", read_saved)
     else:
         monkeypatch.setattr(sta, "run_event_checks", engine)
     monkeypatch.setattr(sta, "read_engine_identity", lambda p: {"name": "test-sta"})

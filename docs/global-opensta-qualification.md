@@ -57,15 +57,46 @@ OpenSTA input publication uses a fresh model directory plus atomic `model.json`.
 The manifest records each generated file's name, size, hash and file generation;
 hashes are computed while writing. Consumers verify the recorded generations
 before and after engine execution without rehashing the model. The production
-engine uses the shared process supervisor. Final `opensta.log` and expanded
-original-identity `measurements.tsv` remain in the Global STA output directory.
-Temporary event owners close after Phase 7C publication or failure. Public
+engine uses the shared process supervisor. `opensta.log` remains in the Global
+STA output directory. Engine TSV is streamed once into the canonical numerical
+owner and retired after successful publication. No expanded original-check TSV
+is produced on the typed production path.
+Temporary event owners close after Phase 7C publication or failure. Their
+retirement is ordered after SQLite closure, including attached dependent readers;
+it does not rely on an independent directory weak finalizer during cyclic GC. Public
 small `EventCheck` inputs retain their direct text exporter for independent
 reference checks. They are not a fallback for indexed production inputs.
 
-This closes event/check identity, compression and model-export ownership.
-Measurement scalar import, final timing columns and aggregation remain Python
-work; this does not establish W6/W7 completion or full physical qualification.
+`measurements.json` selects one `emuflow.global-measurements/v1` SQLite owner.
+It stores exactly three engine scalars per representative check as packed IEEE
+binary64 records, preserving their original precision. Original path/event
+identities and absolute launch offsets come from the event owner and index.
+The manifest binds bytes, file SHA-256, logical measurement SHA-256 and the
+canonical event namespace. A reconstructed event owner may join saved scalars
+only when that namespace agrees; unrelated integer ordinals cannot alias.
+
+Native import rejects malformed, duplicate, missing and nonfinite endpoints.
+Native reduction independently checks complete bundle mappings and restores
+every original member before counting target/runtime observations, TX/commit
+failures and WNS/TNS. TNS uses a bounded faithful partial-sum accumulator in
+canonical original-path order. Optional raw-arc equation checks use the existing
+absolute/relative tolerance and cover transport checks as well as observations.
+The live production path selects OpenSTA as numerical authority; explicit saved
+result validation checks all raw equations and never relaunches the engine.
+
+The shared core writes final ordered path records directly into the existing
+`qor-report-store-v1` typed columns. No per-check scalar or final per-path numeric
+Python arrays are rebuilt. SQLite REAL signed zero is normalized consistently
+before logical sealing. The installed QoR reader selects native ordered-record
+validation for the declared native implementation; failures do not fall back to
+Python. Terminal comparison uses independently validated full logical identities
+and bounded headers rather than expanding two whole QoR JSON documents.
+Historical expanded-TSV production results require their matching Git revision.
+
+This closes event storage, numerical import/reduction and model/QoR export
+ownership. Physical-to-event fact binding still runs through a bounded Python
+producer, and remaining phase adapters require migration. This does not establish
+W6/W7 completion or full physical qualification.
 
 Timing reconstruction must supply each scheduled hop's concrete
 `fixed_slot_tx_time_ns` and its bound TDM ratio where the link model requires

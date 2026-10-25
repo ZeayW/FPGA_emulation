@@ -648,8 +648,14 @@ the derived index stores ordering and representative spans without arc copies.
 `global-sta index-events` independently validates and compresses complete bundles;
 `global-sta export-events` streams the OpenSTA model through common source-bound
 publication. Production no longer retains whole check/identity arrays in Python.
-Measurement import, final scalar columns and stitching still require native
-ownership; the event boundary alone does not complete W6/W7.
+Representative engine measurements now have one native scalar owner. Native
+import/reduction restores every original identity, preserves complete TX/commit
+checks and computes original-path WNS/TNS with faithful partial sums. Native
+QoR publication writes the existing typed final columns directly; the reader
+validates complete ordered records through the shared core. Saved-result
+consumers join the same event namespace rather than load expanded TSV or rebuild
+Python scalar/path arrays. Physical-to-event fact binding remains a bounded
+Python producer; this boundary alone does not complete W6/W7.
 See [global timing semantics](global-opensta-qualification.md).
 
 ## Validation and completion

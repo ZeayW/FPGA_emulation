@@ -236,6 +236,8 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_assignment_cuts.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase5_schedule.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase5_schedule_indexes.sql"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/global_measurements.sql"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/qor_report.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/global_events.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/global_event_index.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/global_event_analyze.tcl")

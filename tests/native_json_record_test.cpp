@@ -20,7 +20,12 @@ int main(int argc, char**) {
     try { (void)emuflow::core::JsonQuoteUtf8(invalid); }
     catch (const std::runtime_error&) { failed = true; }
     if (!failed) return 5;
+    failed=false;
+    try { (void)JsonRecord(invalid).EncodeUtf8(); }
+    catch (const std::runtime_error&) { failed=true; }
+    if (!failed) return 6;
   }
+  if (JsonRecord(std::map<std::string,JsonRecord>{{u8"路径",JsonRecord(std::vector<JsonRecord>{u8"😀",1.25})}}).EncodeUtf8() != u8"{\"路径\":[\"😀\",1.25]}") return 7;
   if (argc == 1) return 0;
   std::uint64_t bits;
   while (std::cin >> std::hex >> bits) {

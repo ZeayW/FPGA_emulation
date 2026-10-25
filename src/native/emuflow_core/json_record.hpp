@@ -13,6 +13,10 @@
 #include <cstdlib>
 #include <locale.h>
 #include <functional>
+#if __has_include(<charconv>)
+#include <charconv>
+#define EMUFLOW_HAS_CHARCONV_HEADER 1
+#endif
 #include <string_view>
 #if defined(__APPLE__)
 #include <xlocale.h>
@@ -110,11 +114,26 @@ inline std::string QuoteJsonString(const std::string& text, bool ensure_ascii) {
 }
 inline std::string JsonQuote(const std::string& text) { return QuoteJsonString(text,true); }
 inline std::string JsonQuoteUtf8(const std::string& text) { return QuoteJsonString(text,false); }
+#if defined(EMUFLOW_HAS_CHARCONV_HEADER)
+template<class T,class=void> struct HasFloatingToChars : std::false_type {};
+template<class T> struct HasFloatingToChars<T,std::void_t<decltype(std::to_chars(
+    static_cast<char*>(nullptr),static_cast<char*>(nullptr),std::declval<T>(),std::chars_format::scientific))>> : std::true_type {};
+template<class T> inline std::string ShortestScientific(T value) {
+  if constexpr(HasFloatingToChars<T>::value) {
+    char text[64];const auto result=std::to_chars(text,text+sizeof(text),value,std::chars_format::scientific);
+    if(result.ec==std::errc())return std::string(text,result.ptr);
+  }
+  return {};
+}
+#else
+inline std::string ShortestScientific(double) { return {}; }
+#endif
 class JsonRecord {
  public:
   enum class Kind { kString, kInteger, kScalar, kObject, kArray };
   JsonRecord() : kind_(Kind::kScalar), scalar_("null") {}
-  JsonRecord(const std::string& text) : kind_(Kind::kString), scalar_(JsonQuote(text)) {}
+  // Validate/quote once at encoding; storing a row must not encode its strings twice.
+  JsonRecord(const std::string& text) : kind_(Kind::kString), scalar_(text) {}
   JsonRecord(const char* text) : JsonRecord(std::string(text)) {}
   template <typename T, std::enable_if_t<std::is_integral<T>::value && !std::is_same<T,bool>::value,int> = 0>
   JsonRecord(T integer) : kind_(Kind::kInteger), scalar_(std::to_string(integer)) {}
@@ -124,12 +143,12 @@ class JsonRecord {
     // Shortest round-trip digits, with Python's fixed/scientific thresholds,
     // exponent padding and explicit .0 for integral floating-point values.
     // Some supported C++17 standard libraries lack floating-point to_chars.
-    // Only bounded header/domain numbers use this path, so find the shortest
-    // correctly rounded decimal precision using locale-independent conversion.
+    // Bulk path records use the standard shortest converter when available.
+    // Older C++17 libraries retain the locale-independent round-trip fallback.
     static const locale_t c_locale = newlocale(LC_NUMERIC_MASK,"C",nullptr);
     if (!c_locale) throw std::runtime_error("cannot create native JSON numeric locale");
-    std::string text;
-    for (unsigned precision = 1; precision <= 17; ++precision) {
+    std::string text=ShortestScientific(value);
+    if(text.empty()) for (unsigned precision = 1; precision <= 17; ++precision) {
       std::ostringstream encoded; encoded.imbue(std::locale::classic());
       encoded << std::scientific << std::setprecision(precision - 1) << value;
       text = encoded.str(); char* end = nullptr;
@@ -184,7 +203,9 @@ class JsonRecord {
   }
   JsonRecord(std::map<std::string, JsonRecord> object) : kind_(Kind::kObject), object_(std::move(object)) {}
   JsonRecord(std::vector<JsonRecord> array) : kind_(Kind::kArray), array_(std::move(array)) {}
-  std::string Encode(bool pretty = false, unsigned level = 0) const {
+  std::string EncodeUtf8() const { return Encode(false,0,false); }
+  std::string Encode(bool pretty = false, unsigned level = 0, bool ensure_ascii = true) const {
+    if (kind_ == Kind::kString) return QuoteJsonString(scalar_,ensure_ascii);
     if (kind_ != Kind::kObject && kind_ != Kind::kArray) return scalar_;
     const bool object = kind_ == Kind::kObject;
     std::string out = object ? "{" : "[";
@@ -194,8 +215,8 @@ class JsonRecord {
       if (position++) out += pretty ? ",\n" : ",";
       else if (pretty) out += '\n';
       if (pretty) out += std::string((level + 1) * 2, ' ');
-      if (object) out += JsonQuote(key) + (pretty ? ": " : ":");
-      out += value.Encode(pretty, level + 1);
+      if (object) out += QuoteJsonString(key,ensure_ascii) + (pretty ? ": " : ":");
+      out += value.Encode(pretty, level + 1,ensure_ascii);
     };
     if (object) for (const auto& entry : object_) item(entry.first, entry.second);
     else for (const auto& value : array_) item("", value);

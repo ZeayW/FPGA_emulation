@@ -118,3 +118,25 @@ def test_qor_writer_rejects_duplicate_or_unsorted_paths(tmp_path):
     report["timing"]["paths"].reverse()
     with pytest.raises(ValidationError, match="strictly ordered"):
         write_qor_report(tmp_path / "qor_report.json", report)
+
+
+def test_qor_real_columns_normalize_signed_zero_before_logical_seal(tmp_path):
+    import math
+    report=_report(1)
+    record=report['timing']['paths'][0]
+    for field in ['system_delay_bound_ns','target_required_time_ns','target_clock_slack_bound_ns',
+                  'runtime_required_time_ns','runtime_clock_slack_bound_ns']:
+        record[field]=-0.0
+    owner=write_qor_report(tmp_path/'qor.json',report)
+    owner.close()
+    with read_qor_report(tmp_path/'qor.json') as view:
+        assert all(math.copysign(1.0,value)==1 for key,value in view['timing']['paths'][0].items()
+                   if key in record and key.endswith('_ns') and isinstance(value,float) and value==0)
+
+
+def test_unknown_native_implementation_never_falls_back_or_publishes(tmp_path):
+    report=_report(1)
+    report['timing']['global_opensta']={'implementation_id':'native-global-measurements-v99'}
+    with pytest.raises(ValidationError,match='unsupported native'):
+        write_qor_report(tmp_path/'qor.json',report)
+    assert not (tmp_path/'qor.json').exists()

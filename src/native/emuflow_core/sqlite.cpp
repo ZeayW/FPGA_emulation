@@ -134,6 +134,13 @@ bool SqliteStatement::IsNull(int column) const {
   return sqlite3_column_type(statement_, column) == SQLITE_NULL;
 }
 
+double SqliteStatement::TypedReal(int column) const {
+  const auto type=sqlite3_column_type(statement_,column);
+  if(type!=SQLITE_INTEGER && type!=SQLITE_FLOAT)
+    throw StageError(ErrorCode::kInvalidArtifact,"SQLite record has invalid real number");
+  return Real(column);
+}
+
 double SqliteStatement::Real(int column) const {
   return sqlite3_column_double(statement_, column);
 }

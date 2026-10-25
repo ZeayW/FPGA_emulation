@@ -479,6 +479,9 @@ def read_measurements(
     *,
     verify_arcs=True,
 ) -> _IndexedMeasurements:
+    if isinstance(rows, _IndexedEventChecks):
+        from .global_measurements import import_measurements
+        return import_measurements(path, rows, verify_arcs=verify_arcs)
     arrivals = array("d")
     required_values = array("d")
     slacks = array("d")
@@ -767,7 +770,8 @@ def run_event_checks(checks: Iterable[EventCheck], directory: Path,
     tool = resolve_native_executable("sta", executable)
     engine = require_opensta_engine(tool)
     output = directory / "measurements.tsv"
-    output.unlink(missing_ok=True)
+    if not isinstance(rows, _IndexedEventChecks):
+        output.unlink(missing_ok=True)
     with (directory / "opensta.log").open("w") as log:
         # Some packaged OpenSTA builds report ``GITDIR-NOT`` because their
         # source archive had no .git directory. Seal the exact executable in
@@ -801,16 +805,21 @@ def run_event_checks(checks: Iterable[EventCheck], directory: Path,
     engine_output = model_directory / "measurements.tsv"
     if result.returncode or not engine_output.is_file():
         raise ValidationError("global OpenSTA failed; see opensta.log")
-    representative_values = read_measurements(
-        engine_output, representatives, verify_arcs=verify_arcs
-    )
-    expanded_values = _write_expanded_measurements(
-        output,
-        rows,
-        representative_values,
-        original_to_representative,
-        representatives,
-    )
+    if isinstance(rows, _IndexedEventChecks):
+        from .global_measurements import import_measurements
+        expanded_values = import_measurements(
+            engine_output, representatives, verify_arcs=verify_arcs, directory=directory
+        )
+        engine_output.unlink()  # The sealed representative store is the numerical owner.
+    else:
+        representative_values = read_measurements(engine_output, representatives, verify_arcs=verify_arcs)
+        expanded_values = _write_expanded_measurements(
+            output,
+            rows,
+            representative_values,
+            original_to_representative,
+            representatives,
+        )
     with (directory / "opensta.log").open("a") as log:
         log.write(
             "EmuFlow exact path-bundle compression "
@@ -1106,6 +1115,9 @@ def build_opensta_timing(runtime, metadata, measurements):
     Binding owns coverage and physical qualifications. OpenSTA owns numerical
     propagation. Python only aggregates the project's original-path metric.
     """
+    from .global_measurements import NativeMeasurements
+    if isinstance(measurements, NativeMeasurements):
+        return _build_native_opensta_timing(runtime, metadata, measurements)
     metadata_paths = metadata["paths"]
 
     def ordered_paths():
@@ -1306,4 +1318,46 @@ def build_opensta_timing(runtime, metadata, measurements):
         "timing_scope": scope, "original_paths": len(paths), "checks": measurement_count,
         "event_failures": failures, "metrics": metrics,
         "tns_definition": "sum-negative-slack-once-per-original-TimingPathDB-path"}
+    return timing
+
+
+def _build_native_opensta_timing(runtime, metadata, measurements):
+    from .global_measurements import NativeTimingPaths
+    measurements.require()
+    paths = NativeTimingPaths(measurements, metadata["paths"])
+    reduced = measurements.header['reduction']
+    source = metadata['source_binding']
+    count, bounds, failures = reduced['paths'], reduced['bounds_paths'], reduced['event_failures']
+    scope = 'whole-original-design' if source is not None else 'cross-fpga-path-subset'
+    status = 'fail' if failures or reduced['runtime']['wns_ns'] < 0 else 'pass'
+    metrics = {role: {key: reduced[role][key] for key in ('wns_ns','original_path_tns_ns','negative_paths')}
+               for role in ('target','runtime')}
+    timing = {'schema':'emuflow.system-timing/v2','status':status,
+              'qualification':'opensta-fixed-event-physical-bounds','timing_scope':scope,
+              'source_binding':source,'paths':paths,
+              'path_exactness': {'physical_model':'routed-staging-chain-upper-bounds',
+                  'endpoint_exact_logic_paths':count-bounds,'cone_bound_logic_paths':bounds,
+                  'fallback_logic_paths':0,'discontinuous_compressed_paths':0,
+                  'physical_logic_segment_bounds':True,'fixed_slot_event_failures':failures},
+              'summary': {'timing_paths':count,'original_paths':source['original_paths'] if source else None,
+                  'original_local_paths':reduced['local_paths'],'original_cross_fpga_paths':count-reduced['local_paths'],
+                  'compressed_representative_paths':metadata['compressed_representative_paths'],
+                  'original_path_coverage':1.0 if source else None,
+                  'original_path_ids_sha256':source['original_path_ids_sha256'] if source else None,
+                  'maximum_system_delay_bound_ns':reduced['maximum_delay_ns']}}
+    for role in ('target','runtime'):
+        values=reduced[role];tns=values['original_path_tns_ns']
+        timing[role+'_clock']={'closure_gate':role=='runtime','worst_path':values['worst_path'],
+            'worst_slack_bound_ns':values['wns_ns'],'tns_bound_ns':tns,
+            'total_negative_slack_bound_ns':tns,'negative_slack_paths':values['negative_paths']}
+    periods={clock:float(record['nominal_period_ns']) for clock,record in runtime['virtual_dut_clocks'].items()}
+    period=min(periods.values());maximum=reduced['maximum_delay_ns']
+    timing['runtime_clock'].update(period_ns=period,frequency_mhz=1000.0/period,
+        period_scope='fastest-domain-summary',clock_periods_ns=periods,
+        minimum_safe_period_bound_ns=maximum,maximum_safe_frequency_bound_mhz=1000.0/maximum if maximum>0 else None)
+    timing['global_opensta']={'schema':'emuflow.global-opensta-check/v1','authority':'opensta','execution':'standalone',
+        'status':status,'timing_scope':scope,'original_paths':count,'checks':reduced['checks'],
+        'event_failures':failures,'metrics':metrics,'tns_definition':'sum-negative-slack-once-per-original-TimingPathDB-path',
+        'implementation_id':'native-global-measurements-v1',
+        'measurement_logical_sha256':reduced['measurements_sha256']}
     return timing
