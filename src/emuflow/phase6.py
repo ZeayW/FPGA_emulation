@@ -378,6 +378,8 @@ def run_phase6(
     elif electrical_binding_path is not None:
         raise ValueError("pin_plan_path is required with electrical_binding_path")
     virtual_board = None
+    from .virtual_board import WORD_MODEL
+    word_board = platform.virtual_board_model == WORD_MODEL
     if platform.virtual_board_model is not None:
         from .virtual_board import build_virtual_board
 
@@ -390,7 +392,9 @@ def run_phase6(
         design=source["design"],
         clocks=source["clocks"],
         pin_plan=pin_plan,
-        virtual_board=virtual_board,
+        # Word binding reduces the canonical endpoint owner to whole native
+        # banks below; the bit-adapter's per-hop binding is a different format.
+        virtual_board=None if word_board else virtual_board,
     )
     runtime = build_virtual_runtime(schedule, platform, clock_periods)
     exact_digest = schedule.get("semantic_contract_sha256")
@@ -537,7 +541,15 @@ def run_phase6(
     )
     virtual_binding = transport_artifacts["binding"]
     virtual_board_validation = None
-    if platform.virtual_board_model is not None:
+    word_plan = None
+    word_plan_refs = {"wiring":"virtual_board_wiring.json","plan":"word_phy_plan.json"}
+    if word_board:
+        from .lvds_word_plan import build_word_phy_plan
+        word_plan=build_word_phy_plan(platform,virtual_board,schedule,artifacts['transports'])
+        artifacts['manifest']['word_phy_plan']=word_plan_refs
+        validation['word_phy_plan']={'status':'pass','qualification':word_plan['qualification'],
+            'implementation_status':word_plan['implementation_status'],**word_plan['metrics']}
+    elif platform.virtual_board_model is not None:
         if virtual_board is None or virtual_binding is None:
             raise ValidationError(
                 "declared virtual board binding was not published"
@@ -604,6 +616,8 @@ def run_phase6(
     output_dir.mkdir(parents=True, exist_ok=True)
     if virtual_board is not None:
         write_json(output_dir / "virtual_board_wiring.json", virtual_board)
+    if word_plan is not None:
+        write_json(output_dir / "word_phy_plan.json", word_plan, compact=True)
     write_json(
         output_dir / "manifest.json",
         (
@@ -704,6 +718,7 @@ def run_phase6(
             "transport_store": "transport.sqlite",
             "runtime_controller_rtl": "virtual_runtime_controller.sv",
             "report": "phase6_report.json",
+            **({'word_phy_plan':word_plan_refs}if word_plan is not None else{}),
             **(
                 {"virtual_board_binding": _virtual_board_artifact_paths(platform)}
                 if virtual_board_validation is not None
@@ -898,7 +913,17 @@ def validate_phase6(
             transport_cost, transports
         )
     virtual_metadata = manifest.get("virtual_board_binding")
-    if platform.virtual_board_model is not None:
+    from .virtual_board import WORD_MODEL
+    if platform.virtual_board_model == WORD_MODEL:
+        from .lvds_word_plan import validate_word_phy_plan
+        if virtual_metadata is not None or manifest.get('word_phy_plan')!={'wiring':'virtual_board_wiring.json','plan':'word_phy_plan.json'}:
+            raise ValidationError('word Phase 6 requires its explicit whole-bank PHY plan and wiring')
+        root=manifest_path.parent
+        validation['word_phy_plan']=validate_word_phy_plan(platform,
+            read_json(root/'virtual_board_wiring.json'),schedule,transports,read_json(root/'word_phy_plan.json'))
+    elif manifest.get('word_phy_plan')is not None:
+        raise ValidationError('word PHY plan requires its declared word board model')
+    elif platform.virtual_board_model is not None:
         if virtual_metadata != _virtual_board_artifact_paths(platform):
             raise ValidationError("Phase 6 declared virtual board requires wiring, binding and pin constraints")
         from .virtual_board import (

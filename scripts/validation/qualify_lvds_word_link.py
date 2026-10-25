@@ -90,7 +90,7 @@ initial begin
  $fatal(1,"payload drain failed: received %0d/64 words; ready=%b valid=%b error=%b",received,rx_ready,rx_valid,rx_error);
 end
 initial begin
- #25000000000;
+ #(64'd250000000);
  $fatal(1,"startup timeout TX ready/pll/reset=%b%b%b RX=%b%b%b valid/error=%b%b",tx_ready,tx_pll_locked,tx_reset_done,rx_ready,rx_pll_locked,rx_reset_done,rx_valid,rx_error);
 end
 endmodule
@@ -118,8 +118,16 @@ def main():
         'scope':'digital native-IP simulation; no place/route, board, SI or fitted fixed-delay proof',
         'runtime_seconds':time.monotonic()-started,'exit_code':result.returncode,
         'configuration_sha256':{d:file_sha256(root/(d+'-bank.tsv'))for d in recipes}}
+    # XSim can return to Tcl at $fatal and a later `run` may resume the kernel.
+    # A subsequently written success file cannot erase that earlier failure.
+    failure_marker=None
+    with(root/'vivado-simulation.log').open()as log:
+        for line in log:
+            if line.lstrip().startswith(('Fatal:','ERROR:')):
+                failure_marker=line.strip()[:1024];break
+    if failure_marker is not None:summary['simulation_failure_marker']=failure_marker
     measurement=root/'word-link-results.tsv'
-    if result.returncode==0 and measurement.is_file():
+    if result.returncode==0 and failure_marker is None and measurement.is_file():
         if measurement.stat().st_size>4096:raise ValidationError('native word-link result exceeds scalar bound')
         rows=measurement.read_text().splitlines()
         if len(rows)!=6 or rows[0]!='metric\tvalue':raise ValidationError('native word-link result header/count is invalid')
@@ -130,6 +138,8 @@ def main():
             raise ValidationError('native word-link result is invalid')
         summary.update(status='pass',measurements=values,
             declared_30ns_capture_window_feasible_in_this_simulation=values['maximum_latency_word_cycles']<=6,
+            fixed_30ns_word_arc_matches_in_this_simulation=(values['minimum_latency_word_cycles']==6
+                and values['maximum_latency_word_cycles']==6),
             result_sha256=file_sha256(measurement))
     (root/'qualification.json').write_text(json.dumps(summary,indent=2)+'\n')
     print(json.dumps(summary,sort_keys=True))

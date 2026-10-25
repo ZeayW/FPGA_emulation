@@ -714,6 +714,18 @@ class TransportView(_BaseView):
         finally:
             connection.close()
 
+    def iter_physical_word_groups(self):
+        """Reduce endpoint occupancy to the bounded physical-lane population."""
+        from .tdm_word import WORD_EVENT_POLICY
+        if self._header.get('word_event_policy')!=WORD_EVENT_POLICY:
+            raise ValidationError('physical word groups require the periodic eight-bit policy')
+        connection=_connect(self.store_path)
+        try:
+            for row in connection.execute('SELECT link,peer,kind,(lane/8) FROM endpoints WHERE fpga=? '
+                'GROUP BY link,peer,kind,(lane/8) ORDER BY link,peer,kind,(lane/8)',(self._header['fpga'],)):
+                yield str(row[0]),str(row[1]),str(row[2]),int(row[3])
+        finally:connection.close()
+
     def iter_rtl_endpoints(
         self, kind: str
     ) -> Iterator[tuple[int, Mapping[str, Any], int]]:

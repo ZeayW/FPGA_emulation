@@ -526,3 +526,18 @@ physical binding until the native word PHY is integrated. Current Chimew plans
 also require a word-group-aware permutation before admission. The global binder
 rejects word plans until its complete-fanin physical event projection is
 implemented; it cannot substitute pre-schedule ratio estimates.
+
+The explicitly versioned word-board model emits a separate `word_phy_plan.json`
+and wiring v2 owner. A SQLite reduction returns only distinct physical lane
+occupancy; the bank planner does not scan endpoint JSON or copy a per-hop binding.
+Its small plan owns logical bus/bank direction, peer, word-slice base and native
+IP module identities. P/N package pins and forwarded-clock wiring remain in the
+referenced wiring owner. Board, schedule and canonical transport digests bind
+the plan to its sources. Independent Phase 6 validation reconstructs and compares
+this bank binding. Only banks carrying scheduled lanes need native instances;
+each active bank still exposes all twenty physical data words.
+
+The split manifest references these two artifacts through `word_phy_plan`,
+separately from the one-bit adapter's `virtual_board_binding`. A word bank plan
+is not accepted by that adapter. Native physical-top integration and global
+periodic-event projection remain required before admitting physical execution.

@@ -30,7 +30,7 @@
           ]
         },
         "virtual_board_model": {
-          "const": "xcvu19p-hp-lvds-cable-v1"
+          "enum": ["xcvu19p-hp-lvds-cable-v1", "xcvu19p-hp-lvds-word-cable-v2"]
         }
       }
     },

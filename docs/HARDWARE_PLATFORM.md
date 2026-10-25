@@ -293,6 +293,41 @@ Neither the serial UI nor a configured frame length determines the DUT/core
 clock. Its implementation constraints must follow the actual clock and
 state-advance circuitry; system-route analysis retains its own reference clock.
 
+### Explicit native word-format model
+
+The ordinary research preset remains `abstract-bit-v1`; it is not implicitly
+relabelled as an implemented serial PHY. Select the new word format explicitly:
+
+```bash
+emuflow platform research-model --transport-format lvds-word-v2 \
+  --output build/word-boarddb.json
+emuflow platform validate build/word-boarddb.json
+```
+
+This uses `xcvu19p-hp-lvds-word-cable-v2`, preserves the selected preset's device
+capacities/utilization policy, and requires twenty data pairs per bank. It
+declares 5 ns parallel words, eight bits per lane, a 1.6 Gb/s ceiling and a
+six-word-cycle fixed model arc. Ratios remain serial UI counts. The ordinary
+two-/four-FPGA source data-cable tables are reused unchanged after validation
+against the package inventory. Each selected bank additionally reserves its
+unique GC/QBC differential pair for the forwarded clock, with an explicit
+P-to-P/N-to-N connection to its peer bank.
+
+The resulting wiring owner uses `emuflow.virtual-board-wiring/v2` and separates
+`wires` (payload lanes) from `forwarded_clocks`. One link has 360 data-lane
+pairs plus eighteen forwarded-clock pairs; its total is 378 differential pairs,
+not 378 payload lanes. A bank carries 160 payload bits per word and its clock
+pair adds no payload capacity. Each three-bank cable has 120 data-conductor
+contact ordinals and six additional clock-contact ordinals. These are declared
+virtual-board contacts, not a connector-product pinout or measured board wiring.
+
+Phase 6 reduces indexed lane occupancy into a whole-bank interface plan,
+referencing the canonical wiring and transport owners. This provides a binding
+input for the native PHY integration; it does not itself qualify a physical top,
+clock/training protocol or system timing. Physical execution rejects this format
+before tool work until the native word top and physical event projection are
+integrated. See the [Phase 6 word contract](FLOW_PLAN.md#periodic-lvds-word-transport).
+
 ### Exporting the bundled platform
 
 Export either bundled platform for inspection or standalone phase commands.

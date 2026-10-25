@@ -43,6 +43,7 @@ from .board_support import validate_board_support_overlay_file
 from .default_platform import (
     DEFAULT_PLATFORM_PATH,
     DEFAULT_WIRES_PER_BANK,
+    RESEARCH_TRANSPORT_FORMATS,
     materialize_research_platform,
 )
 from .chimew_phase6 import run_chimew_phase6_adapter
@@ -263,6 +264,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "research-model", help="materialize the shared-bank research platform"
     )
     platform_research.add_argument("--fpga-count", type=int, choices=(2, 4), default=4)
+    platform_research.add_argument("--transport-format", choices=RESEARCH_TRANSPORT_FORMATS, default="abstract-bit-v1",
+        help="explicit link format; native word physical integration remains under qualification")
     platform_research.add_argument(
         "--wires-per-bank", type=int, default=DEFAULT_WIRES_PER_BANK,
         help="differential data pairs per HP bank (default: 20; two pins per pair)",
@@ -2142,6 +2145,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             _print_json(materialize_research_platform(
                 args.output, fpga_count=args.fpga_count,
                 wires_per_bank=args.wires_per_bank,
+                transport_format=args.transport_format,
             ))
             return 0
         if args.platform_command == "arm-mps4-materialize":

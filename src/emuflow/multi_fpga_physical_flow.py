@@ -641,6 +641,8 @@ def run_multi_fpga_physical_flow(
     if manifest.get("schema") != SPLIT_MANIFEST_SCHEMA:
         raise ValidationError("multi-FPGA physical input split manifest is invalid")
     platform = Platform.load(platform_path)
+    if any(link.word_timing is not None for link in platform.links):
+        raise ValidationError('periodic LVDS physical execution requires native word physical-top and event-projection integration; a bit adapter cannot consume a word PHY plan')
     raw_reservations = manifest.get("resource_reservations_by_fpga", {})
     if (
         not isinstance(raw_reservations, Mapping)

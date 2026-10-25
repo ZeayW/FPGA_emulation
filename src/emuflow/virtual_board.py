@@ -27,7 +27,9 @@ from .platform import Platform
 from .tdm_schedule_storage import canonical_tdm_schedule_sha256
 
 MODEL = "xcvu19p-hp-lvds-cable-v1"
+WORD_MODEL = "xcvu19p-hp-lvds-word-cable-v2"
 WIRING_SCHEMA = "emuflow.virtual-board-wiring/v1"
+WORD_WIRING_SCHEMA = "emuflow.virtual-board-wiring/v2"
 BINDING_SCHEMA = "emuflow.virtual-board-binding/v1"
 IO_CONTRACT_SCHEMA = "emuflow.virtual-io-physical-contract/v1"
 IO_CONTRACT_STORAGE_SCHEMA = "emuflow.virtual-io-physical-contract/v2"
@@ -88,7 +90,8 @@ def _bank_pairs(bank: Mapping[str, Any]) -> list:
 
 def _build_virtual_board_model(platform: Platform) -> Dict[str, Any]:
     """Assign disjoint real HP banks and connect each P to P and N to N."""
-    if platform.virtual_board_model != MODEL or platform.kind != "virtual":
+    word = platform.virtual_board_model == WORD_MODEL
+    if platform.virtual_board_model not in {MODEL,WORD_MODEL} or platform.kind != "virtual":
         raise ValidationError(f"virtual board requires the declared {MODEL} model")
     inventory = _inventory()
     if any(fpga.part != inventory["part"] for fpga in platform.fpgas):
@@ -111,11 +114,15 @@ def _build_virtual_board_model(platform: Platform) -> Dict[str, Any]:
     next_bank = {fpga.id: 0 for fpga in platform.fpgas}
     allocated = defaultdict(list)
     wires = []
+    forwarded_clocks = []
     for link in sorted(platform.links, key=lambda item: item.id):
         if (link.capacity_sharing != "shared_bidirectional" or link.direction != "full_duplex"
-                or link.mode != "abstract" or link.cable_count != 6 or link.hp_banks_per_cable != 3
+                or link.mode != ("source_synchronous" if word else "abstract") or link.cable_count != 6 or link.hp_banks_per_cable != 3
                 or link.bank_count != 18 or link.wires_per_bank is None):
             raise ValidationError("virtual board model requires 6 cables, 3 paired HP banks per cable and shared differential channels")
+        if word and (link.word_timing is None or link.wires_per_bank != 20
+                or link.word_timing.word_period_ns != 5 or link.word_timing.fixed_delay_ns != 30):
+            raise ValidationError("native word wiring requires twenty data pairs, 5 ns words and the declared 30 ns fixed arc")
         ends = sorted(link.endpoints)
         pair_banks = {}
         for fpga in ends:
@@ -127,6 +134,18 @@ def _build_virtual_board_model(platform: Platform) -> Dict[str, Any]:
         for group in range(link.bank_count):
             cable_index, bank_in_cable = divmod(group, link.hp_banks_per_cable)
             cable = f"{link.id}:cable{cable_index}"
+            if word:
+                clock_ends=[]
+                for fpga in ends:
+                    bank=str(pair_banks[fpga][group]["id"])
+                    choices=[p for p in eligible[bank]if "_GC_QBC_"in p["p"]["pin_function"]]
+                    if len(choices)!=1:raise ValidationError("word bank requires one reserved GC/QBC clock pair")
+                    clock_ends.append({"fpga":fpga,"bank":bank,**choices[0]})
+                contact=2*link.wires_per_bank*link.hp_banks_per_cable+2*bank_in_cable+1
+                forwarded_clocks.append({"id":f"{link.id}:clock{group}","link":link.id,
+                    "bank_group":group,"cable":cable,"cable_index":cable_index,
+                    "bank_in_cable":bank_in_cable,"connector_clock_contacts":{"p":contact,"n":contact+1},
+                    "endpoints":clock_ends})
             for fpga in ends:
                 bank = pair_banks[fpga][group]
                 if len(eligible[str(bank["id"])]) < link.wires_per_bank:
@@ -148,8 +167,8 @@ def _build_virtual_board_model(platform: Platform) -> Dict[str, Any]:
                               "bank_in_cable": bank_in_cable, "wire_in_bank": index,
                               "connector_data_contacts": {"p": contact, "n": contact + 1},
                               "endpoints": endpoints})
-    return {
-        "schema": WIRING_SCHEMA, "model": MODEL, "platform": platform.name,
+    result = {
+        "schema": WORD_WIRING_SCHEMA if word else WIRING_SCHEMA, "model": platform.virtual_board_model, "platform": platform.name,
         "qualification": "virtual_board_real_device_pins",
         "source": {"inventory_file": INVENTORY_PATH.name, "inventory_sha256": _digest(inventory),
                    "device_provenance": inventory["provenance"], "pin_screening": inventory["screening"]},
@@ -172,6 +191,16 @@ def _build_virtual_board_model(platform: Platform) -> Dict[str, Any]:
                     "differential_pairs": len(wires), "physical_conductors": 2 * len(wires),
                     "endpoint_data_pins": 4 * len(wires), "hp_banks_per_fpga": next_bank},
     }
+    if word:
+        result["forwarded_clocks"]=forwarded_clocks
+        result["assumptions"].update(
+            wire_unit="one differential data lane: eight serial bits per 5 ns parallel word; P/N are one lane",
+            board_services="forwarded-clock pairs are in this wiring table; DUT/TDM references, reset, startup consensus, power and ground remain external",
+            connector_contacts="data and forwarded-clock contact ordinals, not a connector product pinout")
+        result["metrics"].update(data_lane_pairs=len(wires),forwarded_clock_pairs=len(forwarded_clocks),
+            differential_pairs=len(wires)+len(forwarded_clocks),physical_conductors=2*(len(wires)+len(forwarded_clocks)),
+            endpoint_forwarded_clock_pins=4*len(forwarded_clocks))
+    return result
 
 
 def _file_sha256(path: Path) -> str:

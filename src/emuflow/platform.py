@@ -17,6 +17,7 @@ VALID_PLATFORM_KINDS = {"virtual", "hardware"}
 VALID_DIRECTIONS = {"full_duplex", "half_duplex", "unidirectional"}
 VALID_LINK_MODES = {"source_synchronous", "parallel", "serial", "abstract"}
 VALID_CAPACITY_SHARING = {"per_direction", "shared_bidirectional"}
+VALID_VIRTUAL_BOARD_MODELS = {"xcvu19p-hp-lvds-cable-v1", "xcvu19p-hp-lvds-word-cable-v2"}
 VALID_CLOCK_FREQUENCY_QUALIFICATIONS = {
     "fixed",
     "documented_default",
@@ -374,13 +375,13 @@ class Platform:
             raise ValidationError("platform.description: expected a string")
         virtual_board_model = metadata.get("virtual_board_model")
         if virtual_board_model is not None and (
-            virtual_board_model != "xcvu19p-hp-lvds-cable-v1" or kind != "virtual"
+            virtual_board_model not in VALID_VIRTUAL_BOARD_MODELS or kind != "virtual"
         ):
             raise ValidationError("platform.virtual_board_model: unsupported virtual board model")
         virtual_board_wiring = metadata.get("virtual_board_wiring")
         if virtual_board_wiring is not None:
             if (
-                virtual_board_model != "xcvu19p-hp-lvds-cable-v1"
+                virtual_board_model not in VALID_VIRTUAL_BOARD_MODELS
                 or not isinstance(virtual_board_wiring, str)
                 or re.fullmatch(
                     r"rapidwright_xcvu19p_(?:2fpga_p2p|4fpga_mesh)\.wires\.csv",
@@ -568,7 +569,7 @@ class Platform:
                 for key, number in (("bank_count", bank_count), ("wires_per_bank", wires_per_bank)):
                     if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
                         raise ValidationError(f"links[{index}].{key}: expected a positive integer")
-                if virtual_board_model == "xcvu19p-hp-lvds-cable-v1" and wires_per_bank > 24:
+                if virtual_board_model in VALID_VIRTUAL_BOARD_MODELS and wires_per_bank > 24:
                     raise ValidationError(
                         f"links[{index}].wires_per_bank: the XCVU19P HP bank has at most 24 differential pairs"
                     )

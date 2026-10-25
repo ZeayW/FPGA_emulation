@@ -413,6 +413,10 @@ digital word integrity from the separate six-cycle capture-window check. A
 passing zero-cable behavioral simulation cannot qualify routed I/O timing,
 cable/SI delay, board skew or the fitted fixed component. The fixed-pin word
 BSP and full-system global timing gates remain independently required.
+Simulator fatal/error outputs invalidate the qualification even if Tcl resumes
+the simulation and a later success file appears. Startup timeout literals use
+explicit 64-bit time arithmetic; a scalar output file cannot override a failed
+simulation lifecycle.
 
 The current fixed differential adapter supplies IBUFDS/OBUFDS boundaries; it
 does not implement the serializer/deserializer or forwarded-clock circuitry
