@@ -45,6 +45,8 @@ LEGACY_CROSS_LAYER_TIMING_PROVIDER = (
 CROSS_LAYER_TIMING_CONTRACT_SCHEMA = "emuflow.cross-layer-timing/v2"
 CROSS_LAYER_TIMING_PROVIDER = "provider-neutral-route-schedule-binding-v2"
 CROSS_LAYER_HOP_BINDING_MODE = "canonical-route-schedule-merge-v1"
+INDEXED_CROSS_LAYER_TIMING_CONTRACT_SCHEMA = "emuflow.cross-layer-timing/v3"
+INDEXED_CROSS_LAYER_TIMING_PROVIDER = "provider-neutral-route-schedule-binding-v3"
 CROSS_LAYER_PHYSICAL_BINDING_SCHEMA = (
     "emuflow.cross-layer-physical-binding/v1"
 )
@@ -523,6 +525,28 @@ def build_cross_layer_timing_contract(
 ) -> Dict[str, Any]:
     """Build a compact, provider-neutral route/schedule identity contract."""
 
+    from .phase5_timing_native import (
+        has_native_timing_inputs,
+        project_native_schedule_timing,
+    )
+
+    if (
+        getattr(routes.get("routes"), "_user_version", None) == 3
+        and isinstance(semantic_contract, dict)
+        and semantic_contract.get("indexed") is True
+    ):
+        if not has_native_timing_inputs(routes, schedule):
+            raise ValidationError(
+                "indexed cross-layer projection requires the typed schedule owner"
+            )
+        if "semantic_contract" in routes:
+            raise ValidationError(
+                "cross-layer routes may not duplicate the Phase 3 semantic contract"
+            )
+        if semantic_contract.get("schema") != routes.get("semantic_contract_schema"):
+            raise ValidationError("cross-layer semantic binding is incomplete")
+        return project_native_schedule_timing(routes, schedule)["contract"]
+
     return _build_contract(routes, schedule, semantic_contract)
 
 
@@ -535,6 +559,28 @@ def validate_cross_layer_timing_contract(
     """Independently rebuild and exactly compare a cross-layer contract."""
 
     schema = contract.get("schema")
+    indexed_production = (
+        getattr(routes.get("routes"), "_user_version", None) == 3
+        and isinstance(semantic_contract, dict)
+        and semantic_contract.get("indexed") is True
+    )
+    if indexed_production and schema != INDEXED_CROSS_LAYER_TIMING_CONTRACT_SCHEMA:
+        raise ValidationError("current typed cross-layer timing requires v3")
+    if schema == INDEXED_CROSS_LAYER_TIMING_CONTRACT_SCHEMA:
+        from .phase5_timing_native import has_native_timing_inputs
+
+        if not indexed_production or not has_native_timing_inputs(routes, schedule):
+            raise ValidationError(
+                "cross-layer timing contract does not match canonical typed inputs"
+            )
+        expected = build_cross_layer_timing_contract(
+            routes, schedule, semantic_contract
+        )
+        if expected.get("schema") != schema or contract != expected:
+            raise ValidationError(
+                "cross-layer timing contract does not match canonical inputs"
+            )
+        return {"status": "pass", **expected["metrics"]}
     if schema not in {
         CROSS_LAYER_TIMING_CONTRACT_SCHEMA,
         LEGACY_CROSS_LAYER_TIMING_CONTRACT_SCHEMA,
@@ -578,6 +624,10 @@ def _build_physical_binding(
     if (
         contract_identity
         not in {
+            (
+                INDEXED_CROSS_LAYER_TIMING_CONTRACT_SCHEMA,
+                INDEXED_CROSS_LAYER_TIMING_PROVIDER,
+            ),
             (
                 CROSS_LAYER_TIMING_CONTRACT_SCHEMA,
                 CROSS_LAYER_TIMING_PROVIDER,

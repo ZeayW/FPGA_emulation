@@ -1901,6 +1901,15 @@ def reconstruct_tdm_schedule_timing(
     Legacy links retain their projected fixed-slot event semantics. Physical
     readiness and arrival slots are checked separately by schedule validation.
     """
+    from .phase5_timing_native import (
+        has_native_timing_inputs,
+        project_native_schedule_timing,
+    )
+
+    if has_native_timing_inputs(routes, schedule):
+        return project_native_schedule_timing(
+            routes, schedule, platform, bind=False, analyze=True
+        )["timing_validation"]
     records = reconstruct_tdm_schedule_timing_paths_from_routes(routes, platform, schedule)
     if not records:
         raise ValidationError(

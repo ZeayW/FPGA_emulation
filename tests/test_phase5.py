@@ -208,7 +208,6 @@ class Phase5Test(unittest.TestCase):
         self.assertEqual(minimum, 1)
         self.assertEqual(segments.values_calls, 1)
 
-
     def test_schedule_validate_simulate_and_write_artifacts(self) -> None:
         platform = Platform.from_dict(
             _platform_value(
@@ -257,10 +256,13 @@ class Phase5Test(unittest.TestCase):
                 routes_path, platform_path, output / "schedule.json", assignment_path,
             )["status"], "pass")
             before = {name: (output / name).read_bytes() for name in report["artifacts"].values()}
-            with mock.patch(
-                "emuflow.phase5.build_cross_layer_timing_contract",
-                side_effect=ValidationError("injected cross-layer failure"),
-            ), self.assertRaisesRegex(ValidationError, "injected cross-layer failure"):
+            with (
+                mock.patch(
+                    "emuflow.phase5.project_native_schedule_timing",
+                    side_effect=ValidationError("injected cross-layer failure"),
+                ),
+                self.assertRaisesRegex(ValidationError, "injected cross-layer failure"),
+            ):
                 run_phase5(routes_path, platform_path, output, assignment_path)
             self.assertEqual({name: (output / name).read_bytes() for name in before}, before)
             self.assertFalse(list(output.glob(".phase5-generation-*")))

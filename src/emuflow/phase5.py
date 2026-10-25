@@ -10,9 +10,9 @@ import time
 from typing import Any, Dict, Mapping, Optional
 
 from .cross_layer_timing import (
-    build_cross_layer_timing_contract,
     validate_cross_layer_timing_contract,
 )
+from .phase5_timing_native import project_native_schedule_timing
 from .errors import TDMScheduleInfeasibleError, ValidationError
 from .io import read_json, write_json
 
@@ -308,6 +308,9 @@ def run_phase5(
 ) -> Dict[str, Any]:
     if provider not in {None, TDM_EXACT_DEPENDENCY_PROVIDER}:
         raise ValueError(f"unsupported Phase 5 provider {provider!r}")
+    from .native_tools import require_native_schema
+
+    require_native_schema("phase5-timing-request-v1")
     persisted_routes = read_system_routes(routes_path)
     routes, semantic_contract = _load_phase3_semantics(persisted_routes, assignment_path)
     if semantic_contract is None:
@@ -355,13 +358,15 @@ def _finish_phase5_generation(
         # the generic validator's full hop dictionaries.
         validation = validate_tdm_schedule(routes, platform, persisted_schedule)
         schedule = persisted_schedule
-        if isinstance(routes.get("timing"), dict):
-            timing_validation = reconstruct_tdm_schedule_timing(
-                routes, platform, persisted_schedule,
-            )
-        cross_layer_timing = build_cross_layer_timing_contract(
-            persisted_routes, persisted_schedule, semantic_contract
+        projected = project_native_schedule_timing(
+            persisted_routes,
+            persisted_schedule,
+            platform,
+            bind=True,
+            analyze=isinstance(routes.get("timing"), dict),
         )
+        timing_validation = projected["timing_validation"]
+        cross_layer_timing = projected["contract"]
         staged_store_path = tdm_schedule_store_path(staged_schedule_path)
         if staged_store_path is None:
             raise ValidationError("Phase 5 schedule store is missing")
@@ -380,6 +385,7 @@ def _finish_phase5_generation(
             "provider": schedule["provider"],
             "validation": validation,
             "cross_layer_timing_validation": cross_layer_validation,
+            "timing_dataflow": projected["implementation_id"],
             **(
                 {"timing_validation": timing_validation}
                 if timing_validation is not None
@@ -486,9 +492,31 @@ def validate_phase5(
     if schedule.get("provider") != TDM_EXACT_DEPENDENCY_PROVIDER or semantic_contract is None:
         raise ValidationError("Phase 5 requires a Static Exact dependency schedule")
     validation = validate_tdm_schedule(routes, platform, schedule)
+    cross_layer_path = schedule_path.parent / "cross_layer_timing.json"
+    if cross_layer_path.is_file():
+        contract = read_json(cross_layer_path)
+        if contract.get("schema") != "emuflow.cross-layer-timing/v3":
+            raise ValidationError(
+                "current Phase 5 generation requires indexed cross-layer timing v3"
+            )
+        if contract.get("schema") == "emuflow.cross-layer-timing/v3":
+            projected = project_native_schedule_timing(
+                persisted_routes,
+                schedule,
+                platform,
+                bind=True,
+                analyze=isinstance(routes.get("timing"), dict),
+            )
+            if contract != projected["contract"]:
+                raise ValidationError(
+                    "cross-layer timing contract does not match canonical inputs"
+                )
+            if projected["timing_validation"] is not None:
+                validation["timing"] = projected["timing_validation"]
+            validation["cross_layer_timing"] = {"status": "pass", **contract["metrics"]}
+            return validation
     if isinstance(routes.get("timing"), dict):
         validation["timing"] = reconstruct_tdm_schedule_timing(routes, platform, schedule)
-    cross_layer_path = schedule_path.parent / "cross_layer_timing.json"
     if cross_layer_path.is_file():
         validation["cross_layer_timing"] = validate_cross_layer_timing_contract(
             persisted_routes, read_json(cross_layer_path), schedule, semantic_contract,

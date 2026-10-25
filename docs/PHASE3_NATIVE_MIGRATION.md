@@ -290,15 +290,24 @@ The Python packed-DAG indexed validator and its ordered-record replay helper are
 retired. Indexed validation requires the current typed RouteStore; dictionary
 schedule fixtures can still use the small independent correctness oracle. Fixture
 comparisons cover full fields and hashes, not just counts or a solver success flag.
-Native domain summaries use bounded counts. Timing reconstruction still consumes
-the staged typed view, and opening that freshly sealed producer-owned store does
-not repeat its full file hash. Compact publication and validation apply without a
+Native domain summaries use bounded counts. The shared timing projector now
+reconstructs pre-physical timing and cross-layer binding directly from staged typed
+owners. It emits a v3 descriptor with the complete logical path projection seal,
+not another member/cut tree. The Python path materializer remains an explicit
+reference/stream-consumer API rather than the current Phase 5 summary path. Opening
+the freshly sealed producer-owned store does not repeat its full file hash. Compact publication and validation apply without a
 managed-storage flag. TSV/transport JSON/testbench/feedback exports and reference
 simulation are not implicit native-production outputs.
 
-Timing adapters and remaining phase data-plane ownership still require migration
-and real-design qualification. This closes independent indexed schedule validation;
-it does not complete W7 or establish whole-stage performance gains.
+Normal Phase 5 publication and validation share one native timing/binding pass.
+Native timing statistics retain the reference arithmetic and sorted accumulation
+order; numeric TEMP sorting uses source-scoped IDs instead of duplicate path names.
+See the [indexed timing contract](FLOW_PLAN.md#phase-5-indexed-timing). This closes
+the current Phase 5 summary and cross-layer publication data plane, alongside the
+independent indexed schedule validator. Python still controls report/generation
+publication; native orchestration integration, other phase data planes and real
+design qualification remain required. This does not complete W7 or establish
+whole-stage performance gains.
 Deployment probes load the unified entry and physical bridge before publishing
 runtime provenance; launchers must repeat them in the actual execution
 environment before expensive computation.
@@ -470,7 +479,7 @@ there is no silent implementation or provider fallback.
 | Phase 1–2 | Native synthesis/STA engines; compact indexed inputs | Consolidate import, identities and timing adapters under the shared artifact API |
 | Phase 3 | Shared-core candidate eligibility and primary clustering; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Migrate remaining policy/assignment publication and reference modes; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
-| Phase 5 | One native exact model/solver/certificate/store producer and independent native staged-store validation | Timing adapters and complete native stage lifecycle/qualification |
+| Phase 5 | Native model/solver/certificate/store producer, independent staged-store validation, and timing/cross-layer projection | Complete native stage lifecycle/report ownership and real-design qualification |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |
 | Phase 7 | Indexed lowering; typed physical handoff and native Bookshelf pin export | Complete remaining backend/export/validation ownership and full physical qualification |
 | Global STA | Typed segments/results and bounded identity/stitching views | Native check/input construction, result import and ordered complete-path stitching |

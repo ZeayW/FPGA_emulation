@@ -740,6 +740,7 @@ class SystemRouteSequence(list):
         self._count = count
         self._user_version = user_version
         self._source_bindings = None
+        self._logical_identity = None
         if order not in {"seq", "net", "demand"}:
             raise ValueError(f"unsupported route order {order!r}")
         self.order = order
@@ -752,6 +753,7 @@ class SystemRouteSequence(list):
             self.store_path, self._count, self._user_version, order
         )
         result._source_bindings = self._source_bindings
+        result._logical_identity = self._logical_identity
         return result
 
     def bound_store_sources(self):
@@ -759,6 +761,14 @@ class SystemRouteSequence(list):
             raise ValidationError("route cursor has no original source owner")
         require_store_sources_unchanged(self._source_bindings)
         return self._source_bindings
+
+    def native_logical_identity(self):
+        self.bound_store_sources()
+        if self._user_version != 3 or self._logical_identity is None:
+            raise ValidationError(
+                "native route projection requires a current logical owner"
+            )
+        return self._logical_identity
 
     def open_net_index(self) -> "SystemRouteNetIndex":
         """Open a bounded-lifetime net lookup over the normalized store.
@@ -1600,6 +1610,7 @@ class SystemRoutesView(dict):
         self.store_path = store_path.resolve()
         self._source_bindings = (selector_source, store_source)
         self["routes"]._source_bindings = self._source_bindings
+        self["routes"]._logical_identity = manifest["logical_sha256"]
         require_store_sources_unchanged(self._source_bindings)
 
     def bound_store_sources(self):

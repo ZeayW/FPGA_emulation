@@ -532,6 +532,13 @@ with the standalone Exact scheduler and its build option. Use the complete
 and requires a current typed RouteStore plus its Phase 3 Static Exact binding.
 The Python schedule oracle is test-only and bounded to 4096 routes.
 
+The current `cross_layer_timing.json` uses v3: `path_binding` records a source-bound
+projection hash and counts, while path/member/cut facts remain in RouteStore. It
+has no duplicate `path_bindings` population. The native timing projector and its
+preflight schema are required by the current Phase 5 implementation; use the
+matching Git version to interpret old inline generations. See the
+[indexed timing contract](FLOW_PLAN.md#phase-5-indexed-timing).
+
 ScheduleStore supports only `emuflow.tdm-schedule-storage/v4`; storage v1--v3
 readers, writers and native registry aliases are retired. Historical stores
 require their matching Git revision. The logical `emuflow.tdm-schedule/v1`

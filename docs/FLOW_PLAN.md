@@ -41,6 +41,37 @@ search varies the frame bound using that same engine; it is not another TDM
 provider. Hardware ratio/bank constraints and Chimew's lane/slot consumption
 remain part of the supported contracts.
 
+### Phase 5 indexed timing
+
+Current typed Static Exact production uses cross-layer timing v3. RouteStore owns
+the paths, members and cut transitions; ScheduleStore owns concrete events. The
+contract contains their source identities, projection policy, complete path-binding
+hash and counts, rather than another `path_bindings` array. Phase 7C validates the
+projection against those owners and continues to read physical logic and boundary
+evidence from their existing authoritative stores. The
+[v3 schema](../schemas/cross-layer-timing-v3.schema.json) is distinct from inline
+fixture/reference contracts; indexed production does not retry the Python builder.
+
+`phase5 timing-contract ROUTE_STORE [SCHEDULE_STORE [BOARD_REQUEST]] REQUEST SUMMARY`
+links into the shared core. The bounded request selects binding, timing analysis,
+or both. Normal Phase 5 publication and validation select both in one invocation
+when timing paths exist, avoiding a second route/path reconstruction. Binding
+checks exact route-hop coverage, member uniqueness, source/sink identity, required
+and fixed times, and explicit multicast transitions. Its digest is SHA-256 of the
+compact sorted-key, ASCII-escaped JSON array of the former logical path bindings:
+records are ordered by path ID, while member/cut order stays in source order.
+Every original member and cut field participates; no sampling replaces coverage.
+
+Analysis preserves absolute fixed-slot TX propagation, declared per-hop ratio delay,
+worst-sink selection and the existing Phase 5 diagnostic population. Exact
+quantiles and deterministic left-to-right negative-slack accumulation use a
+transient numeric ordering relation. It holds only source-scoped integer IDs,
+canonical ranks and floating-point values; names and member records remain in the
+RouteStore. Working pages are bounded, and closing the native reader retires the
+SQLite TEMP relation. It is neither a new handoff owner nor a checkpoint. Signed
+zero and double precision survive sorting. No report claims global physical timing
+from these pre-placement statistics.
+
 Phase 6 exposes baseline transport and optional Chimew. The Chimew adapter
 shares the typed pin-plan, electrical-binding and transport contracts; shared
 validators and fixed wiring constraints remain authoritative. Retired

@@ -355,6 +355,27 @@ previous summaries and published generations must survive rejection. No failed
 native operation may retry the Python oracle. These component gates do not replace
 real-design Phase 1–7/7C runtime, memory and complete timing qualification.
 
+## Native Phase 5 timing projection
+
+Compare complete timing summaries and canonical path-binding projections against
+the independent inline reference. Cover fixed and ratio delays, shared banks,
+explicit multi-cut chains, shuffled multicast trees, Unicode identities, missing
+optional member/required fields, equal normalized slack, signed zero and quantile
+boundaries. Compare the full projected array digest including every member and cut
+field, even though production publishes only its descriptor. A large compressed
+member group must leave the descriptor bounded; poisoning Python route/path/hop
+iterators must not affect typed production.
+
+Freshly resealed bad source records must reject unknown cuts, malformed transitions,
+missing/duplicate members, invalid clock/required/fixed values, negative waits and
+ratio errors. Check request CRC/truncation, input generation, source/output aliases,
+prior-summary preservation and absent-schema rejection before opening circuit data.
+Run Phase 7C and physical-binding consumers with v3 and require normal Phase 5
+report-last rollback/revalidation. Numerical equivalence preserves the existing
+pre-physical diagnostic population and must not be relabelled as original-path
+post-route WNS/TNS. Real NVDLA runtime/RSS and whole-flow Phase 7/7C gates remain
+separate required evidence.
+
 ## Fair algorithm comparisons
 
 Use real RTL and an explicitly identified platform. Raw contest communication

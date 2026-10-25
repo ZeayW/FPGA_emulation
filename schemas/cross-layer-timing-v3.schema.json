@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://emuflow.dev/schemas/cross-layer-timing-v3.schema.json",
+  "title": "EmuFlow indexed cross-layer timing contract",
+  "type": "object",
+  "required": [
+    "schema",
+    "provider",
+    "design",
+    "platform",
+    "transport_semantics",
+    "route_binding",
+    "path_binding",
+    "semantic_binding",
+    "logic_segment_binding",
+    "logic_segment_bindings",
+    "metrics"
+  ],
+  "dependentRequired": {
+    "hop_binding": [
+      "schedule_binding"
+    ],
+    "schedule_binding": [
+      "hop_binding"
+    ]
+  },
+  "properties": {
+    "schema": {
+      "const": "emuflow.cross-layer-timing/v3"
+    },
+    "provider": {
+      "const": "provider-neutral-route-schedule-binding-v3"
+    },
+    "design": {
+      "type": "string",
+      "minLength": 1
+    },
+    "platform": {
+      "type": "string",
+      "minLength": 1
+    },
+    "transport_semantics": {
+      "const": "sampled-virtual-wire"
+    },
+    "route_binding": {
+      "$ref": "#/$defs/artifactBinding"
+    },
+    "schedule_binding": {
+      "$ref": "#/$defs/artifactBinding"
+    },
+    "path_binding": {
+      "type": "object",
+      "required": [
+        "mode",
+        "source_user_version",
+        "records",
+        "sha256"
+      ],
+      "properties": {
+        "mode": {
+          "const": "canonical-route-store-path-projection-v1"
+        },
+        "source_user_version": {
+          "const": 3
+        },
+        "records": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "$ref": "#/$defs/digest"
+        }
+      },
+      "additionalProperties": false
+    },
+    "semantic_binding": {
+      "type": "object",
+      "required": [
+        "schema",
+        "sha256",
+        "storage"
+      ],
+      "properties": {
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "storage": {
+          "const": "phase3-assignment-index"
+        }
+      },
+      "additionalProperties": false
+    },
+    "logic_segment_binding": {
+      "type": "object",
+      "required": [
+        "mode",
+        "semantic_contract_sha256"
+      ],
+      "properties": {
+        "mode": {
+          "const": "phase3-assignment-index"
+        },
+        "semantic_contract_sha256": {
+          "$ref": "#/$defs/digest"
+        }
+      },
+      "additionalProperties": false
+    },
+    "logic_segment_bindings": {
+      "const": []
+    },
+    "hop_binding": {
+      "type": "object",
+      "required": [
+        "mode",
+        "scheduled_hops"
+      ],
+      "properties": {
+        "mode": {
+          "const": "canonical-route-schedule-merge-v1"
+        },
+        "scheduled_hops": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "paths",
+        "path_cut_bindings",
+        "logic_segments",
+        "scheduled_hops"
+      ],
+      "properties": {
+        "paths": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "path_cut_bindings": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "logic_segments": {
+          "const": 0
+        },
+        "scheduled_hops": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "artifactBinding": {
+      "type": "object",
+      "required": [
+        "provider",
+        "sha256"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/digest"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

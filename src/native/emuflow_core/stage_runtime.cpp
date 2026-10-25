@@ -181,6 +181,8 @@ constexpr RegisteredSchema schemas[] = {
     {"tlr-output-v1", ArtifactEncoding::kSqlite, 0x45545252, 1},
     {"system-route-store-v3", ArtifactEncoding::kSqlite, 0x454d5552, 3, false,
      "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.system-routes/v1"},
+    {"phase5-timing-request-v1", ArtifactEncoding::kBinary, 0x31544354464d5545ULL, 1},
+    {"phase5-timing-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"exact-schedule-validation-request-v1", ArtifactEncoding::kBinary, 0x3156534d44544545ULL, 1},
     {"exact-schedule-validation-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"exact-schedule-generation-request-v1", ArtifactEncoding::kBinary, 0x3147534d44544545ULL, 1},

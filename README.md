@@ -209,7 +209,10 @@ construction, scheduling, readiness certificates and ScheduleStore publication,
 without Python result import or numeric intermediate files. Independent native
 validation reconstructs events and certificates directly from the typed stores
 before report publication, with no Python route/hop replay. Selection depends on
-the input contract, not its route count; both operations require the unified entry.
+the input contract, not its route count. Native timing projection produces the
+pre-physical summary and a [compact v3 cross-layer contract](docs/FLOW_PLAN.md#phase-5-indexed-timing)
+without Python path/hop trees or a second path-binding payload. These operations
+require the unified entry; compilation checks that capability before synthesis.
 Production ScheduleStore reads and writes only storage v4; retired storage
 versions and the Python snapshot publisher are removed from the installed API.
 The logical schedule and typed relation schemas remain unchanged.

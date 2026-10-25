@@ -1388,6 +1388,9 @@ def _compile_preflight(ctx: _CompileContext):
     ctx.openroad = _resolve_partition_openroad(
         ctx.partition_provider, ctx.openroad, ctx.tritonpart_solution
     )
+    from .native_tools import require_native_schema
+
+    require_native_schema("phase5-timing-request-v1")
     ctx.output_dir.mkdir(parents=True, exist_ok=True)
 
 def _compile_frontend(ctx: _CompileContext):

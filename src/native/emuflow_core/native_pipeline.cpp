@@ -6,6 +6,7 @@
 #include "emuflow_core/native_stages.hpp"
 #include "emuflow_core/schedule_store.hpp"
 #include "emuflow_core/schedule_validation.hpp"
+#include "emuflow_core/schedule_timing.hpp"
 #include "emuflow_core/schedule_ingress.hpp"
 #include "emuflow_core/bookshelf.hpp"
 #include "emuflow_core/rwroute_export.hpp"
@@ -46,6 +47,7 @@ const char* StageName(Stage stage) {
     case Stage::kRefinePatron: return "phase3.refine-patron";
     case Stage::kRoute: return "phase4.route";
     case Stage::kBuildSchedule: return "phase5.build-schedule";
+    case Stage::kProjectScheduleTiming: return "phase5.timing-contract";
     case Stage::kValidateSchedule: return "phase5.validate-schedule";
     case Stage::kAssignBanks: return "phase6.assign-banks";
     case Stage::kGroupSignals: return "phase6.group-signals";
@@ -104,6 +106,13 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
         throw core::StageError(core::ErrorCode::kInvalidRequest, "PATRON requires typed input");
       return {"patron-input-v1"};
     case Stage::kRoute: return {"global-route-input-v1"};
+    case Stage::kProjectScheduleTiming: {
+      const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
+      if(count==2) return {"system-route-store-v3","phase5-timing-request-v1"};
+      if(count==3) return {"system-route-store-v3","tdm-schedule-store-v4","phase5-timing-request-v1"};
+      if(count==4) return {"system-route-store-v3","tdm-schedule-store-v4","exact-schedule-board-request-v1","phase5-timing-request-v1"};
+      throw core::StageError(core::ErrorCode::kInvalidRequest,"timing projection input coverage disagrees");
+    }
     case Stage::kValidateSchedule: return {"system-route-store-v3", "exact-schedule-board-request-v1", "tdm-schedule-store-v4", "exact-schedule-validation-request-v1"};
     case Stage::kBuildSchedule: return {"system-route-store-v3", "exact-schedule-board-request-v1", "exact-schedule-generation-request-v1"};
     case Stage::kAssignBanks:
@@ -260,6 +269,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kRoute: RouteTlr(inputs, output); break;
       case Stage::kSealRoutes: core::SealSystemRoutes(inputs,output); break;
       case Stage::kBuildSchedule: core::BuildExactScheduleStore(inputs,output); break;
+      case Stage::kProjectScheduleTiming: core::ProjectScheduleTiming(inputs,output); break;
       case Stage::kValidateSchedule: core::ValidateExactSchedule(inputs,output); break;
       case Stage::kExportBookshelf:
         core::ExportBookshelf(inputs[0],inputs[1],output,request.auxiliary_output_path,request.scratch_path);
@@ -295,6 +305,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kRoute: schema = "tlr-output-v1"; break;
       case Stage::kSealRoutes: schema = "system-route-seal-summary-v1"; break;
       case Stage::kBuildSchedule: schema = "tdm-schedule-store-v4"; break;
+      case Stage::kProjectScheduleTiming: schema = "phase5-timing-summary-v1"; break;
       case Stage::kValidateSchedule: schema = "exact-schedule-validation-summary-v1"; break;
       case Stage::kAssignBanks: schema = "chimew-bank-output-text"; break;
       case Stage::kGroupSignals: schema = "chimew-group-output-text"; break;

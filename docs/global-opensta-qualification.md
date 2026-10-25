@@ -109,3 +109,10 @@ references instead. A through-point query returning an enclosing
 path must not be labeled an exact subsegment merely because it traverses both
 requested pins; its delay must be restricted to the declared segment or carry
 an explicitly supported conservative qualification.
+
+
+The Phase 5 indexed timing descriptor binds RouteStore path/member identities and
+ScheduleStore events without duplicating a path tree. Its native timing summary
+preserves the pre-placement diagnostic population and event/ratio model; those
+statistics are not global post-route timing. Phase 7C still requires the complete
+original-member physical coverage and numerical OpenSTA checks specified above.
