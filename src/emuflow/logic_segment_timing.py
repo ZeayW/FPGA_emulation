@@ -20,6 +20,7 @@ from .sqlite_artifacts import immutable_sqlite_uri
 from .boundary_timing import BOUNDARY_IDENTITY_SCHEMA
 from .equivalence import _lut_definition
 from .errors import ValidationError
+from .store_publication import bind_view_sources, bind_store_source
 from .io import read_json, write_json
 from .ir import EmuIR
 from .emuir_compact import is_compact_emuir, selected_net_records
@@ -1532,6 +1533,10 @@ def _write_logic_segment_query_impl(
                     for member, reason in sorted(unsupported.items())
                 ),
                 sidecar_publication=(temporary_query, query_path),
+                source_bindings=bind_view_sources(
+                    (merged_ir, "emuir-compact-v2"),
+                    (boundary_identity, "boundary-identity-store-v1"),
+                ),
             )
             identity_view.close()
         except BaseException:
@@ -1780,6 +1785,11 @@ def _indexed_logic_measurement_import(
     from .logic_segment_identity_storage import segment_from_row
     from .logic_segment_timing_storage import write_logic_segment_timing_storage
 
+    source_bindings = bind_view_sources(
+        (identity, "logic-segment-identity-store-v1")
+    ) + (
+        bind_store_source(input_path, "physical-timing-measurements-v1"),
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
         prefix=".logic-measurements.", dir=output_path.parent
@@ -2013,9 +2023,8 @@ def _indexed_logic_measurement_import(
                 header=header_value,
                 segments=measured_records(),
                 unsupported_member_paths=unsupported_records(),
-                unmeasured_segments=(
-                    unmeasured_records() if allow_missing else ()
-                ),
+                unmeasured_segments=(unmeasured_records() if allow_missing else ()),
+                source_bindings=source_bindings,
             )
             try:
                 validation = view.validate_timing()
@@ -2062,6 +2071,9 @@ def import_vivado_logic_segment_timing(
             )
         finally:
             identity.close()
+    source_bindings = (
+        bind_store_source(input_path, "physical-timing-measurements-v1"),
+    )
     validate_logic_segment_identity(identity)
     expected = {item["id"]: item for item in identity["segments"]}
     lines = input_path.read_text(encoding="utf-8").splitlines()
@@ -2198,6 +2210,7 @@ def import_vivado_logic_segment_timing(
             }
             for segment_id in missing
         ),
+        source_bindings=source_bindings,
     )
     try:
         validation = view.validate_timing()

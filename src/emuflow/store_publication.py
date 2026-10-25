@@ -83,6 +83,19 @@ def require_store_sources_unchanged(sources):
             ) from error
 
 
+def validate_store_destination(destination: Path, sources):
+    """Reject changed inputs and output aliases before acquiring a writer lease."""
+    sources = tuple(sources)
+    require_store_sources_unchanged(sources)
+    destination = Path(destination).resolve()
+    for source in sources:
+        if destination == source.path or (
+            destination.exists() and os.path.samefile(destination, source.path)
+        ):
+            raise ValidationError("SQLite publication output aliases a source")
+    return sources
+
+
 def publish_sqlite_store(
     temporary: Path, destination: Path, schema: str, *, sources=()
 ):

@@ -12,6 +12,7 @@ from .board_link_timing import (
     validate_board_link_timing,
 )
 from .errors import EmuFlowError, ValidationError
+from .store_publication import bind_view_sources
 from .io import read_json, write_json
 from .boundary_timing import validate_boundary_timing_database
 from .boundary_identity_storage import write_boundary_identity_storage
@@ -265,7 +266,12 @@ def run_vivado_board_timing(
                 )
             }
             write_boundary_identity_storage(
-                identity_path, identity_header, identities["endpoints"]
+                identity_path,
+                identity_header,
+                identities["endpoints"],
+                source_bindings=bind_view_sources(
+                    (identities, "boundary-identity-store-v1")
+                ),
             ).close()
 
             board_dcp_info = board_by_fpga[fpga_id].get("artifacts", {}).get(

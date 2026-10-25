@@ -15,6 +15,7 @@ from .boundary_timing import (
 from .boundary_identity_storage import read_boundary_identity_storage
 from .boundary_timing_storage import write_boundary_timing_storage
 from .errors import ValidationError
+from .store_publication import bind_view_sources
 from .emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
 from .io import read_json, write_json
 from .logic_segment_timing import (
@@ -404,6 +405,7 @@ def build_xilinx_boundary_timing(
         output_path,
         header,
         records(),
+        source_bindings=bind_view_sources((identity, "boundary-identity-store-v1")),
     ) as database:
         validation = validate_boundary_timing_database(database, identity)
     close_identity = getattr(identity, "close", None)
@@ -481,6 +483,9 @@ def build_xilinx_logic_segment_timing(
             header=header,
             segments=records(),
             unsupported_member_paths=identity["unsupported_member_paths"],
+            source_bindings=bind_view_sources(
+                (identity, "logic-segment-identity-store-v1")
+            ),
         )
         try:
             validation = view.validate_timing()
@@ -527,7 +532,10 @@ def build_xilinx_local_path_timing(
                 yield {**path, "delay_ns": delay}
 
         with write_local_path_timing_storage(
-            output_path, header, records()
+            output_path,
+            header,
+            records(),
+            source_bindings=bind_view_sources((identity, "local-path-timing-store-v1")),
         ) as database:
             validation = validate_local_path_timing(database)
         return {**validation, "output": str(output_path)}

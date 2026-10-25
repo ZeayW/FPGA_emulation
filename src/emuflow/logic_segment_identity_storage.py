@@ -23,6 +23,13 @@ from typing import Any, Optional
 import weakref
 
 from .errors import ValidationError
+from .store_publication import (
+    StoreSource,
+    bind_store_source,
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+)
 from .io import file_sha256, read_json, write_json
 
 
@@ -503,7 +510,9 @@ def _validate_selector(raw: Any) -> dict[str, Any]:
     return raw
 
 
-def _resolve_store(selector_path: Path, selector: Mapping[str, Any]) -> Path:
+def _resolve_store(
+    selector_path: Path, selector: Mapping[str, Any]
+) -> tuple[Path, StoreSource]:
     if selector_path.is_symlink():
         raise ValidationError("logic segment identity selector is a symbolic link")
     candidate = selector_path.parent / str(selector["artifact"])
@@ -514,6 +523,7 @@ def _resolve_store(selector_path: Path, selector: Mapping[str, Any]) -> Path:
     try:
         resolved = candidate.resolve(strict=True)
         stat = resolved.stat()
+        store_source = bind_store_source(resolved, "logic-segment-identity-store-v1")
     except OSError as error:
         raise ValidationError("logic segment identity store is missing") from error
     if resolved.parent != selector_path.parent.resolve():
@@ -523,7 +533,8 @@ def _resolve_store(selector_path: Path, selector: Mapping[str, Any]) -> Path:
         or file_sha256(resolved) != selector["store_sha256"]
     ):
         raise ValidationError("logic segment identity store seal disagrees")
-    return resolved
+    require_store_sources_unchanged((store_source,))
+    return resolved, store_source
 
 
 class LogicSegmentIdentityView(Mapping[str, Any]):
@@ -545,6 +556,9 @@ class LogicSegmentIdentityView(Mapping[str, Any]):
             if selector_path.is_symlink() or not selector_path.is_file():
                 raise ValidationError("logic segment identity selector is missing")
             self.selector_path = selector_path.resolve()
+            selector_source = bind_store_source(
+                self.selector_path, "logic-segment-identity-selector-v1"
+            )
             self.selector = _validate_selector(read_json(selector_path))
             expected = {
                 "design": expected_design, "platform": expected_platform,
@@ -558,8 +572,10 @@ class LogicSegmentIdentityView(Mapping[str, Any]):
                     raise ValidationError(
                         f"logic segment identity {key} source seal disagrees"
                     )
-            self.store_path = _resolve_store(selector_path, self.selector)
+            self.store_path, store_source = _resolve_store(selector_path, self.selector)
+            self._source_bindings = (selector_source, store_source)
             self._validate_store()
+            require_store_sources_unchanged(self._source_bindings)
             self._segments = _SegmentSequence(self, self.selector["counts"]["segments"])
             self._unsupported = _UnsupportedSequence(
                 self, self.selector["counts"]["unsupported_member_paths"]
@@ -579,11 +595,22 @@ class LogicSegmentIdentityView(Mapping[str, Any]):
         value.selector_path = selector_path.resolve()
         value.selector = selector
         value.store_path = store_path.resolve()
+        value._source_bindings = (
+            bind_store_source(
+                value.selector_path, "logic-segment-identity-selector-v1"
+            ),
+            bind_store_source(value.store_path, "logic-segment-identity-store-v1"),
+        )
         value._segments = _SegmentSequence(value, selector["counts"]["segments"])
         value._unsupported = _UnsupportedSequence(
             value, selector["counts"]["unsupported_member_paths"]
         )
         return value
+
+    def bound_store_sources(self):
+        self._ensure_open()
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -1089,10 +1116,12 @@ def write_logic_segment_identity_storage(
     segments: Iterable[Mapping[str, Any]],
     unsupported_member_paths: Iterable[Mapping[str, Any]] = (),
     sidecar_publication: Optional[tuple[Path, Path]] = None,
+    source_bindings=(),
 ) -> LogicSegmentIdentityView:
     normalized_header = _validate_header(
         header, require_exact_coverage=False
     )
+    source_bindings = validate_store_destination(path, source_bindings)
     path.parent.mkdir(parents=True, exist_ok=True)
     lease: Optional[_Lease] = _Lease(path, exclusive=True)
     temporary: Optional[Path] = None
@@ -1225,20 +1254,23 @@ def write_logic_segment_identity_storage(
         connection.commit()
         connection.close()
         connection = None
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
         store_sha = file_sha256(temporary)
         published_store = path.with_name(_store_name(path, store_sha))
         if published_store.is_symlink():
             raise ValidationError("logic segment identity generation is a symlink")
+        require_store_sources_unchanged(source_bindings)
         if published_store.is_file():
             if file_sha256(published_store) != store_sha:
                 raise ValidationError("logic segment identity generation seal disagrees")
             temporary.unlink()
         else:
-            os.replace(temporary, published_store)
+            publish_sqlite_store(
+                temporary,
+                published_store,
+                "logic-segment-identity-store-v1",
+                sources=source_bindings,
+            )
             created_store = True
-            _fsync_directory(path.parent)
         selector.update({
             "artifact": published_store.name,
             "store_bytes": published_store.stat().st_size,
@@ -1281,6 +1313,7 @@ def write_logic_segment_identity_storage(
             shutil.copyfile(path, selector_backup)
             with selector_backup.open("rb") as stream:
                 os.fsync(stream.fileno())
+        require_store_sources_unchanged(source_bindings)
         os.replace(selector_temporary, path)
         selector_published = True
         _fsync_directory(path.parent)

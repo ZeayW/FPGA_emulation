@@ -18,6 +18,17 @@ namespace emuflow::core {
 namespace {
 constexpr RegisteredSchema schemas[] = {
     {"sqlite-publication-request-v1", ArtifactEncoding::kBinary, 0x31505351464d5545ULL, 1},
+    {"boundary-identity-selector-v1", ArtifactEncoding::kText, 0, 1},
+    {"boundary-timing-selector-v1", ArtifactEncoding::kText, 0, 1},
+    {"logic-segment-identity-selector-v1", ArtifactEncoding::kText, 0, 1},
+    {"logic-segment-timing-selector-v1", ArtifactEncoding::kText, 0, 1},
+    {"local-path-timing-selector-v1", ArtifactEncoding::kText, 0, 1},
+    {"openparf-atomic-source-selector-v1", ArtifactEncoding::kText, 0, 1},
+    {"xilinx-mapped-json-v1", ArtifactEncoding::kText, 0, 1},
+    {"transport-selector-v1", ArtifactEncoding::kText, 0, 1},
+    {"physical-timing-measurements-v1", ArtifactEncoding::kText, 0, 1},
+    {"vivado-local-identity-private-v1", ArtifactEncoding::kSqlite, 0, 0, true,
+     "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'", "emuflow.local-path-identity/v2"},
     {"tdm-schedule-selector-v4", ArtifactEncoding::kText, 0, 4},
     {"pin-plan-selector-v1", ArtifactEncoding::kText, 0, 1},
     {"chimew-binding-selector-v1", ArtifactEncoding::kText, 0, 1},

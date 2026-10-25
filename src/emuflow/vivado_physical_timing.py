@@ -12,6 +12,7 @@ from .boundary_identity_storage import read_boundary_identity_storage
 from .boundary_timing import boundary_timing_header, boundary_timing_record, validate_boundary_timing_database
 from .boundary_timing_storage import write_boundary_timing_storage
 from .errors import ValidationError
+from .store_publication import bind_view_sources, bind_store_source
 from .indexed_physical_ir import IndexedPhysicalIR
 from .local_path_timing import LOCAL_PATH_IDENTITY_SCHEMA_V2, local_path_timing_header, validate_local_path_timing
 from .local_path_timing_storage import write_local_path_timing_storage
@@ -62,6 +63,10 @@ def write_vivado_local_query(
 
 def import_vivado_local_timing(input_path: Path, identity_path: Path, output_path: Path) -> dict[str, Any]:
     """Require every original local path exactly once, without a sampled PathDB."""
+    source_bindings = (
+        bind_store_source(input_path, "physical-timing-measurements-v1"),
+        bind_store_source(identity_path, "vivado-local-identity-private-v1"),
+    )
     with tempfile.TemporaryDirectory(prefix=".vivado-local-", dir=output_path.parent) as temporary:
         connection = sqlite3.connect(Path(temporary) / "measurements.sqlite", uri=True)
         try:
@@ -101,7 +106,9 @@ def import_vivado_local_timing(input_path: Path, identity_path: Path, output_pat
                     yield {**json.loads(row[0]), "delay_ns": float(row[1])}
             timing_header = local_path_timing_header(header, provider="vivado-source-bound-local-endpoint-delay-v1",
                                                      qualification="routed-vendor-device-local-endpoint-longest-path")
-            with write_local_path_timing_storage(output_path, timing_header, records()) as view:
+            with write_local_path_timing_storage(
+                output_path, timing_header, records(), source_bindings=source_bindings
+            ) as view:
                 validation = validate_local_path_timing(view)
             return {**validation, "output": str(output_path)}
         finally:
@@ -114,11 +121,17 @@ def import_indexed_vivado_boundary(
     provider: str = "vivado-indexed-routed-boundary-v1",
     qualification: str = "routed-vendor-device-boundary",
 ) -> dict[str, Any]:
+    measurement_source = bind_store_source(
+        input_path, "physical-timing-measurements-v1"
+    )
     with tempfile.TemporaryDirectory(prefix=".vivado-boundary-", dir=output_path.parent) as temporary:
         connection = sqlite3.connect(Path(temporary) / "measurements.sqlite")
         identities = None
         try:
             identities = read_boundary_identity_storage(identity_path, allow_legacy=True)
+            source_bindings = bind_view_sources(
+                (identities, "boundary-identity-store-v1")
+            ) + (measurement_source,)
             connection.execute("CREATE TABLE measurements(id TEXT PRIMARY KEY,kind TEXT,delay REAL,start TEXT,end TEXT)")
             with input_path.open(encoding="utf-8") as stream:
                 if next(stream, "").rstrip("\n") != "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex":
@@ -146,7 +159,9 @@ def import_indexed_vivado_boundary(
                 if count != connection.execute("SELECT count(*) FROM measurements").fetchone()[0]:
                     raise ValidationError("Vivado boundary timing has unexpected endpoints")
             header = boundary_timing_header(identities, provider=provider, qualification=qualification, measurement_scope=measurement_scope)
-            with write_boundary_timing_storage(output_path, header, records()) as view:
+            with write_boundary_timing_storage(
+                output_path, header, records(), source_bindings=source_bindings
+            ) as view:
                 validation = validate_boundary_timing_database(view, identities)
             return {**validation, "output": str(output_path)}
         finally:

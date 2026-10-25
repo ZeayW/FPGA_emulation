@@ -26,6 +26,13 @@ from typing import Any, Optional
 import weakref
 
 from .errors import ValidationError
+from .store_publication import (
+    StoreSource,
+    bind_store_source,
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+)
 from .io import file_sha256, read_json, write_json
 
 
@@ -358,7 +365,9 @@ def _validate_selector(value: Any) -> dict[str, Any]:
     return value
 
 
-def _resolve_store(selector_path: Path, selector: Mapping[str, Any]) -> Path:
+def _resolve_store(
+    selector_path: Path, selector: Mapping[str, Any]
+) -> tuple[Path, StoreSource]:
     if selector_path.is_symlink():
         raise ValidationError("logic segment timing selector is a symbolic link")
     candidate = selector_path.parent / str(selector["artifact"])
@@ -373,6 +382,7 @@ def _resolve_store(selector_path: Path, selector: Mapping[str, Any]) -> Path:
     try:
         resolved = candidate.resolve(strict=True)
         stat = resolved.stat()
+        store_source = bind_store_source(resolved, "logic-segment-timing-store-v1")
     except OSError as error:
         raise ValidationError("logic segment timing store is missing") from error
     if resolved.parent != selector_path.parent.resolve():
@@ -382,7 +392,8 @@ def _resolve_store(selector_path: Path, selector: Mapping[str, Any]) -> Path:
         or file_sha256(resolved) != selector["store_sha256"]
     ):
         raise ValidationError("logic segment timing store seal disagrees")
-    return resolved
+    require_store_sources_unchanged((store_source,))
+    return resolved, store_source
 
 
 def _exact_sqlite_envelope(connection: sqlite3.Connection) -> None:
@@ -617,6 +628,9 @@ class LogicSegmentTimingView(Mapping[str, Any]):
         try:
             if selector_path.is_symlink() or not selector_path.is_file():
                 raise ValidationError("logic segment timing selector is missing")
+            selector_source = bind_store_source(
+                selector_path, "logic-segment-timing-selector-v1"
+            )
             selector_stat = selector_path.stat()
             if (
                 expected_selector_bytes is not None
@@ -642,8 +656,10 @@ class LogicSegmentTimingView(Mapping[str, Any]):
                     raise ValidationError(
                         f"logic segment timing {key} source seal disagrees"
                     )
-            self.store_path = _resolve_store(selector_path, self.selector)
+            self.store_path, store_source = _resolve_store(selector_path, self.selector)
+            self._source_bindings = (selector_source, store_source)
             self._validate_store()
+            require_store_sources_unchanged(self._source_bindings)
             counts = self.selector["counts"]
             self._segments = _StoreSequence(self, "segments", counts["segments"])
             self._unsupported = _StoreSequence(
@@ -667,6 +683,10 @@ class LogicSegmentTimingView(Mapping[str, Any]):
         value.selector_path = selector_path.resolve()
         value.selector = selector
         value.store_path = store_path.resolve()
+        value._source_bindings = (
+            bind_store_source(value.selector_path, "logic-segment-timing-selector-v1"),
+            bind_store_source(value.store_path, "logic-segment-timing-store-v1"),
+        )
         counts = selector["counts"]
         value._segments = _StoreSequence(value, "segments", counts["segments"])
         value._unsupported = _StoreSequence(
@@ -676,6 +696,11 @@ class LogicSegmentTimingView(Mapping[str, Any]):
             value, "unmeasured_segments", counts["unmeasured_segments"]
         )
         return value
+
+    def bound_store_sources(self):
+        self._ensure_open()
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -893,8 +918,10 @@ def write_logic_segment_timing_storage(
     segments: Iterable[Mapping[str, Any]],
     unsupported_member_paths: Iterable[Mapping[str, Any]] = (),
     unmeasured_segments: Iterable[Mapping[str, Any]] = (),
+    source_bindings=(),
 ) -> LogicSegmentTimingView:
     normalized_header = _validate_header(dict(header))
+    source_bindings = validate_store_destination(path, source_bindings)
     path.parent.mkdir(parents=True, exist_ok=True)
     lease: Optional[_Lease] = _Lease(path, exclusive=True)
     temporary: Optional[Path] = None
@@ -1078,20 +1105,23 @@ def write_logic_segment_timing_storage(
         connection.commit()
         connection.close()
         connection = None
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
         store_sha = file_sha256(temporary)
         published_store = path.with_name(_store_name(path, store_sha))
         if published_store.is_symlink():
             raise ValidationError("logic segment timing generation is a symlink")
+        require_store_sources_unchanged(source_bindings)
         if published_store.is_file():
             if file_sha256(published_store) != store_sha:
                 raise ValidationError("logic segment timing generation seal disagrees")
             temporary.unlink()
         else:
-            os.replace(temporary, published_store)
+            publish_sqlite_store(
+                temporary,
+                published_store,
+                "logic-segment-timing-store-v1",
+                sources=source_bindings,
+            )
             created_store = True
-            _fsync_directory(path.parent)
         selector.update({
             "artifact": published_store.name,
             "store_bytes": published_store.stat().st_size,
@@ -1101,6 +1131,7 @@ def write_logic_segment_timing_storage(
         write_json(selector_temporary, selector, compact=True)
         with selector_temporary.open("rb") as stream:
             os.fsync(stream.fileno())
+        require_store_sources_unchanged(source_bindings)
         os.replace(selector_temporary, path)
         selector_committed = True
         _fsync_directory(path.parent)
@@ -1433,10 +1464,15 @@ def publish_logic_segment_timing_selector(
             target, relative_to=output_directory
         )
     with read_logic_segment_timing_storage(source) as source_view:
+        source_bindings = validate_store_destination(
+            target, source_view.bound_store_sources()
+        )
         assert isinstance(source_view, LogicSegmentTimingView)
         selector = dict(source_view.selector)
         lease: Optional[_Lease] = _Lease(target, exclusive=True)
         temporary_store: Optional[Path] = None
+        created_store = False
+        selector_committed = False
         temporary_selector: Optional[Path] = None
         try:
             destination_store = target.with_name(
@@ -1456,7 +1492,6 @@ def publish_logic_segment_timing_selector(
                     with temporary_store.open("wb") as output_stream:
                         shutil.copyfileobj(input_stream, output_stream, 1024 * 1024)
                         output_stream.flush()
-                        os.fsync(output_stream.fileno())
                 if (
                     temporary_store.stat().st_size != selector["store_bytes"]
                     or file_sha256(temporary_store) != selector["store_sha256"]
@@ -1464,9 +1499,14 @@ def publish_logic_segment_timing_selector(
                     raise ValidationError(
                         "logic segment timing copied generation seal disagrees"
                     )
-                os.replace(temporary_store, destination_store)
+                publish_sqlite_store(
+                    temporary_store,
+                    destination_store,
+                    "logic-segment-timing-store-v1",
+                    sources=source_bindings,
+                )
+                created_store = True
                 temporary_store = None
-                _fsync_directory(target.parent)
             elif (
                 destination_store.stat().st_size != selector["store_bytes"]
                 or file_sha256(destination_store) != selector["store_sha256"]
@@ -1482,11 +1522,15 @@ def publish_logic_segment_timing_selector(
             write_json(temporary_selector, selector, compact=True)
             with temporary_selector.open("rb") as stream:
                 os.fsync(stream.fileno())
+            require_store_sources_unchanged(source_bindings)
             os.replace(temporary_selector, target)
+            selector_committed = True
             temporary_selector = None
             _fsync_directory(target.parent)
             _collect_stale(target, destination_store)
         finally:
+            if created_store and not selector_committed:
+                destination_store.unlink(missing_ok=True)
             if temporary_store is not None:
                 temporary_store.unlink(missing_ok=True)
             if temporary_selector is not None:

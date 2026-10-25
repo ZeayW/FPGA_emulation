@@ -23,6 +23,13 @@ from typing import Any, Optional
 import weakref
 
 from .errors import ValidationError
+from .store_publication import (
+    StoreSource,
+    bind_store_source,
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+)
 from .io import file_sha256, read_json, write_json
 
 
@@ -359,7 +366,9 @@ def _validate_selector(raw: Any) -> dict[str, Any]:
     return raw
 
 
-def _resolve_store(selector_path: Path, selector: Mapping[str, Any]) -> Path:
+def _resolve_store(
+    selector_path: Path, selector: Mapping[str, Any]
+) -> tuple[Path, StoreSource]:
     candidate = selector_path.parent / str(selector["artifact"])
     if candidate.name != _store_name(selector_path, str(selector["store_sha256"])):
         raise ValidationError("boundary identity artifact owner disagrees")
@@ -368,6 +377,7 @@ def _resolve_store(selector_path: Path, selector: Mapping[str, Any]) -> Path:
     try:
         resolved = candidate.resolve(strict=True)
         stat = resolved.stat()
+        store_source = bind_store_source(resolved, "boundary-identity-store-v1")
     except OSError as error:
         raise ValidationError("boundary identity store is missing") from error
     if resolved.parent != selector_path.parent.resolve():
@@ -377,7 +387,8 @@ def _resolve_store(selector_path: Path, selector: Mapping[str, Any]) -> Path:
         or file_sha256(resolved) != selector["store_sha256"]
     ):
         raise ValidationError("boundary identity store seal disagrees")
-    return resolved
+    require_store_sources_unchanged((store_source,))
+    return resolved, store_source
 
 
 class _EndpointSequence(Sequence[Mapping[str, Any]]):
@@ -430,9 +441,14 @@ class BoundaryIdentityView(Mapping[str, Any]):
             if selector_path.is_symlink() or not selector_path.is_file():
                 raise ValidationError("boundary identity selector is missing")
             self.selector_path = selector_path.resolve()
+            selector_source = bind_store_source(
+                self.selector_path, "boundary-identity-selector-v1"
+            )
             self.selector = _validate_selector(read_json(selector_path))
-            self.store_path = _resolve_store(selector_path, self.selector)
+            self.store_path, store_source = _resolve_store(selector_path, self.selector)
+            self._source_bindings = (selector_source, store_source)
             self._validate_store()
+            require_store_sources_unchanged(self._source_bindings)
             self._endpoints = _EndpointSequence(
                 self, self.selector["counts"]["endpoints"]
             )
@@ -451,10 +467,19 @@ class BoundaryIdentityView(Mapping[str, Any]):
         value.selector_path = selector_path.resolve()
         value.selector = selector
         value.store_path = store_path.resolve()
+        value._source_bindings = (
+            bind_store_source(value.selector_path, "boundary-identity-selector-v1"),
+            bind_store_source(value.store_path, "boundary-identity-store-v1"),
+        )
         value._endpoints = _EndpointSequence(
             value, selector["counts"]["endpoints"]
         )
         return value
+
+    def bound_store_sources(self):
+        self._ensure_open()
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -550,9 +575,12 @@ def write_boundary_identity_storage(
     path: Path,
     header: Mapping[str, Any],
     records: Iterable[Mapping[str, Any]],
+    *,
+    source_bindings=(),
 ) -> BoundaryIdentityView:
     """Atomically publish one typed boundary identity generation."""
 
+    source_bindings = validate_store_destination(path, source_bindings)
     path.parent.mkdir(parents=True, exist_ok=True)
     base_header = dict(header)
     base_header["coverage"] = {
@@ -659,20 +687,23 @@ def write_boundary_identity_storage(
         connection.commit()
         connection.close()
         connection = None
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
         store_sha = file_sha256(temporary)
         published_store = path.with_name(_store_name(path, store_sha))
         if published_store.is_symlink():
             raise ValidationError("boundary identity generation is a symlink")
+        require_store_sources_unchanged(source_bindings)
         if published_store.is_file():
             if file_sha256(published_store) != store_sha:
                 raise ValidationError("boundary identity generation seal disagrees")
             temporary.unlink()
         else:
-            os.replace(temporary, published_store)
+            publish_sqlite_store(
+                temporary,
+                published_store,
+                "boundary-identity-store-v1",
+                sources=source_bindings,
+            )
             created_store = True
-            _fsync_directory(path.parent)
         selector = {
             "schema": BOUNDARY_IDENTITY_STORAGE_SCHEMA,
             "logical_schema": BOUNDARY_IDENTITY_SCHEMA,
@@ -689,6 +720,7 @@ def write_boundary_identity_storage(
         write_json(selector_temporary, selector, compact=True)
         with selector_temporary.open("rb") as stream:
             os.fsync(stream.fileno())
+        require_store_sources_unchanged(source_bindings)
         os.replace(selector_temporary, path)
         committed = True
         _fsync_directory(path.parent)
@@ -766,9 +798,14 @@ def publish_boundary_identity_selector(
             target, relative_to=output_directory
         )
     with BoundaryIdentityView(source) as source_view:
+        source_bindings = validate_store_destination(
+            target, source_view.bound_store_sources()
+        )
         selector = dict(source_view.selector)
         lease: Optional[_Lease] = _Lease(target, exclusive=True)
         temporary_store: Optional[Path] = None
+        created_store = False
+        selector_committed = False
         temporary_selector: Optional[Path] = None
         try:
             destination_store = target.with_name(
@@ -788,7 +825,6 @@ def publish_boundary_identity_selector(
                     with temporary_store.open("wb") as output_stream:
                         shutil.copyfileobj(input_stream, output_stream, 1024 * 1024)
                         output_stream.flush()
-                        os.fsync(output_stream.fileno())
                 if (
                     temporary_store.stat().st_size != selector["store_bytes"]
                     or file_sha256(temporary_store) != selector["store_sha256"]
@@ -796,9 +832,14 @@ def publish_boundary_identity_selector(
                     raise ValidationError(
                         "boundary identity copied generation seal disagrees"
                     )
-                os.replace(temporary_store, destination_store)
+                publish_sqlite_store(
+                    temporary_store,
+                    destination_store,
+                    "boundary-identity-store-v1",
+                    sources=source_bindings,
+                )
+                created_store = True
                 temporary_store = None
-                _fsync_directory(target.parent)
             elif (
                 destination_store.stat().st_size != selector["store_bytes"]
                 or file_sha256(destination_store) != selector["store_sha256"]
@@ -814,11 +855,15 @@ def publish_boundary_identity_selector(
             write_json(temporary_selector, selector, compact=True)
             with temporary_selector.open("rb") as stream:
                 os.fsync(stream.fileno())
+            require_store_sources_unchanged(source_bindings)
             os.replace(temporary_selector, target)
+            selector_committed = True
             temporary_selector = None
             _fsync_directory(target.parent)
             _collect_stale(target, destination_store)
         finally:
+            if created_store and not selector_committed:
+                destination_store.unlink(missing_ok=True)
             if temporary_store is not None:
                 temporary_store.unlink(missing_ok=True)
             if temporary_selector is not None:

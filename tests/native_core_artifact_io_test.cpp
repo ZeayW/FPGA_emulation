@@ -183,7 +183,7 @@ int main() {
       }
     }
 
-    // Every registered public SQLite envelope uses the same reader/writer.
+    // Every registered SQLite envelope uses the same reader/writer.
     using namespace emuflow::core;
     std::set<std::string> registered_names, round_trip_names;
     std::vector<ArtifactRef> stores;
@@ -225,7 +225,8 @@ int main() {
       if (rows.Step()) throw std::runtime_error("shared store added rows");
       stores.push_back(ref);
     }
-    const std::set<std::string> expected_public_stores = {
+    const std::set<std::string> expected_named_stores = {
+        "vivado-local-identity-private-v1",
         "chimew-bank-input-store-v1",
         "position-hints-store-v1", "chimew-bank-report-store-v1",
         "transport-store-v1", "chimew-binding-store-v1", "pin-plan-store-v1",
@@ -237,7 +238,7 @@ int main() {
         "logic-segment-identity-store-v1", "logic-segment-timing-store-v1",
         "local-path-timing-store-v1", "xilinx-mapped-index-v2",
         "system-route-store-v3", "tdm-schedule-store-v4"};
-    if (round_trip_names != expected_public_stores || stores.size() != round_trip_names.size())
+    if (round_trip_names != expected_named_stores || stores.size() != round_trip_names.size())
       throw std::runtime_error("public store registry coverage is incomplete");
     ArtifactScope a(stores[0]),b(stores[1]);
     auto first=a.Id<emuflow::core::NetTag>(0); a.Require(first);

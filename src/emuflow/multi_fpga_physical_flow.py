@@ -28,6 +28,7 @@ from .chimew_binding_storage import (
     read_chimew_binding,
 )
 from .errors import EmuFlowError, ValidationError
+from .store_publication import bind_view_sources
 from .io import read_json, write_json
 from .logic_segment_timing import (
     LOGIC_SEGMENT_TIMING_SCHEMA,
@@ -105,7 +106,6 @@ from .xilinx_physical_backend import (
 MULTI_FPGA_PHYSICAL_SCHEMA = "emuflow.multi-fpga-physical-flow/v1"
 _TRANSPORT_MODULE = re.compile(r"^module\s+([A-Za-z_][A-Za-z0-9_$]*)", re.M)
 _INACTIVE_PARTITION_PROVIDER = "inactive-empty-partition-v1"
-
 
 
 @contextmanager
@@ -330,6 +330,9 @@ def _write_inactive_logic_timing(
             header=header,
             segments=(),
             unsupported_member_paths=identity["unsupported_member_paths"],
+            source_bindings=bind_view_sources(
+                (identity, "logic-segment-identity-store-v1")
+            ),
         )
         try:
             validation = view.validate_timing()
@@ -352,7 +355,12 @@ def _write_inactive_local_timing(
             provider=_INACTIVE_PARTITION_PROVIDER,
             qualification="not-applicable-empty-partition",
         )
-        with write_local_path_timing_storage(output_path, header, ()) as database:
+        with write_local_path_timing_storage(
+            output_path,
+            header,
+            (),
+            source_bindings=bind_view_sources((identity, "local-path-timing-store-v1")),
+        ) as database:
             validation = validate_local_path_timing(database)
         return {**validation, "output": str(output_path)}
     finally:
@@ -399,12 +407,6 @@ def _record_chimew_fixed_io_target(
     previous_target = targets.setdefault(packed_name, target_y)
     if not math.isclose(previous_target, target_y, abs_tol=1.0e-12):
         raise ValidationError("Chimew packed I/O cluster has conflicting anchors")
-
-
-
-
-
-
 
 
 def validate_multi_fpga_physical_report(
@@ -1033,7 +1035,12 @@ def run_multi_fpga_physical_flow(
                 qualification="not-applicable-empty-partition",
             )
             with write_boundary_timing_storage(
-                boundary_timing_path, boundary_header, ()
+                boundary_timing_path,
+                boundary_header,
+                (),
+                source_bindings=bind_view_sources(
+                    (boundary_identity, "boundary-identity-store-v1")
+                ),
             ) as boundary_timing:
                 boundary_validation = validate_boundary_timing_database(
                     boundary_timing, boundary_identity

@@ -9,7 +9,6 @@ on the production path.
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import uuid
 from pathlib import Path
@@ -23,6 +22,11 @@ from .emuir_storage import (
     _json,
 )
 from .errors import ValidationError
+from .store_publication import (
+    bind_store_source,
+    publish_sqlite_store,
+    validate_store_destination,
+)
 
 
 def _sqlite_uri(path: Path) -> str:
@@ -58,6 +62,13 @@ def write_placement_emuir_from_split(
     be one-shot cursors so lowering never needs an endpoint-sized Python list.
     """
 
+    source_bindings = validate_store_destination(
+        output_path,
+        (
+            bind_store_source(split_path, "split-netlists-v2"),
+            bind_store_source(transport_ir_path, "emuir-compact-v2"),
+        ),
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_name(
         f".{output_path.name}.{uuid.uuid4().hex}.tmp"
@@ -630,9 +641,9 @@ def write_placement_emuir_from_split(
         )
         connection.commit()
         connection.close()
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
-        os.replace(temporary, output_path)
+        publish_sqlite_store(
+            temporary, output_path, "emuir-compact-v2", sources=source_bindings
+        )
     except BaseException:
         connection.close()
         temporary.unlink(missing_ok=True)

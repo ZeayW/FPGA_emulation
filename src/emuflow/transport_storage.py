@@ -37,6 +37,8 @@ from .store_publication import (
     StoreSource,
     VerifiedStoreFile,
     bind_view_sources,
+    bind_store_source,
+    require_store_sources_unchanged,
     publish_sqlite_store,
 )
 from .native_tools import native_file_generation
@@ -498,6 +500,10 @@ class _BaseView(Mapping[str, Any]):
         self._header: dict[str, Any] = {}
         self._sections: dict[str, Sequence[Mapping[str, Any]]] = {}
 
+    def bound_store_sources(self):
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
+
     def __getitem__(self, key: str) -> Any:
         if key in self._sections:
             return self._sections[key]
@@ -545,7 +551,8 @@ def _open_and_validate(
     logical_schema: str,
     sections: set[str],
     store_owner: VerifiedStoreFile | None = None,
-) -> tuple[dict[str, Any], Path]:
+) -> tuple[dict[str, Any], Path, tuple[StoreSource, StoreSource]]:
+    selector_source = bind_store_source(path, "transport-selector-v1")
     manifest = _raw_manifest(path)
     store_path = _validate_manifest(
         manifest,
@@ -556,6 +563,7 @@ def _open_and_validate(
     )
     try:
         stat = store_path.stat()
+        store_source = bind_store_source(store_path, "transport-store-v1")
     except OSError as error:
         raise ValidationError("transport SQLite store is missing") from error
     if stat.st_size != manifest["store_bytes"]:
@@ -593,7 +601,9 @@ def _open_and_validate(
         raise ValidationError("transport SQLite metadata is corrupt") from error
     finally:
         connection.close()
-    return manifest, store_path
+    sources = (selector_source, store_source)
+    require_store_sources_unchanged(sources)
+    return manifest, store_path, sources
 
 
 class TransportView(_BaseView):
@@ -602,7 +612,7 @@ class TransportView(_BaseView):
         self, manifest_path: Path, *, store_owner: VerifiedStoreFile | None = None
     ):
         super().__init__(manifest_path)
-        manifest, store_path = _open_and_validate(
+        manifest, store_path, self._source_bindings = _open_and_validate(
             self.manifest_path,
             schema=TRANSPORT_STORAGE_SCHEMA,
             logical_schema=TRANSPORT_ENDPOINTS_SCHEMA,
@@ -742,7 +752,7 @@ class LaneMapView(_BaseView):
         self, manifest_path: Path, *, store_owner: VerifiedStoreFile | None = None
     ):
         super().__init__(manifest_path)
-        manifest, store_path = _open_and_validate(
+        manifest, store_path, self._source_bindings = _open_and_validate(
             self.manifest_path,
             schema=LANE_MAP_STORAGE_SCHEMA,
             logical_schema=LOGICAL_LANE_MAP_SCHEMA,
@@ -770,7 +780,7 @@ class AnchorView(_BaseView):
         self, manifest_path: Path, *, store_owner: VerifiedStoreFile | None = None
     ):
         super().__init__(manifest_path)
-        manifest, store_path = _open_and_validate(
+        manifest, store_path, self._source_bindings = _open_and_validate(
             self.manifest_path,
             schema=ANCHOR_STORAGE_SCHEMA,
             logical_schema=VIRTUAL_IO_ANCHORS_SCHEMA,
@@ -812,7 +822,7 @@ class VirtualBindingView(_BaseView):
         self, manifest_path: Path, *, store_owner: VerifiedStoreFile | None = None
     ):
         super().__init__(manifest_path)
-        manifest, store_path = _open_and_validate(
+        manifest, store_path, self._source_bindings = _open_and_validate(
             self.manifest_path,
             schema=VIRTUAL_BINDING_STORAGE_SCHEMA,
             logical_schema=VIRTUAL_BINDING_LOGICAL_SCHEMA,

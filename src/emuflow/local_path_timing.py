@@ -129,6 +129,13 @@ class _StoredLocalPathIdentity(Mapping[str, Any]):
         self.timing = timing
         self._paths = _WithoutDelayPaths(timing["paths"])
 
+    @property
+    def store_path(self):
+        return self.timing.store_path
+
+    def bound_store_sources(self):
+        return self.timing.bound_store_sources()
+
     def validate_identity(self) -> Dict[str, Any]:
         validation = self.timing.validate_timing()
         if (

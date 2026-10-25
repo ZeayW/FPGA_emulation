@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow.errors import ValidationError
+from emuflow.tdm_schedule_storage import TDM_SCHEDULE_LOGICAL_SCHEMA
 from emuflow.chimew_binding_storage import (
     ChimewBindingEntrySequence,
     write_chimew_binding_storage,
@@ -333,11 +334,6 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
         ):
             validate_multi_fpga_physical_report(report)
 
-
-
-
-
-
     def test_chimew_fixed_io_targets_allow_only_intragroup_tdm_sharing(self):
         targets = {}
         packed_groups = {}
@@ -429,7 +425,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             # required to follow the BoardDB order even under concurrency.
             manifest["fpgas"].reverse()
             write_json(split / "manifest.json", manifest)
-            write_json(root / "schedule.json", {})
+            write_json(root / "schedule.json", {"schema": TDM_SCHEDULE_LOGICAL_SCHEMA})
             architecture = root / "architecture.xml"
             architecture.write_text("<architecture/>\n", encoding="utf-8")
 
@@ -758,7 +754,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             split = root / "split"
             split.mkdir()
             write_json(split / "manifest.json", {"schema": "emuflow.split-manifest/v1"})
-            write_json(root / "schedule.json", {})
+            write_json(root / "schedule.json", {"schema": TDM_SCHEDULE_LOGICAL_SCHEMA})
             for selected in ([], ["unknown"], ["fpga0", "fpga0"], "fpga0"):
                 with self.subTest(selected=selected), self.assertRaisesRegex(
                     ValidationError, "FPGA selection"
@@ -847,7 +843,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             }
             write_json(split / "manifest.json", manifest)
             write_json(split / "electrical_binding.json", {"bindings": []})
-            write_json(root / "schedule.json", {})
+            write_json(root / "schedule.json", {"schema": TDM_SCHEDULE_LOGICAL_SCHEMA})
             with self.assertRaisesRegex(ValidationError, "position hints"):
                 run_multi_fpga_physical_flow(
                     split,
@@ -896,7 +892,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     ],
                 },
             )
-            write_json(root / "schedule.json", {})
+            write_json(root / "schedule.json", {"schema": TDM_SCHEDULE_LOGICAL_SCHEMA})
             with patch.object(
                 ChimewBindingEntrySequence,
                 "__iter__",
@@ -939,7 +935,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             output = root / "physical"
             output.mkdir()
             (output / "partial").write_text("partial\n", encoding="utf-8")
-            write_json(root / "schedule.json", {})
+            write_json(root / "schedule.json", {"schema": TDM_SCHEDULE_LOGICAL_SCHEMA})
             runtime = {
                 "fabric_clock": {"period_ns": 4.0},
                 "virtual_dut_clock": {"nominal_period_ns": 128.0},

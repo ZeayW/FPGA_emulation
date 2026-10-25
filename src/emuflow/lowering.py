@@ -15,6 +15,7 @@ from .boundary_timing import (
 )
 from .boundary_identity_storage import write_boundary_identity_storage
 from .errors import ValidationError
+from .store_publication import bind_view_sources
 from .io import read_json, write_json
 from .ir import EMUIR_SCHEMA, EmuIR
 from .emuir_storage import _extras, open_emuir_sqlite_read_only
@@ -1116,6 +1117,11 @@ def _run_placement_ir_lowering_from_split_indexed(
             boundary_path,
             boundary_identity_header(transport),
             iter_boundary_identity_records(transport, result, transport_ir),
+            source_bindings=bind_view_sources(
+                (transport, "transport-store-v1"),
+                (transport_ir, "emuir-compact-v2"),
+                (result, "emuir-compact-v2"),
+            ),
         ) as boundary_database:
             boundary_validation = validate_boundary_identity_database(
                 boundary_database, transport

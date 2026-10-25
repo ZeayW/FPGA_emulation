@@ -219,6 +219,27 @@ hash cache or persistent catalog is introduced. Phase 6 row construction and
 electrical/RTL/XDC checks retain their existing semantic owners and still require
 their own data-plane migration and qualification.
 
+Phase 7 placement IR, OpenPARF atomic sources and boundary identity/timing,
+logic-segment identity/timing and local-path timing producers adopt the same
+closed-file publisher. Placement IR binds the source split and transport EmuIR;
+atomic sources bind their mapped owner before consuming its records. Physical
+and timing readers preserve selector/store generations before independent input
+validation, and derived writers borrow those original bindings through the
+selector commit. The transport views and zero-delay local identity projection
+forward their existing owners instead of inventing new snapshots. RapidWright
+and Vivado timing consumers pass typed identity scopes; Vivado measurement
+imports also bind the input measurement file. These checks neither reconstruct
+the graph nor repeat a file hash.
+
+Explicit timing-selector relocation copies into private same-directory staging,
+then uses the common publisher and checks the original input scope before
+committing its selector. A failed source check removes an uncommitted new
+sidecar and preserves the prior selector/store. An output alias of a live input
+is rejected before acquiring its exclusive selector lease. Existing logical
+schemas, ordered records, independent legality/timing checks and the query
+sidecar rollback contract remain unchanged. This infrastructure adoption does
+not qualify the remaining phase algorithms or replace real-design acceptance.
+
 Indexed Chimew input republication streams its bank/group cursors and borrows
 the validated logical identity instead of materializing the complete input.
 Writing back from the same active input view is rejected before acquiring its

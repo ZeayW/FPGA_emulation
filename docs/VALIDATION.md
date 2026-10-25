@@ -52,6 +52,23 @@ A zero-combinational-cut flow is a compatibility test, not Static Exact
 feature evidence. Real-design qualification must use naturally selected cuts,
 not assignments forced to make a feature appear exercised.
 
+## Physical and timing store publication contracts
+
+Run `tests/test_physical_store_publication.py` with the built shared native
+entry, together with the boundary, logic-segment, local-path, OpenPARF source,
+Phase 6 lowering and both physical backend tests. Native rejection must not
+select a reference publisher. Changing a selector/store while a derived writer
+consumes records, or during independent reader validation, must fail without
+rebinding the reader to the new generation. Test direct paths and hardlink
+aliases before acquiring a writer lease, closed views, and source changes both
+during relocation copying and after the new database is staged. Preserve the
+prior selector, query sidecar and SQL owner and remove unpublished staging on
+failure. Exercise the full indexed placement lowering and mapped atomic-source
+producer with poisoned input generations; the normal differential tests still
+compare complete logical records and ownership with their independent oracles.
+These component gates are required but do not constitute full NVDLA physical or
+global timing qualification.
+
 ## Native store publication qualification
 
 The noninstalled `scripts/validation/qualify_phase6_publication.py` executes the
