@@ -115,10 +115,32 @@ def _initial_context(request):
 
 def _control_snapshot(ctx, stage, flow):
     if stage == "finalize":
-        # The terminal report already has a canonical owner on disk; no next
-        # phase needs another serialized copy of it in the ephemeral state.
+        # Source bindings remain live through terminal publication even though
+        # no following phase needs another serialized copy of the final report.
+        catalog = getattr(ctx, "chimew_package_geometry", None)
+        if catalog is not None:
+            catalog.require_unchanged()
         return {}
     state = {key: item for key, item in vars(ctx).items() if not key.startswith("_")}
+    catalog = state.get("chimew_package_geometry")
+    if catalog is not None:
+        from .xilinx_chimew_geometry import XilinxPackageGeometry
+
+        if type(catalog) is not XilinxPackageGeometry:
+            raise EmuFlowError("invalid native Chimew package catalog owner")
+        state["chimew_package_geometry"] = catalog.control_snapshot()
+    comparison = state.get("phase6_comparison")
+    if comparison is not None:
+        # Each baseline report already belongs to the comparison. Carry it
+        # once, then restore aliases in the next adapter, not JSON copies.
+        baseline = comparison["baseline"]
+        for field, key in (
+            ("baseline_physical_report", "physical"),
+            ("baseline_runtime_report", "runtime"),
+        ):
+            if state.get(field) is not baseline[key]:
+                raise EmuFlowError("native Chimew baseline report owners disagree")
+            state.pop(field)
     for field, kind in (("frontend_report", "frontend"), ("phase3_report", "partition"),
                         ("phase4_report", "system_route"), ("phase5_report", "tdm"),
                         ("phase6_report", "split")):
@@ -126,6 +148,37 @@ def _control_snapshot(ctx, stage, flow):
             state[field] = flow._stage_summary(kind, state[field])
     if state.get("physical_report") is not None:
         state["physical_report"] = flow._physical_report_summary(state["physical_report"])
+    return state
+
+
+def _restore_control_state(state):
+    if type(state) is not dict:
+        raise EmuFlowError("invalid native compiler context")
+    catalog = state.get("chimew_package_geometry")
+    if catalog is not None:
+        from .xilinx_chimew_geometry import XilinxPackageGeometry
+
+        state["chimew_package_geometry"] = XilinxPackageGeometry.from_control_snapshot(
+            catalog
+        )
+    comparison = state.get("phase6_comparison")
+    if comparison is not None:
+        if (
+            type(comparison) is not dict
+            or type(comparison.get("baseline")) is not dict
+            or not all(
+                type(comparison["baseline"].get(key)) is dict
+                for key in ("physical", "runtime")
+            )
+        ):
+            raise EmuFlowError("invalid native Chimew baseline reports")
+        for field, key in (
+            ("baseline_physical_report", "physical"),
+            ("baseline_runtime_report", "runtime"),
+        ):
+            if field in state:
+                raise EmuFlowError("duplicate native Chimew baseline report owner")
+            state[field] = comparison["baseline"][key]
     return state
 
 
@@ -146,7 +199,9 @@ def execute(stage, request_path, previous_path, output_path, run_id):
                 previous.get("stage") != STAGES[index - 1] or
                 previous.get("request_generation") != generation):
             raise EmuFlowError("mixed or out-of-order native compiler state")
-        ctx = flow._CompileContext(_unpack(previous["state"]), native_mode=True)
+        ctx = flow._CompileContext(
+            _restore_control_state(_unpack(previous["state"])), native_mode=True
+        )
     function = getattr(flow, "_compile_" + {"tdm": "schedule"}.get(stage, stage.replace("-", "_")))
     function(ctx)
     value = {"schema": "emuflow.native-compile-state/v1", "run_id": run_id,

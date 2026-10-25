@@ -44,6 +44,10 @@ shares the typed pin-plan, electrical-binding and transport contracts; shared
 validators and fixed wiring constraints remain authoritative. Retired
 placement-aware planner providers cannot enter either split producer. The
 baseline/Chimew comparison preserves complete physical/global timing gates.
+Native control supports that same comparison sequence. Its private handoff carries the bounded, immutable package
+pin catalog with its original architectural source generation and SHA; no
+circuit locations are encoded in that catalog. It restores baseline report
+aliases from the single comparison owner and rejects duplicate owners.
 Its prepass and candidate share the selected Xilinx backend, tools, seed and
 workers. Physical endpoint facts are queried from the existing typed owners;
 the old VTR/virtual-package lookahead and implicit `auto` dispatch are retired.

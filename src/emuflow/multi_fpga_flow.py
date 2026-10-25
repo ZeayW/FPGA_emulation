@@ -1192,12 +1192,11 @@ def _compile_preflight(ctx: _CompileContext):
         raise EmuFlowError(f"unsupported Phase 3 provider {ctx.partition_provider!r}")
     if ctx._native_mode and (
         ctx.optimize_frame_slots or
-        ctx.phase6_provider == "chimew" or
         ctx.serial_bsp_phy_provider is not None
     ):
         raise EmuFlowError(
-            "native compile does not yet support frame search, "
-            "Chimew comparison or serial BSP continuation"
+            "native compile does not yet support frame search "
+            "or serial BSP continuation"
         )
     if ctx.output_dir is None:
         raise EmuFlowError("multi-FPGA compilation requires an output directory")

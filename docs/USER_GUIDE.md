@@ -60,9 +60,16 @@ in isolated Python adapters while their remaining data planes are migrated.
 The default remains `python-control-v1`, with the same provider, algorithm,
 seed and physical-policy defaults in both modes.
 
-The native controller supports the ordinary baseline split path, optional physical
-implementation and global timing. Frame-length search,
-Chimew comparison and serial-BSP continuation currently reject before synthesis;
+The native controller supports baseline splitting and retained Chimew comparison,
+with either OpenPARF/RWRoute or Vivado physical implementation and global timing.
+Chimew retains its baseline physical/global timing prepass, source-qualified
+package geometry, fixed wiring, typed pipeline and independent final comparison.
+The device pin catalog crosses process boundaries as bounded, source-generation
+bound control data; no placement or endpoint population is embedded in it.
+Baseline reports have one owner within the comparison and are restored as
+references within each phase, rather than serialized twice. This control state
+is private to the live invocation and cannot be used as an old-artifact reader.
+Frame-length search and serial-BSP continuation still reject before synthesis;
 they remain available through the Python controller. No rejected or failed native
 run retries through Python or changes providers. This entry does not establish
 large-design qualification or completion of the C++ data-plane migration.

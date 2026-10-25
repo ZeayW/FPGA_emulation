@@ -101,7 +101,7 @@ fi
 # standalone binaries would silently execute stale stage code.
 unified="$runtime_dir/bin/emuflow-native"
 rm -f "$unified"
-# The unified entry and retained hop repair helper link the same archive.
+# The unified entry links the shared archive, including hop legalization.
 # Compile the native core once rather than embedding an independent parser /
 # SQLite / lifecycle implementation in each executable.
 object_dir="$runtime_dir/tmp/core-objects"

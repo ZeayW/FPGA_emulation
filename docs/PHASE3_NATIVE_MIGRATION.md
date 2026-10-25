@@ -91,8 +91,9 @@ outputs only after production completes and source generations still match.
 Atomicity failure gates exercise early parse rejection, late producer failure,
 changed sources, failed output streams and prior-result preservation. Pipe
 outputs retain their streaming protocol and require complete record validation
-plus process success. This infrastructure change does not complete W0's frozen
-NVDLA overhead gate, the remaining adapter integration or W7's native data plane.
+plus process success. Infrastructure acceptance is separate from the remaining
+adapter integration and W7's native data plane; a common interface is not
+whole-flow qualification.
 
 `phase3 refine-patron-from-primary EMUIR TIMING PRIMARY INITIAL REQUEST OUTPUT`
 builds the PATRON v14 model and invokes the existing solver in one shared-core
@@ -402,8 +403,12 @@ Control-state paths cannot refer into those roots through absolute paths or
 output symlinks; required downstream stores must be published outside them.
 
 This is a native orchestration milestone, not completed W7. Python phase data
-planes and several direct engine adapters remain; cross-stage/frame search,
-Chimew comparison and serial BSP are not supported by native control yet.
+planes and several direct engine adapters remain. Retained Chimew comparison
+runs through native control with either Xilinx backend. Its source-bound device
+catalog is carried as bounded control data; baseline physical/runtime reports
+are serialized once within the comparison. Frame search and serial BSP remain
+unsupported by native control. Component coverage does not establish real-design
+physical/global timing qualification.
 The controller reports `native_data_plane_complete:false`. Full native data-plane
 ownership and real-design Phase 7/7C qualification remain required for completion.
 

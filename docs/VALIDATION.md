@@ -371,3 +371,19 @@ generations must be rejected; a prior output survives every rejected request.
 Exercise the in-process API as well as the unified CLI and process supervisor.
 These are component interface gates; they do not replace real-design NVDLA
 physical and global timing acceptance or claim native model construction.
+
+### Native-control Chimew boundaries
+
+Exercise the actual Chimew lookahead and typed kernels across serialized split,
+physical and signoff control boundaries for both supported Xilinx backends.
+Keep the same upstream, physical options, fixed wiring and baseline/candidate
+physical/global timing validation. Control tests with physical or timing engine
+doubles qualify these boundaries only; real NVDLA remains the design acceptance
+workload and must independently complete both arms.
+
+The device catalog is bounded independently of circuit size. Restore it without
+rereading the ArchitectureDB site population; retain and check the original
+source generation. Changed/missing sources, malformed geometry, boolean or
+negative coordinates, oversized pin counts and duplicate baseline report owners
+must reject. The C++ multi-process controller must stop on such a rejection and
+must keep `native_data_plane_complete=false` while Python phase adapters remain.
