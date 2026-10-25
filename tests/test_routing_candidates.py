@@ -112,11 +112,13 @@ class RouteCandidatePoolTest(unittest.TestCase):
             self.assertTrue(published.startswith(b"SQLite format 3"))
             subprocess.run(command, check=True, capture_output=True)
             self.assertEqual(output.read_bytes(), published)
-            source.write_text("invalid-input")
-            failed = subprocess.run(command, capture_output=True)
-            self.assertNotEqual(failed.returncode, 0)
-            self.assertEqual(output.read_bytes(), published)
-            self.assertFalse(list(root.glob("*.stage.*")))
+            original = source.read_text()
+            for rejected in (original + "PRICE 0 1\n", "invalid-input"):
+                source.write_text(rejected)
+                failed = subprocess.run(command, capture_output=True)
+                self.assertNotEqual(failed.returncode, 0)
+                self.assertEqual(output.read_bytes(), published)
+                self.assertFalse(list(root.glob("*.stage.*")))
 
     def test_pool_is_deterministic_and_contains_exact_small_tree(self) -> None:
         platform, assignment, timing, constraints = self._fixture()

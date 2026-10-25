@@ -86,3 +86,28 @@ def test_native_stage_rejects_retired_input_versions(tmp_path, header):
     assert result.returncode != 0
     assert "unsupported global routing input header" in result.stderr
     assert not output.exists()
+
+
+@pytest.mark.parametrize("option", [
+    "--tdm-feedback", "--tdm-feedback-routes", "--tdm-feedback-schedule",
+    "--physical-feedback", "--physical-feedback-runtime", "--physical-feedback-summary",
+    "--physical-feedback-weight",
+])
+def test_retired_external_feedback_cli_is_rejected(option):
+    arguments = ["phase4", "--assignment", "a", "--platform", "b", "--out", "out"]
+    parser = _build_parser()
+    parser.parse_args(arguments)
+    with pytest.raises(SystemExit) as failure:
+        parser.parse_args([*arguments, option, "1"])
+    assert failure.value.code == 2
+
+
+def test_retired_external_feedback_api_cannot_load_a_design(tmp_path):
+    with patch("emuflow.phase4.read_phase3_assignment_view", side_effect=AssertionError("assignment loaded")):
+        with pytest.raises(TypeError, match="tdm_feedback_path"):
+            run_phase4(tmp_path / "assignment", tmp_path / "board", tmp_path / "out",
+                       tdm_feedback_path=tmp_path / "feedback")
+    with patch("emuflow.timing_routing._prepare_native_model", side_effect=AssertionError("graph built")):
+        with pytest.raises(TypeError, match="tdm_feedback"):
+            route_system_native({}, None, {}, tdm_feedback={})
+    assert not (tmp_path / "out").exists()

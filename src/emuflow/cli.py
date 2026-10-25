@@ -1747,42 +1747,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="parallel global-candidate generators (default: 1)",
     )
     phase4.add_argument(
-        "--tdm-feedback",
-        type=Path,
-        help=(
-            "checked Phase 5 tdm-feedback/v1 used only by the global "
-            "candidate provider"
-        ),
-    )
-    phase4.add_argument(
-        "--tdm-feedback-routes",
-        type=Path,
-        help="source routes used to independently reconstruct feedback",
-    )
-    phase4.add_argument(
-        "--tdm-feedback-schedule",
-        type=Path,
-        help="source schedule used to independently reconstruct feedback",
-    )
-    phase4.add_argument(
-        "--physical-feedback",
-        type=Path,
-        help="checked Phase 7 boundary-domain feedback to add to TDM prices",
-    )
-    phase4.add_argument(
-        "--physical-feedback-runtime",
-        type=Path,
-        help="source runtime used to independently validate physical feedback",
-    )
-    phase4.add_argument(
-        "--physical-feedback-summary",
-        type=Path,
-        help="source Phase 7 physical summary with boundary timing",
-    )
-    phase4.add_argument(
-        "--physical-feedback-weight", type=float, default=1.0
-    )
-    phase4.add_argument(
         "--provider",
         choices=[
             GLOBAL_CANDIDATE_PROVIDER,
@@ -3099,18 +3063,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             provider=args.provider,
             timing_paths_path=args.timing_paths,
             router=args.router,
-            tdm_feedback_path=args.tdm_feedback,
-            tdm_feedback_routes_path=args.tdm_feedback_routes,
-            tdm_feedback_schedule_path=args.tdm_feedback_schedule,
-
-            physical_feedback_path=args.physical_feedback,
-            physical_feedback_runtime_path=(
-                args.physical_feedback_runtime
-            ),
-            physical_feedback_summary_path=(
-                args.physical_feedback_summary
-            ),
-            physical_feedback_weight=args.physical_feedback_weight,
             candidate_workers=args.candidate_workers,
             retain_candidate_pool=args.retain_candidate_pool,
         )

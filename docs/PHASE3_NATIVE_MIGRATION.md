@@ -183,8 +183,7 @@ unmap, then retire scratch in that order. Explicit close invalidates borrowed
 cursors. Readers of external published inputs unmap without deleting those inputs.
 
 Small/inline and explicitly selected external tools, retained diagnostic traces,
-physical-feedback algorithms and explicit typed input copies keep the reference
-model path. A selected native producer never retries through that path. Its
+and explicit typed input copies keep the reference model path. A selected native producer never retries through that path. Its
 `native_input_transport` is `native-primary-store-model-v2` for direct primary
 ownership. Input bytes count only the emitted packed initial/fixed ownership
 and bounded request; the primary store is referenced. Input records count those

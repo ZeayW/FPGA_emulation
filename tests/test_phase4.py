@@ -1903,18 +1903,17 @@ class Phase4Test(unittest.TestCase):
                     / "phase4-diagnostic/route_candidate_pool.json"
                 ).is_file()
             )
-            managed_report = run_phase4(
+            repeated_report = run_phase4(
                 assignment_path=assignment_path,
                 platform_path=PLATFORM_PATH,
-                output_dir=root / "phase4-managed",
+                output_dir=root / "phase4-repeated",
                 frame_slots=1,
                 timing_driven=False,
                 router=str(tlr_router()),
-                managed_storage=True,
             )
-            self.assertNotIn("candidate_pool", managed_report["artifacts"])
+            self.assertNotIn("candidate_pool", repeated_report["artifacts"])
             self.assertFalse(
-                (root / "phase4-managed/route_candidate_pool.json").exists()
+                (root / "phase4-repeated/route_candidate_pool.json").exists()
             )
 
     def test_native_router_uses_both_diamond_paths(self) -> None:

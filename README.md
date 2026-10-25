@@ -132,6 +132,8 @@ authoritative installation. Bookshelf export uses only the unified command.
 Phase 4 supports only `timing-aware-global-candidate-v1` through the unified
 entry. Retired routing providers, their standalone executable and dedicated
 comparison commands are removed; candidate-generation kernels remain shared.
+The standalone TDM/physical feedback loop, its CLI/API inputs and native `PRICE`
+records are retired. Native congestion history, timing and TDM costs remain.
 Production RouteStore sealing reads typed rows in the shared core, preserving
 logical/section hashes without Python route-tree or candidate-list expansion.
 AMF and DREAMPlaceFPGA feasibility adapters, native runners and the unused

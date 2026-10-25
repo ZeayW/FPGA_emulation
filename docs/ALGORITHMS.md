@@ -174,6 +174,17 @@ Legacy routing input versions, standalone routing executables and the old
 routing/TDM baseline-versus-upgrade comparison commands are retired.
 
 
+
+### Retired external routing feedback
+
+Phase 4 consumes the selected assignment, BoardDB constraints and upstream timing
+population. Standalone TDM/physical feedback documents, feedback price injection,
+and the unused clock/protocol compatibility exporter are retired. The native
+global-candidate router retains its own congestion history, candidate generation,
+timing weights and TDM cost model. Historical feedback runs require their matching
+Git revision; there is no alternate production reader or fallback.
+
+
 ## Phase 5: TDM ratio, lane, and slot assignment
 
 The production algorithm is `deterministic-dependency-earliest-slot-v1`, an

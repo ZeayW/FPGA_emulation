@@ -525,6 +525,9 @@ legacy artifact legality checks do not restore a legacy production scheduler.
 
 The independent ratio/KKT, timing-DAG and slot optimizers, their tuning flags,
 `ratio_plan.json`, and the cross-stage/partition-feedback commands are retired.
+Phase 4 also removes `--tdm-feedback*` and `--physical-feedback*`, their Python API
+arguments and external native price records. Use the single upstream timing and
+routing contract; historical feedback studies require their original Git revision.
 The sequential-versus-Static-Exact comparison compiler is also removed because
 its registered-boundary arm no longer has a production scheduler. Full compile
 requires `static-exact-combinational`. Minimum-frame search uses the same

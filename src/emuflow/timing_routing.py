@@ -1713,9 +1713,6 @@ def _prepare_native_model(
             )
             for key, round_id in native_capacity_keys
         ],
-        "capacity_physical_keys": [
-            key for key, _round_id in native_capacity_keys
-        ],
         "physical_capacity_keys": physical_capacity_keys,
         "active_rounds": active_rounds,
         "round_boundary": round_boundary,
@@ -1807,7 +1804,6 @@ def _write_native_input(
     model: Mapping[str, Any],
     constraints: Mapping[str, Any],
     provider: str,
-    feedback_prices: Optional[Mapping[str, float]] = None,
     candidate_workers: int = 1,
 ) -> None:
     normalization = model["normalization"]
@@ -1877,13 +1873,6 @@ def _write_native_input(
                 f"{width} {normalized_slack:.17g} "
                 f"{predicted_delay:.17g}\n"
             )
-        if feedback_prices is not None:
-            for index, capacity_key in enumerate(
-                model["capacity_physical_keys"]
-            ):
-                stream.write(
-                    f"PRICE {index} {feedback_prices[capacity_key]:.17g}\n"
-                )
         native_paths = model["paths"]
         typed_paths = getattr(native_paths, "iter_native_records", None)
         path_records = (
@@ -2420,7 +2409,6 @@ def route_system_native(
     executable: Optional[str] = None,
     provider: str = GLOBAL_CANDIDATE_PROVIDER,
     candidate_pool_path: Optional[Path] = None,
-    tdm_feedback: Optional[Mapping[str, Any]] = None,
     candidate_workers: int = 1,
     materialize_result: bool = True,
 ) -> Dict[str, Any]:
@@ -2507,39 +2495,6 @@ def route_system_native(
                 "semantic_contract_sha256"
             ]
         return result
-    feedback_prices = None
-    if tdm_feedback is not None:
-        from .tdm_feedback import (
-            TDM_FEEDBACK_PROVIDER,
-            TDM_FEEDBACK_SCHEMA,
-        )
-
-        if (
-            tdm_feedback.get("schema") != TDM_FEEDBACK_SCHEMA
-            or tdm_feedback.get("provider") != TDM_FEEDBACK_PROVIDER
-            or tdm_feedback.get("design") != assignment.get("design")
-            or tdm_feedback.get("platform") != platform.name
-            or tdm_feedback.get("frame_slots") != constraints["frame_slots"]
-        ):
-            raise ValidationError(
-                "TDM feedback identity does not match routing input"
-            )
-        feedback_prices = {}
-        for domain in tdm_feedback.get("domains", []):
-            if (
-                not isinstance(domain, dict)
-                or domain.get("key") in feedback_prices
-                or isinstance(domain.get("routing_price"), bool)
-                or not isinstance(domain.get("routing_price"), (int, float))
-                or not math.isfinite(float(domain["routing_price"]))
-                or float(domain["routing_price"]) < 0.0
-            ):
-                raise ValidationError("TDM feedback domain price is invalid")
-            feedback_prices[domain["key"]] = float(domain["routing_price"])
-        if set(feedback_prices) != set(model["physical_capacity_keys"]):
-            raise ValidationError(
-                "TDM feedback capacity-domain coverage is not exact"
-            )
     command = resolve_native_stage_command(
         "phase4",
         "route",
@@ -2557,8 +2512,7 @@ def route_system_native(
         model,
         constraints,
         provider,
-        feedback_prices,
-        candidate_workers,
+        candidate_workers=candidate_workers,
     )
     completed = subprocess.run(
         [
@@ -2902,20 +2856,6 @@ def route_system_native(
     result["joint_optimization"]["refinement_batches"] = (
         batch_certificate
     )
-    if tdm_feedback is not None:
-        result["joint_optimization"]["tdm_feedback"] = {
-            "schema": tdm_feedback["schema"],
-            "provider": tdm_feedback["provider"],
-            "source_routes_sha256": tdm_feedback[
-                "source_routes_sha256"
-            ],
-            "source_schedule_sha256": tdm_feedback[
-                "source_schedule_sha256"
-            ],
-            "maximum_domain_price": tdm_feedback["metrics"][
-                "maximum_domain_price"
-            ],
-        }
     result["joint_optimization"]["candidate_generation"][
         "master_selection"
     ] = _ProjectedMasterSelectionSequence(
