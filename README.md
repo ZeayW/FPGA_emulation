@@ -37,7 +37,7 @@ identities and explicit checkpoint diagnostics.
 Completed Vivado worker batches can be checked and joined within the active
 run using [`assemble-vivado-physical`](docs/USER_GUIDE.md#joining-vivado-workers).
 Vivado tool censuses are imported by the shared native core into one sealed
-lineage/placement store. Shared publication also admits nullable physical timing
+lineage/placement store, retained and sealed in the accepted physical result. Shared publication also admits nullable physical timing
 and the indexed global result owner. Python passes file references; imported raw snapshots
 are retired. Missing register origins can also use bounded association through
 identical LUT1 control drivers; clock and data identities remain exact. Source

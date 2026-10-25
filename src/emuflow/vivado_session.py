@@ -211,8 +211,8 @@ def prepare_timing(session):
     result = {"status": "pass", "coverage": coverage, "optimization_proofs": proof,
               "resolutions": resolutions, "synthesized_checkpoint_sha256": checkpoint_sha}
     write_json(out/"routed-query-preparation.json", result, compact=True)
-    # Native exporters consume only the sealed resolved queries and proof store.
-    lineage.unlink()
+    # The sealed lineage owner also supplies routed placement to Chimew.
+    # Retire only consumed tool snapshots, never that canonical indexed owner.
     for inventory in ("mapped_cells.tsv", "optimized_mapped_cells.tsv", "routed_mapped_cells.tsv"):
         (out / inventory).unlink(missing_ok=True)
     return {"status": "pass", "query_classes": len(resolutions)}

@@ -23,6 +23,7 @@ from .indexed_physical_ir import IndexedPhysicalIR
 from .io import file_sha256, read_json, write_json
 from .physical_backend import PHYSICAL_PARTITION_RESULT_SCHEMA, validate_physical_partition_result
 from .resource_budget import validate_device_resource_usage
+from .store_publication import bind_store_source, require_store_sources_unchanged
 from .vivado_physical_top import write_vivado_physical_top
 from .vivado_lineage import LINEAGE_POLICY
 from .vivado_optimization import OptimizationProofView
@@ -37,6 +38,20 @@ def _vivado_script(name: str) -> Path:
         if path.is_file():
             return path
     raise EmuFlowError(f"installed Vivado Tcl script is missing: {name}")
+
+
+def _retained_lineage_artifact(output: Path, coverage):
+    path = output/"cell-lineage.sqlite"
+    if (not path.is_file() or path.is_symlink()
+            or Path(coverage.get("output", "")).resolve() != path.resolve()):
+        raise ValidationError("Vivado routed lineage/placement owner is missing or misbound")
+    binding = bind_store_source(path, "vivado-lineage-store-v2")
+    digest = file_sha256(path)
+    size = path.stat().st_size
+    require_store_sources_unchanged((binding,))
+    if digest != coverage.get("sha256") or size != coverage.get("bytes"):
+        raise ValidationError("Vivado routed lineage/placement owner differs from its import seal")
+    return {"path":str(path), "sha256":digest, "bytes":size}, binding
 
 
 def execute_vivado(executable: str, script: Path, arguments: list[str], output: Path, name: str) -> dict[str, Any]:
@@ -238,6 +253,7 @@ def run_indexed_vivado_partition(
     if preparation.get("status") != "pass":
         raise ValidationError("native routed query preparation did not pass")
     coverage, proof_report = preparation["coverage"], preparation["optimization_proofs"]
+    lineage_artifact, lineage_binding = _retained_lineage_artifact(output_dir, coverage)
     proof_path = output_dir/"optimization-proofs.sqlite"
     if coverage["stages"]["routed"]["placed_objects"] != _integer(metrics, "routed_cells"):
         raise ValidationError("Vivado lineage placement coverage differs from physical mapped cells")
@@ -292,7 +308,8 @@ def run_indexed_vivado_partition(
             "contract_sha256": hashlib.sha256(json.dumps(virtual_io_contract, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
             "differential_pairs": pairs, "physical_ports": 2 * pairs,
             "top": top_report, "route_validation": {"unrouted_nets": _integer(metrics, "unrouted_nets")}}
-    artifacts = {}
+    require_store_sources_unchanged((lineage_binding,))
+    artifacts = {"cell-lineage.sqlite":lineage_artifact}
     for name in ("route_status.rpt", "drc.rpt", "timing_summary.rpt", "utilization.rpt", "implementation_metrics.tsv",
                  "native-session.json", "native-session.tcl", "clock-contract.tsv",
                  "routed-query-preparation.json", "constant-frontier-validation.json"):

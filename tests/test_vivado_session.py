@@ -63,6 +63,13 @@ def test_source_candidates_native_facts_and_routed_proof_are_one_checked_pipelin
     shutil.copyfile(facts, out/"constant-frontiers.tsv")
     assert confirm_frontiers(session)["confirmed_sources"] == result["constant_sources"]
     assert prepare_timing(session)["query_classes"] == 1
+    preparation = read_json(out/"routed-query-preparation.json")
+    owner = Path(preparation["coverage"]["output"])
+    assert owner.is_file() and file_sha256(owner) == preparation["coverage"]["sha256"]
+    with sqlite3.connect(owner) as placement:
+        assert placement.execute("SELECT COUNT(*) FROM objects o JOIN sites s ON s.seq=o.site_seq WHERE o.stage='routed'").fetchone()[0] > 0
+    assert not (out/"mapped_cells.tsv").exists()
+    assert not (out/"routed_mapped_cells.tsv").exists()
     with OptimizationProofView(out/"optimization-proofs.sqlite", expected_fpga="fpga0") as proof:
         assert proof.require_eliminated_source(f"s{origins['conditional']}")["initialization"] == "vendor-confirmed"
     assert f"optimized-away:s{origins['conditional']}" in (out/"local_path_timing-resolved.tsv").read_text()

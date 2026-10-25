@@ -358,3 +358,23 @@ puts pass
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_physical_acceptance_requires_a_retained_sealed_placement_owner(tmp_path):
+    from emuflow.vivado_physical import _retained_lineage_artifact
+    from emuflow.store_publication import require_store_sources_unchanged
+    from emuflow.errors import ValidationError
+    import pytest
+    owner = tmp_path/'cell-lineage.sqlite'
+    owner.write_bytes(b'sealed placement fixture')
+    coverage = {"output":str(owner), "sha256":file_sha256(owner), "bytes":owner.stat().st_size}
+    artifact, binding = _retained_lineage_artifact(tmp_path, coverage)
+    assert artifact == {"path":str(owner), "sha256":coverage["sha256"], "bytes":coverage["bytes"]}
+    owner.write_bytes(b'changed placement owner')
+    with pytest.raises(ValidationError):
+        require_store_sources_unchanged((binding,))
+    with pytest.raises(ValidationError, match='differs from its import seal'):
+        _retained_lineage_artifact(tmp_path, coverage)
+    owner.unlink()
+    with pytest.raises(ValidationError, match='missing or misbound'):
+        _retained_lineage_artifact(tmp_path, coverage)

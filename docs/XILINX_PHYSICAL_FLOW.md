@@ -420,7 +420,11 @@ not the numbers embedded in site names or OpenPARF's site-stride x encoding.
 The native importer validates unique site/BEL occupancy and complete placement
 for routed physical objects, checks source origins against the mapped owner,
 and atomically publishes logical `emuflow.vivado-cell-lineage/v2`. The retained
-SQLite owner contains both observed provenance and placement facts. Objects
+SQLite owner contains both observed provenance and placement facts. The native
+session retains it after exporting timing. Physical acceptance checks its path,
+byte count, digest and unchanged source generation, and publishes it as an
+artifact for later placement consumers; retiring raw censuses must not delete
+this owner. Objects
 reference integer site IDs; each site's native coordinates are stored once,
 rather than repeated for every packed cell. There is no separate full placement
 JSON. Tcl caches geometry only for sites reached in the frozen census. Its placed-object count must agree with the
