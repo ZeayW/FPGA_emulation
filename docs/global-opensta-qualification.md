@@ -45,6 +45,63 @@ reconstruction instead of rebuilding a second schedule-entry dictionary.
 Historical artifacts requiring the retired reconstruction or interleaved order
 must be examined with their matching Git version.
 
+## Ratio estimates and schedule-resolved PHY timing
+
+The required serial-PHY timing contract has two stages. Before the concrete
+signal order is known, a ratio-dependent formula estimates the complete
+cross-FPGA delay conservatively. After scheduling, per-signal timing is
+resolved from the actual execution events instead of assigning the same ratio
+estimate to every member. This is the contract required for the
+[8:1 PHY reference](HARDWARE_PLATFORM.md#serial-phy-time-units); the current
+one-bit-per-fabric-cycle adapter has not qualified its implementation.
+
+For the bundled platform, the planning expression is
+`D_pre(R) = 30 ns + R * 0.625 ns = 30 ns + (R / 8) * 5 ns`.
+Its TDM clock is 200 MHz; the supplied PHY reference's fixed 45 ns is not
+substituted for the platform's configured 30 ns. Post-schedule analysis retains
+that same fixed component and replaces only the variable estimate with each
+signal's resolved TDM contribution. Under the supported model assumptions,
+`0 <= T_TDM,i <= 0.625R` and `D_post,i <= D_pre(R)`; do not clamp a violating
+measurement to satisfy the bound.
+Using it as a worst-case bound requires a stated readiness/phase/round policy
+and characterization that supports that bound. The algebra alone does not
+prove the bound, or identify an externally fitted formula as average or worst
+case. Every serial/word timing model must state that scope explicitly.
+
+Post-schedule analysis must retain the following events per signal and hop:
+
+- `ready`: the value is available after its preceding routed logic;
+- `word_load`: its assigned word is sampled by the TX PHY;
+- `serial_tx`: its bit is transmitted within that word;
+- `rx_visible`: the receiving interface makes the value available to logic.
+
+The fixed word-load event must meet readiness and setup requirements. A
+source that misses its assigned event fails the schedule check; the analyzer
+must not move it to a later round or frame to manufacture a passing result.
+Serial positions use UIs, parallel words use word-clock cycles, and event
+phases come from the actual clock/PHY binding. If a receiver exposes a complete
+word at once, bits in that word share its visibility event; changing only
+their serial bit order does not establish different logic-visible arrival
+times.
+
+The effective post-schedule hop delay is `rx_visible - ready`. The fixed PHY
+component must have explicit endpoints: serializer latency, board propagation,
+deserializer latency, alignment, and buffering must each be included exactly
+once. A configured fixed component is not automatically a cable-only delay or
+a fully characterized TX-to-RX timing arc. Do not compute
+`D_pre(R) + schedule_wait`, which counts an already estimated TDM component
+again. Replace that estimate with the resolved events and the separately
+defined fixed component.
+
+For a multi-hop path, the next hop's readiness is the preceding `rx_visible`
+plus its routed relay logic delay. Analyze the whole event chain with common
+clock phases; independently choosing favorable phases on each hop is invalid.
+Original launch/capture edges, clock relationships, setup, uncertainty, and
+margin still determine the terminal timing requirement. Model-exact event
+timing does not turn uncharacterized PHY arcs into measured hardware timing.
+If phase, fixed-delay boundaries, or receive visibility are unknown, report
+the remaining bound or incomplete qualification rather than claiming exactness.
+
 ## Metrics and scope
 
 The following disposition contract is a completion requirement. The indexed

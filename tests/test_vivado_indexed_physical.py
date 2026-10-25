@@ -287,7 +287,7 @@ puts pass
                 report = emit_vivado_mapped_verilog(ir, root / "dut.v")
                 xdc = vivado_runtime_xdc(ir, {
                     "fabric_clock": {"period_ns": 4.0},
-                    "virtual_dut_clocks": {"clk": {"nominal_period_ns": 20.0}},
+                    "virtual_dut_clocks": {"clk": {"target_period_ns": 10.0, "nominal_period_ns": 20.0}},
                     "timing_model": {"dut_clock_ports": ["clk"], "fabric_clock_port": "fabric_clk", "fabric_to_dut_max_delay_ns": 8.0}})
             self.assertEqual(report["emitted_instances"], 2)
             self.assertTrue(Path(report["mapped_index"]["path"]).is_file())

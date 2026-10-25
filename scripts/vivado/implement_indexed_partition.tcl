@@ -41,7 +41,7 @@ if {[catch {
   if {[llength [get_cells -quiet -hier -filter {IS_BLACKBOX == 1}]] != 0} {error "unresolved black boxes"}
   emuflow_inventory "$out/mapped_cells.tsv" $prefix
   set dut_clocks [get_clocks -quiet emuflow_dut_clk*]
-  set fabric [get_clocks -quiet emuflow_fabric_clk]
+  set fabric [get_clocks -quiet emuflow_tdm_clk]
   if {[llength $dut_clocks] != $dut_count || [llength $fabric] != 1} {
     error "runtime clock coverage differs from Phase6"
   }

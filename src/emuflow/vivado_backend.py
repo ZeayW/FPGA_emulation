@@ -118,9 +118,12 @@ def _resolve_vivado(executable: Optional[str]) -> str:
 def vivado_runtime_xdc(
     ir_path: Path,
     runtime: Mapping[str, Any],
+    dut_frequency_mhz: float | None = None,
 ) -> str:
+    """Implement against explicit shared DUT targets, independently of frame length."""
     from .emuir_compact import is_compact_emuir
     from .indexed_physical_ir import IndexedPhysicalIR
+    from .vivado_clocks import IMPLEMENTATION_CLOCK_POLICY, implementation_clocks
 
     from .emuir_storage import is_emuir_sqlite
 
@@ -129,37 +132,11 @@ def vivado_runtime_xdc(
             ports = {item["id"] for item in ir.value["ports"]}
     else:
         ports = {item["id"] for item in EmuIR.load(ir_path).value["ports"]}
-    timing = runtime["timing_model"]
-    dut_ports = timing["dut_clock_ports"]
-    fabric_port = timing["fabric_clock_port"]
-    if fabric_port not in ports:
-        raise ValidationError(
-            "Vivado physical partition lacks required clock ports: "
-            + fabric_port
-        )
-    fabric_period = runtime["fabric_clock"]["period_ns"]
-    cross_delay = timing["fabric_to_dut_max_delay_ns"]
-    lines = ["# EmuFlow provider-neutral runtime timing contract."]
-    lines.append(
-        f"create_clock -name emuflow_fabric_clk -period "
-        f"{fabric_period:.9f} [get_ports {{{fabric_port}}}]"
-    )
-    for index, dut_port in enumerate(dut_ports):
-        if dut_port not in ports:
-            continue
-        dut_period = runtime["virtual_dut_clocks"][dut_port][
-            "nominal_period_ns"
-        ]
-        clock_name = f"emuflow_dut_clk_{index}"
-        lines.extend(
-            [
-                f"create_clock -name {clock_name} -period {dut_period:.9f} "
-                f"[get_ports {{{dut_port}}}]",
-                f"set_max_delay -datapath_only {cross_delay:.9f} "
-                "-from [get_clocks {emuflow_fabric_clk}] "
-                f"-to [get_clocks {{{clock_name}}}]",
-            ]
-        )
+    lines = [f"# EmuFlow {IMPLEMENTATION_CLOCK_POLICY} physical implementation contract.",
+             "# Virtual frame periods and settle windows are runtime analysis inputs,",
+             "# not implementation clock periods or blanket timing exceptions."]
+    for clock_name, port, period in implementation_clocks(runtime, ports, dut_frequency_mhz):
+        lines.append(f"create_clock -name {clock_name} -period {period:.9f} [get_ports {{{port}}}]")
     lines.append("")
     return "\n".join(lines)
 

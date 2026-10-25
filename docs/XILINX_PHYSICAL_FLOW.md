@@ -305,6 +305,77 @@ validation remain; Phase 7 vendor boundary, local and logic measurements use
 their dedicated indexed owners. Historical vendor TimingPathDB artifacts must
 be examined with the matching Git version.
 
+### Local implementation clock baseline
+
+Indexed Vivado implementation uses explicit DUT targets independently of the
+virtual runtime calendar. `--vivado-dut-frequency-mhz` on `multi-fpga physical`
+and `--physical-vivado-dut-frequency-mhz` on `multi-fpga compile` set the
+fastest DUT root implementation frequency. All original root periods scale by
+one common factor, retaining their identities and frequency ratios on every
+partition. For example, a 10 MHz override maps equal 10 ns source roots to
+100 ns, while source roots of 10/20 ns become 100/200 ns. Omitting the override
+uses the explicit source targets. Missing source periods remain errors; the
+runtime frame is never a fallback. Source target metadata is preserved.
+
+The implementation XDC and native admission manifest share one clock contract.
+The transport word clock is named `emuflow_tdm_clk`; its legacy RTL port and
+BoardDB field names remain `fabric_clk` and `fabric_clock_mhz`. Bundled research
+platforms configure its period as 5 ns. A different DUT target does not scale
+the TDM clock. The manifest and physical result distinguish source targets,
+implementation targets and virtual runtime periods. Worker assembly rejects a
+missing clock policy or a mixture of implementation targets. A synthesized
+continuation must match the newly generated XDC, so an old frame-based clock
+cannot silently survive through checkpoint reuse.
+
+This first baseline does not feed exact per-cut budgets back into Vivado.
+It supplies local implementation targets, extracts routed local/interface
+measurements, and requires the global OpenSTA path analysis for system timing.
+Local WNS alone cannot establish a safe multi-FPGA frequency. Final operating
+period and frequency must use complete original-path coverage and the original
+edge/phase relationships; they are calculated against the declared board/PHY
+model, not measured board operation. Source-target and implementation-target
+comparisons must remain separately labelled.
+
+The current fixed differential adapter supplies IBUFDS/OBUFDS boundaries; it
+does not implement the serializer/deserializer or forwarded-clock circuitry
+of the [8:1 serial PHY reference](HARDWARE_PLATFORM.md#serial-phy-time-units).
+Its fabric-cycle slot counter must not be interpreted as proof of the serial
+UI or the physical DUT clock period. Clock constraints must follow the actual
+clock/state-advance circuit; a runtime frame duration alone does not establish
+that circuit. Replacing the DUT period with the original target also does not
+by itself qualify the transport and clock model.
+
+The indexed implementation currently applies zero input/output delay relative
+to the fabric/TDM clock on fixed differential data pads after `synth_design`.
+Synthesis therefore does not receive those pad-delay settings, or the required
+upstream arrival and downstream timing budgets. The zero setting is a local
+measurement reference, not a source-synchronous PHY input window or a
+schedule-derived DUT partition arrival budget. The generated timing XDC does
+not propagate upstream routed logic and resolved transport arrivals into
+partition implementation constraints. A zero-delay pad constraint therefore
+does not establish a fully constrained board or DUT implementation.
+
+The corrected boundary contract must distinguish physical LVDS ports from
+logical partition interfaces. Physical pad constraints need minimum/maximum
+delays relative to the bound forwarded RX/TX clocks. Logical cut inputs need
+upstream arrival events, and cut outputs need downstream required-time
+budgets, expressed against the original DUT clock relationships. An interface
+already implemented as internal transport registers is not a top-level port:
+its budget needs the corresponding internal timing objects rather than an
+invalid `set_input_delay` on a pin. Original external DUT inputs require their
+design/environment constraints. Link delay and upstream arrival must not be
+counted again as a PHY pad delay.
+
+Partitions can share the same original DUT clock periods while requiring
+different boundary constraints. For a cut signal entering a partition, its
+arrival depends on the preceding routed logic and resolved link events;
+an output's required time depends on the remaining downstream path and the
+original capture edge. For subsequent budget-feedback optimization, these source-bound budgets
+must be generated per partition and applied to synthesis as well as implementation. After routed
+delays are available, global timing must recheck the complete paths and update
+budgets when needed. Independent local timing passes do not prove that the
+composed original path meets its clock requirement.
+
 The exporter declares actual SQL net ordinals, including one-based or sparse
 keys. Disconnected input identities start beyond the maximum source ordinal,
 so they cannot alias a real net. Generated RTL disables implicit net creation.

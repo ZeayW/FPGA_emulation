@@ -405,6 +405,11 @@ when required by its timing contract. `--fpga fpgaN` selects a representative
 partition diagnostic and does not constitute a complete global run. The
 indexed adapter uses complete timing queries; `--vivado-max-timing-paths` is a
 retired sampled-export option, as is `--physical-vivado-max-timing-paths`.
+An explicit `--vivado-dut-frequency-mhz 10` sets a 10 MHz fastest-root
+implementation target for standalone physical execution. The full compile
+option is `--physical-vivado-dut-frequency-mhz 10`; original root period ratios
+are preserved. See the [clock baseline](XILINX_PHYSICAL_FLOW.md#local-implementation-clock-baseline)
+for source-target provenance and global timing scope.
 The independent `--timing-backend`/`--timing-vivado` selectors are removed;
 the upstream Phase 2 always uses OpenSTA, including with physical Vivado.
 The old standalone Vivado `sta` map/import commands and provider policy are

@@ -166,19 +166,25 @@ P/N conductors are never assigned separate TDM ratios or slots.
 The single-hop net delay uses the TDM ratio assigned to that net on that hop:
 
 ```text
-d_net(R) = 30 + 0.5 * R                       [ns]
+d_net(R) = 30 + 0.625 * R                     [ns]
 path delay = intra-FPGA delay + sum_h d_net(R_h)
 ```
 
-Thus `R=8` gives 34 ns and `R=16` gives 38 ns. A two-hop path with ratios 8 and
-16 contributes 72 ns of cross-FPGA delay; each hop is evaluated separately.
+Thus `R=8` gives 35 ns and `R=16` gives 40 ns. A two-hop path with ratios 8 and
+16 contributes 75 ns of estimated cross-FPGA delay; each hop is evaluated
+separately. `R=224` gives 170 ns. The configured TDM word clock is 200 MHz
+(5 ns), represented by the existing BoardDB field `fabric_clock_mhz`.
 This platform permits exactly `R = 8, 16, ..., 256`. A load requiring `R > 256`
 is infeasible for the link; increasing `frame_slots` does not legalize it.
 The ratio term is already included in `d_net`, so this model does not add a
-second slot-wait or serialization-delay term. The 250 MHz fabric clock controls
-the concrete slot schedule; it does not replace the nanosecond delay formula.
-`latency_cycles: 9` is the minimum-ratio bound (`ceil(d_net(8) / 4)`). The
-scheduler computes `ceil(d_net(R) / 4)` for each entry's actual ratio.
+second slot-wait or serialization-delay term. The current transport emitter
+advances its slot counter at the configured 200 MHz TDM clock and selects one bit per
+lane per cycle. Its scheduler rounds the modeled hop delay into those cycles;
+`latency_cycles: 7` is the minimum-ratio conversion (`ceil(d_net(8) / 5)`).
+These are current implementation choices, not a demonstrated serial PHY
+mapping. In particular, the 5 ns counter step is not evidence that one serial
+bit position lasts 5 ns. The required serial/parallel distinction is described
+in [Serial PHY time units](#serial-phy-time-units).
 BoardDB records the formula explicitly:
 
 ```json
@@ -186,7 +192,7 @@ BoardDB records the formula explicitly:
   "tdm_delay_model": {
     "model": "linear-ratio-v1",
     "intercept_ns": 30.0,
-    "ratio_coefficient_ns": 0.5,
+    "ratio_coefficient_ns": 0.625,
     "min_ratio": 8,
     "max_ratio": 256,
     "ratio_quantum": 8
@@ -198,6 +204,96 @@ BoardDB is the canonical owner of this ratio domain. Normalized Phase 3--5
 route constraints copy it as `tdm_min_ratio`, `tdm_max_ratio`, and
 `tdm_ratio_quantum` so native optimizers and independent validators consume
 the same sealed values.
+
+### Serial PHY time units
+
+Use the PPro-style 8:1 DDR LVDS arrangement below as a reference for the
+serial/parallel timing contract. The bundled BoardDB adopts the 200 MHz word
+clock and 0.625 ns ratio coefficient, while keeping its own 30 ns fixed
+component. The reference's fixed 45 ns does not replace that component. These
+settings do not qualify the current transport emitter as an implementation
+of the reference PHY.
+
+| Quantity | Meaning | Reference value |
+| --- | --- | --- |
+| DUT/core clock | Advances the original user design | Independently specified |
+| System-route timing clock | Reference used by the timing analysis | Independently specified |
+| Parallel TDM word clock | Presents one parallel word per physical data lane | 200 MHz; 5 ns |
+| Source-synchronous PHY clock | Samples serial LVDS data on both edges | 800 MHz; 1.25 ns |
+| Serial UI | Time occupied by one serial bit; not a separate clock | 0.625 ns |
+| Parallel word width | Bits serialized per lane per word cycle | 8 bits |
+| Raw line rate | Bits per second on one unidirectional data lane | 1.6 Gb/s |
+
+The clock identities remain distinct even when two numerical periods happen
+to match. The relationships for this reference are:
+
+```text
+line_rate = 2 * phy_clock = word_width * word_clock
+          = 2 * 800 MHz = 8 * 200 MHz = 1.6 Gb/s
+UI = 1 / line_rate = 0.625 ns
+word_period = word_width * UI = 8 * 0.625 ns = 5 ns
+```
+
+One P/N differential pair is one physical data lane. Its two conductors do not
+double the data capacity. The eight serial positions in one word are not eight
+physical lanes or eight independent user channels. Logical signals are bound
+to those positions by the TDM assignment.
+
+For the reference's ratio unit, a configured `R` denotes `R` serial positions
+in a lane's multiplexing round. An allocator using complete 8-bit words admits
+multiples of eight; the corresponding word-cycle count is `R / 8`, not `R`.
+Its pre-schedule reference delay estimate can be written equivalently as:
+
+```text
+D_reference_pre(R) = 45 ns + R * 0.625 ns
+                   = 45 ns + (R / 8) * 5 ns
+R = 224: 28 word cycles, 140 ns variable delay, 185 ns total delay
+```
+
+Before scheduling, the integration requires a conservative ratio estimate;
+its characterization must state the assumptions supporting a worst-case bound.
+The equivalence above establishes the units, not a proof that an externally
+fitted formula is average or worst case. After scheduling, replace that
+uniform estimate with each signal's actual readiness, word-load, transmission,
+and receive-visibility events. The estimate is not an extra physical arc to
+add to the resolved waiting time. See the canonical
+[two-stage timing contract](global-opensta-qualification.md#ratio-estimates-and-schedule-resolved-phy-timing)
+for the required fixed-delay boundaries and multi-hop event composition.
+
+A schedule lowered to this PHY must identify the physical lane, parallel word
+index, bit position within that word, and logical signal identity. For
+zero-based consecutive serial positions, `n = 8 * word_index + bit_index`,
+where `bit_index` is in `0..7`. A word is presented every 5 ns while its bits
+occupy successive 0.625 ns UIs. A generic field named `slot` does not establish
+which of these units it uses. Existing one-bit-per-cycle schedules cannot be
+converted by simply dividing every time index by eight: word packing, readiness,
+receive alignment, capacity, and multi-hop dependencies must be revalidated.
+
+With `L` data lanes, the raw bank capacity is `8L` bits per 5 ns word cycle, or
+`1.6L` Gb/s. For example, 23 data lanes carry 184 bits per word cycle and
+36.8 Gb/s in aggregate. A forwarded-clock differential pair is separate from
+those data lanes and contributes no payload bandwidth. This example does not
+change the bundled board's allocation of 20 usable data pairs per bank.
+
+The configured planning model has the matching time units
+`30 ns + 0.625R ns = 30 ns + (R / 8) * 5 ns`. After scheduling, retain the
+30 ns fixed component and replace only the variable estimate with the resolved
+per-signal TDM contribution. Within the stated model assumptions, that
+contribution must not exceed `0.625R` ns. A violation is an inconsistent or
+infeasible timing model, not permission to clamp a result to the bound.
+The serial-PHY clocks remain distinct from the DUT/core clock and from the
+system-route timing reference.
+
+The current differential adapter instantiates IBUFDS/OBUFDS boundaries without
+the serializer/deserializer and forwarded-clock implementation of this
+reference. It therefore does not qualify that serial link, word throughput,
+or source-synchronous timing. A PHY implementation needs the corresponding
+word interfaces, clock bindings, receive alignment, and package-pin contracts.
+Neither the serial UI nor a configured frame length determines the DUT/core
+clock. Its implementation constraints must follow the actual clock and
+state-advance circuitry; system-route analysis retains its own reference clock.
+
+### Exporting the bundled platform
 
 Export either bundled platform for inspection or standalone phase commands.
 `--wires-per-bank` explicitly overrides the effective data width when defining
@@ -317,4 +413,4 @@ lane/port/package-pin coverage. This is a routed research implementation, not
 board electrical signoff: RapidWright's lightweight timing model does not
 characterize the differential buffer's intrinsic delay, and the clock/reset/
 control services above remain board-specific. Link timing keeps the configured
-per-hop `30 + 0.5R` ns model; switching to differential does not recalibrate it.
+per-hop `30 + 0.625R` ns model; switching to differential does not recalibrate it.

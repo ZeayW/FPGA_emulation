@@ -26,6 +26,7 @@ from .resource_budget import validate_device_resource_usage
 from .vivado_physical_top import write_vivado_physical_top
 from .vivado_lineage import LINEAGE_POLICY
 from .vivado_optimization import OptimizationProofView
+from .vivado_clocks import implementation_timing_contract, validate_dut_frequency_mhz
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -126,7 +127,7 @@ def run_indexed_vivado_partition(
     local_query_path: Path | None = None, virtual_io_contract: Mapping[str, Any] | None = None,
     executable: str | None = None, place_directive: str = "Default", route_directive: str = "Default",
     synthesized_checkpoint: Path | None = None, synthesized_checkpoint_sha256: str | None = None,
-    continuation_source_report: Path | None = None,
+    continuation_source_report: Path | None = None, dut_frequency_mhz: float | None = None,
 ) -> dict[str, Any]:
     from .vivado_backend import _resolve_vivado, _read_metrics, _integer, _number, vivado_runtime_xdc, write_vivado_boundary_timing_query
     from .vivado_physical_timing import import_indexed_vivado_boundary, import_vivado_local_timing
@@ -147,6 +148,8 @@ def run_indexed_vivado_partition(
                                   ("local", local_identity_path, local_query_path)):
         if (identity is None) != (query is None):
             raise ValidationError(f"Vivado {kind} timing requires identity and query together")
+    validate_dut_frequency_mhz(dut_frequency_mhz)
+    implementation_timing = implementation_timing_contract(runtime, dut_frequency_mhz)
     from .native_tools import require_native_schema
     require_native_schema("vivado-lineage-store-v2")
     output_dir = output_dir.resolve()
@@ -166,7 +169,7 @@ def run_indexed_vivado_partition(
         ports = {port["id"] for port in ir.value["ports"]}
     dut_count = sum(clock in ports for clock in runtime["timing_model"]["dut_clock_ports"])
     xdc = output_dir / "runtime.xdc"
-    xdc.write_text(vivado_runtime_xdc(ir_path, runtime), encoding="utf-8")
+    xdc.write_text(vivado_runtime_xdc(ir_path, runtime, dut_frequency_mhz), encoding="utf-8")
     prefix, adapter, wrapper, io_xdc, io_query = "", "", "", "", ""
     top_report = None
     if virtual_io_contract is not None:
@@ -210,7 +213,8 @@ def run_indexed_vivado_partition(
             continuation_source_report,mapped_report,mapped_verilog_path,output_dir)
     configuration = prepare_manifest(output_dir,fpga=fpga,part=part,mapped_index=index_path,functions=functions_path,
         mapped_sha256=mapped_report["mapped_index"]["sha256"],queries=queries,runtime=runtime,ports=ports,
-        synthesized_checkpoint=synthesized_checkpoint,synthesized_checkpoint_sha256=synthesized_checkpoint_sha256)
+        synthesized_checkpoint=synthesized_checkpoint,synthesized_checkpoint_sha256=synthesized_checkpoint_sha256,
+        dut_frequency_mhz=dut_frequency_mhz)
     threads = int(os.environ.get("EMUFLOW_VIVADO_THREADS", "2"))
     if threads < 1:
         raise ValidationError("Vivado thread count must be positive")
@@ -303,12 +307,17 @@ def run_indexed_vivado_partition(
             "external_clock_sources": "abstract-unbound",
             "absolute_clock_insertion_and_skew": "not-qualified",
             "cell_accounting_policy": LINEAGE_POLICY,
+            "implementation_clock_policy": implementation_timing["policy"],
             "board_signoff": False},
         "cell_accounting": {"original_cells": original_cells, "transport_cells": transport_cells,
             **{name: coverage["stages"]["routed"][name] for name in ("source_cells_with_lineage", "unretained_source_cells", "source_cells_with_multiple_objects")},
             **{name: _integer(metrics, name) for name in ("routed_cells", "physical_cells", "infrastructure_cells", "optimization_cells")}},
         "closure": {name: _integer(metrics, name) for name in ("unrouted_nets", "drc_violations", "drc_warnings")},
-        "clocks": {"fabric_period_ns": _number(metrics, "fabric_period_ns"), "dut_period_ns": float(runtime["virtual_dut_clock"]["nominal_period_ns"])},
+        "clocks": {"fabric_period_ns": _number(metrics, "fabric_period_ns"),
+            "dut_period_ns": min(implementation_timing["dut_clock_periods_ns"].values()),
+            "dut_clock_periods_ns": {port: period for port, period in implementation_timing["dut_clock_periods_ns"].items() if port in ports},
+            "virtual_runtime_dut_clock_periods_ns": {port: runtime["virtual_dut_clocks"][port]["nominal_period_ns"]
+                for port in implementation_timing["dut_clock_periods_ns"]}},
         "timing": {**aggregate, "timing_met": aggregate["wns_ns"] >= 0,
             **{name: _number(metrics, name) for name in ("dut_wns_ns", "fabric_wns_ns", "fabric_to_dut_wns_ns", "critical_path_ns")},
             "clock_domain_delays_ns": {domain: _number(metrics, name) for domain, name in (("overall", "critical_path_ns"), ("dut", "dut_delay_ns"), ("fabric", "fabric_delay_ns"), ("cross", "fabric_to_dut_delay_ns"))}},
@@ -317,7 +326,9 @@ def run_indexed_vivado_partition(
     report = {"schema": "emuflow.vivado-partition-report/v1", "status": "pass", "provider": "indexed-phase6-vivado-physical-v2",
         "tool": {"executable": executable, "version": metrics["vivado_version"], "threads": threads},
         "implementation": implementation, "continuation": continuation_validation, "input_identity": input_identity,
-        "implementation_options": {"place_directive": place_directive, "route_directive": route_directive},
+        "implementation_timing": implementation_timing,
+        "implementation_options": {"place_directive": place_directive, "route_directive": route_directive,
+                                   "dut_frequency_mhz": dut_frequency_mhz},
         "native_session": {"mode":"current-design-stage-exports-v1",
             "scripts_sha256": {name:file_sha256(_vivado_script(name)) for name in (
                 "native_session.tcl","source_inventory.tcl","resource_inventory.tcl","timing_contract.tcl",

@@ -369,5 +369,3 @@ def assign_clusters(
         seed=seed,
         _include_semantic_contract=_include_semantic_contract,
     )
-
-

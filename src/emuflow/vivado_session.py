@@ -20,6 +20,7 @@ from .io import file_sha256, read_json, write_json
 from .vivado_constant_frontier import check_constant_sources, prepare_constant_frontier_query
 from .vivado_lineage import import_cell_lineage, resolve_timing_query
 from .vivado_optimization import build_optimization_proofs
+from .vivado_clocks import implementation_clocks, implementation_timing_contract
 
 SCHEMA = "emuflow.vivado-native-session/v1"
 
@@ -29,21 +30,21 @@ def _tcl_word(value):
 
 
 def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mapped_sha256,
-                     queries, runtime, ports, synthesized_checkpoint=None, synthesized_checkpoint_sha256=None):
+                     queries, runtime, ports, synthesized_checkpoint=None, synthesized_checkpoint_sha256=None,
+                     dut_frequency_mhz=None):
     """Prepare small native/child contracts after all source views have closed."""
     output = output.resolve()
     checkpoint = Path(synthesized_checkpoint).resolve() if synthesized_checkpoint is not None else output/"synthesized.dcp"
     reserved = {str((output/(kind+suffix)).resolve()) for kind in queries for suffix in ("-synthesis.tsv","-resolved.tsv",".tsv")}
     if any(str(value.resolve()) in reserved for value in queries.values()):
         raise ValidationError("native timing input overlaps a generated query/measurement output")
+    clocks = implementation_clocks(runtime, ports, dut_frequency_mhz)
     manifest = {"schema": SCHEMA, "fpga": fpga, "part": part, "output": str(output),
+        "implementation_timing": implementation_timing_contract(runtime, dut_frequency_mhz),
         "mapped_index": str(mapped_index.resolve()), "functions": str(functions.resolve()),
         "mapped_index_sha256": mapped_sha256, "queries": {key:str(value.resolve()) for key,value in queries.items()},
         "synthesized_checkpoint": str(checkpoint), "synthesized_checkpoint_sha256": synthesized_checkpoint_sha256}
     write_json(output/"native-session.json",manifest,compact=True)
-    clocks = [("emuflow_fabric_clk",runtime["timing_model"]["fabric_clock_port"],runtime["fabric_clock"]["period_ns"])]
-    clocks.extend((f"emuflow_dut_clk_{i}",port,runtime["virtual_dut_clocks"][port]["nominal_period_ns"])
-                  for i,port in enumerate(runtime["timing_model"]["dut_clock_ports"]) if port in ports)
     with (output/"clock-contract.tsv").open("w") as stream:
         stream.write("clock_hex\tport_hex\tperiod_ns\n")
         for name,port,period in clocks:

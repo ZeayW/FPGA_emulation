@@ -41,6 +41,9 @@ def _request(args, kwargs):
     signature = inspect.signature(run_multi_fpga_flow)
     bound = signature.bind(*args, **kwargs)
     bound.apply_defaults()
+    from .vivado_clocks import validate_dut_frequency_mhz
+    validate_dut_frequency_mhz(bound.arguments["physical_vivado_dut_frequency_mhz"],
+        enabled=bound.arguments["physical"] and bound.arguments["physical_backend"] == "vivado")
     if (
         isinstance(bound.arguments['patron_algorithm_version'], bool)
         or not isinstance(bound.arguments['patron_algorithm_version'], int)

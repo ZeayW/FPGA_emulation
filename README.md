@@ -23,6 +23,11 @@ the common physical-result contract. Real-device qualification is in progress. I
 does not establish board clock/skew signoff. Used undriven source nets are
 rejected before mapping or vendor implementation. Physical capacity accounting
 handles native macro expansion and shared LUT halves.
+The [serial PHY reference](docs/HARDWARE_PLATFORM.md#serial-phy-time-units)
+distinguishes DUT and analysis clocks, parallel words, and serial bit intervals.
+The current direct LVDS adapter does not implement that 8:1 serial PHY.
+Its required [timing contract](docs/global-opensta-qualification.md#ratio-estimates-and-schedule-resolved-phy-timing)
+distinguishes pre-schedule ratio estimates from post-schedule per-signal events.
 The indexed provider exports routed reports and timing in one native session
 and supports checked continuation within an active run, using native module
 identities and explicit checkpoint diagnostics.
@@ -32,6 +37,9 @@ Vivado tool censuses are imported by the shared native core into one sealed
 lineage/placement store. Shared publication also admits nullable physical timing
 and the indexed global result owner. Python passes file references; imported raw snapshots
 are retired. Source lineage still does not prove functional equivalence.
+Vivado uses explicit DUT implementation targets independently of runtime frames;
+a frequency override scales all DUT roots together while keeping the TDM clock
+fixed. See the [clock baseline](docs/XILINX_PHYSICAL_FLOW.md#local-implementation-clock-baseline).
 Indexed mapped primitives carry provenance tags without global KEEP/DONT_TOUCH
 constraints; indexed source-bound coverage is checked after optimization. The timing
 contract requires an explicit measured or proven optimized-away disposition for
@@ -281,7 +289,10 @@ establish physical timing closure.
 
 The bundled XCVU19P cable model admits only the discrete TDM ratios
 `8, 16, ..., 256`. The schedule frame may contain more slots, but its length
-does not expand this platform ratio domain.
+does not expand this platform ratio domain. Both bundled sizes use a 5 ns
+(200 MHz) TDM clock and the planning delay `30 + 0.625R` ns per crossing.
+The fixed 30 ns is retained when the variable TDM estimate is replaced by
+post-schedule per-signal timing.
 
 The Xilinx Phase 7 path combines fanout-aware placement, RUDY/pin-density area
 adjustment, and a reserved post-adjustment convergence window before exact

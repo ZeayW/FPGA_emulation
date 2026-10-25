@@ -17,6 +17,9 @@ from emuflow.phase3 import run_phase3
 from emuflow.tritonpart import run_tritonpart
 from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints
+from emuflow.routing import route_hop_delay_ns
+from emuflow.runtime import build_virtual_runtime, runtime_timing_xdc
+from emuflow.tdm import TDM_SCHEDULE_SCHEMA, tdm_hop_latency_cycles
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,8 +44,8 @@ class DefaultPlatformTest(unittest.TestCase):
                     self.assertEqual((link.bank_count, link.wires_per_bank), (18, 20))
                     self.assertEqual(link.data_lanes_per_direction, 360)
                     self.assertEqual((link.cable_count, link.hp_banks_per_cable), (6, 3))
-                    self.assertEqual(link.fabric_clock_mhz, 250.0)
-                    self.assertEqual(link.latency_cycles, 9)
+                    self.assertEqual(link.fabric_clock_mhz, 200.0)
+                    self.assertEqual(link.latency_cycles, 7)
                     self.assertEqual(
                         (
                             link.tdm_delay_model.min_ratio,
@@ -51,8 +54,8 @@ class DefaultPlatformTest(unittest.TestCase):
                         ),
                         (8, 256, 8),
                     )
-                    self.assertEqual(link.tdm_delay_model.delay_ns(8), 34.0)
-                    self.assertEqual(link.tdm_delay_model.delay_ns(16), 38.0)
+                    self.assertEqual(link.tdm_delay_model.delay_ns(8), 35.0)
+                    self.assertEqual(link.tdm_delay_model.delay_ns(16), 40.0)
                     for unsupported in (1, 7, 12, 264):
                         with self.assertRaises(ValidationError):
                             link.tdm_delay_model.delay_ns(unsupported)
@@ -105,6 +108,26 @@ class DefaultPlatformTest(unittest.TestCase):
                 self.assertEqual(fpga.utilization_limit, 0.25 if count == 4 else 0.75)
                 for board_unit, provider_unit in mapping.items():
                     self.assertEqual(fpga.capacity[board_unit], resources[provider_unit])
+
+    def test_tdm_clock_and_ratio_delay_reach_routing_runtime_and_xdc(self):
+        for count in (2, 4):
+            with self.subTest(fpga_count=count):
+                platform = Platform.load(research_platform_path(count))
+                constraints = normalize_route_constraints(None, platform)
+                for link in platform.links:
+                    for ratio, delay, cycles in ((8, 35.0, 7), (16, 40.0, 8),
+                                                 (224, 170.0, 34), (256, 190.0, 38)):
+                        self.assertEqual(route_hop_delay_ns(platform, link.id, *link.endpoints,
+                                                            constraints, ratio), delay)
+                        self.assertEqual(tdm_hop_latency_cycles(link, ratio), cycles)
+                runtime = build_virtual_runtime({
+                    "schema": TDM_SCHEDULE_SCHEMA, "platform": platform.name,
+                    "metrics": {"frame_slots": 64, "completion_slot": 0}, "entries": [],
+                }, platform, {"core_clk": 10.0})
+                self.assertEqual(runtime["fabric_clock"]["period_ns"], 5.0)
+                self.assertEqual(runtime["fabric_clock"]["frequency_mhz"], 200.0)
+                self.assertEqual(runtime["virtual_dut_clocks"]["core_clk"]["target_period_ns"], 10.0)
+                self.assertIn("-period 5.000000000 [get_ports {fabric_clk}]", runtime_timing_xdc(runtime))
 
 
     def test_python_omitted_platform_reaches_frontend_with_bundled_model(self):

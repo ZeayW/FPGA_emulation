@@ -39,4 +39,3 @@ class CheckedRequestWriter:
 
     def close(self):
         self.stream.close()
-

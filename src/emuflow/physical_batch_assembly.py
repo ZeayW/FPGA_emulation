@@ -16,6 +16,7 @@ from .runtime import build_virtual_runtime
 from .tdm_schedule_storage import canonical_tdm_schedule_sha256, read_tdm_schedule
 from .transport_storage import read_virtual_binding
 from .virtual_board import build_virtual_io_physical_contract, validate_virtual_board
+from .vivado_clocks import implementation_timing_contract, validate_dut_frequency_mhz
 
 
 def _canonical_sha(value):
@@ -95,9 +96,11 @@ def assemble_vivado_physical_batches(
         seed = execution.get("seed")
         if (not isinstance(seed, int) or isinstance(seed, bool) or seed < 1
                 or not isinstance(options, dict)
-                or set(options) != {"place_directive", "route_directive"}
-                or any(not isinstance(value, str) or not value for value in options.values())):
+                or set(options) != {"place_directive", "route_directive", "dut_frequency_mhz"}
+                or any(not isinstance(options[name], str) or not options[name]
+                       for name in ("place_directive", "route_directive"))):
             raise ValidationError("physical batch implementation options are missing")
+        validate_dut_frequency_mhz(options["dut_frequency_mhz"])
         contract = {"seed": seed, "vivado_implementation": options}
         if execution_contract is not None and contract != execution_contract:
             raise ValidationError("physical batch implementation options differ")
@@ -133,6 +136,8 @@ def assemble_vivado_physical_batches(
                 native = stages.get("vivado_implementation", {})
                 if not isinstance(native, Mapping) or native.get("implementation_options") != options:
                     raise ValidationError("physical batch declared and implemented directives differ")
+                if native.get("implementation_timing") != implementation_timing_contract(runtime, options["dut_frequency_mhz"]):
+                    raise ValidationError("physical batch implementation target-clock contract differs")
                 for name in ("boundary_timing", "logic_segment_timing", "local_path_timing"):
                     if not isinstance(native.get(name), Mapping) or native[name].get("status") != "pass":
                         raise ValidationError("physical batch timing coverage is incomplete")

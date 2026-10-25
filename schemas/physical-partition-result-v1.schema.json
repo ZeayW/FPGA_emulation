@@ -73,7 +73,8 @@
         "external_clock_sources": {"const": "abstract-unbound"},
         "absolute_clock_insertion_and_skew": {"const": "not-qualified"},
         "board_signoff": {"const": false},
-        "cell_accounting_policy": {"const": "vivado-optimized-source-lineage-v1"}
+        "cell_accounting_policy": {"const": "vivado-optimized-source-lineage-v1"},
+        "implementation_clock_policy": {"const": "shared-dut-target-local-baseline-v1"}
       },
       "additionalProperties": false
     },
@@ -82,7 +83,9 @@
       "required": ["fabric_period_ns", "dut_period_ns"],
       "properties": {
         "fabric_period_ns": {"type": "number", "exclusiveMinimum": 0},
-        "dut_period_ns": {"type": "number", "exclusiveMinimum": 0}
+        "dut_period_ns": {"type": "number", "exclusiveMinimum": 0},
+        "dut_clock_periods_ns": {"type": "object", "additionalProperties": {"type": "number", "exclusiveMinimum": 0}},
+        "virtual_runtime_dut_clock_periods_ns": {"type": "object", "additionalProperties": {"type": "number", "exclusiveMinimum": 0}}
       },
       "additionalProperties": false
     },

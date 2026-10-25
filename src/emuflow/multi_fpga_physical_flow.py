@@ -591,6 +591,7 @@ def run_multi_fpga_physical_flow(
     vivado: Optional[str] = None,
     vivado_place_directive: str = "Default",
     vivado_route_directive: str = "Default",
+    vivado_dut_frequency_mhz: Optional[float] = None,
     rapidwright_jar: Optional[Path] = None,
     rapidwright_java: Optional[Path] = None,
     rapidwright_classes: Optional[Path] = None,
@@ -609,6 +610,8 @@ def run_multi_fpga_physical_flow(
     resume: bool = False,
     fpga_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
+    from .vivado_clocks import validate_dut_frequency_mhz
+    validate_dut_frequency_mhz(vivado_dut_frequency_mhz, enabled=backend == "vivado")
     validate_physical_backend_descriptor(physical_backend_descriptor(backend))
     if workers < 1:
         raise ValidationError("physical workers must be at least one")
@@ -1447,6 +1450,7 @@ def run_multi_fpga_physical_flow(
                 executable=vivado,
                 place_directive=vivado_place_directive,
                 route_directive=vivado_route_directive,
+                dut_frequency_mhz=vivado_dut_frequency_mhz,
                 mapped_report=mapped_report,
                 virtual_io_contract=virtual_io_contract,
                 local_identity_path=local_identity_path,
@@ -1541,6 +1545,7 @@ def run_multi_fpga_physical_flow(
         **({"vivado_implementation": {
             "place_directive": vivado_place_directive,
             "route_directive": vivado_route_directive,
+            "dut_frequency_mhz": vivado_dut_frequency_mhz,
         }} if backend == "vivado" else {}),
         **(
             {"rapidwright_placer": "openparf-native"}

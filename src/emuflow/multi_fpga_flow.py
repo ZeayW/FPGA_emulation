@@ -1196,6 +1196,9 @@ class _CompileContext:
         return measure_stage(self.output_dir, stage, function, *args, **kwargs)
 
 def _compile_preflight(ctx: _CompileContext):
+    from .vivado_clocks import validate_dut_frequency_mhz
+    validate_dut_frequency_mhz(ctx.physical_vivado_dut_frequency_mhz,
+                               enabled=ctx.physical and ctx.physical_backend == "vivado")
     if (
         isinstance(ctx.patron_algorithm_version, bool)
         or not isinstance(ctx.patron_algorithm_version, int)
@@ -1852,6 +1855,7 @@ def _run_selected_physical(ctx, split_root, schedule_path, output_dir):
         vivado=ctx.physical_vivado,
         vivado_place_directive=ctx.physical_vivado_place_directive,
         vivado_route_directive=ctx.physical_vivado_route_directive,
+        vivado_dut_frequency_mhz=ctx.physical_vivado_dut_frequency_mhz,
         rapidwright_jar=ctx.physical_rapidwright_jar,
         rapidwright_java=ctx.physical_rapidwright_java,
         rapidwright_classes=ctx.physical_rapidwright_classes,
@@ -2531,6 +2535,7 @@ def run_multi_fpga_flow(
     physical_vivado: Optional[str] = None,
     physical_vivado_place_directive: str = "Default",
     physical_vivado_route_directive: str = "Default",
+    physical_vivado_dut_frequency_mhz: Optional[float] = None,
     physical_rapidwright_jar: Optional[Path] = None,
     physical_rapidwright_java: Optional[Path] = None,
     physical_rapidwright_classes: Optional[Path] = None,

@@ -91,7 +91,7 @@ def _ir():
 
 RUNTIME = {
     "fabric_clock": {"period_ns": 4.0},
-    "virtual_dut_clocks": {"clk": {"nominal_period_ns": 100.0}},
+    "virtual_dut_clocks": {"clk": {"target_period_ns": 10.0, "nominal_period_ns": 100.0}},
     "virtual_dut_clock": {"nominal_period_ns": 100.0},
     "timing_model": {
         "dut_clock_ports": ["clk"],
@@ -291,15 +291,16 @@ class VivadoBackendTest(unittest.TestCase):
         self.assertEqual(lowered.value["instances"][1]["type"], "FDRE")
         self.assertEqual(lowered.value["nets"][0]["sinks"][0]["port"], "I0")
 
-    def test_runtime_xdc_uses_the_common_clock_contract(self):
+    def test_implementation_xdc_uses_target_clocks_without_runtime_exceptions(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "ir.json"
             write_json(path, _ir().to_dict())
             xdc = vivado_runtime_xdc(path, RUNTIME)
-        self.assertIn("emuflow_dut_clk_0 -period 100.000000000", xdc)
-        self.assertIn("emuflow_fabric_clk -period 4.000000000", xdc)
-        self.assertIn("set_max_delay -datapath_only 8.000000000", xdc)
-        self.assertIn("100.000000000 [get_ports {clk}]", xdc)
+        self.assertIn("emuflow_dut_clk_0 -period 10.000000000", xdc)
+        self.assertIn("emuflow_tdm_clk -period 4.000000000", xdc)
+        self.assertNotIn("set_max_delay", xdc)
+        self.assertNotIn("100.000000000", xdc)
+        self.assertIn("10.000000000 [get_ports {clk}]", xdc)
         self.assertIn("4.000000000 [get_ports {fabric_clk}]", xdc)
         self.assertNotIn("\n  [get_ports", xdc)
         self.assertNotIn("\n  -from", xdc)
@@ -315,7 +316,7 @@ class VivadoBackendTest(unittest.TestCase):
             write_json(path, value)
             xdc = vivado_runtime_xdc(path, RUNTIME)
         self.assertNotIn("emuflow_dut_clk", xdc)
-        self.assertIn("emuflow_fabric_clk", xdc)
+        self.assertIn("emuflow_tdm_clk", xdc)
 
 
 if __name__ == "__main__":

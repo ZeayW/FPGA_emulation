@@ -200,6 +200,14 @@ and readiness certificate directly in ScheduleStore. Independent cursor/join
 validation completes before atomic report-last publication; there is no
 Python result import or size-dependent reference fallback.
 
+For the 8:1 serial PHY reference, the required
+[two-stage timing contract](global-opensta-qualification.md#ratio-estimates-and-schedule-resolved-phy-timing)
+uses a conservative ratio estimate before scheduling and per-signal event
+timing afterward. Signal order can therefore affect post-schedule timing;
+it is not evaluated by retaining a uniform ratio delay and adding another
+waiting term. The current direct adapter does not yet qualify the required
+serial-word mapping, receive events, or PHY timing boundaries.
+
 Whole communication banks are allocated between directions using directional
 load. Hardware ratio limits, compatibility, shared capacity and the calibrated
 per-hop delay model remain constraints even though independent ratio/KKT,

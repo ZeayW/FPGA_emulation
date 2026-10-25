@@ -132,7 +132,7 @@ puts pass
 @pytest.mark.skipif(shutil.which("tclsh") is None, reason="Tcl interpreter required")
 def test_native_child_contract_survives_tcl_characters_and_isolates_vendor_python(tmp_path):
     out = tmp_path/'native $path[0] "quoted"';out.mkdir()
-    runtime = {"fabric_clock": {"period_ns": 4}, "virtual_dut_clocks": {"clk": {"nominal_period_ns": 20}},
+    runtime = {"fabric_clock": {"period_ns": 4}, "virtual_dut_clocks": {"clk": {"target_period_ns": 20, "nominal_period_ns": 200}},
                "timing_model": {"fabric_clock_port": "fabric_clk", "dut_clock_ports": ["clk"]}}
     config = prepare_manifest(out, fpga="fpga0", part="part", mapped_index=tmp_path/"mapped.sqlite", functions=tmp_path/"functions.sqlite",
         mapped_sha256="a"*64, queries={}, runtime=runtime, ports={"clk", "fabric_clk"})
@@ -180,7 +180,7 @@ def test_native_stage_bridge_runs_real_sqlite_children_without_placed_or_routed_
     prior.write_bytes((out/"synthesized.dcp").read_bytes())
     (out/"synthesized.dcp").unlink()
     (out/".tmp").mkdir()
-    runtime = {"fabric_clock": {"period_ns": 4}, "virtual_dut_clocks": {"clk": {"nominal_period_ns": 20}},
+    runtime = {"fabric_clock": {"period_ns": 4}, "virtual_dut_clocks": {"clk": {"target_period_ns": 20, "nominal_period_ns": 200}},
                "timing_model": {"fabric_clock_port": "fabric_clk", "dut_clock_ports": ["clk"]}}
     config = prepare_manifest(out, fpga="fpga0", part="xcpart", mapped_index=Path(session["mapped_index"]),
         functions=Path(session["functions"]), mapped_sha256=session["mapped_index_sha256"], queries={}, runtime=runtime,
@@ -195,7 +195,7 @@ set trace {}
 rename source original_source
 proc source {path} {
   if {[file tail $path] eq "source_inventory.tcl"} {
-    proc emuflow_inventory {path prefix} {file copy -force $::template $path;return 2}
+    proc emuflow_inventory {path prefix {placed 0}} {file copy -force $::template $path;return 2}
   } elseif {[file tail $path] eq "resource_inventory.tcl"} {
     proc emuflow_resource_inventory {} {return {lut 1 ff 1 carry8 0 dsp48 0 uram288 0 ramb18_cells 0 ramb36_cells 0 routed_cells 2 physical_cells 2 infrastructure_cells 0 optimization_cells 0}}
   } else {uplevel 1 [list original_source $path]}
@@ -215,18 +215,18 @@ proc get_cells {args} {return {}}
 proc get_ports {args} {return [lindex $args end]}
 proc get_clocks {args} {
  if {[lsearch -exact $args -of_objects]>=0} {
-  return [expr {[lindex $args end] eq "fabric_clk" ? "emuflow_fabric_clk" : "emuflow_dut_clk_0"}]
+  return [expr {[lindex $args end] eq "fabric_clk" ? "emuflow_tdm_clk" : "emuflow_dut_clk_0"}]
  }
- if {[llength $args]==1} {return {emuflow_fabric_clk emuflow_dut_clk_0}}
+ if {[llength $args]==1} {return {emuflow_tdm_clk emuflow_dut_clk_0}}
  set pattern [lindex $args end]
- return [lsearch -all -inline -glob {emuflow_fabric_clk emuflow_dut_clk_0} $pattern]
+ return [lsearch -all -inline -glob {emuflow_tdm_clk emuflow_dut_clk_0} $pattern]
 }
 proc get_property {property object} {
  switch $property {
   PART {return xcpart}
   NAME {return [expr {$object eq "dut" ? "checkpoint_synthesized" : $object}]}
   TOP {return dut}
-  PERIOD {return [expr {$object eq "emuflow_fabric_clk" ? 4.0 : 20.0}]}
+  PERIOD {return [expr {$object eq "emuflow_tdm_clk" ? 4.0 : 20.0}]}
   SLACK {return 0.5}
   DATAPATH_DELAY {return 2.5}
  }

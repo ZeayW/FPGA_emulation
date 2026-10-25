@@ -3,7 +3,7 @@
   "platform": {
     "name": "rapidwright_xcvu19p_4fpga_mesh",
     "kind": "virtual",
-    "description": "4-XCVU19P research model: RapidWright device resources, K2,2 topology (fpga0/fpga1 to fpga2/fpga3), 6 cables with 3 paired HP banks per cable, 20 effective differential data pairs per bank, and single-hop delay 30 + 0.5*R ns",
+    "description": "4-XCVU19P research model: RapidWright device resources, K2,2 topology (fpga0/fpga1 to fpga2/fpga3), 6 cables with 3 paired HP banks per cable, 20 effective differential data pairs per bank, and 200 MHz TDM clock, and single-hop delay 30 + 0.625*R ns",
     "virtual_board_model": "xcvu19p-hp-lvds-cable-v1",
     "virtual_board_wiring": "rapidwright_xcvu19p_4fpga_mesh.wires.csv"
   },
@@ -82,12 +82,12 @@
       "capacity_sharing": "shared_bidirectional",
       "bank_count": 18,
       "wires_per_bank": 20,
-      "fabric_clock_mhz": 250.0,
-      "latency_cycles": 9,
+      "fabric_clock_mhz": 200.0,
+      "latency_cycles": 7,
       "tdm_delay_model": {
         "model": "linear-ratio-v1",
         "intercept_ns": 30.0,
-        "ratio_coefficient_ns": 0.5,
+        "ratio_coefficient_ns": 0.625,
         "min_ratio": 8,
         "max_ratio": 256,
         "ratio_quantum": 8
@@ -107,12 +107,12 @@
       "capacity_sharing": "shared_bidirectional",
       "bank_count": 18,
       "wires_per_bank": 20,
-      "fabric_clock_mhz": 250.0,
-      "latency_cycles": 9,
+      "fabric_clock_mhz": 200.0,
+      "latency_cycles": 7,
       "tdm_delay_model": {
         "model": "linear-ratio-v1",
         "intercept_ns": 30.0,
-        "ratio_coefficient_ns": 0.5,
+        "ratio_coefficient_ns": 0.625,
         "min_ratio": 8,
         "max_ratio": 256,
         "ratio_quantum": 8
@@ -132,12 +132,12 @@
       "capacity_sharing": "shared_bidirectional",
       "bank_count": 18,
       "wires_per_bank": 20,
-      "fabric_clock_mhz": 250.0,
-      "latency_cycles": 9,
+      "fabric_clock_mhz": 200.0,
+      "latency_cycles": 7,
       "tdm_delay_model": {
         "model": "linear-ratio-v1",
         "intercept_ns": 30.0,
-        "ratio_coefficient_ns": 0.5,
+        "ratio_coefficient_ns": 0.625,
         "min_ratio": 8,
         "max_ratio": 256,
         "ratio_quantum": 8
@@ -157,12 +157,12 @@
       "capacity_sharing": "shared_bidirectional",
       "bank_count": 18,
       "wires_per_bank": 20,
-      "fabric_clock_mhz": 250.0,
-      "latency_cycles": 9,
+      "fabric_clock_mhz": 200.0,
+      "latency_cycles": 7,
       "tdm_delay_model": {
         "model": "linear-ratio-v1",
         "intercept_ns": 30.0,
-        "ratio_coefficient_ns": 0.5,
+        "ratio_coefficient_ns": 0.625,
         "min_ratio": 8,
         "max_ratio": 256,
         "ratio_quantum": 8

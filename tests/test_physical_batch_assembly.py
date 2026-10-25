@@ -15,6 +15,7 @@ from emuflow.platform import Platform
 from emuflow.runtime import build_virtual_runtime
 from emuflow.tdm_schedule_storage import canonical_tdm_schedule_sha256, read_tdm_schedule
 from emuflow.tdm import TDM_SCHEDULE_SCHEMA
+from emuflow.vivado_clocks import implementation_timing_contract
 
 
 PLATFORM = Path(__file__).resolve().parents[1] / "platforms/virtual/academic_vtr_2fpga_p2p.json"
@@ -46,7 +47,8 @@ class PhysicalBatchAssemblyTest(unittest.TestCase):
             native = {name: {"status": "pass"} for name in (
                 "boundary_timing", "logic_segment_timing", "local_path_timing")}
             native["input_identity"] = {"runtime_sha256": digest}
-            native["implementation_options"] = {"place_directive": "Default", "route_directive": "Default"}
+            native["implementation_options"] = {"place_directive": "Default", "route_directive": "Default", "dut_frequency_mhz": None}
+            native["implementation_timing"] = implementation_timing_contract(runtime)
             record = worker / "partition-record.json"
             write_json(record, {"fpga": fpga.id, "status": "pass", "active": True,
                                 "stages": {"vivado_implementation": native}})
@@ -59,7 +61,7 @@ class PhysicalBatchAssemblyTest(unittest.TestCase):
                      "expected_fpgas": [item.id for item in platform.fpgas],
                      "selected_fpgas": [fpga.id], "source": copy.deepcopy(source),
                      "execution": {"seed": 1, "vivado_implementation": {
-                         "place_directive": "Default", "route_directive": "Default"}},
+                         "place_directive": "Default", "route_directive": "Default", "dut_frequency_mhz": None}},
                      "records": [{"fpga": fpga.id, "path": record.name,
                                   "sha256": file_sha256(record)}]}
             write_json(path, batch)
@@ -123,7 +125,7 @@ class PhysicalBatchAssemblyTest(unittest.TestCase):
                         join.assert_not_called()
 
     def test_mixed_sources_options_digest_and_incomplete_coverage_fail_before_publication(self):
-        for mutation in ("source", "seed", "directive", "missing-options", "digest", "missing-fpga", "duplicate-fpga", "runtime", "missing-timing", "reported-directive"):
+        for mutation in ("source", "seed", "directive", "missing-options", "digest", "missing-fpga", "duplicate-fpga", "runtime", "missing-timing", "reported-directive", "runtime-clock", "missing-clock-policy", "mixed-frequency", "missing-frequency"):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 split, schedule, batches = self.prepare(root)
@@ -135,6 +137,10 @@ class PhysicalBatchAssemblyTest(unittest.TestCase):
                     batch["execution"]["seed"] = 2
                 elif mutation == "directive":
                     batch["execution"]["vivado_implementation"]["route_directive"] = "Quick"
+                elif mutation == "mixed-frequency":
+                    batch["execution"]["vivado_implementation"]["dut_frequency_mhz"] = 10.0
+                elif mutation == "missing-frequency":
+                    del batch["execution"]["vivado_implementation"]["dut_frequency_mhz"]
                 elif mutation == "missing-options":
                     del batch["execution"]["vivado_implementation"]
                 elif mutation == "digest":
@@ -151,6 +157,10 @@ class PhysicalBatchAssemblyTest(unittest.TestCase):
                         native["input_identity"]["runtime_sha256"] = "0" * 64
                     elif mutation == "reported-directive":
                         native["implementation_options"]["place_directive"] = "Quick"
+                    elif mutation == "runtime-clock":
+                        native["implementation_timing"]["dut_clock_periods_ns"]["clk"] = 4096.0
+                    elif mutation == "missing-clock-policy":
+                        del native["implementation_timing"]
                     else:
                         del native["local_path_timing"]
                     write_json(record_path, record)

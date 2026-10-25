@@ -101,4 +101,3 @@ class _MappedNames:
     def iter_bytes(self):
         for start in range(self.offset,self.offset+self.size,1024*1024):
             yield self.owner.data[start:min(start+1024*1024,self.offset+self.size)]
-

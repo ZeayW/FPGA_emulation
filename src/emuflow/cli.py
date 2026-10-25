@@ -1039,6 +1039,8 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument("--physical-openparf-python", type=Path)
     multi_fpga_compile.add_argument("--physical-seed", type=int, default=1)
     multi_fpga_compile.add_argument("--physical-vivado")
+    multi_fpga_compile.add_argument("--physical-vivado-dut-frequency-mhz", type=float,
+        help="fastest DUT root implementation target; scale all root periods together")
 
     multi_fpga_compile.add_argument(
         "--physical-vivado-place-directive", default="Default"
@@ -1154,6 +1156,8 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_physical.add_argument("--openparf-python", type=Path)
     multi_fpga_physical.add_argument("--seed", type=int, default=1)
     multi_fpga_physical.add_argument("--vivado")
+    multi_fpga_physical.add_argument("--vivado-dut-frequency-mhz", type=float,
+        help="fastest DUT root implementation target; scale all root periods together")
 
     multi_fpga_physical.add_argument(
         "--vivado-place-directive", default="Default"
@@ -2753,6 +2757,7 @@ def _dispatch(args: argparse.Namespace) -> int:
                 openparf_python=args.openparf_python,
                 seed=args.seed,
                 vivado=args.vivado,
+                vivado_dut_frequency_mhz=args.vivado_dut_frequency_mhz,
                 vivado_place_directive=args.vivado_place_directive,
                 vivado_route_directive=args.vivado_route_directive,
                 rapidwright_jar=args.rapidwright_jar,
@@ -2926,6 +2931,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             physical_openparf_python=args.physical_openparf_python,
             physical_seed=args.physical_seed,
             physical_vivado=args.physical_vivado,
+            physical_vivado_dut_frequency_mhz=args.physical_vivado_dut_frequency_mhz,
             physical_vivado_place_directive=(
                 args.physical_vivado_place_directive
             ),
