@@ -17,6 +17,7 @@ if {[catch {
   if {[llength $definitions] != 1} {
     error "expected exactly one installed High Speed SelectIO Wizard definition: $definitions"
   }
+  file mkdir [file join $output ip]
   create_ip -vlnv [lindex $definitions 0] -module_name emuflow_selectio_probe -dir [file join $output ip]
   set ip [get_ips emuflow_selectio_probe]
   set stream [open [file join $output ip-properties.tsv] w]
