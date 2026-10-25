@@ -2431,9 +2431,16 @@ def build_opensta_timing(runtime, metadata, measurements):
         period_scope="fastest-domain-summary",
         clock_periods_ns=clock_periods,
     )
-    maximum = timing["summary"]["maximum_system_delay_bound_ns"]
-    timing["runtime_clock"].update(minimum_safe_period_bound_ns=maximum,
-        maximum_safe_frequency_bound_mhz=1000.0/maximum if maximum is not None and maximum > 0 else None)
+    # A raw arrival bound does not identify the launch/capture edge budget.
+    # Its reciprocal is not a safe operating frequency (even a half-cycle
+    # check is a counterexample). The current binding does not retain an
+    # affine clock budget, so leave these claims unavailable until that
+    # source-bound contract and its physical margins are supplied.
+    timing["runtime_clock"].update(
+        minimum_safe_period_bound_ns=None,
+        maximum_safe_frequency_bound_mhz=None,
+        operating_frequency_status="unavailable-missing-edge-and-physical-margin-budget",
+    )
     if metrics["runtime"]["wns_ns"] is not None and metrics["runtime"]["wns_ns"] < 0:
         timing["status"] = "fail"
     timing["global_opensta"] = {"schema": "emuflow.global-opensta-check/v1",

@@ -583,6 +583,9 @@ def test_lazy_expansion_is_reiterable_sliceable_and_fail_closed(tmp_path):
     )
     assert timing["summary"]["timing_paths"] == 1
     assert timing["summary"]["maximum_system_delay_bound_ns"] == 31.5
+    assert timing["runtime_clock"]["minimum_safe_period_bound_ns"] is None
+    assert timing["runtime_clock"]["maximum_safe_frequency_bound_mhz"] is None
+    assert timing["runtime_clock"]["operating_frequency_status"] == "unavailable-missing-edge-and-physical-margin-budget"
 
     damaged = array("q", mapping)
     damaged[-1] = len(values)

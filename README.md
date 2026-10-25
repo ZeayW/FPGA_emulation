@@ -32,6 +32,8 @@ Fixed-pin word-PHY integration and global physical event projection remain
 unqualified; unsupported physical bindings are rejected.
 Its required [timing contract](docs/global-opensta-qualification.md#ratio-estimates-and-schedule-resolved-phy-timing)
 distinguishes pre-schedule ratio estimates from post-schedule per-signal events.
+Safe-frequency fields remain unavailable until edge/phase and physical margins
+are bound; raw maximum delay alone does not determine an operating frequency.
 The indexed provider exports routed reports and timing in one native session
 and supports checked continuation within an active run, using native module
 identities and explicit checkpoint diagnostics.

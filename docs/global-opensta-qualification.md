@@ -12,6 +12,16 @@ With the repository OpenSTA container launcher, `executable_sha256` identifies
 the delegated native OpenSTA engine, while `launcher_sha256` separately seals
 the launcher. Engine identity must not be inferred from the wrapper alone.
 
+Raw maximum delay and minimum operating period are separate results. A safe
+frequency calculation needs the original launch/capture edge and phase
+relationship, common clock scaling, exceptions and physical setup/skew/margin
+budget. The current global binding does not preserve that complete contract;
+its `minimum_safe_period_bound_ns` and `maximum_safe_frequency_bound_mhz` are
+therefore null, with an explicit `operating_frequency_status`. In particular,
+it must not report the reciprocal of raw maximum delay as a safe frequency.
+Fixed-period WNS/TNS retain their independently bound check scope. Extending
+them to a frequency claim requires the additional clock-budget contract.
+
 ## Fixed events and original logical paths
 
 Transport registers split ordinary STA paths. Register-to-register setup slack
