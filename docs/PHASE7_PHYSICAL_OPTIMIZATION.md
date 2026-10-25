@@ -246,16 +246,24 @@ tile of the same type. Ordinary signal tiles retain upstream sparse allocation.
 Only selected paths contribute to clock occupancy. Inter-site clock PIPs enter
 the preserved signal-routing graph only after an entire iteration has zero
 cross-clock shared nodes. Iteration reports include the number of rerouted
-clocks and total clocks. The loop has a 64-iteration work bound and fails
+clocks and total clocks. When at most sixteen clocks own shared nodes, up to
+four local repair passes try smaller-fanout clocks first while forbidding all
+other clocks' occupied nodes. This can expose a farther free sink leaf when
+the cost-based search keeps choosing a contested nearer leaf. A failed bounded
+search restores the entire previous PIP set and ownership; unrelated exceptions
+also restore ownership and remain fatal. Accepted repairs cannot introduce new
+cross-clock sharing. Counts of repair attempts and successes accompany each
+iteration. The loop has a 64-iteration work bound and fails
 explicitly if no legal clock routing is produced. This removes unconstrained helper calls
 from the source/centroid/distribution path. It is a connectivity/resource policy,
 not a clock-skew or timing guarantee. The producer identifies this policy as
-`recovery-negotiated-clock-tree-v3`; historical sealed route strategies remain
+`recovery-negotiated-clock-tree-v4`; historical sealed route strategies remain
 readable by the validator.
 
 `EmuFlowClockPathProbe --clock-owner-self-test` checks distinct-user counters,
 snapshot stability during rip-up, clean-route exclusion, and enlistment of
-newly conflicting clocks.
+newly conflicting clocks. It also exercises a farther free leaf, failed-search
+rollback, preservation of other clocks, and rejection of a conflicting repair.
 `--clock-tree-self-test` exercises blocked resources, dedicated-graph boundaries,
 cycles, unreachable nearer leaves, occupied sources and bounded sink tails
 without loading a device. `--clock-graph DEVICE SOURCE_NODE SINK_NODE` additionally

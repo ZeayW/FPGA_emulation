@@ -500,6 +500,8 @@ class XilinxRWRouteTest(unittest.TestCase):
                 self._route()["materialization"]["router"],
                 "CUFR-HUS-non-timing-driven-uturn-enabled-"
                 "parallel-unroutable-recovery-negotiated-clock-tree-v3",
+                "CUFR-HUS-non-timing-driven-uturn-enabled-"
+                "parallel-unroutable-recovery-negotiated-clock-tree-v4",
             ]:
                 value = self._route()
                 value["materialization"]["router"] = strategy

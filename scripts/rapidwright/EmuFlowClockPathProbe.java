@@ -6,6 +6,7 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.function.Predicate;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
@@ -296,6 +297,45 @@ public final class EmuFlowClockPathProbe {
             if (!EmuFlowRWRoute.congestedClockOwners(routes).equals(Set.of("b","c")))
                 throw new IllegalStateException("new conflicts did not enlist a previously clean clock");
             System.out.println("PASS: selective clock rerouting snapshots all conflicting owners and admits newly affected clocks");
+            Map<String,Set<String>> repairUsers=new TreeMap<>();
+            for (String node : List.of("source","busy","near_leaf","sink"))
+                repairUsers.put(node,new HashSet<>(Set.of("a")));
+            repairUsers.get("busy").add("b");
+            Map<String,Set<String>> snapshot=new TreeMap<>();
+            repairUsers.forEach((node,owners) -> snapshot.put(node,new HashSet<>(owners)));
+            Set<String> previous=Set.of("source","busy","near_leaf","sink");
+            boolean repaired=EmuFlowRWRoute.tryDisjointClockReroute(repairUsers,"a",previous,() -> {
+                throw new EmuFlowRWRoute.ClockPathUnavailableException("bounded search unavailable");
+            });
+            if (repaired || !repairUsers.equals(snapshot))
+                throw new IllegalStateException("failed disjoint search did not restore all owners");
+            Map<String,List<String>> disjointDown=Map.of("source",List.of("busy","free"),
+                "busy",List.of("near_leaf"),"free",List.of("free2"),"free2",List.of("far_leaf"));
+            Set<String> replacement=new HashSet<>();
+            repaired=EmuFlowRWRoute.tryDisjointClockReroute(repairUsers,"a",previous,() -> {
+                Predicate<String> available=node -> !EmuFlowRWRoute.hasForeignClockUser(repairUsers,node,"a");
+                EmuFlowRWRoute.ClockTree<String> free=EmuFlowRWRoute.weightedClockTree("source",
+                    node -> disjointDown.getOrDefault(node,List.of()),node -> true,available,node -> 1.0);
+                List<String> path=EmuFlowRWRoute.availableClockSinkPath("sink",free.parents,
+                    node -> node.equals("sink")?List.of("near_leaf","tail"):
+                        node.equals("tail")?List.of("far_leaf"):List.of(),
+                    node -> node.endsWith("leaf"),available,node -> !node.endsWith("leaf"),3,
+                    node -> free.distance.get(node),node -> 1.0);
+                if (!path.equals(List.of("source","free","free2","far_leaf","tail","sink")))
+                    throw new IllegalStateException("strict search failed to use a farther free leaf: "+path);
+                replacement.addAll(path);return replacement;
+            });
+            if (!repaired || !repairUsers.get("busy").equals(Set.of("b"))
+                || repairUsers.containsKey("near_leaf") || !EmuFlowRWRoute.congestedClockOwners(repairUsers).isEmpty())
+                throw new IllegalStateException("disjoint repair lost another owner or retained old branches");
+            snapshot.clear();repairUsers.forEach((node,owners) -> snapshot.put(node,new HashSet<>(owners)));
+            boolean rejected=false;
+            try {
+                EmuFlowRWRoute.tryDisjointClockReroute(repairUsers,"a",replacement,() -> Set.of("busy"));
+            } catch (IllegalStateException expected) { rejected=true; }
+            if (!rejected || !repairUsers.equals(snapshot))
+                throw new IllegalStateException("invalid disjoint candidate was accepted or corrupted ownership");
+            System.out.println("PASS: disjoint repair uses a farther free leaf, preserves other clocks and rolls back unavailable or conflicting candidates");
             return;
         }
         if (args.length == 4 && args[0].equals("--audit-site-clocks")) {
