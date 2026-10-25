@@ -418,9 +418,10 @@ the simulation and a later success file appears. Startup timeout literals use
 explicit 64-bit time arithmetic; a scalar output file cannot override a failed
 simulation lifecycle.
 
-The optional `--rx-alignment word-two-stage-v1` candidate requests the native
-raw receive words (`ENABLE_BITSLIP=0`) and adds an EmuFlow two-stage byte
-aligner. The default remains `native-bit-slip-v1`. Four consecutive training
+The optional `--rx-alignment word-two-stage-v1` and `word-one-stage-v1`
+candidates request native raw receive words (`ENABLE_BITSLIP=0`) and add an
+EmuFlow byte aligner with two or one output register stages, respectively.
+The default remains `native-bit-slip-v1`. Four consecutive training
 matches select one of eight serial bit phases; the selected phase is held
 through payload. Loss of admitted FIFO validity latches an error until reset
 and retraining. This rotates bits across adjacent words; it does not establish

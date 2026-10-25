@@ -1,7 +1,7 @@
 """Native 20-lane SelectIO word interfaces and explicit training controls.
 
 The native IP owns reset/calibration and FIFO read coordination. Bit alignment
-uses either the native default or an explicitly selected two-stage candidate.
+uses either the native default or an explicitly selected registered candidate.
 The caller supplies global readiness consensus and synchronous application
 controls. This wrapper is not itself a distributed barrier or a latency proof.
 """
@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 from .errors import ValidationError
-from .lvds_selectio import SelectIOBankRecipe
+from .lvds_selectio import SelectIOBankRecipe,RX_ALIGNMENT_OUTPUT_STAGES
 
 
 def selectio_core_ports(recipe: SelectIOBankRecipe):
@@ -105,7 +105,7 @@ def selectio_bank_to_systemverilog(recipe: SelectIOBankRecipe, *, ip_module: str
                 connections[f'fifo_empty_{pin}']=''
                 if native_alignment:connections[f'bitslip_error_{pin}']=f'native_bitslip_errors[{2*lane+delta}]'
             if not native_alignment:
-                lines += [f'  emuflow_lvds_word_align2 lane_{lane} (',
+                lines += [f'  emuflow_lvds_word_align #(.OUTPUT_STAGES({RX_ALIGNMENT_OUTPUT_STAGES[recipe.rx_alignment]})) lane_{lane} (',
                     '    .clk(tdm_clk), .reset(reset), .enable(alignment_enable && native_interface_ready),',
                     f'    .raw_valid(native_word_valid), .raw_word(raw_words[{8*lane} +: 8]),',
                     f'    .aligned_word(rx_words[{8*lane} +: 8]), .aligned(aligned_lanes[{lane}]),',
@@ -114,7 +114,7 @@ def selectio_bank_to_systemverilog(recipe: SelectIOBankRecipe, *, ip_module: str
         raise ValidationError('native SelectIO input/port coverage is incomplete')
     lines += [f'  {ip_module} native_phy (',
         ',\n'.join(f'    .{name}({connections[name]})'for name in sorted(ports)),'  );','endmodule','']
-    if recipe.direction=='rx'and recipe.rx_alignment=='word-two-stage-v1'and include_common:
+    if recipe.direction=='rx'and recipe.rx_alignment in RX_ALIGNMENT_OUTPUT_STAGES and include_common:
         from .lvds_word_aligner import word_aligner_to_systemverilog
         lines.append(word_aligner_to_systemverilog())
     return '\n'.join(lines)

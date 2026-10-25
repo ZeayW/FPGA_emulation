@@ -27,7 +27,8 @@ def simulate(tmp_path,bench):
 
 @pytest.mark.skipif(not shutil.which('iverilog')or not shutil.which('vvp'),reason='Icarus Verilog required')
 @pytest.mark.parametrize('phase',range(8))
-def test_all_serial_phases_bytes_fixed_two_stage_age_and_reset_retraining(tmp_path,phase):
+@pytest.mark.parametrize('stages',(1,2))
+def test_all_serial_phases_bytes_fixed_pipeline_age_and_reset_retraining(tmp_path,phase,stages):
     # Bits originate in a serialized transmit stream, independently of the
     # aligner's cross-word barrel-shift implementation.
     words=[0x2c]*48+list(range(256))+[0x2c]*8
@@ -41,7 +42,7 @@ reg clk=0;always #2.5 clk=~clk;
 reg reset=1,enable=0,raw_valid=1;reg[7:0]raw_word=0;
 wire[7:0]out;wire aligned,valid,error;
 reg[7:0]raw[0:309],expected[0:311];integer epoch,i;
-emuflow_lvds_word_align2 dut(clk,reset,enable,raw_valid,raw_word,out,aligned,valid,error);
+emuflow_lvds_word_align #(.OUTPUT_STAGES(@STAGES@)) dut(clk,reset,enable,raw_valid,raw_word,out,aligned,valid,error);
 initial begin
  $readmemh("expected.hex",expected);
  for(epoch=0;epoch<2;epoch=epoch+1)begin
@@ -52,7 +53,7 @@ initial begin
    @(posedge clk);
    if(i>=50)begin
     if(!aligned||!valid||error)$fatal(1,"not aligned at epoch/index %0d %0d",epoch,i);
-    if(out!==expected[i-2])$fatal(1,"wrong bit order/word age epoch=%0d index=%0d got=%h expected=%h",epoch,i,out,expected[i-2]);
+    if(out!==expected[i-@STAGES@])$fatal(1,"wrong bit order/word age epoch=%0d index=%0d got=%h expected=%h",epoch,i,out,expected[i-@STAGES@]);
    end
   end
   @(negedge clk);raw_valid=0;
@@ -68,7 +69,7 @@ initial begin
 end
 initial begin #10000;$fatal(1,"test timeout");end
 endmodule
-'''
+'''.replace('@STAGES@',str(stages))
     result=simulate(tmp_path,bench)
     assert result.returncode==0,result.stdout+result.stderr
     assert 'SERIAL_PHASE_BYTES_RETRAIN_PASS'in result.stdout
@@ -80,7 +81,7 @@ def test_nontraining_input_expires_without_payload_admission(tmp_path):
 module tb;
 reg clk=0;always #2.5 clk=~clk;
 reg reset=1;wire[7:0]out;wire aligned,valid,error;
-emuflow_lvds_word_align2 dut(clk,reset,1'b1,1'b1,8'h00,out,aligned,valid,error);
+emuflow_lvds_word_align dut(clk,reset,1'b1,1'b1,8'h00,out,aligned,valid,error);
 initial begin
  repeat(2)@(negedge clk);reset=0;
  repeat(515)begin @(posedge clk);if(aligned||valid)$fatal(1,"nontraining data admitted");end
@@ -93,22 +94,24 @@ endmodule
     assert 'TRAINING_TIMEOUT_PASS'in result.stdout
 
 
-def test_explicit_raw_rx_recipe_has_complete_distinct_interface():
-    recipe=selectio_bank_recipe('19','rx',rx_alignment='word-two-stage-v1')
+@pytest.mark.parametrize('policy',('word-two-stage-v1','word-one-stage-v1'))
+def test_explicit_raw_rx_recipe_has_complete_distinct_interface(policy):
+    recipe=selectio_bank_recipe('19','rx',rx_alignment=policy)
     assert dict(recipe.settings)['ENABLE_BITSLIP']=='0'
     ports=selectio_core_ports(recipe)
     assert sum(width for direction,width in ports.values())==476
     assert 'start_bitslip'not in ports and not any(name.startswith('bitslip_error_')for name in ports)
     rtl=selectio_bank_to_systemverilog(recipe,ip_module='native_raw')
-    assert rtl.count('module emuflow_lvds_word_align2 (')==1
+    assert rtl.count('module emuflow_lvds_word_align #(')==1
     assert all(f' lane_{lane} ('in rtl for lane in range(20))
     separate=selectio_bank_to_systemverilog(recipe,ip_module='native_raw',include_common=False)
-    assert 'module emuflow_lvds_word_align2 ('not in separate
+    assert 'module emuflow_lvds_word_align #('not in separate
 
 
 @pytest.mark.skipif(not shutil.which('iverilog')or not shutil.which('vvp'),reason='Icarus Verilog required')
-def test_raw_bank_wrapper_trains_all_twenty_lanes_and_gates_fifo_loss(tmp_path):
-    recipe=selectio_bank_recipe('19','rx',rx_alignment='word-two-stage-v1')
+@pytest.mark.parametrize('policy',('word-two-stage-v1','word-one-stage-v1'))
+def test_raw_bank_wrapper_trains_all_twenty_lanes_and_gates_fifo_loss(tmp_path,policy):
+    recipe=selectio_bank_recipe('19','rx',rx_alignment=policy)
     ports=selectio_core_ports(recipe);declarations=[];assignments=[]
     words={pair['word_port']:lane+17 for lane,pair in enumerate(recipe.data_pairs)}
     for name,(direction,width)in ports.items():

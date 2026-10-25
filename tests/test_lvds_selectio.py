@@ -8,7 +8,7 @@ from emuflow.lvds_selectio import selectio_bank_recipe, validate_selectio_observ
 from emuflow.virtual_board import _inventory
 
 
-@pytest.mark.parametrize('policy',('native-bit-slip-v1','word-two-stage-v1'))
+@pytest.mark.parametrize('policy',('native-bit-slip-v1','word-two-stage-v1','word-one-stage-v1'))
 @pytest.mark.parametrize('damage',(None,'missing','unknown','reverse','width','direction'))
 def test_complete_generated_xci_boundary_acceptance(tmp_path,policy,damage):
     import json

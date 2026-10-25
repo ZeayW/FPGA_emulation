@@ -31,8 +31,8 @@ word RTL with aligned startup, repeated lane tables and a drained commit barrier
 Relay events preserve capture-before-load causality, including zero-delay cones.
 The explicit `platform research-model --transport-format lvds-word-v2` model
 reserves separate forwarded-clock pairs; Phase 6 emits a source-bound bank plan.
-The native word-link qualification driver also exposes an explicit two-stage
-receive-alignment candidate, with complete generated-IP interface checks.
+The native word-link qualification driver also exposes explicit registered
+receive-alignment candidates, with complete generated-IP interface checks.
 Fixed-pin word-PHY integration and global physical event projection remain
 unqualified; unsupported physical bindings are rejected.
 Its required [timing contract](docs/global-opensta-qualification.md#ratio-estimates-and-schedule-resolved-phy-timing)

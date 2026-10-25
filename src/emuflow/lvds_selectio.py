@@ -15,7 +15,8 @@ import re
 from .errors import ValidationError
 from .virtual_board import _inventory, _bank_pairs
 
-RX_ALIGNMENT_POLICIES = ('native-bit-slip-v1', 'word-two-stage-v1')
+RX_ALIGNMENT_POLICIES = ('native-bit-slip-v1', 'word-two-stage-v1', 'word-one-stage-v1')
+RX_ALIGNMENT_OUTPUT_STAGES = {'word-two-stage-v1':2,'word-one-stage-v1':1}
 
 @dataclass(frozen=True)
 class SelectIOBankRecipe:
