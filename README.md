@@ -51,6 +51,8 @@ a frequency override scales all DUT roots together while keeping the TDM clock
 fixed. The same documentation describes installed SelectIO IP inspection and
 package-derived bank recipes, checked output generation and optional out-of-context
 IP synthesis used for PHY integration, with a bounded configuration/port audit.
+Native bank wrappers bind training, complete words and receive FIFO clocks;
+an explicit vendor-model loopback tool examines word integrity and latency.
 See the [clock baseline](docs/XILINX_PHYSICAL_FLOW.md#local-implementation-clock-baseline).
 Indexed mapped primitives carry provenance tags without global KEEP/DONT_TOUCH
 constraints; indexed source-bound coverage and selected constant facts are checked

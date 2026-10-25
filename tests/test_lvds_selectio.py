@@ -63,9 +63,11 @@ def test_inconsistent_vendor_byte_identity_is_rejected():
 
 
 def observations(tmp_path,direction):
+    from emuflow.lvds_bank_phy import selectio_core_ports
     recipe=selectio_bank_recipe('19',direction)
     properties={'CONFIG.'+k:v for k,v in recipe.settings}
-    ports={}
+    ports={f'{name}[{bit}]'if width>1 else name:d
+        for name,(d,width)in selectio_core_ports(recipe).items()for bit in range(width)}
     physical,word=('OUT','IN')if direction=='tx'else('IN','OUT')
     for pair in (*recipe.data_pairs,recipe.clock_pair):
         byte,pin=divmod(pair['native_pin'],13)
@@ -77,6 +79,8 @@ def observations(tmp_path,direction):
         if direction=='rx'and pair is not recipe.clock_pair:
             ports.update((f"data_to_fabric_{pair['n']['port']}[{bit}]",'OUT')for bit in range(8))
     def write():
+        (tmp_path/'tool-identity.tsv').write_text('field\tvalue\npart\t'+recipe.part+
+            '\nip_definition\txilinx.com:ip:high_speed_selectio_wiz:3.6\nvivado_version\t2024.2\n')
         (tmp_path/'ip-properties.tsv').write_text('property_hex\tvalue_hex\n'+''.join(
             k.encode().hex()+'\t'+v.encode().hex()+'\n'for k,v in properties.items()))
         (tmp_path/'synthesis-ports.tsv').write_text('name_hex\tdirection\n'+''.join(
@@ -106,3 +110,11 @@ def test_native_port_or_package_mismatch_cannot_pass_the_recipe_audit(tmp_path,d
     if damage=='duplicate-port':
         with(tmp_path/'synthesis-ports.tsv').open('a')as stream:stream.write(word.encode().hex()+'\tOUT\n')
     with pytest.raises(ValidationError):validate_selectio_observations(recipe,tmp_path)
+
+
+def test_census_cannot_be_rebound_to_another_device(tmp_path):
+    recipe,_properties,_ports,write=observations(tmp_path,'tx');write()
+    path=tmp_path/'tool-identity.tsv'
+    path.write_text(path.read_text().replace(recipe.part,'xcvu9p-flga2104-2-e'))
+    with pytest.raises(ValidationError,match='tool/device identity differs'):
+        validate_selectio_observations(recipe,tmp_path)

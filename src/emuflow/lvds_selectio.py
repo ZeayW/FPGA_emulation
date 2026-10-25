@@ -100,6 +100,20 @@ def selectio_bank_recipe(bank: str, direction: str, *, inventory=None):
 
 def validate_selectio_observations(recipe: SelectIOBankRecipe, directory: Path):
     """Check one bounded native-IP census, without claiming routed PHY timing."""
+    identity_path=directory/'tool-identity.tsv'
+    if not identity_path.is_file()or identity_path.stat().st_size>16384:
+        raise ValidationError('SelectIO tool/device identity is missing or oversized')
+    identity_lines=identity_path.read_text().splitlines()
+    if not identity_lines or identity_lines[0]!='field\tvalue':
+        raise ValidationError('SelectIO tool identity header is invalid')
+    identity={}
+    for row in identity_lines[1:]:
+        fields=row.split('\t')
+        if len(fields)!=2 or fields[0]in identity:raise ValidationError('SelectIO tool identity is invalid')
+        identity[fields[0]]=fields[1]
+    if (identity.get('part')!=recipe.part or identity.get('ip_definition')!='xilinx.com:ip:high_speed_selectio_wiz:3.6'
+        or not identity.get('vivado_version')):
+        raise ValidationError('SelectIO tool/device identity differs from the supported native recipe')
     def rows(name,header,limit):
         path=directory/name
         if not path.is_file() or path.stat().st_size > 2*1024*1024:
@@ -133,6 +147,11 @@ def validate_selectio_observations(recipe: SelectIOBankRecipe, directory: Path):
         if key in ports or direction not in {'IN','OUT','INOUT'}:
             raise ValidationError("SelectIO synthesis census has duplicate or invalid ports")
         ports[key]=direction
+    from .lvds_bank_phy import selectio_core_ports
+    expected_ports={f'{name}[{bit}]'if width>1 else name:direction
+        for name,(direction,width)in selectio_core_ports(recipe).items()for bit in range(width)}
+    if ports!=expected_ports:
+        raise ValidationError('SelectIO native interface differs from the supported full-bank port contract')
     physical_direction,word_direction=('OUT','IN')if recipe.direction=='tx'else('IN','OUT')
     expected_data=set()
     expected_words=set()
@@ -166,6 +185,7 @@ def validate_selectio_observations(recipe: SelectIOBankRecipe, directory: Path):
         raise ValidationError("SelectIO synthesis has unexpected parallel data words")
     return {"status":"pass","qualification":"native-IP-configuration-and-port-census",
         "part":recipe.part,"bank":recipe.bank,"direction":recipe.direction,
+        "vivado_version":identity['vivado_version'],
         "data_lanes":len(recipe.data_pairs),"payload_word_bits":8*len(recipe.data_pairs),
         "forwarded_clock_pairs":1,"unused_complement_word_bits":len(actual_words&complements),
         "physical_implementation_qualified":False}

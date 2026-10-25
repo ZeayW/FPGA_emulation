@@ -385,6 +385,35 @@ never double payload capacity. Its pass status qualifies this configuration
 and port census only; a physical top must still bind every control input and
 replace out-of-context clock placeholders with the actual clock networks.
 
+`lvds_bank_phy.py` emits a complete native bank interface: twenty independent
+8-bit payload words, a separate forwarded-clock word, calibration/PLL status,
+receive FIFO application clocks and held alignment control. Every native input
+must have a connection, and the observation checker compares the entire native
+port population against the supported customization. RX complement words are
+unused outputs. TX sends the native `0x2c` training pattern until the external
+payload-enable consensus; the forwarded clock word remains `0x55`. The native
+`start_bitslip` control is a held level: deasserting it resets alignment. The
+caller must supply global startup consensus and the synchronous application
+controls. These bank interfaces do not independently implement a distributed
+startup barrier or prove a 30 ns fixed arc.
+
+The explicit native behavioral loopback qualification exercises those interfaces
+with unmodified generated IP and vendor models:
+
+```bash
+PYTHONPATH=src python3 scripts/validation/qualify_lvds_word_link.py \
+  --vivado vivado --bank 19 --out build/native-word-link
+```
+
+It runs reset/calibration and held alignment before switching to 64 complete
+160-bit payload words. Its scoreboard requires consecutive, uncorrupted words
+and measures their TX-word to receiver-capture latency at application clock
+edges. `declared_30ns_capture_window_feasible_in_this_simulation` distinguishes
+digital word integrity from the separate six-cycle capture-window check. A
+passing zero-cable behavioral simulation cannot qualify routed I/O timing,
+cable/SI delay, board skew or the fitted fixed component. The fixed-pin word
+BSP and full-system global timing gates remain independently required.
+
 The current fixed differential adapter supplies IBUFDS/OBUFDS boundaries; it
 does not implement the serializer/deserializer or forwarded-clock circuitry
 of the [8:1 serial PHY reference](HARDWARE_PLATFORM.md#serial-phy-time-units).

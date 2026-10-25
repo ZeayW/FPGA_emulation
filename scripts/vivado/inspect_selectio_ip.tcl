@@ -16,46 +16,8 @@ set output [file normalize $output]
 if {[catch {
   if {[llength [get_parts -quiet $part]] != 1} {error "target part is not installed"}
   create_project -in_memory -part $part emuflow_selectio_inspection
-  set definitions [get_ipdefs -all -quiet xilinx.com:ip:high_speed_selectio_wiz:*]
-  if {[llength $definitions] != 1} {
-    error "expected exactly one installed High Speed SelectIO Wizard definition: $definitions"
-  }
-  file mkdir [file join $output ip]
-  create_ip -vlnv [lindex $definitions 0] -module_name emuflow_selectio_probe -dir [file join $output ip]
-  set ip [get_ips emuflow_selectio_probe]
-  if {$configuration ne ""} {
-    set stream [open $configuration r]
-    if {[gets $stream header] < 0 || $header ne "property\tvalue"} {error "invalid SelectIO configuration header"}
-    set settings [dict create]
-    while {[gets $stream row] >= 0} {
-      if {[dict size $settings] >= 4096} {error "SelectIO configuration exceeds bound"}
-      set fields [split $row "\t"]
-      if {[llength $fields] != 2} {error "invalid SelectIO configuration record"}
-      lassign $fields property value
-      if {![regexp {^CONFIG\.[A-Za-z0-9_.]+$} $property] ||
-          [lsearch -exact [list_property $ip] $property] < 0 || [dict exists $settings $property]} {
-        error "unknown or duplicate SelectIO configuration property"
-      }
-      if {[regexp {^CONFIG\.ENABLE_BYTE[0-3]_PIN([0-9]|1[0-2])$} $property] &&
-          $value ni {true false}} {
-        error "SelectIO pin-enable values must use lowercase true or false"
-      }
-      dict set settings $property $value
-    }
-    close $stream
-    if {[dict size $settings] == 0} {error "empty SelectIO configuration"}
-    # Parameters can enable later controls; preserve the declared TSV order.
-    dict for {property requested} $settings {set_property $property $requested $ip}
-    dict for {property requested} $settings {
-      set actual [get_property $property $ip]
-      if {$actual ne $requested && !([string is double -strict $actual] &&
-          [string is double -strict $requested] && $actual == $requested) &&
-          !([string is boolean -strict $actual] && [string is boolean -strict $requested] &&
-            bool($actual) == bool($requested))} {
-        error "SelectIO configuration was ignored or changed: $property requested=$requested observed=$actual"
-      }
-    }
-  }
+  source [file join [file dirname [info script]] selectio_ip.tcl]
+  lassign [emuflow_create_selectio_ip emuflow_selectio_probe [file join $output ip] $configuration] ip definition
   set stream [open [file join $output ip-properties.tsv] w]
   puts $stream "property_hex\tvalue_hex"
   set count 0
@@ -70,7 +32,7 @@ if {[catch {
   puts $stream "field\tvalue"
   puts $stream "vivado_version\t[version -short]"
   puts $stream "part\t$part"
-  puts $stream "ip_definition\t[lindex $definitions 0]"
+  puts $stream "ip_definition\t$definition"
   puts $stream "config_properties\t$count"
   close $stream
   if {$configuration ne ""} {
