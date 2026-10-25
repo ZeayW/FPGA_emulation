@@ -336,6 +336,11 @@ edge/phase relationships; they are calculated against the declared board/PHY
 model, not measured board operation. Source-target and implementation-target
 comparisons must remain separately labelled.
 
+`scripts/vivado/inspect_selectio_ip.tcl PART EMPTY_OUTPUT_DIRECTORY` records
+the installed High Speed SelectIO Wizard definition and its configurable defaults
+for PHY integration. It creates one private IP customization without synthesis
+or implementation; its observations do not qualify a serial PHY.
+
 The current fixed differential adapter supplies IBUFDS/OBUFDS boundaries; it
 does not implement the serializer/deserializer or forwarded-clock circuitry
 of the [8:1 serial PHY reference](HARDWARE_PLATFORM.md#serial-phy-time-units).

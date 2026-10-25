@@ -39,7 +39,8 @@ and the indexed global result owner. Python passes file references; imported raw
 are retired. Source lineage still does not prove functional equivalence.
 Vivado uses explicit DUT implementation targets independently of runtime frames;
 a frequency override scales all DUT roots together while keeping the TDM clock
-fixed. See the [clock baseline](docs/XILINX_PHYSICAL_FLOW.md#local-implementation-clock-baseline).
+fixed. The same documentation describes the installed SelectIO IP inspection
+used for PHY integration. See the [clock baseline](docs/XILINX_PHYSICAL_FLOW.md#local-implementation-clock-baseline).
 Indexed mapped primitives carry provenance tags without global KEEP/DONT_TOUCH
 constraints; indexed source-bound coverage is checked after optimization. The timing
 contract requires an explicit measured or proven optimized-away disposition for
