@@ -19,7 +19,14 @@ from .tool_runtime import NativeToolProcess
 
 
 class _NativeEligibleCutIds(_PackedEligibleCutIds):
-    __slots__ = ('implementation_id','native_metrics')
+    __slots__ = (
+        "implementation_id",
+        "native_metrics",
+        "native_source_path",
+        "native_artifact",
+        "native_source_generation",
+        "native_generation",
+    )
 
 
 def write_candidate_policy(path, ir):
@@ -105,6 +112,10 @@ def build_native_candidate_ids(ir):
         request.unlink(); report.unlink()
         result=_read_ids(output,scratch,len(ir.value['nets']))
         result.native_metrics=operation['metrics']
+        result.native_source_path = Path(ir.path)
+        result.native_artifact = output
+        result.native_source_generation = generation
+        result.native_generation = native_file_generation(output)
         return result
     except BaseException:
         scratch.cleanup()

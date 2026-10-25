@@ -210,6 +210,7 @@ set(EMUFLOW_INSTALL_BINDIR "${EMUFLOW_INSTALL_ROOT}/${CMAKE_INSTALL_BINDIR}")
 file(MAKE_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}")
 
 find_package(SQLite3 3.22 REQUIRED)
+find_package(ZLIB REQUIRED)
 if(NOT TARGET SQLite3::SQLite3)
   # CMake 3.x exposes the older imported-target spelling.
   add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
@@ -236,6 +237,7 @@ set(EMUFLOW_STORE_SCHEMA_GENERATOR "${CMAKE_SOURCE_DIR}/scripts/generate_store_s
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${EMUFLOW_STORE_SCHEMA_GENERATOR}"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/assignment_schema.hpp.in"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_clusters.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_assignment_core.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_assignment_cuts.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase5_schedule.sql"
@@ -253,7 +255,7 @@ target_include_directories(
   emuflow_core PUBLIC "${CMAKE_SOURCE_DIR}/src/native"
   PRIVATE "${CMAKE_BINARY_DIR}/generated"
 )
-target_link_libraries(emuflow_core PUBLIC SQLite3::SQLite3)
+target_link_libraries(emuflow_core PUBLIC SQLite3::SQLite3 ZLIB::ZLIB)
 if(BUILD_TESTING)
   add_executable(
     emuflow_core_artifact_io_test

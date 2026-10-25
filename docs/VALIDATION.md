@@ -134,6 +134,17 @@ identities, comparison and resource evidence, then retire the invocation's
 scratch after its processes exit. Component qualification does not establish
 complete Phase 1--7/7C, physical or global timing acceptance.
 
+Final cluster catalog component gates compare every decoded section, member,
+resource, sparse fixed/group entry, candidate name and document against the
+independent reference serializer. Include nonempty eligibility, Unicode and
+source-sequence order distinct from lexical ordinals. Prohibit host cluster/name
+iteration on the native path. Reject resealed duplicate members, mismatched names,
+foreign/missing native owners, malformed checked requests and source changes
+between native generation and final adoption. Selector tests cover pre/post-write
+failure, incomplete backup and failed rollback recovery. Small fixtures establish
+these contracts only; real NVDLA equivalence, wall/RSS/I/O and complete physical
+and global timing acceptance retain their normal gates.
+
 ## Native producer differential
 
 The offline command

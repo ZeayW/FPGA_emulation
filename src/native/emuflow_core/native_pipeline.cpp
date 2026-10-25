@@ -13,6 +13,7 @@
 #include "emuflow_core/partition_clusters.hpp"
 #include "emuflow_core/partition_loads.hpp"
 #include "emuflow_core/assignment_publish.hpp"
+#include "emuflow_core/cluster_catalog.hpp"
 #include "emuflow_core/exact_captures.hpp"
 #include "emuflow_core/candidate_ids.hpp"
 #include "emuflow_core/sqlite.hpp"
@@ -32,6 +33,7 @@ const char* StageName(Stage stage) {
     case Stage::kBuildCaptures: return "phase3.build-captures";
     case Stage::kValidateCaptures: return "phase3.validate-captures";
     case Stage::kPublishAssignmentIndex: return "phase3.publish-assignment";
+    case Stage::kPublishClusterCatalog: return "phase3.publish-cluster-catalog";
     case Stage::kReducePartitionLoads: return "phase3.reduce-loads";
     case Stage::kAnalyzeExact: return "phase3.analyze";
     case Stage::kFinalizeExact: return "phase3.finalize-semantics";
@@ -68,6 +70,13 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     case Stage::kBuildCaptures: return {"emuir-compact-v2","exact-indexed-request-v4","exact-topology-v3","exact-parts-v1"};
     case Stage::kValidateCaptures: return {"emuir-compact-v2","exact-indexed-request-v4","exact-topology-v3","exact-parts-v1","exact-captures-v1"};
     case Stage::kPublishAssignmentIndex: return {"emuir-compact-v2","partition-cluster-columns-v2","assignment-publication-request-v1"};
+    case Stage::kPublishClusterCatalog: {
+      auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
+      if(count!=3 && count!=4) throw core::StageError(core::ErrorCode::kInvalidRequest,"cluster catalog source count disagrees");
+      std::vector<std::string> schemas{"emuir-compact-v2","partition-cluster-columns-v2","cluster-catalog-request-v1"};
+      if(count==4) schemas.push_back("candidate-id-columns-v1");
+      return schemas;
+    }
     case Stage::kReducePartitionLoads: return {"emuir-compact-v2","partition-cluster-columns-v2","partition-load-request-v1"};
     case Stage::kAnalyzeExact:
       return request.indexed_input
@@ -221,6 +230,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kExportRwroute:
         core::ExportRwroute(inputs[0],inputs[1],inputs[2],output,request.auxiliary_output_path); break;
       case Stage::kPublishAssignmentIndex: core::PublishAssignmentIndex(inputs,output); break;
+      case Stage::kPublishClusterCatalog: core::PublishClusterCatalog(inputs,output); break;
       case Stage::kReducePartitionLoads: core::ReducePartitionLoads(inputs,output); break;
       case Stage::kBuildCaptures: core::BuildExactCaptures(inputs,output); break;
       case Stage::kValidateCaptures: core::ValidateExactCaptures(inputs,output); break;
@@ -254,6 +264,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kImportVivadoLineage: schema = "vivado-lineage-store-v2"; break;
       case Stage::kExportRwroute: schema = "rwroute-input-tsv-v1"; break;
       case Stage::kPublishAssignmentIndex: schema = "assignment-index-v4"; break;
+      case Stage::kPublishClusterCatalog: schema = "phase3-cluster-catalog-v3"; break;
       case Stage::kReducePartitionLoads: schema = "partition-load-summary-v1"; break;
       case Stage::kBuildCaptures: schema = "exact-captures-v1"; break;
       case Stage::kValidateCaptures: schema = "exact-capture-validation-v1"; break;

@@ -1,6 +1,7 @@
 #include "emuflow_core/primary_cluster_view.hpp"
 #include "emuflow_core/hash.hpp"
 #include "emuflow_core/emuir_view.hpp"
+#include "emuflow_core/json_record.hpp"
 #include <algorithm>
 #include <cstring>
 #include <fcntl.h>
@@ -16,11 +17,12 @@ void Check(bool ok,const char* message) {
 }
 struct PrimaryClusterView::Impl {
   ArtifactRef artifact;
+  ArtifactScope scope, source_scope;
   unsigned char* data=nullptr;
   std::size_t size=0, offsets=0, owners=0, resources=0;
   std::uint64_t cells=0, clusters=0;
   std::array<std::uint64_t,13> totals{};
-  explicit Impl(const ArtifactRef& ref):artifact(ref) {
+  Impl(const ArtifactRef& ref,const ArtifactRef& source):artifact(ref),scope(ref),source_scope(source) {
     artifact.RequireUnchanged();
     size=artifact.generation().bytes;
     Check(size>=204,"primary columns are truncated");
@@ -38,7 +40,7 @@ struct PrimaryClusterView::Impl {
   }
 };
 PrimaryClusterView::PrimaryClusterView(const ArtifactRef& primary,const ArtifactRef& source)
-    :impl_(std::make_unique<Impl>(primary)) {
+    :impl_(std::make_unique<Impl>(primary,source)) {
   auto& v=*impl_;
   Check(v.Get<std::uint64_t>(0)==0x314c4350464d5545ULL && v.Get<std::uint32_t>(8)==2,
         "unsupported primary cluster columns");
@@ -86,6 +88,47 @@ std::uint32_t PrimaryClusterView::Owner(std::uint64_t cell) const {
   Check(cell<impl_->cells,"primary cell identity is invalid");
   auto value=impl_->Get<std::uint32_t>(impl_->owners+4*cell);
   Check(value<impl_->clusters,"primary cluster owner is invalid"); return value;
+}
+CellId PrimaryClusterView::Cell(std::uint64_t cell) const {
+  Check(cell<impl_->cells,"primary cell ordinal is invalid");return impl_->scope.Id<CellTag>(cell);
+}
+std::string PrimaryClusterView::Name(const CellId& identity) const {
+  const auto& v=*impl_; v.scope.RequireOwner(identity); const auto cell=identity.sequence();
+  Check(cell<v.cells,"primary name identity is invalid");
+  auto begin=v.Get<std::uint64_t>(200+8*cell),end=v.Get<std::uint64_t>(200+8*(cell+1));
+  auto offset=v.resources+48*v.clusters;
+  Check(begin<end && end<=v.size-4-offset,"primary name bounds disagree");
+  return std::string(reinterpret_cast<const char*>(v.data+offset+begin),end-begin);
+}
+CellId PrimaryClusterView::Member(std::uint64_t cluster,std::uint64_t member) const {
+  const auto& v=*impl_; Check(cluster<v.clusters && member<Weight(cluster,0),"primary member coordinate is invalid");
+  auto begin=v.Get<std::uint32_t>(v.offsets+4*cluster);
+  auto value=v.Get<std::uint32_t>(v.offsets+4*(v.clusters+1)+4*(begin+member));
+  Check(value<v.cells,"primary member identity is invalid");return Cell(value);
+}
+void PrimaryClusterView::ValidateMembers(EmuirView& source) const {
+  const auto& v=*impl_;
+  v.source_scope.RequireOwner(source.store().artifact());
+  v.source_scope.artifact().RequireUnchanged(); v.artifact.RequireUnchanged();
+  std::vector<std::uint32_t> lexical_owners; lexical_owners.reserve(v.cells);
+  auto names=source.store().database().Prepare("SELECT seq,id FROM cell_records ORDER BY id");
+  while(names.Step()) {
+    const auto seq=names.TypedInteger(0); const auto name=names.TypedText(1);
+    Check(seq>=0 && static_cast<std::uint64_t>(seq)<v.cells && lexical_owners.size()<v.cells &&
+          Name(Cell(lexical_owners.size()))==name,"primary cell name/source identity disagrees");
+    JsonQuote(name);
+    lexical_owners.push_back(Owner(seq));
+  }
+  Check(lexical_owners.size()==v.cells,"primary source cell coverage disagrees");
+  for(std::uint64_t cluster=0;cluster<v.clusters;++cluster) {
+    std::uint64_t previous=0;
+    for(std::uint64_t i=0;i<Weight(cluster,0);++i) {
+      auto member=Member(cluster,i).sequence();
+      Check(lexical_owners[member]==cluster && (!i || previous<member),"primary member/source ownership disagrees");
+      previous=member;
+    }
+  }
+  v.source_scope.artifact().RequireUnchanged(); v.artifact.RequireUnchanged();
 }
 std::uint32_t PrimaryClusterView::Weight(std::uint64_t cluster,unsigned d) const {
   Check(cluster<impl_->clusters && d<13,"primary resource identity is invalid");

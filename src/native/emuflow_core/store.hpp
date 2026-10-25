@@ -42,11 +42,18 @@ class ArtifactScope {
   template <typename Tag> ArtifactId<Tag> Id(std::uint64_t sequence) const {
     return ArtifactId<Tag>(artifact_,sequence);
   }
-  template <typename Tag> void Require(const ArtifactId<Tag>& identity) const {
-    const auto& other=*identity.owner_;
+  // Ordered kernels already retain an input lease and recheck its generation
+  // at the stage boundary. Per-record ownership checks must not issue fstat.
+  void RequireOwner(const ArtifactRef& other) const {
     if (other.path()!=artifact_->path() || other.schema()!=artifact_->schema() ||
         !(other.generation()==artifact_->generation()))
       throw StageError(ErrorCode::kMixedGeneration,"identity belongs to another artifact");
+  }
+  template <typename Tag> void RequireOwner(const ArtifactId<Tag>& identity) const {
+    RequireOwner(*identity.owner_);
+  }
+  template <typename Tag> void Require(const ArtifactId<Tag>& identity) const {
+    RequireOwner(identity);
     artifact_->RequireUnchanged();
   }
  private:

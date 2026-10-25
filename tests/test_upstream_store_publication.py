@@ -199,7 +199,9 @@ def test_sta_selector_failure_preserves_old_payload_and_retires_uncommitted_gene
     module, output, produce = setup_case(kind, tmp_path)
     previous = produce()
     old = (output.read_bytes(), previous.read_bytes())
-    write = module.write_json
+    from emuflow import store_publication
+
+    write = store_publication.write_json
 
     def reject_commit(path, *args, **kwargs):
         if path == output:
@@ -208,7 +210,7 @@ def test_sta_selector_failure_preserves_old_payload_and_retires_uncommitted_gene
             raise OSError("selector rejected")
         return write(path, *args, **kwargs)
 
-    with patch.object(module, "write_json", reject_commit):
+    with patch.object(store_publication, "write_json", reject_commit):
         with pytest.raises(OSError, match="selector rejected"):
             produce(1)
     assert output.read_bytes() == old[0] and previous.read_bytes() == old[1]
@@ -287,7 +289,9 @@ def test_incomplete_selector_backup_never_replaces_a_valid_previous_selector(
         Path(target).write_bytes(b"partial backup")
         raise OSError("backup rejected")
 
-    with patch.object(module.shutil, "copyfile", fail_copy):
+    from emuflow import store_publication
+
+    with patch.object(store_publication.shutil, "copyfile", fail_copy):
         with pytest.raises(OSError, match="backup rejected"):
             produce(1)
     assert output.read_bytes() == old[0] and previous.read_bytes() == old[1]

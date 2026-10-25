@@ -8,7 +8,6 @@ import math
 import os
 import re
 import sqlite3
-import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterator, Mapping, Optional
@@ -17,6 +16,7 @@ from .errors import ValidationError
 from .store_publication import (
     bind_store_source,
     publish_sqlite_store,
+    commit_store_selector,
     require_store_sources_unchanged,
     validate_store_destination,
 )
@@ -984,36 +984,6 @@ def _adopt_sta_payload(temporary, selector, kind, schema, sources):
     return payload, digest, created
 
 
-def _commit_sta_selector(path, artifact, sources, payload, created):
-    backup = None
-    backup_ready = False
-    had_previous = path.exists()
-    try:
-        if had_previous:
-            descriptor, name = tempfile.mkstemp(
-                prefix=f".{path.name}.", suffix=".previous", dir=path.parent
-            )
-            os.close(descriptor)
-            backup = Path(name)
-            shutil.copyfile(path, backup)
-            with backup.open("rb") as stream:
-                os.fsync(stream.fileno())
-            backup_ready = True
-        require_store_sources_unchanged(sources)
-        write_json(path, artifact, compact=True)
-    except BaseException:
-        if backup_ready:
-            os.replace(backup, path)
-        elif not had_previous:
-            path.unlink(missing_ok=True)
-        if created:
-            payload.unlink(missing_ok=True)
-        raise
-    finally:
-        if backup is not None:
-            backup.unlink(missing_ok=True)
-
-
 def _sta_ir_source_bindings(path, supplied_ir=None):
     # In-memory reference inputs do not claim a missing provenance filename.
     if supplied_ir is not None and not path.is_file():
@@ -1251,7 +1221,7 @@ def import_sta_path_database_tsv_streaming(
             }
         },
     }
-    _commit_sta_selector(
+    commit_store_selector(
         output_path, artifact, source_bindings, payload_path, created_payload
     )
     return {
@@ -1782,7 +1752,7 @@ def derive_partition_net_weights(
             }
         },
     }
-    _commit_sta_selector(
+    commit_store_selector(
         output_path, artifact, source_bindings, payload_path, created_payload
     )
     return {

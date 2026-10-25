@@ -141,12 +141,12 @@ do
     ${sqlite_flags[@]+"${sqlite_flags[@]}"} -I"$source_dir/src/native" \
     "$source_dir/src/native/$tool.cpp" \
     "$archive" \
-    -lsqlite3 -o "$target"
+    -lsqlite3 -lz -o "$target"
 done
 
 "$selected_cxx" -std=c++17 -O3 -pthread -static-libstdc++ -static-libgcc \
   ${sqlite_flags[@]+"${sqlite_flags[@]}"} -I"$source_dir/src/native" \
-  "$source_dir/src/native/emuflow_native.cpp" "$archive" -lsqlite3 -o "$unified"
+  "$source_dir/src/native/emuflow_native.cpp" "$archive" -lsqlite3 -lz -o "$unified"
 rm -rf "$object_dir"
 # Do not publish a runtime whose unified core cannot even
 # load its linked dependencies in the deployment environment. The run launcher

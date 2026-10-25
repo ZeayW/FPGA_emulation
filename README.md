@@ -92,9 +92,11 @@ protocol as streamed input.
 Compact production clustering uses the shared core for connectivity union,
 canonical membership and resource reduction, with read-only columns borrowed by
 Python consumers; their mapping owner also controls temporary-file retirement.
-Structural candidate eligibility also runs in the shared core, without a
-SQLite arc staging table or Python graph. Final semantic/index publication still
-has Python work; this is not complete Phase 3 native ownership.
+Structural candidate eligibility and final cluster catalog serialization also run
+in the shared core. The catalog consumes original primary/candidate artifacts;
+assignment packing reads ordinals without expanding member/resource records.
+Remaining semantic/index orchestration still has Python work; this is not
+complete Phase 3 native ownership.
 Compact indexed PATRON v14 production builds its pressure model directly in
 the shared core from EmuIR, TimingPathDB and the original native primary store;
 it avoids a second membership/resource snapshot and transposed resource matrix.
@@ -309,9 +311,9 @@ The root CMake project builds EmuFlow's native kernels and selected in-tree
 engines. Python packaging alone does not build a complete flow.
 
 Required tools include CMake 3.20+, GNU Make, a C++17 compiler, Python 3.9+,
-Boost, and the SQLite 3.22+ development library. The complete build also needs the
+Boost, and the SQLite 3.22+ and zlib development libraries. The complete build also needs the
 development dependencies for OpenROAD, OpenSTA, and OpenPARF: Bison, Flex,
-Tcl 8.6+ (including the OpenSTA runtime), SWIG, Eigen3, zlib,
+Tcl 8.6+ (including the OpenSTA runtime), SWIG, Eigen3,
 spdlog, LEMON, OR-Tools, OpenMP, and the appropriate Python/PyTorch packages.
 CUDA is optional and disabled by default. The OpenPARF Python/PyTorch ABI must
 match the interpreter selected when compiling its native operators.

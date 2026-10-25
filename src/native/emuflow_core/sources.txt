@@ -33,3 +33,4 @@ emuflow_core/route_seal.cpp
 emuflow_core/physical_cells.cpp
 emuflow_core/atomic_ownership.cpp
 emuflow_core/store_publication.cpp
+emuflow_core/cluster_catalog.cpp

@@ -168,6 +168,11 @@ class _CompactClusterRecords(list):
         for index in range(len(self)):
             yield self._record(index)
 
+    def cluster_id_at(self, index: int) -> str:
+        if index < 0 or index >= len(self):
+            raise IndexError("compact cluster index out of range")
+        return f"c{index:06d}"
+
     def cluster_member_count(self, index: int) -> int:
         if index < 0 or index >= len(self):
             raise IndexError("compact cluster index out of range")

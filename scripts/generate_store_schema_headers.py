@@ -37,6 +37,20 @@ def generate(directory):
     if not output.exists() or output.read_text(encoding="utf-8") != schedule:
         output.write_text(schedule, encoding="utf-8")
 
+    ddl = (root / "src/emuflow/data/schema/phase3_clusters.sql").read_text(
+        encoding="utf-8"
+    )
+    if ')EMUFLOW_SQL"' in ddl:
+        raise ValueError("SQL schema contains the native raw-string delimiter")
+    catalog = (
+        '#pragma once\nnamespace emuflow::core {\ninline constexpr const char* kClusterCatalogDDL = R"EMUFLOW_SQL('
+        + ddl
+        + ')EMUFLOW_SQL";\n}\n'
+    )
+    output = Path(directory) / "cluster_catalog_schema.hpp"
+    if not output.exists() or output.read_text(encoding="utf-8") != catalog:
+        output.write_text(catalog, encoding="utf-8")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

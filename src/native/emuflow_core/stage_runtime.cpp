@@ -81,6 +81,11 @@ constexpr RegisteredSchema schemas[] = {
      "SELECT value FROM metadata WHERE key='schema'","emuflow.openparf-atomic-placement-database/v3"},
     {"physical-cell-check-request-v1", ArtifactEncoding::kBinary, 0x31564350464d5545ULL, 1},
     {"physical-cell-check-summary-v1", ArtifactEncoding::kText, 0, 1},
+    {"cluster-catalog-request-v1", ArtifactEncoding::kBinary, 0x31514343464d5545ULL, 1},
+    {"phase3-cluster-catalog-v3", ArtifactEncoding::kSqlite, 0x454d5543, 1, true,
+     "SELECT 'emuflow.phase3-clusters-storage/v3' WHERE EXISTS(SELECT 1 FROM pragma_table_info('sections') WHERE name='compressed_bytes') "
+     "AND EXISTS(SELECT 1 FROM pragma_table_info('section_chunks') WHERE name='payload') "
+     "AND json_valid((SELECT value FROM metadata WHERE key='counts'))", "emuflow.phase3-clusters-storage/v3"},
     {"assignment-publication-request-v1", ArtifactEncoding::kBinary, 0x31514241554d5545ULL, 1},
     {"xilinx-physical-handoff-v1", ArtifactEncoding::kSqlite, 0x454d5550, 1, true,
      "SELECT schema FROM manifest WHERE singleton=1","emuflow.xilinx-physical-handoff-sqlite/v1"},

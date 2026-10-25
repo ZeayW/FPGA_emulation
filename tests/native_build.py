@@ -28,8 +28,6 @@ def tlr_router() -> Path:
     return emuflow_native()
 
 
-
-
 def static_exact_analyzer() -> Path:
     return emuflow_native()
 
@@ -52,10 +50,24 @@ def _build_native_stage_program(entry: Path, executable: Path) -> Path:
     subprocess.run([sys.executable, str(ROOT / 'scripts/generate_store_schema_headers.py'),
         str(generated / 'emuflow_core')], check=True)
     subprocess.run(
-        [compiler, "-std=c++17", *_runtime_link_flags(), "-O2", "-pthread",
-         "-DEMUFLOW_NATIVE_STAGE_LIBRARY=1", str(entry),
-         *(str(ROOT / "src/native" / source) for source in _NATIVE_STAGE_SOURCES),
-         "-I", str(ROOT / "src/native"), "-I", str(generated), "-lsqlite3", "-o", str(executable)],
+        [
+            compiler,
+            "-std=c++17",
+            *_runtime_link_flags(),
+            "-O2",
+            "-pthread",
+            "-DEMUFLOW_NATIVE_STAGE_LIBRARY=1",
+            str(entry),
+            *(str(ROOT / "src/native" / source) for source in _NATIVE_STAGE_SOURCES),
+            "-I",
+            str(ROOT / "src/native"),
+            "-I",
+            str(generated),
+            "-lsqlite3",
+            "-lz",
+            "-o",
+            str(executable),
+        ],
         check=True,
     )
     return executable

@@ -5,11 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
+import shutil
 from pathlib import Path
 import tempfile
 
 from .errors import ValidationError
-from .io import file_sha256
+from .io import file_sha256, write_json
 from .native_protocol import CheckedRequestWriter
 from .native_tools import native_file_generation, resolve_native_executable
 from .tool_runtime import NativeToolProcess
@@ -158,3 +159,53 @@ def publish_sqlite_store(
         ):
             raise ValidationError("native SQLite publication result disagrees")
         return result
+
+
+def commit_store_selector(path, artifact, sources, payload, created, *, durable=None):
+    """Commit a bounded selector; a rejected commit preserves its prior payload.
+
+    If rollback itself fails, retain both generations and the recovery selector
+    for diagnosis. An error never reports a passing complete artifact set.
+    """
+    if path.resolve() == payload.resolve() or (
+        path.exists() and payload.exists() and os.path.samefile(path, payload)
+    ):
+        raise ValidationError("selector output aliases its payload")
+    backup = None
+    backup_ready = False
+    retain_recovery = False
+    had_previous = path.exists()
+    try:
+        validate_store_destination(path, sources)
+        if had_previous:
+            descriptor, name = tempfile.mkstemp(
+                prefix=f".{path.name}.", suffix=".previous", dir=path.parent
+            )
+            os.close(descriptor)
+            backup = Path(name)
+            shutil.copyfile(path, backup)
+            with backup.open("rb") as stream:
+                os.fsync(stream.fileno())
+            backup_ready = True
+        require_store_sources_unchanged(sources)
+        write_json(path, artifact, compact=True, durable=durable)
+    except BaseException:
+        if backup_ready:
+            try:
+                os.replace(backup, path)
+                directory = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            except BaseException:
+                retain_recovery = True
+                raise
+        elif not had_previous:
+            path.unlink(missing_ok=True)
+        if created:
+            payload.unlink(missing_ok=True)
+        raise
+    finally:
+        if backup is not None and not retain_recovery:
+            backup.unlink(missing_ok=True)

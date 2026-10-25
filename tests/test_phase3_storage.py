@@ -148,6 +148,9 @@ class Phase3StorageTest(unittest.TestCase):
                 store.read_bytes()
             ).hexdigest()
             selector["store_bytes"] = store.stat().st_size
+            renamed = store.with_name(f"clusters.{selector['store_sha256']}.sqlite")
+            store.rename(renamed)
+            selector["artifact"] = renamed.name
             selector_path.write_text(json.dumps(selector), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "section counts disagree"):
                 read_json(selector_path)

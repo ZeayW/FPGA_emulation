@@ -186,7 +186,7 @@ paired source artifact; equal integers never prove a cross-store identity.
 `RouteView` and the native ScheduleStore producer use the same ownership and
 publication facilities. ScheduleStore has one installed storage contract, v4;
 older storage readers, Python snapshot publication and native version aliases
-are retired. Assignment and ScheduleStore DDL each have one canonical SQL owner
+are retired. Cluster catalog, Assignment and ScheduleStore DDL each have one canonical SQL owner
 under `src/emuflow/data/schema`; native headers are generated from those files,
 and bounded test snapshots use the same SQL. Logical and child-relation version
 numbers remain independent of the storage envelope. Candidate construction, primary clustering and PATRON
@@ -194,6 +194,27 @@ joins borrow the existing `EmuirView` store, sharing its source connection/cache
 and lifetime. The schema registry also names mapped/physical handoffs
 and boundary, logic-segment and local-path timing stores. Their phase-specific
 readers and independent electrical/timing validators retain semantic authority.
+
+Final native-primary cluster publication runs as `phase3 publish-cluster-catalog`
+in the shared core. It reads source-bound member/name/resource columns directly
+and streams the existing compressed SQLite sections through bounded zlib buffers.
+The original native candidate artifact supplies eligibility; an ordered source
+cursor checks bitmap/name agreement. Sparse fixed/group configuration stays in a
+checked request. The host does not expand cluster records or candidate names,
+and native failure never retries the reference serializer. Assignment packing
+uses canonical ordinal IDs and member counts instead of decoding each cluster.
+
+Primary membership ordinals and EmuIR ownership source sequences are distinct
+coordinates. The catalog independently checks their pairing with a single
+ordered source scan; its cell IDs retain the primary artifact namespace.
+Lease-bound per-record ownership checks compare the frozen namespace in memory;
+physical generation checks remain at input, validation and publication boundaries,
+not one filesystem call per cell. Final catalog SQL keeps its logical/storage
+schema but uses `clusters.<sha256>.sqlite` generations behind `clusters.json`.
+Readers also accept the prior fixed basename for identified historical inputs.
+The common selector commit preserves the old pair on failed publication or
+partial backup, and retains recovery files if rollback itself fails. Old payloads
+remain invocation scratch until process-aware terminal retirement.
 
 Current compact EmuIR, final assignment v4, RouteStore v3 and ScheduleStore v4
 producers hand their closed SQLite files to the common publisher. Indexed Yosys

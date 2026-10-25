@@ -507,10 +507,18 @@ it does not rebuild the primary arrays or rerun the union/resource loops.
 Borrowed columns retain their mapping and phase-owned scratch until the last
 consumer releases them. That owner releases views and closes the mapping before
 removing its directory, including exception cycles; no independent weak-reference
-scratch finalizer may unlink a still-mapped file. The final cluster/assignment
-schemas remain unchanged; final policy/semantic/index publication still needs
-native ownership. The public reference constructor remains independently
-available for differential validation; native production has no failure fallback.
+scratch finalizer may unlink a still-mapped file. Final catalog publication now
+reads those columns in the shared core and writes the existing compressed SQLite
+sections directly. It also consumes the original candidate artifact, checking its
+bitmap/name/source pairing without decoding the name population in Python.
+The common SQL publisher adopts the closed generation; the selector follows its
+sealed payload descriptor rather than a fixed filename. Source replacement,
+corrupt member/name relations and failed selector commits reject publication.
+The final logical cluster/assignment schemas remain unchanged. Assignment packing
+uses ordinal IDs/member counts without replaying cluster records. Remaining
+policy/semantic/index orchestration still needs native ownership; this boundary
+alone is not complete Phase 3 migration. The public reference constructor remains
+available for independent differential validation; native failure has no fallback.
 
 ## Phase 3 contracts
 

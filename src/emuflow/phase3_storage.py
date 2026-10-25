@@ -15,6 +15,12 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping
 
 from .io import file_sha256, json_writes_are_durable, write_json
+from .store_publication import (
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+    commit_store_selector,
+)
 
 
 PACKED_CLUSTERS_SCHEMA = "emuflow.phase3-clusters-storage/v1"
@@ -32,26 +38,9 @@ CLUSTERS_SQLITE_FORMAT = "sqlite-phase3-clusters/v1"
 CLUSTERS_STORE_NAME = "clusters.sqlite"
 
 
-_CLUSTERS_DDL = """
-CREATE TABLE metadata(
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-) WITHOUT ROWID;
-CREATE TABLE sections(
-  section TEXT PRIMARY KEY,
-  codec TEXT NOT NULL,
-  records INTEGER NOT NULL,
-  raw_bytes INTEGER NOT NULL,
-  compressed_bytes INTEGER NOT NULL,
-  chunks INTEGER NOT NULL
-) WITHOUT ROWID;
-CREATE TABLE section_chunks(
-  section TEXT NOT NULL,
-  chunk_seq INTEGER NOT NULL,
-  payload BLOB NOT NULL,
-  PRIMARY KEY(section,chunk_seq)
-) WITHOUT ROWID;
-"""
+_CLUSTERS_DDL = (Path(__file__).parent / "data/schema/phase3_clusters.sql").read_text(
+    encoding="utf-8"
+)
 
 _CLUSTER_SECTION_CODEC = "zlib-level-1-typed-columns"
 _CLUSTER_SECTION_CHUNK_BYTES = 1024 * 1024
@@ -436,7 +425,8 @@ def _cluster_store_path(selector_path: Path, selector: Mapping[str, Any]) -> Pat
     if (
         not isinstance(artifact, str)
         or Path(artifact).name != artifact
-        or artifact != CLUSTERS_STORE_NAME
+        or artifact
+        not in {CLUSTERS_STORE_NAME, f"clusters.{selector.get('store_sha256')}.sqlite"}
     ):
         raise ValueError(f"{selector_path}: indexed clusters artifact is invalid")
     return selector_path.with_name(artifact)
@@ -590,44 +580,9 @@ def _read_cluster_store_metadata(
     return store_path, metadata
 
 
-def write_indexed_phase3_clusters(
-    path: Path,
-    value: Mapping[str, Any],
-    *,
-    durable: bool | None = None,
-) -> Dict[str, Any]:
-    """Publish the cluster population once in a typed SQLite sidecar.
-
-    ``clusters.json`` becomes a small sealed selector.  The logical v1 document
-    remains available through :func:`read_json`, but production publication no
-    longer serializes every name/resource/policy entry into JSON, compresses it,
-    base64-encodes it, and then asks later consumers to decode the same graph.
-    """
-
-    clusters = value.get("clusters")
-    if not isinstance(clusters, list):
-        raise ValueError("clusters.clusters: expected an array")
-    policy = value.get("policy")
-    if not isinstance(policy, dict):
-        raise ValueError("clusters.policy: expected an object")
-    eligible_present = "eligible_combinational_cut_nets" in policy
-    eligible_nets = policy.get("eligible_combinational_cut_nets", [])
-    if not isinstance(eligible_nets, list):
-        raise ValueError(
-            "clusters.policy.eligible_combinational_cut_nets: expected an array"
-        )
-    stored_policy = {
-        key: item
-        for key, item in policy.items()
-        if key != "eligible_combinational_cut_nets"
-    }
-    document = {
-        key: item for key, item in value.items() if key not in {"clusters", "policy"}
-    }
-    document["policy"] = stored_policy
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.sqlite.tmp")
+def _build_reference_cluster_store(
+    temporary, value, clusters, eligible_nets, eligible_present, document
+):
     connection = sqlite3.connect(temporary)
     cluster_count = 0
     instance_count = 0
@@ -719,35 +674,98 @@ def write_indexed_phase3_clusters(
         )
         connection.commit()
         connection.close()
-        effective_durable = (
-            json_writes_are_durable() if durable is None else bool(durable)
+        return counts
+    finally:
+        connection.close()
+
+
+def write_indexed_phase3_clusters(
+    path: Path,
+    value: Mapping[str, Any],
+    *,
+    durable: bool | None = None,
+    source_bindings=(),
+) -> Dict[str, Any]:
+    """Publish one final catalog; native columns never expand into host rows."""
+    clusters = value.get("clusters")
+    if not isinstance(clusters, list):
+        raise ValueError("clusters.clusters: expected an array")
+    policy = value.get("policy")
+    if not isinstance(policy, dict):
+        raise ValueError("clusters.policy: expected an object")
+    eligible_present = "eligible_combinational_cut_nets" in policy
+    eligible_nets = policy.get("eligible_combinational_cut_nets", [])
+    if not isinstance(eligible_nets, list):
+        raise ValueError(
+            "clusters.policy.eligible_combinational_cut_nets: expected an array"
         )
-        if effective_durable:
-            with temporary.open("rb") as stream:
-                os.fsync(stream.fileno())
+    stored_policy = {
+        key: item
+        for key, item in policy.items()
+        if key != "eligible_combinational_cut_nets"
+    }
+    document = {
+        key: item for key, item in value.items() if key not in {"clusters", "policy"}
+    }
+    document["policy"] = stored_policy
+
+    from .phase3_cluster_catalog import catalog_sources, build_native_cluster_catalog
+
+    native_sources = catalog_sources(clusters, eligible_nets)
+    sources = tuple(source_bindings) + native_sources
+    sources = validate_store_destination(path, sources)
+    if path.is_symlink():
+        raise ValueError("cluster selector is a symbolic link")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.sqlite.tmp")
+    try:
+        if getattr(clusters, "native_artifact", None) is not None:
+            counts = build_native_cluster_catalog(
+                temporary,
+                value,
+                document,
+                eligible_nets,
+                eligible_present,
+                native_sources,
+            )
+        else:
+            counts = _build_reference_cluster_store(
+                temporary, value, clusters, eligible_nets, eligible_present, document
+            )
+        if value.get("instances") != counts["instances"]:
+            raise ValueError("clusters instance count is inconsistent")
+        require_store_sources_unchanged(sources)
         digest = file_sha256(temporary)
-        artifact = CLUSTERS_STORE_NAME
-        store_path = path.with_name(artifact)
-        os.replace(temporary, store_path)
+        store_path = path.with_name(f"clusters.{digest}.sqlite")
+        validate_store_destination(store_path, sources)
+        if store_path.is_symlink():
+            raise ValueError("cluster payload generation is a symbolic link")
+        created = not store_path.exists()
+        if created:
+            publish_sqlite_store(
+                temporary, store_path, "phase3-cluster-catalog-v3", sources=sources
+            )
+        else:
+            if file_sha256(store_path) != digest:
+                raise ValueError("cluster payload generation seal disagrees")
+            temporary.unlink()
         selector = {
             "schema": INDEXED_CLUSTERS_SCHEMA,
             "logical_schema": value.get("schema"),
             "format": CLUSTERS_SQLITE_FORMAT,
             "application_id": CLUSTERS_SQLITE_APPLICATION_ID,
             "user_version": CLUSTERS_SQLITE_USER_VERSION,
-            "artifact": artifact,
+            "artifact": store_path.name,
             "store_bytes": store_path.stat().st_size,
             "store_sha256": digest,
             "counts": counts,
         }
-        write_json(path, selector, compact=True, durable=durable)
+        commit_store_selector(
+            path, selector, sources, store_path, created, durable=durable
+        )
         return selector
-    except BaseException:
-        try:
-            connection.close()
-        finally:
-            temporary.unlink(missing_ok=True)
-        raise
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def expand_indexed_phase3_clusters(
@@ -1115,15 +1133,15 @@ def pack_phase3_assignment(
     part_ids = sorted(partition_ids)
     part_index = {part: index for index, part in enumerate(part_ids)}
     observed_instances = 0
+    cluster_id_at = getattr(clusters, "cluster_id_at", None)
+    if callable(cluster_id_at):
+        cluster_ids = lambda: (cluster_id_at(index) for index in range(len(clusters)))
+    else:
+        cluster_ids = lambda: (cluster.get("id") for cluster in clusters)
     sequential_cluster_ids = all(
-        cluster.get("id") == f"c{index:06d}"
-        for index, cluster in enumerate(clusters)
+        identity == f"c{index:06d}" for index, identity in enumerate(cluster_ids())
     )
-    stored_cluster_ids = (
-        None
-        if sequential_cluster_ids
-        else [cluster.get("id") for cluster in clusters]
-    )
+    stored_cluster_ids = None if sequential_cluster_ids else list(cluster_ids())
 
     def cluster_part_indices() -> Iterator[int]:
         nonlocal observed_instances
@@ -1133,12 +1151,12 @@ def pack_phase3_assignment(
         compact_member_count = getattr(
             instance_assignment, "cluster_member_count", None
         )
-        for cluster_index, cluster in enumerate(clusters):
-            cluster_id = cluster.get("id")
-            if (
-                not isinstance(cluster_id, str)
-                or cluster_id not in cluster_assignment
-            ):
+        for cluster_index in range(len(clusters)):
+            cluster = None if callable(cluster_id_at) else clusters[cluster_index]
+            cluster_id = (
+                cluster_id_at(cluster_index) if cluster is None else cluster.get("id")
+            )
+            if not isinstance(cluster_id, str) or cluster_id not in cluster_assignment:
                 raise ValueError(
                     "assignment cannot be packed: cluster coverage differs"
                 )
@@ -1148,14 +1166,20 @@ def pack_phase3_assignment(
                     raise ValueError(
                         "assignment cannot be packed: cluster is split"
                     )
-                members = cluster.get("instances", [])
                 member_count = compact_member_count(cluster_index)
-                if not isinstance(members, list) or member_count != len(members):
+                expected_count = (
+                    clusters.cluster_member_count(cluster_index)
+                    if cluster is None
+                    else len(cluster.get("instances", []))
+                )
+                if member_count != expected_count:
                     raise ValueError(
                         "assignment cannot be packed: cluster coverage differs"
                     )
                 observed_instances += member_count
             else:
+                if cluster is None:
+                    cluster = clusters[cluster_index]
                 for instance in cluster.get("instances", []):
                     if instance_assignment.get(instance) != part:
                         raise ValueError(
