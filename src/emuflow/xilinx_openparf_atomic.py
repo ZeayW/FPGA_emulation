@@ -52,6 +52,7 @@ from .xilinx_packing import (
     _derive_cascade_chains,
     _net_drivers,
     _slice_site_pin_conflicts,
+    _SliceSitePinContext,
     legalize_xilinx_slice_site_pins,
 )
 from .xilinx_physical_macros import build_xilinx_physical_macro_contract
@@ -466,14 +467,19 @@ class _IndexedAtomicPlacement:
         ]
 
     def iter_site_groups(
-        self,
+        self, *, only_mux: bool = False,
     ) -> Iterator[tuple[str, List[Dict[str, Any]]]]:
         if self._database is None:
             raise ValidationError("OpenPARF atomic placement index is closed")
+        selection = (
+            "WHERE anchor_site IN (SELECT anchor_site FROM normalized "
+            "WHERE cell_type IN ('MUXF7','MUXF8','MUXF9')) "
+            if only_mux else ""
+        )
         rows = self._database.execute(
             "SELECT instance,cell_type,source_cluster,resource,z,x,y,site,"
             "anchor_site,bel,placement_mode,bram_tile_group FROM normalized "
-            "ORDER BY anchor_site,instance"
+            + selection + "ORDER BY anchor_site,instance"
         )
         current_site: Optional[str] = None
         current: List[Dict[str, Any]] = []
@@ -2137,34 +2143,40 @@ def _legalize_atomic_mux_site_pins(raw, atoms, cells, remember_move, evacuate_ff
         "MUXF7": ("F7MUX_AB", "F7MUX_CD", "F7MUX_EF", "F7MUX_GH"),
         "MUXF8": ("F8MUX_BOT", "F8MUX_TOP"), "MUXF9": ("F9MUX",),
     }
+    def local_cluster(coordinate, names):
+        local_atoms = {atoms[name]["instance"]: name for name in names
+                       if raw[name][:2] == coordinate}
+        local_cells = {instance: cells[instance] for instance in local_atoms}
+        assignments = []
+        for instance, name in local_atoms.items():
+            atom, z = atoms[name], raw[name][2]
+            resource = atom["resource"]
+            if resource == "LUT":
+                bel = SLICE_LUT_BELS[z // 2]
+            elif resource == "FF":
+                bel = SLICE_FF_BELS[z]
+            elif atom["cell_type"] in mux_roles:
+                bel = mux_roles[atom["cell_type"]][z]
+            else:
+                raise ValidationError("MUX site contains a non-slice atom")
+            assignments.append(dict(instance=instance, cell_type=atom["cell_type"], bel=bel))
+        cluster = dict(id=f"atomic:{coordinate}", kind="slice", assignments=assignments)
+        return local_atoms, local_cells, cluster
+
+    context = _SliceSitePinContext(
+        cells, (local_cluster(coordinate, names)[2] for coordinate, names in by_site.items())
+    ).collect(cells)
     repacked, evicted = set(), set()
     for coordinate, names in sorted(by_site.items()):
         while True:
-            local_atoms = {atoms[name]["instance"]: name for name in names
-                           if raw[name][:2] == coordinate}
-            local_cells = {instance: cells[instance] for instance in local_atoms}
-            assignments = []
-            for instance, name in local_atoms.items():
-                atom, z = atoms[name], raw[name][2]
-                resource = atom["resource"]
-                if resource == "LUT":
-                    bel = SLICE_LUT_BELS[z // 2]
-                elif resource == "FF":
-                    bel = SLICE_FF_BELS[z]
-                elif atom["cell_type"] in mux_roles:
-                    bel = mux_roles[atom["cell_type"]][z]
-                else:
-                    raise ValidationError("MUX site contains a non-slice atom")
-                assignments.append(dict(instance=instance, cell_type=atom["cell_type"], bel=bel))
-            cluster = dict(id=f"atomic:{coordinate}", kind="slice", assignments=assignments)
-            # For this check only driver membership in this site matters.
-            # Missing outside drivers are correctly treated as external users.
+            local_atoms, local_cells, cluster = local_cluster(coordinate, names)
+            assignments = cluster["assignments"]
             drivers = _net_drivers(local_cells)
-            conflicts = _slice_site_pin_conflicts(local_cells, [cluster], drivers)
+            conflicts = _slice_site_pin_conflicts(local_cells, [cluster], drivers, context.routed_bits)
             if not conflicts:
                 break
             try:
-                legalize_xilinx_slice_site_pins(local_cells, [cluster])
+                legalize_xilinx_slice_site_pins(local_cells, [cluster], routed_bits=context.routed_bits)
             except ValidationError as error:
                 if "cannot be legalized within certified site" not in str(error):
                     raise
@@ -2176,6 +2188,10 @@ def _legalize_atomic_mux_site_pins(raw, atoms, cells, remember_move, evacuate_ff
                 name = local_atoms[offender]
                 remember_move(name)
                 evacuate_ff(name, mux_sites)
+                context.routed_bits.update(
+                    bit for values in local_cells[offender]["connections"].values()
+                    for bit in values if bit in context.targets
+                )
                 evicted.add(name)
                 continue
             for assignment in assignments:
@@ -5877,6 +5893,10 @@ def validate_xilinx_openparf_atomic_placement(
                     checked_carry_edges += 1
 
         clusters: list[Dict[str, Any]] = []
+        pin_context = _SliceSitePinContext(cells, (
+            dict(id=site_name, kind="slice", assignments=items)
+            for site_name, items in placement_index.iter_site_groups(only_mux=True)
+        )).collect(cells)
         if output_path is not None and not materialize_result:
             certificate_builder = _AtomicPlacementCertificateBuilder(output_path)
         for site_name, items in placement_index.iter_site_groups():
@@ -5924,7 +5944,7 @@ def validate_xilinx_openparf_atomic_placement(
                     dict(instance=item["instance"], cell_type=item["cell_type"], bel=item["bel"])
                     for item in items
                 ])],
-                _net_drivers(mux_cells),
+                pin_context.drivers, pin_context.routed_bits,
             ):
                 raise ValidationError(f"site {site_name!r} violates shared MUX/FF site-pin legality")
             for item in items:

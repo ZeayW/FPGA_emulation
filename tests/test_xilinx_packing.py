@@ -3,6 +3,7 @@ import json
 import tempfile
 import itertools
 import random
+import sqlite3
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -16,6 +17,7 @@ from emuflow.xilinx_packing import (
     _minimum_cost_ff_assignment,
     _slice_ff_control_sets,
     _slice_site_pin_conflicts,
+    _SliceSitePinContext,
 )
 
 
@@ -50,6 +52,62 @@ def add_carry(cells, name, *, ci, co, net_base):
 
 
 class XilinxPackingTest(unittest.TestCase):
+    def _internal_driver_mux(self, *, internal_select=False, remote_sink=True):
+        cells = {
+            "lut0": cell("LUT6", {"I0": [1], "O": [10]}),
+            "lut1": cell("LUT6", {"I0": [2], "O": [11]}),
+            "mux": cell("MUXF7", {"I0": [10], "I1": [11], "S": [10 if internal_select else 3], "O": [12]}),
+            "ff": cell("FDRE", {"C": [50], "CE": ["1"], "R": ["0"],
+                                   "D": [4 if internal_select else 10], "Q": [20]}),
+        }
+        clusters = [dict(id="local", kind="slice", assignments=[
+            dict(instance=name, cell_type=cells[name]["type"], bel=bel)
+            for name, bel in [("lut0", "A6LUT"), ("lut1", "B6LUT"),
+                              ("mux", "F7MUX_AB"), ("ff", "AFF")]
+        ])]
+        if remote_sink:
+            cells["remote"] = cell("FDRE", {"C": [50], "CE": ["1"], "R": ["0"], "D": [10], "Q": [21]})
+            clusters.append(dict(id="remote", kind="slice", assignments=[
+                dict(instance="remote", cell_type="FDRE", bel="AFF")]))
+        return cells, clusters
+
+    def test_local_driver_with_external_fanout_consumes_bypass_pin(self):
+        for internal_select in (False, True):
+            with self.subTest(internal_select=internal_select):
+                cells, clusters = self._internal_driver_mux(internal_select=internal_select)
+                context = _SliceSitePinContext(cells, clusters).collect(cells)
+                self.assertIn(10, context.routed_bits)
+                self.assertTrue(_slice_site_pin_conflicts(cells, clusters, context.drivers, context.routed_bits))
+                report = legalize_xilinx_slice_site_pins(cells, clusters)
+                self.assertEqual(report["moved_ffs"], 1)
+                self.assertFalse(_slice_site_pin_conflicts(cells, clusters, context.drivers, context.routed_bits))
+
+    def test_purely_local_driver_keeps_dedicated_ff_connection(self):
+        cells, clusters = self._internal_driver_mux(remote_sink=False)
+        context = _SliceSitePinContext(cells, clusters).collect(cells)
+        self.assertNotIn(10, context.routed_bits)
+        self.assertEqual(legalize_xilinx_slice_site_pins(cells, clusters)["moved_ffs"], 0)
+
+    def test_indexed_pin_scope_matches_reference_without_cell_iteration(self):
+        cells, clusters = self._internal_driver_mux()
+        expected = _SliceSitePinContext(cells, clusters).collect(cells)
+        with sqlite3.connect(":memory:") as database:
+            database.executescript("CREATE TABLE metadata(key TEXT,value TEXT); "
+                                  "CREATE TABLE cell_pins(cell_id TEXT,net_bit INTEGER,direction INTEGER,value_kind INTEGER)")
+            database.execute("INSERT INTO metadata VALUES ('ports_json','{}')")
+            for name, value in cells.items():
+                database.executemany("INSERT INTO cell_pins VALUES (?,?,?,0)",
+                    [(name, bit, int(value["port_directions"][port] == "output"))
+                     for port, values in value["connections"].items() for bit in values if isinstance(bit, int)])
+            class Indexed(dict):
+                _with_pins = staticmethod(lambda *args: None)
+            indexed = Indexed(cells)
+            indexed.connection = database
+            with mock.patch.object(indexed, "items", side_effect=AssertionError("whole cell traversal")):
+                actual = _SliceSitePinContext(indexed, clusters).collect(indexed)
+            self.assertEqual(actual.drivers, expected.drivers)
+            self.assertEqual(actual.routed_bits, expected.routed_bits)
+
     def test_bounded_ff_assignment_matches_exhaustive_oracle(self):
         rng = random.Random(17)
         for n in range(1, 5):

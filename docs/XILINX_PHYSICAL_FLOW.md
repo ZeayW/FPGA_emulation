@@ -83,6 +83,15 @@ repacking and cross-site evictions separately; displacement uses each moved
 FF's initial and final coordinates. The independent atomic certificate now
 rejects shared MUX/FF input-pin conflicts itself, before the physical bridge.
 
+Driver co-location alone does not make a net internal. If another sink or an
+output boundary lies outside the slice, RWRoute materializes its local MUX/FF
+endpoint through a site pin too. Pin legality therefore derives routed-net
+scope from the canonical mapped endpoint index for the bounded set of MUX
+select and FF data bits. Native FF repair, native certification, and physical
+handoff use that same scope. Indexed inputs select typed endpoint rows in
+SQLite without reconstructing every mapped cell. Evicting an FF also marks
+its affected nets as routed before the source slice is rechecked.
+
 Native and continuous OpenPARF drivers load the calling EmuFlow package through
 an explicit package entry point under the selected OpenPARF interpreter. They
 do not require EmuFlow to be separately installed in that interpreter or add

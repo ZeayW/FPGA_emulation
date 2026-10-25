@@ -50,6 +50,7 @@ from .xilinx_packing import (
     _derive_cascade_chains,
     _mux_input_driver,
     _slice_site_pin_conflicts,
+    _SliceSitePinContext,
     _validate_declared_slice_control_sets,
     _slice_ff_control_sets,
     legalize_xilinx_slice_site_pins,
@@ -1058,7 +1059,8 @@ def _validate_streamed_physical_handoff(
         if driver_database is not None:
             driver_database.close()
         driver_database_path.unlink(missing_ok=True)
-    if _slice_site_pin_conflicts(cells, special_clusters, drivers):
+    pin_context = _SliceSitePinContext(cells, special_clusters).collect(cells)
+    if _slice_site_pin_conflicts(cells, special_clusters, drivers, pin_context.routed_bits):
         raise ValidationError("slice external site pin assignment is invalid")
     for cluster in special_clusters:
         assignments = cluster.get("assignments", [])

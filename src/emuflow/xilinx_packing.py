@@ -260,10 +260,73 @@ def _net_drivers(
     return drivers
 
 
+class _SliceSitePinContext:
+    """Bounded MUX pin facts from the canonical mapped endpoint index.
+
+    An internally driven net still enters the fabric when any endpoint is
+    outside its slice. Such nets consume the same bypass pins as other routed
+    nets; driver location alone cannot establish an internal connection.
+    """
+
+    def __init__(self, cells, clusters):
+        self.owners, self.targets, self.drivers, self.routed_bits = {}, {}, {}, set()
+        for cluster in clusters:
+            assignments = cluster.get("assignments", [])
+            if cluster.get("kind") != "slice" or not any(a.get("cell_type") in MUX_TYPES for a in assignments):
+                continue
+            for assignment in assignments:
+                name = assignment["instance"]
+                self.owners[name] = cluster["id"]
+                port = ("S" if assignment["cell_type"] in MUX_TYPES else
+                        "D" if assignment["cell_type"] in FF_TYPES else None)
+                if port is not None:
+                    for bit in _bits(cells[name], port):
+                        if isinstance(bit, int):
+                            self.targets.setdefault(bit, set()).add(cluster["id"])
+
+    def add_pin(self, name, bit, output):
+        if bit not in self.targets:
+            return
+        if self.targets[bit] != {self.owners.get(name)}:
+            self.routed_bits.add(bit)
+        if output:
+            previous = self.drivers.setdefault(bit, name)
+            if previous != name:
+                raise ValidationError(f"mapped net bit {bit} has multiple drivers")
+
+    def collect(self, cells):
+        if not self.targets:
+            return self
+        connection = getattr(cells, "connection", None)
+        if connection is not None and callable(getattr(cells, "_with_pins", None)):
+            # Select only target endpoint rows. SQLite scans its typed relation
+            # without reconstructing every mapped cell in Python.
+            bits = ",".join(str(bit) for bit in sorted(self.targets))
+            for name, bit, direction in connection.execute(
+                "SELECT cell_id,net_bit,direction FROM cell_pins "
+                f"WHERE value_kind=0 AND net_bit IN ({bits})"
+            ):
+                self.add_pin(name, bit, direction == 1)
+            row = connection.execute("SELECT value FROM metadata WHERE key='ports_json'").fetchone()
+            if row is not None:
+                for port in json.loads(row[0]).values():
+                    if port.get("direction") in {"output", "inout"}:
+                        self.routed_bits.update(bit for bit in port.get("bits", []) if bit in self.targets)
+        else:
+            for name, cell in cells.items():
+                for port, values in cell.get("connections", {}).items():
+                    output = cell.get("port_directions", {}).get(port) == "output"
+                    for bit in values:
+                        if isinstance(bit, int):
+                            self.add_pin(name, bit, output)
+        return self
+
+
 def _slice_site_pin_conflicts(
     cells: Mapping[str, Any],
     clusters: Sequence[Mapping[str, Any]],
     drivers: Mapping[Any, str],
+    routed_bits=frozenset(),
 ) -> List[Dict[str, Any]]:
     """Return conflicting external users of UltraScale+ slice input pins.
 
@@ -317,7 +380,7 @@ def _slice_site_pin_conflicts(
         # A missing cell driver can be a top-level input.  Treat it as an
         # external user conservatively; driverless nets are harmlessly
         # over-constrained instead of escaping physical-pin validation.
-        if driver is None or owner.get(driver) != cluster_id:
+        if driver is None or owner.get(driver) != cluster_id or bits[0] in routed_bits:
             return bits[0]
         return None
 
@@ -409,7 +472,8 @@ def _minimum_cost_ff_assignment(costs: Sequence[Sequence[int]]) -> Optional[List
 
 
 def _joint_slice_ff_assignment(
-    cells: Mapping[str, Any], cluster: Mapping[str, Any], drivers: Mapping[Any, str]
+    cells: Mapping[str, Any], cluster: Mapping[str, Any], drivers: Mapping[Any, str],
+    routed_bits=frozenset(),
 ) -> Optional[Dict[str, str]]:
     """Search both half-slice controls and all FF BELs without moving sites.
 
@@ -426,7 +490,8 @@ def _joint_slice_ff_assignment(
 
     def external(instance: str, port: str) -> Optional[int]:
         bits = _bits(cells[instance], port)
-        if len(bits) == 1 and isinstance(bits[0], int) and drivers.get(bits[0]) not in local:
+        if (len(bits) == 1 and isinstance(bits[0], int)
+                and (drivers.get(bits[0]) not in local or bits[0] in routed_bits)):
             return bits[0]
         return None
 
@@ -483,7 +548,7 @@ def _joint_slice_ff_assignment(
 
 
 def legalize_xilinx_slice_site_pins(
-    cells: Mapping[str, Any], clusters: List[Dict[str, Any]]
+    cells: Mapping[str, Any], clusters: List[Dict[str, Any]], *, routed_bits=None,
 ) -> Dict[str, Any]:
     """Repair MUX-select/primary-FF site-pin conflicts within each slice.
 
@@ -520,10 +585,14 @@ def legalize_xilinx_slice_site_pins(
                     bit for bit in _bits(cells[instance], port)
                     if isinstance(bit, int)
                 )
-    drivers = _net_drivers(cells, required_bits)
+    if routed_bits is None:
+        context = _SliceSitePinContext(cells, clusters).collect(cells)
+        drivers, routed_bits = context.drivers, context.routed_bits
+    else:
+        drivers = _net_drivers(cells, required_bits)
     repairs: List[Dict[str, str]] = []
     cluster_by_id = {cluster["id"]: cluster for cluster in clusters}
-    initial = _slice_site_pin_conflicts(cells, clusters, drivers)
+    initial = _slice_site_pin_conflicts(cells, clusters, drivers, routed_bits)
     for cluster_id in sorted({item["cluster"] for item in initial}):
         cluster = cluster_by_id[cluster_id]
         original_bels = {a["instance"]: a["bel"] for a in cluster["assignments"]
@@ -533,7 +602,7 @@ def legalize_xilinx_slice_site_pins(
             # Once the initial whole-design audit identifies an affected site,
             # evaluate candidates against that one bounded 16-FF cluster.
             # This avoids rescanning a production netlist for every repair.
-            conflicts = _slice_site_pin_conflicts(cells, [cluster], drivers)
+            conflicts = _slice_site_pin_conflicts(cells, [cluster], drivers, routed_bits)
             if not conflicts:
                 break
             conflict = conflicts[0]
@@ -567,7 +636,7 @@ def legalize_xilinx_slice_site_pins(
                 try:
                     _slice_ff_control_sets(cells, assignments)
                     remaining = _slice_site_pin_conflicts(
-                        cells, [cluster], drivers
+                        cells, [cluster], drivers, routed_bits
                     )
                 except ValidationError:
                     remaining = conflicts
@@ -591,7 +660,7 @@ def legalize_xilinx_slice_site_pins(
                 try:
                     _slice_ff_control_sets(cells, assignments)
                     remaining = _slice_site_pin_conflicts(
-                        cells, [cluster], drivers
+                        cells, [cluster], drivers, routed_bits
                     )
                 except ValidationError:
                     remaining = conflicts
@@ -618,7 +687,7 @@ def legalize_xilinx_slice_site_pins(
                     if assignment["instance"] in original_bels:
                         assignment["bel"] = original_bels[assignment["instance"]]
                 del repairs[first_repair:]
-                joint = _joint_slice_ff_assignment(cells, cluster, drivers)
+                joint = _joint_slice_ff_assignment(cells, cluster, drivers, routed_bits)
                 if joint is None:
                     raise ValidationError(
                         "slice site-pin conflict cannot be legalized within certified "
@@ -632,7 +701,7 @@ def legalize_xilinx_slice_site_pins(
                             repairs.append(dict(cluster=cluster["id"], instance=name,
                                                 from_bel=original_bels[name], to_bel=joint[name]))
                 _slice_ff_control_sets(cells, assignments)
-                if _slice_site_pin_conflicts(cells, [cluster], drivers):
+                if _slice_site_pin_conflicts(cells, [cluster], drivers, routed_bits):
                     raise ValidationError("joint FF assignment failed independent site-pin validation")
                 break
     return {
@@ -1218,8 +1287,9 @@ def validate_xilinx_packing(
         else:
             raise ValidationError(f"unknown packing cluster kind {kind!r}")
 
+    pin_context = _SliceSitePinContext(cells, packed.get("clusters", [])).collect(cells)
     site_pin_conflicts = _slice_site_pin_conflicts(
-        cells, packed.get("clusters", []), drivers
+        cells, packed.get("clusters", []), drivers, pin_context.routed_bits
     )
     if site_pin_conflicts:
         conflict = site_pin_conflicts[0]
