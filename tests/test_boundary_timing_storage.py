@@ -46,11 +46,16 @@ def _record(endpoint_id: str, kind: str, index: int) -> dict[str, object]:
     }
 
 
-def test_typed_boundary_timing_round_trip_and_relocation(tmp_path: Path) -> None:
+@pytest.mark.parametrize('scope',('partition-boundary','native-word-registered-interface'))
+def test_typed_boundary_timing_round_trip_and_relocation(tmp_path: Path,scope) -> None:
     selector = tmp_path / "source" / "boundary-timing.json"
     records = [_record("tx-0", "tx", 0), _record("rx-1", "rx", 1)]
+    header=_header();header['measurement_scope']=scope
+    if scope=='native-word-registered-interface':
+        records[0]['measurement']='logical-source-to-native-tx-word-sampling-pin'
+        records[1]['measurement']='registered-native-rx-word-to-shadow-capture-within-fixed-arc'
     with write_boundary_timing_storage(
-        selector, _header(), reversed(records)
+        selector, header, reversed(records)
     ) as view:
         assert isinstance(view, BoundaryTimingView)
         assert [item["id"] for item in view["endpoints"]] == ["rx-1", "tx-0"]

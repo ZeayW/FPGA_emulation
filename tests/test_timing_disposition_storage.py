@@ -19,13 +19,12 @@ def test_measured_v1_storage_retains_its_exact_envelope(tmp_path, kind):
         app_id = module.BOUNDARY_TIMING_APPLICATION_ID
     else:
         import emuflow.logic_segment_timing_storage as module
-        from emuflow.logic_segment_timing import import_vpr_logic_segment_timing
-        from tests.test_logic_segment_timing import LogicSegmentTimingTest
+        from tests.test_logic_segment_timing import LogicSegmentTimingTest,_import_fixture_logic_measurements
         identity,_ = LogicSegmentTimingTest._typed_identity(tmp_path, count=1)
         raw = tmp_path/"raw.tsv"
         raw.write_text("endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\nlogic00000000\tlaunch\t1.25\tstart00000000\tend00000000\n")
         selector = tmp_path/"timing.json"
-        import_vpr_logic_segment_timing(raw,identity,selector)
+        _import_fixture_logic_measurements(raw,identity,selector)
         read = module.read_logic_segment_timing_storage
         schema = module.LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA_V1
         app_id = module.LOGIC_SEGMENT_TIMING_APPLICATION_ID
