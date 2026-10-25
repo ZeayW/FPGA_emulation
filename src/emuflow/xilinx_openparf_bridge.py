@@ -195,20 +195,35 @@ def _validate_certificate(
     cells = module.get("cells")
     if not isinstance(cells, Mapping):
         raise ValidationError("mapped JSON cells are invalid")
-    unsupported = sorted({
-        cell.get("type") for cell in cells.values()
-        if isinstance(cell, Mapping)
-        and cell.get("type") not in _SUPPORTED_PHYSICAL_TYPES | CONSTANT_TYPES
-    })
+    types_by_id = getattr(cells, "types_by_id", None)
+    if callable(types_by_id):
+        unsupported = sorted(
+            {
+                kind
+                for _name, kind in types_by_id()
+                if kind not in _SUPPORTED_PHYSICAL_TYPES | CONSTANT_TYPES
+            }
+        )
+        constants = [name for name, kind in types_by_id() if kind in CONSTANT_TYPES]
+    else:
+        unsupported = sorted(
+            {
+                cell.get("type")
+                for cell in cells.values()
+                if isinstance(cell, Mapping)
+                and cell.get("type") not in _SUPPORTED_PHYSICAL_TYPES | CONSTANT_TYPES
+            }
+        )
+        constants = sorted(
+            name
+            for name, cell in cells.items()
+            if isinstance(cell, Mapping) and cell.get("type") in CONSTANT_TYPES
+        )
     if unsupported:
         raise ValidationError(
             "OpenPARF physical bridge does not support primitives: "
             + ", ".join(str(item) for item in unsupported)
         )
-    constants = sorted(
-        name for name, cell in cells.items()
-        if isinstance(cell, Mapping) and cell.get("type") in CONSTANT_TYPES
-    )
     expected_count = len(cells) - len(constants)
     cascades: list[Dict[str, Any]] = []
     source_owner: Optional[Dict[str, str]] = (
@@ -639,6 +654,7 @@ def _validate_streamed_physical_handoff(
     placement: Mapping[str, Any],
     constraints_path: Optional[Path],
     native: Optional[Mapping[str, Any]],
+    mapped_index_path: Optional[Path] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Independently validate typed rows with bounded per-site state.
 
@@ -681,9 +697,25 @@ def _validate_streamed_physical_handoff(
     ):
         raise ValidationError("Xilinx placement source identity is invalid")
 
-    expected_constants = sorted(
-        name for name, cell in cells.items()
-        if isinstance(cell, Mapping) and cell.get("type") in CONSTANT_TYPES
+    native_population = None
+    if mapped_index_path is not None:
+        from .physical_cells_native import validate_native_physical_cells
+
+        native_population = validate_native_physical_cells(
+            mapped_index_path,
+            path,
+            mapped_sha256=mapped_sha,
+            top=selected_top,
+        )
+    types_by_id = getattr(cells, "types_by_id", None)
+    expected_constants = (
+        [name for name, kind in types_by_id() if kind in CONSTANT_TYPES]
+        if callable(types_by_id)
+        else sorted(
+            name
+            for name, cell in cells.items()
+            if isinstance(cell, Mapping) and cell.get("type") in CONSTANT_TYPES
+        )
     )
     constants = packed.get("unplaced_constants")
     if constants != expected_constants:
@@ -831,9 +863,12 @@ def _validate_streamed_physical_handoff(
             for assignment in assignments:
                 name = assignment.get("instance") if isinstance(assignment, Mapping) else None
                 cell_type = assignment.get("cell_type") if isinstance(assignment, Mapping) else None
-                cell = cells.get(name)
-                if not isinstance(cell, Mapping) or cell.get("type") != cell_type:
-                    raise ValidationError("PackedSiteNetlist assignment does not match source")
+                if native_population is None:
+                    cell = cells.get(name)
+                    if not isinstance(cell, Mapping) or cell.get("type") != cell_type:
+                        raise ValidationError(
+                            "PackedSiteNetlist assignment does not match source"
+                        )
                 bel = assignment.get("bel")
                 if not isinstance(bel, str) or not bel or bel in used_bels:
                     raise ValidationError("PackedSiteNetlist reuses a BEL")
@@ -843,22 +878,36 @@ def _validate_streamed_physical_handoff(
 
             kind = cluster.get("kind")
             if kind == "slice":
-                if (
-                    sum(cells[name].get("type") in LUT_TYPES for name in instances)
-                    > len(SLICE_LUT_BELS)
-                    or sum(cells[name].get("type") in FF_TYPES for name in instances)
-                    > len(SLICE_FF_BELS)
+                if sum(item["cell_type"] in LUT_TYPES for item in assignments) > len(
+                    SLICE_LUT_BELS
+                ) or sum(item["cell_type"] in FF_TYPES for item in assignments) > len(
+                    SLICE_FF_BELS
                 ):
                     raise ValidationError("slice cluster exceeds physical capacity")
-                control_sets = _slice_ff_control_sets(cells, assignments)
+                # The site owns at most sixteen FFs. Read each once; the
+                # independent semantic checker consumes only this local scope.
+                control_cells = {
+                    item["instance"]: cells[item["instance"]]
+                    for item in assignments
+                    if item["cell_type"] in FF_TYPES
+                }
+                control_sets = _slice_ff_control_sets(control_cells, assignments)
                 _validate_declared_slice_control_sets(cluster, control_sets)
             elif kind == "carry":
-                carry = [name for name in instances if cells[name].get("type") == "CARRY8"]
-                adapters = [name for name in instances if cells[name].get("type") == DUAL_OUTPUT_LUT_TYPE]
+                carry = [
+                    item["instance"]
+                    for item in assignments
+                    if item["cell_type"] == "CARRY8"
+                ]
+                adapters = [
+                    item["instance"]
+                    for item in assignments
+                    if item["cell_type"] == DUAL_OUTPUT_LUT_TYPE
+                ]
                 if len(carry) != 1 or len(adapters) != 8 or len(instances) != 9:
                     raise ValidationError("carry cluster is invalid")
             elif kind == "hard":
-                cell_types = [cells[name].get("type") for name in instances]
+                cell_types = [item["cell_type"] for item in assignments]
                 if set(cell_types) == {"RAMB18E2"}:
                     if (
                         not 1 <= len(instances) <= 2
@@ -920,68 +969,73 @@ def _validate_streamed_physical_handoff(
         for bit in _bits(cells[assignment["instance"]], port)
         if isinstance(bit, int)
     }
-    # The compatibility validator rejects multiple drivers on every mapped
-    # integer net bit.  Keep that full semantic check on the streamed path,
-    # but put its design-sized uniqueness relation on disk.  The Python map is
-    # restricted to the MUX/CARRY bits needed by the topology checks below.
-    descriptor, driver_database_name = tempfile.mkstemp(
-        prefix=f".{path.name}.drivers.", suffix=".tmp", dir=path.parent
-    )
-    os.close(descriptor)
-    driver_database_path = Path(driver_database_name)
-    driver_database: Optional[sqlite3.Connection] = None
-    drivers: Dict[Any, str] = {}
-    try:
-        driver_database = sqlite3.connect(driver_database_path)
-        driver_database.execute("PRAGMA journal_mode=OFF")
-        driver_database.execute("PRAGMA synchronous=OFF")
-        driver_database.execute(
-            "CREATE TABLE driver (bit INTEGER PRIMARY KEY) WITHOUT ROWID"
+    # The native check covers every mapped integer output bit directly in its
+    # typed owner. Explicit JSON inputs use a disk-backed uniqueness relation.
+    # The Python map contains only the MUX/CARRY topology bits below.
+    if native_population is not None:
+        output_drivers = getattr(cells, "output_drivers", None)
+        if not callable(output_drivers):
+            raise ValidationError("typed mapped driver lookup is unavailable")
+        drivers = output_drivers(required_bits)
+    else:
+        descriptor, driver_database_name = tempfile.mkstemp(
+            prefix=f".{path.name}.drivers.", suffix=".tmp", dir=path.parent
         )
-        rows_since_commit = 0
-        items_by_id = getattr(cells, "items_by_id", None)
-        cell_rows = items_by_id() if callable(items_by_id) else cells.items()
-        for name, cell in cell_rows:
-            directions = cell.get("port_directions")
-            connections = cell.get("connections")
-            if not isinstance(directions, Mapping) or not isinstance(
-                connections, Mapping
-            ):
-                raise ValidationError(f"cell {name!r} lacks explicit port metadata")
-            for port, direction in directions.items():
-                if direction != "output":
-                    continue
-                bits = connections.get(port, [])
-                if not isinstance(bits, list):
-                    raise ValidationError(
-                        f"cell {name!r} output {port!r} is invalid"
-                    )
-                for bit in bits:
-                    if not isinstance(bit, int):
+        os.close(descriptor)
+        driver_database_path = Path(driver_database_name)
+        driver_database: Optional[sqlite3.Connection] = None
+        drivers: Dict[Any, str] = {}
+        try:
+            driver_database = sqlite3.connect(driver_database_path)
+            driver_database.execute("PRAGMA journal_mode=OFF")
+            driver_database.execute("PRAGMA synchronous=OFF")
+            driver_database.execute(
+                "CREATE TABLE driver (bit INTEGER PRIMARY KEY) WITHOUT ROWID"
+            )
+            rows_since_commit = 0
+            items_by_id = getattr(cells, "items_by_id", None)
+            cell_rows = items_by_id() if callable(items_by_id) else cells.items()
+            for name, cell in cell_rows:
+                directions = cell.get("port_directions")
+                connections = cell.get("connections")
+                if not isinstance(directions, Mapping) or not isinstance(
+                    connections, Mapping
+                ):
+                    raise ValidationError(f"cell {name!r} lacks explicit port metadata")
+                for port, direction in directions.items():
+                    if direction != "output":
                         continue
-                    try:
-                        driver_database.execute(
-                            "INSERT INTO driver(bit) VALUES (?)", (bit,)
-                        )
-                    except sqlite3.IntegrityError as error:
+                    bits = connections.get(port, [])
+                    if not isinstance(bits, list):
                         raise ValidationError(
-                            f"mapped net bit {bit} has multiple drivers"
-                        ) from error
-                    if bit in required_bits:
-                        drivers[bit] = name
-                    rows_since_commit += 1
-                    if rows_since_commit >= 65_536:
-                        driver_database.commit()
-                        rows_since_commit = 0
-        driver_database.commit()
-    except sqlite3.Error as error:
-        raise ValidationError(
-            "failed to validate mapped net driver uniqueness"
-        ) from error
-    finally:
-        if driver_database is not None:
-            driver_database.close()
-        driver_database_path.unlink(missing_ok=True)
+                            f"cell {name!r} output {port!r} is invalid"
+                        )
+                    for bit in bits:
+                        if not isinstance(bit, int):
+                            continue
+                        try:
+                            driver_database.execute(
+                                "INSERT INTO driver(bit) VALUES (?)", (bit,)
+                            )
+                        except sqlite3.IntegrityError as error:
+                            raise ValidationError(
+                                f"mapped net bit {bit} has multiple drivers"
+                            ) from error
+                        if bit in required_bits:
+                            drivers[bit] = name
+                        rows_since_commit += 1
+                        if rows_since_commit >= 65_536:
+                            driver_database.commit()
+                            rows_since_commit = 0
+            driver_database.commit()
+        except sqlite3.Error as error:
+            raise ValidationError(
+                "failed to validate mapped net driver uniqueness"
+            ) from error
+        finally:
+            if driver_database is not None:
+                driver_database.close()
+            driver_database_path.unlink(missing_ok=True)
     if _slice_site_pin_conflicts(cells, special_clusters, drivers):
         raise ValidationError("slice external site pin assignment is invalid")
     for cluster in special_clusters:
@@ -1069,14 +1123,25 @@ def _validate_streamed_physical_handoff(
     digest = handoff_sha
     return (
         {
-            "status": "pass", "schema": "emuflow.packed-site-netlist-validation/v1",
-            "cells": len(cells), "clusters": cluster_count,
-            "architecture_checked": True, "packed_sha256": digest,
+            "status": "pass",
+            "schema": "emuflow.packed-site-netlist-validation/v1",
+            "cells": len(cells),
+            "clusters": cluster_count,
+            "architecture_checked": True,
+            "packed_sha256": digest,
+            **(
+                {"source_population_validation": native_population}
+                if native_population is not None
+                else {}
+            ),
         },
         {
-            "status": "pass", "schema": "emuflow.xilinx-placement-validation/v1",
-            "clusters": cluster_count, "cells": assignment_count,
-            "cascade_chains": len(cascades), "placement_sha256": digest,
+            "status": "pass",
+            "schema": "emuflow.xilinx-placement-validation/v1",
+            "clusters": cluster_count,
+            "cells": assignment_count,
+            "cascade_chains": len(cascades),
+            "placement_sha256": digest,
         },
     )
 
@@ -1175,6 +1240,9 @@ def _materialize_typed_physical_handoff(
     mapped = read_json(mapped_path) if mapped_value is None else mapped_value
     if not isinstance(mapped, Mapping):
         raise ValidationError("OpenPARF bridge inputs are invalid")
+    if getattr(mapped, "schema", None) == "emuflow.xilinx-mapped-index/v2":
+        mapped.require_source_unchanged()
+        handoff_builder.bind_sources([mapped.path])
     descriptor = certificate.get("cluster_storage")
     if isinstance(descriptor, Mapping):
         filename = descriptor.get("file")
@@ -1478,20 +1546,23 @@ def _materialize_typed_physical_handoff(
             time.perf_counter() - step_started
         )
         step_started = time.perf_counter()
-        packing_validation, placement_validation = (
-            _validate_streamed_physical_handoff(
-                temporary_handoff,
-                handoff_sha=handoff_validation["physical_handoff_sha256"],
-                mapped_sha=mapped_sha,
-                selected_top=selected_top,
-                cells=cells,
-                architecture_path=architecture_path,
-                architecture=architecture,
-                packed=validation_packed,
-                placement=validation_placement,
-                constraints_path=constraints_path,
-                native=native,
-            )
+        packing_validation, placement_validation = _validate_streamed_physical_handoff(
+            temporary_handoff,
+            handoff_sha=handoff_validation["physical_handoff_sha256"],
+            mapped_sha=mapped_sha,
+            selected_top=selected_top,
+            cells=cells,
+            architecture_path=architecture_path,
+            architecture=architecture,
+            packed=validation_packed,
+            placement=validation_placement,
+            constraints_path=constraints_path,
+            native=native,
+            mapped_index_path=(
+                mapped.path
+                if getattr(mapped, "schema", None) == "emuflow.xilinx-mapped-index/v2"
+                else None
+            ),
         )
         publication_steps["packing_validation_seconds"] = (
             time.perf_counter() - step_started
@@ -1522,22 +1593,20 @@ def _materialize_typed_physical_handoff(
     publication_validation_seconds = time.perf_counter() - publication_started
     return {
         "schema": OPENPARF_ATOMIC_BRIDGE_REPORT_SCHEMA,
-        "status": "pass", "top": selected_top,
+        "status": "pass",
+        "top": selected_top,
         "source": {
             "mapped_sha256": mapped_sha,
             "architecture_sha256": architecture_sha,
             "openparf_atomic_placement_sha256": certificate_sha,
-            "source_packed_sha256": (
-                source_packed_sha
-            ),
-            "constraints_sha256": (
-                constraints_sha
-            ),
+            "source_packed_sha256": (source_packed_sha),
+            "constraints_sha256": (constraints_sha),
         },
         "packed_sha256": published_digest,
         "placement_sha256": published_digest,
         "physical_handoff_sha256": published_digest,
-        "cells": len(cells), "placed_cells": len(cells) - len(constants),
+        "cells": len(cells),
+        "placed_cells": len(cells) - len(constants),
         "clusters": cluster_count,
         "site_pin_moved_ffs": site_pin_legalization["moved_ffs"],
         "site_pin_repaired_sites": site_pin_legalization["sites"],
@@ -1549,9 +1618,7 @@ def _materialize_typed_physical_handoff(
         "runtime_breakdown": {
             "schema": "emuflow.openparf-bridge-runtime/v1",
             "certificate_validation_seconds": certificate_validation_seconds,
-            "publication_and_validation_seconds": (
-                publication_validation_seconds
-            ),
+            "publication_and_validation_seconds": (publication_validation_seconds),
             "publication_steps": publication_steps,
             "total_seconds": time.perf_counter() - bridge_started,
             "rows": {
@@ -1564,37 +1631,26 @@ def _materialize_typed_physical_handoff(
                 "placement_certificate_database": certificate_database_bytes,
                 "packed_output": 0,
                 "placement_output": 0,
-                "physical_handoff": (
-                    physical_handoff_path.stat().st_size
-                ),
+                "physical_handoff": (physical_handoff_path.stat().st_size),
             },
             "dataflow": {
                 "certificate": "streaming-sqlite",
-                "bridge_contracts": (
-                    "incremental-typed-single-owner-dual-view-v1"
-                ),
-                "certificate_to_handoff": (
-                    "validated-cluster-direct-typed-row"
-                ),
-                "legalization_working_set": (
-                    "mux-slice-clusters-only"
-                ),
-                "certificate_assignment_ownership": (
-                    "typed-unique-index-and-count"
-                ),
-                "handoff_publication": (
-                    "validate-temporary-before-atomic-replace"
-                ),
+                "bridge_contracts": ("incremental-typed-single-owner-dual-view-v1"),
+                "certificate_to_handoff": ("validated-cluster-direct-typed-row"),
+                "legalization_working_set": ("mux-slice-clusters-only"),
+                "certificate_assignment_ownership": ("typed-unique-index-and-count"),
+                "handoff_publication": ("validate-temporary-before-atomic-replace"),
                 "physical_contract_validation": (
-                    "sqlite-single-scan-ordered-merge-bounded-special-subgraph"
+                    "native-typed-population-with-local-site-semantics-v1"
+                    if "source_population_validation" in packing_validation
+                    else "sqlite-single-scan-ordered-merge-bounded-special-subgraph"
                 ),
                 "source_packed": (
-                    "in-process-view" if source_packed_value is not None
+                    "in-process-view"
+                    if source_packed_value is not None
                     else "serialized-compatibility"
                 ),
-                "published_values": (
-                    "lazy-typed-sqlite-views"
-                ),
+                "published_values": ("lazy-typed-sqlite-views"),
                 "validation_replay": False,
             },
         },

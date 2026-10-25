@@ -1,5 +1,6 @@
 #include "emuflow_core/native_pipeline.hpp"
 #include "emuflow_core/route_seal.hpp"
+#include "emuflow_core/physical_cells.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/native_stages.hpp"
 #include "emuflow_core/schedule_store.hpp"
@@ -22,6 +23,7 @@ namespace emuflow::native {
 const char* StageName(Stage stage) {
   switch (stage) {
     case Stage::kInvalid: return "native.request";
+    case Stage::kValidatePhysicalCells: return "phase7.validate-physical-cells";
     case Stage::kSealRoutes: return "phase4.seal-routes";
     case Stage::kImportVivadoLineage: return "phase7.import-vivado-lineage";
     case Stage::kExportRwroute: return "phase7.export-rwroute";
@@ -51,6 +53,7 @@ namespace {
 std::vector<std::string> InputSchemas(const StageRequest& request) {
   switch (request.stage) {
     case Stage::kInvalid: break;
+    case Stage::kValidatePhysicalCells: return {"xilinx-mapped-index-v2","xilinx-physical-handoff-v1","physical-cell-check-request-v1"};
     case Stage::kSealRoutes: return {"system-route-store-v3","system-route-seal-request-v1"};
     case Stage::kImportVivadoLineage: {
       auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
@@ -206,6 +209,8 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       return;
     }
     switch (request.stage) {
+      case Stage::kValidatePhysicalCells:
+        core::ValidatePhysicalCells(inputs[0],inputs[1],inputs[2],output); break;
       case Stage::kImportVivadoLineage:
         core::ImportVivadoLineage(inputs,output,request.auxiliary_output_path); break;
       case Stage::kExportRwroute:
@@ -239,6 +244,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
   }, [&]() {
     const char* schema = nullptr;
     switch (request.stage) {
+      case Stage::kValidatePhysicalCells: schema = "physical-cell-check-summary-v1"; break;
       case Stage::kImportVivadoLineage: schema = "vivado-lineage-store-v2"; break;
       case Stage::kExportRwroute: schema = "rwroute-input-tsv-v1"; break;
       case Stage::kPublishAssignmentIndex: schema = "assignment-index-v4"; break;

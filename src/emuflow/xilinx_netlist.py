@@ -17,6 +17,7 @@ from .emuir_storage import _RowsForOwner, _decode, open_emuir_sqlite_read_only
 from .equivalence import _lut_definition
 from .errors import ValidationError
 from .io import file_sha256, write_json
+from .native_tools import native_file_generation
 from .ir import EmuIR
 from .resources import ResourceVector
 from .vivado_netlist import lower_vivado_primitives
@@ -195,12 +196,59 @@ class _IndexedCells(_IndexedRecords):
         ):
             yield str(row[0]), str(row[1])
 
+    def items_of_types(
+        self, cell_types: Iterable[str]
+    ) -> Iterator[Tuple[str, Mapping[str, Any]]]:
+        """Reconstruct only a requested physical subgraph from its typed owner."""
+        kinds = tuple(sorted(set(cell_types)))
+        if not kinds:
+            return
+        if len(kinds) > 64 or any(
+            not isinstance(kind, str) or not kind for kind in kinds
+        ):
+            raise ValidationError("mapped primitive projection is invalid")
+        slots = ",".join("?" for _ in kinds)
+        pins = _RowsForOwner(
+            self.connection.execute(
+                "SELECT p.* FROM cell_pins p JOIN cells c ON c.seq=p.cell_seq "
+                f"WHERE c.type IN ({slots}) ORDER BY p.cell_seq,p.port,p.port_bit",
+                kinds,
+            ),
+            "cell_seq",
+        )
+        for row in self.connection.execute(
+            f"SELECT id,seq,record_json FROM cells WHERE type IN ({slots}) ORDER BY seq",
+            kinds,
+        ):
+            value = json.loads(row["record_json"])
+            if not isinstance(value, dict):
+                raise ValidationError(f"indexed mapped record {row['id']!r} is invalid")
+            yield str(row["id"]), self._with_pins(
+                value, iter(pins.take(int(row["seq"])))
+            )
+        pins.finish()
+
+    def output_drivers(self, required_bits: Iterable[int]) -> Dict[int, str]:
+        """Read the bounded topology subgraph after complete native validation."""
+        drivers = {}
+        for bit in sorted(required_bits):
+            rows = self.connection.execute(
+                "SELECT cell_id FROM cell_pins WHERE value_kind=0 AND direction=1 AND net_bit=? LIMIT 2",
+                (bit,),
+            ).fetchall()
+            if len(rows) > 1:
+                raise ValidationError(f"mapped net bit {bit} has multiple drivers")
+            if rows:
+                drivers[bit] = str(rows[0][0])
+        return drivers
+
 
 class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
     """Bounded read interface for a production Xilinx mapped netlist."""
 
     def __init__(self, path: Path):
         self.path = path
+        self.source_generation = native_file_generation(path)
         self.connection = sqlite3.connect(
             immutable_sqlite_uri(path),
             uri=True,
@@ -240,6 +288,19 @@ class IndexedXilinxMappedNetlist(MappingABC[str, Any]):
         # A private, detached structural result for this immutable reader only.
         # It is never serialized or shared with another reader/experiment.
         self._derived_physical_macro_contract: Optional[Dict[str, Any]] = None
+        try:
+            self.require_source_unchanged()
+        except BaseException:
+            self.connection.close()
+            raise
+
+    def require_source_unchanged(self) -> None:
+        """A leased reader must still refer to the generation at its path."""
+        try:
+            if native_file_generation(self.path) != self.source_generation:
+                raise ValidationError("indexed mapped source generation changed")
+        except OSError as error:
+            raise ValidationError("indexed mapped source generation changed") from error
 
     def __getitem__(self, key: str) -> Any:
         if key == "creator":

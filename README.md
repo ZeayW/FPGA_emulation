@@ -141,7 +141,10 @@ candidate comparator are retired. The maintained Xilinx implementations are
 OpenPARF/RWRoute and Vivado. Production RWRoute export accepts only a mapped SQLite
 index and one typed physical handoff. The OpenPARF bridge also publishes only
 that single store from a typed placement certificate; separate packing and
-placement JSON output is retired. The separate carry-only adapter/bridge is
+placement JSON output is retired. Indexed physical handoffs independently check
+complete cell ownership, typed pin coverage and output-driver uniqueness in the
+shared native core; local FF, site/BEL and macro checks remain required.
+The separate carry-only adapter/bridge is
 removed; CARRY8/LUT6_2 use the maintained mixed atomic backend. OpenPARF exposes all
 qualified sites; its density target does not remove physical sites or impose a
 second 75% clock-region cap. The old JSON exporter

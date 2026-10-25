@@ -429,3 +429,21 @@ Virtual region encodings and RUDY remain lookahead heuristics. Actual fixed
 wires, whole-bank static direction and electrical constraints remain mandatory.
 This interface does not itself establish real-device Chimew QoR, board signoff
 or complete NVDLA Phase 1–7/7C qualification.
+
+## Indexed handoff population validation
+
+`emuflow-native phase7 validate-physical-cells MAPPED PHYSICAL REQUEST SUMMARY`
+checks the current mapped-index v2 and typed physical-handoff v1 owners directly.
+Its checked request binds both input generations and the expected mapped identity
+and top. Source/assignment coverage is checked in both directions, constants are
+accounted for separately, each pin retains its source owner and complete port
+ordinal range, and output-driver uniqueness covers the entire mapped population.
+The result is a compact summary published through the shared source-bound writer.
+A failed check cannot replace the physical handoff or a prior summary.
+
+This population check complements the bridge's per-site FF control, capacity,
+site/BEL, region and native BRAM checks and its MUX/CARRY/cascade topology checks.
+It does not replace routing, fixed-I/O, resource-budget or final timing acceptance.
+Cascade discovery queries only its requested primitive families. Topology driver
+lookups read the required bits from the mapped pin owner after the complete native
+uniqueness check, rather than rebuilding the complete driver population.

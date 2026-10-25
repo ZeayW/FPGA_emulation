@@ -195,6 +195,17 @@ and lifetime. The schema registry also names mapped/physical handoffs
 and boundary, logic-segment and local-path timing stores. Their phase-specific
 readers and independent electrical/timing validators retain semantic authority.
 
+The indexed OpenPARF bridge calls `phase7 validate-physical-cells` before
+publishing its handoff. The shared `SqliteStore` readers compare both directions
+of mapped/physical ownership, constant membership, pin owners and complete port
+ordinals, then check every mapped integer output bit for duplicate drivers.
+Only a bounded checked request and result cross the process boundary; no Python
+cell catalog, pin reconstruction or second all-driver database is used for these
+checks. The caller still checks geometry and FF controls independently per site,
+and validates MUX/CARRY topology and dedicated cascades. Native errors stop
+publication; they never select the Python checker as a fallback. Explicit logical
+JSON qualification inputs retain their existing mapping checks.
+
 Static Exact analysis and the four Chimew kernels have no standalone production
 wrappers or separate build targets. Chimew grouping, refinement and bank/channel
 assignment expose only typed inputs; the old text parsers, writers and registry

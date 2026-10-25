@@ -571,7 +571,9 @@ def _cascade_cells_by_type(
     result: Dict[str, Dict[str, Mapping[str, Any]]] = {
         cell_type: {} for cell_type in CASCADE_PORTS
     }
-    for name, cell in cells.items():
+    projected = getattr(cells, "items_of_types", None)
+    source = projected(CASCADE_PORTS) if callable(projected) else cells.items()
+    for name, cell in source:
         if not isinstance(cell, Mapping):
             continue
         cell_type = cell.get("type")

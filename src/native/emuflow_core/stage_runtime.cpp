@@ -17,6 +17,8 @@
 namespace emuflow::core {
 namespace {
 constexpr RegisteredSchema schemas[] = {
+    {"physical-cell-check-request-v1", ArtifactEncoding::kBinary, 0x31564350464d5545ULL, 1},
+    {"physical-cell-check-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"assignment-publication-request-v1", ArtifactEncoding::kBinary, 0x31514241554d5545ULL, 1},
     {"xilinx-physical-handoff-v1", ArtifactEncoding::kSqlite, 0x454d5550, 1, true,
      "SELECT schema FROM manifest WHERE singleton=1","emuflow.xilinx-physical-handoff-sqlite/v1"},
