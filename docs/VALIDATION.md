@@ -291,8 +291,9 @@ record oracle on semantic, nonsemantic, Unicode, sparse and empty inputs. Poison
 host iteration and JSON formatting must not affect normal validation. Negative
 cases cover orphan/missing/self references, ownership, order, incomplete and
 mistyped scalars, metadata, versions and invalid UTF-8; the source and previous
-summary must remain unchanged. A large ordered storage fixture verifies complete
-identity and bounded host memory; it is not circuit or feature qualification.
+summary must remain unchanged. Paired ordered storage populations verify complete identity and bounded host
+memory growth after protocol warmup, separately from fixed interpreter/subprocess
+buffers. This storage fixture is not circuit or feature qualification.
 Malformed or oversized native summaries and source-generation changes reject
 without a host fallback. Native node/capture fixture scopes explicitly close
 mapped owners on success and exceptions before replacing files or retiring their

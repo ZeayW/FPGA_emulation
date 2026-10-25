@@ -294,62 +294,70 @@ def test_native_summary_rejection_has_no_host_fallback(source, tmp_path, kind):
 
 def test_large_ordered_cut_relation_has_bounded_host_memory(source, tmp_path):
     """Storage stress only; these records are not a circuit or feature claim."""
+    import gc
     import tracemalloc
 
     path = published(source, tmp_path)
-    count = 100_000
-    digest = hashlib.sha256()
+    peaks = {}
+    for count in (1_000, 100_000):
+        digest = hashlib.sha256()
 
-    # Construct a declared record population independently from native code.
-    # Reference JSON is emitted once, outside the measured production call.
-    def records():
-        for i in range(count):
-            net = f"cut{i:06d}"
-            predecessor = [f"cut{i-1:06d}"] if i else []
-            row = {
-                "net": net,
-                "cut_class": "combinational",
-                "source_fpgas": ["a"],
-                "sink_fpgas": ["b"],
-                "sink_endpoints": 3,
-                "dependency_level": i,
-                "combinational_dependency_depth": i,
-                "predecessor_cut_nets": predecessor,
-            }
-            digest.update(
-                json.dumps(row, sort_keys=True, separators=(",", ":")).encode()
+        # Reference records are prepared outside the production measurement.
+        def records():
+            for i in range(count):
+                net = f"cut{i:06d}"
+                predecessor = [f"cut{i-1:06d}"] if i else []
+                row = {
+                    "net": net,
+                    "cut_class": "combinational",
+                    "source_fpgas": ["a"],
+                    "sink_fpgas": ["b"],
+                    "sink_endpoints": 3,
+                    "dependency_level": i,
+                    "combinational_dependency_depth": i,
+                    "predecessor_cut_nets": predecessor,
+                }
+                digest.update(
+                    json.dumps(row, sort_keys=True, separators=(",", ":")).encode()
+                )
+                digest.update(b"\n")
+                yield i, net, 0, "combinational", 3, None, i, i
+
+        with closing(sqlite3.connect(path)) as db, db:
+            db.execute("DELETE FROM cut_predecessors")
+            db.execute("DELETE FROM cut_sinks")
+            db.execute("DELETE FROM cuts")
+            db.executemany("INSERT INTO cuts VALUES(?,?,?,?,?,?,?,?)", records())
+            db.executemany(
+                "INSERT INTO cut_sinks VALUES(?,0,1)",
+                ((f"cut{i:06d}",) for i in range(count)),
             )
-            digest.update(b"\n")
-            yield i, net, 0, "combinational", 3, None, i, i
-
-    with closing(sqlite3.connect(path)) as db, db:
-        db.execute("DELETE FROM cut_predecessors")
-        db.execute("DELETE FROM cut_sinks")
-        db.execute("DELETE FROM cuts")
-        db.executemany("INSERT INTO cuts VALUES(?,?,?,?,?,?,?,?)", records())
-        db.executemany(
-            "INSERT INTO cut_sinks VALUES(?,0,1)",
-            ((f"cut{i:06d}",) for i in range(count)),
-        )
-        db.executemany(
-            "INSERT INTO cut_predecessors VALUES(?,0,?)",
-            ((i, f"cut{i-1:06d}") for i in range(1, count)),
-        )
-        db.execute("UPDATE metadata SET value=? WHERE key='cut_records'", (str(count),))
-        db.execute(
-            "UPDATE metadata SET value=? WHERE key='cut_records_sha256'",
-            (json.dumps(digest.hexdigest()),),
-        )
-    with patch(
-        "emuflow.phase3_assignment_index._iter_cut_records",
-        side_effect=AssertionError("host cut population"),
-    ):
-        tracemalloc.start()
-        try:
-            summary = validate_native_assignment_cuts(path)
-            peak = tracemalloc.get_traced_memory()[1]
-        finally:
-            tracemalloc.stop()
-    assert summary["records"] == count and summary["sinks"] == count
-    assert summary["sha256"] == digest.hexdigest()
-    assert peak < 2 * 1024 * 1024
+            db.executemany(
+                "INSERT INTO cut_predecessors VALUES(?,0,?)",
+                ((i, f"cut{i-1:06d}") for i in range(1, count)),
+            )
+            db.execute(
+                "UPDATE metadata SET value=? WHERE key='cut_records'", (str(count),)
+            )
+            db.execute(
+                "UPDATE metadata SET value=? WHERE key='cut_records_sha256'",
+                (json.dumps(digest.hexdigest()),),
+            )
+        with patch(
+            "emuflow.phase3_assignment_index._iter_cut_records",
+            side_effect=AssertionError("host cut population"),
+        ):
+            # Warm protocol/import caches and settle reference-only objects.
+            # Interpreter/subprocess fixed buffers are unrelated to cut count.
+            validate_native_assignment_cuts(path)
+            gc.collect()
+            tracemalloc.start()
+            try:
+                summary = validate_native_assignment_cuts(path)
+                peaks[count] = tracemalloc.get_traced_memory()[1]
+            finally:
+                tracemalloc.stop()
+        assert summary["records"] == count and summary["sinks"] == count
+        assert summary["sha256"] == digest.hexdigest()
+    # A 100x record increase must not add a cut population to the host heap.
+    assert peaks[100_000] <= peaks[1_000] + 256 * 1024, peaks
