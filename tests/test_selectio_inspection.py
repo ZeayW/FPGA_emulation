@@ -27,7 +27,7 @@ proc get_ipdefs {args} {return xilinx.com:ip:high_speed_selectio_wiz:3.6}
 proc create_ip {args} {}
 proc get_ips {args} {return probe}
 proc list_property {ip} {return {CONFIG.BUS_DIR CONFIG.SERIALIZATION_FACTOR}}
-proc set_property {flag settings ip} {set ::properties $settings}
+proc set_property {property value ip} {dict set ::properties $property $value}
 proc get_property {property ip} {return [dict get $::properties $property]}
 proc version {args} {return 2024.2}
 proc generate_target {target ip} {set ::generated 1}
@@ -35,7 +35,7 @@ proc report_ip_status {flag path} {set stream [open $path w];puts $stream genera
 proc close_project {} {if {![info exists ::generated]} {error "output generation missing"}}
 '''
     if ignore:
-        source += '\nrename set_property accepted_set_property\nproc set_property {flag settings ip} {set ::properties [dict replace $settings CONFIG.BUS_DIR 1]}\n'
+        source += '\nrename set_property accepted_set_property\nproc set_property {property value ip} {dict set ::properties $property [expr {$property eq "CONFIG.BUS_DIR" ? 1 : $value}]}\n'
     arguments = ['xcpart', str(output), str(config)]
     source += '\nset argv [list '+' '.join(_tcl_word(x) for x in arguments)+']\nset argc 3\n'
     source += 'source '+_tcl_word(ROOT/'scripts/vivado/inspect_selectio_ip.tcl')+'\n'

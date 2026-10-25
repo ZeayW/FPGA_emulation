@@ -314,3 +314,19 @@ def test_postopt_preflight_rejects_a_facts_stage_mismatch(tmp_path):
     session["source_preflight_stage"] = "optimized"
     with pytest.raises(ValidationError, match="different preplacement stage"):
         confirm_frontiers(session)
+
+
+@pytest.mark.skipif(shutil.which("tclsh") is None, reason="Tcl interpreter required")
+def test_native_child_preserves_explicit_runtime_installation(tmp_path, monkeypatch):
+    selected = tmp_path/'selected runtime [1]'
+    selected.mkdir()
+    monkeypatch.setenv("EMUFLOW_NATIVE_ROOT", str(selected))
+    out = tmp_path/'out';out.mkdir()
+    runtime = {"fabric_clock":{"period_ns":5},"virtual_dut_clocks":{"clk":{"target_period_ns":100}},
+               "timing_model":{"fabric_clock_port":"fabric_clk","dut_clock_ports":["clk"]}}
+    config = prepare_manifest(out, fpga="fpga0", part="part", mapped_index=tmp_path/'mapped',
+        functions=tmp_path/'functions', mapped_sha256='a'*64, queries={}, runtime=runtime, ports={"clk","fabric_clk"})
+    code = f"source {_tcl_word(config)}\nputs [lsearch -inline $emuflow_child_command {{EMUFLOW_NATIVE_ROOT=*}}]\n"
+    result = subprocess.run([shutil.which("tclsh")], input=code, text=True, capture_output=True, check=True)
+    assert not result.stderr
+    assert result.stdout.strip() == 'EMUFLOW_NATIVE_ROOT='+str(selected)

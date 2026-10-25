@@ -37,11 +37,14 @@ if {[catch {
     }
     close $stream
     if {[dict size $settings] == 0} {error "empty SelectIO configuration"}
-    set_property -dict $settings $ip
+    # Parameters can enable later controls; preserve the declared TSV order.
+    dict for {property requested} $settings {set_property $property $requested $ip}
     dict for {property requested} $settings {
       set actual [get_property $property $ip]
       if {$actual ne $requested && !([string is double -strict $actual] &&
-          [string is double -strict $requested] && $actual == $requested)} {
+          [string is double -strict $requested] && $actual == $requested) &&
+          !([string is boolean -strict $actual] && [string is boolean -strict $requested] &&
+            bool($actual) == bool($requested))} {
         error "SelectIO configuration was ignored or changed: $property requested=$requested observed=$actual"
       }
     }

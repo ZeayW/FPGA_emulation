@@ -57,6 +57,8 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
     environment = {"PATH":str(Path(sys.executable).parent)+os.pathsep+"/usr/bin:/bin",
         "PYTHONPATH":str(Path(__file__).resolve().parents[1]), "PYTHONDONTWRITEBYTECODE":"1",
         "TMPDIR":str(output/".tmp"), "SQLITE_TMPDIR":str(output/".tmp")}
+    if os.environ.get("EMUFLOW_NATIVE_ROOT"):
+        environment["EMUFLOW_NATIVE_ROOT"] = str(Path(os.environ["EMUFLOW_NATIVE_ROOT"]).expanduser().resolve())
     if "LD_LIBRARY_PATH" in os.environ:
         environment["LD_LIBRARY_PATH"] = os.environ["LD_LIBRARY_PATH"]
     command = ["/usr/bin/env","-i",*(f"{key}={value}" for key,value in environment.items()),
