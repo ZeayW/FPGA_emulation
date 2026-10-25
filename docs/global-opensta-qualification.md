@@ -53,7 +53,10 @@ cross-FPGA delay conservatively. After scheduling, per-signal timing is
 resolved from the actual execution events instead of assigning the same ratio
 estimate to every member. This is the contract required for the
 [8:1 PHY reference](HARDWARE_PLATFORM.md#serial-phy-time-units); the current
-one-bit-per-fabric-cycle adapter has not qualified its implementation.
+one-bit-per-fabric-cycle adapter has not qualified its implementation. Native
+Phase 5 word-table planning is available, while Phase 6 word transport/PHY and
+the physical periodic-event projection are not yet admitted. The global binder
+rejects such plans rather than assigning the pre-schedule ratio arc to them.
 
 For the bundled platform, the planning expression is
 `D_pre(R) = 30 ns + R * 0.625 ns = 30 ns + (R / 8) * 5 ns`.

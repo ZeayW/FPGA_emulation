@@ -28,7 +28,8 @@ distinguishes DUT and analysis clocks, parallel words, and serial bit intervals.
 The native planner can represent periodic eight-bit LVDS lane tables, with
 ratios in serial UIs and word events in TDM cycles. These explicit plans are
 rejected at the current direct-adapter Phase 6 boundary until word transport
-and PHY integration are qualified.
+and PHY integration are qualified. Global physical binding also rejects them
+until the periodic execution projection is available.
 Its required [timing contract](docs/global-opensta-qualification.md#ratio-estimates-and-schedule-resolved-phy-timing)
 distinguishes pre-schedule ratio estimates from post-schedule per-signal events.
 The indexed provider exports routed reports and timing in one native session

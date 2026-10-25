@@ -157,3 +157,9 @@ def test_word_plan_cannot_silently_enter_the_one_bit_one_shot_transport(tmp_path
         write_transport_systemverilog(tmp_path/"bad.sv", {}, platform)
     with pytest.raises(ValidationError, match="qualified word transport and PHY"):
         transport_to_systemverilog({}, platform)
+
+
+def test_word_plan_cannot_fall_back_to_uniform_ratio_arcs_in_global_physical_timing():
+    from emuflow.global_sta import bind_physical_checks
+    with pytest.raises(ValidationError, match="ratio estimates cannot substitute"):
+        bind_physical_checks({}, {}, {"transport_semantics":"sampled-virtual-wire"}, {}, Platform.from_dict(board()))

@@ -1970,6 +1970,8 @@ the Python event propagator or consume its per-path numerical results.
 
     if not is_fixed_slot_transport_schedule(schedule):
         raise ValidationError("global OpenSTA requires fixed-slot transport")
+    if any(link.word_timing is not None for link in platform.links):
+        raise ValidationError("periodic LVDS word physical event projection is not yet qualified; ratio estimates cannot substitute for execution events")
     endpoints = _endpoint_delay_database(physical)
     segments = _logic_segment_database(physical)
     links = _board_link_delay_database(physical, platform)
