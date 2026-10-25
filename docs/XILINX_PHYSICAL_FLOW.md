@@ -87,6 +87,17 @@ full physical capacity would optimize a different density than the overflow
 metric. Native startup independently checks both the budget and sampled
 area; new convergence certificates record the budget and its provider.
 Historical certificates remain readable with their recorded policy.
+ISM detailed placement uses the same configured routing and pin capacities
+as the analytical congestion estimators. Capacities must be finite and
+positive; zero defaults would produce invalid utilization and remove usable
+whitespace from matching. Each CLB/BLE/LUT-FF stage clears demand maps before
+accumulating current demand, then normalizes once. Pin demand uses its own
+bin area. These estimates guide whitespace selection; they do not certify
+physical routing capacity or replace exact RWRoute validation.
+An operator-only qualification build is available through
+`scripts/validation/build_openparf_ism.py`. The checked overlay installer
+accepts that exact-commit build receipt using `--native-ism-manifest`, checks
+the binary hash and Python ABI suffix, and retains the unchanged base runtime.
 The sampling constraint keeps
 each LUT/FF filler within half a density bin. Native startup validates the
 actual filler count, size, bin size, and span, and the convergence certificate

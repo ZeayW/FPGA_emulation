@@ -71,5 +71,11 @@ fillers. This matches the existing target-scaled fixed/background charge and
 overflow operator. Filler geometry retains the half-bin sampling bound; the
 EmuFlow driver independently validates the initial area budget before solving.
 
+ISM receives the configured routing/pin capacities and rejects nonpositive or
+nonfinite values. Its three matching stages reset demand maps before kernel
+accumulation and normalize pin demand by pin-bin area. This avoids mixing
+previous normalized utilization into fresh demand. A checked operator-only
+CMake build can replace ISM without modifying the base runtime.
+
 Large router example netlists are omitted because they are input data rather
 than implementation source.

@@ -1,4 +1,5 @@
 import hashlib
+import json
 import importlib.util
 from pathlib import Path
 import subprocess
@@ -29,6 +30,9 @@ class OpenParfPythonOverlayTests(unittest.TestCase):
             placement = source / "engines/openparf/openparf/placement"
             placement.mkdir(parents=True)
             params = source / "engines/openparf/openparf/params.json"
+            ism = source / "engines/openparf/openparf/ops/ism_dp"
+            ism.mkdir(parents=True)
+            (ism / "ism_dp.py").write_text("baseline ism\n")
             params.write_text("{\"step\": 1.002}\n")
             (placement / "placer.py").write_text("baseline\n")
             (placement / "data_collections.py").write_text("baseline data\n")
@@ -44,6 +48,11 @@ class OpenParfPythonOverlayTests(unittest.TestCase):
             commit = git("rev-parse", "HEAD")
             (base / "openparf/placement").mkdir(parents=True)
             (base / "openparf/ops").mkdir()
+            native_ism_dir = base / "openparf/ops/ism_dp"
+            native_ism_dir.mkdir()
+            (native_ism_dir / "ism_dp.py").write_text("baseline ism\n")
+            module_name = "ism_dp_cpp.cpython-38-x86_64-linux-gnu.so"
+            (native_ism_dir / module_name).write_bytes(b"old ISM")
             (base / "openparf/params.json").write_text("{\"step\": 1.002}\n")
             original = base / "openparf/placement/placer.py"
             original.write_text("baseline\n")
@@ -71,6 +80,27 @@ class OpenParfPythonOverlayTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "different placement"):
                 MODULE.deploy(source, base, root / "other", commit, baseline)
             original.write_text("baseline\n")
+            header = ism / "src/ism_detailed_placer.hpp"
+            header.parent.mkdir()
+            header.write_text("fresh utilization\n")
+            git("add", "."); git("commit", "-m", "native ISM fix")
+            ism_commit = git("rev-parse", "HEAD")
+            with self.assertRaisesRegex(RuntimeError, "Python-only"):
+                MODULE.deploy(source, base, root / "ism-output", ism_commit, baseline)
+            rebuilt = root / module_name
+            rebuilt.write_bytes(b"rebuilt ISM")
+            receipt = dict(status="built", provider="ism-utilization-capacity-and-fresh-demand-v1",
+                           source_commit=ism_commit, source_root=str(source.resolve()),
+                           binary=dict(path=str(rebuilt), sha256=hashlib.sha256(rebuilt.read_bytes()).hexdigest()))
+            receipt_path = root / "build.json"
+            receipt_path.write_text(json.dumps(receipt))
+            MODULE.deploy(source, base, root / "ism-output", ism_commit, baseline, receipt_path)
+            installed = root / "ism-output/openparf/ops/ism_dp"
+            self.assertEqual((installed / module_name).resolve(), rebuilt.resolve())
+            self.assertEqual((installed / "ism_dp.py").resolve(), (ism / "ism_dp.py").resolve())
+            rebuilt.write_bytes(b"tampered ISM")
+            with self.assertRaisesRegex(RuntimeError, "does not match its build receipt"):
+                MODULE.deploy(source, base, root / "tampered", ism_commit, baseline, receipt_path)
             (source / "engines/openparf/native.cpp").write_text("ABI change\n")
             git("add", "."); git("commit", "-m", "native change")
             with self.assertRaisesRegex(RuntimeError, "Python-only"):

@@ -94,6 +94,8 @@ Clock-region/site-type occupancy may use the complete nonoverlapping physical
 site capacity; routing headroom is measured by RWRoute instead of enforced by
 an additional placement cap.
 The native certificate records the effective count, geometry, and span.
+Detailed placement consumes the configured positive routing/pin capacities
+and rebuilds demand maps between its CLB, BLE, and LUT/FF matching stages.
 The `0.10` global-placement overflow target remains the normal analytical
 criterion. A representative placement triggers RUDY/pin feedback at `0.65`,
 samples eight post-adjustment iterates, and restores the sample with the lowest

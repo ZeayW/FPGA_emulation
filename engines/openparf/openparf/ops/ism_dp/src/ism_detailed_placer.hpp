@@ -11,6 +11,8 @@
 
 // C++ system library headers
 #include <algorithm>
+#include <cmath>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -104,6 +106,12 @@ class ISMDetailedPlacer {
         isCKAllowedInSite_(isCKAllowedInSite),
         honorClockConstraint_(honorClockConstraint),
         num_threads_(num_threads) {
+    for (auto value : {param_.unitHoriRouteCap, param_.unitVertRouteCap, param_.unitPinCap,
+                       param_.routeUtilBinW, param_.routeUtilBinH, param_.pinUtilBinW, param_.pinUtilBinH}) {
+      if (!std::isfinite(value) || value <= 0) {
+        throw std::invalid_argument("ISM routing/pin capacities and bin sizes must be finite and positive");
+      }
+    }
     state_.pos.resize(db_.numInsts() * 3);
     state_.pin_pos.resize(db_.numPins() * 2);
     state_.pos_xy.resize(db_.numInsts() * 2);
@@ -288,6 +296,13 @@ class ISMDetailedPlacer {
 
   /// Update routing and pin utiizations
   void updateRoutePinUtil() {
+    // Native demand kernels accumulate into their outputs. These maps held
+    // normalized utilization from the previous CLB/BLE stage, so reusing them
+    // as raw demand mixes units and retains stale placement information.
+    for (auto &map : state_.rudy_maps) {
+      std::fill(map.begin(), map.end(), 0);
+    }
+    std::fill(state_.pin_util_map.begin(), state_.pin_util_map.end(), 0);
     // Update routing utilization
     for (uint32_t i = 0; i < db_.numPins(); ++i) {
       int32_t inst_id           = db_.pin2Inst(i);
@@ -335,9 +350,15 @@ class ISMDetailedPlacer {
             std::make_pair(0, db_.numInsts()),
             /*deterministic_clag=*/1, num_threads_, state_.pin_util_map.data());
     // normalize to unit
-    auto pin_scale_factor = 1.0 / (bin_area * param_.unitPinCap);
+    auto pin_scale_factor = 1.0 / (param_.pinUtilBinW * param_.pinUtilBinH * param_.unitPinCap);
     for (auto &value : state_.pin_util_map) {
       value *= pin_scale_factor;
+    }
+    if (param_.verbose > 0) {
+      openparfPrint(kInfo, "ISM utilization: horizontal_max=%g vertical_max=%g pin_max=%g\n",
+                    *std::max_element(state_.rudy_maps[0].begin(), state_.rudy_maps[0].end()),
+                    *std::max_element(state_.rudy_maps[1].begin(), state_.rudy_maps[1].end()),
+                    *std::max_element(state_.pin_util_map.begin(), state_.pin_util_map.end()));
     }
   }
 

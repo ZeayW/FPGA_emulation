@@ -10,6 +10,7 @@ import torch
 from torch.autograd import Function
 from torch import nn
 import numpy as np
+import math
 import pdb
 
 from . import ism_dp_cpp
@@ -27,8 +28,8 @@ class ISMDetailedPlaceParam(object):
         self.routeUtilBinDimX = np.iinfo(np.int32).max
         # The bin dimension for routing estimation
         self.routeUtilBinDimY = np.iinfo(np.int32).max
-        self.unitHoriRouteCap = 0.0   # The unit horizontal routing capacity
-        self.unitVertRouteCap = 0.0   # The unit vertical routing capacity
+        self.unitHoriRouteCap = float(params.unit_horizontal_routing_capacity)
+        self.unitVertRouteCap = float(params.unit_vertical_routing_capacity)
 
         self.pinUtilBinW = 1.0   # The bin width for pin utilization estimation
         self.pinUtilBinH = 1.0   # The bin height for pin utilization estimation
@@ -36,7 +37,10 @@ class ISMDetailedPlaceParam(object):
         self.pinUtilBinDimX = np.iinfo(np.int32).max
         # The bin dimension for pin utilization estimation
         self.pinUtilBinDimY = np.iinfo(np.int32).max
-        self.unitPinCap = 0.0   # The unit pin capacity
+        self.unitPinCap = float(params.unit_pin_capacity)
+        if not all(math.isfinite(value) and value > 0 for value in
+                   (self.unitHoriRouteCap, self.unitVertRouteCap, self.unitPinCap)):
+            raise ValueError("ISM routing and pin capacities must be finite and positive")
         self.ffPinWeight = 3.0   # The weight of FF pins for pin density optimization
         # Stretch pin to a ratio of the pin utilization bin to smooth the density map
         self.pinStretchRatio = 1.414
