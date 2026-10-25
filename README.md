@@ -140,7 +140,9 @@ OpenPARF/RWRoute and Vivado. Production RWRoute export accepts only a mapped SQL
 index and one typed physical handoff. The OpenPARF bridge also publishes only
 that single store from a typed placement certificate; separate packing and
 placement JSON output is retired. The separate carry-only adapter/bridge is
-removed; CARRY8/LUT6_2 use the maintained mixed atomic backend. The old JSON exporter
+removed; CARRY8/LUT6_2 use the maintained mixed atomic backend. OpenPARF exposes all
+qualified sites; its density target does not remove physical sites or impose a
+second 75% clock-region cap. The old JSON exporter
 is a noninstalled qualification oracle; it has no production API or fallback. Chimew consumes
 their indexed Xilinx owners.
 The VTR/open execution route, engine source, standalone adapters and build

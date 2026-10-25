@@ -325,7 +325,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(contract["FF"]["movable_area"], 1 / 16)
         self.assertEqual(sites[0][1]["LUT"], 16)
 
-    def test_clock_region_site_headroom_is_reserved_before_placement(self):
+    def test_all_clock_region_sites_remain_available_to_placement(self):
         sites = []
         for x in range(2):
             for y in range(4):
@@ -337,18 +337,19 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                     },
                 }, {"LUT": 16, "FF": 16}))
 
-        available, contract = atomic_adapter._derate_clock_region_sites(sites)
+        available, contract = atomic_adapter._expose_all_clock_region_sites(sites)
 
         self.assertEqual(contract["status"], "pass")
-        self.assertEqual(contract["limit"], 0.75)
+        self.assertEqual(contract["limit"], 1.0)
+        self.assertEqual(contract["policy"], "full-qualified-site-domain")
         self.assertEqual(contract["original_sites"], 8)
-        self.assertEqual(contract["available_sites"], 6)
-        self.assertEqual(contract["reserved_sites"], 2)
+        self.assertEqual(contract["available_sites"], 8)
+        self.assertEqual(contract["reserved_sites"], 0)
         by_x = {}
         for site, _resources in available:
             by_x.setdefault(site["x"], []).append(site["y"])
-        self.assertEqual(sorted(by_x[0]), [0, 1, 2])
-        self.assertEqual(sorted(by_x[1]), [1, 2, 3])
+        self.assertEqual(sorted(by_x[0]), [0, 1, 2, 3])
+        self.assertEqual(sorted(by_x[1]), [0, 1, 2, 3])
 
     def test_site_geometry_preserves_empty_physical_rows(self):
         sites = [
@@ -757,7 +758,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         self.assertEqual(config["gp_adjust_area_max_pin_opt_adjust_rate"], 1.6)
         self.assertEqual(config["gp_adjust_resource_area"], 0)
         self.assertEqual(manifest["routability_contract"], {
-            "provider": "openparf-rudy-pin-stable-feasible-v7",
+            "provider": "openparf-rudy-pin-stable-feasible-full-sites-v8",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": 0.10,
             "diagnostic_legalization_handoff": {

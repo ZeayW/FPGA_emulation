@@ -201,7 +201,7 @@ class XilinxPlacementTest(unittest.TestCase):
                 "openparf-native-mcf-direct-lg-ism-atomic-bridge-v1"
             )
             value["policy"] = {
-                "clock_region_site_utilization_limit": 0.75,
+                "clock_region_site_utilization_limit": 1.0,
                 "capacity_rounding": "ceil-with-one-site-minimum",
                 "packing": "native-openparf-atomic-site-groups-v1",
                 "placement_certificate": "emuflow.openparf-atomic-placement/v2",
@@ -499,7 +499,7 @@ class XilinxPlacementTest(unittest.TestCase):
                     packed, arch, output, constraints_path=constraints
                 )
 
-    def test_clock_region_headroom_spreads_guidance_and_is_validated(self):
+    def test_clock_region_uses_full_nonoverlapping_site_capacity(self):
         architecture = {
             "schema": "emuflow.archdb/v1", "part": "xcvu19p-density-test",
             "source": {"format": "unit-test/v1"},
@@ -567,38 +567,16 @@ class XilinxPlacementTest(unittest.TestCase):
                 )
             self.assertEqual(
                 {key: len(entries) for key, entries in placed_by_region.items()},
-                {"X0Y0": 6, "X1Y0": 1},
+                {"X0Y0": 7, "X1Y0": 0},
             )
             self.assertEqual(
                 result["summary"]["maximum_clock_region_site_utilization"],
-                0.75,
+                0.875,
             )
             self.assertEqual(
                 result["summary"]["maximum_clock_region_site_reservation"],
-                1.0,
+                0.875,
             )
-
-            # Move the spill cluster into the only unused site in the already
-            # full clock region. It remains a legal, non-overlapping SLICEL,
-            # so only the independent routability policy should reject it.
-            spill = placed_by_region["X1Y0"][0]
-            used = {entry["site"] for entry in placed_by_region["X0Y0"]}
-            replacement = next(
-                site for site in architecture["sites"]
-                if site["physical_region"]["clock_region"] == "X0Y0"
-                and site["name"] not in used
-            )
-            spill.update({
-                "site": replacement["name"],
-                "site_type": replacement["type"],
-                "x": replacement["x"], "y": replacement["y"],
-                "physical_region": replacement["physical_region"],
-            })
-            output.write_text(json.dumps(value), encoding="utf-8")
-            with self.assertRaisesRegex(
-                ValidationError, "clock-region site utilization limit"
-            ):
-                validate_xilinx_placement(packed_path, arch_path, output)
 
     def test_bram_anchor_requires_source_sealed_native_tile_group(self):
         architecture = {

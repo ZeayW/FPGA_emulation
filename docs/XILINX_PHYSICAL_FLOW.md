@@ -224,6 +224,14 @@ per-FPGA utilization limit is a whole-device capacity contract and does not
 implicitly create a pblock. Using the whole device lets the placer trade
 wirelength for lower local density and better routability.
 
+Clock-region/site-type buckets expose their complete nonoverlapping physical
+capacity. Analytical density reserves whitespace without deleting a fraction of
+qualified sites. Site/BEL uniqueness and whole-device resource limits remain hard
+checks; local utilization is diagnostic within physical capacity. RWRoute must
+still establish routability. The site-domain contract records
+`full-qualified-site-domain`; the routability policy is
+`openparf-rudy-pin-stable-feasible-full-sites-v8`.
+
 ## Detailed routing and validation
 
 The validated placement is passed to RWRoute. Routing is complete only when

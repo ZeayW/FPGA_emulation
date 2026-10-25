@@ -292,6 +292,29 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
                     physical_cluster_sink=lambda _cluster: None,
                 )
 
+    def test_region_capacity_uses_all_sites_and_rejects_physical_overuse(self):
+        from collections import Counter
+        from emuflow.xilinx_openparf_bridge import _local_utilization_summary
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _mapped, architecture, _certificate = _native_certificate(root, include_hard=False)
+            value = json.loads(architecture.read_text())
+            for site in value["sites"]:
+                site["physical_region"] = {"slr": "SLR0", "clock_region": "X0Y0"}
+            architecture.write_text(json.dumps(value))
+            device = ArchitectureDB.load(architecture)
+            capacity = Counter()
+            for site in device.value["sites"]:
+                region = site.get("physical_region")
+                if region and region.get("clock_region"):
+                    capacity[(region["slr"], region["clock_region"], site["type"])] += 1
+            self.assertTrue(capacity)
+            summary = _local_utilization_summary(device, capacity)
+            self.assertEqual(summary["maximum_clock_region_site_utilization"], 1.0)
+            capacity[next(iter(capacity))] += 1
+            with self.assertRaisesRegex(ValidationError, "clock-region site limit"):
+                _local_utilization_summary(device, capacity)
+
     def test_public_bridge_only_accepts_one_output(self):
         from emuflow.xilinx_openparf_bridge import materialize_xilinx_openparf_atomic_contract as typed_bridge
         with self.assertRaises(TypeError):

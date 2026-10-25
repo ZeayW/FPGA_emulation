@@ -127,7 +127,6 @@ OPENPARF_FF_CONTROL_LEGALIZATION_SCHEMA = (
 OPENPARF_RESULT_CHECKPOINT_SCHEMA = "emuflow.openparf-result-checkpoint/v1"
 _TARGET_DENSITY = 0.75
 _QUALIFIED_LUTS_PER_SLICE = 8
-_CLOCK_REGION_SITE_UTILIZATION_LIMIT = 0.75
 _GLOBAL_PLACEMENT_STOP_OVERFLOW = 0.10
 _DIAGNOSTIC_HANDOFF_OVERFLOW = 0.25
 _DIAGNOSTIC_HANDOFF_PATIENCE = 64
@@ -2647,101 +2646,43 @@ def _clock_region_site_key(
     return slr, clock_region, site_type
 
 
-def _derate_clock_region_sites(
+def _expose_all_clock_region_sites(
     sites: Sequence[Tuple[Mapping[str, Any], Mapping[str, int]]],
 ) -> Tuple[
     List[Tuple[Mapping[str, Any], Mapping[str, int]]], Dict[str, Any]
 ]:
-    """Reserve physical placement headroom before OpenPARF legalization.
+    """Expose every qualified physical site to placement and legalization.
 
-    Global analytical target density is not a local clock-region occupancy
-    constraint.  Expose at most 75% of each (SLR, clock region, site type) to
-    every downstream legalizer.  Each physical column retains one contiguous
-    run, alternating its reserved edge across columns, so dedicated vertical
-    chains remain useful while the reservation is spatially distributed.
+    Analytical target density already reserves whitespace. Removing another
+    fraction of the sites would apply the same headroom twice and distort its
+    spatial distribution before the density optimizer can choose where that
+    whitespace is useful.
     """
 
-    groups: Dict[
-        Tuple[str, str, str],
-        List[Tuple[Mapping[str, Any], Mapping[str, int]]],
-    ] = defaultdict(list)
-    passthrough = []
+    groups: Counter = Counter()
     for item in sites:
         key = _clock_region_site_key(item[0])
-        if key is None:
-            passthrough.append(item)
-        else:
-            groups[key].append(item)
+        if key is not None:
+            groups[key] += 1
     if not groups:
         return list(sites), {
-            "status": "not-applicable", "limit": None,
+            "status": "not-applicable",
+            "policy": "full-qualified-site-domain",
+            "limit": None,
             "groups": 0, "original_sites": len(sites),
             "available_sites": len(sites), "reserved_sites": 0,
         }
 
-    selected_names = {item[0]["name"] for item in passthrough}
-    group_available = []
-    for key, group in sorted(groups.items()):
-        limit = max(
-            1,
-            int(math.ceil(
-                len(group) * _CLOCK_REGION_SITE_UTILIZATION_LIMIT
-            )),
-        )
-        columns: Dict[int, List[Tuple[Mapping[str, Any], Mapping[str, int]]]] = (
-            defaultdict(list)
-        )
-        for item in group:
-            columns[int(item[0]["x"])].append(item)
-        ordered_columns = []
-        for x, column in sorted(columns.items()):
-            column.sort(key=lambda item: (int(item[0]["y"]), item[0]["name"]))
-            ordered_columns.append((x, column))
-
-        allocations = [
-            int(math.floor(
-                len(column) * _CLOCK_REGION_SITE_UTILIZATION_LIMIT
-            ))
-            for _x, column in ordered_columns
-        ]
-        remaining = limit - sum(allocations)
-        for index in range(remaining):
-            allocations[index % len(allocations)] += 1
-
-        for index, ((_x, column), count) in enumerate(
-            zip(ordered_columns, allocations)
-        ):
-            if count <= 0:
-                continue
-            if len(ordered_columns) == 1:
-                start = (len(column) - count) // 2
-            elif index % 2:
-                start = len(column) - count
-            else:
-                start = 0
-            selected_names.update(
-                item[0]["name"] for item in column[start:start + count]
-            )
-        available = sum(
-            item[0]["name"] in selected_names for item in group
-        )
-        if available != limit:
-            raise ValidationError(
-                f"clock-region site derating failed for {key!r}: "
-                f"available={available}, limit={limit}"
-            )
-        group_available.append(available)
-
-    result = [item for item in sites if item[0]["name"] in selected_names]
-    return result, {
+    return list(sites), {
         "status": "pass",
-        "limit": _CLOCK_REGION_SITE_UTILIZATION_LIMIT,
+        "policy": "full-qualified-site-domain",
+        "limit": 1.0,
         "groups": len(groups),
         "original_sites": len(sites),
-        "available_sites": len(result),
-        "reserved_sites": len(sites) - len(result),
-        "minimum_group_available_sites": min(group_available),
-        "maximum_group_available_sites": max(group_available),
+        "available_sites": len(sites),
+        "reserved_sites": 0,
+        "minimum_group_available_sites": min(groups.values()),
+        "maximum_group_available_sites": max(groups.values()),
     }
 
 
@@ -3941,7 +3882,7 @@ def _render_site_geometry(
             "physical_region": group["physical_region"],
         })
     # OpenPARF extends each entry to the next entry in its column. Terminate
-    # each logic site after one row: physical gaps and derated sites are not
+    # each logic site after one row: physical gaps are not
     # extra placement area. Hard-resource spans retain their native height.
     # Legalizer position tensors use the center of that box, while the emitted
     # .pl file is written back using its lower-left dense coordinate.  Preserve
@@ -4281,7 +4222,7 @@ def _device_static_geometry(
                 and item[0]["physical_region"].get("slr") in selected_slrs
             ]
         placement_region = _validate_native_placement_region(sites)
-        sites, site_headroom_contract = _derate_clock_region_sites(sites)
+        sites, site_headroom_contract = _expose_all_clock_region_sites(sites)
         placement_region = {
             **placement_region,
             "available_logic_sites": sum(
@@ -4800,7 +4741,7 @@ def export_xilinx_openparf_atomic(
         native_carry_chains = filtered_native_carry_chains
         if not native_carry_chains:
             raise ValidationError(
-                "clock-region site derating removed every CARRY_NEXT window"
+                "available site domain contains no CARRY_NEXT window"
             )
         chain_set_id = "native:CARRY_NEXT"
         site_chain_sets.append({
@@ -5194,7 +5135,7 @@ def export_xilinx_openparf_atomic(
         "site_headroom_contract": device_static["site_headroom_contract"],
         "density_contract": density_contract,
         "routability_contract": {
-            "provider": "openparf-rudy-pin-stable-feasible-v7",
+            "provider": "openparf-rudy-pin-stable-feasible-full-sites-v8",
             "area_types": ["LUT", "FF"],
             "global_placement_stop_overflow": (
                 _GLOBAL_PLACEMENT_STOP_OVERFLOW

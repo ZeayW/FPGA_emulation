@@ -25,7 +25,7 @@ XILINX_EXACT_SITE_LEGALIZER_PROVIDER = (
 XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER = (
     "openparf-native-mcf-direct-lg-ism-atomic-bridge-v1"
 )
-XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT = 0.75
+XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT = 1.0
 _SITE_XY_RE = re.compile(r"^(?P<kind>[A-Z0-9_]+)_X(?P<x>\d+)Y(?P<y>\d+)$")
 
 
