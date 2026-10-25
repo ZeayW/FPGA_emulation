@@ -276,6 +276,17 @@ and final validation, compare full independent balance reports, and require
 coverage, catalog, version, checksum, generation, ownership and capacity failures
 to preserve any previously published output.
 
+Native cut publication compares every SQL record, the canonical cut digest and
+exact-binary bytes with the independent reference writer. Tests poison host cut
+expansion and normalization only during native production; the separate output
+validator still runs normally. Coverage includes Unicode identities,
+noncanonical source order, sparse endpoint ordinals and zero cuts. Malformed
+requests and source-bound node envelopes, identities, ownership, offsets and
+launch flags must reject without replacing the prior index/binary pair. Node and
+capture generation changes, including ctime-only changes after independent
+validation, must fail before pair commit. These are component gates; full Phase 3
+and complete NVDLA acceptance still require their declared real-design evidence.
+
 ## Timing acceptance
 
 Native compact capture contracts compare complete output bytes with the explicit

@@ -25,6 +25,7 @@ from typing import Any
 
 from .errors import ValidationError
 from .native_columns import _ColumnOwner
+from .native_tools import native_file_generation
 
 
 STATIC_EXACT_RECORD_STREAM_SCHEMA = "emuflow.static-exact-record-stream/v1"
@@ -410,6 +411,7 @@ def read_native_static_exact_cut_node_stream(path: Path) -> StaticExactCutNodeSe
     views = []
     result = None
     try:
+        generation = native_file_generation(path)
         with path.open("rb") as stream:
             data = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
         owner = _ColumnOwner(data)
@@ -439,6 +441,11 @@ def read_native_static_exact_cut_node_stream(path: Path) -> StaticExactCutNodeSe
                 return struct.unpack_from(f"<{predecessor_count}I", data, end - 4 * predecessor_count)
             result.native_dependency_indices = dependency_indices
         result.native_semantic_artifact_path = path
+        if native_file_generation(path) != generation:
+            raise ValidationError(
+                "native semantic record generation changed while mapping"
+            )
+        result.native_semantic_generation = generation
         result._bind_native_mapping(owner)
         return result
     except (OSError, ValueError, struct.error) as error:
@@ -719,6 +726,7 @@ def read_native_static_exact_capture_stream(path: Path) -> StaticExactCaptureSeq
     owner = None
     result = None
     try:
+        generation = native_file_generation(path)
         with path.open("rb") as stream:
             data = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
         owner = _ColumnOwner(data)
@@ -780,6 +788,11 @@ def read_native_static_exact_capture_stream(path: Path) -> StaticExactCaptureSeq
         result = StaticExactCaptureSequence(count, records, binaries)
         result._binary_indexer = binary
         result.native_capture_artifact_path = path
+        if native_file_generation(path) != generation:
+            raise ValidationError(
+                "native semantic record generation changed while mapping"
+            )
+        result.native_capture_generation = generation
         result._bind_native_mapping(owner)
         return result
     except (OSError, ValueError, struct.error) as error:

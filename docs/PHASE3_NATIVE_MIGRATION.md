@@ -563,26 +563,39 @@ unknown versions, truncation, corruption and mixed generations fail closed.
 
 ## Assignment index publication
 
-`emuflow-native phase3 publish-assignment EMUIR PRIMARY REQUEST OUTPUT` publishes
-current assignment v4 through the shared `SqliteArtifactWriter`. Its source-bound
-request carries integer cluster ownership, the FPGA catalog, metadata and ordered
-cut records. The C++ owner joins primary ownership with the paired EmuIR cell
-cursor and writes primary copies directly; Python never expands or transfers
-instance records for this operation. Both native and reference writers use the
-same installed SQL schema. CMake, compiler-only fixture builds and deployment
-builds generate the native header from those authoritative SQL files.
+`emuflow-native phase3 publish-assignment EMUIR PRIMARY REQUEST [NATIVE_NODES] OUTPUT`
+publishes current assignment v4 through the shared `SqliteArtifactWriter`.
+The C++ owner joins primary ownership with the paired EmuIR cell cursor and writes
+primary copies directly; Python never expands or transfers instance records for
+this operation. With final native semantic nodes, the v2 request carries their
+original file generation, integer cluster ownership, FPGA catalogs, bounded
+metadata and one uint64 endpoint count per cut. The C++ reader consumes ordered
+cut identities, ownership and predecessors directly from that node artifact,
+using the shared bounded semantic-record decoder. It does not receive another
+host-generated cut/predecessor record protocol. The compact cut owner lends its
+existing count column; an already materialized noncanonical-source cut list
+projects only counts. This does not remove that earlier list-construction cost.
+
+The explicit v1 request remains for current nonsemantic and Python-reference
+semantic producers. Missing or changed native ownership fails; it never selects
+v1 as recovery. Both native and reference writers use the same installed SQL
+schema. CMake, compiler-only fixture builds and deployment builds generate the
+native header from those authoritative SQL files.
 
 The producer checks source generations, counts, ownership, cut order and
-predecessor coverage. The separate typed-index validator still checks the output,
+predecessor coverage. Original node and capture generations remain bound through
+independent validation and final index/binary pair publication, including ctime
+changes. The separate typed-index validator still checks the output,
 canonical cut digest and exact contract. Only then does the host publish the
 index/binary pair and its descriptor. Failed requests or validation preserve the
 previous pair, including failures before the previous binary can be moved aside.
 A selected native failure does not retry through the reference writer.
 
 The phase report records `assignment_index_writer_implementation_id` and native
-writer metrics. This closes the Python instance-row publication boundary; policy
-conversion, host cut-record emission and other remaining publication work retain
-their explicit migration obligations. It does not qualify complete Phase 3 costs
+writer metrics, including native/host cut counts and request bytes. This closes
+the Python instance-row and final native-cut request boundaries; policy
+conversion, initial cut construction, reference inputs and other remaining
+publication work retain their explicit migration obligations. It does not qualify complete Phase 3 costs
 or complete native compilation without the required real-design measurements.
 
 ## Physical and timing contracts

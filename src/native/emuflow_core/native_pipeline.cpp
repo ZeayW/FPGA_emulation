@@ -71,7 +71,12 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     case Stage::kExportRwroute: return {"xilinx-mapped-index-v2","xilinx-physical-handoff-v1","rwroute-export-request-v2"};
     case Stage::kBuildCaptures: return {"emuir-compact-v2","exact-indexed-request-v4","exact-topology-v3","exact-parts-v1"};
     case Stage::kValidateCaptures: return {"emuir-compact-v2","exact-indexed-request-v4","exact-topology-v3","exact-parts-v1","exact-captures-v1"};
-    case Stage::kPublishAssignmentIndex: return {"emuir-compact-v2","partition-cluster-columns-v2","assignment-publication-request-v1"};
+    case Stage::kPublishAssignmentIndex: {
+      const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
+      if(count==3) return {"emuir-compact-v2","partition-cluster-columns-v2","assignment-publication-request-v1"};
+      if(count==4) return {"emuir-compact-v2","partition-cluster-columns-v2","assignment-publication-request-v2","exact-nodes-v2"};
+      throw core::StageError(core::ErrorCode::kInvalidRequest,"assignment publication input coverage disagrees");
+    }
     case Stage::kPublishClusterCatalog: {
       auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
       if(count!=3 && count!=4) throw core::StageError(core::ErrorCode::kInvalidRequest,"cluster catalog source count disagrees");

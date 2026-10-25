@@ -4,6 +4,8 @@
 #include "emuflow_core/primary_cluster_view.hpp"
 #include "emuflow_core/json_record.hpp"
 #include "emuflow_core/hash.hpp"
+#include "emuflow_core/ordered_record_table.hpp"
+#include <memory>
 #include <algorithm>
 #include <map>
 #include <set>
@@ -40,11 +42,12 @@ void Put(SqliteStatement& statement,const std::string& key,const std::string& va
 }
 }
 void PublishAssignmentIndex(const std::vector<ArtifactRef>& inputs,const std::string& output) {
-  Check(inputs.size()==3,"assignment publication source coverage disagrees");
+  Check(inputs.size()==3 || inputs.size()==4,"assignment publication source coverage disagrees");
+  const bool native_cuts=inputs.size()==4;
   CheckedRequestReader request(inputs[2].path(),inputs[2].generation().bytes);
-  Check(request.Read<std::uint64_t>()==0x31514241554d5545ULL && request.Read<std::uint32_t>()==1,
+  Check(request.Read<std::uint64_t>()==0x31514241554d5545ULL && request.Read<std::uint32_t>()==(native_cuts?2U:1U),
         "unsupported assignment publication request");
-  for (unsigned i=0;i<2;++i) {
+  for (unsigned i=0;i<(native_cuts?3U:2U);++i) {
     FileGeneration generation;
     generation.device=request.Read<std::uint64_t>();
     generation.inode=request.Read<std::uint64_t>();
@@ -53,7 +56,7 @@ void PublishAssignmentIndex(const std::vector<ArtifactRef>& inputs,const std::st
     generation.modified_nanoseconds=request.Read<std::int64_t>();
     generation.changed_seconds=request.Read<std::int64_t>();
     generation.changed_nanoseconds=request.Read<std::int64_t>();
-    if (!(generation==inputs[i].generation()))
+    if (!(generation==inputs[i==2?3:i].generation()))
       throw StageError(ErrorCode::kMixedGeneration,"assignment publication source generation changed");
   }
   const auto parts=Catalog(request),ownership_parts=Catalog(request);
@@ -124,32 +127,65 @@ void PublishAssignmentIndex(const std::vector<ArtifactRef>& inputs,const std::st
     auto sinks=database.Prepare("INSERT INTO cut_sinks VALUES(?,?,?)");
     auto predecessors=database.Prepare("INSERT INTO cut_predecessors VALUES(?,?,?)");
     const auto cut_count=request.Read<std::uint64_t>();
-    Check(cut_count<=static_cast<std::uint64_t>(INT64_MAX) && cut_count<=request.remaining()/48,
-          "assignment cut count is invalid");
+    Check(cut_count<=static_cast<std::uint64_t>(INT64_MAX) &&
+          cut_count<=request.remaining()/(native_cuts?8:48),"assignment cut count is invalid");
+    std::unique_ptr<OrderedRecordTable> nodes;
+    if(native_cuts) {
+      nodes=std::make_unique<OrderedRecordTable>(inputs[3].path(),0x314E4553464D5545ULL,2);
+      Check(nodes->count==cut_count,"assignment native cut coverage disagrees");
+    }
+    auto part_index=[&](const std::string& name) {
+      const auto found=std::lower_bound(parts.begin(),parts.end(),name);
+      Check(found!=parts.end() && *found==name,"assignment native cut references an unknown FPGA");
+      return static_cast<std::uint32_t>(found-parts.begin());
+    };
+    auto identity=[](const std::string& name) {
+      Check(!name.empty() && name.find('\0')==std::string::npos,"assignment native identity is invalid");
+      JsonQuote(name);return name;
+    };
     Sha256 digest; std::string previous;
     for (std::uint64_t i=0;i<cut_count;++i) {
-      const auto net=Identity(request),cut_class=Identity(request);
+      std::string net,cut_class;
+      std::uint32_t source_part=0;
+      std::vector<std::uint32_t> sink_parts;
+      std::vector<std::string> predecessor_values;
+      std::uint64_t endpoints=0;
+      std::int64_t round=-1,level=-1,depth=-1;
+      if(native_cuts) {
+        auto node=ReadExactNodeRecord(*nodes);
+        net=identity(node.net);cut_class=identity(node.kind);source_part=part_index(node.source);
+        Check(!node.sinks.empty() && node.sinks.size()<parts.size(),"assignment native sink coverage is invalid");
+        for(const auto& sink:node.sinks) sink_parts.push_back(part_index(sink));
+        endpoints=request.Read<std::uint64_t>();level=node.level;depth=node.depth;
+        predecessor_values=std::move(node.predecessors);
+      } else {
+        net=Identity(request);cut_class=Identity(request);
+        source_part=request.Read<std::uint32_t>();const auto sink_count=request.Read<std::uint32_t>();
+        Check(source_part<parts.size() && sink_count && sink_count<parts.size() && sink_count<=request.remaining()/4,
+              "assignment cut ownership is invalid");
+        for(std::uint32_t j=0;j<sink_count;++j) sink_parts.push_back(request.Read<std::uint32_t>());
+        endpoints=request.Read<std::uint64_t>();
+        round=request.Read<std::int64_t>();level=request.Read<std::int64_t>();depth=request.Read<std::int64_t>();
+        const auto count=request.Read<std::uint32_t>();
+        Check(count<=request.remaining()/4,"assignment predecessor count is invalid");
+        for(std::uint32_t j=0;j<count;++j) predecessor_values.push_back(Identity(request));
+      }
       Check(i==0 || previous<net,"assignment cut order is not canonical");previous=net;
-      const auto source_part=request.Read<std::uint32_t>(),sink_count=request.Read<std::uint32_t>();
-      Check(source_part<parts.size() && sink_count && sink_count<parts.size() && sink_count<=request.remaining()/4,
-            "assignment cut ownership is invalid");
-      std::vector<JsonRecord> sink_names; std::uint32_t previous_sink=0;
-      for (std::uint32_t j=0;j<sink_count;++j) {
-        const auto sink=request.Read<std::uint32_t>();
+      Check(source_part<parts.size(),"assignment cut source is invalid");
+      std::vector<JsonRecord> sink_names;std::uint32_t previous_sink=0;
+      for(std::size_t j=0;j<sink_parts.size();++j) {
+        const auto sink=sink_parts[j];
         Check(sink<parts.size() && sink!=source_part && (j==0 || previous_sink<sink),
               "assignment cut sink order is invalid");previous_sink=sink;
         sinks.BindText(1,net);sinks.BindInteger(2,source_part);sinks.BindInteger(3,sink);sinks.Execute();sinks.Reset();
         sink_names.emplace_back(parts[sink]);
       }
-      const auto endpoints=request.Read<std::uint64_t>();
-      const auto round=request.Read<std::int64_t>(),level=request.Read<std::int64_t>(),depth=request.Read<std::int64_t>();
-      const auto predecessor_count=request.Read<std::uint32_t>();
       Check(endpoints && endpoints<=INT64_MAX && round>=-1 && level>=-1 && depth>=-1 &&
-            ((level<0)==(depth<0)) && (level>=0 || predecessor_count==0) &&
-            predecessor_count<=request.remaining()/4,"assignment cut dependency fields are invalid");
-      std::vector<JsonRecord> predecessor_names; std::string previous_predecessor;
-      for (std::uint32_t j=0;j<predecessor_count;++j) {
-        const auto predecessor=Identity(request);
+            ((level<0)==(depth<0)) && (level>=0 || predecessor_values.empty()),
+            "assignment cut dependency fields are invalid");
+      std::vector<JsonRecord> predecessor_names;std::string previous_predecessor;
+      for(std::size_t j=0;j<predecessor_values.size();++j) {
+        const auto& predecessor=predecessor_values[j];identity(predecessor);
         Check(predecessor!=net && (j==0 || previous_predecessor<predecessor),
               "assignment predecessor order is invalid");previous_predecessor=predecessor;
         predecessors.BindInteger(1,i);predecessors.BindInteger(2,j);predecessors.BindText(3,predecessor);
@@ -173,6 +209,7 @@ void PublishAssignmentIndex(const std::vector<ArtifactRef>& inputs,const std::st
       const auto canonical=JsonRecord(std::move(record)).Encode()+"\n";
       digest.update(reinterpret_cast<const unsigned char*>(canonical.data()),canonical.size());
     }
+    if(nodes) nodes->reader.RequireEnd();
     request.RequireEnd();
     Put(metadata,"cut_records_schema",JsonQuote("emuflow.phase3-cut-records/v1"));
     Put(metadata,"cut_records",std::to_string(cut_count));

@@ -4,6 +4,7 @@ This consumer independently sums primary resources under the final assignment;
 it never accepts an optimizer's cached loads or expands cell/member records.
 """
 from array import array
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
@@ -98,6 +99,75 @@ def reduce_native_partition_loads(clusters, assignment, fpga_ids, *, metrics=Non
     return dict(zip(dimensions, totals)), loads_by_part, counts_by_part
 
 
+@dataclass(frozen=True)
+class NativeAssignmentCutSource:
+    paths: tuple
+    generations: tuple
+    endpoint_counts: object
+
+
+def native_assignment_cut_source(assignment):
+    """Borrow final native nodes and the already paired compact count column.
+
+    Reference/nonsemantic inputs still use their current explicit-record request.
+    Once native nodes exist, missing or changed ownership is an error, never a
+    reason to rebuild the records through the host compatibility protocol.
+    """
+    from .partition import _StaticExactCutNetRecords
+
+    cuts = assignment.get("cut_nets")
+    contract = assignment.get("semantic_contract")
+    nodes = (
+        cuts._nodes
+        if isinstance(cuts, _StaticExactCutNetRecords)
+        else contract.get("cut_nodes") if isinstance(contract, dict) else None
+    )
+    path = getattr(nodes, "native_semantic_artifact_path", None)
+    if path is None:
+        if getattr(nodes, "native_semantic_version", None) is not None:
+            raise ValidationError("native assignment semantic artifact is missing")
+        return None
+    source = getattr(nodes, "direct_binary_source", None)
+    if (
+        not isinstance(contract, dict)
+        or contract.get("cut_nodes") is not nodes
+        or source is None
+        or getattr(nodes, "native_semantic_version", None) != 2
+    ):
+        raise ValidationError("native assignment semantic owner is missing or mixed")
+    paths = source.native_record_paths()
+    if isinstance(cuts, _StaticExactCutNetRecords):
+        counts = cuts._cuts._sink_endpoints
+    elif type(cuts) is list:
+        # A noncanonical source-order reference can already own plain records.
+        # Carry only its endpoint column, never normalize/re-emit names or edges.
+        counts = array("Q")
+        for cut in cuts:
+            value = cut.get("sink_endpoints") if isinstance(cut, dict) else None
+            if type(value) is not int or not 0 < value < 2**64:
+                raise ValidationError("native assignment endpoint count is invalid")
+            counts.append(value)
+    else:
+        raise ValidationError("native assignment cut owner is unavailable")
+    generations = (
+        getattr(nodes, "native_semantic_generation", None),
+        getattr(source.captures, "native_capture_generation", None),
+    )
+    if (
+        paths is None
+        or Path(path).resolve() != paths[0]
+        or any(generation is None for generation in generations)
+        or len(counts) != len(cuts)
+        or len(cuts) != len(nodes)
+        or counts.itemsize != 8
+        or sys.byteorder != "little"
+    ):
+        raise ValidationError("native assignment semantic source dimensions disagree")
+    if tuple(native_file_generation(p) for p in paths) != generations:
+        raise ValidationError("native assignment semantic generation changed")
+    return NativeAssignmentCutSource(paths, generations, counts)
+
+
 def publish_native_assignment_index(path, ir, assignment, part_ids, metadata):
     """Publish current typed ownership without iterating source instances in Python."""
     from .native_protocol import CheckedRequestWriter
@@ -120,13 +190,17 @@ def publish_native_assignment_index(path, ir, assignment, part_ids, metadata):
     if not isinstance(raw_cuts, list):
         raise ValidationError('cut-net assignment is invalid')
     part_index = {part: index for index, part in enumerate(part_ids)}
+    cut_source = native_assignment_cut_source(assignment)
+    cut_version = 2 if cut_source is not None else 1
     with tempfile.TemporaryDirectory(prefix='emuflow-assignment-publish-', dir=path.parent) as temporary:
         request = Path(temporary) / 'request.bin'
         writer = CheckedRequestWriter(request)
         try:
-            writer.put('QI', 0x31514241554D5545, 1)
+            writer.put("QI", 0x31514241554D5545, cut_version)
             for generation in generations:
                 writer.put('3Q4q', *generation)
+            if cut_source is not None:
+                writer.put("3Q4q", *cut_source.generations[0])
             writer.catalog(part_ids)
             writer.catalog(instance_assignment.part_ids)
             writer.put('QQ', len(instance_assignment._cluster_parts), len(instance_assignment))
@@ -136,24 +210,44 @@ def publish_native_assignment_index(path, ir, assignment, part_ids, metadata):
                 writer.text(key)
                 writer.text(_json(value))
             writer.put('Q', len(raw_cuts))
-            for raw in raw_cuts:
-                cut = _normalized_cut_record(raw, part_index)
-                writer.text(cut['net'])
-                writer.text(cut['cut_class'])
-                writer.put('II', part_index[cut['source_fpgas'][0]], len(cut['sink_fpgas']))
-                for sink in cut['sink_fpgas']:
-                    writer.put('I', part_index[sink])
-                writer.put('Qqqq', cut['sink_endpoints'], cut.get('transport_round', -1),
-                           cut.get('dependency_level', -1), cut.get('combinational_dependency_depth', -1))
-                predecessors = cut.get('predecessor_cut_nets', ())
-                writer.put('I', len(predecessors))
-                for predecessor in predecessors:
-                    writer.text(predecessor)
+            if cut_source is not None:
+                writer.bytes(cut_source.endpoint_counts)
+            else:
+                for raw in raw_cuts:
+                    cut = _normalized_cut_record(raw, part_index)
+                    writer.text(cut["net"])
+                    writer.text(cut["cut_class"])
+                    writer.put(
+                        "II", part_index[cut["source_fpgas"][0]], len(cut["sink_fpgas"])
+                    )
+                    for sink in cut["sink_fpgas"]:
+                        writer.put("I", part_index[sink])
+                    writer.put(
+                        "Qqqq",
+                        cut["sink_endpoints"],
+                        cut.get("transport_round", -1),
+                        cut.get("dependency_level", -1),
+                        cut.get("combinational_dependency_depth", -1),
+                    )
+                    predecessors = cut.get("predecessor_cut_nets", ())
+                    writer.put("I", len(predecessors))
+                    for predecessor in predecessors:
+                        writer.text(predecessor)
             writer.finish()
         finally:
             writer.close()
         executable = resolve_native_executable('emuflow-native')
-        command = [executable, 'phase3', 'publish-assignment', str(source), str(primary), str(request), str(path)]
+        command = [
+            executable,
+            "phase3",
+            "publish-assignment",
+            str(source),
+            str(primary),
+            str(request),
+        ]
+        if cut_source is not None:
+            command.append(str(cut_source.paths[0]))
+        command.append(str(path))
         with NativeToolProcess(executable, command, environment=dict(os.environ),
                                timeout_ms=21600000, scratch_parent=Path(temporary)) as process:
             completed = process.finish()
@@ -161,4 +255,15 @@ def publish_native_assignment_index(path, ir, assignment, part_ids, metadata):
             raise ValidationError('native assignment publication failed: ' + completed.stdout)
         if tuple(native_file_generation(p) for p in (source, primary)) != generations:
             raise ValidationError('native assignment publication source generation changed')
-        return completed.native_metrics
+        if (
+            cut_source is not None
+            and tuple(native_file_generation(p) for p in cut_source.paths)
+            != cut_source.generations
+        ):
+            raise ValidationError("native assignment semantic generation changed")
+        return dict(
+            completed.native_metrics,
+            native_cut_records=len(raw_cuts) if cut_source is not None else 0,
+            host_cut_records=0 if cut_source is not None else len(raw_cuts),
+            cut_request_bytes=request.stat().st_size,
+        )

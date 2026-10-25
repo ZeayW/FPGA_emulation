@@ -374,6 +374,19 @@ def write_phase3_assignment_index(
                 instance_assignment._native_primary_generation,
             ),
         )
+    if native_owner:
+        from .phase3_assignment_native import native_assignment_cut_source
+
+        cut_source = native_assignment_cut_source(assignment)
+        if cut_source is not None:
+            source_bindings += tuple(
+                StoreSource(source_path, schema, generation)
+                for source_path, schema, generation in zip(
+                    cut_source.paths,
+                    ("exact-nodes-v2", "exact-captures-v1"),
+                    cut_source.generations,
+                )
+            )
     source_bindings = validate_store_destination(path, source_bindings)
     assignment_parts = getattr(instance_assignment, "part_ids", None)
     if assignment_parts is None:

@@ -69,6 +69,8 @@ class NativeStageRuntimeTest(unittest.TestCase):
                 ["phase3", "analyze", missing],
                 ["phase3", "refine-hops", missing],
                 ["phase3", "reduce-loads", missing, missing, missing],
+                ["phase3", "publish-assignment", missing, missing, missing],
+                ["phase3", "publish-assignment", missing, missing, missing, missing],
                 ["phase3", "analyze", "--indexed-input", missing, missing],
                 ["phase3", "finalize-semantics", missing, missing],
                 ["phase3", "build-captures", missing, missing, missing, missing],

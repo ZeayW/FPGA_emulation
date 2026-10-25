@@ -43,6 +43,40 @@ class OrderedRecordTable {
   std::uint64_t size_ = 0, start_ = 0, end_ = 0, observed_ = 0;
 };
 
+struct ExactNodeRecord {
+  std::string net, kind, source;
+  std::uint32_t level, depth;
+  std::vector<std::string> sinks, predecessors, sources, captures;
+  std::uint8_t flag;
+  std::vector<std::uint32_t> predecessor_indices;
+};
+
+inline ExactNodeRecord ReadExactNodeRecord(OrderedRecordTable& table) {
+  table.Begin(); auto& r = table.reader;
+  ExactNodeRecord node;
+  node.net = r.ReadString32(); node.kind = r.ReadString32(); node.source = r.ReadString32();
+  node.level = r.Read<std::uint32_t>(); node.depth = r.Read<std::uint32_t>();
+  std::array<std::uint32_t,4> counts{};
+  std::uint64_t total = 0;
+  for (auto& count : counts) { count = r.Read<std::uint32_t>(); total += count; }
+  if (total > table.Remaining() / 5) throw std::runtime_error("native canonical node fields are truncated");
+  std::array<std::vector<std::string>*,4> lists{&node.sinks,&node.predecessors,&node.sources,&node.captures};
+  for (int i = 0; i < 4; ++i) for (std::uint32_t j = 0; j < counts[i]; ++j) lists[i]->push_back(r.ReadString32());
+  for (std::uint32_t i = 0; i < counts[1]; ++i) {
+    const auto ordinal = r.Read<std::uint32_t>();
+    if (ordinal >= table.count || (i && ordinal <= node.predecessor_indices.back())) {
+      throw std::runtime_error("native canonical predecessor coordinate is invalid");
+    }
+    node.predecessor_indices.push_back(ordinal);
+  }
+  node.flag = r.Read<std::uint8_t>();
+  if (node.flag > 2 || node.sources.size() != node.predecessors.size() + (node.flag != 0) ||
+      (node.flag == 2 && !node.predecessors.empty()) || (!node.flag && node.predecessors.empty())) {
+    throw std::runtime_error("native canonical launch semantics disagree");
+  }
+  table.End(); return node;
+}
+
 struct ExactCaptureRecord { std::string net, fpga, endpoint, port, bit; std::uint8_t kind; };
 
 inline ExactCaptureRecord ReadExactCaptureRecord(OrderedRecordTable& table) {

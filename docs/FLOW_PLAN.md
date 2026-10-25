@@ -193,7 +193,11 @@ The maintained owner boundary is below. Each public SQL owner uses the registere
 envelope, bound input generations and common closed-file publisher; phase-specific
 record construction and independent semantic validation remain with the named
 producer/consumer. This census does not imply that those algorithms have moved
-out of their Python adapters.
+out of their Python adapters. Final native Phase 3 semantic nodes feed assignment
+publication directly through the shared bounded decoder. Its request passes
+packed ownership and endpoint counts; it does not repeat cut names or predecessor
+lists. Original node/capture generations remain bound through final pair commit,
+and the independent typed-index/exact-binary checks remain required.
 
 | Artifact family | Producer owner | Maintained consumers |
 | --- | --- | --- |

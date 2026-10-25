@@ -1134,39 +1134,8 @@ std::string ExactBitDecimal(const std::string& bytes) {
 
 using ExactHashTable = emuflow::core::OrderedRecordTable;
 
-struct ExactHashNode {
-  std::string net, kind, source;
-  std::uint32_t level, depth;
-  std::vector<std::string> sinks, predecessors, sources, captures;
-  std::uint8_t flag;
-  std::vector<std::uint32_t> predecessor_indices;
-};
-
-ExactHashNode ReadExactHashNode(ExactHashTable& table) {
-  table.Begin(); auto& r = table.reader;
-  ExactHashNode node;
-  node.net = r.ReadString32(); node.kind = r.ReadString32(); node.source = r.ReadString32();
-  node.level = r.Read<std::uint32_t>(); node.depth = r.Read<std::uint32_t>();
-  std::array<std::uint32_t,4> counts{};
-  std::uint64_t total = 0;
-  for (auto& count : counts) { count = r.Read<std::uint32_t>(); total += count; }
-  if (total > table.Remaining() / 5) throw std::runtime_error("native canonical node fields are truncated");
-  std::array<std::vector<std::string>*,4> lists{&node.sinks,&node.predecessors,&node.sources,&node.captures};
-  for (int i = 0; i < 4; ++i) for (std::uint32_t j = 0; j < counts[i]; ++j) lists[i]->push_back(r.ReadString32());
-  for (std::uint32_t i = 0; i < counts[1]; ++i) {
-    const auto ordinal = r.Read<std::uint32_t>();
-    if (ordinal >= table.count || (i && ordinal <= node.predecessor_indices.back())) {
-      throw std::runtime_error("native canonical predecessor coordinate is invalid");
-    }
-    node.predecessor_indices.push_back(ordinal);
-  }
-  node.flag = r.Read<std::uint8_t>();
-  if (node.flag > 2 || node.sources.size() != node.predecessors.size() + (node.flag != 0) ||
-      (node.flag == 2 && !node.predecessors.empty()) || (!node.flag && node.predecessors.empty())) {
-    throw std::runtime_error("native canonical launch semantics disagree");
-  }
-  table.End(); return node;
-}
+using ExactHashNode = emuflow::core::ExactNodeRecord;
+using emuflow::core::ReadExactNodeRecord;
 
 using emuflow::core::ExactCaptureRecord;
 using emuflow::core::ReadExactCaptureRecord;
@@ -1230,7 +1199,7 @@ void emuflow::native::HashStaticExactSemantics(
       }
     } else if (tag == 2) {
       for (std::uint32_t i = 0; i < nodes.count; ++i) {
-        const auto n = ReadExactHashNode(nodes); hash.Element(count);
+        const auto n = ReadExactNodeRecord(nodes); hash.Element(count);
         hash.Object({{"capture_segment_ids",ExactStringArray(n.captures)},{"combinational_dependency_depth",std::to_string(n.depth)},
             {"cut_class",ExactQuote(n.kind)},{"dependency_level",std::to_string(n.level)},{"net",ExactQuote(n.net)},
             {"predecessor_cut_nets",ExactStringArray(n.predecessors)},{"sink_fpgas",ExactStringArray(n.sinks)},
@@ -1238,7 +1207,7 @@ void emuflow::native::HashStaticExactSemantics(
       }
     } else if (tag == 3) {
       for (std::uint32_t i = 0; i < nodes.count; ++i) {
-        const auto n = ReadExactHashNode(nodes);
+        const auto n = ReadExactNodeRecord(nodes);
         for (std::size_t j = 0; j < n.predecessors.size(); ++j) {
           hash.Element(count); hash.Object({{"from",ExactQuote(n.predecessors[j])},
               {"segment",ExactQuote(n.sources[j + (n.flag != 0)])},{"to",ExactQuote(n.net)}});
@@ -1247,7 +1216,7 @@ void emuflow::native::HashStaticExactSemantics(
     } else {
       std::uint64_t capture_start = 0;
       for (std::uint32_t i = 0; i < nodes.count; ++i) {
-        const auto n = ReadExactHashNode(nodes); capture_start += n.sources.size();
+        const auto n = ReadExactNodeRecord(nodes); capture_start += n.sources.size();
         if (!n.flag) continue; hash.Element(count);
         if (n.flag == 2) hash.Object({{"fpga",ExactQuote(n.source)},{"id",ExactQuote(n.sources[0])},
             {"kind","\"launch_to_tx\""},{"sink_cut_net",ExactQuote(n.net)},{"source_semantics","\"configuration-stable-constant\""}});
@@ -1255,7 +1224,7 @@ void emuflow::native::HashStaticExactSemantics(
       }
       nodes.Reset();
       for (std::uint32_t i = 0; i < nodes.count; ++i) {
-        const auto n = ReadExactHashNode(nodes);
+        const auto n = ReadExactNodeRecord(nodes);
         for (std::size_t j = 0; j < n.predecessors.size(); ++j) {
           hash.Element(count); hash.Object({{"fpga",ExactQuote(n.source)},{"id",ExactQuote(n.sources[j + (n.flag != 0)])},
               {"kind","\"rx_to_tx\""},{"sink_cut_net",ExactQuote(n.net)},{"source_cut_net",ExactQuote(n.predecessors[j])}});
@@ -1346,7 +1315,7 @@ void emuflow::native::WriteStaticExactSections(
   std::uint64_t launches = 0, dependencies = 0;
   std::vector<std::uint64_t> sizes(section_count, 0), expected_counts(section_count, 0);
   for (std::uint32_t i = 0; i < nodes.count; ++i) {
-    const auto node = ReadExactHashNode(nodes);
+    const auto node = ReadExactNodeRecord(nodes);
     if (i && node.net <= previous) throw std::runtime_error("native exact cut order is invalid");
     previous = node.net; names += node.net; name_offsets.push_back(names.size());
     launches += node.flag != 0; dependencies += node.predecessors.size();
@@ -1388,7 +1357,7 @@ void emuflow::native::WriteStaticExactSections(
   nodes.Reset();
   std::uint32_t launch = 0, edge = static_cast<std::uint32_t>(launches);
   for (std::uint32_t i = 0; i < nodes.count; ++i) {
-    const auto node = ReadExactHashNode(nodes);
+    const auto node = ReadExactNodeRecord(nodes);
     write_string(0, node.net); ++counts[0];
     sections[1]->Write(static_cast<std::uint32_t>(node.sources.size())); ++counts[1];
     if (node.flag) {
@@ -1408,7 +1377,7 @@ void emuflow::native::WriteStaticExactSections(
   if (launch != launches || edge != launches + dependencies) throw std::runtime_error("native exact source coverage disagrees");
   nodes.Reset(); edge = static_cast<std::uint32_t>(launches);
   for (std::uint32_t i = 0; i < nodes.count; ++i) {
-    const auto node = ReadExactHashNode(nodes);
+    const auto node = ReadExactNodeRecord(nodes);
     for (const auto source : node.predecessor_indices) segment(2 + 2 * part_index(node.source), edge++, 1, 0, source, i);
   }
   nodes.Reset(); captures.Reset();
@@ -1417,7 +1386,7 @@ void emuflow::native::WriteStaticExactSections(
   ExactCaptureRecord capture;
   if (have_capture) capture = ReadExactCaptureRecord(captures);
   for (std::uint32_t i = 0; i < nodes.count; ++i) {
-    const auto node = ReadExactHashNode(nodes);
+    const auto node = ReadExactNodeRecord(nodes);
     const auto first_capture = capture_number;
     while (have_capture && capture.net == node.net) {
       const auto part = part_index(capture.fpga);
