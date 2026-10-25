@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from itertools import product
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
@@ -357,6 +358,130 @@ def _slice_site_pin_conflicts(
     return conflicts
 
 
+def _minimum_cost_ff_assignment(costs: Sequence[Sequence[int]]) -> Optional[List[int]]:
+    """Rectangular Hungarian assignment for at most sixteen FFs/BELs."""
+    if not costs:
+        return []
+    n, m = len(costs), len(costs[0])
+    if n > m or m > 16:
+        return None
+    forbidden = 10**9
+    u, v, owner, previous = ([0] * (n + 1), [0] * (m + 1),
+                              [0] * (m + 1), [0] * (m + 1))
+    for row in range(1, n + 1):
+        owner[0] = row
+        column = 0
+        minimum, used = [forbidden] * (m + 1), [False] * (m + 1)
+        while True:
+            used[column] = True
+            active_row = owner[column]
+            delta, next_column = forbidden, 0
+            for candidate in range(1, m + 1):
+                if used[candidate]:
+                    continue
+                reduced = costs[active_row - 1][candidate - 1] - u[active_row] - v[candidate]
+                if reduced < minimum[candidate]:
+                    minimum[candidate], previous[candidate] = reduced, column
+                if minimum[candidate] < delta:
+                    delta, next_column = minimum[candidate], candidate
+            if next_column == 0:
+                return None
+            for candidate in range(m + 1):
+                if used[candidate]:
+                    u[owner[candidate]] += delta
+                    v[candidate] -= delta
+                else:
+                    minimum[candidate] -= delta
+            column = next_column
+            if owner[column] == 0:
+                break
+        while column:
+            previous_column = previous[column]
+            owner[column] = owner[previous_column]
+            column = previous_column
+    result = [0] * n
+    for column in range(1, m + 1):
+        if owner[column]:
+            result[owner[column] - 1] = column - 1
+    if any(costs[row][column] >= forbidden for row, column in enumerate(result)):
+        return None
+    return result
+
+
+def _joint_slice_ff_assignment(
+    cells: Mapping[str, Any], cluster: Mapping[str, Any], drivers: Mapping[Any, str]
+) -> Optional[Dict[str, str]]:
+    """Search both half-slice controls and all FF BELs without moving sites.
+
+    Swapping one FF at a time cannot exchange two occupied clock domains.
+    Enumerate the bounded half/lane control choices, then solve an exact
+    assignment for each choice. The shared validators remain authoritative.
+    """
+    assignments = cluster["assignments"]
+    ffs = sorted((a for a in assignments if a["cell_type"] in FF_TYPES),
+                 key=lambda a: a["instance"])
+    if len(ffs) > 16:
+        return None
+    local = {a["instance"] for a in assignments}
+
+    def external(instance: str, port: str) -> Optional[int]:
+        bits = _bits(cells[instance], port)
+        if len(bits) == 1 and isinstance(bits[0], int) and drivers.get(bits[0]) not in local:
+            return bits[0]
+        return None
+
+    mux_pins = {}
+    for assignment in assignments:
+        if assignment["cell_type"] in MUX_TYPES and assignment["bel"] in SLICE_MUX_SELECT_SITE_PINS:
+            bit = external(assignment["instance"], "S")
+            if bit is not None:
+                mux_pins[SLICE_MUX_SELECT_SITE_PINS[assignment["bel"]]] = bit
+    controls = []
+    for assignment in ffs:
+        control = json.loads(_ff_control_set(cells[assignment["instance"]]))
+        enable = tuple(control.pop("enable"))
+        signature = json.dumps(control, sort_keys=True, separators=(",", ":"))
+        controls.append((signature, enable))
+    signatures = sorted({signature for signature, _enable in controls})
+    if len(signatures) > 2:
+        return None
+    enables = {signature: sorted({enable for s, enable in controls if s == signature}, key=repr)
+               for signature in signatures}
+    original = [SLICE_FF_BELS.index(a["bel"]) for a in ffs]
+    best, best_cost = None, 10**18
+    for halves in product([None, *signatures], repeat=2):
+        if set(halves) - {None} != set(signatures):
+            continue
+        lane_choices = [list(product(enables[signature], repeat=2)) if signature is not None
+                        else [(None, None)] for signature in halves]
+        for lanes in product(*lane_choices):
+            costs = []
+            for index, assignment in enumerate(ffs):
+                data_bit = external(assignment["instance"], "D")
+                row = []
+                for bel_index, bel in enumerate(SLICE_FF_BELS):
+                    half, lane = bel_index // 8, bel_index % 2
+                    allowed = (controls[index] == (halves[half], lanes[half][lane])
+                               and (lane == 1 or f"{bel[0]}X" not in mux_pins
+                                    or data_bit is None or data_bit == mux_pins[f"{bel[0]}X"]))
+                    # One moved FF outweighs every possible secondary cost
+                    # over the complete sixteen-position assignment.
+                    row.append(4096 * (bel_index != original[index])
+                               + 16 * abs(bel_index - original[index]) + bel_index
+                               if allowed else 10**9)
+                costs.append(row)
+            if any(min(row) >= 10**9 for row in costs):
+                continue
+            result = _minimum_cost_ff_assignment(costs)
+            if result is None:
+                continue
+            cost = sum(costs[index][bel] for index, bel in enumerate(result))
+            if cost < best_cost:
+                best_cost = cost
+                best = {a["instance"]: SLICE_FF_BELS[bel] for a, bel in zip(ffs, result)}
+    return best
+
+
 def legalize_xilinx_slice_site_pins(
     cells: Mapping[str, Any], clusters: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
@@ -401,6 +526,9 @@ def legalize_xilinx_slice_site_pins(
     initial = _slice_site_pin_conflicts(cells, clusters, drivers)
     for cluster_id in sorted({item["cluster"] for item in initial}):
         cluster = cluster_by_id[cluster_id]
+        original_bels = {a["instance"]: a["bel"] for a in cluster["assignments"]
+                         if a.get("cell_type") in FF_TYPES}
+        first_repair = len(repairs)
         while True:
             # Once the initial whole-design audit identifies an affected site,
             # evaluate candidates against that one bounded 16-FF cluster.
@@ -486,10 +614,27 @@ def legalize_xilinx_slice_site_pins(
                     break
                 source["bel"], target["bel"] = source_bel, target_bel
             if not accepted:
-                raise ValidationError(
-                    "slice site-pin conflict cannot be legalized within certified "
-                    f"site {cluster['id']!r} on {resource}"
-                )
+                for assignment in assignments:
+                    if assignment["instance"] in original_bels:
+                        assignment["bel"] = original_bels[assignment["instance"]]
+                del repairs[first_repair:]
+                joint = _joint_slice_ff_assignment(cells, cluster, drivers)
+                if joint is None:
+                    raise ValidationError(
+                        "slice site-pin conflict cannot be legalized within certified "
+                        f"site {cluster['id']!r} on {resource}"
+                    )
+                for assignment in assignments:
+                    name = assignment["instance"]
+                    if name in joint:
+                        assignment["bel"] = joint[name]
+                        if joint[name] != original_bels[name]:
+                            repairs.append(dict(cluster=cluster["id"], instance=name,
+                                                from_bel=original_bels[name], to_bel=joint[name]))
+                _slice_ff_control_sets(cells, assignments)
+                if _slice_site_pin_conflicts(cells, [cluster], drivers):
+                    raise ValidationError("joint FF assignment failed independent site-pin validation")
+                break
     return {
         "provider": "ultrascaleplus-slice-site-pin-legalizer-v1",
         "moved_ffs": len(repairs),

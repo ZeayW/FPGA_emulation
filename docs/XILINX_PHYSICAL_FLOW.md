@@ -60,6 +60,18 @@ cluster and is discarded before the next site. Certificate validation and the
 independent handoff validator still load and check their own source records;
 driver uniqueness and dedicated topology checks retain their full scope.
 
+MUX selects and primary FF bypass inputs share slice pins. The physical bridge
+first tries individual FF moves or swaps within the certified site. If those
+cannot resolve a conflict, it jointly assigns the site's at most sixteen FFs:
+enumerate half-slice clock/reset and lane-enable choices, then use a rectangular
+Hungarian assignment to minimize moved FFs and BEL displacement. This permits a
+complete exchange of occupied clock halves, which individual swaps cannot make
+without temporarily violating clock compatibility. LUT/MUX BELs, physical sites,
+net connections, and primitive counts stay fixed. The shared control-set and
+site-pin validators recheck the result; genuinely infeasible sites still fail.
+Qualification covers occupied halves, an infeasible case, determinism, and a
+small exhaustive assignment oracle.
+
 Native and continuous OpenPARF drivers load the calling EmuFlow package through
 an explicit package entry point under the selected OpenPARF interpreter. They
 do not require EmuFlow to be separately installed in that interpreter or add

@@ -1,6 +1,8 @@
 import hashlib
 import json
 import tempfile
+import itertools
+import random
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -11,6 +13,9 @@ from emuflow.xilinx_packing import (
     legalize_xilinx_slice_site_pins,
     pack_xilinx_sites,
     validate_xilinx_packing,
+    _minimum_cost_ff_assignment,
+    _slice_ff_control_sets,
+    _slice_site_pin_conflicts,
 )
 
 
@@ -45,6 +50,76 @@ def add_carry(cells, name, *, ci, co, net_base):
 
 
 class XilinxPackingTest(unittest.TestCase):
+    def test_bounded_ff_assignment_matches_exhaustive_oracle(self):
+        rng = random.Random(17)
+        for n in range(1, 5):
+            for _ in range(20):
+                costs = [[rng.choice([10**9, rng.randrange(40)]) for _ in range(5)]
+                         for _ in range(n)]
+                feasible = [sum(costs[i][bel] for i, bel in enumerate(candidate))
+                            for candidate in itertools.permutations(range(5), n)
+                            if all(costs[i][bel] < 10**9 for i, bel in enumerate(candidate))]
+                actual = _minimum_cost_ff_assignment(costs)
+                if not feasible:
+                    self.assertIsNone(actual)
+                else:
+                    self.assertEqual(len(set(actual)), n)
+                    self.assertEqual(sum(costs[i][bel] for i, bel in enumerate(actual)), min(feasible))
+
+    def _occupied_halves_with_mux_pins(self, upper_count=2):
+        cells = {
+            **{f"lut{i}": cell("LUT6", {"I0": [1000 + i], "O": [10 + i]}) for i in range(4)},
+            "mux_ab": cell("MUXF7", {"I0": [10], "I1": [11], "S": [3], "O": [20]}),
+            "mux_cd": cell("MUXF7", {"I0": [12], "I1": [13], "S": [3], "O": [21]}),
+            "mux_bottom": cell("MUXF8", {"I0": [20], "I1": [21], "S": [4], "O": [22]}),
+        }
+        assignments = [dict(instance=f"lut{i}", cell_type="LUT6", bel=f"{letter}6LUT")
+                       for i, letter in enumerate("ABCD")]
+        assignments += [dict(instance=name, cell_type=cells[name]["type"], bel=bel)
+                        for name, bel in [("mux_ab", "F7MUX_AB"), ("mux_cd", "F7MUX_CD"),
+                                          ("mux_bottom", "F8MUX_BOT")]]
+        lower = [("AFF", 60), ("BFF", 60), ("AFF2", 61), ("BFF2", 61)]
+        upper = [(bel, 62) for bel in (["EFF2", "FFF2"] if upper_count == 2
+                                      else [f"{letter}{suffix}" for letter in "EFGH" for suffix in ["FF", "FF2"]])]
+        for index, (bel, enable) in enumerate([*lower, *upper]):
+            name = f"ff{index}"
+            cells[name] = cell("FDRE", {"C": [50 if index < 4 else 51], "CE": [enable],
+                                        "R": ["0"], "D": [100 + index], "Q": [200 + index]})
+            assignments.append(dict(instance=name, cell_type="FDRE", bel=bel))
+        cluster = dict(id="site0", kind="slice", assignments=assignments)
+        return cells, [cluster]
+
+    def test_site_pin_repair_jointly_exchanges_occupied_clock_halves(self):
+        cells, clusters = self._occupied_halves_with_mux_pins()
+        before = json.dumps(cells, sort_keys=True)
+        fixed = {a["instance"]: a["bel"] for a in clusters[0]["assignments"]
+                 if a["cell_type"] != "FDRE"}
+        _slice_ff_control_sets(cells, clusters[0]["assignments"])
+        self.assertEqual(len(_slice_site_pin_conflicts(cells, clusters, {})), 2)
+        report = legalize_xilinx_slice_site_pins(cells, clusters)
+        self.assertEqual(report["moved_ffs"], 6)
+        self.assertFalse(_slice_site_pin_conflicts(cells, clusters, {}))
+        _slice_ff_control_sets(cells, clusters[0]["assignments"])
+        for assignment in clusters[0]["assignments"]:
+            name = assignment["instance"]
+            if name in fixed:
+                self.assertEqual(assignment["bel"], fixed[name])
+            else:
+                self.assertEqual(assignment["bel"][0] in "EFGH", int(name[2:]) < 4)
+        self.assertEqual(json.dumps(cells, sort_keys=True), before)
+        again_cells, again_clusters = self._occupied_halves_with_mux_pins()
+        self.assertEqual(legalize_xilinx_slice_site_pins(again_cells, again_clusters), report)
+        self.assertEqual(again_clusters, clusters)
+        self.assertEqual(legalize_xilinx_slice_site_pins(cells, clusters)["moved_ffs"], 0)
+
+    def test_site_pin_repair_still_rejects_infeasible_halves(self):
+        cells, clusters = self._occupied_halves_with_mux_pins(upper_count=8)
+        before = json.dumps(clusters, sort_keys=True)
+        _slice_ff_control_sets(cells, clusters[0]["assignments"])
+        with self.assertRaisesRegex(ValidationError, "cannot be legalized within certified"):
+            legalize_xilinx_slice_site_pins(cells, clusters)
+        self.assertEqual(json.dumps(clusters, sort_keys=True), before)
+
     def _mapped(self):
         cells = {
             f"lut{i}": cell("LUT6", {"I0": [100 + i], "O": [200 + i]})
