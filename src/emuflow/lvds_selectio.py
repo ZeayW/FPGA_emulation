@@ -86,7 +86,7 @@ def selectio_bank_recipe(bank: str, direction: str, *, inventory=None):
     clock=clocks[0];byte,pin=position(clock);key=f"BYTE{byte}_PIN{pin}"
     settings.extend([(key+"_SIG_TYPE","DIFF"),(key+"_BUS_DIR",direction.upper()),
                      (key+"_DATA_STROBE","Clk Fwd"if direction=="tx"else"Input Clock")])
-    clock_binding={"pair_id":clock["pair_id"]}
+    clock_binding={"pair_id":clock["pair_id"],"native_pin":byte*13+pin}
     if direction=="tx":
         settings.extend([(key+"_SIGNAL_NAME","forward_p"),(f"BYTE{byte}_PIN{pin+1}_SIGNAL_NAME","forward_n")])
         clock_binding.update(word_port=f"data_from_fabric_forward_p_{byte*13+pin}",word_value="8'h55")
@@ -98,13 +98,92 @@ def selectio_bank_recipe(bank: str, direction: str, *, inventory=None):
     return SelectIOBankRecipe(inventory["part"],bank,direction,tuple(settings),tuple(bindings),clock_binding)
 
 
+def validate_selectio_observations(recipe: SelectIOBankRecipe, directory: Path):
+    """Check one bounded native-IP census, without claiming routed PHY timing."""
+    def rows(name,header,limit):
+        path=directory/name
+        if not path.is_file() or path.stat().st_size > 2*1024*1024:
+            raise ValidationError("SelectIO observation is absent or exceeds one-bank bound")
+        with path.open(encoding="utf-8")as stream:
+            if next(stream,"").rstrip("\r\n")!=header:
+                raise ValidationError("SelectIO observation header is invalid")
+            for ordinal,line in enumerate(stream):
+                fields=line.rstrip("\r\n").split("\t")
+                if ordinal>=limit or len(fields)!=2:
+                    raise ValidationError("SelectIO observation row is invalid")
+                try:key=bytes.fromhex(fields[0]).decode("utf-8")
+                except (ValueError,UnicodeDecodeError)as error:
+                    raise ValidationError("SelectIO observation identity encoding is invalid")from error
+                yield key,fields[1]
+    properties={}
+    for key,encoded in rows('ip-properties.tsv','property_hex\tvalue_hex',16384):
+        try:value=bytes.fromhex(encoded).decode('utf-8')
+        except (ValueError,UnicodeDecodeError)as error:
+            raise ValidationError("SelectIO property encoding is invalid")from error
+        if key in properties:raise ValidationError("duplicate SelectIO property")
+        properties[key]=value
+    for key,expected in recipe.settings:
+        actual=properties.get('CONFIG.'+key)
+        if actual==expected:continue
+        try:equal=float(actual)==float(expected)
+        except (TypeError,ValueError):equal=False
+        if not equal:raise ValidationError("SelectIO observed configuration differs from recipe: "+key)
+    ports={}
+    for key,direction in rows('synthesis-ports.tsv','name_hex\tdirection',4096):
+        if key in ports or direction not in {'IN','OUT','INOUT'}:
+            raise ValidationError("SelectIO synthesis census has duplicate or invalid ports")
+        ports[key]=direction
+    physical_direction,word_direction=('OUT','IN')if recipe.direction=='tx'else('IN','OUT')
+    expected_data=set()
+    expected_words=set()
+    for pair in (*recipe.data_pairs,recipe.clock_pair):
+        for polarity in ('p','n'):
+            physical=pair[polarity]
+            name=physical['port']
+            if ports.get(name)!=physical_direction:
+                raise ValidationError("SelectIO physical pair port is absent or has wrong direction: "+name)
+            if pair is not recipe.clock_pair:expected_data.add(name)
+        byte,pin=divmod(pair['native_pin'],13)
+        for delta,polarity in ((0,'p'),(1,'n')):
+            if properties.get(f'CONFIG.BYTE{byte}_PIN{pin+delta}_LOC')!=pair[polarity]['package_pin']:
+                raise ValidationError("SelectIO package location differs from declared P/N pair")
+        if 'word_port'in pair:
+            for bit in range(8):
+                name=f"{pair['word_port']}[{bit}]"
+                if ports.get(name)!=word_direction:
+                    raise ValidationError("SelectIO parallel word bit is absent or has wrong direction: "+name)
+                expected_words.add(name)
+    actual_data={name for name in ports if re.fullmatch(r'data_l[0-9]+_[pn]_[0-9]+',name)}
+    if actual_data!=expected_data:
+        raise ValidationError("SelectIO synthesis has an unexpected data pair population")
+    complements=set()
+    if recipe.direction=='rx':
+        complements={f"data_to_fabric_{pair['n']['port']}[{bit}]"for pair in recipe.data_pairs for bit in range(8)}
+        if any(ports[name]!='OUT'for name in complements&ports.keys()):
+            raise ValidationError("SelectIO complement word must be an unused output")
+    actual_words={name for name in ports if name.startswith('data_from_fabric_')or name.startswith('data_to_fabric_')}
+    if actual_words-expected_words-complements:
+        raise ValidationError("SelectIO synthesis has unexpected parallel data words")
+    return {"status":"pass","qualification":"native-IP-configuration-and-port-census",
+        "part":recipe.part,"bank":recipe.bank,"direction":recipe.direction,
+        "data_lanes":len(recipe.data_pairs),"payload_word_bits":8*len(recipe.data_pairs),
+        "forwarded_clock_pairs":1,"unused_complement_word_bits":len(actual_words&complements),
+        "physical_implementation_qualified":False}
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bank",required=True)
     parser.add_argument("--direction",choices=("tx","rx"),required=True)
-    parser.add_argument("--output",type=Path,required=True)
+    parser.add_argument("--output",type=Path)
+    parser.add_argument("--check-observations",type=Path)
     args=parser.parse_args()
+    if (args.output is None)==(args.check_observations is None):
+        parser.error('choose exactly one of --output or --check-observations')
     recipe=selectio_bank_recipe(args.bank,args.direction)
+    if args.check_observations is not None:
+        print(json.dumps(validate_selectio_observations(recipe,args.check_observations),sort_keys=True))
+        return
     args.output.write_text(recipe.configuration_tsv())
     print(json.dumps({"part":recipe.part,"bank":recipe.bank,"direction":recipe.direction,
         "data_pairs":len(recipe.data_pairs),"word_bits_per_cycle":8*len(recipe.data_pairs),

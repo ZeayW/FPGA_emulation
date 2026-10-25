@@ -504,6 +504,11 @@ All concrete load indices are positive. A signal available on the epoch edge
 therefore uses the next occurrence, including phase zero in the following
 lane-table round. This retains the maximum wait of R serial UIs. The fixed
 capture latency must be an integral number of word cycles in this policy.
+For a relay, event resolution also requires the latest contributing shadow
+capture index. A TX load must occur strictly after that capture edge, even
+when a measured combinational cone has zero delay. The reference event API
+accepts this as `source_capture_word_index`; readiness alone cannot establish
+same-edge register causality.
 
 RX supplies the complete word before its declared receiver capture edge;
 transport shadows sample that word together. The declared fixed arc owns the

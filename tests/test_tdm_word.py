@@ -170,6 +170,23 @@ def test_epoch_release_edge_is_never_used_as_a_new_word_load():
         timing.transfer(ready_ns=0,word_index=0,bit_in_word=0,ratio=8)
 
 
+def test_zero_delay_relay_cannot_consume_a_new_shadow_on_its_capture_edge():
+    timing=LVDSWordTiming(5.0,30.0)
+    first=timing.next_transfer(ready_ns=0,phase_word=0,bit_in_word=0,ratio=8)
+    assert first.rx_visible_ns==35
+    next_hop=timing.next_transfer(ready_ns=35,phase_word=0,bit_in_word=0,ratio=8,
+                                 source_capture_word_index=7)
+    assert next_hop.word_load_ns==40
+    assert next_hop.rx_visible_ns==70
+    assert next_hop.tdm_wait_ns==5
+    with pytest.raises(ValidationError,match='follow its source capture edge'):
+        timing.transfer(ready_ns=35,word_index=7,bit_in_word=0,ratio=8,
+                        source_capture_word_index=7)
+    with pytest.raises(ValidationError,match='readiness precedes its capture edge'):
+        timing.next_transfer(ready_ns=30,phase_word=0,bit_in_word=0,ratio=16,
+                             source_capture_word_index=7)
+
+
 def test_word_plan_cannot_fall_back_to_uniform_ratio_arcs_in_global_physical_timing():
     from emuflow.global_sta import bind_physical_checks
     with pytest.raises(ValidationError, match="ratio estimates cannot substitute"):

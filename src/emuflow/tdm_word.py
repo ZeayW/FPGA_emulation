@@ -123,11 +123,17 @@ class LVDSWordTiming:
             raise ValidationError("TDM parallel channel exceeds physical lane word capacity")
         return divmod(channel, self.bits_per_word)
 
-    def transfer(self, *, ready_ns, word_index, bit_in_word, ratio, word_epoch_ns=0.0):
+    def transfer(self, *, ready_ns, word_index, bit_in_word, ratio, word_epoch_ns=0.0,
+                 source_capture_word_index=0):
         """Resolve one assigned event; a missed event never wraps to another round."""
         ready = _number(ready_ns, "readiness")
         epoch = _number(word_epoch_ns, "epoch")
         _integer(word_index, "index", minimum=1)
+        _integer(source_capture_word_index, "source capture index")
+        if word_index <= source_capture_word_index:
+            raise ValidationError("TDM word load must follow its source capture edge")
+        if source_capture_word_index and ready < epoch + source_capture_word_index * self.word_period_ns:
+            raise ValidationError("TDM source readiness precedes its capture edge")
         _integer(bit_in_word, "bit position")
         if bit_in_word >= self.bits_per_word:
             raise ValidationError("TDM serial bit position exceeds its word")
@@ -144,11 +150,15 @@ class LVDSWordTiming:
         return WordTransfer(load, load + bit_in_word * self.serial_ui_ns,
                             visible, wait, self.fixed_delay_ns + wait)
 
-    def next_transfer(self, *, ready_ns, phase_word, bit_in_word, ratio, word_epoch_ns=0.0):
+    def next_transfer(self, *, ready_ns, phase_word, bit_in_word, ratio, word_epoch_ns=0.0,
+                      source_capture_word_index=0):
         """Select the first occurrence in an explicitly periodic lane table.
 
         This resolves the execution of a cyclic table. It does not reinterpret
         a missed one-shot transfer or change the assigned signal order.
+        Relays supply their latest contributing shadow capture index as well
+        as physical cone readiness. Equal-edge nonblocking register updates
+        cannot feed that same edge's TX load, including a zero-delay cone.
         """
         words = self.word_cycles_for_ratio(ratio)
         _integer(phase_word, "phase word")
@@ -156,11 +166,13 @@ class LVDSWordTiming:
             raise ValidationError("TDM word phase lies outside its lane's periodic table")
         ready = _number(ready_ns, "readiness")
         epoch = _number(word_epoch_ns, "epoch")
+        _integer(source_capture_word_index, "source capture index")
         first = epoch + phase_word * self.word_period_ns
         cycles = max(0, math.ceil((ready - first) / (words * self.word_period_ns)),
-                     math.ceil((epoch + self.word_period_ns - first) / (words * self.word_period_ns)))
+                     (source_capture_word_index + 1 - phase_word + words - 1) // words)
         return self.transfer(ready_ns=ready, word_index=phase_word + cycles * words,
-                             bit_in_word=bit_in_word, ratio=ratio, word_epoch_ns=epoch)
+                             bit_in_word=bit_in_word, ratio=ratio, word_epoch_ns=epoch,
+                             source_capture_word_index=source_capture_word_index)
 
     @classmethod
     def from_link(cls, link):

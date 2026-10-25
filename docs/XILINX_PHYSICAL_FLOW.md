@@ -360,6 +360,8 @@ bundled twenty-data-pair HP-bank arrangement:
 python -m emuflow.lvds_selectio --bank 19 --direction tx --output build/tx-bank.tsv
 vivado -mode batch -source scripts/vivado/inspect_selectio_ip.tcl \
   -tclargs xcvu19p-fsva3824-2-e build/tx-bank-inspection build/tx-bank.tsv synthesize
+python -m emuflow.lvds_selectio --bank 19 --direction tx \
+  --check-observations build/tx-bank-inspection
 ```
 
 Use a fresh empty inspection directory and an existing output parent. The RX
@@ -376,6 +378,12 @@ training, reset sequencing, FIFO capture or the physical boundary latency.
 Configuration generation and IP synthesis remain intermediate PHY diagnostics.
 Frequency enumeration strings retain the wizard's canonical decimal spelling;
 numerical equality does not guarantee that a customization accepts an alias.
+The bounded observation checker verifies the requested settings, selected P/N
+package locations, physical port directions and every bit of each expected
+parallel word. Native RX complement-word outputs are counted separately and
+never double payload capacity. Its pass status qualifies this configuration
+and port census only; a physical top must still bind every control input and
+replace out-of-context clock placeholders with the actual clock networks.
 
 The current fixed differential adapter supplies IBUFDS/OBUFDS boundaries; it
 does not implement the serializer/deserializer or forwarded-clock circuitry

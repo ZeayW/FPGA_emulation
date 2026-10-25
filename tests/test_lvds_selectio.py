@@ -4,7 +4,7 @@ import copy
 import pytest
 
 from emuflow.errors import ValidationError
-from emuflow.lvds_selectio import selectio_bank_recipe
+from emuflow.lvds_selectio import selectio_bank_recipe, validate_selectio_observations
 from emuflow.virtual_board import _inventory
 
 
@@ -60,3 +60,49 @@ def test_inconsistent_vendor_byte_identity_is_rejected():
     pin['pin_function']=pin['pin_function'].replace('T0L_N1','T1L_N1')
     with pytest.raises(ValidationError,match='inconsistent native byte'):
         selectio_bank_recipe('19','rx',inventory=inventory)
+
+
+def observations(tmp_path,direction):
+    recipe=selectio_bank_recipe('19',direction)
+    properties={'CONFIG.'+k:v for k,v in recipe.settings}
+    ports={}
+    physical,word=('OUT','IN')if direction=='tx'else('IN','OUT')
+    for pair in (*recipe.data_pairs,recipe.clock_pair):
+        byte,pin=divmod(pair['native_pin'],13)
+        for delta,polarity in ((0,'p'),(1,'n')):
+            ports[pair[polarity]['port']]=physical
+            properties[f'CONFIG.BYTE{byte}_PIN{pin+delta}_LOC']=pair[polarity]['package_pin']
+        if 'word_port'in pair:
+            ports.update((f"{pair['word_port']}[{bit}]",word)for bit in range(8))
+        if direction=='rx'and pair is not recipe.clock_pair:
+            ports.update((f"data_to_fabric_{pair['n']['port']}[{bit}]",'OUT')for bit in range(8))
+    def write():
+        (tmp_path/'ip-properties.tsv').write_text('property_hex\tvalue_hex\n'+''.join(
+            k.encode().hex()+'\t'+v.encode().hex()+'\n'for k,v in properties.items()))
+        (tmp_path/'synthesis-ports.tsv').write_text('name_hex\tdirection\n'+''.join(
+            k.encode().hex()+'\t'+v+'\n'for k,v in ports.items()))
+    return recipe,properties,ports,write
+
+
+@pytest.mark.parametrize('direction',('tx','rx'))
+def test_census_validates_whole_words_without_counting_complements_or_clock_as_payload(tmp_path,direction):
+    recipe,_properties,_ports,write=observations(tmp_path,direction);write()
+    result=validate_selectio_observations(recipe,tmp_path)
+    assert result['data_lanes']==20 and result['payload_word_bits']==160
+    assert result['forwarded_clock_pairs']==1
+    assert result['unused_complement_word_bits']==(160 if direction=='rx'else 0)
+    assert result['physical_implementation_qualified']is False
+
+
+@pytest.mark.parametrize('damage',('missing-bit','wrong-direction','extra-word','wrong-package','duplicate-port'))
+def test_native_port_or_package_mismatch_cannot_pass_the_recipe_audit(tmp_path,damage):
+    recipe,properties,ports,write=observations(tmp_path,'rx')
+    word=recipe.data_pairs[0]['word_port']+'[7]'
+    if damage=='missing-bit':ports.pop(word)
+    elif damage=='wrong-direction':ports[word]='IN'
+    elif damage=='extra-word':ports['data_to_fabric_unknown[0]']='OUT'
+    elif damage=='wrong-package':properties['CONFIG.BYTE0_PIN1_LOC']='BR49'
+    write()
+    if damage=='duplicate-port':
+        with(tmp_path/'synthesis-ports.tsv').open('a')as stream:stream.write(word.encode().hex()+'\tOUT\n')
+    with pytest.raises(ValidationError):validate_selectio_observations(recipe,tmp_path)

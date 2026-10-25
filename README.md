@@ -28,6 +28,7 @@ distinguishes DUT and analysis clocks, parallel words, and serial bit intervals.
 The native planner and Phase 6 represent periodic eight-bit LVDS lane tables,
 with ratios in serial UIs and word events in TDM cycles. Phase 6 streams logical
 word RTL with aligned startup, repeated lane tables and a drained commit barrier.
+Relay events preserve capture-before-load causality, including zero-delay cones.
 Fixed-pin word-PHY integration and global physical event projection remain
 unqualified; unsupported physical bindings are rejected.
 Its required [timing contract](docs/global-opensta-qualification.md#ratio-estimates-and-schedule-resolved-phy-timing)
@@ -49,7 +50,8 @@ Vivado uses explicit DUT implementation targets independently of runtime frames;
 a frequency override scales all DUT roots together while keeping the TDM clock
 fixed. The same documentation describes installed SelectIO IP inspection and
 package-derived bank recipes, checked output generation and optional out-of-context
-IP synthesis used for PHY integration. See the [clock baseline](docs/XILINX_PHYSICAL_FLOW.md#local-implementation-clock-baseline).
+IP synthesis used for PHY integration, with a bounded configuration/port audit.
+See the [clock baseline](docs/XILINX_PHYSICAL_FLOW.md#local-implementation-clock-baseline).
 Indexed mapped primitives carry provenance tags without global KEEP/DONT_TOUCH
 constraints; indexed source-bound coverage and selected constant facts are checked
 after `opt_design`, before placement, and checked again after routing. The timing
