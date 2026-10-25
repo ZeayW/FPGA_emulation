@@ -38,6 +38,35 @@ Export, representative compression, independent validation and result stitching
 all use this contract. Complete numerical bundles remain the unit of
 compression, and expansion preserves every original member.
 
+The production binder streams bounded batches into one invocation-owned
+`emuflow.global-event-checks/v1` store. Path metadata, path/event identities and
+packed per-check numbers have one owner. Arc vectors remain BLOBs rather than
+one SQL row per arc. A separate `emuflow.global-event-index/v1` contains only
+path ordering and representative spans; it never copies numerical payloads.
+Integer identities are scoped to the primary artifact. The index binds its
+original path and file generation.
+
+The shared core independently validates schema, coverage, finite/nonnegative
+launch and arc values, unique identities, bundle continuity, and identical
+target/runtime physical chains. Numerical compression compares the complete
+ordered bundle after a candidate hash match; distinct TX/commit bundles cannot
+merge. Signed zeros retain their source representation and compare numerically.
+Native index/export failures stop the selected path without a Python fallback.
+
+OpenSTA input publication uses a fresh model directory plus atomic `model.json`.
+The manifest records each generated file's name, size, hash and file generation;
+hashes are computed while writing. Consumers verify the recorded generations
+before and after engine execution without rehashing the model. The production
+engine uses the shared process supervisor. Final `opensta.log` and expanded
+original-identity `measurements.tsv` remain in the Global STA output directory.
+Temporary event owners close after Phase 7C publication or failure. Public
+small `EventCheck` inputs retain their direct text exporter for independent
+reference checks. They are not a fallback for indexed production inputs.
+
+This closes event/check identity, compression and model-export ownership.
+Measurement scalar import, final timing columns and aggregation remain Python
+work; this does not establish W6/W7 completion or full physical qualification.
+
 Timing reconstruction must supply each scheduled hop's concrete
 `fixed_slot_tx_time_ns` and its bound TDM ratio where the link model requires
 one. Global binding consumes those fields directly. It rejects an incomplete

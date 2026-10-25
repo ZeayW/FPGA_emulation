@@ -51,6 +51,24 @@ def generate(directory):
     if not output.exists() or output.read_text(encoding="utf-8") != catalog:
         output.write_text(catalog, encoding="utf-8")
 
+    events = "#pragma once\nnamespace emuflow::core {\n"
+    for symbol, filename in (
+        ("kGlobalEventsDDL", "global_events.sql"),
+        ("kGlobalEventIndexDDL", "global_event_index.sql"),
+    ):
+        ddl = (root / "src/emuflow/data/schema" / filename).read_text(encoding="utf-8")
+        if ')EMUFLOW_SQL"' in ddl:
+            raise ValueError("SQL schema contains the native raw-string delimiter")
+        events += f'inline constexpr const char* {symbol} = R"EMUFLOW_SQL({ddl})EMUFLOW_SQL";\n'
+    tcl = (root / "src/emuflow/data/schema/global_event_analyze.tcl").read_text(encoding="utf-8")
+    if ')EMUFLOW_SQL"' in tcl:
+        raise ValueError("Tcl template contains the native raw-string delimiter")
+    events += 'inline constexpr const char* kGlobalEventAnalyzeTcl = R"EMUFLOW_SQL(' + tcl + ')EMUFLOW_SQL";\n'
+    events += "}\n"
+    output = Path(directory) / "global_event_schema.hpp"
+    if not output.exists() or output.read_text(encoding="utf-8") != events:
+        output.write_text(events, encoding="utf-8")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

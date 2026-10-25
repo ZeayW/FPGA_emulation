@@ -40,6 +40,8 @@ constexpr const char* kUsage =
     "  phase5 timing-contract ROUTE_STORE [SCHEDULE_STORE [BOARD_REQUEST]] REQUEST SUMMARY\n"
     "  phase5 validate-schedule ROUTE_STORE BOARD_REQUEST SCHEDULE_STORE REQUEST SUMMARY\n"
     "  phase5 build-schedule ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST OUTPUT\n"
+    "  global-sta index-events PRIMARY INDEX\n"
+    "  global-sta export-events PRIMARY INDEX REQUEST SUMMARY\n"
     "  phase6 assign-banks --typed-input INPUT OUTPUT\n"
     "  phase6 group-signals --typed-input INPUT OUTPUT EXPECTED_SHA256\n"
     "  phase6 refine-groups --typed-input INPUT OUTPUT EXPECTED_SHA256\n"
@@ -227,6 +229,10 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if (phase == "phase4" && operation == "route" && argc == 6 && std::string(argv[3]) == "--typed-output")
     return run(Stage::kRoute, {argv[4]}, argv[5]);
+  if (phase == "global-sta" && operation == "index-events" && argc == 5)
+    return Execute({Stage::kIndexGlobalEvents,{argv[3]},argv[4]},report);
+  if (phase == "global-sta" && operation == "export-events" && argc == 7)
+    return Execute({Stage::kExportGlobalEvents,{argv[3],argv[4],argv[5]},argv[6]},report);
   if (phase == "phase5" && operation == "timing-contract" && argc >= 6 && argc <= 8) {
     std::vector<std::string> inputs;
     for(int i=3;i<argc-1;++i) inputs.push_back(argv[i]);

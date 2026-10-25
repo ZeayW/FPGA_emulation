@@ -438,6 +438,17 @@ A missing engine or unsupported physical model is an error. Terminal validation
 requires standalone OpenSTA evidence and checks saved measurements without
 relaunching STA or reconstructing a different engine's numerical results.
 
+Production `global-opensta/model.json` selects a generated model directory
+containing `global_timing.lib`, `global_timing.v`, `global_timing.sdc` and
+`analyze.tcl`. Use the manifest rather than assuming these files are directly
+beside `opensta.log`. Expanded original-check `measurements.tsv` and the engine
+log remain directly in `global-opensta` for explicit saved-result validation.
+The event store is invocation-owned scratch and is not a replay checkpoint.
+The internal commands are `emuflow-native global-sta index-events PRIMARY INDEX`
+and `emuflow-native global-sta export-events PRIMARY INDEX REQUEST SUMMARY`;
+the installed phase adapter creates the versioned request and binds sources.
+See the [event-stream contract](global-opensta-qualification.md#current-event-stream-contract).
+
 For independent terminal validation, require the physical endpoint:
 
 ```bash

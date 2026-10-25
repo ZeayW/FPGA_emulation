@@ -643,6 +643,13 @@ Global OpenSTA remains the numerical authority. Ordered event/check and
 measurement relations must preserve every original timing-path member exactly
 once, complete TX/commit checks and disjoint local/cross-FPGA populations. TNS
 counts each original path once, even when checks use representative bundles.
+Invocation-owned event facts and metadata now share one registered primary;
+the derived index stores ordering and representative spans without arc copies.
+`global-sta index-events` independently validates and compresses complete bundles;
+`global-sta export-events` streams the OpenSTA model through common source-bound
+publication. Production no longer retains whole check/identity arrays in Python.
+Measurement import, final scalar columns and stitching still require native
+ownership; the event boundary alone does not complete W6/W7.
 See [global timing semantics](global-opensta-qualification.md).
 
 ## Validation and completion

@@ -65,7 +65,7 @@ inline void VisitPrettyCanonicalJson(const std::string& value, unsigned level,
 
 // Small typed record serializer, never a whole-graph JSON representation.
 // Matches the existing sorted-key, ensure_ascii Python contract exactly.
-inline std::string JsonQuote(const std::string& text) {
+inline std::string QuoteJsonString(const std::string& text, bool ensure_ascii) {
   std::string out = "\"";
   const auto escaped = [&](std::uint32_t cp) {
     static const char* digits = "0123456789abcdef";
@@ -73,6 +73,7 @@ inline std::string JsonQuote(const std::string& text) {
     for (int shift : {12, 8, 4, 0}) out += digits[(cp >> shift) & 15];
   };
   for (std::size_t i = 0; i < text.size();) {
+    const auto start = i;
     auto cp = static_cast<unsigned char>(text[i++]);
     std::uint32_t value = cp;
     if (cp >= 128) {
@@ -99,13 +100,16 @@ inline std::string JsonQuote(const std::string& text) {
       case '\r': out += "\\r"; break;
       case '\t': out += "\\t"; break;
       default:
-        if (value < 32 || (value >= 127 && value <= 0xffff)) escaped(value);
+        if (!ensure_ascii && value >= 127) out.append(text,start,i-start);
+        else if (value < 32 || (value >= 127 && value <= 0xffff)) escaped(value);
         else if (value > 0xffff) { value -= 0x10000; escaped(0xd800 + (value >> 10)); escaped(0xdc00 + (value & 1023)); }
         else out += static_cast<char>(value);
     }
   }
   return out + '"';
 }
+inline std::string JsonQuote(const std::string& text) { return QuoteJsonString(text,true); }
+inline std::string JsonQuoteUtf8(const std::string& text) { return QuoteJsonString(text,false); }
 class JsonRecord {
  public:
   enum class Kind { kString, kInteger, kScalar, kObject, kArray };

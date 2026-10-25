@@ -10,23 +10,24 @@ No Python-computed arrival, slack, or TDM wait enters the exported circuit.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import os
 import re
-import sqlite3
 import subprocess
-import tempfile
 from array import array
-from bisect import bisect_left
-from collections import OrderedDict
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 from .errors import ValidationError
+from .global_event_store import (
+    EventChecks as _IndexedEventChecks, EventBuilder as _EventCheckBuilder,
+    PathMetadata as _IndexedPathMetadata, MetadataBuilder as _PathMetadataBuilder,
+    export_event_model, event_model_sources,
+)
 from .native_tools import resolve_native_executable
 from .opensta import render_opensta_liberty, require_opensta_engine
 
@@ -94,8 +95,10 @@ class _IndexedMeasurements(Sequence[Mapping[str, object]]):
         }
 
     def __iter__(self):
-        for index in range(len(self)):
-            yield self[index]
+        guard = self._rows._owner.borrow() if isinstance(self._rows, _IndexedEventChecks) else nullcontext()
+        with guard:
+            for index in range(len(self)):
+                yield self[index]
 
     def __eq__(self, other):
         if not isinstance(other, Sequence) or len(self) != len(other):
@@ -110,237 +113,8 @@ class _IndexedMeasurements(Sequence[Mapping[str, object]]):
         )
 
 
-_EVENT_CHECK_ROLES = ("target", "runtime", "tx", "commit")
-_EVENT_CHECK_ROLE_INDEX = {
-    role: index for index, role in enumerate(_EVENT_CHECK_ROLES)
-}
 _UINT32_MAX = (1 << 32) - 1
 _UINT64_MASK = (1 << 64) - 1
-
-
-class _PackedUtf8Strings(Sequence[str]):
-    """One UTF-8 payload plus fixed-width offsets for a string identity set."""
-
-    def __init__(self, payload: bytearray, offsets: array):
-        if (
-            offsets.typecode != "Q"
-            or not offsets
-            or offsets[0] != 0
-            or offsets[-1] != len(payload)
-            or any(
-                offsets[index - 1] > offsets[index]
-                for index in range(1, len(offsets))
-            )
-        ):
-            raise ValidationError("global STA packed string pool is malformed")
-        self._payload = payload
-        self._offsets = offsets
-
-    def __len__(self) -> int:
-        return len(self._offsets) - 1
-
-    def __getitem__(self, index):
-        if isinstance(index, slice):
-            return [self[position] for position in range(*index.indices(len(self)))]
-        if index < 0:
-            index += len(self)
-        if index < 0 or index >= len(self):
-            raise IndexError(index)
-        return self._payload[
-            self._offsets[index] : self._offsets[index + 1]
-        ].decode("utf-8")
-
-    def __iter__(self):
-        for index in range(len(self)):
-            yield self[index]
-
-    def __eq__(self, other):
-        if not isinstance(other, Sequence) or len(self) != len(other):
-            return False
-        return all(left == right for left, right in zip(self, other))
-
-    @property
-    def packed_bytes(self) -> int:
-        return len(self._payload) + len(self._offsets) * self._offsets.itemsize
-
-
-class _PackedStringSelection(Sequence[str]):
-    """A fixed-width ordered projection over a shared packed string pool."""
-
-    def __init__(self, strings: _PackedUtf8Strings, indices: array):
-        if indices.typecode != "I" or any(index >= len(strings) for index in indices):
-            raise ValidationError("global STA packed string selection is malformed")
-        self._strings = strings
-        self._indices = indices
-
-    def __len__(self) -> int:
-        return len(self._indices)
-
-    def __getitem__(self, index):
-        if isinstance(index, slice):
-            return [self[position] for position in range(*index.indices(len(self)))]
-        if index < 0:
-            index += len(self)
-        if index < 0 or index >= len(self):
-            raise IndexError(index)
-        return self._strings[self._indices[index]]
-
-    def __iter__(self):
-        for index in self._indices:
-            yield self._strings[index]
-
-
-class _IndexedPathMetadata(Mapping[str, Mapping[str, object]]):
-    """Sorted, fixed-width metadata for every original timing path.
-
-    The production binding used to retain one Python dictionary for every
-    original path in addition to the indexed event/check relation.  This view
-    owns path IDs once, interns repeated metadata strings, and resolves a path
-    with binary search.  Materialized dictionaries exist only for the current
-    report row.
-    """
-
-    def __init__(
-        self,
-        strings: _PackedUtf8Strings,
-        path_indices: array,
-        representative_indices: array,
-        scopes: array,
-        clock_indices: array,
-        target_periods: array,
-        cone_bounds: array,
-        model_indices: array,
-        *,
-        validated: bool = False,
-    ):
-        paths = _PackedStringSelection(strings, path_indices)
-        count = len(path_indices)
-        if (
-            len(representative_indices) != count
-            or len(scopes) != count
-            or len(clock_indices) != count
-            or len(target_periods) != count
-            or len(cone_bounds) != count
-            or len(model_indices) != count
-            or (
-                not validated
-                and (
-                    any(not path for path in paths)
-                    or any(
-                        paths[index - 1] >= paths[index]
-                        for index in range(1, count)
-                    )
-                )
-            )
-        ):
-            raise ValidationError("global STA indexed path metadata is malformed")
-        self._paths = paths
-        self._strings = strings
-        self._path_indices = path_indices
-        self._representative_indices = representative_indices
-        self._scopes = scopes
-        self._clock_indices = clock_indices
-        self._target_periods = target_periods
-        self._cone_bounds = cone_bounds
-        self._model_indices = model_indices
-
-    def __len__(self) -> int:
-        return len(self._paths)
-
-    def __iter__(self):
-        return iter(self._paths)
-
-    def __getitem__(self, path: str) -> Mapping[str, object]:
-        if not isinstance(path, str):
-            raise KeyError(path)
-        index = bisect_left(self._paths, path)
-        if index >= len(self._paths) or self._paths[index] != path:
-            raise KeyError(path)
-        representative_index = self._representative_indices[index]
-        clock_index = self._clock_indices[index]
-        model_index = self._model_indices[index]
-        if (
-            representative_index >= len(self._strings)
-            or self._scopes[index] > 1
-            or (
-                clock_index != _UINT32_MAX
-                and clock_index >= len(self._strings)
-            )
-            or self._cone_bounds[index] > 1
-            or (
-                model_index != _UINT32_MAX
-                and model_index >= len(self._strings)
-            )
-        ):
-            raise ValidationError(
-                "global STA indexed path metadata identity is malformed"
-            )
-        target_period = self._target_periods[index]
-        if not math.isfinite(target_period) or target_period <= 0.0:
-            raise ValidationError(
-                "global STA indexed path metadata period is malformed"
-            )
-        return {
-            "representative_path": self._strings[representative_index],
-            "path_scope": (
-                "same-fpga-local" if self._scopes[index] else "cross-fpga"
-            ),
-            "clock_domain": (
-                None
-                if clock_index == _UINT32_MAX
-                else self._strings[clock_index]
-            ),
-            "target_period_ns": target_period,
-            "physical_logic_segments_cone_bound": bool(
-                self._cone_bounds[index]
-            ),
-            **(
-                {}
-                if model_index == _UINT32_MAX
-                else {
-                    "interconnect_delay_model": self._strings[model_index]
-                }
-            ),
-        }
-
-    @property
-    def typed_payload_bytes(self) -> int:
-        """Bytes in fixed-width columns, excluding the shared UTF-8 pool."""
-
-        return sum(
-            values.itemsize * len(values)
-            for values in (
-                self._path_indices,
-                self._representative_indices,
-                self._scopes,
-                self._clock_indices,
-                self._target_periods,
-                self._cone_bounds,
-                self._model_indices,
-            )
-        )
-
-    @property
-    def packed_identity_bytes(self) -> int:
-        """Bytes retained for all unique identities and their offsets."""
-
-        return self._strings.packed_bytes
-
-    def path_id_set_sha256(self) -> str:
-        """Hash the already sorted unique path IDs without another copy/sort."""
-
-        digest = hashlib.sha256()
-        digest.update(b"[")
-        for index, path in enumerate(self._paths):
-            if index:
-                digest.update(b",")
-            digest.update(
-                json.dumps(
-                    path, ensure_ascii=False, separators=(",", ":")
-                ).encode("utf-8")
-            )
-        digest.update(b"]")
-        return digest.hexdigest()
 
 
 class _IndexedSystemTimingPaths(Sequence[Mapping[str, object]]):
@@ -393,8 +167,9 @@ class _IndexedSystemTimingPaths(Sequence[Mapping[str, object]]):
         }
 
     def __iter__(self):
-        for index in range(len(self)):
-            yield self[index]
+        with self._metadata._owner.borrow():
+            for index in range(len(self)):
+                yield self[index]
 
     def __eq__(self, other):
         if not isinstance(other, Sequence) or len(self) != len(other):
@@ -429,9 +204,7 @@ class _SystemTimingPathBuilder:
         self._runtime_slacks = array("d", [math.nan]) * count
 
     def append(self, path: str, target: Mapping, runtime: Mapping) -> bool:
-        index = bisect_left(self._metadata._paths, path)
-        if index >= len(self._metadata) or self._metadata._paths[index] != path:
-            raise ValidationError("global STA measurement path is unknown")
+        index = self._metadata.position(path)
         if self._seen[index]:
             return False
         self._seen[index] = 1
@@ -455,219 +228,6 @@ class _SystemTimingPathBuilder:
             self._runtime_required,
             self._runtime_slacks,
         )
-
-
-class _PathMetadataBuilder:
-    """Spool path metadata, then seal sorted packed identity columns.
-
-    Global STA can cover millions of original paths. Keeping path strings, an
-    interning dictionary, a second string list, and the final sort order in
-    Python made all of those populations overlap at ``finish()``. This owner
-    writes bounded batches to a private typed SQLite relation. SQLite owns the
-    external sort and duplicate detection; the sealed view retains one shared
-    UTF-8 pool plus fixed-width columns only.
-    """
-
-    _BATCH_ROWS = 4096
-
-    def __init__(self):
-        self._finished = False
-        descriptor, name = tempfile.mkstemp(
-            prefix="emuflow-global-sta-paths-", suffix=".sqlite3"
-        )
-        os.close(descriptor)
-        self._database_path = Path(name)
-        self._connection: sqlite3.Connection | None = sqlite3.connect(name)
-        self._connection.executescript(
-            """
-            PRAGMA journal_mode=OFF;
-            PRAGMA synchronous=OFF;
-            PRAGMA temp_store=FILE;
-            PRAGMA cache_size=-8192;
-            CREATE TABLE path_metadata (
-                path TEXT NOT NULL,
-                representative_path TEXT NOT NULL,
-                path_scope INTEGER NOT NULL CHECK(path_scope IN (0, 1)),
-                clock_domain TEXT,
-                target_period_ns REAL NOT NULL,
-                cone_bound INTEGER NOT NULL CHECK(cone_bound IN (0, 1)),
-                interconnect_delay_model TEXT
-            );
-            """
-        )
-        self._pending: list[tuple[object, ...]] = []
-
-    def _flush(self) -> None:
-        if not self._pending:
-            return
-        assert self._connection is not None
-        self._connection.executemany(
-            "INSERT INTO path_metadata VALUES (?, ?, ?, ?, ?, ?, ?)",
-            self._pending,
-        )
-        self._pending.clear()
-
-    def _close(self) -> None:
-        connection = self._connection
-        self._connection = None
-        if connection is not None:
-            connection.close()
-        self._database_path.unlink(missing_ok=True)
-
-    def __del__(self):
-        try:
-            self._close()
-        except BaseException:
-            pass
-
-    def append(
-        self,
-        path: str,
-        *,
-        representative_path: str,
-        path_scope: str,
-        clock_domain: str | None,
-        target_period_ns: float,
-        physical_logic_segments_cone_bound: bool,
-        interconnect_delay_model: str | None = None,
-    ) -> None:
-        if self._finished:
-            raise ValidationError("global STA path metadata builder is sealed")
-        if not isinstance(path, str) or not path:
-            raise ValidationError("global STA path metadata identity is invalid")
-        if (
-            not isinstance(representative_path, str)
-            or not representative_path
-        ):
-            raise ValidationError(
-                "global STA path metadata representative is invalid"
-            )
-        for value in (clock_domain, interconnect_delay_model):
-            if value is not None and (not isinstance(value, str) or not value):
-                raise ValidationError("global STA path metadata string is invalid")
-        if path_scope not in {"cross-fpga", "same-fpga-local"}:
-            raise ValidationError("global STA path metadata scope is invalid")
-        if (
-            isinstance(target_period_ns, bool)
-            or not isinstance(target_period_ns, (int, float))
-            or not math.isfinite(float(target_period_ns))
-            or float(target_period_ns) <= 0.0
-            or not isinstance(physical_logic_segments_cone_bound, bool)
-        ):
-            raise ValidationError("global STA path metadata values are invalid")
-        self._pending.append(
-            (
-                path,
-                representative_path,
-                path_scope == "same-fpga-local",
-                clock_domain,
-                float(target_period_ns),
-                physical_logic_segments_cone_bound,
-                interconnect_delay_model,
-            )
-        )
-        if len(self._pending) >= self._BATCH_ROWS:
-            self._flush()
-
-    def finish(self) -> _IndexedPathMetadata:
-        if self._finished:
-            raise ValidationError("global STA path metadata builder is sealed")
-        self._finished = True
-        try:
-            self._flush()
-            assert self._connection is not None
-            connection = self._connection
-            connection.executescript(
-                """
-                CREATE TABLE string_identity (
-                    identity INTEGER PRIMARY KEY,
-                    value TEXT NOT NULL UNIQUE
-                );
-                INSERT INTO string_identity(value)
-                    SELECT value FROM (
-                        SELECT path AS value FROM path_metadata
-                        UNION
-                        SELECT representative_path AS value FROM path_metadata
-                        UNION
-                        SELECT clock_domain AS value FROM path_metadata
-                            WHERE clock_domain IS NOT NULL
-                        UNION
-                        SELECT interconnect_delay_model AS value
-                            FROM path_metadata
-                            WHERE interconnect_delay_model IS NOT NULL
-                    ) ORDER BY value;
-                """
-            )
-            (identity_count,) = connection.execute(
-                "SELECT COUNT(*) FROM string_identity"
-            ).fetchone()
-            if identity_count >= _UINT32_MAX:
-                raise ValidationError(
-                    "global STA path metadata string population is too large"
-                )
-
-            string_payload = bytearray()
-            string_offsets = array("Q", [0])
-            for (value,) in connection.execute(
-                "SELECT value FROM string_identity ORDER BY identity"
-            ):
-                string_payload.extend(value.encode("utf-8"))
-                string_offsets.append(len(string_payload))
-            strings = _PackedUtf8Strings(string_payload, string_offsets)
-
-            path_indices = array("I")
-            representative_indices = array("I")
-            scopes = array("B")
-            clock_indices = array("I")
-            target_periods = array("d")
-            cone_bounds = array("B")
-            model_indices = array("I")
-            previous_path_identity = None
-            query = """
-                SELECT path_string.identity - 1,
-                       representative_string.identity - 1, p.path_scope,
-                       clock_string.identity - 1, p.target_period_ns,
-                       p.cone_bound, model_string.identity - 1
-                  FROM path_metadata AS p
-                  JOIN string_identity AS path_string
-                    ON path_string.value = p.path
-                  JOIN string_identity AS representative_string
-                    ON representative_string.value = p.representative_path
-             LEFT JOIN string_identity AS clock_string
-                    ON clock_string.value = p.clock_domain
-             LEFT JOIN string_identity AS model_string
-                    ON model_string.value = p.interconnect_delay_model
-              ORDER BY p.path
-            """
-            for row in connection.execute(query):
-                if previous_path_identity == row[0]:
-                    raise ValidationError("global STA local/crossing path overlap")
-                previous_path_identity = row[0]
-                path_indices.append(row[0])
-                representative_indices.append(row[1])
-                scopes.append(row[2])
-                clock_indices.append(
-                    _UINT32_MAX if row[3] is None else row[3]
-                )
-                target_periods.append(row[4])
-                cone_bounds.append(row[5])
-                model_indices.append(
-                    _UINT32_MAX if row[6] is None else row[6]
-                )
-            return _IndexedPathMetadata(
-                strings,
-                path_indices,
-                representative_indices,
-                scopes,
-                clock_indices,
-                target_periods,
-                cone_bounds,
-                model_indices,
-                validated=True,
-            )
-        finally:
-            self._pending.clear()
-            self._close()
 
 
 def _event_check_values_hash(
@@ -701,546 +261,6 @@ class _RepresentativeBundle:
         self.count = count
         self.numerical_key = numerical_key
         self.collision = collision
-
-
-class _IndexedEventChecks(Sequence[EventCheck]):
-    """Fixed-width, string-interned storage for the production check stream.
-
-    A transported original path produces several TX/commit checks in addition
-    to its target/runtime observations.  Keeping each row as a Python
-    dataclass with a separate arc tuple made that hop-sized relation one of the
-    last large in-process Global STA populations.  This view owns each path and
-    event string once and stores the relation and arc payload in typed arrays.
-    ``EventCheck`` objects are materialized only for the row currently being
-    exported, validated, or stitched.
-    """
-
-    def __init__(
-        self,
-        paths: Sequence[str],
-        events: Sequence[str],
-        path_indices: array,
-        roles: array,
-        event_indices: array,
-        launches: array,
-        required: array,
-        arc_offsets: array,
-        arcs: array,
-        numerical_hashes: array,
-        original_to_representative: array | None = None,
-        representative_indices: array | None = None,
-        *,
-        validated: bool = False,
-    ):
-        count = len(roles)
-        if (
-            len(path_indices) != count
-            or len(event_indices) != count
-            or len(launches) != count
-            or len(required) != count
-            or len(numerical_hashes) != count
-            or (
-                original_to_representative is not None
-                and len(original_to_representative) != count
-            )
-            or (original_to_representative is None)
-            != (representative_indices is None)
-            or len(arc_offsets) != count + 1
-            or arc_offsets[0] != 0
-            or arc_offsets[-1] != len(arcs)
-        ):
-            raise ValidationError("global STA indexed check storage is malformed")
-        self._paths = paths
-        self._events = events
-        self._path_indices = path_indices
-        self._roles = roles
-        self._event_indices = event_indices
-        self._launches = launches
-        self._required = required
-        self._arc_offsets = arc_offsets
-        self._arcs = arcs
-        self._numerical_hashes = numerical_hashes
-        self._original_to_representative = original_to_representative
-        self._representative_indices = representative_indices
-        self._validated = validated
-
-    def __len__(self) -> int:
-        return len(self._roles)
-
-    def __getitem__(self, index):
-        if isinstance(index, slice):
-            return [self[position] for position in range(*index.indices(len(self)))]
-        if index < 0:
-            index += len(self)
-        if index < 0 or index >= len(self):
-            raise IndexError(index)
-        path_index = self._path_indices[index]
-        event_index = self._event_indices[index]
-        role_index = self._roles[index]
-        if (
-            path_index >= len(self._paths)
-            or event_index >= len(self._events)
-            or role_index >= len(_EVENT_CHECK_ROLES)
-        ):
-            raise ValidationError("global STA indexed check identity is malformed")
-        begin = self._arc_offsets[index]
-        end = self._arc_offsets[index + 1]
-        if begin > end or end > len(self._arcs):
-            raise ValidationError("global STA indexed check arcs are malformed")
-        return EventCheck(
-            self._paths[path_index],
-            _EVENT_CHECK_ROLES[role_index],
-            self._events[event_index],
-            self._launches[index],
-            tuple(self._arcs[begin:end]),
-            self._required[index],
-        )
-
-    def __iter__(self):
-        for index in range(len(self)):
-            yield self[index]
-
-    def __eq__(self, other):
-        if not isinstance(other, Sequence) or len(self) != len(other):
-            return False
-        return all(left == right for left, right in zip(self, other))
-
-    def _numerical_hash(self, index: int) -> int:
-        return self._numerical_hashes[index]
-
-    def _numerical_key(self, index: int) -> tuple:
-        begin = self._arc_offsets[index]
-        end = self._arc_offsets[index + 1]
-        return (
-            self._roles[index],
-            self._launches[index],
-            tuple(self._arcs[begin:end]),
-            self._required[index],
-        )
-
-    def _validate_row(self, index: int) -> None:
-        path_index = self._path_indices[index]
-        event_index = self._event_indices[index]
-        role_index = self._roles[index]
-        if (
-            path_index >= len(self._paths)
-            or event_index >= len(self._events)
-            or role_index >= len(_EVENT_CHECK_ROLES)
-            or not self._paths[path_index]
-            or not self._events[event_index]
-        ):
-            raise ValidationError("global STA indexed check identity is malformed")
-        begin = self._arc_offsets[index]
-        end = self._arc_offsets[index + 1]
-        if begin > end or end > len(self._arcs):
-            raise ValidationError("global STA indexed check arcs are malformed")
-        launch = self._launches[index]
-        required = self._required[index]
-        if (
-            not math.isfinite(launch)
-            or not math.isfinite(required)
-        ):
-            raise ValidationError("global STA times must be finite numbers")
-        if launch < 0:
-            raise ValidationError(
-                "global STA launch/arc delay must be nonnegative"
-            )
-        for offset in range(begin, end):
-            value = self._arcs[offset]
-            if not math.isfinite(value):
-                raise ValidationError("global STA times must be finite numbers")
-            if value < 0:
-                raise ValidationError(
-                    "global STA launch/arc delay must be nonnegative"
-                )
-
-    def _physical_chain_equal(self, left: int, right: int) -> bool:
-        if self._launches[left] != self._launches[right]:
-            return False
-        left_begin = self._arc_offsets[left]
-        left_end = self._arc_offsets[left + 1]
-        right_begin = self._arc_offsets[right]
-        right_end = self._arc_offsets[right + 1]
-        return (
-            left_end - left_begin == right_end - right_begin
-            and all(
-                self._arcs[left_begin + offset]
-                == self._arcs[right_begin + offset]
-                for offset in range(left_end - left_begin)
-            )
-        )
-
-    @property
-    def typed_payload_bytes(self) -> int:
-        """Bytes in fixed-width relation buffers, excluding interned strings."""
-
-        return sum(
-            values.itemsize * len(values)
-            for values in (
-                self._path_indices,
-                self._roles,
-                self._event_indices,
-                self._launches,
-                self._required,
-                self._arc_offsets,
-                self._arcs,
-                self._numerical_hashes,
-                *(
-                    (self._original_to_representative,)
-                    if self._original_to_representative is not None
-                    else ()
-                ),
-                *(
-                    (self._representative_indices,)
-                    if self._representative_indices is not None
-                    else ()
-                ),
-            )
-        )
-
-    @property
-    def packed_identity_bytes(self) -> int | None:
-        """Bytes in packed path/event pools, if owned by this typed view."""
-
-        if not isinstance(self._paths, _PackedUtf8Strings) or not isinstance(
-            self._events, _PackedUtf8Strings
-        ):
-            return None
-        return self._paths.packed_bytes + self._events.packed_bytes
-
-
-class _EventCheckBuilder:
-    """Append checks with bounded Python identity and compression state."""
-
-    _EVENT_CACHE_SIZE = 8192
-    _BUNDLE_CACHE_SIZE = 4096
-    _BUNDLE_CANDIDATE_CACHE_SIZE = 8
-    _INDEX_COMMIT_ROWS = 4096
-
-    def __init__(self):
-        self._finished = False
-        self._path_payload = bytearray()
-        self._path_offsets = array("Q", [0])
-        self._event_payload = bytearray()
-        self._event_offsets = array("Q", [0])
-        self._event_cache: OrderedDict[str, int] = OrderedDict()
-        self._path_indices = array("I")
-        self._roles = array("B")
-        self._event_indices = array("I")
-        self._launches = array("d")
-        self._required = array("d")
-        self._arc_offsets = array("Q", [0])
-        self._arcs = array("d")
-        self._numerical_hashes = array("Q")
-        self._original_to_representative = array("I")
-        self._representative_indices = array("I")
-        self._bundle_cache: OrderedDict[
-            tuple[bytes, int], tuple[int, ...]
-        ] = OrderedDict()
-        self._current_path_index: int | None = None
-        self._current_path: str | None = None
-        self._current_bundle_start = 0
-        self._current_identities: set[tuple[int, str]] = set()
-        self._target_chain: tuple[float, tuple[float, ...]] | None = None
-        self._runtime_chain: tuple[float, tuple[float, ...]] | None = None
-        descriptor, name = tempfile.mkstemp(
-            prefix="emuflow-global-sta-checks-", suffix=".sqlite3"
-        )
-        os.close(descriptor)
-        self._database_path = Path(name)
-        self._connection: sqlite3.Connection | None = sqlite3.connect(name)
-        self._connection.executescript(
-            """
-            PRAGMA journal_mode=OFF;
-            PRAGMA synchronous=OFF;
-            PRAGMA temp_store=FILE;
-            PRAGMA cache_size=-8192;
-            CREATE TABLE seen_path (
-                path TEXT PRIMARY KEY
-            ) WITHOUT ROWID;
-            CREATE TABLE representative_bundle (
-                bundle_hash BLOB NOT NULL,
-                check_count INTEGER NOT NULL,
-                representative_start INTEGER NOT NULL,
-                PRIMARY KEY(bundle_hash, representative_start)
-            ) WITHOUT ROWID;
-            CREATE INDEX representative_bundle_lookup
-                ON representative_bundle(bundle_hash, check_count);
-            """
-        )
-        self._pending_index_rows = 0
-
-    def _close(self) -> None:
-        connection = self._connection
-        self._connection = None
-        if connection is not None:
-            connection.close()
-        self._database_path.unlink(missing_ok=True)
-
-    def _index_mutated(self) -> None:
-        self._pending_index_rows += 1
-        if self._pending_index_rows >= self._INDEX_COMMIT_ROWS:
-            assert self._connection is not None
-            self._connection.commit()
-            self._pending_index_rows = 0
-
-    def __del__(self):
-        try:
-            self._close()
-        except BaseException:
-            pass
-
-    @staticmethod
-    def _append_packed(value: str, payload: bytearray, offsets: array) -> int:
-        identity = len(offsets) - 1
-        if identity >= _UINT32_MAX:
-            raise ValidationError(
-                "global STA indexed identity population is too large"
-            )
-        payload.extend(value.encode("utf-8"))
-        offsets.append(len(payload))
-        return identity
-
-    def _intern_event(self, event: str) -> int:
-        identity = self._event_cache.get(event)
-        if identity is None:
-            identity = self._append_packed(
-                event, self._event_payload, self._event_offsets
-            )
-            self._event_cache[event] = identity
-            if len(self._event_cache) > self._EVENT_CACHE_SIZE:
-                self._event_cache.popitem(last=False)
-        else:
-            self._event_cache.move_to_end(event)
-        return identity
-
-    def _rows_numerically_equal(
-        self, left: int, right: int
-    ) -> bool:
-        if (
-            self._roles[left] != self._roles[right]
-            or self._launches[left] != self._launches[right]
-            or self._required[left] != self._required[right]
-        ):
-            return False
-        left_begin = self._arc_offsets[left]
-        left_end = self._arc_offsets[left + 1]
-        right_begin = self._arc_offsets[right]
-        right_end = self._arc_offsets[right + 1]
-        return (
-            left_end - left_begin == right_end - right_begin
-            and all(
-                self._arcs[left_begin + offset]
-                == self._arcs[right_begin + offset]
-                for offset in range(left_end - left_begin)
-            )
-        )
-
-    def _bundles_numerically_equal(
-        self, representative_start: int, begin: int, count: int
-    ) -> bool:
-        if representative_start + count > len(self._representative_indices):
-            raise ValidationError(
-                "global STA representative bundle index is malformed"
-            )
-        return all(
-            self._rows_numerically_equal(
-                self._representative_indices[representative_start + offset],
-                begin + offset,
-            )
-            for offset in range(count)
-        )
-
-    def _finish_bundle(self) -> None:
-        if self._current_path_index is None:
-            return
-        if self._target_chain is None or self._runtime_chain is None:
-            raise ValidationError("global STA target/runtime population disagrees")
-        if self._target_chain != self._runtime_chain:
-            raise ValidationError(
-                "global STA target/runtime physical chains disagree"
-            )
-        begin = self._current_bundle_start
-        end = len(self._roles)
-        bundle_hash = end - begin
-        for index in range(begin, end):
-            bundle_hash = (
-                (bundle_hash * 1_000_003) ^ self._numerical_hashes[index]
-            ) & _UINT64_MASK
-
-        start = None
-        check_count = end - begin
-        hash_bytes = bundle_hash.to_bytes(8, "little")
-        cache_key = (hash_bytes, check_count)
-        candidates = self._bundle_cache.get(cache_key, ())
-        for candidate_start in candidates:
-            if self._bundles_numerically_equal(
-                candidate_start, begin, check_count
-            ):
-                start = candidate_start
-                break
-        if start is None:
-            assert self._connection is not None
-            for (candidate_start,) in self._connection.execute(
-                    """
-                    SELECT representative_start
-                      FROM representative_bundle
-                     WHERE bundle_hash=? AND check_count=?
-                  ORDER BY representative_start
-                    """,
-                    (sqlite3.Binary(hash_bytes), check_count),
-                ):
-                if candidate_start in candidates:
-                    continue
-                if self._bundles_numerically_equal(
-                    candidate_start, begin, check_count
-                ):
-                    start = candidate_start
-                    break
-        if start is None:
-            start = len(self._representative_indices)
-            if start + check_count >= _UINT32_MAX:
-                raise ValidationError(
-                    "global STA representative population exceeds indexed storage"
-                )
-            self._representative_indices.extend(range(begin, end))
-            assert self._connection is not None
-            self._connection.execute(
-                "INSERT INTO representative_bundle VALUES (?, ?, ?)",
-                (sqlite3.Binary(hash_bytes), check_count, start),
-            )
-            self._index_mutated()
-        updated = (start, *(value for value in candidates if value != start))[
-            : self._BUNDLE_CANDIDATE_CACHE_SIZE
-        ]
-        self._bundle_cache[cache_key] = updated
-        self._bundle_cache.move_to_end(cache_key)
-        if len(self._bundle_cache) > self._BUNDLE_CACHE_SIZE:
-            self._bundle_cache.popitem(last=False)
-        for offset, index in enumerate(range(begin, end)):
-            self._original_to_representative[index] = start + offset
-
-    def append(self, row: EventCheck) -> None:
-        self.append_values(
-            row.path,
-            row.role,
-            row.event,
-            row.launch_ns,
-            row.arcs_ns,
-            row.required_ns,
-        )
-
-    def append_values(
-        self,
-        path: str,
-        role: str,
-        event: str,
-        launch_ns: float,
-        arcs_ns: tuple[float, ...],
-        required_ns: float,
-    ) -> None:
-        if self._finished:
-            raise ValidationError("global STA indexed check builder is sealed")
-        if (
-            not isinstance(path, str)
-            or not path
-            or not isinstance(event, str)
-            or not event
-        ):
-            raise ValidationError("global STA has duplicate/empty check identity")
-        if role not in _EVENT_CHECK_ROLE_INDEX:
-            raise ValidationError("global STA has an unsupported check role")
-        for value in (launch_ns, required_ns, *arcs_ns):
-            if isinstance(value, bool) or not math.isfinite(value):
-                raise ValidationError("global STA times must be finite numbers")
-        if launch_ns < 0 or any(value < 0 for value in arcs_ns):
-            raise ValidationError(
-                "global STA launch/arc delay must be nonnegative"
-            )
-        role_index = _EVENT_CHECK_ROLE_INDEX[role]
-        if path != self._current_path:
-            self._finish_bundle()
-            assert self._connection is not None
-            try:
-                self._connection.execute(
-                    "INSERT INTO seen_path VALUES (?)", (path,)
-                )
-                self._index_mutated()
-            except sqlite3.IntegrityError as error:
-                raise ValidationError(
-                    "global STA indexed checks are not path-contiguous"
-                ) from error
-            path_index = self._append_packed(
-                path, self._path_payload, self._path_offsets
-            )
-            self._current_path_index = path_index
-            self._current_path = path
-            self._current_identities = set()
-            self._target_chain = None
-            self._runtime_chain = None
-            self._current_bundle_start = len(self._roles)
-        assert self._current_path_index is not None
-        event_index = self._intern_event(event)
-        identity = (role_index, event)
-        if identity in self._current_identities:
-            raise ValidationError("global STA has duplicate/empty check identity")
-        self._current_identities.add(identity)
-        if role == "target":
-            if self._target_chain is not None:
-                raise ValidationError(
-                    "global STA must observe each original path once"
-                )
-            self._target_chain = (launch_ns, arcs_ns)
-        elif role == "runtime":
-            if self._runtime_chain is not None:
-                raise ValidationError(
-                    "global STA must observe each original path once"
-                )
-            self._runtime_chain = (launch_ns, arcs_ns)
-        self._path_indices.append(self._current_path_index)
-        self._roles.append(role_index)
-        self._event_indices.append(event_index)
-        self._launches.append(launch_ns)
-        self._required.append(required_ns)
-        self._arcs.extend(arcs_ns)
-        self._arc_offsets.append(len(self._arcs))
-        self._numerical_hashes.append(
-            _event_check_values_hash(role, launch_ns, arcs_ns, required_ns)
-        )
-        self._original_to_representative.append(_UINT32_MAX)
-
-    def finish(self) -> _IndexedEventChecks:
-        if self._finished:
-            raise ValidationError("global STA indexed check builder is sealed")
-        try:
-            self._finish_bundle()
-            self._finished = True
-            paths = _PackedUtf8Strings(
-                self._path_payload, self._path_offsets
-            )
-            events = _PackedUtf8Strings(
-                self._event_payload, self._event_offsets
-            )
-            result = _IndexedEventChecks(
-                paths,
-                events,
-                self._path_indices,
-                self._roles,
-                self._event_indices,
-                self._launches,
-                self._required,
-                self._arc_offsets,
-                self._arcs,
-                self._numerical_hashes,
-                self._original_to_representative,
-                self._representative_indices,
-                validated=True,
-            )
-            self._event_cache.clear()
-            self._bundle_cache.clear()
-            return result
-        finally:
-            self._close()
 
 
 class _IndexedCheckSelection(Sequence[EventCheck]):
@@ -1289,59 +309,6 @@ def _validate_check_values(row: EventCheck) -> None:
         raise ValidationError("global STA launch/arc delay must be nonnegative")
 
 
-def _validate_indexed_checks(rows: _IndexedEventChecks) -> None:
-    """Validate canonical typed rows without reconstructing every dataclass."""
-
-    completed_paths: set[int] = set()
-    current_path = None
-    current_identities: set[tuple[int, int]] = set()
-    target = None
-    runtime = None
-
-    def finish_bundle() -> None:
-        if current_path is None:
-            return
-        if target is None and runtime is None:
-            raise ValidationError("global STA event has no original-path observation")
-        if target is None or runtime is None:
-            raise ValidationError("global STA target/runtime population disagrees")
-        if not rows._physical_chain_equal(target, runtime):
-            raise ValidationError(
-                "global STA target/runtime physical chains disagree"
-            )
-        completed_paths.add(current_path)
-
-    for index in range(len(rows)):
-        rows._validate_row(index)
-        path = rows._path_indices[index]
-        if path != current_path:
-            finish_bundle()
-            if path in completed_paths:
-                raise ValidationError("global STA requires contiguous original-path bundles")
-            current_path = path
-            current_identities = set()
-            target = None
-            runtime = None
-        role = rows._roles[index]
-        identity = (role, rows._events[rows._event_indices[index]])
-        if identity in current_identities:
-            raise ValidationError("global STA has duplicate/empty check identity")
-        current_identities.add(identity)
-        if role == _EVENT_CHECK_ROLE_INDEX["target"]:
-            if target is not None:
-                raise ValidationError(
-                    "global STA must observe each original path once"
-                )
-            target = index
-        elif role == _EVENT_CHECK_ROLE_INDEX["runtime"]:
-            if runtime is not None:
-                raise ValidationError(
-                    "global STA must observe each original path once"
-                )
-            runtime = index
-    finish_bundle()
-
-
 def validate_checks(checks: Iterable[EventCheck]) -> Sequence[EventCheck]:
     # Preserve the public API's historical snapshot contract for every
     # caller-owned container, including list, tuple, and custom Sequence
@@ -1355,8 +322,7 @@ def validate_checks(checks: Iterable[EventCheck]) -> Sequence[EventCheck]:
     if not rows:
         raise ValidationError("global STA has no timing checks")
     if isinstance(rows, _IndexedEventChecks):
-        if not rows._validated:
-            _validate_indexed_checks(rows)
+        rows.require_valid()
         return rows
 
     # bind_physical_checks emits one contiguous bundle per original path.
@@ -1422,6 +388,9 @@ cannot silently wrap a missed slot into the following frame. The measured arc
 chain remains explicit; a scalar Liberty cell is shared for each unique delay.
 """
     rows = validate_checks(checks)
+    if isinstance(rows, _IndexedEventChecks):
+        export_event_model(rows, directory)
+        return rows
     directory.mkdir(parents=True, exist_ok=True)
     delays = sorted({0.0, *(v for r in rows for v in r.arcs_ns)})
     cells = {v: f"D{i}" for i, v in enumerate(delays)}
@@ -1513,7 +482,8 @@ def read_measurements(
     arrivals = array("d")
     required_values = array("d")
     slacks = array("d")
-    with path.open() as stream:
+    guard = rows._owner.borrow() if isinstance(rows, _IndexedEventChecks) else nullcontext()
+    with guard, path.open() as stream:
         if next(stream, "").strip() != "endpoint\tarrival_ns\trequired_ns\tslack_ns":
             raise ValidationError("invalid global STA measurements header")
         for index, line in enumerate(stream):
@@ -1566,21 +536,8 @@ def _compress_path_equivalent_checks(
     the numerical signature, but the whole bundle is the unit of compression:
     individual TX, commit or observation rows are never merged in isolation.
     """
-    if (
-        isinstance(rows, _IndexedEventChecks)
-        and rows._original_to_representative is not None
-        and rows._representative_indices is not None
-    ):
-        if any(
-            index == _UINT32_MAX
-            or index >= len(rows._representative_indices)
-            for index in rows._original_to_representative
-        ):
-            raise ValidationError("global STA path compression lost a timing check")
-        return (
-            _IndexedCheckSelection(rows, rows._representative_indices),
-            rows._original_to_representative,
-        )
+    if isinstance(rows, _IndexedEventChecks):
+        return rows.compressed()
 
     representative_indices = array("I")
     # A machine-word hash keeps one bounded key per distinct numerical bundle
@@ -1602,13 +559,9 @@ def _compress_path_equivalent_checks(
     )
 
     def numerical_hash(index: int) -> int:
-        if isinstance(rows, _IndexedEventChecks):
-            return rows._numerical_hash(index)
         return _event_check_row_hash(rows[index])
 
     def numerical_key(index: int) -> tuple:
-        if isinstance(rows, _IndexedEventChecks):
-            return rows._numerical_key(index)
         row = rows[index]
         return row.role, row.launch_ns, row.arcs_ns, row.required_ns
 
@@ -1663,11 +616,7 @@ def _compress_path_equivalent_checks(
     seen_paths = set()
     current_path = None
     current_indices: list[int] = []
-    path_identities = (
-        enumerate(rows._path_indices)
-        if isinstance(rows, _IndexedEventChecks)
-        else ((index, row.path) for index, row in enumerate(rows))
-    )
+    path_identities = ((index, row.path) for index, row in enumerate(rows))
     for index, path_identity in path_identities:
         if path_identity != current_path:
             if path_identity in seen_paths:
@@ -1736,6 +685,12 @@ class _ExpandedMeasurementSequence(Sequence):
             "required_ns": value["required_ns"],
             "slack_ns": value["slack_ns"],
         }
+
+    def __iter__(self):
+        guard = self._rows._owner.borrow() if isinstance(self._rows, _IndexedEventChecks) else nullcontext()
+        with guard:
+            for index in range(len(self)):
+                yield self[index]
 
     def __eq__(self, other):
         if not isinstance(other, Sequence) or len(self) != len(other):
@@ -1806,6 +761,9 @@ def run_event_checks(checks: Iterable[EventCheck], directory: Path,
         _compress_path_equivalent_checks(rows)
     )
     export_event_checks(representatives, directory)
+    model_directory, model_sources = (
+        event_model_sources(directory) if isinstance(rows, _IndexedEventChecks) else (directory, ())
+    )
     tool = resolve_native_executable("sta", executable)
     engine = require_opensta_engine(tool)
     output = directory / "measurements.tsv"
@@ -1821,12 +779,30 @@ def run_event_checks(checks: Iterable[EventCheck], directory: Path,
         if "launcher_sha256" in engine:
             log.write(f"EmuFlow OpenSTA launcher SHA256 {engine['launcher_sha256']}\n")
         log.flush()
-        result = subprocess.run([tool, "-exit", "analyze.tcl"], cwd=directory,
-                                stdout=log, stderr=subprocess.STDOUT, check=False)
-    if result.returncode or not output.is_file():
+        if isinstance(rows, _IndexedEventChecks):
+            from .store_publication import require_store_sources_unchanged
+            from .tool_runtime import NativeToolProcess
+            rows.require_valid()
+            require_store_sources_unchanged(model_sources)
+            runner = resolve_native_executable("emuflow-native")
+            with NativeToolProcess(
+                runner, [tool, "-exit", "analyze.tcl"], cwd=model_directory,
+                environment=dict(os.environ), forward_stdout=True,
+                scratch_parent=rows._owner.root,
+            ) as process:
+                for line in process.stdout:
+                    log.write(line.decode("utf-8", errors="replace"))
+                result = process.finish()
+            rows.require_valid()
+            require_store_sources_unchanged(model_sources)
+        else:
+            result = subprocess.run([tool, "-exit", "analyze.tcl"], cwd=model_directory,
+                                    stdout=log, stderr=subprocess.STDOUT, check=False)
+    engine_output = model_directory / "measurements.tsv"
+    if result.returncode or not engine_output.is_file():
         raise ValidationError("global OpenSTA failed; see opensta.log")
     representative_values = read_measurements(
-        output, representatives, verify_arcs=verify_arcs
+        engine_output, representatives, verify_arcs=verify_arcs
     )
     expanded_values = _write_expanded_measurements(
         output,
@@ -1896,6 +872,21 @@ def read_engine_identity(log_path: Path) -> dict:
 
 def bind_physical_checks(runtime, routes, schedule, physical, platform, *, metadata=None,
                          routes_artifact_sha256=None):
+    result = _EventCheckBuilder(bound=True)
+    path_metadata = _PathMetadataBuilder(result)
+    try:
+        return _bind_physical_checks(
+            runtime, routes, schedule, physical, platform, metadata=metadata,
+            routes_artifact_sha256=routes_artifact_sha256,
+            result=result, path_metadata=path_metadata,
+        )
+    except BaseException:
+        result._owner.close()
+        raise
+
+
+def _bind_physical_checks(runtime, routes, schedule, physical, platform, *, metadata=None,
+                          routes_artifact_sha256=None, result, path_metadata):
     """Bind canonical measurements to event checks without composing delays.
 
 Shared database readers validate identities only. This exporter does not call
@@ -1928,8 +919,6 @@ the Python event propagator or consume its per-path numerical results.
     if uncertainty < 0 or not math.isfinite(uncertainty):
         raise ValidationError("invalid global STA uncertainty")
     from .runtime import runtime_clock_period_ns
-    result = _EventCheckBuilder()
-    path_metadata = _PathMetadataBuilder()
     representatives = 0
     segment_cursor = (
         segments.ordered_cursor()

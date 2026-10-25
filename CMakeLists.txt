@@ -235,7 +235,10 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_assignment_core.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_assignment_cuts.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase5_schedule.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase5_schedule_indexes.sql")
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase5_schedule_indexes.sql"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/global_events.sql"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/global_event_index.sql"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/global_event_analyze.tcl")
 execute_process(COMMAND "${Python3_EXECUTABLE}" "${EMUFLOW_STORE_SCHEMA_GENERATOR}"
   "${CMAKE_BINARY_DIR}/generated/emuflow_core"
   RESULT_VARIABLE EMUFLOW_STORE_SCHEMA_STATUS)

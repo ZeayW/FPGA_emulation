@@ -7,6 +7,7 @@
 #include "emuflow_core/schedule_store.hpp"
 #include "emuflow_core/schedule_validation.hpp"
 #include "emuflow_core/schedule_timing.hpp"
+#include "emuflow_core/global_events.hpp"
 #include "emuflow_core/schedule_ingress.hpp"
 #include "emuflow_core/bookshelf.hpp"
 #include "emuflow_core/rwroute_export.hpp"
@@ -48,6 +49,8 @@ const char* StageName(Stage stage) {
     case Stage::kRoute: return "phase4.route";
     case Stage::kBuildSchedule: return "phase5.build-schedule";
     case Stage::kProjectScheduleTiming: return "phase5.timing-contract";
+    case Stage::kIndexGlobalEvents: return "global-sta.index-events";
+    case Stage::kExportGlobalEvents: return "global-sta.export-events";
     case Stage::kValidateSchedule: return "phase5.validate-schedule";
     case Stage::kAssignBanks: return "phase6.assign-banks";
     case Stage::kGroupSignals: return "phase6.group-signals";
@@ -114,6 +117,8 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
       throw core::StageError(core::ErrorCode::kInvalidRequest,"timing projection input coverage disagrees");
     }
     case Stage::kValidateSchedule: return {"system-route-store-v3", "exact-schedule-board-request-v1", "tdm-schedule-store-v4", "exact-schedule-validation-request-v1"};
+    case Stage::kIndexGlobalEvents: return {"global-event-primary-v1"};
+    case Stage::kExportGlobalEvents: return {"global-event-primary-v1","global-event-index-v1","global-event-export-request-v1"};
     case Stage::kBuildSchedule: return {"system-route-store-v3", "exact-schedule-board-request-v1", "exact-schedule-generation-request-v1"};
     case Stage::kAssignBanks:
     case Stage::kGroupSignals:
@@ -270,6 +275,8 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kSealRoutes: core::SealSystemRoutes(inputs,output); break;
       case Stage::kBuildSchedule: core::BuildExactScheduleStore(inputs,output); break;
       case Stage::kProjectScheduleTiming: core::ProjectScheduleTiming(inputs,output); break;
+      case Stage::kIndexGlobalEvents: core::IndexGlobalEvents(inputs[0],output); break;
+      case Stage::kExportGlobalEvents: core::ExportGlobalEvents(inputs,output); break;
       case Stage::kValidateSchedule: core::ValidateExactSchedule(inputs,output); break;
       case Stage::kExportBookshelf:
         core::ExportBookshelf(inputs[0],inputs[1],output,request.auxiliary_output_path,request.scratch_path);
@@ -306,6 +313,8 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kSealRoutes: schema = "system-route-seal-summary-v1"; break;
       case Stage::kBuildSchedule: schema = "tdm-schedule-store-v4"; break;
       case Stage::kProjectScheduleTiming: schema = "phase5-timing-summary-v1"; break;
+      case Stage::kIndexGlobalEvents: schema = "global-event-index-v1"; break;
+      case Stage::kExportGlobalEvents: schema = "global-event-export-summary-v1"; break;
       case Stage::kValidateSchedule: schema = "exact-schedule-validation-summary-v1"; break;
       case Stage::kAssignBanks: schema = "chimew-bank-output-text"; break;
       case Stage::kGroupSignals: schema = "chimew-group-output-text"; break;

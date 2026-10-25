@@ -13,6 +13,14 @@ int main(int argc, char**) {
   try { (void)JsonRecord(std::numeric_limits<double>::infinity()); }
   catch (const std::runtime_error&) { rejected = true; }
   if (!rejected) return 2;
+  if (emuflow::core::JsonQuoteUtf8(u8"路径😀\x7f\n\\\"") != u8"\"路径😀\x7f\\n\\\\\\\"\"") return 3;
+  if (emuflow::core::JsonQuote(u8"路径😀") != "\"\\u8def\\u5f84\\ud83d\\ude00\"") return 4;
+  for (const auto& invalid : {std::string("\xc0\x80"), std::string("\xed\xa0\x80"), std::string("\xf4\x90\x80\x80")}) {
+    bool failed = false;
+    try { (void)emuflow::core::JsonQuoteUtf8(invalid); }
+    catch (const std::runtime_error&) { failed = true; }
+    if (!failed) return 5;
+  }
   if (argc == 1) return 0;
   std::uint64_t bits;
   while (std::cin >> std::hex >> bits) {

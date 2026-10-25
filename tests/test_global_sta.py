@@ -231,22 +231,14 @@ def test_indexed_check_builder_is_exact_compact_and_sealed(tmp_path):
     assert compact._events == ["shared-tx", "capture"]
     assert not isinstance(compact._paths, list)
     assert not isinstance(compact._events, list)
-    assert compact.packed_identity_bytes == (
-        sum(len(value.encode("utf-8")) for value in compact._paths)
-        + (len(compact._paths) + 1) * 8
-        + sum(len(value.encode("utf-8")) for value in compact._events)
-        + (len(compact._events) + 1) * 8
-    )
-    assert not builder._event_cache
-    assert not builder._bundle_cache
-    assert not builder._database_path.exists()
-    # 4-byte path ID, 1-byte role, 4-byte event ID, two 8-byte scalars,
-    # one 8-byte arc end offset, three 8-byte arcs, one 8-byte numerical hash,
-    # and one 4-byte representative ID per check; plus the initial arc offset
-    # and four representative row IDs. This is fixed-width storage rather than
-    # one Python dataclass and arc tuple per check.
-    assert compact.typed_payload_bytes == len(rows) * 69 + 24
-    assert compact.typed_payload_bytes < len(rows) * 76
+    assert compact._owner.header["numeric_bytes"] == len(rows) * 40
+    assert not compact._owner.pending
+    assert not compact._owner.event_cache
+    assert not hasattr(compact, "_arcs")
+    assert not hasattr(compact, "_path_indices")
+    assert compact._owner.primary.is_file()
+    assert compact._owner.index.is_file()
+    assert compact._owner.header["representative_checks"] == 4
     assert compact[-1] == rows[-1]
     assert compact[3:7] == rows[3:7]
     representatives, mapping = _compress_path_equivalent_checks(compact)
@@ -267,31 +259,31 @@ def test_indexed_check_builder_is_exact_compact_and_sealed(tmp_path):
     small_compact = small_builder.finish()
     export_event_checks(rows[:8], list_dir)
     assert export_event_checks(small_compact, compact_dir) is small_compact
-    for name in (
-        "global_timing.lib",
-        "global_timing.v",
-        "global_timing.sdc",
-        "analyze.tcl",
-    ):
-        assert (compact_dir / name).read_bytes() == (list_dir / name).read_bytes()
+    from emuflow.global_event_store import event_model_directory
+    for name in ("global_timing.lib", "global_timing.v", "global_timing.sdc", "analyze.tcl"):
+        assert (event_model_directory(compact_dir) / name).read_bytes() == (list_dir / name).read_bytes()
+    root = compact._owner.root
+    compact.close()
+    assert not root.exists()
+    with pytest.raises(ValidationError, match="closed"):
+        representatives[0]
 
 
-def test_indexed_check_view_rejects_corrupt_identity():
+@pytest.mark.parametrize("file", ["primary", "index"])
+def test_indexed_check_view_rejects_changed_owner(file):
+    import os
     builder = _EventCheckBuilder()
     for row in example():
         builder.append(row)
     compact = builder.finish()
-    compact._roles[0] = 255
-    with pytest.raises(ValidationError, match="identity"):
+    path = getattr(compact._owner, file)
+    status = path.stat()
+    os.utime(path, ns=(status.st_atime_ns, status.st_mtime_ns + 1_000_000))
+    with pytest.raises(ValidationError, match="generation changed"):
         compact[0]
-
-    builder = _EventCheckBuilder()
-    for row in example():
-        builder.append(row)
-    compact = builder.finish()
-    compact._original_to_representative[0] = (1 << 32) - 1
-    with pytest.raises(ValidationError, match="lost a timing check"):
+    with pytest.raises(ValidationError, match="generation changed"):
         _compress_path_equivalent_checks(compact)
+    compact.close()
 
 
 def test_indexed_path_metadata_is_sorted_compact_mapping():
@@ -327,17 +319,10 @@ def test_indexed_path_metadata_is_sorted_compact_mapping():
         "physical_logic_segments_cone_bound": False,
     }
     assert metadata["path-z"]["interconnect_delay_model"] == "linear-ratio-v1"
-    # Path, representative, clock, and model identities share one packed pool.
-    # The fixed-width payload includes the path-to-string identity column.
-    assert metadata.typed_payload_bytes == 52
-    assert len(metadata._strings) == 5
-    assert metadata.packed_identity_bytes == (
-        sum(len(value.encode("utf-8")) for value in metadata._strings)
-        + (len(metadata._strings) + 1) * 8
-    )
     assert not isinstance(metadata._paths, list)
-    assert not isinstance(metadata._strings, list)
-    assert not builder._database_path.exists()
+    assert not hasattr(metadata, "_strings")
+    assert metadata._owner.primary.is_file()
+    assert metadata._owner.header["mode"] == 2
     assert metadata.path_id_set_sha256() == path_id_set_sha256(
         ["path-z", "path-a"]
     )
@@ -358,17 +343,14 @@ def test_indexed_path_metadata_is_sorted_compact_mapping():
         )
 
     duplicate = _PathMetadataBuilder()
-    for _ in range(2):
-        duplicate.append(
-            "same",
-            representative_path="same",
-            path_scope="cross-fpga",
-            clock_domain="clk",
-            target_period_ns=10.0,
-            physical_logic_segments_cone_bound=False,
-        )
     with pytest.raises(ValidationError, match="overlap"):
-        duplicate.finish()
+        for _ in range(2):
+            duplicate.append(
+                "same", representative_path="same", path_scope="cross-fpga",
+                clock_domain="clk", target_period_ns=10.0,
+                physical_logic_segments_cone_bound=False,
+            )
+    duplicate._owner.close()
 
 
 @pytest.mark.parametrize("indexed", [False, True])
@@ -379,26 +361,19 @@ def test_check_validation_rejects_interleaved_bundles(indexed, incomplete):
         for path in ("p", "q")
         for role, deadline in (("target", 2), ("runtime", 20))
     ]
-    if indexed:
-        builder = _EventCheckBuilder()
-        for row in canonical:
-            builder.append(row)
-        if not incomplete:
-            for role, deadline in (("target", 2), ("runtime", 20)):
-                builder.append(EventCheck("r", role, "capture", 0, (1,), deadline))
-        rows = builder.finish()
-        # Model a separately supplied typed view; the production builder seals
-        # complete bundles and never emits this order.
-        rows._validated = False
-        if incomplete:
-            rows._path_indices = array("I", [0, 1, 0, 1])
-        else:
-            rows._path_indices = array("I", [0, 0, 1, 1, 0, 0])
-    else:
-        rows = ([canonical[index] for index in (0, 2, 1, 3)]
-                if incomplete else canonical + canonical[:2])
+    rows = ([canonical[index] for index in (0, 2, 1, 3)]
+            if incomplete else canonical + canonical[:2])
     with pytest.raises(ValidationError, match="population|contiguous"):
-        validate_checks(rows)
+        if indexed:
+            builder = _EventCheckBuilder()
+            try:
+                for row in rows:
+                    builder.append(row)
+                builder.finish()
+            finally:
+                builder._owner.close()
+        else:
+            validate_checks(rows)
 
 
 def test_exact_compression_uses_complete_path_bundles(tmp_path):
@@ -450,19 +425,13 @@ def test_exact_compression_does_not_trust_bundle_hash(monkeypatch):
         for role, deadline in (("target", 4.0), ("runtime", 40.0))
     ]
     monkeypatch.setattr(sta, "_event_check_values_hash", lambda *args: 0)
-    builder = _EventCheckBuilder()
-    builder._BUNDLE_CANDIDATE_CACHE_SIZE = 1
-    for row in rows:
-        builder.append(row)
-    compact = validate_checks(builder.finish())
-    representatives, mapping = _compress_path_equivalent_checks(compact)
+    representatives, mapping = _compress_path_equivalent_checks(validate_checks(rows))
     assert representatives == rows[:4]
     assert list(mapping) == [0, 1, 2, 3, 0, 1]
 
 
-def test_indexed_check_builder_reloads_evicted_bundle_exactly():
+def test_native_check_index_compares_repeated_bundles_exactly():
     builder = _EventCheckBuilder()
-    builder._BUNDLE_CACHE_SIZE = 1
     rows = []
     for path, delay in (("p", 1.0), ("q", 2.0), ("r", 1.0)):
         for role, deadline in (("target", 4.0), ("runtime", 40.0)):
@@ -477,8 +446,8 @@ def test_indexed_check_builder_reloads_evicted_bundle_exactly():
 
 def test_indexed_check_builder_bounds_live_identity_caches():
     builder = _EventCheckBuilder()
-    builder._EVENT_CACHE_SIZE = 2
-    builder._BUNDLE_CACHE_SIZE = 3
+    builder._owner.EVENT_CACHE_SIZE = 2
+    builder._owner.CHECK_BATCH_SIZE = 3
     rows = []
     for index in range(20):
         for role, deadline in (("target", 40.0), ("runtime", 400.0)):
@@ -492,20 +461,17 @@ def test_indexed_check_builder_bounds_live_identity_caches():
             )
             rows.append(row)
             builder.append(row)
-        assert len(builder._event_cache) <= 2
-        assert len(builder._bundle_cache) <= 3
+        assert len(builder._owner.event_cache) <= 2
+        assert len(builder._owner.pending) < 3
     compact = builder.finish()
     assert compact == rows
-    assert not builder._event_cache
-    assert not builder._bundle_cache
+    assert not builder._owner.event_cache
+    assert not builder._owner.pending
     assert not hasattr(builder, "_path_ids")
     assert not hasattr(builder, "_event_ids")
 
 
-def test_indexed_check_bundle_cache_keys_hash_and_count(monkeypatch):
-    import emuflow.global_sta as sta
-
-    monkeypatch.setattr(sta, "_event_check_values_hash", lambda *args: 0)
+def test_native_check_index_distinguishes_bundle_counts():
     builder = _EventCheckBuilder()
     rows = [
         EventCheck("p", "target", "p-target", 0, (1,), 4),
@@ -1288,9 +1254,11 @@ def test_real_opentimer_from_physical_binding(tmp_path):
     physical["board_link_timing"] = build_board_link_timing_model(fixture.platform)
     checks = bind_physical_checks(runtime, routes, fixture.schedule, physical, fixture.platform)
     export_event_checks(checks, tmp_path)
+    from emuflow.global_event_store import event_model_directory
+    model = event_model_directory(tmp_path)
     subprocess.run([os.environ["EMUFLOW_TEST_OPENTIMER"], str(len(checks))],
-                   cwd=tmp_path, check=True)
-    measured = read_measurements(tmp_path / "opentimer-measurements.tsv", checks)
+                   cwd=model, check=True)
+    measured = read_measurements(model / "opentimer-measurements.tsv", checks)
     reference = build_system_timing(runtime, routes, fixture.schedule, phase5, physical,
                                     fixture.platform,
                                     semantic_contract=fixture.assignment["semantic_contract"])

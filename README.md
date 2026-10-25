@@ -404,9 +404,11 @@ inputs never select another toolchain.
 Other CLI defaults are TritonPart initial partitioning followed by
 timing-driven PATRON v14 post-processing, `static-exact-combinational` cuts,
 baseline Phase 6, and OpenSTA global physical timing. Global timing consumes
-complete, contiguous original-path bundles with concrete scheduled events;
-historical regrouping and
-schedule reconstruction fallbacks are retired. See the
+complete, contiguous original-path bundles with concrete scheduled events.
+Invocation-owned event stores feed shared-core validation, bundle compression
+and OpenSTA model export without retaining whole check/identity arrays in Python.
+Measurement import and final result aggregation still use Python adapters.
+Historical regrouping and schedule reconstruction fallbacks are retired. See the
 [global timing contract](docs/global-opensta-qualification.md#current-event-stream-contract).
 CLI, Python phase APIs and experiment configurations share these defaults;
 cut mode never implicitly selects an older PATRON version. The redundant

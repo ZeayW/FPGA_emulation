@@ -89,6 +89,8 @@ class NativeStageRuntimeTest(unittest.TestCase):
                 ["phase3", "refine-patron", "--typed-input", missing],
                 ["phase4", "route", "--typed-output", missing],
                 ["phase4", "seal-routes", missing, missing],
+                ["global-sta", "index-events", missing],
+                ["global-sta", "export-events", missing, missing, missing],
                 ["phase5", "build-schedule", missing, missing, missing],
                 ["phase5", "validate-schedule", missing, missing, missing, missing],
                 ["phase5", "timing-contract", missing, missing],

@@ -238,7 +238,8 @@ int main() {
         "boundary-identity-store-v1", "boundary-timing-store-v1",
         "logic-segment-identity-store-v1", "logic-segment-timing-store-v1",
         "local-path-timing-store-v1", "xilinx-mapped-index-v2",
-        "system-route-store-v3", "tdm-schedule-store-v4"};
+        "system-route-store-v3", "tdm-schedule-store-v4",
+        "global-event-primary-v1", "global-event-index-v1"};
     if (round_trip_names != expected_named_stores || stores.size() != round_trip_names.size())
       throw std::runtime_error("public store registry coverage is incomplete");
     ArtifactScope a(stores[0]),b(stores[1]);

@@ -119,6 +119,7 @@ def run_phase7c(
         if physical_summary_path is not None
         else None
     )
+    checks = None
     try:
         if physical_summary is not None and routes_path is None:
             raise ValidationError(
@@ -397,5 +398,8 @@ def run_phase7c(
         write_json(output_dir / "phase7c_report.json", report)
         return report
     finally:
+        close_checks = getattr(checks, "close", None)
+        if callable(close_checks):
+            close_checks()
         if physical_summary is not None:
             physical_summary.close()
