@@ -92,6 +92,8 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
     if stage not in {"synthesized", "routed"}:
         raise ValidationError("unsupported Vivado timing-query lineage stage")
     connection = sqlite3.connect(f"file:{lineage.resolve()}?mode=ro&immutable=1", uri=True)
+    from .vivado_control_alias import ControlAliasLookup
+    controls = ControlAliasLookup(connection, stage)
     diagnostic = None
     diagnostic_complete = False
     try:
@@ -161,13 +163,28 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
                     CROSS JOIN objects a INDEXED BY objects_origin ON a.origin=equivalent.seq AND a.stage=?
                     WHERE equivalent.signature=? AND a.ref=? ORDER BY a.name
                 """, (stage,signature,reference))
-            encoded = []
-            for row in rows:
-                changes = row[1].upper()
-                if any(marker in changes for marker in ("RETIM", "REGISTER_OPT", "AUTOPIPELINE", "INSERT_NEGEDGE", "SHIFT_REGISTER_TO_PIPELINE")) or (row[2].startswith("FD") and "MISC_OPT" in changes):
-                    raise ValidationError(f"Vivado timing source has an unsupported sequential transformation: {name}")
-                actual = row[0] if cell_only else row[0]+"/"+pin
-                encoded.append(actual.encode().hex())
+            def encode_rows(objects, limit=None):
+                result = []
+                for row in objects:
+                    if limit is not None and len(result) >= limit:
+                        raise ValidationError("Vivado structural control association exceeds native object scope")
+                    changes = row[1].upper()
+                    if any(marker in changes for marker in ("RETIM", "REGISTER_OPT", "AUTOPIPELINE", "INSERT_NEGEDGE", "SHIFT_REGISTER_TO_PIPELINE")) or (row[2].startswith("FD") and "MISC_OPT" in changes):
+                        raise ValidationError(f"Vivado timing source has an unsupported sequential transformation: {name}")
+                    actual = row[0] if cell_only else row[0]+"/"+pin
+                    result.append(actual.encode().hex())
+                return result
+
+            encoded = encode_rows(rows)
+            if not encoded and own is None:
+                for equivalent in controls.equivalent_origins(origin, reference):
+                    objects = connection.execute(
+                        "SELECT name,transformations,ref FROM objects INDEXED BY objects_origin "
+                        "WHERE stage=? AND origin=? AND ref=? ORDER BY name", (stage,equivalent,reference))
+                    encoded.extend(encode_rows(objects, 4096 - len(encoded)))
+                    if len(encoded) > 4096:
+                        raise ValidationError("Vivado structural control association exceeds native object scope")
+                encoded.sort()
             if not encoded and required:
                 if allow_eliminated:
                     proof = connection.execute("SELECT p.origin FROM mapped.cells c JOIN proofs.eliminated_sources p ON p.origin=c.seq JOIN proofs.source_names n ON n.origin=p.origin AND n.name=c.id WHERE c.id=?", (cell,)).fetchone()
@@ -232,4 +249,5 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
                 diagnostic.execute("INSERT OR REPLACE INTO metadata VALUES ('status','\"failed\"')")
             diagnostic.commit()
             diagnostic.close()
+        controls.close()
         connection.close()

@@ -426,7 +426,13 @@ remains an error.
 Timing queries resolve the original source's typed descendants first, without
 broadening a retained source to other equivalent cells. A removed object may
 alias another source only when the primitive, parameters, pin interfaces and
-original input connections are identical. Queries across descendant collections
+original input connections are identical. For FDRE/FDSE/FDCE/FDPE only, an
+absent source may additionally associate through duplicated single LUT1
+drivers on CE/reset/set controls. The LUT1 parameters and input identities must
+match exactly with fully specified INIT; the register type, parameters, pin
+interfaces, clock and D identities remain exact. This bounded structural rule
+does not admit retiming, unknown control functions, or a deletion proof.
+Queries across descendant collections
 take the worst physical endpoint delay. Removed source objects require checked
 elimination proofs before an original path can be marked optimized away.
 Unproved missing associations and unsupported transformations fail timing
@@ -595,8 +601,10 @@ Endpoint association uses the indexed source-origin lookup for retained cells.
 Only absent origins enter the indexed identical-input signature lookup. Both
 branches use the stage/origin index explicitly, so a pin query cannot become a
 scan of the full physical inventory. The lineage snapshot is immutable during
-query consumption; no whole-circuit Python map or SQLite integrity audit is
-needed for resolution.
+query consumption. The structural control fallback uses indexed D-net fanout
+and rejects candidate or physical-object collections above 4,096; bounded
+operation-local caches retain no whole-circuit graph. No SQLite integrity audit
+is needed for resolution.
 
 An explicit `diagnostic_unresolved_path` on `resolve_timing_query` scans the
 whole requested query population and aggregates unresolved required sources by
