@@ -319,6 +319,18 @@ physical-lookahead run.
 
 ## Physical implementation
 
+Standalone RWRoute input export accepts only the current mapped SQLite index and
+one typed physical handoff:
+
+```bash
+emuflow arch export-xilinx-rwroute-input --mapped-index MAPPED.sqlite \
+  --physical-handoff PHYSICAL.sqlite --output INPUT.tsv
+```
+
+Separate packing/placement JSON export and Python mapping-object export are
+retired. Historical JSON qualification uses the noninstalled test oracle; the
+production entry never falls back after a native failure.
+
 Append `--physical` to compilation when a complete physical run is required.
 Backend-specific architecture, timing, and constraints must be supplied
 consistently.

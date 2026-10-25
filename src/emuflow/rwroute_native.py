@@ -13,8 +13,7 @@ from .native_tools import native_file_generation, resolve_native_executable
 from .tool_runtime import NativeToolProcess
 
 
-def export_native_rwroute(mapped_path, handoff_path, output_path, *, top, part,
-                           digests, virtual_io_contract, resource_limits):
+def export_native_rwroute(mapped_path, handoff_path, output_path, *, digests, virtual_io_contract, resource_limits):
     inputs = (Path(mapped_path), Path(handoff_path))
     generations = tuple(native_file_generation(path) for path in inputs)
     if digests['packed_sha256'] != digests['placement_sha256']:
@@ -46,10 +45,10 @@ def export_native_rwroute(mapped_path, handoff_path, output_path, *, top, part,
         request, summary, operation = root/'request.bin', root/'summary.json', root/'operation.json'
         writer = CheckedRequestWriter(request)
         try:
-            writer.put('QI', 0x31515752554d5545, 1)
+            writer.put('QI', 0x31515752554d5545, 2)
             for generation in generations:
                 writer.put('3Q4q', *generation)
-            for value in (top, part, digests['mapped_sha256'], digests['packed_sha256'],
+            for value in (digests['mapped_sha256'], digests['packed_sha256'],
                           digests['placement_sha256'], io_digest):
                 writer.text(value)
             writer.put('I', len(limits))

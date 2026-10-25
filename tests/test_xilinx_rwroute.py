@@ -8,6 +8,7 @@ from unittest import mock
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.rwroute_reference import export_rwroute_reference, _qualified_lut_clock_gates
 from emuflow.errors import ValidationError
 from emuflow.xilinx_netlist import (
     emit_xilinx_mapped_index,
@@ -18,7 +19,6 @@ from emuflow.xilinx_physical_handoff import (
     write_xilinx_physical_handoff,
 )
 from emuflow.xilinx_rwroute import (
-    _qualified_lut_clock_gates,
     _validate_rapidwright_device_data,
     export_rwroute_input,
     validate_xilinx_route_db,
@@ -107,7 +107,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             root = Path(temporary)
             handoff = root / "physical-handoff.sqlite"
             output = root / "route.tsv"
-            report = export_rwroute_input(
+            report = export_rwroute_reference(
                 root / "mapped.sqlite", handoff, handoff, output,
                 mapped_value=mapped, packed_value=packed,
                 placement_value=placement,
@@ -204,7 +204,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                     wraps=indexed.iter_physical_cells,
                 ) as physical_cells,
                 mock.patch(
-                    "emuflow.xilinx_rwroute.heapq.merge",
+                    "tests.rwroute_reference.heapq.merge",
                     side_effect=AssertionError("safe-name map was built"),
                 ),
                 mock.patch.object(
@@ -216,16 +216,14 @@ class XilinxRWRouteTest(unittest.TestCase):
                     side_effect=AssertionError("mapped cell JSON was decoded"),
                 ),
             ):
-                report = export_rwroute_input(
-                    mapped_index, handoff, handoff, output,
-                    mapped_value=indexed, packed_value=packed_view,
-                    placement_value=placement_view,
+                report = export_rwroute_input(mapped_index,
+                    handoff,
+                    output,
                     source_sha256={
                         "mapped_sha256": "1" * 64,
                         "packed_sha256": "2" * 64,
                         "placement_sha256": "2" * 64,
-                    },
-                )
+                    })
                 self.assertEqual(physical_cells.call_count, 0)
             rows = output.read_text(encoding="utf-8").splitlines()
 
@@ -293,7 +291,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             for path, value in zip(paths, (mapped, packed, placement)):
                 path.write_text(json.dumps(value), encoding="utf-8")
             output = root / "route.tsv"
-            report = export_rwroute_input(
+            report = export_rwroute_reference(
                 *paths, output, virtual_io_contract=contract,
                 source_sha256={
                     "mapped_sha256": SHA,
@@ -308,7 +306,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             emit_xilinx_mapped_index(ir_path, mapped_index)
             indexed_output = root / "route-indexed.tsv"
             with open_xilinx_mapped_index(mapped_index) as indexed:
-                indexed_report = export_rwroute_input(
+                indexed_report = export_rwroute_reference(
                     mapped_index, paths[1], paths[2], indexed_output,
                     mapped_value=indexed,
                     virtual_io_contract=contract,
@@ -863,7 +861,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                 "packed_sha256": "2" * 64,
                 "placement_sha256": "2" * 64,
             }
-            report = export_rwroute_input(
+            report = export_rwroute_reference(
                 *paths, root / "route.tsv", source_sha256=source_sha256
             )
             text = (root / "route.tsv").read_text(encoding="utf-8")
@@ -886,18 +884,16 @@ class XilinxRWRouteTest(unittest.TestCase):
                     wraps=indexed.iter_physical_route_endpoints_by_net,
                 ) as routed_pins,
                 mock.patch(
-                    "emuflow.xilinx_rwroute._lut_clock_candidate_pins",
+                    "tests.rwroute_reference._lut_clock_candidate_pins",
                     side_effect=AssertionError(
                         "typed qualification rebuilt Python candidates"
                     ),
                 ),
             ):
-                indexed_report = export_rwroute_input(
-                    mapped_index, handoff, handoff, indexed_output,
-                    mapped_value=indexed, packed_value=packed_view,
-                    placement_value=placement_view,
-                    source_sha256=source_sha256,
-                )
+                indexed_report = export_rwroute_input(mapped_index,
+                    handoff,
+                    indexed_output,
+                    source_sha256=source_sha256)
                 self.assertEqual(qualify.call_count, 0)
                 self.assertEqual(routed_pins.call_count, 0)
             indexed_text = indexed_output.read_text(encoding="utf-8")
@@ -1271,7 +1267,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             for path, value in zip(paths, (mapped, packed, placement)):
                 path.write_text(json.dumps(value), encoding="utf-8")
             output = root / "route.tsv"
-            report = export_rwroute_input(*paths, output)
+            report = export_rwroute_reference(*paths, output)
             text = output.read_text(encoding="utf-8")
         self.assertEqual(report["routable_nets"], 0)
         self.assertIn("EXCLUDED\tn1\tintra_site", text)
@@ -1324,7 +1320,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 ValidationError, "CARRY8 shared site exit is multiply driven"
             ):
-                export_rwroute_input(*paths, root / "route.tsv")
+                export_rwroute_reference(*paths, root / "route.tsv")
 
     def test_exporter_qualifies_driverless_boundary_clock(self):
         mapped = {
@@ -1353,7 +1349,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             for path, value in zip(paths, (mapped, packed, placement)):
                 path.write_text(json.dumps(value), encoding="utf-8")
             output = root / "route.tsv"
-            export_rwroute_input(*paths, output)
+            export_rwroute_reference(*paths, output)
             text = output.read_text(encoding="utf-8")
         self.assertIn(
             "EXCLUDED\tn1\tboundary_clock\tideal-boundary-clock", text
@@ -1387,7 +1383,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                 "emuflow.xilinx_rwroute.read_json",
                 side_effect=AssertionError("preloaded objects were reparsed"),
             ):
-                report = export_rwroute_input(
+                report = export_rwroute_reference(
                     root / "mapped.json",
                     root / "packed.json",
                     root / "placement.json",
@@ -1472,7 +1468,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             for path, value in zip(paths, (mapped, packed, placement)):
                 path.write_text(json.dumps(value), encoding="utf-8")
             output = root / "route.tsv"
-            report = export_rwroute_input(*paths, output)
+            report = export_rwroute_reference(*paths, output)
             rows = [line.split("\t") for line in output.read_text().splitlines()]
         cell_rows = {row[2]: row for row in rows if row[0] == "CELL"}
         o5 = cell_rows["adapter$physical_o5"]
@@ -1534,7 +1530,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             for path, value in zip(paths, (mapped, packed, placement)):
                 path.write_text(json.dumps(value), encoding="utf-8")
             output = root / "route.tsv"
-            report = export_rwroute_input(*paths, output)
+            report = export_rwroute_reference(*paths, output)
             rows = [line.split("\t") for line in output.read_text().splitlines()]
         dsp_rows = [row for row in rows if row[0] == "CELL" and row[3] == "DSP48E2"]
         self.assertEqual(len(dsp_rows), 1)
@@ -1596,7 +1592,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             for path, value in zip(paths, (mapped, packed, placement)):
                 path.write_text(json.dumps(value), encoding="utf-8")
             output = root / "route.tsv"
-            export_rwroute_input(*paths, output)
+            export_rwroute_reference(*paths, output)
             rows = [line.split("\t") for line in output.read_text().splitlines()]
         memory_safe = next(
             row[1] for row in rows if row[0] == "CELL" and row[2] == "memory"
@@ -1665,7 +1661,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             for path, value in zip(paths, (mapped, packed, placement)):
                 path.write_text(json.dumps(value), encoding="utf-8")
             output = root / "route.tsv"
-            export_rwroute_input(*paths, output)
+            export_rwroute_reference(*paths, output)
             rows = [line.split("\t") for line in output.read_text().splitlines()]
         memory_safe = next(
             row[1] for row in rows if row[0] == "CELL" and row[2] == "memory"

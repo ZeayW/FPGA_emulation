@@ -1360,6 +1360,8 @@ def _compile_preflight(ctx: _CompileContext):
     # binding before creating any frontend artifact or doing synthesis.
     physical_uses_openparf = ctx.physical and ctx.physical_backend == "rapidwright"
     if physical_uses_openparf:
+        from .native_tools import require_native_schema
+        require_native_schema("rwroute-export-request-v2")
         validate_openparf_runtime(
             install_root=ctx.physical_openparf_install,
             python_executable=ctx.physical_openparf_python,

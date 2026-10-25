@@ -204,13 +204,18 @@ atom relations retain their zero application/user PRAGMAs; their stage-owned
 metadata and ordered-record checks remain required. This integration does not
 complete the other physical exporters or full W0/W7 qualification.
 
+RWRoute's production API takes the mapped SQLite index and one typed physical
+handoff directly. JSON/object export is retired; the noninstalled
+`tests/rwroute_reference.py` remains an explicit differential oracle. Native request
+v2 derives top/part from the stores instead of Python metadata views.
+
 `phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY` now owns the complete
 production TSV export from mapped index v2 and the typed physical handoff in the
 shared core. Its small request binds source generations and carries board I/O
 and resource configuration only. Placed cells, RAM properties, LUT6_2 route
 ordinals, closed clock-gate qualification and net/pin rows stay native. The
-explicit Python cursor reference is reserved for compatibility and independent
-differentials; it is not a failed-native fallback. See the authoritative
+Python cursor oracle is noninstalled and reserved for explicit independent
+differentials; it is not a production input path or failed-native fallback. See the authoritative
 [physical export contract](XILINX_PHYSICAL_FLOW.md#native-rwroute-export).
 This closes that exporter boundary, not all physical adapters or W7.
 

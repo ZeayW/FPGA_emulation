@@ -136,7 +136,10 @@ Production RouteStore sealing reads typed rows in the shared core, preserving
 logical/section hashes without Python route-tree or candidate-list expansion.
 AMF and DREAMPlaceFPGA feasibility adapters, native runners and the unused
 candidate comparator are retired. The maintained Xilinx implementations are
-OpenPARF/RWRoute and Vivado. Chimew consumes their indexed Xilinx owners.
+OpenPARF/RWRoute and Vivado. Production RWRoute export accepts only a mapped SQLite
+index and one typed physical handoff. The old JSON exporter is a noninstalled
+qualification oracle; it has no production API or fallback. Chimew consumes
+their indexed Xilinx owners.
 The VTR/open execution route, engine source, standalone adapters and build
 options are retired. Shared site/BEL and handoff validation remain. See the
 [backend contract](docs/XILINX_PHYSICAL_FLOW.md#backend-contract).

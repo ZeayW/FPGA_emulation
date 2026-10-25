@@ -13,7 +13,7 @@ from emuflow.xilinx_openparf_carry8_bridge import (
     materialize_xilinx_openparf_carry8_contract,
 )
 from emuflow.xilinx_placement import validate_xilinx_placement
-from emuflow.xilinx_rwroute import export_rwroute_input
+from tests.rwroute_reference import export_rwroute_reference
 from tests.test_xilinx_openparf_carry8 import _write_fixture, _write_placement
 
 
@@ -60,7 +60,7 @@ class XilinxOpenparfCarry8BridgeTest(unittest.TestCase):
                 {item["id"] for item in read_json(packed)["clusters"]},
             )
             rwroute = root / "rwroute.tsv"
-            route_report = export_rwroute_input(
+            route_report = export_rwroute_reference(
                 mapped, packed, output, rwroute
             )
             self.assertEqual(route_report["logical_cells"], 20)

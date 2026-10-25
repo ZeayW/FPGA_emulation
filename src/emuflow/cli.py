@@ -1397,9 +1397,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "export-xilinx-rwroute-input",
         help="export a sealed placed UltraScale+ netlist for RWRoute",
     )
-    arch_export_rwroute.add_argument("--mapped-json", type=Path, required=True)
-    arch_export_rwroute.add_argument("--packed", type=Path, required=True)
-    arch_export_rwroute.add_argument("--placement", type=Path, required=True)
+    arch_export_rwroute.add_argument("--mapped-index", type=Path, required=True)
+    arch_export_rwroute.add_argument("--physical-handoff", type=Path, required=True)
     arch_export_rwroute.add_argument("--output", "-o", type=Path, required=True)
     arch_run_rwroute = arch_subparsers.add_parser(
         "run-xilinx-rwroute",
@@ -2606,7 +2605,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif args.arch_command == "export-xilinx-rwroute-input":
             report = export_rwroute_input(
-                args.mapped_json, args.packed, args.placement, args.output
+                args.mapped_index, args.physical_handoff, args.output
             )
         elif args.arch_command == "run-xilinx-rwroute":
             report = run_rwroute(

@@ -73,14 +73,25 @@ preparation, and timing-query preparation are separate stages.
 
 ## Native RWRoute export
 
+The production API is `export_rwroute_input(mapped_index, physical_handoff, output)`.
+Its CLI is `emuflow arch export-xilinx-rwroute-input --mapped-index MAPPED.sqlite
+--physical-handoff PHYSICAL.sqlite --output INPUT.tsv`. The former separate
+`--packed`/`--placement` JSON export inputs and Python-object API are retired.
+The v2 bounded native request carries source identities, I/O and resource limits;
+top and part come directly from the authoritative stores. It never opens Python
+packing/placement views or copies their graph populations. Standalone export hashes
+the physical handoff once; managed callers reuse the sealed source digests.
+The independent Python TSV oracle lives in `tests/rwroute_reference.py` for explicit
+qualification and is not installed or selected by production failures.
+
 For mapped index v2 and a single typed physical handoff, the production bridge
 requires `emuflow-native phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY`.
 The shared-core operation reads both immutable stores directly. The checked
-request contains their file generations, source digests, top/part, resource
+request contains their file generations, source digests and resource
 limits and fixed differential I/O configuration; it contains no placed-cell,
 safe-name, gate or net population. A selected native failure stops the export.
-The explicit Python reference owner remains available for differential checks
-and legacy JSON inputs; it is never an automatic error fallback.
+The noninstalled test oracle remains available for explicit differential checks;
+legacy JSON inputs are limited to qualification fixtures.
 
 C++ emits the complete existing RapidWright TSV contract: resource/source META,
 CELL, selected RAM PARAM, IOB, CLOCK_GATE, NET/PIN and EXCLUDED rows. Lexical cell

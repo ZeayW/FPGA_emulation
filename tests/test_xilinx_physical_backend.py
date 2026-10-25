@@ -238,16 +238,13 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     },
                 }
 
-            def stop_at_export(mapped, packed, placement, output, **kwargs):
+            def stop_at_export(mapped, handoff, output, **kwargs):
                 self.assertEqual(mapped, physical / "partition.mapped.sqlite")
-                self.assertEqual(packed, packed_path)
-                self.assertEqual(placement, placement_path)
+                self.assertEqual(handoff, packed_path)
                 self.assertEqual(output, physical / "rwroute.tsv")
-                self.assertIs(kwargs["mapped_value"], mapped_value)
-                self.assertEqual(kwargs["packed_value"], {"summary": {"clusters": 2}})
-                self.assertEqual(
-                    kwargs["placement_value"], {"summary": {"clusters": 1}}
-                )
+                self.assertNotIn("mapped_value", kwargs)
+                self.assertNotIn("packed_value", kwargs)
+                self.assertNotIn("placement_value", kwargs)
                 self.assertEqual(
                     kwargs["source_sha256"],
                     {

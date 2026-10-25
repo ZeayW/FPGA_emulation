@@ -389,12 +389,11 @@ void ExportRwroute(const ArtifactRef& mapped_ref, const ArtifactRef& physical_re
   const auto started=Clock::now();
   for (const auto* ref:{&mapped_ref,&physical_ref,&request_ref}) ref->RequireUnchanged();
   CheckedRequestReader request(request_ref.path(),16*1024*1024);
-  Check(request.Read<std::uint64_t>()==0x31515752554d5545ULL && request.Read<std::uint32_t>()==1,
+  Check(request.Read<std::uint64_t>()==0x31515752554d5545ULL && request.Read<std::uint32_t>()==2,
         "unsupported RWRoute export request");
   if (!(ReadGeneration(request)==mapped_ref.generation()) ||
       !(ReadGeneration(request)==physical_ref.generation()))
     throw StageError(ErrorCode::kMixedGeneration,"RWRoute source generation changed");
-  const auto top=request.ReadString32(), part=request.ReadString32();
   std::array<std::string,3> digests;
   for (auto& digest:digests) { digest=request.ReadString32(); Digest(digest); }
   const auto io_digest=request.ReadString32(true);
@@ -422,14 +421,15 @@ void ExportRwroute(const ArtifactRef& mapped_ref, const ArtifactRef& physical_re
           "RWRoute virtual I/O logical top-port binding is invalid");
     io.bit=bit; io.width=width; ios.push_back(std::move(io));
   }
-  request.RequireEnd(); Token(top); Token(part);
+  request.RequireEnd();
   SqliteStore mapped_store(mapped_ref);
   auto& db=mapped_store.database();
   db.Execute("PRAGMA temp_store=FILE; PRAGMA cache_size=-16384; PRAGMA temp.cache_size=-16384");
   auto attach=db.Prepare("ATTACH DATABASE ? AS physical");
   attach.BindText(1,SqliteImmutableUri(physical_ref.path())); attach.Execute();
   Check(Metadata(db,"schema")=="emuflow.xilinx-mapped-index/v2","RWRoute requires mapped index v2");
-  Check(JsonString(db,Metadata(db,"top_json"),"$")==top,"RWRoute mapped top disagrees");
+  const auto top=JsonString(db,Metadata(db,"top_json"),"$");
+  std::string part;
   {
     auto row=db.Prepare("SELECT schema,assignments FROM physical.manifest WHERE singleton=1");
     Check(row.Step() && row.TypedText(0)=="emuflow.xilinx-physical-handoff-sqlite/v1",
@@ -450,10 +450,12 @@ void ExportRwroute(const ArtifactRef& mapped_ref, const ArtifactRef& physical_re
     Check(source.IsNull(0) || (source.Text(0)=="text" && source.Text(1)==digests[0]),
           "RWRoute physical source mapped identity disagrees");
     Check(documents.Step() && documents.Text(0)=="placement" &&
-          JsonString(db,documents.Text(1),"$.schema")=="emuflow.xilinx-placement/v1" &&
-          JsonString(db,documents.Text(1),"$.part")==part && !documents.Step(),
+          JsonString(db,documents.Text(1),"$.schema")=="emuflow.xilinx-placement/v1",
           "RWRoute placement header disagrees");
+    part=JsonString(db,documents.Text(1),"$.part");
+    Check(!documents.Step(),"RWRoute physical header population disagrees");
   }
+  Token(top); Token(part);
   db.Execute("CREATE TEMP TABLE rwroute_io_endpoints(net_bit INTEGER PRIMARY KEY,"
              "seq INTEGER NOT NULL,cell_id TEXT NOT NULL,pin TEXT NOT NULL,"
              "role INTEGER NOT NULL,site TEXT NOT NULL,route_ordinal INTEGER NOT NULL)");

@@ -18,6 +18,7 @@ from emuflow.errors import ValidationError
 from emuflow.xilinx_netlist import open_xilinx_mapped_index
 from emuflow.xilinx_physical_handoff import open_xilinx_physical_handoff, write_xilinx_physical_handoff
 from emuflow.xilinx_rwroute import export_rwroute_input
+from tests.rwroute_reference import export_rwroute_reference
 from tests.native_build import emuflow_native
 
 DIGESTS = {'mapped_sha256': '1'*64, 'packed_sha256': '2'*64, 'placement_sha256': '2'*64}
@@ -107,20 +108,16 @@ def write_mapped(path, mapped):
 
 def native(root, values, *, contract=True):
     mapped, packed, placement, io, mapped_path, handoff = values
-    packed_view, placement_view = open_xilinx_physical_handoff(handoff)
-    with open_xilinx_mapped_index(mapped_path) as indexed, mock.patch.object(
-            rwroute_native, 'resolve_native_executable', return_value=str(emuflow_native())):
-        with mock.patch.object(indexed, 'iter_physical_cells',
-                side_effect=AssertionError('Python cell cursor')), mock.patch.object(
-                indexed, 'iter_physical_route_endpoints_by_net',
-                side_effect=AssertionError('Python pin cursor')), mock.patch.object(
-                indexed, 'iter_qualified_lut_clock_gates',
-                side_effect=AssertionError('Python clock qualification')), mock.patch.object(
-                type(indexed.cells), '__getitem__', side_effect=AssertionError('Python cell lookup')):
-            return export_rwroute_input(mapped_path, handoff, handoff, root/'native.tsv',
-                mapped_value=indexed, packed_value=packed_view, placement_value=placement_view,
-                source_sha256=DIGESTS, virtual_io_contract=io if contract else None,
-                resource_limits={'lut': 100, 'ff': 200, 'dsp48': 3})
+    with mock.patch.object(
+            rwroute_native, 'resolve_native_executable', return_value=str(emuflow_native())), \
+            mock.patch('emuflow.xilinx_rwroute.read_json', side_effect=AssertionError('Python JSON loader')), \
+            mock.patch('emuflow.xilinx_netlist.IndexedXilinxMappedNetlist.__init__', side_effect=AssertionError('Python mapped view')), \
+            mock.patch('emuflow.xilinx_physical_handoff.open_xilinx_physical_handoff', side_effect=AssertionError('Python physical views')):
+        return export_rwroute_input(
+            mapped_path, handoff, root/'native.tsv',
+            source_sha256=DIGESTS, virtual_io_contract=io if contract else None,
+            resource_limits={'lut': 100, 'ff': 200, 'dsp48': 3},
+        )
 
 
 class NativeRwrouteTests(unittest.TestCase):
@@ -133,7 +130,7 @@ class NativeRwrouteTests(unittest.TestCase):
             with self.subTest(io=use_io), tempfile.TemporaryDirectory() as temporary:
                 root=Path(temporary); values=fixture(root)
                 mapped,packed,placement,io,mp,handoff=values
-                expected=export_rwroute_input(root/'mapped.json',root/'packed.json',root/'placed.json',root/'reference.tsv',
+                expected=export_rwroute_reference(root/'mapped.json',root/'packed.json',root/'placed.json',root/'reference.tsv',
                     mapped_value=mapped,packed_value=packed,placement_value=placement,
                     source_sha256=DIGESTS,virtual_io_contract=io if use_io else None,
                     resource_limits={'lut': 100,'ff': 200,'dsp48': 3})
@@ -155,6 +152,55 @@ class NativeRwrouteTests(unittest.TestCase):
                 text=(root/'native.tsv').read_text()
                 self.assertNotIn('INIT_00',text)
                 self.assertIn(str((1<<80)-1),text)
+
+    def test_json_inputs_are_rejected_before_hash_or_native_execution(self):
+        from emuflow import xilinx_rwroute as adapter
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            values = fixture(root)
+            legacy = root / 'legacy.json'
+            legacy.write_text('{}')
+            output = root / 'native.tsv'
+            output.write_text('prior publication')
+            for mapped, physical in ((legacy, values[-1]), (values[-2], legacy)):
+                with self.subTest(mapped=mapped, physical=physical), \
+                        mock.patch.object(adapter, '_sha256', side_effect=AssertionError('legacy full hash')), \
+                        mock.patch.object(rwroute_native, 'export_native_rwroute', side_effect=AssertionError('native launch')):
+                    with self.assertRaisesRegex(ValidationError, 'JSON export is retired'):
+                        export_rwroute_input(mapped, physical, output)
+                    self.assertEqual(output.read_text(), 'prior publication')
+
+    def test_standalone_export_hashes_the_single_physical_owner_once(self):
+        from emuflow import xilinx_rwroute as adapter
+        from emuflow.io import file_sha256
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            values = fixture(root)
+            mapped, physical = values[-2:]
+            with mock.patch.object(adapter, '_sha256', wraps=file_sha256) as digest, \
+                    mock.patch.object(rwroute_native, 'resolve_native_executable', return_value=str(self.executable)):
+                report = export_rwroute_input(mapped, physical, root/'native.tsv')
+            self.assertEqual(report['implementation_id'], 'native-rwroute-export-v2')
+            self.assertEqual(digest.call_args_list, [mock.call(physical), mock.call(mapped)])
+            text = (root/'native.tsv').read_text()
+            self.assertIn('META\tpacked_sha256\t'+file_sha256(physical), text)
+            self.assertIn('META\tplacement_sha256\t'+file_sha256(physical), text)
+
+    def test_current_cli_accepts_one_handoff_and_rejects_old_export_options(self):
+        from emuflow.cli import _build_parser
+        import contextlib, io
+        parser = _build_parser()
+        args = parser.parse_args(['arch', 'export-xilinx-rwroute-input', '--mapped-index', 'm.sqlite',
+                                  '--physical-handoff', 'p.sqlite', '--output', 'input.tsv'])
+        self.assertEqual(args.mapped_index, Path('m.sqlite'))
+        self.assertEqual(args.physical_handoff, Path('p.sqlite'))
+        for version, accepted in ((1, False), (2, True)):
+            probe = subprocess.run([str(self.executable), 'check-runtime', 'rwroute-export-request-v'+str(version)],
+                                   capture_output=True, text=True)
+            self.assertEqual(probe.returncode == 0, accepted, probe.stderr)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(['arch', 'export-xilinx-rwroute-input', '--mapped-json', 'm.json',
+                               '--packed', 'p.json', '--placement', 'l.json', '--output', 'input.tsv'])
 
     def test_integer_parameter_tokens_do_not_round_through_sqlite_real(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -225,7 +271,7 @@ class NativeRwrouteTests(unittest.TestCase):
 
     def test_request_corruption_generation_and_aliases_fail_closed(self):
         original=rwroute_native.NativeToolProcess
-        for mutation in ('crc','version','truncated','trailing','generation','source_changed',
+        for mutation in ('crc','version','retired_v1','truncated','trailing','generation','source_changed',
                          'output_input_alias','summary_input_alias','summary_output_alias','report_input_alias'):
             with self.subTest(mutation=mutation),tempfile.TemporaryDirectory() as temporary:
                 root=Path(temporary);values=fixture(root)
@@ -237,6 +283,9 @@ class NativeRwrouteTests(unittest.TestCase):
                     data=bytearray(request.read_bytes())
                     if mutation=='crc':data[-5]^=1
                     elif mutation=='version':struct.pack_into('<I',data,8,99)
+                    elif mutation=='retired_v1':
+                        struct.pack_into('<I',data,8,1)
+                        struct.pack_into('<I',data,len(data)-4,zlib.crc32(data[:-4]))
                     elif mutation=='truncated':data=data[:-5]
                     elif mutation=='trailing':data+=b'X'
                     elif mutation=='generation':
@@ -259,7 +308,7 @@ class NativeRwrouteTests(unittest.TestCase):
                 self.assertFalse(list(root.glob('.emuflow-rwroute-*')))
                 self.assertFalse(list(root.glob('*.tmp.*')))
 
-    def test_preloaded_index_keeps_logical_source_identity(self):
+    def test_supplied_canonical_source_identity_is_retained(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);values=fixture(root)
             packed_view,placement_view=open_xilinx_physical_handoff(values[-1])
@@ -267,8 +316,9 @@ class NativeRwrouteTests(unittest.TestCase):
             logical_source.write_text(json.dumps(values[0]))
             with open_xilinx_mapped_index(values[-2]) as indexed,mock.patch.object(
                     rwroute_native,'resolve_native_executable',return_value=str(self.executable)):
-                result=export_rwroute_input(logical_source,values[-1],values[-1],root/'native.tsv',
-                    mapped_value=indexed,packed_value=packed_view,placement_value=placement_view,
+                result=export_rwroute_input(values[-2],
+                    values[-1],
+                    root/'native.tsv',
                     source_sha256=DIGESTS)
             self.assertEqual(result['implementation_id'],'native-rwroute-export-v2')
             self.assertIn('META\tmapped_sha256\t'+DIGESTS['mapped_sha256'],(root/'native.tsv').read_text())
@@ -323,7 +373,7 @@ class NativeRwrouteTests(unittest.TestCase):
                 mp.unlink();handoff.unlink();write_mapped(mp,mapped)
                 write_xilinx_physical_handoff(handoff,packed,placement)
                 def reference():
-                    return export_rwroute_input(root/'m.json',root/'p.json',root/'l.json',root/'reference.tsv',
+                    return export_rwroute_reference(root/'m.json',root/'p.json',root/'l.json',root/'reference.tsv',
                         mapped_value=mapped,packed_value=packed,placement_value=placement,
                         source_sha256=DIGESTS,virtual_io_contract=io,
                         resource_limits={'lut':100,'ff':200,'dsp48':3})
@@ -381,7 +431,7 @@ class NativeRwrouteTests(unittest.TestCase):
                         'assignments':[dict(assignment,placement_mode='fixed',site=site)]})
                 mp.unlink();handoff.unlink();write_mapped(mp,mapped)
                 write_xilinx_physical_handoff(handoff,packed,placement)
-                expected=export_rwroute_input(root/'m.json',root/'p.json',root/'l.json',root/'reference.tsv',
+                expected=export_rwroute_reference(root/'m.json',root/'p.json',root/'l.json',root/'reference.tsv',
                     mapped_value=mapped,packed_value=packed,placement_value=placement,source_sha256=DIGESTS,
                     resource_limits={'lut':100,'ff':200,'dsp48':3})
                 actual=native(root,values,contract=False)
@@ -395,7 +445,7 @@ class NativeRwrouteTests(unittest.TestCase):
             with closing(sqlite3.connect(mp)) as db,db:
                 db.execute('UPDATE cells SET seq=1000000000000+seq*7')
                 db.execute('UPDATE cell_pins SET cell_seq=1000000000000+cell_seq*7')
-            expected=export_rwroute_input(root/'m.json',root/'p.json',root/'l.json',root/'reference.tsv',
+            expected=export_rwroute_reference(root/'m.json',root/'p.json',root/'l.json',root/'reference.tsv',
                 mapped_value=mapped,packed_value=packed,placement_value=placement,source_sha256=DIGESTS,
                 virtual_io_contract=io,resource_limits={'lut':100,'ff':200,'dsp48':3})
             actual=native(root,values)

@@ -31,6 +31,7 @@ from emuflow.xilinx_openparf_bridge import (
 from emuflow.xilinx_packing import validate_xilinx_packing
 from emuflow.xilinx_placement import validate_xilinx_placement
 from emuflow.xilinx_rwroute import export_rwroute_input
+from tests.rwroute_reference import export_rwroute_reference
 from emuflow.yosys import import_yosys_json
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 
@@ -403,7 +404,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
                 "openparf-native-mcf-direct-lg-ism-atomic-bridge-v1",
             )
             rwroute = root / "rwroute.tsv"
-            rwroute_report = export_rwroute_input(
+            rwroute_report = export_rwroute_reference(
                 mapped, packed, placement, rwroute
             )
             self.assertEqual(rwroute_report["logical_cells"], 131)
@@ -503,7 +504,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             ))
             self.assertEqual(len(packed["clusters"]), len(placement["clusters"]))
             rwroute = root / "rwroute.tsv"
-            export = export_rwroute_input(
+            export = export_rwroute_reference(
                 mapped, handoff, handoff, rwroute,
                 packed_value=packed, placement_value=placement,
             )
@@ -518,28 +519,23 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
                 # A fabricated source seal must still fail before publication.
                 bad_output = root / "rwroute-wrong-source.tsv"
                 with self.assertRaisesRegex(ValidationError, "mapped identity disagrees"):
-                    export_rwroute_input(
-                        mapped_index, handoff, handoff, bad_output,
-                        mapped_value=indexed, packed_value=packed, placement_value=placement,
-                        source_sha256={
+                    export_rwroute_input(mapped_index,
+                    handoff,
+                    bad_output,
+                    source_sha256={
                             "mapped_sha256": "0" * 64,
                             "packed_sha256": report["physical_handoff_sha256"],
                             "placement_sha256": report["physical_handoff_sha256"],
-                        },
-                    )
+                        })
                 self.assertFalse(bad_output.exists())
-                indexed_export = export_rwroute_input(
-                    mapped_index, handoff, handoff,
+                indexed_export = export_rwroute_input(mapped_index,
+                    handoff,
                     root / "rwroute-indexed.tsv",
-                    mapped_value=indexed,
-                    packed_value=packed,
-                    placement_value=placement,
                     source_sha256={
                         "mapped_sha256": packed["source"]["mapped_json_sha256"],
                         "packed_sha256": report["physical_handoff_sha256"],
                         "placement_sha256": report["physical_handoff_sha256"],
-                    },
-                )
+                    })
             self.assertEqual(
                 indexed_export["logical_cells"], report["placed_cells"]
             )

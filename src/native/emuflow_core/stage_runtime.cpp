@@ -20,7 +20,7 @@ constexpr RegisteredSchema schemas[] = {
     {"assignment-publication-request-v1", ArtifactEncoding::kBinary, 0x31514241554d5545ULL, 1},
     {"xilinx-physical-handoff-v1", ArtifactEncoding::kSqlite, 0x454d5550, 1, true,
      "SELECT schema FROM manifest WHERE singleton=1","emuflow.xilinx-physical-handoff-sqlite/v1"},
-    {"rwroute-export-request-v1", ArtifactEncoding::kBinary, 0x31515752554d5545ULL, 1},
+    {"rwroute-export-request-v2", ArtifactEncoding::kBinary, 0x31515752554d5545ULL, 2},
     {"rwroute-input-tsv-v1", ArtifactEncoding::kText, 0, 1},
     {"rwroute-export-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"vivado-lineage-import-request-v1", ArtifactEncoding::kText, 0, 1},

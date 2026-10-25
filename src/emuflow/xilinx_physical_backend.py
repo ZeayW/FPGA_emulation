@@ -290,13 +290,7 @@ def _run_rapidwright_routed_backend_tail(
     }
     rwroute_input = output_dir / "rwroute.tsv"
     route_input_report = export_rwroute_input(
-        mapped_path,
-        packed_path,
-        placement_path,
-        rwroute_input,
-        mapped_value=mapped_value,
-        packed_value=packed_value,
-        placement_value=placement_value,
+        mapped_path, packed_path, rwroute_input,
         source_sha256=source_sha256,
         virtual_io_contract=virtual_io_contract,
         resource_limits=runtime.get("resource_budget", {}).get("effective_capacity"),
@@ -716,6 +710,8 @@ def run_rapidwright_openparf_native_candidate_backend(
 ) -> Dict[str, Any]:
     """Run the fail-closed native OpenPARF placement candidate backend."""
 
+    from .native_tools import require_native_schema
+    require_native_schema("rwroute-export-request-v2")
     architecture = ArchitectureDB.load(architecture_path)
     if architecture.part != part:
         raise ValidationError(

@@ -58,7 +58,7 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
       std::vector<std::string> schemas{"xilinx-mapped-index-v2","vivado-source-functions-v1","vivado-lineage-import-request-v1"};
       schemas.insert(schemas.end(),count-3,"vivado-lineage-inventory-v2");return schemas;
     }
-    case Stage::kExportRwroute: return {"xilinx-mapped-index-v2","xilinx-physical-handoff-v1","rwroute-export-request-v1"};
+    case Stage::kExportRwroute: return {"xilinx-mapped-index-v2","xilinx-physical-handoff-v1","rwroute-export-request-v2"};
     case Stage::kBuildCaptures: return {"emuir-compact-v2","exact-indexed-request-v4","exact-topology-v3","exact-parts-v1"};
     case Stage::kValidateCaptures: return {"emuir-compact-v2","exact-indexed-request-v4","exact-topology-v3","exact-parts-v1","exact-captures-v1"};
     case Stage::kPublishAssignmentIndex: return {"emuir-compact-v2","partition-cluster-columns-v2","assignment-publication-request-v1"};
