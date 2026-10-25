@@ -244,6 +244,7 @@ class XilinxChimewGeometry:
                         JOIN geometry.physical_sites p ON p.physical_site=pc.site
                         JOIN geometry.sites s ON s.dense_x=p.dense_x AND s.dense_y=p.dense_y
                         WHERE a.instance={instance}
+                        GROUP BY a.instance
                         HAVING min(s.physical_x)=max(s.physical_x) AND min(s.physical_y)=max(s.physical_y)"""
                     bounds = db.execute("SELECT min(physical_x),max(physical_x),min(physical_y),max(physical_y) FROM geometry.sites").fetchone()
                 else:
