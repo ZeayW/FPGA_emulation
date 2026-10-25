@@ -5,6 +5,7 @@
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/native_stages.hpp"
 #include "emuflow_core/schedule_store.hpp"
+#include "emuflow_core/schedule_validation.hpp"
 #include "emuflow_core/schedule_ingress.hpp"
 #include "emuflow_core/bookshelf.hpp"
 #include "emuflow_core/rwroute_export.hpp"
@@ -45,6 +46,7 @@ const char* StageName(Stage stage) {
     case Stage::kRefinePatron: return "phase3.refine-patron";
     case Stage::kRoute: return "phase4.route";
     case Stage::kBuildSchedule: return "phase5.build-schedule";
+    case Stage::kValidateSchedule: return "phase5.validate-schedule";
     case Stage::kAssignBanks: return "phase6.assign-banks";
     case Stage::kGroupSignals: return "phase6.group-signals";
     case Stage::kRefinePositions: return "phase6.refine-groups";
@@ -102,6 +104,7 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
         throw core::StageError(core::ErrorCode::kInvalidRequest, "PATRON requires typed input");
       return {"patron-input-v1"};
     case Stage::kRoute: return {"global-route-input-v1"};
+    case Stage::kValidateSchedule: return {"system-route-store-v3", "exact-schedule-board-request-v1", "tdm-schedule-store-v4", "exact-schedule-validation-request-v1"};
     case Stage::kBuildSchedule: return {"system-route-store-v3", "exact-schedule-board-request-v1", "exact-schedule-generation-request-v1"};
     case Stage::kAssignBanks:
     case Stage::kGroupSignals:
@@ -257,6 +260,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kRoute: RouteTlr(inputs, output); break;
       case Stage::kSealRoutes: core::SealSystemRoutes(inputs,output); break;
       case Stage::kBuildSchedule: core::BuildExactScheduleStore(inputs,output); break;
+      case Stage::kValidateSchedule: core::ValidateExactSchedule(inputs,output); break;
       case Stage::kExportBookshelf:
         core::ExportBookshelf(inputs[0],inputs[1],output,request.auxiliary_output_path,request.scratch_path);
         break;
@@ -291,6 +295,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kRoute: schema = "tlr-output-v1"; break;
       case Stage::kSealRoutes: schema = "system-route-seal-summary-v1"; break;
       case Stage::kBuildSchedule: schema = "tdm-schedule-store-v4"; break;
+      case Stage::kValidateSchedule: schema = "exact-schedule-validation-summary-v1"; break;
       case Stage::kAssignBanks: schema = "chimew-bank-output-text"; break;
       case Stage::kGroupSignals: schema = "chimew-group-output-text"; break;
       case Stage::kRefinePositions: schema = "chimew-refine-output-text"; break;

@@ -2733,7 +2733,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     "WHERE cut_index=0"
                 )
             with self.assertRaisesRegex(
-                ValidationError, "cut-record identity disagrees"
+                ValidationError, "assignment cut identity disagrees"
             ):
                 validate_phase3_assignment_index(root / "assignment.sqlite")
 

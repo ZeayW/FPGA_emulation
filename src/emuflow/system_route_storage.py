@@ -739,6 +739,7 @@ class SystemRouteSequence(list):
         self.store_path = store_path
         self._count = count
         self._user_version = user_version
+        self._source_bindings = None
         if order not in {"seq", "net", "demand"}:
             raise ValueError(f"unsupported route order {order!r}")
         self.order = order
@@ -747,9 +748,17 @@ class SystemRouteSequence(list):
         return self._count
 
     def ordered(self, order: str) -> "SystemRouteSequence":
-        return SystemRouteSequence(
+        result = SystemRouteSequence(
             self.store_path, self._count, self._user_version, order
         )
+        result._source_bindings = self._source_bindings
+        return result
+
+    def bound_store_sources(self):
+        if self._source_bindings is None:
+            raise ValidationError("route cursor has no original source owner")
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
 
     def open_net_index(self) -> "SystemRouteNetIndex":
         """Open a bounded-lifetime net lookup over the normalized store.
@@ -1590,6 +1599,7 @@ class SystemRoutesView(dict):
         self.storage_user_version = int(user_version)
         self.store_path = store_path.resolve()
         self._source_bindings = (selector_source, store_source)
+        self["routes"]._source_bindings = self._source_bindings
         require_store_sources_unchanged(self._source_bindings)
 
     def bound_store_sources(self):

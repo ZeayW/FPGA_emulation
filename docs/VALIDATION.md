@@ -337,6 +337,24 @@ to its original members before original-path TNS is accumulated. The metric is
 not conventional unique-register-endpoint TNS. See
 [global timing scope](global-opensta-qualification.md).
 
+## Independent native schedule validation
+
+Compare the native indexed validator with the small independent dictionary oracle
+for fixed and affine latency, shared direction banks, dependency chains, multicast
+relays, different net/demand order and empty populations. Poison Python route/hop
+cursors, dependency ordering, logical-seal replay and temporary validation indexes
+while exercising the normal producer/report boundary. Require full metric,
+certificate and record equivalence, with an explicit validator implementation ID.
+
+Forge a new valid storage seal after changing events, route identity/edges/sinks,
+completion/readiness, capacity, ratio/lane, domain counts, metrics or certificates.
+The independent reconstruction must still reject. Separately reject broken section
+and complete logical seals, orphan child records, stale source generations,
+truncated/version/CRC failures, input/report aliases and native execution failure;
+previous summaries and published generations must survive rejection. No failed
+native operation may retry the Python oracle. These component gates do not replace
+real-design Phase 1–7/7C runtime, memory and complete timing qualification.
+
 ## Fair algorithm comparisons
 
 Use real RTL and an explicitly identified platform. Raw contest communication

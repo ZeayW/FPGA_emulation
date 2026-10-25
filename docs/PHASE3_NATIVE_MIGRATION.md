@@ -265,33 +265,40 @@ publication does not rescan RouteStore to reconstruct them.
 This production path requires current v3 typed route input and the unified
 native scheduler, regardless of the route count. Indexed production never
 selects Python because a partition happens to have fewer cut routes, and a
-standalone-only installation is rejected for this boundary. Older storage and
-dictionary inputs and supported registered-boundary/ratio providers still use
-the common Python schedule builder; it no longer selects native result import
-by a circuit-size threshold. A native failure never
-retries that path. Requests retain the
-source file generations captured by their producer; stale references are rejected
-before computation and rechecked before atomic publication. The Python layer
-still commits the compact manifest and report. Phase 5 reports identify the
-store and producer implementations separately from the schedule algorithm.
-Storage wall time includes native calculation for the complete producer and is
-labelled with its measurement scope.
+standalone-only installation is rejected for this boundary. Production supports
+only the Static Exact dependency provider. Small scheduling oracles live in tests;
+retired providers and intermediate result import are not production fallbacks.
+Requests retain the source generations captured by their producer; stale references
+are rejected before computation and rechecked before atomic publication. Python
+still commits the compact manifest and report. Reports identify the store and
+producer implementations separately from the schedule algorithm. Storage wall time
+includes native calculation and is labelled with that measurement scope.
 
-Independent schedule validation runs against the staged typed store before
-report commit. It does not rebuild the reference validator's complete route/hop
-dictionaries. Native domain summaries use bounded counts over the in-process
-solution. Timing reconstruction consumes the staged typed view, and opening
-that freshly sealed producer-owned store does not repeat its full file hash.
-Compact output and indexed validation apply without a managed-storage flag;
-legacy TSV/transport JSON/testbench/feedback exports and reference simulation
-are not implicit native-production outputs. Small reference and explicit
-compatibility paths retain their export behavior; qualification tools may
-request those functions explicitly.
+`phase5 validate-schedule ROUTE_STORE BOARD_REQUEST SCHEDULE_STORE REQUEST SUMMARY`
+is the independent shared-core validator used before report commit. It reads the
+same versioned board grammar as the producer, but never calls its model builder,
+solver, solution or certificate builder. It reconstructs the dependency order,
+source and relay readiness, affine link latency, fixed wire/ratio groups, bank
+direction, sink/commit deadlines, completions and phase metrics from source routes
+and stored events. Ordered typed cursors check route/child coverage and canonical
+section, compact and pretty logical seals without per-route SQL queries or a
+second validation store. Only bounded header/configuration and the final summary
+cross Python. Original route and schedule generations remain bound through atomic
+summary publication. A native rejection never retries a Python validator.
 
-The independent Python validator still has compact route-scale working data;
-non-exact providers, explicit compatibility result import, timing adapters and
-advanced phase orchestration are unfinished. This delivery does not
-complete W7 or establish whole-stage performance gains.
+The Python packed-DAG indexed validator and its ordered-record replay helper are
+retired. Indexed validation requires the current typed RouteStore; dictionary
+schedule fixtures can still use the small independent correctness oracle. Fixture
+comparisons cover full fields and hashes, not just counts or a solver success flag.
+Native domain summaries use bounded counts. Timing reconstruction still consumes
+the staged typed view, and opening that freshly sealed producer-owned store does
+not repeat its full file hash. Compact publication and validation apply without a
+managed-storage flag. TSV/transport JSON/testbench/feedback exports and reference
+simulation are not implicit native-production outputs.
+
+Timing adapters and remaining phase data-plane ownership still require migration
+and real-design qualification. This closes independent indexed schedule validation;
+it does not complete W7 or establish whole-stage performance gains.
 Deployment probes load the unified entry and physical bridge before publishing
 runtime provenance; launchers must repeat them in the actual execution
 environment before expensive computation.
@@ -463,7 +470,7 @@ there is no silent implementation or provider fallback.
 | Phase 1–2 | Native synthesis/STA engines; compact indexed inputs | Consolidate import, identities and timing adapters under the shared artifact API |
 | Phase 3 | Shared-core candidate eligibility and primary clustering; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Migrate remaining policy/assignment publication and reference modes; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
-| Phase 5 | One native exact model/solver/certificate/store producer; independent staged cursor validation | Native independent validation, timing adapters and non-exact interfaces |
+| Phase 5 | One native exact model/solver/certificate/store producer and independent native staged-store validation | Timing adapters and complete native stage lifecycle/qualification |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |
 | Phase 7 | Indexed lowering; typed physical handoff and native Bookshelf pin export | Complete remaining backend/export/validation ownership and full physical qualification |
 | Global STA | Typed segments/results and bounded identity/stitching views | Native check/input construction, result import and ordered complete-path stitching |

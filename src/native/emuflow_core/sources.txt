@@ -14,6 +14,7 @@ emuflow_core/stage_runtime.cpp
 emuflow_core/store.cpp
 emuflow_core/emuir_view.cpp
 emuflow_core/schedule_store.cpp
+emuflow_core/schedule_validation.cpp
 emuflow_core/route_view.cpp
 emuflow_core/schedule_ingress.cpp
 emuflow_core/tool_runtime.cpp

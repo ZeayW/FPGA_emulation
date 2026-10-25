@@ -38,25 +38,19 @@ FileGeneration ReadGeneration(BinaryReader& request) {
   value.changed_nanoseconds = request.Read<std::int64_t>();
   return value;
 }
-struct Arc {
-  std::uint32_t link, from, to, capacity, offset, budget, affine, fixed_latency;
-  double base, slope, period;
-};
-using ArcKey = std::tuple<std::uint32_t,std::uint32_t,std::uint32_t>;
+using Arc = ExactScheduleArc;
+using ArcKey = ExactScheduleArcKey;
 }
-ExactScheduleModel BuildExactScheduleModel(const std::string& route_path,
-                                          const std::string& request_path,
-                                          ExactScheduleBuildContext& context) {
+ExactScheduleBoard ReadExactScheduleBoard(const ArtifactRef& artifact,
+                                          const std::string& request_path) {
   BinaryReader request(request_path);
   ReadAndValidateHeader(request,{0x3142534d44544545ULL,1,"exact schedule board request"});
   const auto expected = ReadGeneration(request);
-  const auto artifact = ArtifactRef::Bind(route_path,"system-route-store-v3");
   if (!(artifact.generation() == expected))
     throw StageError(ErrorCode::kMixedGeneration,"schedule ingress RouteStore generation changed");
   const auto frame = request.Read<std::uint32_t>(), barrier = request.Read<std::uint32_t>(), settle = request.Read<std::uint32_t>();
   const auto minimum = request.Read<std::uint32_t>(), maximum = request.Read<std::uint32_t>(), quantum = request.Read<std::uint32_t>();
   const auto fpga = ReadCatalog(request), links = ReadCatalog(request), capacities = ReadCatalog(request);
-  context.catalogs = {fpga,links,capacities};
   Require(frame > barrier && !fpga.empty() && minimum && maximum >= minimum && maximum <= frame && quantum,
           "schedule board request dimensions are invalid");
   const auto arc_count = request.Read<std::uint32_t>();
@@ -73,6 +67,20 @@ ExactScheduleModel BuildExactScheduleModel(const std::string& route_path,
             arcs.emplace(ArcKey{arc.link,arc.from,arc.to},arc).second,"schedule board arc is invalid");
   }
   request.RequireEnd();
+  return {frame,barrier,settle,minimum,maximum,quantum,{fpga,links,capacities},std::move(arcs)};
+}
+ExactScheduleModel BuildExactScheduleModel(const std::string& route_path,
+                                          const std::string& request_path,
+                                          ExactScheduleBuildContext& context) {
+  const auto artifact = ArtifactRef::Bind(route_path,"system-route-store-v3");
+  const auto board=ReadExactScheduleBoard(artifact,request_path);
+  const auto frame=board.frame,barrier=board.barrier,settle=board.settle;
+  const auto minimum=board.minimum,maximum=board.maximum,quantum=board.quantum;
+  const auto& fpga=board.catalogs.fpgas;
+  const auto& links=board.catalogs.links;
+  const auto& capacities=board.catalogs.capacities;
+  const auto& arcs=board.arcs;
+  context.catalogs=board.catalogs;
   RouteView source(artifact);
   Require(source.count() <= UINT32_MAX,"schedule has too many routes");
   Require(source.count() <= artifact.generation().bytes,"schedule route count exceeds source bounds");

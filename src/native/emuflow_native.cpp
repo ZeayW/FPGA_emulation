@@ -37,6 +37,7 @@ constexpr const char* kUsage =
     "  phase3 reduce-loads EMUIR PRIMARY REQUEST OUTPUT\n"
     "  phase4 route --typed-output INPUT OUTPUT\n"
     "  phase4 seal-routes STORE REQUEST SUMMARY\n"
+    "  phase5 validate-schedule ROUTE_STORE BOARD_REQUEST SCHEDULE_STORE REQUEST SUMMARY\n"
     "  phase5 build-schedule ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST OUTPUT\n"
     "  phase6 assign-banks --typed-input INPUT OUTPUT\n"
     "  phase6 group-signals --typed-input INPUT OUTPUT EXPECTED_SHA256\n"
@@ -225,6 +226,8 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if (phase == "phase4" && operation == "route" && argc == 6 && std::string(argv[3]) == "--typed-output")
     return run(Stage::kRoute, {argv[4]}, argv[5]);
+  if (phase == "phase5" && operation == "validate-schedule" && argc == 8)
+    return run(Stage::kValidateSchedule,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
   if (phase == "phase5" && operation == "build-schedule" && argc == 7)
     return run(Stage::kBuildSchedule, {argv[3],argv[4],argv[5]}, argv[6]);
   if (phase == "phase6") {

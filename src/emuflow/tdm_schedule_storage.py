@@ -1785,6 +1785,11 @@ class TDMScheduleView(Mapping[str, Any]):
         require_store_sources_unchanged(self._source_bindings)
         return self._source_bindings
 
+    def native_validation_header(self):
+        """Bounded header projection; record sections remain in the store."""
+        require_store_sources_unchanged(self._source_bindings)
+        return dict(self._header)
+
     def __enter__(self) -> "TDMScheduleView":
         return self
 

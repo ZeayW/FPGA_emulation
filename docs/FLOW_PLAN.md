@@ -33,7 +33,9 @@ RTL + constraints + mapping profile
 Phase 5 has one production provider, the native Static Exact dependency
 scheduler. It consumes the typed RouteStore and the Phase 3 semantic binding,
 writes one typed ScheduleStore, and publishes its compact selector and report
-only after independent validation. Full compilation rejects retired TDM
+only after independent native validation. The validator reconstructs readiness,
+wire/ratio, arrival and commit evidence directly from typed owners; it does not
+call the solver or replay route/hop records in Python. Full compilation rejects retired TDM
 providers and registered-boundary mode before frontend work. Minimum-frame
 search varies the frame bound using that same engine; it is not another TDM
 provider. Hardware ratio/bank constraints and Chimew's lane/slot consumption

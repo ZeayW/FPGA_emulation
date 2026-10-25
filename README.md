@@ -206,9 +206,10 @@ independent hop audit. Production keeps assignment and counters; explicit
 `--trace-output` retains diagnostic moves. The standalone executable is retired.
 Current indexed Static Exact Phase 5 runs use one shared-core call for model
 construction, scheduling, readiness certificates and ScheduleStore publication,
-without Python result import or numeric intermediate files. Independent indexed
-validation precedes report publication. Selection depends on the input contract,
-not its route count; this path requires the unified native scheduler.
+without Python result import or numeric intermediate files. Independent native
+validation reconstructs events and certificates directly from the typed stores
+before report publication, with no Python route/hop replay. Selection depends on
+the input contract, not its route count; both operations require the unified entry.
 Production ScheduleStore reads and writes only storage v4; retired storage
 versions and the Python snapshot publisher are removed from the installed API.
 The logical schedule and typed relation schemas remain unchanged.

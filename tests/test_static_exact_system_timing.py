@@ -25,6 +25,7 @@ from tests.system_timing_oracle import (
     _fixed_slot_transport_path_delay,
     build_system_timing,
 )
+from emuflow.system_route_storage import read_system_routes, write_system_route_storage
 from emuflow.tdm import reconstruct_tdm_schedule_timing, validate_tdm_schedule
 from tests.schedule_reference import build_tdm_schedule
 from emuflow.tdm_schedule_storage import (
@@ -257,15 +258,22 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             path = Path(temporary) / "schedule.json"
             write_tdm_schedule_storage(path, schedule)
             indexed = read_tdm_schedule(path)
+            route_path = Path(temporary) / "routes.json"
+            write_system_route_storage(route_path, routes)
+            indexed_routes = read_system_routes(route_path)
             with mock.patch.object(
                 ScheduleRecordSequence,
                 "__iter__",
                 side_effect=AssertionError("hop records were decoded"),
             ):
-                self.assertEqual(
-                    validate_tdm_schedule(routes, fixture.platform, indexed),
-                    legacy,
+                actual = validate_tdm_schedule(
+                    indexed_routes, fixture.platform, indexed
                 )
+                self.assertEqual(
+                    actual.pop("implementation_id"),
+                    "native-independent-exact-schedule-validation-v1",
+                )
+                self.assertEqual(actual, legacy)
 
     def test_indexed_schedule_validation_rejects_tamper_and_missing_hop(self):
         fixture = (
@@ -296,6 +304,9 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         cases.append((collision, "collision"))
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            route_path = root / "routes.json"
+            write_system_route_storage(route_path, routes)
+            routes = read_system_routes(route_path)
             for index, (candidate, message) in enumerate(cases):
                 path = root / f"schedule-{index}.json"
                 write_tdm_schedule_storage(path, candidate)
@@ -325,7 +336,8 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             routes_path = root / "routes.json"
             platform_path = root / "platform.json"
             schedule_path = root / "schedule.json"
-            routes_path.write_text("{}", encoding="utf-8")
+            write_system_route_storage(routes_path, routes)
+            indexed_routes = read_system_routes(routes_path)
             platform_path.write_text(
                 json.dumps(fixture.platform.to_dict()), encoding="utf-8"
             )
@@ -333,7 +345,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             with (
                 mock.patch(
                     "emuflow.phase5._load_phase3_semantics",
-                    return_value=(routes, routes["semantic_contract"]),
+                    return_value=(indexed_routes, routes["semantic_contract"]),
                 ),
                 mock.patch.object(
                     ScheduleRecordSequence,
@@ -434,6 +446,9 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         candidates.append((bad_bank, "allocated direction banks"))
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            route_path = root / "routes.json"
+            write_system_route_storage(route_path, routes)
+            routes = read_system_routes(route_path)
             for index, (candidate, error) in enumerate(candidates):
                 path = root / f"schedule-{index}.json"
                 write_tdm_schedule_storage(path, candidate)
