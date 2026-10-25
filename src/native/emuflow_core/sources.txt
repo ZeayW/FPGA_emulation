@@ -29,3 +29,4 @@ emuflow_core/candidate_ids.cpp
 emuflow_core/resource_view.cpp
 emuflow_core/assignment_publish.cpp
 emuflow_core/vivado_lineage.cpp
+emuflow_core/route_seal.cpp

@@ -1,4 +1,5 @@
 #include "emuflow_core/native_pipeline.hpp"
+#include "emuflow_core/route_seal.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/native_stages.hpp"
 #include "emuflow_core/schedule_store.hpp"
@@ -21,6 +22,7 @@ namespace emuflow::native {
 const char* StageName(Stage stage) {
   switch (stage) {
     case Stage::kInvalid: return "native.request";
+    case Stage::kSealRoutes: return "phase4.seal-routes";
     case Stage::kImportVivadoLineage: return "phase7.import-vivado-lineage";
     case Stage::kExportRwroute: return "phase7.export-rwroute";
     case Stage::kBuildCaptures: return "phase3.build-captures";
@@ -49,6 +51,7 @@ namespace {
 std::vector<std::string> InputSchemas(const StageRequest& request) {
   switch (request.stage) {
     case Stage::kInvalid: break;
+    case Stage::kSealRoutes: return {"system-route-store-v3","system-route-seal-request-v1"};
     case Stage::kImportVivadoLineage: {
       auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
       if(count<4 || count>67) throw core::StageError(core::ErrorCode::kInvalidRequest,"Vivado inventory input count is invalid");
@@ -219,6 +222,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kWriteExactSections: WriteStaticExactSections(inputs, output); break;
       case Stage::kRefinePatron: RefinePatron(inputs, output, request.summary_output, request.typed_output); break;
       case Stage::kRoute: RouteTlr(inputs, output); break;
+      case Stage::kSealRoutes: core::SealSystemRoutes(inputs,output); break;
       case Stage::kBuildSchedule: core::BuildExactScheduleStore(inputs,output); break;
       case Stage::kExportBookshelf:
         core::ExportBookshelf(inputs[0],inputs[1],output,request.auxiliary_output_path,request.scratch_path);
@@ -247,6 +251,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kWriteExactSections: schema = "exact-section-summary-v2"; break;
       case Stage::kRefinePatron: schema = request.typed_output ? "patron-output-v1" : "patron-output-text"; break;
       case Stage::kRoute: schema = "tlr-output-v1"; break;
+      case Stage::kSealRoutes: schema = "system-route-seal-summary-v1"; break;
       case Stage::kBuildSchedule: schema = "tdm-schedule-store-v4"; break;
       case Stage::kAssignBanks: schema = "chimew-bank-output-text"; break;
       case Stage::kGroupSignals: schema = "chimew-group-output-text"; break;

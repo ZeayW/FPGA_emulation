@@ -130,6 +130,8 @@ authoritative installation. Bookshelf export uses only the unified command.
 Phase 4 supports only `timing-aware-global-candidate-v1` through the unified
 entry. Retired routing providers, their standalone executable and dedicated
 comparison commands are removed; candidate-generation kernels remain shared.
+Production RouteStore sealing reads typed rows in the shared core, preserving
+logical/section hashes without Python route-tree or candidate-list expansion.
 AMF and DREAMPlaceFPGA feasibility adapters, native runners and the unused
 candidate comparator are retired. The maintained Xilinx implementations are
 OpenPARF/RWRoute and Vivado. Chimew consumes their indexed Xilinx owners.

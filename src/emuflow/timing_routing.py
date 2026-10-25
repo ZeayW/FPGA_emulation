@@ -2432,6 +2432,9 @@ def route_system_native(
         or candidate_workers <= 0
     ):
         raise ValueError("candidate_workers must be a positive integer")
+    if not materialize_result:
+        from .native_tools import require_native_schema
+        require_native_schema("system-route-seal-request-v1")
     nodes, model = _prepare_native_model(
         assignment, platform, constraints, timing_paths
     )

@@ -31,6 +31,24 @@ package and verifies its module/data inventory and default profile resources.
 It requires the Python install target to have been built, as in the normal
 root build. This check does not execute synthesis or physical implementation.
 
+## Native route sealing
+
+Production Phase 4 requires an updated `emuflow-native` with the
+`system-route-seal-request-v1` protocol. The retained-row routing API checks
+that capability before constructing its model. The internal
+`phase4 seal-routes STORE REQUEST SUMMARY` command reads current RouteStore v3
+rows and returns a bounded `emuflow.system-route-seal/v1` summary; it does not
+export routes or replace the canonical store. Its request references the five
+relation families rather than embedding their records. Producers use the shared
+checked request writer; a stale native installation, corrupt source, mismatched
+header/count, or changed input fails instead of invoking another publisher.
+
+The public route selector, v3 typed schema, route ordering, logical SHA and
+independent legality checks retain their meanings. Prior store generations
+remain recoverable until the normal selector and typed-store validation pass.
+The Python mapping writer is an explicit reference/import interface, not a
+fallback for failed native sealing.
+
 ## Native compile control
 
 Add `--compile-implementation native-control-v1` to the normal

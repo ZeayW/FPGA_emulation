@@ -304,33 +304,6 @@ class _JsonRecordSequence(list):
         return not self == other
 
 
-class _DigestingRecordSequence(list):
-    """Update one ordered-record seal while another encoder consumes rows."""
-
-    def __init__(
-        self,
-        source: Sequence[Mapping[str, Any]],
-        digest: Any,
-    ) -> None:
-        super().__init__()
-        self._source = source
-        self._digest = digest
-        self.records = 0
-
-    def __len__(self) -> int:
-        return len(self._source)
-
-    def __iter__(self) -> Iterator[Mapping[str, Any]]:
-        if self.records:
-            raise ValidationError("route seal cursor was consumed twice")
-        for record in self._source:
-            payload = _canonical(record)
-            self._digest.update(payload.encode("utf-8"))
-            self._digest.update(b"\n")
-            self.records += 1
-            yield record
-
-
 class _MasterSelectionSequence(list):
     """Lazy master-candidate selections stored outside the route header."""
 
@@ -1998,61 +1971,6 @@ def write_system_route_storage(
                 raise ValidationError(
                     "system-route refinement batch summary disagrees"
                 )
-        if direct_native_routes:
-            # The relation copy is now the authority.  Seal and hash that
-            # published view instead of walking the Python route projection a
-            # second time; this also makes any SQL mapping error observable in
-            # the logical identity.
-            assert callable(native_route_publisher)
-            native_route_publisher(connection)
-            connection.commit()
-            connection.close()
-            sealed_routes = _DigestingRecordSequence(
-                SystemRouteSequence(
-                    temporary,
-                    len(raw_routes),
-                    SYSTEM_ROUTE_USER_VERSION,
-                ),
-                relation_digests["routes"],
-            )
-            logical_routes = dict(routes)
-            logical_routes["routes"] = sealed_routes
-            sealed_selections = None
-            if direct_native_selections:
-                sealed_selections = _DigestingRecordSequence(
-                    _MasterSelectionSequence(
-                        temporary, len(raw_master_selections)
-                    ),
-                    relation_digests["master_selections"],
-                )
-                joint_value = logical_routes.get("joint_optimization")
-                if not isinstance(joint_value, Mapping):
-                    raise ValidationError(
-                        "native master selections lack optimization header"
-                    )
-                joint_value = dict(joint_value)
-                candidate_value = joint_value.get("candidate_generation")
-                if not isinstance(candidate_value, Mapping):
-                    raise ValidationError(
-                        "native master selections lack candidate header"
-                    )
-                candidate_value = dict(candidate_value)
-                candidate_value["master_selection"] = sealed_selections
-                joint_value["candidate_generation"] = candidate_value
-                logical_routes["joint_optimization"] = joint_value
-            logical_sha256 = _pretty_sha256(logical_routes)
-            if sealed_routes.records != len(raw_routes):
-                raise ValidationError("published route seal coverage disagrees")
-            if (
-                sealed_selections is not None
-                and sealed_selections.records != len(raw_master_selections)
-            ):
-                raise ValidationError(
-                    "published master-selection seal coverage disagrees"
-                )
-            connection = sqlite3.connect(temporary, uri=True)
-        else:
-            logical_sha256 = _pretty_sha256(routes)
         sections = {
             "demands": {
                 "records": len(raw_demands),
@@ -2080,14 +1998,28 @@ def write_system_route_storage(
                 ].hexdigest(),
             },
         }
-        connection.executemany(
-            "INSERT INTO metadata VALUES(?,?)",
-            (
-                ("header", _canonical(header)),
-                ("sections", _canonical(sections)),
-                ("logical_sha256", _canonical(logical_sha256)),
-            ),
-        )
+        if direct_native_routes:
+            # Seal the final typed rows, not their Python projection. Only
+            # bounded shape/header literals cross the native process boundary.
+            assert callable(native_route_publisher)
+            native_route_publisher(connection)
+            if direct_native_selections:
+                sections["master_selections"]["sha256"] = None
+            sections["routes"]["sha256"] = None
+            connection.executemany("INSERT INTO metadata VALUES(?,?)", (
+                ("header", _canonical(header)), ("sections", _canonical(sections))))
+            connection.commit()
+            connection.close()
+            from .route_seal_native import seal_native_system_routes
+            seal = seal_native_system_routes(temporary, routes)
+            logical_sha256, sections = seal["logical_sha256"], seal["sections"]
+            connection = sqlite3.connect(temporary, uri=True)
+            connection.execute("UPDATE metadata SET value=? WHERE key='sections'", (_canonical(sections),))
+        else:
+            logical_sha256 = _pretty_sha256(routes)
+            connection.executemany("INSERT INTO metadata VALUES(?,?)", (
+                ("header", _canonical(header)), ("sections", _canonical(sections))))
+        connection.execute("INSERT INTO metadata VALUES('logical_sha256',?)", (_canonical(logical_sha256),))
         connection.commit()
     except sqlite3.IntegrityError as error:
         connection.close()

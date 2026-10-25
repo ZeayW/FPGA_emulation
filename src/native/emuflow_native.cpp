@@ -31,6 +31,7 @@ constexpr const char* kUsage =
     "  phase3 publish-assignment EMUIR PRIMARY REQUEST OUTPUT\n"
     "  phase3 reduce-loads EMUIR PRIMARY REQUEST OUTPUT\n"
     "  phase4 route --typed-output INPUT OUTPUT\n"
+    "  phase4 seal-routes STORE REQUEST SUMMARY\n"
     "  phase5 build-schedule ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST OUTPUT\n"
     "  phase6 assign-banks --typed-input INPUT OUTPUT\n"
     "  phase6 group-signals --typed-input INPUT OUTPUT EXPECTED_SHA256\n"
@@ -140,6 +141,8 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if (phase == "phase3" && operation == "refine-patron-from-primary" && argc == 9)
     return run(Stage::kRefinePatronFromPrimary,{argv[3],argv[4],argv[5],argv[6],argv[7]},argv[8]);
+  if (phase == "phase4" && operation == "seal-routes" && argc == 6)
+    return run(Stage::kSealRoutes,{argv[3],argv[4]},argv[5]);
   if (phase == "phase3" && operation == "build-captures" && argc == 8)
     return run(Stage::kBuildCaptures,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
   if (phase == "phase3" && operation == "validate-captures" && argc == 9)

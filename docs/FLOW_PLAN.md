@@ -59,6 +59,34 @@ process starts. The transitional Python data planes remain explicit. See
 selection and unsupported modes, and the [migration contract](PHASE3_NATIVE_MIGRATION.md)
 for the remaining native ownership requirements.
 
+## Native route publication
+
+The current Phase 4 RouteStore v3 remains the canonical owner. After route,
+sink, edge, dependency, timing and candidate relations are inserted, the shared
+`phase4 seal-routes STORE REQUEST SUMMARY` operation reads the closed private
+store through ordered cursors. It returns only the existing logical SHA and
+five relation seals. No second database or full JSON document is produced.
+Python installs these bounded metadata values before the existing atomic
+selector publication and independent typed-store checks.
+
+The checked request is limited to 8 MiB, 65,536 header nodes and depth 64. It
+contains bounded header literals, document structure, and references/counts for
+large relations. It cannot carry route, demand, candidate or timing populations.
+The native consumer verifies the projected header against the store, actual
+ordered row coverage, child identities and source relation seals. Record JSON
+uses the shared serializer; already canonical literals use a streaming
+whitespace formatter that preserves string and number spellings. The resulting
+logical identity remains the existing sorted-key, indented JSON identity,
+independent of SQLite page layout. Timing and batch payloads remain in their
+owning relations; batches stream without a population-sized vector.
+
+The old Python seal cursor that reconstructed each route and selection solely
+for pretty JSON hashing is retired. Native failure rejects publication; there
+is no automatic Python fallback. The small explicit mapping/reference writer
+remains available for fixtures and supplied legacy data. This does not migrate
+all Phase 4 metadata preparation, route-output parsing or routing validation to
+C++; those remaining data-plane boundaries are separate from this seal.
+
 ## Logical model
 
 EmuIR retains directed endpoints, hierarchy, cell types and parameters,

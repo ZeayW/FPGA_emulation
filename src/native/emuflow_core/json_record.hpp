@@ -12,11 +12,57 @@
 #include <locale>
 #include <cstdlib>
 #include <locale.h>
+#include <functional>
+#include <string_view>
 #if defined(__APPLE__)
 #include <xlocale.h>
 #endif
 
 namespace emuflow::core {
+// Whitespace formatting only: callers validate the canonical JSON with the
+// owning SQLite/request contract. Preserve producer number/string spellings;
+// never build another JSON tree merely to hash its pretty representation.
+inline void VisitPrettyCanonicalJson(const std::string& value, unsigned level,
+                                    const std::function<void(std::string_view)>& emit) {
+  std::string buffer;
+  buffer.reserve(4096);
+  unsigned depth = 0;
+  bool quoted = false, escaped = false;
+  const auto flush = [&] { if (!buffer.empty()) { emit(buffer); buffer.clear(); } };
+  for (std::size_t i = 0; i < value.size(); ++i) {
+    const char c = value[i];
+    if (quoted) {
+      buffer += c;
+      if (escaped) escaped = false;
+      else if (c == '\\') escaped = true;
+      else if (c == '"') quoted = false;
+    } else if (c == '"') { quoted = true; buffer += c; }
+    else if (c == '{' || c == '[') {
+      buffer += c;
+      if (++depth > 1000) throw std::runtime_error("JSON formatting depth exceeds bound");
+      if (i+1 < value.size() && value[i+1] != '}' && value[i+1] != ']') {
+        buffer += '\n'; buffer.append(2*(level+depth),' ');
+      }
+    } else if (c == '}' || c == ']') {
+      if (!depth) throw std::runtime_error("JSON formatting depth is invalid");
+      --depth;
+      if (i && value[i-1] != '{' && value[i-1] != '[') {
+        buffer += '\n'; buffer.append(2*(level+depth),' ');
+      }
+      buffer += c;
+    } else if (c == ',') { buffer += ",\n"; buffer.append(2*(level+depth),' '); }
+    else if (c == ':') buffer += ": ";
+    else {
+      if (c == ' ' || c == '\n' || c == '\t' || c == '\r')
+        throw std::runtime_error("JSON formatting input is not compact");
+      buffer += c;
+    }
+    if (buffer.size() >= 4096) flush();
+  }
+  if (quoted || depth) throw std::runtime_error("JSON formatting input is incomplete");
+  flush();
+}
+
 // Small typed record serializer, never a whole-graph JSON representation.
 // Matches the existing sorted-key, ensure_ascii Python contract exactly.
 inline std::string JsonQuote(const std::string& text) {

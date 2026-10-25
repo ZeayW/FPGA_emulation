@@ -104,6 +104,8 @@ constexpr RegisteredSchema schemas[] = {
     {"chimew-refine-input-v1", ArtifactEncoding::kBinary, 0x0032465248434d45ULL, 1},
     // Text compatibility/IPC schemas have stage-owned grammars. Binding does
     // not consume a pipe or duplicate their parser; the body checks the grammar.
+    {"system-route-seal-request-v1", ArtifactEncoding::kBinary, 0x31515352464d5545ULL, 1},
+    {"system-route-seal-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"global-route-input-v1", ArtifactEncoding::kText, 0, 1},
     {"chimew-rudy-input-v1", ArtifactEncoding::kText, 0, 1},
     {"patron-output-v1", ArtifactEncoding::kBinary, 0x3154554f54415045ULL, 1},
