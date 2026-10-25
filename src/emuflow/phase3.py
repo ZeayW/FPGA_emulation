@@ -285,10 +285,8 @@ def _rebase_patron_initial_assignment(
 
 def _hop_report_summary(report: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        key: value
-        for key, value in report.items()
-        if key not in {"moves", "input"}
-    } | {"move_count": len(report.get("moves", []))}
+        key: value for key, value in report.items() if key not in {"moves", "input"}
+    } | {"move_count": report.get("move_count", len(report.get("moves", [])))}
 
 
 def _patron_hop_audit_report(
@@ -626,6 +624,7 @@ def run_phase3(
                 route_constraints_path=route_constraints_path,
                 net_weights_path=net_weights_path,
                 executable=hop_refiner,
+                retain_diagnostics=retain_diagnostics,
                 defer_semantic_contract=True,
             )
         timing_database = phase3_runtime_call(
@@ -915,6 +914,7 @@ def run_phase3(
             route_constraints_path=route_constraints_path,
             net_weights_path=net_weights_path,
             executable=hop_refiner,
+            retain_diagnostics=retain_diagnostics,
             defer_semantic_contract=True,
         )
     if (

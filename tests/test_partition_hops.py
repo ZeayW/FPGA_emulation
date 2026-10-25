@@ -60,29 +60,9 @@ def _line_platform() -> Platform:
 class HopPartitionRefinementTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        compiler = shutil.which("g++") or shutil.which("clang++")
-        if compiler is None:
-            raise unittest.SkipTest("a C++17 compiler is required")
-        cls.temporary_directory = tempfile.TemporaryDirectory()
-        cls.executable = (
-            Path(cls.temporary_directory.name)
-            / "emuflow_hop_partition_refiner"
-        )
-        subprocess.run(
-            [
-                compiler,
-                "-std=c++17",
-                "-O2",
-                str(ROOT / "src/native/hop_partition_refiner.cpp"),
-                "-o",
-                str(cls.executable),
-            ],
-            check=True,
-        )
+        from tests.native_build import emuflow_native
 
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls.temporary_directory.cleanup()
+        cls.executable = emuflow_native()
 
     def setUp(self) -> None:
         self.ir = import_yosys_json(
@@ -166,6 +146,7 @@ class HopPartitionRefinementTest(unittest.TestCase):
                 root / "first",
                 route_constraints_path=route_constraints,
                 executable=str(self.executable),
+                retain_diagnostics=True,
             )
             repeated, repeated_report = refine_partition_hops(
                 self.ir,
@@ -176,6 +157,7 @@ class HopPartitionRefinementTest(unittest.TestCase):
                 root / "second",
                 route_constraints_path=route_constraints,
                 executable=str(self.executable),
+                retain_diagnostics=True,
             )
         self.assertGreater(report["before"]["violating_net_sink_pairs"], 0)
         self.assertEqual(report["after"]["violating_net_sink_pairs"], 0)
@@ -348,6 +330,106 @@ class HopPartitionRefinementTest(unittest.TestCase):
                     executable=str(self.executable),
                 )
 
+    def test_hop_summary_retains_count_and_assignment_without_move_trace(self):
+        constraints, clusters, assignment = self._artifacts()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            routes = self._route_constraints(root)
+            results = [
+                refine_partition_hops(
+                    self.ir,
+                    self.platform,
+                    clusters,
+                    constraints,
+                    assignment,
+                    root / mode,
+                    route_constraints_path=routes,
+                    executable=str(self.executable),
+                    retain_diagnostics=trace,
+                )
+                for mode, trace in (("summary", False), ("trace", True))
+            ]
+            self.assertEqual(results[0][0], results[1][0])
+            summary, trace = results[0][1], results[1][1]
+            self.assertEqual(summary["moves"], [])
+            self.assertGreater(summary["move_count"], 0)
+            self.assertEqual(summary["move_count"], len(trace["moves"]))
+            self.assertEqual(summary["native_metrics"], trace["native_metrics"])
+            output = (root / "summary/hop_refiner.out").read_text()
+            self.assertNotIn("\nMOVE ", output)
+            operation = json.loads(
+                (root / "summary/hop_refiner.operation.json").read_text()
+            )
+            self.assertEqual(operation["stage"], "phase3.refine-hops")
+            self.assertEqual(operation["status"], "pass")
+
+    def test_hop_native_rejects_malformed_records_before_atomic_publish(self):
+        valid = (
+            "EMUFLOW_HOP_PARTITION_REFINER_INPUT_V1\n"
+            "PARAM 1 1 1 0 1 1\nDIST 0 0 0\nBOUND 0 0 1 1\n"
+            "CLUSTER 0 0 -1 1\n"
+        )
+        cases = [
+            valid.replace("_INPUT_V1", "_INPUT_V9"),
+            valid.replace("PARAM 1 1 1 0 1 1", "PARAM 1000000000 1 1000000000 0 1 1"),
+            valid.replace("BOUND 0 0 1 1\n", ""),
+            valid + "DIST 0 0 0\n",
+            valid + "BOUND 0 0 1 1\n",
+            valid + "CLUSTER 0 0 -1 1\n",
+            valid + "PARAM 1 1 1 0 1 1\n",
+            valid + "NET 0 1 0 -1\n",
+            valid.replace("CLUSTER 0 0 -1 1", "CLUSTER 0 0 -1"),
+            valid.replace("DIST 0 0 0", "DIST -1 0 0"),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, output, report = (
+                root / "model",
+                root / "output",
+                root / "operation.json",
+            )
+            for model in cases:
+                with self.subTest(model=model):
+                    source.write_text(model)
+                    output.write_bytes(b"prior-result")
+                    completed = subprocess.run(
+                        [
+                            str(self.executable),
+                            "--report",
+                            str(report),
+                            "phase3",
+                            "refine-hops",
+                            str(source),
+                            str(output),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    self.assertNotEqual(completed.returncode, 0)
+                    self.assertEqual(output.read_bytes(), b"prior-result")
+                    operation = json.loads(report.read_text())
+                    self.assertEqual(operation["error"]["code"], "invalid-artifact")
+                    self.assertEqual(operation["outputs"], [])
+                    self.assertFalse(list(root.glob("*.tmp.*")))
+            source.write_text(valid)
+            alias = root / "alias"
+            os.link(source, alias)
+            for destination in (source, alias):
+                result = subprocess.run(
+                    [
+                        str(self.executable),
+                        "phase3",
+                        "refine-hops",
+                        str(source),
+                        str(destination),
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(source.read_text(), valid)
+
     def test_native_refiner_rejects_quadratic_large_repair_search(self) -> None:
         cluster_count = 50_001
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -371,7 +453,13 @@ class HopPartitionRefinementTest(unittest.TestCase):
             lines.append(f"NET 0 1 0 1 {cluster_count - 1}")
             input_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
             subprocess.run(
-                [str(self.executable), str(input_path), str(output_path)],
+                [
+                    str(self.executable),
+                    "phase3",
+                    "refine-hops",
+                    str(input_path),
+                    str(output_path),
+                ],
                 check=True,
                 timeout=5,
             )
@@ -412,7 +500,13 @@ class HopPartitionRefinementTest(unittest.TestCase):
                 encoding="utf-8",
             )
             subprocess.run(
-                [str(self.executable), str(input_path), str(output_path)],
+                [
+                    str(self.executable),
+                    "phase3",
+                    "refine-hops",
+                    str(input_path),
+                    str(output_path),
+                ],
                 check=True,
             )
             output = output_path.read_text(encoding="utf-8")
@@ -451,12 +545,18 @@ class HopPartitionRefinementTest(unittest.TestCase):
                 encoding="utf-8",
             )
             completed = subprocess.run(
-                [str(self.executable), str(input_path), str(output_path)],
+                [
+                    str(self.executable),
+                    "phase3",
+                    "refine-hops",
+                    str(input_path),
+                    str(output_path),
+                ],
                 capture_output=True,
                 text=True,
                 check=False,
             )
-        self.assertEqual(completed.returncode, 1)
+        self.assertNotEqual(completed.returncode, 0)
         self.assertIn("invalid NET sink record", completed.stderr)
 
     def test_phase3_standalone_applies_route_hop_contract(self) -> None:

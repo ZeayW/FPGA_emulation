@@ -146,9 +146,12 @@ also writes `OUTPUT.order` (sealed integer identity mapping) and
 Diagnostic/explicit comparison modes retain their named reference input path;
 a native failure never switches implementations. This does not establish complete
 native Phase 3 ownership or real-design physical/timing qualification.
-Configured route-hop limits also require `emuflow_hop_partition_refiner`;
-versioned runtime deployment builds and probes it instead of relying on an
-older base installation to contain that helper.
+Configured route-hop limits use `emuflow-native phase3 refine-hops INPUT OUTPUT`.
+The unified operation publishes assignments and metric counters atomically and
+accepts `--trace-output` for diagnostic move records. The Phase 3 API follows
+`retain_diagnostics`; its normal report retains the total move count without
+materializing a Python move list. There is no standalone helper or installation
+fallback. Versioned runtimes build this kernel into `libemuflow_core`.
 
 `emuflow-native [--report OPERATION_JSON] phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL`
 streams the finalized mapped v2 and private lexical atom relations to OpenPARF

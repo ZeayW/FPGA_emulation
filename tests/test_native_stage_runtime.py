@@ -67,11 +67,20 @@ class NativeStageRuntimeTest(unittest.TestCase):
             output, report = root / "previous-result", root / "status.json"
             cases = [
                 ["phase3", "analyze", missing],
+                ["phase3", "refine-hops", missing],
                 ["phase3", "reduce-loads", missing, missing, missing],
                 ["phase3", "analyze", "--indexed-input", missing, missing],
                 ["phase3", "finalize-semantics", missing, missing],
                 ["phase3", "build-captures", missing, missing, missing, missing],
-                ["phase3", "validate-captures", missing, missing, missing, missing, missing],
+                [
+                    "phase3",
+                    "validate-captures",
+                    missing,
+                    missing,
+                    missing,
+                    missing,
+                    missing,
+                ],
                 ["phase3", "hash-semantics", missing, missing, missing],
                 ["phase3", "write-exact-sections", missing, missing, missing],
                 ["phase3", "refine-patron", "--typed-input", missing],

@@ -86,7 +86,7 @@ echo "RUNTIME_CXX=$selected_cxx"
 for binary in "$native_base"/bin/*; do
   test -e "$binary" || continue
   case "$(basename "$binary")" in
-    openroad|sta|yosys|yosys-abc|emuflow_hop_partition_refiner|emuflow_bsp_pin_solver|emuflow_fpgaif_arch_importer|emuflow_eda2025_topology_optimizer)
+    openroad|sta|yosys|yosys-abc|emuflow_bsp_pin_solver|emuflow_fpgaif_arch_importer|emuflow_eda2025_topology_optimizer)
       ln -s "$binary" "$runtime_dir/bin/$(basename "$binary")" ;;
   esac
 done
@@ -131,19 +131,6 @@ for source in "${core_sources[@]}"; do
 done
 archive="$runtime_dir/lib/libemuflow_core.a"
 "$("$selected_cxx" -print-prog-name=ar)" rcs "$archive" "${objects[@]}"
-for tool in \
-  hop_partition_refiner
-do
-  target="$runtime_dir/bin/emuflow_$tool"
-  rm -f "$target"
-  "$selected_cxx" -std=c++17 -O3 -pthread \
-    -static-libstdc++ -static-libgcc \
-    ${sqlite_flags[@]+"${sqlite_flags[@]}"} -I"$source_dir/src/native" \
-    "$source_dir/src/native/$tool.cpp" \
-    "$archive" \
-    -lsqlite3 -lz -o "$target"
-done
-
 "$selected_cxx" -std=c++17 -O3 -pthread -static-libstdc++ -static-libgcc \
   ${sqlite_flags[@]+"${sqlite_flags[@]}"} -I"$source_dir/src/native" \
   "$source_dir/src/native/emuflow_native.cpp" "$archive" -lsqlite3 -lz -o "$unified"
@@ -152,7 +139,6 @@ rm -rf "$object_dir"
 # load its linked dependencies in the deployment environment. The run launcher
 # must repeat these probes inside its actual execution environment.
 "$unified" check-runtime >/dev/null
-"$runtime_dir/bin/emuflow_hop_partition_refiner" --help >/dev/null
 "$unified" --help >/dev/null
 printf '%s\n' "$expected_commit" > "$runtime_dir/SOURCE_COMMIT"
 printf '%s\n' "$native_base" > "$runtime_dir/NATIVE_BASE_INSTALL"

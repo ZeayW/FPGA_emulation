@@ -36,6 +36,12 @@ The linked operations use a versioned schema registry, `ArtifactRef`,
 `SplitView` and `RouteView` share artifact binding and connection ownership;
 `SqliteArtifactWriter` owns staged SQLite publication, including ScheduleStore.
 EmuIR v1/v2, assignment v3/v4 and split v2 have explicit versioned readers.
+The initial topology hop legalizer also links into this core and uses the
+shared stage/error/metrics/source-binding and atomic output contracts. Its old
+standalone build, deployment and test entry are retired. The existing algorithm
+and independent final hop audit remain; summary output retains counters without
+a Python move trace. Native direct model construction is still W4 work.
+
 The [W0 contract](FLOW_PLAN.md#shared-native-core-w0) specifies shared interfaces,
 compatibility and acceptance separately from the later phase algorithm migrations.
 An integer identity is meaningful only with its owning artifact;

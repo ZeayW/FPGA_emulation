@@ -170,6 +170,14 @@ SQLite handles and circuit-sized Python containers do not cross it.
 | Failure and measurements | `StageError`, `RunStage`, `StageResult` | Shared error codes and bounded reports; wall/CPU/I/O intervals and process lifetime RSS retain their stated scopes. |
 | External engine lifecycle | `RunExternalTool`, `ToolRequest`, `ToolResult` | Literal arguments/environment, bounded diagnostics, limits, deadlines, cancellation and reaping; engines remain separate processes. |
 
+The topology hop legalizer is a shared `StageRequest` operation
+(`phase3 refine-hops`), with original source generations, standard errors and
+metrics, and the common atomic text writer. Its existing deterministic FM and
+exact fallback kernel remains unchanged. Production emits ordered assignments
+and counters; optional diagnostic traces retain moves. Model construction still
+uses the streamed numeric input protocol and remains a Phase 3 data-plane task,
+separate from this W0 execution/publication consolidation.
+
 `EmuirView` reads indexed v1 and compact v2 directly. Explicit v1 reads derive
 counts because that historical format has no count manifest; compact production
 v2 construction reads bounded metadata. Both expose the same cell-state and

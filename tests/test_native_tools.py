@@ -171,24 +171,48 @@ class NativeToolsTest(unittest.TestCase):
         self.assertIn('"$archive"', script)
         # Retired analyzer/Chimew shells have no main; deployment must not
         # compile a second executable from those shared kernel sources.
-        link_helpers = script[script.index("for tool in "):script.index('"$unified" check-runtime')]
+        link_helpers = script[
+            script.index('archive="$runtime_dir/lib/libemuflow_core.a"') : script.index(
+                '"$unified" check-runtime'
+            )
+        ]
         for retired in ("static_exact_analyzer", "chimew_signal_grouper", "chimew_position_refiner",
                         "chimew_rudy", "chimew_bank_channel_assigner"):
             self.assertNotIn(retired, link_helpers)
-
 
     def test_thin_runtime_borrows_only_maintained_dependency_programs(self) -> None:
         import subprocess
         root = Path(__file__).resolve().parents[1]
         script = (root / "scripts/validation/deploy_stream_runtime.sh").read_text()
         block = script[script.index('for binary in "$native_base"/bin/*; do'):script.index("sqlite_flags=()")]
-        kept = {"openroad", "sta", "yosys", "yosys-abc", "emuflow_hop_partition_refiner",
-                "emuflow_bsp_pin_solver", "emuflow_fpgaif_arch_importer", "emuflow_eda2025_topology_optimizer"}
-        retired = {"emuflow-native", "emuflow_static_exact_analyzer", "emuflow_chimew_signal_grouper",
-                   "emuflow_chimew_position_refiner", "emuflow_chimew_rudy", "emuflow_chimew_bank_channel_assigner",
-                   "emuflow_vpr_packed_netlist_importer", "emuflow_vpr_route_checker", "emuflow_pin_planner",
-                   "emuflow_tlr_router", "emuflow_patron_refiner", "emuflow_tdm_exact_scheduler",
-                   "emuflow_tdm_ratio_optimizer", "repart", "emuflow_mfspart_old", "unknown-experiment"}
+        kept = {
+            "openroad",
+            "sta",
+            "yosys",
+            "yosys-abc",
+            "emuflow_bsp_pin_solver",
+            "emuflow_fpgaif_arch_importer",
+            "emuflow_eda2025_topology_optimizer",
+        }
+        retired = {
+            "emuflow_hop_partition_refiner",
+            "emuflow-native",
+            "emuflow_static_exact_analyzer",
+            "emuflow_chimew_signal_grouper",
+            "emuflow_chimew_position_refiner",
+            "emuflow_chimew_rudy",
+            "emuflow_chimew_bank_channel_assigner",
+            "emuflow_vpr_packed_netlist_importer",
+            "emuflow_vpr_route_checker",
+            "emuflow_pin_planner",
+            "emuflow_tlr_router",
+            "emuflow_patron_refiner",
+            "emuflow_tdm_exact_scheduler",
+            "emuflow_tdm_ratio_optimizer",
+            "repart",
+            "emuflow_mfspart_old",
+            "unknown-experiment",
+        }
         with tempfile.TemporaryDirectory() as temporary:
             base, runtime = Path(temporary)/"base", Path(temporary)/"runtime"
             (base/"bin").mkdir(parents=True); (runtime/"bin").mkdir(parents=True)

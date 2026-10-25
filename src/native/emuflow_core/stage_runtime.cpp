@@ -17,6 +17,8 @@
 namespace emuflow::core {
 namespace {
 constexpr RegisteredSchema schemas[] = {
+    {"hop-refiner-input-v1", ArtifactEncoding::kText, 0, 1},
+    {"hop-refiner-output-v1", ArtifactEncoding::kText, 0, 1},
     {"sqlite-publication-request-v1", ArtifactEncoding::kBinary, 0x31505351464d5545ULL, 1},
     {"boundary-identity-selector-v1", ArtifactEncoding::kText, 0, 1},
     {"boundary-timing-selector-v1", ArtifactEncoding::kText, 0, 1},

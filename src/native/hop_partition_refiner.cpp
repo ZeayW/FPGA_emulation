@@ -13,6 +13,10 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <filesystem>
+#include <cstdint>
+#include "emuflow_core/native_stages.hpp"
+#include "emuflow_core/artifact_io.hpp"
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -120,11 +124,29 @@ Input read_input(const std::string& path) {
   }
   Input input;
   std::string kind;
+  bool parameters = false;
+  const auto bytes = std::filesystem::file_size(path);
+  std::vector<bool> seen_distances, seen_bounds, seen_clusters, seen_nets;
   while (stream >> kind) {
+    if (kind != "PARAM" && !parameters)
+      throw std::runtime_error("missing PARAM record");
     if (kind == "PARAM") {
       stream >> input.num_parts >> input.num_clusters >>
           input.num_dimensions >> input.num_nets >> input.hop_limit >>
           input.min_used_parts;
+      if (!stream || parameters || input.num_parts <= 0 || input.num_clusters <= 0 ||
+          input.num_dimensions <= 0 || input.num_nets < 0 || input.hop_limit <= 0 ||
+          input.min_used_parts <= 0 || input.min_used_parts > input.num_parts)
+        throw std::runtime_error("invalid or duplicate PARAM record");
+      const auto parts = static_cast<std::uint64_t>(input.num_parts);
+      const auto dimensions = static_cast<std::uint64_t>(input.num_dimensions);
+      if (parts*parts > bytes/4 || parts*dimensions > bytes/4 ||
+          static_cast<std::uint64_t>(input.num_clusters)*dimensions > bytes/2 ||
+          static_cast<std::uint64_t>(input.num_nets) > bytes/4)
+        throw std::runtime_error("hop input counts exceed record bounds");
+      parameters = true;
+      seen_distances.assign(parts*parts,false); seen_bounds.assign(parts*dimensions,false);
+      seen_clusters.assign(input.num_clusters,false); seen_nets.assign(input.num_nets,false);
       input.distance.assign(
           input.num_parts, std::vector<int>(input.num_parts, -1));
       input.balance_bound.assign(
@@ -140,6 +162,11 @@ Input read_input(const std::string& path) {
       int sink = -1;
       int hops = -1;
       stream >> source >> sink >> hops;
+      if (!stream || source<0 || source>=input.num_parts || sink<0 || sink>=input.num_parts)
+        throw std::runtime_error("invalid DIST identity");
+      auto index=static_cast<std::size_t>(source)*input.num_parts+sink;
+      if (seen_distances[index]) throw std::runtime_error("duplicate DIST record");
+      seen_distances[index]=true;
       input.distance.at(source).at(sink) = hops;
     } else if (kind == "BOUND") {
       int part = -1;
@@ -147,6 +174,11 @@ Input read_input(const std::string& path) {
       double balance = 0.0;
       long long hard = 0;
       stream >> part >> dimension >> balance >> hard;
+      if (!stream || part<0 || part>=input.num_parts || dimension<0 || dimension>=input.num_dimensions)
+        throw std::runtime_error("invalid BOUND identity");
+      auto index=static_cast<std::size_t>(part)*input.num_dimensions+dimension;
+      if (seen_bounds[index]) throw std::runtime_error("duplicate BOUND record");
+      seen_bounds[index]=true;
       input.balance_bound.at(part).at(dimension) = balance;
       input.hard_capacity.at(part).at(dimension) = hard;
     } else if (kind == "CLUSTER") {
@@ -157,12 +189,20 @@ Input read_input(const std::string& path) {
       for (long long& weight : cluster.weights) {
         stream >> weight;
       }
+      if (!stream || index<0 || index>=input.num_clusters || seen_clusters[index])
+        throw std::runtime_error("invalid or duplicate CLUSTER identity");
+      seen_clusters[index]=true;
       input.clusters.at(index) = std::move(cluster);
     } else if (kind == "NET") {
       int index = -1;
       int sink_count = 0;
       Net net;
       stream >> index >> net.weight >> net.source >> sink_count;
+      if (!stream || index<0 || index>=input.num_nets || seen_nets[index] ||
+          sink_count<=0 || sink_count>input.num_clusters ||
+          static_cast<std::uint64_t>(sink_count)>bytes/2)
+        throw std::runtime_error("invalid or duplicate NET identity/count");
+      seen_nets[index]=true;
       net.sinks.resize(sink_count);
       for (int& sink : net.sinks) {
         stream >> sink;
@@ -175,6 +215,12 @@ Input read_input(const std::string& path) {
       throw std::runtime_error("malformed input record");
     }
   }
+  if (!parameters || !stream.eof() ||
+      std::find(seen_distances.begin(),seen_distances.end(),false)!=seen_distances.end() ||
+      std::find(seen_bounds.begin(),seen_bounds.end(),false)!=seen_bounds.end() ||
+      std::find(seen_clusters.begin(),seen_clusters.end(),false)!=seen_clusters.end() ||
+      std::find(seen_nets.begin(),seen_nets.end(),false)!=seen_nets.end())
+    throw std::runtime_error("incomplete hop input record coverage");
   if (input.num_parts <= 0 || input.num_clusters <= 0 ||
       input.num_dimensions <= 0 || input.num_nets < 0 ||
       input.hop_limit <= 0 || input.min_used_parts <= 0 ||
@@ -725,7 +771,7 @@ Result refine(const Input& input) {
   return result;
 }
 
-void write_objective(std::ofstream& output, const std::string& prefix,
+void write_objective(std::ostream& output, const std::string& prefix,
                      const Objective& objective) {
   output << "METRIC " << prefix << "_violations " << objective.violations
          << '\n';
@@ -741,11 +787,7 @@ void write_objective(std::ofstream& output, const std::string& prefix,
          << objective.used_part_deficit << '\n';
 }
 
-void write_result(const Result& result, const std::string& path) {
-  std::ofstream output(path);
-  if (!output) {
-    throw std::runtime_error("cannot open output: " + path);
-  }
+void write_result(const Result& result, std::ostream& output, bool trace) {
   output << "EMUFLOW_HOP_PARTITION_REFINER_OUTPUT_V1\n";
   output << std::setprecision(17);
   output << "STATUS "
@@ -762,7 +804,7 @@ void write_result(const Result& result, const std::string& path) {
   output << "METRIC exact_fallback " << (result.exact_fallback ? 1 : 0)
          << '\n';
   output << "METRIC scale_guard " << (result.scale_guard ? 1 : 0) << '\n';
-  for (const auto& [cluster, source, target] : result.committed_moves) {
+  if (trace) for (const auto& [cluster, source, target] : result.committed_moves) {
     output << "MOVE " << cluster << ' ' << source << ' ' << target << '\n';
   }
   for (int cluster = 0; cluster < static_cast<int>(result.assignment.size());
@@ -772,27 +814,20 @@ void write_result(const Result& result, const std::string& path) {
   }
 }
 
-void usage(const char* executable) {
-  std::cerr << "usage: " << executable << " INPUT OUTPUT\n";
-}
-
 }  // namespace
 
-int main(int argc, char** argv) {
-  if (argc == 2 && std::string(argv[1]) == "--help") {
-    usage(argv[0]);
-    return 0;
+void emuflow::native::RefinePartitionHops(
+    const std::vector<core::ArtifactRef>& inputs, const std::string& output,
+    bool retain_trace) {
+  if (inputs.size()!=1)
+    throw core::StageError(core::ErrorCode::kInvalidRequest,"hop input coverage is invalid");
+  inputs[0].RequireUnchanged();
+  Input model;
+  try { model=read_input(inputs[0].path()); }
+  catch (const std::exception& error) {
+    throw core::StageError(core::ErrorCode::kInvalidArtifact,error.what());
   }
-  if (argc != 3) {
-    usage(argv[0]);
-    return 2;
-  }
-  try {
-    const Input input = read_input(argv[1]);
-    write_result(refine(input), argv[2]);
-    return 0;
-  } catch (const std::exception& error) {
-    std::cerr << "emuflow_hop_partition_refiner: " << error.what() << '\n';
-    return 1;
-  }
+  core::PublishTextArtifact(output,inputs,[&](std::ostream& stream) {
+    write_result(refine(model),stream,retain_trace);
+  });
 }

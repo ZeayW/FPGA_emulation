@@ -247,6 +247,31 @@ int main() {
     for (const auto& published : physical.outputs) published.RequireUnchanged();
     if (emuflow::native::ExecuteStage(StageRequest{}).error != ErrorCode::kInvalidRequest)
       throw std::runtime_error("native API executed an unspecified stage");
+    {
+      const auto source = (root / "hop.input").string();
+      const auto output = (root / "hop.output").string();
+      const std::string model = "EMUFLOW_HOP_PARTITION_REFINER_INPUT_V1\n"
+          "PARAM 1 1 1 0 1 1\nDIST 0 0 0\nBOUND 0 0 1 1\nCLUSTER 0 0 -1 1\n";
+      { std::ofstream file(source); file << model; }
+      StageRequest hop{Stage::kRefinePartitionHops, {}, output};
+      hop.input_artifacts = {ArtifactRef::Bind(source,"hop-refiner-input-v1")};
+      const auto result = emuflow::native::ExecuteStage(hop);
+      if (!result.ok() || result.inputs.size()!=1 || result.outputs.size()!=1 ||
+          result.outputs[0].schema()!="hop-refiner-output-v1")
+        throw std::runtime_error("hop typed API failed: "+result.message);
+      const auto generation = fs::last_write_time(source);
+      { emuflow::core::AtomicBinaryWriter writer(source);
+        writer.WriteBytes(model.data(),model.size()); writer.Commit(); }
+      fs::last_write_time(source,generation);
+      if (emuflow::native::ExecuteStage(hop).error!=ErrorCode::kMixedGeneration)
+        throw std::runtime_error("hop API rebound a stale source generation");
+      result.outputs[0].RequireUnchanged();
+      auto mismatched=hop;
+      mismatched.input_artifacts={ArtifactRef::Bind(source,"global-route-input-v1")};
+      if (emuflow::native::ExecuteStage(mismatched).error!=ErrorCode::kInvalidArtifact)
+        throw std::runtime_error("hop API inferred a mismatched input schema");
+      result.outputs[0].RequireUnchanged();
+    }
     const auto source = (root / "rudy.input").string();
     const auto output = (root / "rudy.output").string();
     const std::string payload = "EMUFLOW_CHIMEW_RUDY_INPUT_V1\nGRID 0 0 1 1 1 1\nPARAM 1 1\nCAP 0 1\nNET 0 2 0.1 0.1 0.2 0.2\n";

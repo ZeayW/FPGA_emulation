@@ -356,3 +356,18 @@ outside the repository after terminal validation.
 Do not restart computation merely because an observer disconnected. Check its
 recorded identity and process tree. Remove scratch only when its producers and
 consumers have stopped. Do not publish a partial stage as a completed flow.
+
+### Topology hop legalization interface
+
+The shared `phase3 refine-hops` operation must retain the same numerical model,
+solver decisions, objective metrics and ordered assignments. Compare summary
+and diagnostic output on a model that requires moves: the summary omits `MOVE`
+records but reports the same committed count and final assignment. The existing
+independent hop, capacity and assignment validators remain authoritative.
+
+Malformed, duplicate, truncated, oversized-count or incomplete model records
+must fail before publishing. Input/output aliases and stale `ArtifactRef`
+generations must be rejected; a prior output survives every rejected request.
+Exercise the in-process API as well as the unified CLI and process supervisor.
+These are component interface gates; they do not replace real-design NVDLA
+physical and global timing acceptance or claim native model construction.

@@ -43,12 +43,6 @@ option(
   "Build the in-tree quantized-delay topology optimizer"
   ON
 )
-option(
-  EMUFLOW_BUILD_HOP_PARTITION_REFINER
-  "Build the in-tree topology-constrained FM partition refiner"
-  ON
-)
-
 
 option(
   EMUFLOW_BUILD_BSP_PIN_SOLVER
@@ -592,21 +586,7 @@ if(EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER)
 endif()
 
 
-if(EMUFLOW_BUILD_HOP_PARTITION_REFINER)
-  add_executable(
-    emuflow_hop_partition_refiner
-    "${CMAKE_SOURCE_DIR}/src/native/hop_partition_refiner.cpp"
-  )
-  target_compile_features(
-    emuflow_hop_partition_refiner PRIVATE cxx_std_17
-  )
-  target_compile_options(emuflow_hop_partition_refiner PRIVATE -O3)
-  set_target_properties(
-    emuflow_hop_partition_refiner
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
+
 
 
 if(EMUFLOW_BUILD_BSP_PIN_SOLVER)
@@ -976,12 +956,7 @@ if(BUILD_TESTING)
   endif()
 
 
-  if(EMUFLOW_BUILD_HOP_PARTITION_REFINER)
-    add_test(
-      NAME emuflow_hop_partition_refiner_cli
-      COMMAND "$<TARGET_FILE:emuflow_hop_partition_refiner>" --help
-    )
-  endif()
+
 
 
   if(EMUFLOW_BUILD_BSP_PIN_SOLVER)

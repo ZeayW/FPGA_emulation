@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import math
-import subprocess
+import json
+import os
 from array import array
 from collections import deque
 from pathlib import Path
@@ -23,7 +24,8 @@ from typing import (
 from .errors import EmuFlowError, ValidationError
 from .io import read_json
 from .ir import EmuIR
-from .native_tools import resolve_native_executable
+from .native_tools import is_unified_native_executable, resolve_native_stage_command
+from .tool_runtime import NativeToolProcess, native_tool_runner
 from .partition import (
     _CompactClusterRecords,
     _PackedClusterAssignment,
@@ -448,11 +450,13 @@ def _write_native_input(
         else [cluster["id"] for cluster in clusters]
     )
     temporary = path.with_name(f".{path.name}.tmp")
+    digest = hashlib.sha256()
     try:
-        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+        with temporary.open("wb") as stream:
             def emit(line: str) -> None:
-                stream.write(line)
-                stream.write("\n")
+                record = (line + "\n").encode("ascii")
+                stream.write(record)
+                digest.update(record)
 
             emit("EMUFLOW_HOP_PARTITION_REFINER_INPUT_V1")
             emit(
@@ -584,10 +588,6 @@ def _write_native_input(
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
     if isinstance(nets, _PackedHopNetRecords):
         phase3_runtime_observe(
             hop_refiner_compact_nets=len(nets),
@@ -611,6 +611,7 @@ def _parse_native_output(
     native_input: Mapping[str, Any],
     *,
     packed_assignment: bool = False,
+    retain_diagnostics: bool = False,
 ) -> Tuple[
     str,
     Mapping[str, str],
@@ -635,10 +636,14 @@ def _parse_native_output(
             if not fields:
                 continue
             if fields[0] == "STATUS" and len(fields) == 2:
+                if status is not None:
+                    raise ValidationError("duplicate hop refiner status")
                 status = fields[1]
             elif fields[0] == "ASSIGN" and len(fields) == 3:
                 cluster = int(fields[1])
                 part = int(fields[2])
+                if not 0 <= cluster < len(native_input["cluster_order"]):
+                    raise ValidationError("invalid hop refiner cluster identity")
                 if packed_assignment:
                     if cluster != len(packed_parts):
                         raise ValidationError(
@@ -650,9 +655,21 @@ def _parse_native_output(
                         )
                     packed_parts.append(part)
                 else:
+                    if cluster in assignments:
+                        raise ValidationError("duplicate hop refiner assignment")
                     assignments[cluster] = part
             elif fields[0] == "MOVE" and len(fields) == 4:
+                if not retain_diagnostics:
+                    raise ValidationError(
+                        "unexpected hop refiner trace in summary output"
+                    )
                 cluster, source, target = map(int, fields[1:])
+                if (
+                    not 0 <= cluster < len(native_input["cluster_order"])
+                    or not 0 <= source < len(fpga_order)
+                    or not 0 <= target < len(fpga_order)
+                ):
+                    raise ValidationError("invalid hop refiner move identity")
                 moves.append(
                     {
                         "cluster": native_input["cluster_order"][cluster],
@@ -661,13 +678,23 @@ def _parse_native_output(
                     }
                 )
             elif fields[0] == "METRIC" and len(fields) == 3:
-                metrics[fields[1]] = float(fields[2])
+                value = float(fields[2])
+                if fields[1] in metrics or not math.isfinite(value):
+                    raise ValidationError("duplicate or non-finite hop refiner metric")
+                metrics[fields[1]] = value
             else:
                 raise ValidationError(
                     f"invalid hop partition refiner output record {line!r}"
                 )
     if status not in {"PASS", "STUCK"}:
         raise ValidationError("hop partition refiner output has no valid status")
+    committed = metrics.get("committed_moves", -1)
+    if (
+        committed < 0
+        or not committed.is_integer()
+        or (retain_diagnostics and committed != len(moves))
+    ):
+        raise ValidationError("hop refiner committed move count disagrees")
     cluster_count = len(native_input["cluster_order"])
     if packed_assignment:
         if len(packed_parts) != cluster_count:
@@ -704,6 +731,7 @@ def refine_partition_hops(
     net_weights_path: Optional[Path] = None,
     executable: Optional[str] = None,
     defer_semantic_contract: bool = False,
+    retain_diagnostics: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     route_constraints = load_route_constraints(
         route_constraints_path, platform
@@ -734,37 +762,55 @@ def refine_partition_hops(
         distances,
         net_weights,
     )
-    resolved_executable = resolve_native_executable(
-        "emuflow_hop_partition_refiner", executable
+    command = resolve_native_stage_command("phase3", "refine-hops", executable)
+    unified = is_unified_native_executable(command[0])
+    operation_path = output_dir / "hop_refiner.operation.json"
+    if unified:
+        command[1:1] = ["--report", str(operation_path.resolve())]
+        if retain_diagnostics:
+            command.append("--trace-output")
+    command.extend(
+        [str(native_input_path.resolve()), str(native_output_path.resolve())]
     )
-    completed = subprocess.run(
-        [
-            resolved_executable,
-            str(native_input_path.resolve()),
-            str(native_output_path.resolve()),
-        ],
+    runner = native_tool_runner(command[0])
+    if runner is None:
+        raise EmuFlowError("hop refiner requires the shared native tool supervisor")
+    with NativeToolProcess(
+        runner,
+        command,
         cwd=output_dir,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
-    (output_dir / "hop_refiner.log").write_text(
-        completed.stdout, encoding="utf-8"
-    )
+        environment=dict(os.environ),
+        timeout_ms=21600000,
+        scratch_parent=output_dir,
+    ) as process:
+        completed = process.finish()
+    (output_dir / "hop_refiner.log").write_text(completed.stdout, encoding="utf-8")
     if completed.returncode != 0:
         raise EmuFlowError(
             "hop partition refiner failed with exit code "
             f"{completed.returncode}: {completed.stdout[-2000:]}"
         )
+    if unified:
+        if not operation_path.is_file() or operation_path.stat().st_size > 262144:
+            raise ValidationError(
+                "hop refiner operation report is missing or exceeds bound"
+            )
+        operation = json.loads(operation_path.read_text(encoding="utf-8"))
+        if (
+            not isinstance(operation, dict)
+            or operation.get("schema") != "emuflow.native-stage-result/v1"
+            or operation.get("stage") != "phase3.refine-hops"
+            or operation.get("status") != "pass"
+            or not isinstance(operation.get("metrics"), dict)
+        ):
+            raise ValidationError("hop refiner operation report disagrees")
     status, cluster_assignment, moves, native_metrics = _parse_native_output(
         native_output_path,
         native_input,
+        retain_diagnostics=retain_diagnostics,
         packed_assignment=(
             defer_semantic_contract
-            and isinstance(
-                native_input["cluster_order"], _CompactClusterOrder
-            )
+            and isinstance(native_input["cluster_order"], _CompactClusterOrder)
         ),
     )
 
@@ -781,7 +827,7 @@ def refine_partition_hops(
             "reproduction"
         ),
         "native_status": status,
-        "move_count": len(moves),
+        "move_count": int(native_metrics["committed_moves"]),
         "native_metrics": native_metrics,
     }
     metadata["hop_feasibility"] = refinement_summary
@@ -832,6 +878,7 @@ def refine_partition_hops(
         "before": before,
         "after": after,
         "moves": moves,
+        "move_count": int(native_metrics["committed_moves"]),
         "native_metrics": native_metrics,
         "timing_weighted_nets": len(net_weights),
         "artifacts": {

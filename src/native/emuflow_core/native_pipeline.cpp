@@ -25,6 +25,7 @@ namespace emuflow::native {
 const char* StageName(Stage stage) {
   switch (stage) {
     case Stage::kInvalid: return "native.request";
+    case Stage::kRefinePartitionHops: return "phase3.refine-hops";
     case Stage::kValidateAtomicOwnership: return "phase7.validate-atomic-ownership";
     case Stage::kValidatePhysicalCells: return "phase7.validate-physical-cells";
     case Stage::kSealRoutes: return "phase4.seal-routes";
@@ -57,6 +58,7 @@ namespace {
 std::vector<std::string> InputSchemas(const StageRequest& request) {
   switch (request.stage) {
     case Stage::kInvalid: break;
+    case Stage::kRefinePartitionHops: return {"hop-refiner-input-v1"};
     case Stage::kValidateAtomicOwnership: return {"xilinx-mapped-index-v2","openparf-atomic-source-store-v1","openparf-placement-certificate-v3","atomic-ownership-request-v1"};
     case Stage::kValidatePhysicalCells: return {"xilinx-mapped-index-v2","xilinx-physical-handoff-v1","physical-cell-check-request-v1"};
     case Stage::kSealRoutes: return {"system-route-store-v3","system-route-seal-request-v1"};
@@ -221,6 +223,8 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       return;
     }
     switch (request.stage) {
+      case Stage::kRefinePartitionHops:
+        RefinePartitionHops(inputs,output,!request.summary_output); break;
       case Stage::kValidateAtomicOwnership:
         core::ValidateAtomicOwnership(inputs,output); break;
       case Stage::kValidatePhysicalCells:
@@ -259,6 +263,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
   }, [&]() {
     const char* schema = nullptr;
     switch (request.stage) {
+      case Stage::kRefinePartitionHops: schema = "hop-refiner-output-v1"; break;
       case Stage::kValidateAtomicOwnership: schema = "atomic-ownership-summary-v1"; break;
       case Stage::kValidatePhysicalCells: schema = "physical-cell-check-summary-v1"; break;
       case Stage::kImportVivadoLineage: schema = "vivado-lineage-store-v2"; break;

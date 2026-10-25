@@ -7,6 +7,8 @@
 namespace emuflow::core { struct ExactScheduleModel; struct ExactScheduleSolution; }
 
 namespace emuflow::native {
+void RefinePartitionHops(const std::vector<core::ArtifactRef>& inputs,
+                         const std::string& output_path, bool retain_trace);
 core::ExactScheduleSolution ComputeStaticExactSchedule(const core::ExactScheduleModel& model);
 
 void RefinePatron(const std::vector<core::ArtifactRef>& inputs, const std::string& output_path,

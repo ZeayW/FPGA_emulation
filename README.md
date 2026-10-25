@@ -195,8 +195,10 @@ See the
 [physical export contract](docs/XILINX_PHYSICAL_FLOW.md#native-rwroute-export).
 The [offline handoff differential](docs/VALIDATION.md#primary-store-handoff-differential)
 can use the normal TritonPart initializer while keeping capacity/balance bounds.
-Versioned native runtimes also build the Phase 3 topology hop refiner from the
-same source revision.
+The Phase 3 topology hop legalizer runs through the shared
+`emuflow-native phase3 refine-hops` operation, preserving its algorithm and
+independent hop audit. Production keeps assignment and counters; explicit
+`--trace-output` retains diagnostic moves. The standalone executable is retired.
 Current indexed Static Exact Phase 5 runs use one shared-core call for model
 construction, scheduling, readiness certificates and ScheduleStore publication,
 without Python result import or numeric intermediate files. Independent indexed
@@ -421,8 +423,8 @@ reached. Small qualification models retain the
 configured full search budgets; all capacity and lexicographic acceptance
 checks remain unchanged.
 
-Thin versioned runtime deployments rebuild the unified native core and required
-Phase 3 analyzer/hop refiner from the same source revision. Installed runtime
+Thin versioned runtime deployments rebuild the unified native core, including
+Phase 3 analysis and hop legalization, from the same source revision. Installed runtime
 checks bind current executables, modules and data to that source.
 
 - State the period of every analyzed clock explicitly.

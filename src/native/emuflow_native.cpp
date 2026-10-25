@@ -19,6 +19,7 @@ constexpr const char* kUsage =
     "  compile REQUEST_JSON\n"
     "  run-tool REQUEST RESULT_JSON\n"
     "  phase3 analyze INPUT OUTPUT\n"
+    "  phase3 refine-hops [--trace-output] INPUT OUTPUT\n"
     "  phase3 analyze --indexed-input EMUIR INPUT OUTPUT\n"
     "  phase3 finalize-semantics TOPOLOGY METADATA OUTPUT\n"
     "  phase3 build-captures EMUIR REQUEST TOPOLOGY PARTS OUTPUT\n"
@@ -174,6 +175,16 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if (phase == "phase3" && operation == "build-clusters" && argc == 6)
     return run(Stage::kBuildPartitionClusters,{argv[3],argv[4]},argv[5]);
   if (phase == "phase3") {
+    if (operation == "refine-hops") {
+      int start = 3;
+      bool trace = argc > start && std::string(argv[start]) == "--trace-output";
+      if (trace) ++start;
+      if (argc == start + 2) {
+        StageRequest request{Stage::kRefinePartitionHops,{argv[start]},argv[start+1]};
+        request.summary_output = !trace;
+        return Execute(std::move(request),report);
+      }
+    }
     if (operation == "analyze" && argc == 5)
       return run(Stage::kAnalyzeExact, {argv[3]}, argv[4]);
     if (operation == "analyze" && argc == 7 && std::string(argv[3]) == "--indexed-input")
