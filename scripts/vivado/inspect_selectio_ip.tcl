@@ -38,6 +38,13 @@ if {[catch {
     close $stream
     if {[dict size $settings] == 0} {error "empty SelectIO configuration"}
     set_property -dict $settings $ip
+    dict for {property requested} $settings {
+      set actual [get_property $property $ip]
+      if {$actual ne $requested && !([string is double -strict $actual] &&
+          [string is double -strict $requested] && $actual == $requested)} {
+        error "SelectIO configuration was ignored or changed: $property requested=$requested observed=$actual"
+      }
+    }
   }
   set stream [open [file join $output ip-properties.tsv] w]
   puts $stream "property_hex\tvalue_hex"

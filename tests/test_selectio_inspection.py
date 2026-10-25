@@ -15,7 +15,7 @@ HAS_BINARY_ENCODE = tuple(int(x) for x in TCL_VERSION.split('.')[:2]) >= (8, 6)
 pytestmark = pytest.mark.skipif(TCL is None, reason='Tcl interpreter required')
 
 
-def inspect(tmp_path, configuration):
+def inspect(tmp_path, configuration, *, ignore=False):
     config = tmp_path/'config.tsv'
     config.write_text(configuration)
     output = tmp_path/'observations'
@@ -34,6 +34,8 @@ proc generate_target {target ip} {set ::generated 1}
 proc report_ip_status {flag path} {set stream [open $path w];puts $stream generated;close $stream}
 proc close_project {} {if {![info exists ::generated]} {error "output generation missing"}}
 '''
+    if ignore:
+        source += '\nrename set_property accepted_set_property\nproc set_property {flag settings ip} {set ::properties [dict replace $settings CONFIG.BUS_DIR 1]}\n'
     arguments = ['xcpart', str(output), str(config)]
     source += '\nset argv [list '+' '.join(_tcl_word(x) for x in arguments)+']\nset argc 3\n'
     source += 'source '+_tcl_word(ROOT/'scripts/vivado/inspect_selectio_ip.tcl')+'\n'
@@ -66,4 +68,11 @@ def test_literal_configuration_generates_outputs_without_evaluating_values(tmp_p
 def test_malformed_or_unknown_ip_configuration_fails_before_generation(tmp_path, rows):
     result, output = inspect(tmp_path, rows)
     assert result.returncode != 0
+    assert not (output/'ip-status.rpt').exists()
+
+
+def test_ignored_ip_configuration_is_a_failure_even_when_the_vendor_command_returns(tmp_path):
+    result, output = inspect(tmp_path, 'property\tvalue\nCONFIG.BUS_DIR\t0\nCONFIG.SERIALIZATION_FACTOR\t8\n', ignore=True)
+    assert result.returncode != 0
+    assert 'ignored or changed' in result.stderr
     assert not (output/'ip-status.rpt').exists()
