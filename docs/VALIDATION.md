@@ -81,6 +81,18 @@ global timing qualification.
 
 ## Native store publication qualification
 
+Component gates exercise current upstream EmuIR, assignment, route, schedule,
+timing/weight, QoR and physical auxiliary owners. Inject native rejection and
+source replacement after row construction or independent validation; require the
+prior committed result to remain readable and prohibit reconstruction fallback.
+For TimingPathDB and weights, fail selector writes both before and after replacement
+and interrupt the prior-selector backup. Check the selector and its original SQL
+payload together. Geometry alias failures must preserve the old target and
+successful aliases must share the sealed inode. Rejected lazy readers must close
+their SQLite connections and generation leases even when the exception traceback
+remains alive; NFS cleanup must not depend on garbage collection.
+
+
 The noninstalled `scripts/validation/qualify_phase6_publication.py` executes the
 complete production Phase 6 API. Its bounded JSON request uses
 `emuflow.phase6-publication-qualification/v1` and declares the source commit,

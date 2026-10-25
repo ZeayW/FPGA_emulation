@@ -6,7 +6,6 @@ The explicit v1 reader remains available for historical immutable artifacts.
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import sys
 import uuid
@@ -17,6 +16,11 @@ from typing import Any, Iterable, Iterator, Mapping
 from .emuir_storage import (
     EMUIR_SQLITE_APPLICATION_ID, EMUIR_COMPACT_STORAGE_SCHEMA,
     _json, _extras, _decode, _RowsForOwner, open_emuir_sqlite_read_only,
+)
+
+from .store_publication import (
+    publish_sqlite_store,
+    validate_store_destination,
 )
 
 
@@ -89,7 +93,10 @@ class _Intern:
         return row_id
 
 
-def write_compact_emuir(path: Path, value: Mapping[str, Any]) -> None:
+def write_compact_emuir(
+    path: Path, value: Mapping[str, Any], *, source_bindings=()
+) -> None:
+    source_bindings = validate_store_destination(path, source_bindings)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     c = sqlite3.connect(temporary)
@@ -169,9 +176,9 @@ def write_compact_emuir(path: Path, value: Mapping[str, Any]) -> None:
         c.execute("CREATE INDEX endpoint_owner ON endpoint_records(instance_seq,port_seq,bit)")
         c.commit()
         c.close()
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        publish_sqlite_store(
+            temporary, path, "emuir-compact-v2", sources=source_bindings
+        )
     except BaseException:
         c.close()
         temporary.unlink(missing_ok=True)

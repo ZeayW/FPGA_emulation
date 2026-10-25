@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .errors import ValidationError
+from .store_publication import (
+    bind_store_source,
+    publish_sqlite_store,
+    validate_store_destination,
+)
 from .io import file_sha256, write_json
 from .verilog import _emittable_parameters, _identifier, _parameter
 from .vivado_lineage import LINEAGE_POLICY, primitive_function_signature
@@ -32,6 +37,9 @@ def emit_indexed_vivado_verilog(
     temporary = output_path.with_name(f".{output_path.name}.{uuid.uuid4().hex}.tmp")
     functions_path = output_path.with_suffix(".functions.sqlite")
     functions_temporary = temporary.with_suffix(".sqlite")
+    source_bindings = validate_store_destination(
+        functions_path, (bind_store_source(index_path, "xilinx-mapped-index-v2"),)
+    )
     functions = sqlite3.connect(functions_temporary)
     functions.executescript("PRAGMA application_id=0x454D5646; PRAGMA user_version=1;")
     functions.execute("CREATE TABLE signatures(seq INTEGER PRIMARY KEY,signature TEXT NOT NULL)")
@@ -116,7 +124,12 @@ def emit_indexed_vivado_verilog(
         functions.execute("CREATE INDEX signatures_function ON signatures(signature,seq)")
         functions.commit()
         functions.close()
-        os.replace(functions_temporary, functions_path)
+        publish_sqlite_store(
+            functions_temporary,
+            functions_path,
+            "vivado-source-functions-v1",
+            sources=source_bindings,
+        )
     finally:
         functions.close()
         temporary.unlink(missing_ok=True)

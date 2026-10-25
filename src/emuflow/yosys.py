@@ -25,6 +25,10 @@ from typing import (
 
 from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import ImportError
+from .store_publication import (
+    bind_store_source,
+    validate_store_destination,
+)
 from .emuir_storage import write_emuir_sqlite
 from .io import read_json
 from .ir import EMUIR_SCHEMA, EmuIR
@@ -950,6 +954,14 @@ def import_yosys_json_indexed(
     same graph through a temporary JSON document.
     """
 
+    source_bindings = ()
+    if _source_index_path is not None:
+        source_bindings = (
+            bind_store_source(_source_index_path, "xilinx-mapped-index-v2"),
+        )
+    elif _source_value is None and _source_stream is None:
+        source_bindings = (bind_store_source(path, "yosys-source-document-v1"),)
+    source_bindings = validate_store_destination(output, source_bindings)
     warnings: List[str] = []
     ports: List[Dict[str, Any]] = []
     creator = "unknown"
@@ -1667,7 +1679,7 @@ def import_yosys_json_indexed(
             ],
             "warnings": sorted(set(warnings)),
         }
-        write_emuir_sqlite(output, value)
+        write_emuir_sqlite(output, value, source_bindings=source_bindings)
     finally:
         if connection is not None:
             connection.close()

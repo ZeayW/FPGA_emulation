@@ -19,6 +19,13 @@ from typing import Any, Iterator, Mapping
 
 from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import ValidationError
+from .store_publication import (
+    StoreSource,
+    bind_store_source,
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+)
 from .ir import EmuIR
 from .phase3_exact_binary import (
     EXACT_BINARY_ARTIFACT,
@@ -350,6 +357,24 @@ def write_phase3_assignment_index(
     if len(part_ids) != len(partitions) or len(set(part_ids)) != len(part_ids):
         raise ValidationError("Phase 3 assignment has invalid partitions")
     part_index = {fpga: index for index, fpga in enumerate(part_ids)}
+    native_owner = getattr(instance_assignment, "_native_publication", False)
+    source_bindings = ()
+    if native_owner:
+        if instance_assignment._native_primary_artifact is None:
+            raise ValidationError("native assignment primary ownership is missing")
+        source_bindings = (
+            StoreSource(
+                Path(instance_assignment.path).resolve(),
+                "emuir-compact-v2",
+                instance_assignment._native_source_generation,
+            ),
+            StoreSource(
+                Path(instance_assignment._native_primary_artifact).resolve(),
+                "partition-cluster-columns-v2",
+                instance_assignment._native_primary_generation,
+            ),
+        )
+    source_bindings = validate_store_destination(path, source_bindings)
     assignment_parts = getattr(instance_assignment, "part_ids", None)
     if assignment_parts is None:
         assignment_parts = instance_assignment.values()
@@ -388,7 +413,6 @@ def write_phase3_assignment_index(
     )
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     connection = None
-    native_owner = getattr(instance_assignment, "_native_publication", False)
     try:
         metadata = {
             "schema": ASSIGNMENT_INDEX_SCHEMA,
@@ -621,8 +645,7 @@ def write_phase3_assignment_index(
         )
         if native_owner:
             summary["native_writer_metrics"] = native_writer_metrics
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
+        require_store_sources_unchanged(source_bindings)
         previous_binary = path.with_name(
             f".{EXACT_BINARY_ARTIFACT}.{uuid.uuid4().hex}.previous"
         )
@@ -635,7 +658,14 @@ def write_phase3_assignment_index(
                     moved_previous = True
                 os.replace(exact_binary_temporary, exact_binary_path)
                 installed_binary = True
-            os.replace(temporary, path)
+            publication_sources = source_bindings
+            if exact_contract is not None:
+                publication_sources += (
+                    bind_store_source(exact_binary_path, "phase3-exact-data-v2"),
+                )
+            publish_sqlite_store(
+                temporary, path, "assignment-index-v4", sources=publication_sources
+            )
         except BaseException:
             if exact_contract is not None:
                 if installed_binary:

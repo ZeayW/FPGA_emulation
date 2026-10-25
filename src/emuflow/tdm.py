@@ -1158,6 +1158,7 @@ class NativeExactScheduleRequest:
     arcs: Mapping[Any, Any]
     bank_allocations: Mapping[Any, Any]
     catalogs: tuple[tuple[str, ...], ...]
+    source_bindings: tuple
 
     def write_board_request(self, path: Path) -> None:
         _write_native_schedule_board_request(
@@ -1165,8 +1166,12 @@ class NativeExactScheduleRequest:
             self.arcs, self.bank_allocations, *self.catalogs,
         )
 
+
 def build_native_exact_schedule_request(
-    routes: Mapping[str, Any], platform: Platform,
+    routes: Mapping[str, Any],
+    platform: Platform,
+    *,
+    source_bindings=None,
 ) -> Optional[NativeExactScheduleRequest]:
     """Select the complete producer without importing routes or hop results.
 
@@ -1181,7 +1186,7 @@ def build_native_exact_schedule_request(
     contract = _static_exact_contract_from_routes(routes)
     if contract is None or contract.get("indexed") is not True:
         return None
-    from .native_tools import native_file_generation, resolve_native_stage_command
+    from .native_tools import resolve_native_stage_command
 
     command = resolve_native_stage_command("phase5", "build-schedule")
     if len(command) != 3 or command[1:] != ["phase5", "build-schedule"]:
@@ -1210,12 +1215,47 @@ def build_native_exact_schedule_request(
     }
     if allocations:
         header["bank_allocations"] = _bank_allocation_records(allocations)
-    store = Path(raw.store_path)
-    return NativeExactScheduleRequest(
-        tuple(command), store, native_file_generation(store), len(raw),
-        header, tuple(templates), platform, constraints, arcs, allocations,
-        (tuple(sorted(fpga.id for fpga in platform.fpgas)), tuple(sorted(links)), tuple(sorted(capacities))),
+    from .store_publication import require_store_sources_unchanged
+
+    store = Path(raw.store_path).resolve()
+    if source_bindings is None:
+        bind_sources = getattr(routes, "bound_store_sources", None)
+        if not callable(bind_sources):
+            raise ValidationError(
+                "indexed Phase 5 input lacks original source bindings"
+            )
+        source_bindings = bind_sources()
+    sources = tuple(source_bindings)
+    route_source = next(
+        (
+            source
+            for source in sources
+            if source.path == store and source.schema == "system-route-store-v3"
+        ),
+        None,
     )
+    if route_source is None:
+        raise ValidationError("indexed Phase 5 route ownership is missing")
+    require_store_sources_unchanged(sources)
+    return NativeExactScheduleRequest(
+        tuple(command),
+        store,
+        route_source.generation,
+        len(raw),
+        header,
+        tuple(templates),
+        platform,
+        constraints,
+        arcs,
+        allocations,
+        (
+            tuple(sorted(fpga.id for fpga in platform.fpgas)),
+            tuple(sorted(links)),
+            tuple(sorted(capacities)),
+        ),
+        sources,
+    )
+
 
 def _domain_schedule_records(
     platform: Platform,

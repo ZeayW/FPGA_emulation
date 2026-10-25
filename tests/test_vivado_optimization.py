@@ -77,7 +77,12 @@ class VivadoOptimizationTests(unittest.TestCase):
     def proofs(self, root):
         mapped, lineage, digest, origins = self.prepare(root)
         output = root / "proofs.sqlite"
-        with patch.object(Path, "read_text", side_effect=AssertionError("whole-document read")):
+        read_text = Path.read_text
+        def control_document_only(path, *args, **kwargs):
+            if path in (mapped, lineage, output) or path.stat().st_size > 256 * 1024:
+                raise AssertionError("whole-document read")
+            return read_text(path, *args, **kwargs)
+        with patch.object(Path, "read_text", control_document_only):
             report = build_optimization_proofs(mapped, lineage, output, mapped_sha256=digest)
         with closing(sqlite3.connect(output)) as db, db:
             rows = {name:db.execute("SELECT reason,constant_value,initialization FROM eliminated_sources WHERE origin=?", (origin,)).fetchone()

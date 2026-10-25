@@ -8,11 +8,18 @@ import math
 import os
 import re
 import sqlite3
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterator, Mapping, Optional
 
 from .errors import ValidationError
+from .store_publication import (
+    bind_store_source,
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+)
 from .io import read_json, write_json
 from .ir import EmuIR
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
@@ -959,6 +966,70 @@ def import_sta_path_database_tsv(
     return result
 
 
+def _adopt_sta_payload(temporary, selector, kind, schema, sources):
+    """Commit an immutable SQL generation; the selector remains the public commit."""
+    digest = _file_sha256(temporary)
+    payload = selector.with_name(f"{selector.name}.{kind}.{digest}.sqlite")
+    validate_store_destination(payload, sources)
+    if payload.is_symlink():
+        raise ValidationError("STA payload generation is a symbolic link")
+    created = not payload.exists()
+    if created:
+        publish_sqlite_store(temporary, payload, schema, sources=sources)
+    else:
+        require_store_sources_unchanged(sources)
+        if _file_sha256(payload) != digest:
+            raise ValidationError("STA payload generation seal disagrees")
+        temporary.unlink()
+    return payload, digest, created
+
+
+def _commit_sta_selector(path, artifact, sources, payload, created):
+    backup = None
+    backup_ready = False
+    had_previous = path.exists()
+    try:
+        if had_previous:
+            descriptor, name = tempfile.mkstemp(
+                prefix=f".{path.name}.", suffix=".previous", dir=path.parent
+            )
+            os.close(descriptor)
+            backup = Path(name)
+            shutil.copyfile(path, backup)
+            with backup.open("rb") as stream:
+                os.fsync(stream.fileno())
+            backup_ready = True
+        require_store_sources_unchanged(sources)
+        write_json(path, artifact, compact=True)
+    except BaseException:
+        if backup_ready:
+            os.replace(backup, path)
+        elif not had_previous:
+            path.unlink(missing_ok=True)
+        if created:
+            payload.unlink(missing_ok=True)
+        raise
+    finally:
+        if backup is not None:
+            backup.unlink(missing_ok=True)
+
+
+def _sta_ir_source_bindings(path, supplied_ir=None):
+    # In-memory reference inputs do not claim a missing provenance filename.
+    if supplied_ir is not None and not path.is_file():
+        return ()
+    from .emuir_storage import is_emuir_sqlite
+    from .emuir_compact import is_compact_emuir
+
+    sqlite_input = is_emuir_sqlite(path)
+    schema = (
+        "emuir-compact-v2"
+        if sqlite_input and is_compact_emuir(path)
+        else "emuir-indexed-v1" if sqlite_input else "sta-source-document-v1"
+    )
+    return (bind_store_source(path, schema),)
+
+
 def import_sta_path_database_tsv_streaming(
     input_path: Path,
     ir_path: Path,
@@ -977,12 +1048,20 @@ def import_sta_path_database_tsv_streaming(
 
     if provider not in STA_PATH_DATABASE_PROVIDERS:
         raise ValidationError("STA path database provider is invalid")
+    if output_path.is_symlink():
+        raise ValidationError("STA selector is a symbolic link")
+    source_bindings = validate_store_destination(
+        output_path,
+        (bind_store_source(input_path, "sta-source-document-v1"),)
+        + _sta_ir_source_bindings(ir_path, _ir),
+    )
     ir = _ir if _ir is not None else EmuIR.load(ir_path)
     known_nets = ir.net_ids if hasattr(ir, "net_ids") else {net["id"] for net in ir.value["nets"]}
     object_index = sta_object_index(ir)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload_path = output_path.with_name(output_path.name + ".paths.sqlite")
+    validate_store_destination(payload_path, source_bindings)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=payload_path.name + ".",
         suffix=".tmp",
@@ -1119,7 +1198,13 @@ def import_sta_path_database_tsv_streaming(
         connection.commit()
         connection.close()
         connection = None
-        os.replace(temporary_path, payload_path)
+        payload_path, payload_sha256, created_payload = _adopt_sta_payload(
+            temporary_path,
+            output_path,
+            "paths",
+            "timing-path-store-v1",
+            source_bindings,
+        )
     finally:
         if connection is not None:
             connection.close()
@@ -1161,12 +1246,14 @@ def import_sta_path_database_tsv_streaming(
             "paths": {
                 "format": STA_PATH_DATABASE_SQLITE_FORMAT,
                 "path": payload_path.name,
-                "sha256": _file_sha256(payload_path),
+                "sha256": payload_sha256,
                 "records": count,
             }
         },
     }
-    write_json(output_path, artifact, compact=True)
+    _commit_sta_selector(
+        output_path, artifact, source_bindings, payload_path, created_payload
+    )
     return {
         "status": "pass",
         "design": artifact["design"],
@@ -1530,7 +1617,28 @@ def derive_partition_net_weights(
     all extracted paths containing the net. The power-law edge weight is the
     standard timing-driven partitioning form ``1 + scale * criticality^p``.
     """
+    if output_path.is_symlink():
+        raise ValidationError("STA selector is a symbolic link")
+    source_bindings = validate_store_destination(
+        output_path,
+        (bind_store_source(database_path, "sta-path-selector-v1"),)
+        + _sta_ir_source_bindings(ir_path),
+    )
     database = read_json(database_path)
+    if database.get("schema") == STA_PATH_DATABASE_INDEX_SCHEMA:
+        source_payload, _digest, _records, source_format = _sta_path_payload(
+            database_path, database
+        )
+        source_bindings += (
+            bind_store_source(
+                source_payload,
+                (
+                    "timing-path-store-v1"
+                    if source_format == STA_PATH_DATABASE_SQLITE_FORMAT
+                    else "sta-source-document-v1"
+                ),
+            ),
+        )
     if input_already_validated:
         summary = database.get("summary")
         if not isinstance(summary, Mapping):
@@ -1554,6 +1662,7 @@ def derive_partition_net_weights(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     payload_path = output_path.with_name(output_path.name + ".weights.sqlite")
+    validate_store_destination(payload_path, source_bindings)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=payload_path.name + ".",
         suffix=".tmp",
@@ -1623,7 +1732,13 @@ def derive_partition_net_weights(
         ).fetchone()
         connection.close()
         connection = None
-        os.replace(temporary_path, payload_path)
+        payload_path, payload_sha256, created_payload = _adopt_sta_payload(
+            temporary_path,
+            output_path,
+            "weights",
+            "net-weight-store-v1",
+            source_bindings,
+        )
     finally:
         if connection is not None:
             connection.close()
@@ -1662,12 +1777,14 @@ def derive_partition_net_weights(
             "weights": {
                 "format": PARTITION_NET_WEIGHTS_SQLITE_FORMAT,
                 "path": payload_path.name,
-                "sha256": _file_sha256(payload_path),
+                "sha256": payload_sha256,
                 "records": timed_nets,
             }
         },
     }
-    write_json(output_path, artifact, compact=True)
+    _commit_sta_selector(
+        output_path, artifact, source_bindings, payload_path, created_payload
+    )
     return {
         "status": "pass",
         "design": database["design"],

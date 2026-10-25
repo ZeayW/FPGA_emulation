@@ -17,6 +17,10 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import EmuFlowError, ValidationError
+from .store_publication import (
+    bind_store_source,
+    require_store_sources_unchanged,
+)
 from .io import read_json, write_json
 from .native_tools import resolve_native_stage_command
 from .platform import Platform
@@ -1166,6 +1170,7 @@ class _ProjectedSystemRouteSequence(list):
         latency_cycles: array,
         native_result_path: Optional[Path] = None,
         native_result_owner: Any = None,
+        native_result_source=None,
     ) -> None:
         super().__init__()
         self._demands = demands
@@ -1174,6 +1179,19 @@ class _ProjectedSystemRouteSequence(list):
         self._latency_cycles = latency_cycles
         self._native_result_path = native_result_path
         self._native_result_owner = native_result_owner
+        self._native_result_source = native_result_source
+        if native_result_path is not None and native_result_source is None:
+            self._native_result_source = bind_store_source(
+                native_result_path, "tlr-output-v1"
+            )
+
+    def bound_store_sources(self):
+        if self._native_result_source is None:
+            return ()
+        if self._native_result_path is None:
+            raise ValidationError("native route result lease is unavailable")
+        require_store_sources_unchanged((self._native_result_source,))
+        return (self._native_result_source,)
 
     @property
     def has_native_route_relations(self) -> bool:
@@ -1192,6 +1210,7 @@ class _ProjectedSystemRouteSequence(list):
         the public demand contract; only router-owned facts are transferred.
         """
 
+        self.bound_store_sources()
         path = self._native_result_path
         if path is None or not path.is_file():
             raise ValidationError("native route result lease is unavailable")
@@ -2531,12 +2550,14 @@ def route_system_native(
             f"in-tree TLR router failed with exit code "
             f"{completed.returncode}: {detail}"
         )
+    native_result_source = bind_store_source(native_output, "tlr-output-v1")
     native = _parse_native_output(
         native_output,
         model,
         compact_candidates=(candidate_pool_path is None),
         max_route_hops=constraints.get("max_route_hops"),
     )
+    require_store_sources_unchanged((native_result_source,))
     for name in ("master_rounds", "master_switches", "master_exact"):
         native["metrics"].setdefault(name, 0)
 
@@ -2591,6 +2612,7 @@ def route_system_native(
         route_latency_cycles,
         native_output,
         native_result_owner,
+        native_result_source,
     )
 
     utilization = []

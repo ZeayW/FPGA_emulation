@@ -313,7 +313,12 @@ def run_phase5(
     if semantic_contract is None:
         raise ValidationError("Phase 5 requires the Static Exact dependency contract")
     platform = Platform.load(platform_path)
-    schedule = build_native_exact_schedule_request(routes, platform)
+    bind_sources = getattr(persisted_routes, "bound_store_sources", None)
+    if not callable(bind_sources):
+        raise ValidationError("Phase 5 requires the current typed RouteStore owner")
+    schedule = build_native_exact_schedule_request(
+        routes, platform, source_bindings=bind_sources()
+    )
     if schedule is None:
         raise ValidationError("Phase 5 requires the current typed RouteStore and indexed Static Exact contract")
     return _finish_phase5_generation(

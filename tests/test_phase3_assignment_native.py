@@ -250,7 +250,7 @@ def test_native_index_failure_preserves_published_pair_without_retry(source, tmp
     assert not list(tmp_path.glob('emuflow-assignment-publish-*'))
 
 
-@pytest.mark.parametrize('kind', ['lost-primary', 'stale-primary', 'stale-source', 'validator', 'backup-rename', 'index-rename'])
+@pytest.mark.parametrize('kind', ['lost-primary', 'stale-primary', 'stale-source', 'validator', 'backup-rename', 'index-rename', 'post-validation-source', 'post-validation-primary'])
 def test_native_publication_rejection_preserves_existing_index_and_exact_data(source, tmp_path, kind):
     import emuflow.phase3_assignment_index as index
     from emuflow.phase3_exact_binary import EXACT_BINARY_ARTIFACT
@@ -272,8 +272,18 @@ def test_native_publication_rejection_preserves_existing_index_and_exact_data(so
         return replace(src,dst)
     with ExitStack() as patches:
         patches.enter_context(patch.object(_CompactInstanceAssignment, 'iter_source_assignments', side_effect=AssertionError('reference fallback')))
-        if kind=='validator':
+        if kind.startswith('post-validation-'):
+            validate = index.validate_phase3_assignment_index
+            def change_validated_source(*args, **kwargs):
+                result = validate(*args, **kwargs)
+                source_path = ir.path if kind.endswith('source') else instance._native_primary_artifact
+                source_path.chmod(source_path.stat().st_mode ^ 0o100)
+                return result
+            patches.enter_context(patch.object(index, 'validate_phase3_assignment_index', side_effect=change_validated_source))
+        elif kind=='validator':
             patches.enter_context(patch.object(index, 'validate_phase3_assignment_index', side_effect=ValidationError('injected validator rejection')))
+        elif kind == 'index-rename':
+            patches.enter_context(patch.object(index, 'publish_sqlite_store', side_effect=OSError('injected publication failure')))
         elif kind.endswith('rename'):
             patches.enter_context(patch.object(index.os, 'replace', side_effect=fail_selected_rename))
         with pytest.raises((ValidationError,OSError)):

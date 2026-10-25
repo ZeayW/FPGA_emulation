@@ -120,6 +120,10 @@ publication or temporary-file retirement, including borrowed native cursors and
 lazy physical and timing-store queries.
 The shared native store API covers EmuIR v1/v2, assignment v3/v4 and split v2;
 artifact-scoped identities and one build manifest bind its readers and writers.
+Current upstream EmuIR, assignment, route, schedule and timing/weight stores,
+plus Vivado function/proof and final QoR stores, use the shared publisher.
+STA selectors reference immutable payload generations so a rejected selector
+commit preserves the previous result.
 Phase 6 split/transport, position/pin-plan and Chimew input/binding/report stores
 use the shared publisher, which adopts closed SQLite staging without copying it.
 Phase 7 mapped indexes, placement IR, atomic sources/name maps, placement

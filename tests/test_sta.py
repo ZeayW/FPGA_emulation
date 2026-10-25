@@ -113,7 +113,10 @@ class StaAdapterTest(unittest.TestCase):
                         database_path, ir_path, actual_weights, input_already_validated=True,
                     )
                 self.assertEqual(load_partition_net_weights_indexed(expected_weights), load_partition_net_weights_indexed(actual_weights))
-                self.assertEqual(expected_weights.with_name(expected_weights.name + ".weights.sqlite").read_bytes(), actual_weights.with_name(actual_weights.name + ".weights.sqlite").read_bytes())
+                self.assertEqual(
+                    (root / read_json(expected_weights)["payloads"]["weights"]["path"]).read_bytes(),
+                    (root / read_json(actual_weights)["payloads"]["weights"]["path"]).read_bytes(),
+                )
 
     def test_net_map_reuses_validated_graph_without_reloading(self) -> None:
         ir = import_yosys_json(

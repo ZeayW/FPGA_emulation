@@ -24,7 +24,12 @@ from typing import Any, NamedTuple, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from .tdm import NativeExactScheduleRequest
 
-from .store_publication import bind_store_source, require_store_sources_unchanged
+from .store_publication import (
+    bind_store_source,
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+)
 from .errors import ValidationError
 from .io import file_sha256, write_json
 
@@ -1119,6 +1124,15 @@ def write_tdm_schedule_storage(
         raise ValidationError(
             "production ScheduleStore requires a native exact schedule request"
         )
+    source_bindings = schedule.source_bindings
+    if not any(
+        source.path == Path(schedule.route_store).resolve()
+        and source.schema == "system-route-store-v3"
+        and source.generation == schedule.route_generation
+        for source in source_bindings
+    ):
+        raise ValidationError("native schedule route ownership disagrees")
+    source_bindings = validate_store_destination(manifest_path, source_bindings)
     header = schedule.header
     if (
         header.get("schema") != TDM_SCHEDULE_LOGICAL_SCHEMA
@@ -1151,7 +1165,9 @@ def write_tdm_schedule_storage(
                 raise ValidationError("schedule content-addressed artifact disagrees")
             temporary.unlink()
         else:
-            os.replace(temporary, store_path)
+            publish_sqlite_store(
+                temporary, store_path, "tdm-schedule-store-v4", sources=source_bindings
+            )
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
@@ -1184,6 +1200,7 @@ def write_tdm_schedule_storage(
         "records": section_summaries["demand_completions"]["records"],
         "arrival_records": relation_counts["completion_arrivals"],
     }
+    require_store_sources_unchanged(source_bindings)
     write_json(manifest_path, manifest, compact=True)
     return manifest
 

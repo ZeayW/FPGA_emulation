@@ -16,6 +16,7 @@ from contextlib import closing
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Mapping as MappingABC
 import fcntl
+import errno
 import hashlib
 import json
 import math
@@ -1597,11 +1598,11 @@ def iter_xilinx_openparf_atomic_placement_clusters(
 
 
 def _write_site_database(
-    path: Path, coordinate_system: Mapping[str, Any]
+    path: Path, coordinate_system: Mapping[str, Any], *, source_bindings=()
 ) -> int:
     """Write the large physical site map once in a queryable representation."""
 
-    path.unlink(missing_ok=True)
+    source_bindings = validate_store_destination(path, source_bindings)
     sites = coordinate_system.get("sites")
     if not isinstance(sites, list) or not sites:
         raise ValidationError("OpenPARF atomic coordinate system is empty")
@@ -1702,20 +1703,31 @@ def _write_site_database(
             CREATE INDEX physical_sites_name ON physical_sites(physical_site);
         """)
         database.commit()
-        with closing(sqlite3.connect(path)) as destination, destination:
-            destination.executescript("""
-                PRAGMA journal_mode = OFF;
-                PRAGMA synchronous = OFF;
-            """)
-            database.backup(destination, pages=4096)
+        descriptor, name = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+        )
+        os.close(descriptor)
+        temporary = Path(name)
+        try:
+            with closing(sqlite3.connect(temporary)) as destination, destination:
+                destination.executescript(
+                    "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;"
+                )
+                database.backup(destination, pages=4096)
+            publish_sqlite_store(
+                temporary, path, "openparf-site-store-v1", sources=source_bindings
+            )
+        finally:
+            temporary.unlink(missing_ok=True)
     return len(sites)
 
 
 def _materialize_site_database(
-    path: Path, device_static: Dict[str, Any]
+    path: Path, device_static: Dict[str, Any], *, source_bindings=()
 ) -> int:
     """Write one immutable device site database, then hard-link later users."""
 
+    source_bindings = validate_store_destination(path, source_bindings)
     with _DEVICE_STATIC_CACHE_LOCK:
         source = device_static.get("site_database")
         if isinstance(source, Path) and source.is_file():
@@ -1730,17 +1742,43 @@ def _materialize_site_database(
             if path.exists() and os.path.samefile(source,path):
                 device_static["site_database_generation"] = before
                 return int(device_static["site_count"])
-            path.unlink(missing_ok=True)
+            require_store_sources_unchanged(source_bindings)
+            descriptor, name = tempfile.mkstemp(
+                prefix=f".{path.name}.", suffix=".link.tmp", dir=path.parent
+            )
+            os.close(descriptor)
+            alias = Path(name)
+            alias.unlink()
             try:
-                os.link(source, path)
-                device_static["site_database_generation"] = native_file_generation(source)
-                return int(device_static["site_count"])
-            except OSError:
-                # A different filesystem cannot share an inode. Preserve the
-                # contract by materializing normally instead of copying a
-                # mutable SQLite file behind the cache's back.
-                pass
-        count = _write_site_database(path, device_static["coordinate_system"])
+                try:
+                    os.link(source, alias)
+                except OSError as error:
+                    if error.errno != errno.EXDEV:
+                        raise
+                else:
+                    # The link is a namespace alias of the already sealed owner,
+                    # not private SQL staging. Do not copy it to satisfy the
+                    # private writer's single-link ownership requirement.
+                    linked_generation = native_file_generation(source)
+                    if linked_generation[:5] != before[:5]:
+                        raise ValidationError(
+                            "OpenPARF site map changed while creating its alias"
+                        )
+                    require_store_sources_unchanged(source_bindings)
+                    os.replace(alias, path)
+                    _fsync_directory(path.parent)
+                    committed_generation = native_file_generation(source)
+                    if committed_generation[:5] != before[:5]:
+                        raise ValidationError(
+                            "OpenPARF site map changed while publishing its alias"
+                        )
+                    device_static["site_database_generation"] = committed_generation
+                    return int(device_static["site_count"])
+            finally:
+                alias.unlink(missing_ok=True)
+        count = _write_site_database(
+            path, device_static["coordinate_system"], source_bindings=source_bindings
+        )
         # Seal this immutable device generation once, before publishing any
         # hard links. Later users reuse this seal instead of hashing per FPGA.
         from .native_tools import native_file_generation
@@ -5116,7 +5154,9 @@ def export_xilinx_openparf_atomic(
             raise ValidationError("typed hardblock constraints have incomplete ownership")
     site_database_path = output_dir / "site-map.sqlite3"
     device_static["coordinate_system"]["architecture_sha256"] = architecture_digest
-    site_count = _materialize_site_database(site_database_path, device_static)
+    site_count = _materialize_site_database(
+        site_database_path, device_static, source_bindings=source_bindings
+    )
     site_database_descriptor = {
         "schema": XILINX_OPENPARF_SITE_DATABASE_SCHEMA,
         "file": site_database_path.name,

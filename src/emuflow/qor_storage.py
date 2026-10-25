@@ -15,6 +15,13 @@ import tempfile
 from typing import Any, Optional
 
 from .errors import ValidationError
+from .store_publication import (
+    StoreSource,
+    bind_store_source,
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+)
 from .io import file_sha256, write_json
 from .runtime import QOR_REPORT_SCHEMA
 
@@ -288,7 +295,7 @@ def _store_name(path: Path, digest: str) -> str:
     return f"{path.stem}.{digest}.sqlite"
 
 
-def _resolve_store(path: Path, selector: Mapping[str, Any]) -> Path:
+def _resolve_store(path: Path, selector: Mapping[str, Any]) -> tuple[Path, StoreSource]:
     if path.is_symlink():
         raise ValidationError("QoR report selector is a symbolic link")
     candidate = path.parent / str(selector["artifact"])
@@ -299,13 +306,15 @@ def _resolve_store(path: Path, selector: Mapping[str, Any]) -> Path:
     resolved = candidate.resolve()
     if resolved.parent != path.parent.resolve():
         raise ValidationError("QoR report store escapes its selector")
+    store_source = bind_store_source(resolved, "qor-report-store-v1")
     stat = resolved.stat()
     if (
         stat.st_size != selector["store_bytes"]
         or file_sha256(resolved) != selector["store_sha256"]
     ):
         raise ValidationError("QoR report store seal disagrees")
-    return resolved
+    require_store_sources_unchanged((store_source,))
+    return resolved, store_source
 
 
 class _Lease:
@@ -388,14 +397,17 @@ class QorReportView(Mapping[str, Any]):
             if not path.is_file() or path.is_symlink():
                 raise ValidationError("QoR report selector is missing")
             self.path = path.resolve()
+            selector_source = bind_store_source(self.path, "qor-report-selector-v1")
             self.selector = _validate_selector(_raw_json(path))
-            self.store_path = _resolve_store(path, self.selector)
+            self.store_path, store_source = _resolve_store(path, self.selector)
+            self._source_bindings = (selector_source, store_source)
             self.connection = sqlite3.connect(
                 f"file:{self.store_path}?mode=ro", uri=True
             )
             self.connection.row_factory = sqlite3.Row
             self._timing = _SystemTimingView(self)
             self._validate_store()
+            require_store_sources_unchanged(self._source_bindings)
         except BaseException:
             self.close()
             raise
@@ -413,12 +425,21 @@ class QorReportView(Mapping[str, Any]):
         value.path = path.resolve()
         value.selector = selector
         value.store_path = store.resolve()
+        value._source_bindings = (
+            bind_store_source(value.path, "qor-report-selector-v1"),
+            bind_store_source(value.store_path, "qor-report-store-v1"),
+        )
         value.connection = sqlite3.connect(
             f"file:{value.store_path}?mode=ro", uri=True
         )
         value.connection.row_factory = sqlite3.Row
         value._timing = _SystemTimingView(value)
         return value
+
+    def bound_store_sources(self):
+        self._ensure_open()
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
 
     def _ensure_open(self) -> None:
         if self.connection is None:
@@ -523,9 +544,12 @@ def _collect_stale(path: Path, keep: Path) -> None:
         candidate.unlink()
 
 
-def write_qor_report(path: Path, report: Mapping[str, Any]) -> QorReportView:
+def write_qor_report(
+    path: Path, report: Mapping[str, Any], *, source_bindings=()
+) -> QorReportView:
     """Publish a bounded QoR selector and one typed per-path generation."""
 
+    source_bindings = validate_store_destination(path, source_bindings)
     logical = dict(report)
     timing = logical.get("timing")
     if not isinstance(timing, Mapping):
@@ -633,20 +657,20 @@ def write_qor_report(path: Path, report: Mapping[str, Any]) -> QorReportView:
         connection.commit()
         connection.close()
         connection = None
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
         store_sha = file_sha256(temporary)
         published = path.with_name(_store_name(path, store_sha))
         if published.is_symlink():
             raise ValidationError("QoR report generation is a symbolic link")
+        require_store_sources_unchanged(source_bindings)
         if published.is_file():
             if file_sha256(published) != store_sha:
                 raise ValidationError("QoR report generation seal disagrees")
             temporary.unlink()
         else:
-            os.replace(temporary, published)
+            publish_sqlite_store(
+                temporary, published, "qor-report-store-v1", sources=source_bindings
+            )
             created = True
-            _fsync_directory(path.parent)
         selector = _validate_selector({
             "schema": QOR_REPORT_STORAGE_SCHEMA,
             "logical_schema": QOR_REPORT_SCHEMA,
@@ -662,6 +686,7 @@ def write_qor_report(path: Path, report: Mapping[str, Any]) -> QorReportView:
         write_json(selector_temporary, selector, compact=True)
         with selector_temporary.open("rb") as stream:
             os.fsync(stream.fileno())
+        require_store_sources_unchanged(source_bindings)
         os.replace(selector_temporary, path)
         committed = True
         _fsync_directory(path.parent)

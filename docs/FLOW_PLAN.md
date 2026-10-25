@@ -195,6 +195,37 @@ and lifetime. The schema registry also names mapped/physical handoffs
 and boundary, logic-segment and local-path timing stores. Their phase-specific
 readers and independent electrical/timing validators retain semantic authority.
 
+Current compact EmuIR, final assignment v4, RouteStore v3 and ScheduleStore v4
+producers hand their closed SQLite files to the common publisher. Indexed Yosys
+imports bind their named source before row construction; pipe/in-memory inputs
+do not invent a file identity. Routing retains its private native result through
+final adoption. Schedule requests borrow the original validated RouteStore and
+selector generations rather than recapturing the files after computation.
+Assignment publication preserves its existing independent validation and exact
+binary rollback; the final SQL commit binds the newly installed binary as well
+as the original EmuIR and primary columns.
+
+TimingPathDB and net weights publish immutable, invocation-owned SQLite payloads
+named by their file digest, then commit the small selector. Consumers follow the
+payload descriptor rather than assume a fixed `.paths.sqlite` or `.weights.sqlite`
+filename. Failed selector publication restores the previous selector and removes
+only a newly created uncommitted payload; an incomplete backup never replaces a
+valid prior selector. Prior payloads remain ephemeral within their owning run
+until process-aware terminal retirement, not a persistent checkpoint cache.
+Vivado source-function and optimization-proof stores and the final QoR SQL owner
+also use common adoption; their independent semantic validators remain required.
+Separate Verilog, proof/report and selector files are not an atomic multi-file
+transaction, and consumers still require successful stage completion.
+
+OpenPARF site geometry is built once into private SQL staging and adopted through
+the same boundary. Later per-FPGA paths may be hardlink aliases of that immutable
+owner: a private alias is replaced atomically, preserving an old target if link
+creation or replacement fails. Expected ctime changes from this known link
+operation are accounted for without dropping inode, size and content checks.
+Only an explicit cross-filesystem link failure triggers normal materialization;
+other I/O failures stop the operation. Hardlinked geometry is never disguised as
+private single-owner SQL staging or copied solely to satisfy that requirement.
+
 Phase 6 registers one transport store for endpoint, lane, anchor and virtual
 binding views, plus position hints, pin plans and the retained Chimew input,
 electrical-binding and bank/channel report stores. Split publication adopts the

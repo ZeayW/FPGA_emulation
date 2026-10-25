@@ -23,6 +23,12 @@ from typing import Any
 
 from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import ValidationError
+from .store_publication import (
+    bind_store_source,
+    publish_sqlite_store,
+    require_store_sources_unchanged,
+    validate_store_destination,
+)
 from .io import file_sha256, write_json
 from .routing import SYSTEM_ROUTES_SCHEMA
 
@@ -1287,6 +1293,9 @@ class SystemRoutesView(dict):
 
     def __init__(self, manifest_path: Path):
         self.manifest_path = Path(manifest_path).resolve()
+        selector_source = bind_store_source(
+            self.manifest_path, "system-route-selector-v1"
+        )
         with self.manifest_path.open("r", encoding="utf-8") as stream:
             manifest = json.load(stream)
         if not isinstance(manifest, dict):
@@ -1366,6 +1375,9 @@ class SystemRoutesView(dict):
             )
         store_path = self.manifest_path.with_name(artifact)
         try:
+            store_source = bind_store_source(
+                store_path, f"system-route-store-v{user_version}"
+            )
             store_size = store_path.stat().st_size
         except OSError as error:
             raise ValidationError("system-route store is missing") from error
@@ -1574,9 +1586,19 @@ class SystemRoutesView(dict):
                 joint["refinement_batches"] = refinement
                 value["joint_optimization"] = joint
         super().__init__(value)
-        self.store_path = store_path
         self.storage_manifest = manifest
         self.storage_user_version = int(user_version)
+        self.store_path = store_path.resolve()
+        self._source_bindings = (selector_source, store_source)
+        require_store_sources_unchanged(self._source_bindings)
+
+    def bound_store_sources(self):
+        if self.storage_manifest["user_version"] != SYSTEM_ROUTE_USER_VERSION:
+            raise ValidationError(
+                "typed publication requires the current RouteStore owner"
+            )
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
 
 
 def pretty_system_routes_sha256(routes: Mapping[str, Any]) -> str:
@@ -1663,6 +1685,12 @@ def write_system_route_storage(
         raise ValidationError("system routes demands must be an array")
     if not isinstance(raw_routes, Sequence) or isinstance(raw_routes, (str, bytes)):
         raise ValidationError("system routes routes must be an array")
+    bind_sources = getattr(raw_routes, "bound_store_sources", None)
+    source_bindings = bind_sources() if callable(bind_sources) else ()
+    bind_document = getattr(routes, "bound_store_sources", None)
+    if callable(bind_document):
+        source_bindings += bind_document()
+    source_bindings = validate_store_destination(manifest_path, source_bindings)
     native_route_publisher = getattr(
         raw_routes, "publish_native_route_relations", None
     )
@@ -2032,8 +2060,7 @@ def write_system_route_storage(
         temporary.unlink(missing_ok=True)
         raise
     connection.close()
-    with temporary.open("rb") as stream:
-        os.fsync(stream.fileno())
+    require_store_sources_unchanged(source_bindings)
     store_sha256 = file_sha256(temporary)
     store_name = _content_addressed_store_name(store_sha256)
     store_path = manifest_path.with_name(store_name)
@@ -2044,7 +2071,13 @@ def write_system_route_storage(
             raise ValidationError("existing system-route store seal disagrees")
         temporary.unlink()
     else:
-        os.replace(temporary, store_path)
+        try:
+            publish_sqlite_store(
+                temporary, store_path, "system-route-store-v3", sources=source_bindings
+            )
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
     manifest = {
         "schema": SYSTEM_ROUTE_STORAGE_SCHEMA,
         "logical_schema": SYSTEM_ROUTES_SCHEMA,
@@ -2075,6 +2108,7 @@ def write_system_route_storage(
                     store_path.unlink(missing_ok=True)
                 raise
     try:
+        require_store_sources_unchanged(source_bindings)
         write_json(manifest_path, manifest, compact=True)
         # The selector is the commit point, but old data remains recoverable
         # until a fresh reader has checked every selector, store and relation
