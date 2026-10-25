@@ -545,15 +545,15 @@ def probe_xilinx_openparf_carry_native_support(
         "remaining_qualification_steps": [
             {
                 "id": "compiled-openparf-carry8-run",
-                "component": "src/emuflow/xilinx_openparf_carry8.py",
+                "component": "src/emuflow/xilinx_openparf_atomic.py",
                 "requirement": (
-                    "build the modified core and execute unplaced GP through "
-                    "native chain legalization and detailed placement"
+                    "build the modified core and execute mixed-resource GP through "
+                    "native directed-macro legalization and detailed placement"
                 ),
             },
             {
                 "id": "rapidwright-native-legality",
-                "component": "src/emuflow/xilinx_openparf_carry8.py",
+                "component": "src/emuflow/xilinx_openparf_atomic.py",
                 "requirement": (
                     "independently prove same-site CARRY8/LUT6_2 roles and "
                     "CARRY_NEXT adjacency against certified device constraints"
@@ -795,7 +795,7 @@ def probe_openparf_native_capabilities(
                 "evidence": [
                     "openparf/custom_data/chain_info/src/chain_info.cpp",
                     "openparf/ops/chain_legalizer/src/chain_legalizer.cpp",
-                    "src/emuflow/xilinx_openparf_carry8.py",
+                    "src/emuflow/xilinx_openparf_atomic.py",
                 ],
                 **(
                     {"adapter_validation": "missing"}
@@ -998,7 +998,7 @@ def probe_openparf_native_capabilities(
             "evidence": [
                 "openparf/custom_data/chain_info/src/chain_info.cpp",
                 "openparf/ops/chain_legalizer/src/chain_legalizer.cpp",
-                "src/emuflow/xilinx_openparf_carry8.py",
+                "src/emuflow/xilinx_openparf_atomic.py",
             ],
             **(
                 {"adapter_validation": "missing"}

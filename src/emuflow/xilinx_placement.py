@@ -25,9 +25,6 @@ XILINX_EXACT_SITE_LEGALIZER_PROVIDER = (
 XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER = (
     "openparf-native-mcf-direct-lg-ism-atomic-bridge-v1"
 )
-XILINX_OPENPARF_CARRY8_BRIDGE_PROVIDER = (
-    "openparf-native-carry8-full-slice-bridge-v1"
-)
 XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT = 0.75
 _SITE_XY_RE = re.compile(r"^(?P<kind>[A-Z0-9_]+)_X(?P<x>\d+)Y(?P<y>\d+)$")
 
@@ -364,7 +361,6 @@ def validate_xilinx_placement(
     if provider not in {
         XILINX_EXACT_SITE_LEGALIZER_PROVIDER,
         XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER,
-        XILINX_OPENPARF_CARRY8_BRIDGE_PROVIDER,
     }:
         raise ValidationError("Xilinx placement provider is invalid")
     expected_policy = {
@@ -378,11 +374,6 @@ def validate_xilinx_placement(
             "site_pin_legalization": (
                 "ultrascaleplus-slice-site-pin-legalizer-v1"
             ),
-        })
-    elif provider == XILINX_OPENPARF_CARRY8_BRIDGE_PROVIDER:
-        expected_policy.update({
-            "packing": "preserved-carry8-full-slice-macros-v1",
-            "placement_certificate": "emuflow.openparf-carry8-placement/v1",
         })
     if placement.get("policy") != expected_policy:
         raise ValidationError("Xilinx placement routability policy is invalid")

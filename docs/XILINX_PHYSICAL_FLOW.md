@@ -71,6 +71,10 @@ retain the reference exporter for explicit compatibility and differential tests.
 This removes one graph-sized Python traversal; mapped lowering, physical macro
 preparation, and timing-query preparation are separate stages.
 
+The separate CARRY8/LUT6_2-only exporter, runtime adapter, certificate and JSON
+bridge are retired. Mixed-resource atomic placement owns carry macro and directed
+chain validation. Shared native carry kernels and current legality tests remain.
+
 ## Typed placement handoff
 
 `materialize_xilinx_openparf_atomic_contract(mapped, architecture, certificate,

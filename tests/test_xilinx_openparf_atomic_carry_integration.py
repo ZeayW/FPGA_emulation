@@ -4,7 +4,11 @@ import unittest
 from pathlib import Path
 
 from emuflow.io import read_json, write_json
+from emuflow.errors import ValidationError
+from emuflow.architecture import ArchitectureDB
+from unittest import mock
 from emuflow.xilinx_openparf_atomic import (
+    _native_carry_y_axis_order,
     build_xilinx_openparf_atomic_source,
     export_xilinx_openparf_atomic,
     read_xilinx_openparf_atomic_source,
@@ -13,7 +17,7 @@ from emuflow.xilinx_openparf_atomic import (
 )
 from emuflow.xilinx_packing import validate_xilinx_packing
 from emuflow.xilinx_placement import validate_xilinx_placement
-from tests.test_xilinx_openparf_carry8 import _write_fixture
+from tests.xilinx_carry_fixture import _write_fixture
 
 
 def _write_atomic_placement(path: Path, name_map: dict) -> None:
@@ -39,6 +43,24 @@ def _write_atomic_placement(path: Path, name_map: dict) -> None:
 
 
 class XilinxOpenparfAtomicCarryIntegrationTest(unittest.TestCase):
+    def test_native_carry_axis_rejects_mixed_physical_directions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _mapped, _packed, architecture, native, _provider = _write_fixture(root)
+            native_value = read_json(native)
+            native_value["payload"]["dedicated_adjacency"][0]["chains"].append(
+                ["SLICE_X3Y1", "SLICE_X3Y0"]
+            )
+            architecture_db = ArchitectureDB.load(architecture)
+            with self.assertRaisesRegex(
+                ValidationError, "disagree on physical Y orientation"
+            ), mock.patch.object(
+                architecture_db, "site_named", side_effect=AssertionError
+            ):
+                _native_carry_y_axis_order(
+                    architecture_db, native_value
+                )
+
     def test_atomic_source_keeps_ramb18_halves_unpaired(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -74,6 +96,38 @@ class XilinxOpenparfAtomicCarryIntegrationTest(unittest.TestCase):
                     cluster["assignments"][0]["bel_candidates"],
                     ["RAMB18E2_L", "RAMB18E2_U"],
                 )
+
+    def test_atomic_certificate_rejects_broken_carry_adjacency_and_lut_roles(self):
+        for broken in ("chain-gap", "lut-role-collision"):
+            with self.subTest(broken=broken), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                mapped, _packed, architecture, native, provider = _write_fixture(root)
+                source, output = root / "atomic-source.json", root / "openparf"
+                build_xilinx_openparf_atomic_source(mapped, source, top="top")
+                export_xilinx_openparf_atomic(
+                    mapped, source, architecture, output, top="top",
+                    native_constraints_path=native, provider_manifest_path=provider,
+                )
+                name_map = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+                placement = root / "native.pl"
+                _write_atomic_placement(placement, name_map)
+                instances = {atom["openparf"]: atom["instance"] for atom in name_map["atoms"]}
+                rows = []
+                for row in placement.read_text().splitlines():
+                    fields = row.split()
+                    instance = instances[fields[0]]
+                    if broken == "chain-gap" and instance.startswith("carry1"):
+                        fields[2] = "2"
+                    if broken == "lut-role-collision" and instance == "carry0$lut0":
+                        fields[3] = "3"
+                    rows.append(" ".join(fields))
+                placement.write_text("\n".join(rows) + "\n")
+                with self.assertRaises(ValidationError):
+                    validate_xilinx_openparf_atomic_placement(
+                        placement, output / "name_map.json", mapped, architecture,
+                        root / "certificate.json", packed_path=source,
+                        native_constraints_path=native, provider_manifest_path=provider,
+                    )
 
     def test_unified_atomic_route_preserves_full_slice_and_chain(self):
         with tempfile.TemporaryDirectory() as temporary:
