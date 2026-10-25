@@ -108,10 +108,10 @@ class XilinxOpenparfAtomicCarryIntegrationTest(unittest.TestCase):
                     mapped, source, architecture, output, top="top",
                     native_constraints_path=native, provider_manifest_path=provider,
                 )
-                name_map = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
                 placement = root / "native.pl"
-                _write_atomic_placement(placement, name_map)
-                instances = {atom["openparf"]: atom["instance"] for atom in name_map["atoms"]}
+                with read_xilinx_openparf_atomic_name_map(output / "name_map.json") as name_map:
+                    _write_atomic_placement(placement, name_map)
+                    instances = {atom["openparf"]: atom["instance"] for atom in name_map["atoms"]}
                 rows = []
                 for row in placement.read_text().splitlines():
                     fields = row.split()
