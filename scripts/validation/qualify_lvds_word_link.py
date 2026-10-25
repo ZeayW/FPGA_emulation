@@ -2,7 +2,7 @@
 """Characterize a real native-IP 20-lane word link in behavioral loopback.
 
 This exercises unmodified generated IP, reset/calibration, FIFO/application
-clock wiring, held bitslip alignment, training-to-payload transition and all
+clock wiring, explicit alignment policy, training-to-payload transition and all
 160 bits. It is not routed/board/SI evidence or a fitted-delay characterization.
 """
 import argparse
@@ -13,7 +13,7 @@ import time
 
 from emuflow.errors import ValidationError
 from emuflow.io import file_sha256
-from emuflow.lvds_selectio import selectio_bank_recipe
+from emuflow.lvds_selectio import RX_ALIGNMENT_POLICIES,selectio_bank_recipe,validate_selectio_xci_ports
 from emuflow.lvds_bank_phy import selectio_bank_to_systemverilog
 
 
@@ -102,9 +102,10 @@ def main():
     parser.add_argument('--out',type=Path,required=True)
     parser.add_argument('--vivado',required=True)
     parser.add_argument('--bank',default='19')
+    parser.add_argument('--rx-alignment',choices=RX_ALIGNMENT_POLICIES,default=RX_ALIGNMENT_POLICIES[0])
     args=parser.parse_args()
     root=args.out.resolve();root.mkdir(parents=True,exist_ok=False)
-    recipes={d:selectio_bank_recipe(args.bank,d)for d in ('tx','rx')}
+    recipes={d:selectio_bank_recipe(args.bank,d,**({'rx_alignment':args.rx_alignment}if d=='rx'else{}))for d in ('tx','rx')}
     for d,recipe in recipes.items():
         (root/(d+'-bank.tsv')).write_text(recipe.configuration_tsv())
         (root/(d+'-interface.sv')).write_text(selectio_bank_to_systemverilog(recipe,ip_module='emuflow_selectio_'+d))
@@ -115,6 +116,7 @@ def main():
         result=subprocess.run([args.vivado,'-mode','batch','-notrace','-nojournal','-nolog','-source',str(script),
             '-tclargs',recipes['tx'].part,str(root)],cwd=root,stdout=log,stderr=subprocess.STDOUT)
     summary={'status':'fail','qualification':'vendor-behavioral-zero-cable-word-link',
+        'rx_alignment':args.rx_alignment,
         'scope':'digital native-IP simulation; no place/route, board, SI or fitted fixed-delay proof',
         'runtime_seconds':time.monotonic()-started,'exit_code':result.returncode,
         'configuration_sha256':{d:file_sha256(root/(d+'-bank.tsv'))for d in recipes}}
@@ -126,6 +128,12 @@ def main():
             if line.lstrip().startswith(('Fatal:','ERROR:')):
                 failure_marker=line.strip()[:1024];break
     if failure_marker is not None:summary['simulation_failure_marker']=failure_marker
+    if result.returncode==0 and failure_marker is None:
+        try:
+            summary['native_port_validation']={d:validate_selectio_xci_ports(recipe,
+                root/'ip'/('emuflow_selectio_'+d)/('emuflow_selectio_'+d+'.xci'))for d,recipe in recipes.items()}
+        except ValidationError as error:
+            failure_marker=str(error);summary['native_port_validation_error']=failure_marker
     measurement=root/'word-link-results.tsv'
     if result.returncode==0 and failure_marker is None and measurement.is_file():
         if measurement.stat().st_size>4096:raise ValidationError('native word-link result exceeds scalar bound')

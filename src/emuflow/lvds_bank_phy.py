@@ -1,6 +1,7 @@
 """Native 20-lane SelectIO word interfaces and explicit training controls.
 
-The native IP owns reset/calibration, bit alignment and FIFO read coordination.
+The native IP owns reset/calibration and FIFO read coordination. Bit alignment
+uses either the native default or an explicitly selected two-stage candidate.
 The caller supplies global readiness consensus and synchronous application
 controls. This wrapper is not itself a distributed barrier or a latency proof.
 """
@@ -25,20 +26,23 @@ def selectio_core_ports(recipe: SelectIOBankRecipe):
         if 'word_port'in pair:ports[pair['word_port']]=(word,8)
     if recipe.direction=='tx':ports['clk']=('IN',1)
     else:
-        for name in ('app_clk','multi_intf_lock_in','start_bitslip'):ports[name]=('IN',1)
-        for name in ('intf_rdy','fifo_rd_data_valid','rx_bitslip_sync_done'):ports[name]=('OUT',1)
+        for name in ('app_clk','multi_intf_lock_in'):ports[name]=('IN',1)
+        for name in ('intf_rdy','fifo_rd_data_valid'):ports[name]=('OUT',1)
+        if recipe.rx_alignment=='native-bit-slip-v1':
+            ports['start_bitslip']=('IN',1)
+            ports['rx_bitslip_sync_done']=('OUT',1)
         for pair in recipe.data_pairs:
             ports['data_to_fabric_'+pair['n']['port']]=('OUT',8)
             for delta in (0,1):
                 pin=pair['native_pin']+delta
                 ports[f'fifo_rd_clk_{pin}']=('IN',1)
                 ports[f'fifo_empty_{pin}']=('OUT',1)
-                ports[f'bitslip_error_{pin}']=('OUT',1)
+                if recipe.rx_alignment=='native-bit-slip-v1':ports[f'bitslip_error_{pin}']=('OUT',1)
     return ports
 
 
 def selectio_bank_to_systemverilog(recipe: SelectIOBankRecipe, *, ip_module: str,
-                                   module: str | None = None):
+                                   module: str | None = None, include_common: bool = True):
     """Wire every native input, keeping training words separate from payload."""
     module=module or f'emuflow_lvds_bank{recipe.bank}_{recipe.direction}'
     if any(not isinstance(name,str)or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*',name)
@@ -76,24 +80,41 @@ def selectio_bank_to_systemverilog(recipe: SelectIOBankRecipe, *, ip_module: str
         connections[recipe.clock_pair['word_port']]=recipe.clock_pair['word_value']
         lines.append('  assign bank_ready = !reset && native_pll_locked && native_reset_done && (&vtc_ready) && (&delay_ready);')
     else:
-        connections.update(app_clk='tdm_clk',multi_intf_lock_in='all_plls_locked',start_bitslip='alignment_enable',
-            intf_rdy='native_interface_ready',fifo_rd_data_valid='native_word_valid',rx_bitslip_sync_done='native_bitslip_done')
+        native_alignment=recipe.rx_alignment=='native-bit-slip-v1'
+        connections.update(app_clk='tdm_clk',multi_intf_lock_in='all_plls_locked',
+            intf_rdy='native_interface_ready',fifo_rd_data_valid='native_word_valid')
         lines+=['  wire native_interface_ready, native_word_valid, native_bitslip_done;',
-                '  wire [39:0] native_bitslip_errors;',
-                '  assign training_error = |native_bitslip_errors;',
                 '  assign bank_ready = !reset && native_pll_locked && native_reset_done && (&vtc_ready) && (&delay_ready)',
-                '                   && native_interface_ready && native_bitslip_done && !training_error;',
-                '  assign word_valid = bank_ready && native_word_valid;']
+                '                   && native_interface_ready && native_bitslip_done && !training_error;']
+        if native_alignment:
+            connections.update(start_bitslip='alignment_enable',rx_bitslip_sync_done='native_bitslip_done')
+            lines+=['  wire [39:0] native_bitslip_errors;',
+                    '  assign training_error = |native_bitslip_errors;']
+        else:
+            lines+=['  wire [159:0] raw_words;',
+                    '  wire [19:0] aligned_lanes, aligned_valid, alignment_errors;',
+                    '  assign native_bitslip_done = &aligned_lanes;',
+                    '  assign training_error = |alignment_errors;']
+        lines.append('  assign word_valid = bank_ready && '+('native_word_valid;'if native_alignment else'(&aligned_valid);'))
         for lane,pair in enumerate(recipe.data_pairs):
-            connections[pair['word_port']]=f'rx_words[{8*lane} +: 8]'
+            connections[pair['word_port']]=f"{'rx_words'if native_alignment else'raw_words'}[{8*lane} +: 8]"
             connections['data_to_fabric_'+pair['n']['port']]=''
             for delta in (0,1):
                 pin=pair['native_pin']+delta
                 connections[f'fifo_rd_clk_{pin}']='tdm_clk'
                 connections[f'fifo_empty_{pin}']=''
-                connections[f'bitslip_error_{pin}']=f'native_bitslip_errors[{2*lane+delta}]'
+                if native_alignment:connections[f'bitslip_error_{pin}']=f'native_bitslip_errors[{2*lane+delta}]'
+            if not native_alignment:
+                lines += [f'  emuflow_lvds_word_align2 lane_{lane} (',
+                    '    .clk(tdm_clk), .reset(reset), .enable(alignment_enable && native_interface_ready),',
+                    f'    .raw_valid(native_word_valid), .raw_word(raw_words[{8*lane} +: 8]),',
+                    f'    .aligned_word(rx_words[{8*lane} +: 8]), .aligned(aligned_lanes[{lane}]),',
+                    f'    .word_valid(aligned_valid[{lane}]), .training_error(alignment_errors[{lane}]));']
     if connections.keys()!=ports.keys() or any(not connections[name]for name,(d,_)in ports.items()if d=='IN'):
         raise ValidationError('native SelectIO input/port coverage is incomplete')
     lines += [f'  {ip_module} native_phy (',
         ',\n'.join(f'    .{name}({connections[name]})'for name in sorted(ports)),'  );','endmodule','']
+    if recipe.direction=='rx'and recipe.rx_alignment=='word-two-stage-v1'and include_common:
+        from .lvds_word_aligner import word_aligner_to_systemverilog
+        lines.append(word_aligner_to_systemverilog())
     return '\n'.join(lines)

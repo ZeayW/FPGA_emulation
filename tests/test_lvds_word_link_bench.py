@@ -86,6 +86,7 @@ def test_fixed_arc_requires_constant_six_cycles(tmp_path,monkeypatch,minimum,max
             f'minimum_latency_word_cycles\t{minimum}\nmaximum_latency_word_cycles\t{maximum}\n')
         return SimpleNamespace(returncode=0)
     monkeypatch.setattr(driver.subprocess,'run',simulate)
+    monkeypatch.setattr(driver,'validate_selectio_xci_ports',lambda *args:{'scope':'fixture'})
     with pytest.raises(SystemExit)as error:driver.main()
     assert error.value.code==0
     import json

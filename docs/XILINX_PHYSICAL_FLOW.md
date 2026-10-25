@@ -418,6 +418,22 @@ the simulation and a later success file appears. Startup timeout literals use
 explicit 64-bit time arithmetic; a scalar output file cannot override a failed
 simulation lifecycle.
 
+The optional `--rx-alignment word-two-stage-v1` candidate requests the native
+raw receive words (`ENABLE_BITSLIP=0`) and adds an EmuFlow two-stage byte
+aligner. The default remains `native-bit-slip-v1`. Four consecutive training
+matches select one of eight serial bit phases; the selected phase is held
+through payload. Loss of admitted FIFO validity latches an error until reset
+and retraining. This rotates bits across adjacent words; it does not establish
+whole-word lane deskew or a physical delay. Independent serial-stream RTL tests
+cover every phase and payload byte, fixed pipeline age, reset/retraining and
+invalid-data rejection. The qualification also compares the complete generated
+XCI boundary, including vector order and unused outputs, with the wrapper.
+
+`fixed_30ns_word_arc_matches_in_this_simulation` requires both measured latency
+bounds to equal six word cycles. A shorter variable or constant latency does
+not by itself match a six-cycle table: it would require explicit normalization.
+Neither this field nor the deadline-only field qualifies the fitted board arc.
+
 The current fixed differential adapter supplies IBUFDS/OBUFDS boundaries; it
 does not implement the serializer/deserializer or forwarded-clock circuitry
 of the [8:1 serial PHY reference](HARDWARE_PLATFORM.md#serial-phy-time-units).

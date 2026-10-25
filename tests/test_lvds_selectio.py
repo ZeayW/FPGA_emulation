@@ -8,6 +8,28 @@ from emuflow.lvds_selectio import selectio_bank_recipe, validate_selectio_observ
 from emuflow.virtual_board import _inventory
 
 
+@pytest.mark.parametrize('policy',('native-bit-slip-v1','word-two-stage-v1'))
+@pytest.mark.parametrize('damage',(None,'missing','unknown','reverse','width','direction'))
+def test_complete_generated_xci_boundary_acceptance(tmp_path,policy,damage):
+    import json
+    from emuflow.lvds_selectio import validate_selectio_xci_ports
+    from emuflow.lvds_bank_phy import selectio_core_ports
+    recipe=selectio_bank_recipe('19','rx',rx_alignment=policy)
+    ports={name:[{'direction':direction.lower(),**({'size_left':str(width-1),'size_right':'0'}if width>1 else{})}]
+        for name,(direction,width)in selectio_core_ports(recipe).items()}
+    word=recipe.data_pairs[0]['word_port']
+    if damage=='missing':ports.pop('riu_clk')
+    if damage=='unknown':ports['unbound_control']=[{'direction':'in'}]
+    if damage=='reverse':ports[word][0].update(size_left='0',size_right='7')
+    if damage=='width':ports[word][0]['size_left']='6'
+    if damage=='direction':ports[word][0]['direction']='in'
+    path=tmp_path/'native.xci';path.write_text(json.dumps({'ip_inst':{'boundary':{'ports':ports}}}))
+    if damage is None:
+        assert validate_selectio_xci_ports(recipe,path)['status']=='pass'
+    else:
+        with pytest.raises(ValidationError):validate_selectio_xci_ports(recipe,path)
+
+
 @pytest.mark.parametrize('direction',('tx','rx'))
 def test_all_supported_bank_recipes_keep_twenty_data_pairs_and_reserve_the_clock(direction):
     inventory=_inventory()

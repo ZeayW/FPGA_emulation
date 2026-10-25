@@ -15,6 +15,7 @@ import re
 from .errors import ValidationError
 from .virtual_board import _inventory, _bank_pairs
 
+RX_ALIGNMENT_POLICIES = ('native-bit-slip-v1', 'word-two-stage-v1')
 
 @dataclass(frozen=True)
 class SelectIOBankRecipe:
@@ -24,14 +25,18 @@ class SelectIOBankRecipe:
     settings: tuple[tuple[str, str], ...]
     data_pairs: tuple[dict, ...]
     clock_pair: dict
+    rx_alignment: str = 'native-bit-slip-v1'
 
     def configuration_tsv(self):
         return "property\tvalue\n" + "".join(f"CONFIG.{key}\t{value}\n" for key,value in self.settings)
 
 
-def selectio_bank_recipe(bank: str, direction: str, *, inventory=None):
+def selectio_bank_recipe(bank: str, direction: str, *, inventory=None,
+                        rx_alignment: str = 'native-bit-slip-v1'):
     if direction not in {"tx", "rx"}:
         raise ValidationError("SelectIO bank direction must be tx or rx")
+    if rx_alignment not in RX_ALIGNMENT_POLICIES or (direction == 'tx' and rx_alignment != RX_ALIGNMENT_POLICIES[0]):
+        raise ValidationError('unsupported SelectIO receive alignment policy')
     if not isinstance(bank,str) or not re.fullmatch(r"[0-9]+",bank) or bank == "65":
         raise ValidationError("SelectIO recipe requires a non-configuration HP bank")
     inventory = _inventory() if inventory is None else inventory
@@ -91,11 +96,11 @@ def selectio_bank_recipe(bank: str, direction: str, *, inventory=None):
         settings.extend([(key+"_SIGNAL_NAME","forward_p"),(f"BYTE{byte}_PIN{pin+1}_SIGNAL_NAME","forward_n")])
         clock_binding.update(word_port=f"data_from_fabric_forward_p_{byte*13+pin}",word_value="8'h55")
     else:
-        settings.extend([("ENABLE_BITSLIP","1"),("EN_MULTI_INTF_PORTS","1")])
+        settings.extend([("ENABLE_BITSLIP","1"if rx_alignment=='native-bit-slip-v1'else"0"),("EN_MULTI_INTF_PORTS","1")])
     for polarity in ("p","n"):
         port=f"forward_{polarity}_{byte*13+pin+(polarity=='n')}"if direction=="tx"else"clk_"+polarity
         clock_binding[polarity]={"port":port,"package_pin":clock[polarity]["package_pin"]}
-    return SelectIOBankRecipe(inventory["part"],bank,direction,tuple(settings),tuple(bindings),clock_binding)
+    return SelectIOBankRecipe(inventory["part"],bank,direction,tuple(settings),tuple(bindings),clock_binding,rx_alignment)
 
 
 def validate_selectio_observations(recipe: SelectIOBankRecipe, directory: Path):
@@ -189,6 +194,35 @@ def validate_selectio_observations(recipe: SelectIOBankRecipe, directory: Path):
         "data_lanes":len(recipe.data_pairs),"payload_word_bits":8*len(recipe.data_pairs),
         "forwarded_clock_pairs":1,"unused_complement_word_bits":len(actual_words&complements),
         "physical_implementation_qualified":False}
+
+
+def validate_selectio_xci_ports(recipe: SelectIOBankRecipe, path: Path):
+    """Audit the complete generated-IP boundary, including unused outputs."""
+    from .lvds_bank_phy import selectio_core_ports
+    import hashlib
+    if not path.is_file()or path.stat().st_size>4*1024*1024:
+        raise ValidationError('native SelectIO XCI is missing or exceeds its one-bank bound')
+    payload=path.read_bytes()
+    try:
+        ports=json.loads(payload)['ip_inst']['boundary']['ports']
+        if not isinstance(ports,dict):raise ValueError('port object')
+        actual={}
+        for name,entries in ports.items():
+            if not isinstance(entries,list)or len(entries)!=1:raise ValueError('port entry')
+            item=entries[0];direction={'in':'IN','out':'OUT'}[item['direction']]
+            limits=[item.get('size_left','0'),item.get('size_right','0')]
+            if any(not isinstance(n,str)or re.fullmatch(r'[0-9]+',n)is None for n in limits):
+                raise ValueError('vector limit')
+            width=abs(int(limits[0])-int(limits[1]))+1
+            if not 1<=width<=4096 or limits!=[str(width-1),'0']:raise ValueError('vector width/order')
+            actual[name]=(direction,width)
+    except (KeyError,TypeError,ValueError)as error:
+        raise ValidationError('native SelectIO XCI port boundary is invalid')from error
+    if actual!=selectio_core_ports(recipe):
+        raise ValidationError('native SelectIO XCI ports differ from the complete wrapper interface')
+    return {'status':'pass','rx_alignment':recipe.rx_alignment,
+        'scalar_port_bits':sum(width for direction,width in actual.values()),
+        'xci_sha256':hashlib.sha256(payload).hexdigest()}
 
 
 def main():
