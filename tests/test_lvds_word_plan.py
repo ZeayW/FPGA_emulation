@@ -76,6 +76,8 @@ def test_phase6_word_plan_is_source_bound_and_uses_indexed_lane_reduction(tmp_pa
     assert 'virtual_board_binding'not in manifest
     assert manifest['word_phy_plan']=={'wiring':'virtual_board_wiring.json','plan':'word_phy_plan.json'}
     assert plan['metrics']['active_banks']==4
+    assert plan['native_phy']=={'ip_definition':'xilinx.com:ip:high_speed_selectio_wiz:3.6',
+        'rx_alignment':'word-one-stage-v1'}
     assert validate_phase6(*args,out/'manifest.json')==report['validation']
     from emuflow.tdm_schedule_storage import read_tdm_schedule
     views={f['fpga']:read_transport(out/f['transport'])for f in manifest['fpgas']}
@@ -87,10 +89,19 @@ def test_phase6_word_plan_is_source_bound_and_uses_indexed_lane_reduction(tmp_pa
     assert build_word_phy_plan(Platform.load(args[3]),read_json(out/'virtual_board_wiring.json'),
         read_tdm_schedule(args[2]),views)==plan
     monkeypatch.setattr(TransportView,'__getitem__',old)
-    plan['fpgas'][0]['banks'][0]['logical_lsb']+=8
-    write_json(out/'word_phy_plan.json',plan)
-    with pytest.raises(ValidationError,match='differs from its canonical'):
-        validate_phase6(*args,out/'manifest.json')
+    for damage in ('lane','alignment'):
+        changed=copy.deepcopy(plan)
+        if damage=='lane':changed['fpgas'][0]['banks'][0]['logical_lsb']+=8
+        else:changed['native_phy']['rx_alignment']='native-bit-slip-v1'
+        write_json(out/'word_phy_plan.json',changed)
+        with pytest.raises(ValidationError,match='differs from its canonical'):
+            validate_phase6(*args,out/'manifest.json')
+
+
+def test_word_plan_without_an_alignment_selection_is_not_admitted():
+    from emuflow.lvds_word_plan import validate_word_phy_plan
+    with pytest.raises(ValidationError,match='unsupported word PHY plan schema'):
+        validate_word_phy_plan(None,None,None,None,{'schema':'emuflow.lvds-word-phy-plan/v1'})
 
 
 def test_word_mode_cannot_be_executed_as_the_bit_adapter(tmp_path):

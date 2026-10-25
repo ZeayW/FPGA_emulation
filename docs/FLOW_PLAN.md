@@ -537,6 +537,12 @@ the plan to its sources. Independent Phase 6 validation reconstructs and compare
 this bank binding. Only banks carrying scheduled lanes need native instances;
 each active bank still exposes all twenty physical data words.
 
+The bank plan uses `emuflow.lvds-word-phy-plan/v2` and declares the native IP
+definition plus `word-one-stage-v1` receive alignment. Physical consumers must
+use that selection instead of a generic recipe default. This selects the
+digital word pipeline; it does not establish the fitted board delay. A v1 bank
+plan without this selection is not admitted by the current consumer.
+
 The split manifest references these two artifacts through `word_phy_plan`,
 separately from the one-bit adapter's `virtual_board_binding`. A word bank plan
 is not accepted by that adapter. Native physical-top integration and global

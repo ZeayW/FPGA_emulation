@@ -10,9 +10,10 @@ from .errors import ValidationError
 from .netlist import transport_endpoint_port
 from .tdm_schedule_storage import canonical_tdm_schedule_sha256
 from .tdm_word import WORD_EVENT_POLICY
+from .lvds_selectio import SELECTIO_IP_DEFINITION,WORD_PHY_RX_ALIGNMENT
 from .virtual_board import WORD_MODEL,WORD_WIRING_SCHEMA,_digest,_artifact_digest,validate_virtual_board
 
-WORD_PHY_PLAN_SCHEMA='emuflow.lvds-word-phy-plan/v1'
+WORD_PHY_PLAN_SCHEMA='emuflow.lvds-word-phy-plan/v2'
 
 
 def _physical_groups(transport):
@@ -85,6 +86,7 @@ def build_word_phy_plan(platform,board,schedule,transports):
         fpgas.append({'fpga':fpga,'banks':sorted(active.values(),key=lambda r:int(r['bank']))})
     return {'schema':WORD_PHY_PLAN_SCHEMA,'status':'pass','qualification':'virtual-board-native-word-bank-plan',
         'implementation_status':'requires-vendor-physical-top-and-global-timing',
+        'native_phy':{'ip_definition':SELECTIO_IP_DEFINITION,'rx_alignment':WORD_PHY_RX_ALIGNMENT},
         'platform':platform.name,'design':schedule.get('design'),'word_event_policy':WORD_EVENT_POLICY,
         'source':{'board_sha256':_digest(board),'schedule_sha256':canonical_tdm_schedule_sha256(schedule),
                   'transport_sha256':source_digests},'fpgas':fpgas,
@@ -92,6 +94,8 @@ def build_word_phy_plan(platform,board,schedule,transports):
 
 
 def validate_word_phy_plan(platform,board,schedule,transports,plan):
+    if plan.get('schema')!=WORD_PHY_PLAN_SCHEMA:
+        raise ValidationError('unsupported word PHY plan schema; a native alignment selection is required')
     validate_virtual_board(platform,board)
     expected=build_word_phy_plan(platform,board,schedule,transports)
     if plan!=expected:raise ValidationError('word PHY plan differs from its canonical endpoint/wiring sources')

@@ -30,7 +30,8 @@ with ratios in serial UIs and word events in TDM cycles. Phase 6 streams logical
 word RTL with aligned startup, repeated lane tables and a drained commit barrier.
 Relay events preserve capture-before-load causality, including zero-delay cones.
 The explicit `platform research-model --transport-format lvds-word-v2` model
-reserves separate forwarded-clock pairs; Phase 6 emits a source-bound bank plan.
+reserves separate forwarded-clock pairs; Phase 6 emits a source-bound bank plan
+with an explicit native IP and receive-alignment selection.
 The native word-link qualification driver also exposes explicit registered
 receive-alignment candidates, with complete generated-IP interface checks.
 Fixed-pin word-PHY integration and global physical event projection remain

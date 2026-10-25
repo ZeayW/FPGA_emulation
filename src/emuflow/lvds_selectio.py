@@ -17,6 +17,8 @@ from .virtual_board import _inventory, _bank_pairs
 
 RX_ALIGNMENT_POLICIES = ('native-bit-slip-v1', 'word-two-stage-v1', 'word-one-stage-v1')
 RX_ALIGNMENT_OUTPUT_STAGES = {'word-two-stage-v1':2,'word-one-stage-v1':1}
+SELECTIO_IP_DEFINITION = 'xilinx.com:ip:high_speed_selectio_wiz:3.6'
+WORD_PHY_RX_ALIGNMENT = 'word-one-stage-v1'
 
 @dataclass(frozen=True)
 class SelectIOBankRecipe:
