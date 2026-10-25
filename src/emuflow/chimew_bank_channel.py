@@ -505,8 +505,6 @@ def _candidate_cost(group: Mapping[str, Any], endpoint_a: Tuple[float, float], e
     return _ranked_cost(_raw_cost(group, endpoint_a, endpoint_b), scale)
 
 
-
-
 def _serialize_typed(
     problem: Mapping[str, Any], stream: Any, logical_sha256: str
 ) -> Mapping[str, int]:
@@ -1468,6 +1466,9 @@ def evaluate_chimew_bank_channel_assignment(
 ) -> Mapping[str, Any]:
     """Run both paper stages and check exact optimality without replaying them."""
 
+    from .store_publication import bind_view_sources
+
+    source_bindings = bind_view_sources((document, "chimew-bank-input-store-v1"))
     from .chimew_bank_channel_storage import (
         canonical_bank_channel_input_sha256,
     )
@@ -1618,6 +1619,7 @@ def evaluate_chimew_bank_channel_assignment(
                 output_path,
                 document_view,
                 _derive_physical_costs=True,
+                source_bindings=source_bindings,
             )
         materialized_assignments = []
         stage1_physical_cost = 0.0

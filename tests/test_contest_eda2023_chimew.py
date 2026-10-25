@@ -14,6 +14,7 @@ from emuflow.contest_eda2023_chimew import (
 )
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
+from tests.native_build import emuflow_native
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,31 +23,11 @@ ROOT = Path(__file__).resolve().parents[1]
 class Eda2023ContestChimewTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        compiler = shutil.which("c++") or shutil.which("clang++")
-        if compiler is None:
-            raise RuntimeError("a C++17 compiler is required")
         cls.native_root = tempfile.TemporaryDirectory()
-        cls.executables = {}
-        for source, label in (
-            ("chimew_signal_grouper.cpp", "grouper"),
-            ("chimew_position_refiner.cpp", "refiner"),
-            ("chimew_rudy.cpp", "rudy"),
-            ("chimew_bank_channel_assigner.cpp", "assigner"),
-        ):
-            executable = Path(cls.native_root.name) / label
-            subprocess.run(
-                [
-                    compiler,
-                    "-std=c++17",
-                    "-O2",
-                    "-pthread",
-                    str(ROOT / "src/native" / source),
-                    "-o",
-                    str(executable),
-                ],
-                check=True,
-            )
-            cls.executables[label] = str(executable)
+        cls.executables = {
+            label: str(emuflow_native())
+            for label in ("grouper", "refiner", "rudy", "assigner")
+        }
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -241,7 +222,6 @@ class Eda2023ContestChimewTest(unittest.TestCase):
         )
         return imported, routes, tdm
 
-
     def test_source_bound_contest_materialization(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -288,7 +268,6 @@ class Eda2023ContestChimewTest(unittest.TestCase):
                 "registered-boundary",
             )
             self.assertIn("synthetic package pins", report["claim_boundary"])
-
 
     def test_invalid_tdm_link_is_rejected_before_native_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

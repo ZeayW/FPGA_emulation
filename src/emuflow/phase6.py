@@ -289,7 +289,12 @@ def run_phase6(
                     "position_hints_path is required with pin_plan_path"
                 )
             staged_position_hints = write_position_hints_storage(
-                temporary_root / "position_hints.json", position_hints
+                temporary_root / "position_hints.json",
+                position_hints,
+                source_bindings=bind_view_sources(
+                    (schedule, "tdm-schedule-store-v4"),
+                    (position_hints, "position-hints-store-v1"),
+                ),
             )
             pin_validation = validate_pin_plan(
                 schedule,

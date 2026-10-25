@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sqlite3
 import uuid
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -14,6 +13,11 @@ from typing import Any
 from .sqlite_artifacts import immutable_sqlite_uri
 from .errors import ValidationError
 from .io import file_sha256, read_json, write_json
+from .store_publication import (
+    bind_store_source,
+    require_store_sources_unchanged,
+    publish_sqlite_store,
+)
 
 
 POSITION_HINTS_LOGICAL_SCHEMA = "emuflow.signal-position-hints/v1"
@@ -111,6 +115,9 @@ class PositionHintEntrySequence(Sequence[Mapping[str, Any]]):
 class PositionHintsView(Mapping[str, Any]):
     def __init__(self, manifest_path: Path):
         self.manifest_path = manifest_path.resolve()
+        selector_source = bind_store_source(
+            self.manifest_path, "position-hints-selector-v1"
+        )
         manifest = read_json(self.manifest_path)
         if (
             manifest.get("schema") != POSITION_HINTS_STORAGE_SCHEMA
@@ -144,6 +151,7 @@ class PositionHintsView(Mapping[str, Any]):
             raise ValidationError("position-hint storage path is invalid")
         store_path = self.manifest_path.with_name(artifact)
         try:
+            store_source = bind_store_source(store_path, "position-hints-store-v1")
             stat = store_path.stat()
         except OSError as error:
             raise ValidationError("position-hint SQLite store is missing") from error
@@ -215,6 +223,13 @@ class PositionHintsView(Mapping[str, Any]):
         self._entries = PositionHintEntrySequence(
             store_path, entries["records"], entries["sha256"]
         )
+
+        self._source_bindings = (selector_source, store_source)
+        require_store_sources_unchanged(self._source_bindings)
+
+    def bound_store_sources(self):
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
 
     def __getitem__(self, key: str) -> Any:
         if key == "entries":
@@ -318,9 +333,12 @@ def write_position_hints_storage(
     positions: Mapping[str, Any],
     *,
     derive_metrics: bool = False,
+    source_bindings=(),
 ) -> PositionHintsView:
     if positions.get("schema") != POSITION_HINTS_LOGICAL_SCHEMA:
         raise ValidationError("position hints have an unsupported schema")
+    source_bindings = tuple(source_bindings)
+    require_store_sources_unchanged(source_bindings)
     records = positions.get("entries")
     if not isinstance(records, Iterable) or isinstance(records, (str, bytes)):
         raise ValidationError("position hint entries must be iterable")
@@ -462,8 +480,6 @@ def write_position_hints_storage(
         )
         connection.commit()
         connection.close()
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
     except sqlite3.IntegrityError as error:
         try:
             connection.close()
@@ -476,16 +492,22 @@ def write_position_hints_storage(
         finally:
             temporary.unlink(missing_ok=True)
         raise
-    store_sha256 = file_sha256(temporary)
-    artifact = path.with_name(f"{path.stem}.{store_sha256}.sqlite")
-    created_artifact = not artifact.exists()
-    if created_artifact:
-        os.replace(temporary, artifact)
-    else:
-        if file_sha256(artifact) != store_sha256:
-            temporary.unlink(missing_ok=True)
-            raise ValidationError("position-hint artifact digest collision")
-        temporary.unlink()
+    try:
+        store_sha256 = file_sha256(temporary)
+        artifact = path.with_name(f"{path.stem}.{store_sha256}.sqlite")
+        created_artifact = not artifact.exists()
+        if created_artifact:
+            publish_sqlite_store(
+                temporary, artifact, "position-hints-store-v1", sources=source_bindings
+            )
+        else:
+            require_store_sources_unchanged(source_bindings)
+            if file_sha256(artifact) != store_sha256:
+                raise ValidationError("position-hint artifact digest collision")
+            temporary.unlink()
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     manifest = {
         "schema": POSITION_HINTS_STORAGE_SCHEMA,
         "logical_schema": POSITION_HINTS_LOGICAL_SCHEMA,

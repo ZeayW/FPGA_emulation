@@ -547,9 +547,9 @@ class ChimewBankChannelTest(unittest.TestCase):
             failures = []
             real_writer = storage_module._write_chimew_bank_channel_storage_locked
 
-            def instrumented_writer(path, document):
+            def instrumented_writer(path, document, **kwargs):
                 entered_writer.set()
-                return real_writer(path, document)
+                return real_writer(path, document, **kwargs)
 
             def replace() -> None:
                 try:
@@ -986,9 +986,6 @@ class ChimewBankChannelTest(unittest.TestCase):
             )
             self.assertEqual(streamed.stderr, "")
             self.assertEqual(streamed.stdout, output_path.read_text())
-
-
-
 
     def test_production_prefers_unified_phase6_entry(self) -> None:
         problem = validate_chimew_bank_channel_input(self.document)

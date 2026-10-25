@@ -21,6 +21,17 @@ constexpr RegisteredSchema schemas[] = {
     {"tdm-schedule-selector-v4", ArtifactEncoding::kText, 0, 4},
     {"pin-plan-selector-v1", ArtifactEncoding::kText, 0, 1},
     {"chimew-binding-selector-v1", ArtifactEncoding::kText, 0, 1},
+    {"position-hints-selector-v1", ArtifactEncoding::kText, 0, 1},
+    {"chimew-bank-report-selector-v1", ArtifactEncoding::kText, 0, 1},
+    {"chimew-bank-input-selector-v1", ArtifactEncoding::kText, 0, 1},
+    {"chimew-bank-input-store-v1", ArtifactEncoding::kSqlite, 0x454d5543, 1, false,
+     "SELECT 'emuflow.chimew-bank-channel-storage/v1' FROM metadata WHERE key='header' AND "
+     "json_extract(value,'$.schema') IN ('emuflow.chimew-bank-channel-input/v1','emuflow.chimew-bank-channel-input/v2')",
+     "emuflow.chimew-bank-channel-storage/v1"},
+    {"position-hints-store-v1", ArtifactEncoding::kSqlite, 0x454d5548, 1, false,
+     "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'", "emuflow.signal-position-hints/v1"},
+    {"chimew-bank-report-store-v1", ArtifactEncoding::kSqlite, 0x454d5552, 1, false,
+     "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'", "emuflow.chimew-bank-channel-report/v1"},
     {"transport-store-v1", ArtifactEncoding::kSqlite, 0x454d5558, 1, false,
      "SELECT 'emuflow.transport-storage/v1' FROM metadata WHERE key='platform' AND json_type(value)='text' "
      "AND (SELECT json_type(value) FROM metadata WHERE key='design')='text' "

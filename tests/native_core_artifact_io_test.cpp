@@ -209,7 +209,8 @@ int main() {
           const bool header=query.find("'header'")!=std::string::npos;
           const std::string key=header ? "header" : query.find("'logical_schema'")!=std::string::npos ? "logical_schema" :
               query.find("'storage_schema'")!=std::string::npos ? "storage_schema" : "schema";
-          const auto value=std::string(schema.name)=="chimew-binding-store-v1" ?
+          const auto value=std::string(schema.name)=="chimew-bank-input-store-v1" ?
+              "{\"schema\":\"emuflow.chimew-bank-channel-input/v2\"}" : std::string(schema.name)=="chimew-binding-store-v1" ?
               "{\"schema\":\"emuflow.chimew-phase6-electrical-binding/v3\"}" : raw ? std::string(schema.sqlite_schema_value) : header ?
               "{\"schema\":"+JsonQuote(schema.sqlite_schema_value)+"}" : JsonQuote(schema.sqlite_schema_value);
           auto put=db.Prepare("INSERT INTO metadata VALUES (?,?)");put.BindText(1,key);put.BindText(2,value);put.Execute();
@@ -225,6 +226,8 @@ int main() {
       stores.push_back(ref);
     }
     const std::set<std::string> expected_public_stores = {
+        "chimew-bank-input-store-v1",
+        "position-hints-store-v1", "chimew-bank-report-store-v1",
         "transport-store-v1", "chimew-binding-store-v1", "pin-plan-store-v1",
         "openparf-atomic-source-store-v1", "openparf-placement-certificate-v3",
         "xilinx-physical-handoff-v1", "vivado-lineage-store-v2",

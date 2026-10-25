@@ -196,7 +196,9 @@ and boundary, logic-segment and local-path timing stores. Their phase-specific
 readers and independent electrical/timing validators retain semantic authority.
 
 Phase 6 registers one transport store for endpoint, lane, anchor and virtual
-binding views, plus the retained Chimew electrical-binding and pin-plan stores.
+binding views, plus position hints, pin plans and the retained Chimew input,
+electrical-binding and bank/channel report stores. Split publication adopts the
+same common writer boundary and accepts the supported assignment v3/v4 owners.
 Their producers hand closed same-directory SQLite staging to the common
 `publish-store REQUEST OUTPUT` command. The checked bounded request names the
 registered store schema, staged generation and original source generations.
@@ -207,7 +209,7 @@ report must name a fresh invocation-owned file. Active source, staging or
 destination journal/WAL state, aliases, unknown versions and changed generations
 reject publication. There is no alternate Python publisher on failure.
 
-Schedule, pin-plan and electrical-binding readers preserve both the selector
+Schedule, position/pin-plan and Chimew input/binding/report readers preserve both the selector
 and sidecar generations established at construction. Producers borrow those
 bindings instead of capturing a later snapshot. A transport producer hashes its
 published database once: all selectors, summary and returned lazy views reuse
@@ -216,6 +218,23 @@ generation. Independent consumers still verify their input file; no global
 hash cache or persistent catalog is introduced. Phase 6 row construction and
 electrical/RTL/XDC checks retain their existing semantic owners and still require
 their own data-plane migration and qualification.
+
+Indexed Chimew input republication streams its bank/group cursors and borrows
+the validated logical identity instead of materializing the complete input.
+Writing back from the same active input view is rejected before acquiring its
+exclusive writer lease. A different input view retains its source leases until
+the derived store has committed.
+
+Split publication binds EmuIR, assignment, schedule and any Static Exact binary
+source. The existing binary sidecar contract retains its same-filesystem
+read-only hardlink or explicit cross-filesystem copy. An existing identical
+hardlink is reused. Creating and renaming an owned hardlink may advance ctime;
+the producer checks that inode, bytes and mtime remain unchanged, then binds the
+generation after that known alias operation. Other source changes are rejected.
+Full generation checks, including ctime, cover construction between those
+individual alias operations; the exception does not span the split build.
+Binary and split-database names remain separate file commits; consumers require
+the successful phase result and its independent validation before using the set.
 
 The indexed OpenPARF bridge calls `phase7 validate-physical-cells` before
 publishing its handoff. The shared `SqliteStore` readers compare both directions

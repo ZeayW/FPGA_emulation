@@ -81,6 +81,7 @@ class ChimewQualificationTest(unittest.TestCase):
 
     def setUp(self) -> None:
         self.schedule = {
+            "schema": "emuflow.tdm-schedule/v1",
             "design": "qualification_fixture",
             "platform": "two_fpga",
             "entries": [

@@ -27,6 +27,11 @@ import fcntl
 
 from .errors import ValidationError
 from .io import file_sha256, read_json, write_json
+from .store_publication import (
+    bind_store_source,
+    require_store_sources_unchanged,
+    publish_sqlite_store,
+)
 
 
 REPORT_STORAGE_SCHEMA = "emuflow.chimew-bank-channel-report-storage/v1"
@@ -405,6 +410,9 @@ class BankChannelReportView(Mapping[str, Any]):
         from .chimew_bank_channel import CHIMEW_BANK_CHANNEL_REPORT_SCHEMA
 
         self.manifest_path = selector_path.resolve(strict=True)
+        selector_source = bind_store_source(
+            self.manifest_path, "chimew-bank-report-selector-v1"
+        )
         manifest = read_json(self.manifest_path)
         relation = manifest.get("assignments")
         artifact = manifest.get("artifact")
@@ -430,6 +438,9 @@ class BankChannelReportView(Mapping[str, Any]):
             raise ValidationError("Chimew bank/channel report selector is malformed")
         self.store_path = self.manifest_path.with_name(artifact)
         try:
+            store_source = bind_store_source(
+                self.store_path, "chimew-bank-report-store-v1"
+            )
             store_lstat = self.store_path.lstat()
             resolved_store = self.store_path.resolve(strict=True)
         except OSError as error:
@@ -557,6 +568,15 @@ class BankChannelReportView(Mapping[str, Any]):
                 "Chimew bank/channel report logical record seal disagrees"
             )
 
+        self._source_bindings = (selector_source, store_source)
+        require_store_sources_unchanged(self._source_bindings)
+
+    def bound_store_sources(self):
+        if self._closed:
+            raise ValidationError("Chimew bank/channel report view is closed")
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
+
     def __getitem__(self, key: str) -> Any:
         if self._closed:
             raise ValidationError("Chimew bank/channel report view is closed")
@@ -623,6 +643,7 @@ def _write_locked(
     document: Mapping[str, Any],
     *,
     derive_physical_costs: bool,
+    source_bindings,
 ) -> BankChannelReportView:
     from .chimew_bank_channel import CHIMEW_BANK_CHANNEL_REPORT_SCHEMA
 
@@ -729,8 +750,6 @@ def _write_locked(
         )
         connection.commit()
         connection.close()
-        with temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
     except sqlite3.IntegrityError as error:
         try:
             connection.close()
@@ -745,17 +764,25 @@ def _write_locked(
         finally:
             temporary.unlink(missing_ok=True)
         raise
-    store_sha256 = file_sha256(temporary)
-    artifact = path.with_name(f"{path.stem}.{store_sha256}.sqlite")
-    created = not artifact.exists()
-    if created:
-        os.replace(temporary, artifact)
-        _fsync_directory(path.parent)
-    else:
-        if file_sha256(artifact) != store_sha256:
-            temporary.unlink(missing_ok=True)
-            raise ValidationError("Chimew bank/channel report digest collision")
-        temporary.unlink()
+    try:
+        store_sha256 = file_sha256(temporary)
+        artifact = path.with_name(f"{path.stem}.{store_sha256}.sqlite")
+        created = not artifact.exists()
+        if created:
+            publish_sqlite_store(
+                temporary,
+                artifact,
+                "chimew-bank-report-store-v1",
+                sources=source_bindings,
+            )
+        else:
+            require_store_sources_unchanged(source_bindings)
+            if file_sha256(artifact) != store_sha256:
+                raise ValidationError("Chimew bank/channel report digest collision")
+            temporary.unlink()
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     manifest = {
         "schema": REPORT_STORAGE_SCHEMA,
         "logical_schema": CHIMEW_BANK_CHANNEL_REPORT_SCHEMA,
@@ -804,7 +831,10 @@ def write_chimew_bank_channel_report_storage(
     document: Mapping[str, Any],
     *,
     _derive_physical_costs: bool = False,
+    source_bindings=(),
 ) -> BankChannelReportView:
+    source_bindings = tuple(source_bindings)
+    require_store_sources_unchanged(source_bindings)
     path = Path(path)
     if (
         getattr(document, "manifest_path", None) == path.resolve(strict=False)
@@ -819,6 +849,7 @@ def write_chimew_bank_channel_report_storage(
             path,
             document,
             derive_physical_costs=_derive_physical_costs,
+            source_bindings=source_bindings,
         )
         checked.close()
         fcntl.flock(descriptor, fcntl.LOCK_SH)
@@ -905,5 +936,7 @@ def copy_chimew_bank_channel_report_storage(
     with BankChannelReportView(source) as view:
         # Re-publish from the logical cursor.  This is intentionally streaming
         # and also revalidates every typed assignment before selector commit.
-        copied = write_chimew_bank_channel_report_storage(destination, view)
+        copied = write_chimew_bank_channel_report_storage(
+            destination, view, source_bindings=view.bound_store_sources()
+        )
         copied.close()

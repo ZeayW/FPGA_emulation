@@ -39,6 +39,39 @@ def private_store(root, schema="pin-plan-store-v1"):
                     "entries": [],
                 },
             ).store_path
+        elif schema == "position-hints-store-v1":
+            from emuflow.position_hints_storage import write_position_hints_storage
+            from tests.test_position_hints_storage import _positions
+
+            source = write_position_hints_storage(
+                root / "positions.json", _positions()
+            ).store_path
+        elif schema == "chimew-bank-input-store-v1":
+            from emuflow.chimew_bank_channel_storage import (
+                write_chimew_bank_channel_storage,
+            )
+            from tests.test_chimew_bank_channel import ChimewBankChannelTest
+
+            case = ChimewBankChannelTest()
+            case.setUp()
+            with write_chimew_bank_channel_storage(
+                root / "bank-input.json", case.document
+            ) as view:
+                source = view.store_path
+        elif schema == "chimew-bank-report-store-v1":
+            from emuflow.chimew_bank_channel import (
+                evaluate_chimew_bank_channel_assignment,
+            )
+            from tests.test_chimew_bank_channel import ChimewBankChannelTest
+
+            case = ChimewBankChannelTest()
+            case.setUp()
+            with evaluate_chimew_bank_channel_assignment(
+                case.document,
+                executable=str(emuflow_native()),
+                output_path=root / "bank-report.json",
+            ) as view:
+                source = view.store_path
         else:
             # Envelope-only fixture. Real transport construction and electrical
             # equivalence are exercised by the Phase 6 tests, not inferred here.
@@ -72,7 +105,15 @@ def publish(temporary, output, schema, sources=()):
 
 
 @pytest.mark.parametrize(
-    "schema", ["transport-store-v1", "pin-plan-store-v1", "chimew-binding-store-v1"]
+    "schema",
+    [
+        "transport-store-v1",
+        "pin-plan-store-v1",
+        "chimew-binding-store-v1",
+        "position-hints-store-v1",
+        "chimew-bank-report-store-v1",
+        "chimew-bank-input-store-v1",
+    ],
 )
 def test_registered_store_adoption_preserves_bytes_and_inode(tmp_path, schema):
     source, temporary = private_store(tmp_path, schema)
@@ -290,7 +331,9 @@ def test_producer_rejects_source_changed_during_record_generation(tmp_path, kind
     assert not list(tmp_path.glob(".output.*.sqlite.tmp"))
 
 
-@pytest.mark.parametrize("kind", ["pin", "binding", "schedule"])
+@pytest.mark.parametrize(
+    "kind", ["pin", "binding", "schedule", "position", "bank_report", "bank_input"]
+)
 @pytest.mark.parametrize("changed", ["selector", "store"])
 def test_indexed_views_bind_original_generations_instead_of_taking_a_new_snapshot(
     tmp_path, kind, changed
@@ -312,6 +355,40 @@ def test_indexed_views_bind_original_generations_instead_of_taking_a_new_snapsho
                 },
             )
             schema = "chimew-binding-store-v1"
+        elif kind == "position":
+            from emuflow.position_hints_storage import write_position_hints_storage
+            from tests.test_position_hints_storage import _positions
+
+            view = write_position_hints_storage(
+                tmp_path / "positions.json", _positions()
+            )
+            schema = "position-hints-store-v1"
+        elif kind == "bank_input":
+            from emuflow.chimew_bank_channel_storage import (
+                write_chimew_bank_channel_storage,
+            )
+            from tests.test_chimew_bank_channel import ChimewBankChannelTest
+
+            case = ChimewBankChannelTest()
+            case.setUp()
+            view = write_chimew_bank_channel_storage(
+                tmp_path / "bank-input.json", case.document
+            )
+            schema = "chimew-bank-input-store-v1"
+        elif kind == "bank_report":
+            from emuflow.chimew_bank_channel import (
+                evaluate_chimew_bank_channel_assignment,
+            )
+            from tests.test_chimew_bank_channel import ChimewBankChannelTest
+
+            case = ChimewBankChannelTest()
+            case.setUp()
+            view = evaluate_chimew_bank_channel_assignment(
+                case.document,
+                executable=str(emuflow_native()),
+                output_path=tmp_path / "bank-report.json",
+            )
+            schema = "chimew-bank-report-store-v1"
         else:
             from emuflow.tdm_schedule_storage import read_tdm_schedule
             from tests.schedule_store_fixture import write_tdm_schedule_storage
@@ -368,3 +445,37 @@ def test_existing_identical_store_does_not_bypass_source_checks_or_leak_staging(
                 writer(output, document, source_bindings=[bound])
     assert output.read_bytes() == previous
     assert not list(tmp_path.glob(".output.*.sqlite.tmp"))
+
+
+def test_indexed_bank_input_republication_streams_without_materializing_or_waiting_on_itself(
+    tmp_path,
+):
+    from emuflow.chimew_bank_channel_storage import (
+        BankChannelInputView,
+        write_chimew_bank_channel_storage,
+    )
+    from tests.test_chimew_bank_channel import ChimewBankChannelTest
+
+    case = ChimewBankChannelTest()
+    case.setUp()
+    with patch.object(
+        store_publication,
+        "resolve_native_executable",
+        return_value=str(emuflow_native()),
+    ):
+        with write_chimew_bank_channel_storage(
+            tmp_path / "input.json", case.document
+        ) as original:
+            with patch.object(
+                BankChannelInputView,
+                "materialize",
+                side_effect=AssertionError("whole input graph"),
+            ):
+                with write_chimew_bank_channel_storage(
+                    tmp_path / "copy.json", original
+                ) as copied:
+                    assert copied.logical_sha256 == original.logical_sha256
+                    assert list(copied["groups"]) == list(original["groups"])
+                    assert list(copied["bank_pairs"]) == list(original["bank_pairs"])
+                with pytest.raises(ValidationError, match="active view"):
+                    write_chimew_bank_channel_storage(original.manifest_path, original)

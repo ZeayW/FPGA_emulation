@@ -120,9 +120,10 @@ publication or temporary-file retirement, including borrowed native cursors and
 lazy physical and timing-store queries.
 The shared native store API covers EmuIR v1/v2, assignment v3/v4 and split v2;
 artifact-scoped identities and one build manifest bind its readers and writers.
-Phase 6 transport, Chimew binding and pin-plan stores use the shared publisher,
-which adopts closed SQLite staging without copying it. Transport selectors and
-returned views share one file seal within the producer invocation.
+Phase 6 split/transport, position/pin-plan and Chimew input/binding/report stores
+use the shared publisher, which adopts closed SQLite staging without copying it.
+Transport selectors and returned views share one file seal within the producer
+invocation; indexed Chimew inputs can be republished without restoring a Python graph.
 Assignment v1/v2 readers and the old JSON-to-v2 migration writer are retired;
 historical artifacts require their matching Git revision.
 Thin deployments borrow only maintained tool dependencies; old installations

@@ -1214,7 +1214,10 @@ def build_chimew_phase6_pin_plan(
         raise ValueError("region_count must be in [1, 31]")
     if pin_plan_output_path is not None or electrical_binding_output_path is not None:
         require_native_schema("sqlite-publication-request-v1")
-    publication_sources = bind_view_sources((schedule, "tdm-schedule-store-v4"))
+    publication_sources = bind_view_sources(
+        (schedule, "tdm-schedule-store-v4"),
+        (bank_channel_input, "chimew-bank-input-store-v1"),
+    )
     problem = validate_chimew_bank_channel_input(bank_channel_input)
     qualification_validation = None
     if qualification_document is not None:
@@ -1269,6 +1272,7 @@ def build_chimew_phase6_pin_plan(
     ):
         raise ValidationError("Chimew assignment does not match schedule identity")
     indexed_report = isinstance(report, BankChannelReportView)
+    publication_sources += bind_view_sources((report, "chimew-bank-report-store-v1"))
     report_assignment = None
     if not indexed_report:
         report_assignment = {row["group"]: row for row in report["assignments"]}
@@ -1506,7 +1510,9 @@ def build_chimew_phase6_pin_plan(
         }
         positions = (
             write_position_hints_storage(
-                position_hints_output_path, positions_document
+                position_hints_output_path,
+                positions_document,
+                source_bindings=publication_sources,
             )
             if position_hints_output_path is not None
             else {
@@ -2227,7 +2233,11 @@ def _run_chimew_phase6_adapter_with_input(
             indexed_bank_report = result_bank_report
         else:
             indexed_bank_report = write_chimew_bank_channel_report_storage(
-                report_selector_path, result_bank_report
+                report_selector_path,
+                result_bank_report,
+                source_bindings=bind_view_sources(
+                    (result_bank_report, "chimew-bank-report-store-v1")
+                ),
             )
         if qualification is not None:
             write_json(staging_root / "qualification_certificate.json", qualification)
