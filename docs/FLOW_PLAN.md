@@ -195,6 +195,28 @@ and lifetime. The schema registry also names mapped/physical handoffs
 and boundary, logic-segment and local-path timing stores. Their phase-specific
 readers and independent electrical/timing validators retain semantic authority.
 
+Phase 6 registers one transport store for endpoint, lane, anchor and virtual
+binding views, plus the retained Chimew electrical-binding and pin-plan stores.
+Their producers hand closed same-directory SQLite staging to the common
+`publish-store REQUEST OUTPUT` command. The checked bounded request names the
+registered store schema, staged generation and original source generations.
+`SqliteStore` validates the envelope and releases its reader before the common
+publisher syncs and renames the existing file; it never copies or rewrites the
+database. The result uses the normal stage errors and metrics. An optional
+report must name a fresh invocation-owned file. Active source, staging or
+destination journal/WAL state, aliases, unknown versions and changed generations
+reject publication. There is no alternate Python publisher on failure.
+
+Schedule, pin-plan and electrical-binding readers preserve both the selector
+and sidecar generations established at construction. Producers borrow those
+bindings instead of capturing a later snapshot. A transport producer hashes its
+published database once: all selectors, summary and returned lazy views reuse
+one invocation-scoped file seal, checking its path, schema, bytes, digest and
+generation. Independent consumers still verify their input file; no global
+hash cache or persistent catalog is introduced. Phase 6 row construction and
+electrical/RTL/XDC checks retain their existing semantic owners and still require
+their own data-plane migration and qualification.
+
 The indexed OpenPARF bridge calls `phase7 validate-physical-cells` before
 publishing its handoff. The shared `SqliteStore` readers compare both directions
 of mapped/physical ownership, constant membership, pin owners and complete port

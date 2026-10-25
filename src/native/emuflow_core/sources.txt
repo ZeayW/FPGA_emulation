@@ -32,3 +32,4 @@ emuflow_core/vivado_lineage.cpp
 emuflow_core/route_seal.cpp
 emuflow_core/physical_cells.cpp
 emuflow_core/atomic_ownership.cpp
+emuflow_core/store_publication.cpp

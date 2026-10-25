@@ -24,6 +24,7 @@ from typing import Any, NamedTuple, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from .tdm import NativeExactScheduleRequest
 
+from .store_publication import bind_store_source, require_store_sources_unchanged
 from .errors import ValidationError
 from .io import file_sha256, write_json
 
@@ -1610,9 +1611,13 @@ class TDMScheduleView(Mapping[str, Any]):
 
     def __init__(self, manifest_path: Path, *, verify_store_hash: bool = True):
         self.manifest_path = manifest_path.resolve()
+        selector_source = bind_store_source(
+            self.manifest_path, "tdm-schedule-selector-v4"
+        )
         self.manifest = _raw_manifest(self.manifest_path)
         store_path = _validate_manifest(self.manifest, self.manifest_path)
         try:
+            store_source = bind_store_source(store_path, "tdm-schedule-store-v4")
             stat = store_path.stat()
         except OSError as error:
             raise ValidationError("schedule SQLite store is missing") from error
@@ -1755,6 +1760,13 @@ class TDMScheduleView(Mapping[str, Any]):
             ) from error
         finally:
             connection.close()
+
+        self._source_bindings = (selector_source, store_source)
+        require_store_sources_unchanged(self._source_bindings)
+
+    def bound_store_sources(self):
+        require_store_sources_unchanged(self._source_bindings)
+        return self._source_bindings
 
     def __enter__(self) -> "TDMScheduleView":
         return self

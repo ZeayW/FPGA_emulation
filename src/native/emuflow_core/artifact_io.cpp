@@ -214,8 +214,8 @@ void PublishTextArtifact(const std::string& target,
 
 void PublishTemporaryFile(const std::string& temporary_path_, const std::string& target_path_,
                           const std::vector<ArtifactRef>& inputs) {
-  if (std::filesystem::absolute(temporary_path_).parent_path().lexically_normal() !=
-      std::filesystem::absolute(target_path_).parent_path().lexically_normal())
+  if (std::filesystem::weakly_canonical(std::filesystem::absolute(temporary_path_).parent_path()) !=
+      std::filesystem::weakly_canonical(std::filesystem::absolute(target_path_).parent_path()))
     throw StageError(ErrorCode::kPublicationFailed,"native publication requires a same-directory temporary");
   SyncFile(temporary_path_);
   // Check after synchronization, immediately before replacing the public name.

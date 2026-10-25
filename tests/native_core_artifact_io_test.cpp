@@ -197,7 +197,10 @@ int main() {
       {
         auto& db=writer.database();
         const std::string query=schema.sqlite_schema_query;
-        if (query.find("FROM manifest")!=std::string::npos) {
+        if (std::string(schema.name)=="transport-store-v1") {
+          db.Execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);"
+                     "INSERT INTO metadata VALUES ('platform','\"board\"'),('design','\"design\"'),('frame_slots','4')");
+        } else if (query.find("FROM manifest")!=std::string::npos) {
           db.Execute("CREATE TABLE manifest(singleton INTEGER PRIMARY KEY,schema TEXT)");
           auto put=db.Prepare("INSERT INTO manifest VALUES (1,?)");put.BindText(1,schema.sqlite_schema_value);put.Execute();
         } else {
@@ -206,7 +209,8 @@ int main() {
           const bool header=query.find("'header'")!=std::string::npos;
           const std::string key=header ? "header" : query.find("'logical_schema'")!=std::string::npos ? "logical_schema" :
               query.find("'storage_schema'")!=std::string::npos ? "storage_schema" : "schema";
-          const auto value=raw ? std::string(schema.sqlite_schema_value) : header ?
+          const auto value=std::string(schema.name)=="chimew-binding-store-v1" ?
+              "{\"schema\":\"emuflow.chimew-phase6-electrical-binding/v3\"}" : raw ? std::string(schema.sqlite_schema_value) : header ?
               "{\"schema\":"+JsonQuote(schema.sqlite_schema_value)+"}" : JsonQuote(schema.sqlite_schema_value);
           auto put=db.Prepare("INSERT INTO metadata VALUES (?,?)");put.BindText(1,key);put.BindText(2,value);put.Execute();
         }
@@ -221,6 +225,7 @@ int main() {
       stores.push_back(ref);
     }
     const std::set<std::string> expected_public_stores = {
+        "transport-store-v1", "chimew-binding-store-v1", "pin-plan-store-v1",
         "openparf-atomic-source-store-v1", "openparf-placement-certificate-v3",
         "xilinx-physical-handoff-v1", "vivado-lineage-store-v2",
         "vivado-source-functions-v1", "emuir-compact-v2", "emuir-indexed-v1",

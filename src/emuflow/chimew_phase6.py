@@ -28,6 +28,8 @@ from .chimew_bank_channel_report_storage import (
     write_chimew_bank_channel_report_storage,
 )
 from .chimew_grouping import _tdm_ratio
+from .store_publication import bind_view_sources
+from .native_tools import require_native_schema
 from .chimew_binding_storage import (
     CHIMEW_BINDING_STORAGE_SCHEMA,
     ChimewBindingView,
@@ -1210,6 +1212,9 @@ def build_chimew_phase6_pin_plan(
 
     if not 1 <= region_count <= 31:
         raise ValueError("region_count must be in [1, 31]")
+    if pin_plan_output_path is not None or electrical_binding_output_path is not None:
+        require_native_schema("sqlite-publication-request-v1")
+    publication_sources = bind_view_sources((schedule, "tdm-schedule-store-v4"))
     problem = validate_chimew_bank_channel_input(bank_channel_input)
     qualification_validation = None
     if qualification_document is not None:
@@ -1559,7 +1564,9 @@ def build_chimew_phase6_pin_plan(
             "entries": plan_records,
         }
         plan = (
-            write_pin_plan_storage(pin_plan_output_path, plan_document)
+            write_pin_plan_storage(
+                pin_plan_output_path, plan_document, source_bindings=publication_sources
+            )
             if pin_plan_output_path is not None
             else {**plan_document, "entries": list(plan_records)}
         )
@@ -1658,7 +1665,10 @@ def build_chimew_phase6_pin_plan(
         }
         binding = (
             write_chimew_binding_storage(
-                electrical_binding_output_path, binding_document
+                electrical_binding_output_path,
+                binding_document,
+                source_bindings=publication_sources
+                + bind_view_sources((plan, "pin-plan-store-v1")),
             )
             if electrical_binding_output_path is not None
             else {**binding_document, "entries": list(iter_binding_entries())}

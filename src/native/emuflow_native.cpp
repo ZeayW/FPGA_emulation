@@ -7,6 +7,7 @@
 #include "emuflow_core/native_pipeline.hpp"
 #include "emuflow_core/tool_runtime.hpp"
 #include "emuflow_core/compile.hpp"
+#include "emuflow_core/store_publication.hpp"
 
 namespace {
 using emuflow::native::Stage;
@@ -14,6 +15,7 @@ using emuflow::native::StageRequest;
 constexpr const char* kUsage =
     "usage: emuflow-native [--report RESULT_JSON] PHASE OPERATION ...\n"
     "  check-runtime [SCHEMA]\n"
+    "  publish-store REQUEST OUTPUT\n"
     "  compile REQUEST_JSON\n"
     "  run-tool REQUEST RESULT_JSON\n"
     "  phase3 analyze INPUT OUTPUT\n"
@@ -109,6 +111,10 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if ((argc == 2 || argc == 3) && std::string(argv[1]) == "check-runtime") {
     if (argc == 3) (void)emuflow::core::FindSchema(argv[2]);
     return Finish(emuflow::core::CheckNativeRuntime(),report);
+  }
+  if (argc == 4 && std::string(argv[1]) == "publish-store") {
+    const auto request = emuflow::core::ArtifactRef::Bind(argv[2],"sqlite-publication-request-v1");
+    return Finish(emuflow::core::PublishSqliteStore(request,argv[3],report),report);
   }
   if (argc == 4 && std::string(argv[1]) == "run-tool" && report.empty())
     return RunTool(argv[2],argv[3]);

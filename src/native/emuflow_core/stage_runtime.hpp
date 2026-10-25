@@ -37,6 +37,9 @@ struct RegisteredSchema {
 // envelopes; circuit/record semantics remain independently checked by stages.
 const RegisteredSchema& FindSchema(const std::string& name);
 const std::vector<RegisteredSchema>& SchemaRegistry();
+// Metadata-only rejection of active journal/WAL state, shared by readers and
+// publishers. This never runs SQLite integrity/quick checks.
+void RequireFinalizedSqlite(const std::string& path);
 
 struct FileGeneration {
   std::uint64_t device = 0, inode = 0, bytes = 0;

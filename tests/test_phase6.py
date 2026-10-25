@@ -24,7 +24,7 @@ from emuflow.chimew_binding_storage import (
 from emuflow.errors import ValidationError
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.ir import EmuIR
-from emuflow.io import read_json, write_json
+from emuflow.io import file_sha256, read_json, write_json
 from emuflow.lowering import (
     _LoweringOverlaySpool,
     run_placement_ir_lowering_from_split,
@@ -285,9 +285,14 @@ class Phase6Test(unittest.TestCase):
                     writer_uri_modes.append(kwargs.get("uri", False))
                 return original_connect(database, *args, **kwargs)
 
-            with mock.patch(
-                "emuflow.transport_storage.sqlite3.connect",
-                side_effect=recording_connect,
+            with (
+                mock.patch(
+                    "emuflow.transport_storage.sqlite3.connect",
+                    side_effect=recording_connect,
+                ),
+                mock.patch(
+                    "emuflow.store_publication.file_sha256", wraps=file_sha256
+                ) as store_hash,
             ):
                 for run in range(2):
                     output = root / f"run-{run}"
@@ -300,6 +305,7 @@ class Phase6Test(unittest.TestCase):
                         clocks=self.ir.value["clocks"],
                     )
                     summaries.append(artifacts["summary"])
+                    self.assertEqual(store_hash.call_count, run + 1)
                     self.assertEqual(
                         len(artifacts["lane_map"]["entries"]), count
                     )
@@ -882,8 +888,6 @@ class Phase6Test(unittest.TestCase):
                     for key in direct_identity
                 }
             self.assertEqual(direct_value, read_json(legacy_boundary))
-
-
 
     def test_lowering_overlay_spool_bounds_batches_and_preserves_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

@@ -17,6 +17,21 @@
 namespace emuflow::core {
 namespace {
 constexpr RegisteredSchema schemas[] = {
+    {"sqlite-publication-request-v1", ArtifactEncoding::kBinary, 0x31505351464d5545ULL, 1},
+    {"tdm-schedule-selector-v4", ArtifactEncoding::kText, 0, 4},
+    {"pin-plan-selector-v1", ArtifactEncoding::kText, 0, 1},
+    {"chimew-binding-selector-v1", ArtifactEncoding::kText, 0, 1},
+    {"transport-store-v1", ArtifactEncoding::kSqlite, 0x454d5558, 1, false,
+     "SELECT 'emuflow.transport-storage/v1' FROM metadata WHERE key='platform' AND json_type(value)='text' "
+     "AND (SELECT json_type(value) FROM metadata WHERE key='design')='text' "
+     "AND (SELECT json_type(value) FROM metadata WHERE key='frame_slots')='integer'", "emuflow.transport-storage/v1"},
+    {"chimew-binding-store-v1", ArtifactEncoding::kSqlite, 0x454d5542, 1, false,
+     "SELECT 'emuflow.chimew-binding-storage/v1' FROM metadata WHERE key='header' AND "
+     "json_extract(value,'$.schema') IN ('emuflow.chimew-phase6-electrical-binding/v1',"
+     "'emuflow.chimew-phase6-electrical-binding/v2','emuflow.chimew-phase6-electrical-binding/v3')",
+     "emuflow.chimew-binding-storage/v1"},
+    {"pin-plan-store-v1", ArtifactEncoding::kSqlite, 0x454d5550, 1, false,
+     "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'", "emuflow.placement-aware-pin-plan/v1"},
     {"atomic-ownership-request-v1", ArtifactEncoding::kBinary, 0x314f5341464d5545ULL, 1},
     {"atomic-ownership-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"openparf-atomic-source-store-v1", ArtifactEncoding::kSqlite, 0x454d5541, 1, false,
@@ -165,7 +180,7 @@ struct Usage {
   bool has_io = false;
   std::uint64_t read_bytes = 0, write_bytes = 0;
 };
-void RequireFinalizedSqlite(const std::string& path) {
+void CheckFinalizedSqlite(const std::string& path) {
   for (const char* suffix : {"-wal", "-journal"}) {
     std::error_code error;
     const auto size = std::filesystem::file_size(path + suffix, error);
@@ -208,6 +223,8 @@ std::string Quote(const std::string& value) {
   out << '"'; return out.str();
 }
 }  // namespace
+
+void RequireFinalizedSqlite(const std::string& path) { CheckFinalizedSqlite(path); }
 
 const char* ErrorName(ErrorCode code) {
   switch (code) {
