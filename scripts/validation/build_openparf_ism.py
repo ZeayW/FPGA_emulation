@@ -33,6 +33,7 @@ def main():
          "-DBUILD_TESTING=OFF", "-DENABLE_ROUTER=OFF",
          "-DPython3_EXECUTABLE=" + str(Path(args.python).resolve()),
          "-DPYTHON_EXECUTABLE=" + str(Path(args.python).resolve()),
+         "-DPython_EXECUTABLE=" + str(Path(args.python).resolve()),
          "-DCMAKE_INSTALL_PREFIX=" + str(output / "install"), *args.cmake_arg],
         [args.cmake, "--build", str(build), "--target", "ism_dp_cpp", "--parallel", str(args.jobs)],
     ]
@@ -41,8 +42,8 @@ def main():
         if command is commands[0]:
             cache = (build / "CMakeCache.txt").read_text().splitlines()
             interpreters = [line.split("=", 1)[1] for line in cache
-                            if line.startswith(("Python3_EXECUTABLE:", "PYTHON_EXECUTABLE:"))]
-            if len(interpreters) != 2 or any(
+                            if line.startswith(("Python3_EXECUTABLE:", "PYTHON_EXECUTABLE:", "Python_EXECUTABLE:"))]
+            if len(interpreters) != 3 or any(
                 Path(value).resolve() != Path(args.python).resolve()
                 for value in interpreters
             ):
