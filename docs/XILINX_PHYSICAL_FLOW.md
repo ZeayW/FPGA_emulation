@@ -338,7 +338,7 @@ comparisons must remain separately labelled.
 
 `scripts/vivado/inspect_selectio_ip.tcl PART EMPTY_OUTPUT_DIRECTORY` records
 the installed High Speed SelectIO Wizard definition and its configurable defaults
-for PHY integration. It creates one private IP customization without synthesis
+for PHY integration. Its default mode creates one private IP customization without synthesis
 or implementation; its observations do not qualify a serial PHY. An optional
 third argument names a literal TSV with header `property<TAB>value` and unique
 `CONFIG.*` properties, ordered so enabling controls precede their dependents.
@@ -348,7 +348,32 @@ Boolean values, so an accepted noncanonical spelling can produce different
 ports. Ignored or changed requested settings fail before generation. This explicitly
 configures the private IP and generates
 its output products and status report. The tool records resulting property
-values; it does not synthesize or qualify those outputs.
+values. A fourth literal argument, `synthesize`, additionally synthesizes the
+configured IP out of context and records its port census, I/O, clock and resource
+reports. This does not perform placement, routing, link training or board timing
+qualification.
+
+A bounded package-derived recipe emits the literal configuration for the
+bundled twenty-data-pair HP-bank arrangement:
+
+```bash
+python -m emuflow.lvds_selectio --bank 19 --direction tx --output build/tx-bank.tsv
+vivado -mode batch -source scripts/vivado/inspect_selectio_ip.tcl \
+  -tclargs xcvu19p-fsva3824-2-e build/tx-bank-inspection build/tx-bank.tsv synthesize
+```
+
+Use a fresh empty inspection directory and an existing output parent. The RX
+recipe uses `--direction rx`. Both select 8-bit words at 1.6 Gb/s and reserve one
+GC/QBC pair for the 800 MHz forwarded clock, separately from the twenty data
+pairs (160 parallel bits per 5 ns word cycle). The TX clock word is `8'h55`;
+this is an expected wrapper binding, not a claim that the recipe instantiates
+the clock driver. Native byte/bit positions come from the official pin-function
+fields; data pairs and clock pairs retain their distinct P/N identities. RX
+uses the wizard's fixed `clk_p`/`clk_n` names and requests bitslip and the
+multiple-interface handshake. Resulting ports must be checked against the
+native products before connecting a physical top. The recipe does not supply
+training, reset sequencing, FIFO capture or the physical boundary latency.
+Configuration generation and IP synthesis remain intermediate PHY diagnostics.
 
 The current fixed differential adapter supplies IBUFDS/OBUFDS boundaries; it
 does not implement the serializer/deserializer or forwarded-clock circuitry

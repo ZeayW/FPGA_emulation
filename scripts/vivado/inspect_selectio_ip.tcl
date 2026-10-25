@@ -1,7 +1,10 @@
 # Inspect the installed native SelectIO IP before constructing an LVDS PHY.
 # This creates one private IP customization, not an implemented design.
-if {$argc ni {2 3}} {error "expected PART EMPTY_OUTPUT_DIRECTORY ?CONFIG_TSV?"}
-lassign $argv part output configuration
+if {$argc ni {2 3 4}} {error "expected PART EMPTY_OUTPUT_DIRECTORY ?CONFIG_TSV ?synthesize??"}
+lassign $argv part output configuration synthesis
+if {$synthesis ne "" && ($synthesis ne "synthesize" || $configuration eq "")} {
+  error "SelectIO synthesis requires a configuration and the literal synthesize mode"
+}
 if {[file exists $output]} {
   if {![file isdirectory $output]} {error "SelectIO output is not a directory"}
   foreach entry [glob -nocomplain -tails -directory $output * .*] {
@@ -73,6 +76,22 @@ if {[catch {
   if {$configuration ne ""} {
     generate_target all $ip
     report_ip_status -file [file join $output ip-status.rpt]
+  }
+  if {$synthesis eq "synthesize"} {
+    synth_ip $ip
+    set checkpoint [file join $output ip emuflow_selectio_probe emuflow_selectio_probe.dcp]
+    if {![file isfile $checkpoint]} {error "native IP synthesis did not publish its checkpoint"}
+    open_checkpoint $checkpoint
+    report_utilization -file [file join $output synthesis-utilization.rpt]
+    report_clocks -file [file join $output synthesis-clocks.rpt]
+    report_io -file [file join $output synthesis-io.rpt]
+    set stream [open [file join $output synthesis-ports.tsv] w]
+    puts $stream "name_hex\tdirection"
+    foreach port [lsort [get_ports -quiet *]] {
+      puts $stream "[binary encode hex [encoding convertto utf-8 [get_property NAME $port]]]\t[get_property DIRECTION $port]"
+    }
+    close $stream
+    close_design
   }
   close_project
 } message options]} {
