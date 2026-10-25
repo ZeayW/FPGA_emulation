@@ -108,7 +108,7 @@ def write_vivado_word_top(ir_path:Path,output:Path,*,fpga,board,plan):
     for name in ('fabric_clk','reset','links_ready'):
         if ports.get(name,{}).get('direction')!='input'or ports[name]['width']!=1:
             raise ValidationError('native word partition lacks a scalar service input: '+name)
-    if set(ports)&set((*SERVICE_INPUTS,*SERVICE_OUTPUTS)):
+    if set(ports)&set((*SERVICE_INPUTS,*SERVICE_OUTPUTS,'__emuflow_word_tdm_clk','__emuflow_word_riu_clk')):
         raise ValidationError('native word startup service port collides')
     buses={};ranges={};physical={}
     for bank in banks:
@@ -138,9 +138,12 @@ def write_vivado_word_top(ir_path:Path,output:Path,*,fpga,board,plan):
     declarations.extend('  output wire '+name for name in SERVICE_OUTPUTS)
     declarations.extend(f'  {direction} wire {name}'for name,direction in physical.items())
     lines=['// OOC clock/reset/startup consensus services are external.',f'module {top} (',',\n'.join(declarations),');']
+    lines += ['  wire __emuflow_word_tdm_clk, __emuflow_word_riu_clk;',
+        '  BUFG word_tdm_reference (.I(fabric_clk), .O(__emuflow_word_tdm_clk));',
+        '  BUFG word_riu_reference (.I(__emuflow_riu_clk), .O(__emuflow_word_riu_clk));']
     lines.extend(f'  wire [{width-1}:0] {_identifier(bus)};'for bus,width in buses.items())
     lines += [f'  {_identifier(source_top)} mapped_partition (',
-        ',\n'.join(f'    .{_identifier(name)}({_identifier(name)})'for name in ports),'  );']
+        ',\n'.join(f'    .{_identifier(name)}('+('__emuflow_word_tdm_clk'if name=='fabric_clk'else _identifier(name))+')'for name in ports),'  );']
     for bus in sorted(buses):
         if ports[bus]['direction']=='input':
             for begin in range(0,buses[bus],160):
@@ -156,7 +159,7 @@ def write_vivado_word_top(ir_path:Path,output:Path,*,fpga,board,plan):
         signals=['pll_locked','reset_done',direction+'_ready']+(['rx_word_valid','training_error']if direction=='rx'else[])
         for signal in signals:
             name=prefix+signal;lines.append('  wire '+name+';');status[signal].append(name)
-        connections=['.tdm_clk(fabric_clk)','.riu_clk(__emuflow_riu_clk)',
+        connections=['.tdm_clk(__emuflow_word_tdm_clk)','.riu_clk(__emuflow_word_riu_clk)',
             '.reset('+('reset'if direction=='tx'else'reset || !__emuflow_all_tx_ready')+')',
             '.pll_locked('+prefix+'pll_locked)','.reset_done('+prefix+'reset_done)',
             '.bank_ready('+prefix+direction+'_ready)']

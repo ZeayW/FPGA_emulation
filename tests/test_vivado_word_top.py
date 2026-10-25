@@ -126,7 +126,7 @@ def test_native_word_top_rtl_connects_all_lanes_startup_status_and_payload(tmp_p
                 assignments.append(f'assign {name}={value};')
         native_modules.append(f"module {record['ip_module']} ("+','.join(declarations)+');\n'+'\n'.join(assignments)+'\nendmodule')
     (out/'partition.sv').write_text('module dut('+','.join(partition_ports)+');\n'+'\n'.join(partition_body)+'\nendmodule')
-    (out/'native-stubs.sv').write_text('\n'.join(native_modules))
+    (out/'native-stubs.sv').write_text('module BUFG(input wire I,output wire O);assign O=I;endmodule\n'+'\n'.join(native_modules))
     calls=['.fabric_clk(clk)','.clk(clk)','.d(1\'b0)','.reset(reset)',".links_ready(1'b1)",'.q(q)']
     calls+=['.__emuflow_riu_clk(clk)',".__emuflow_all_tx_ready(1'b1)",".__emuflow_all_plls_locked(1'b1)",
         ".__emuflow_alignment_enable(1'b1)",'.__emuflow_payload_enable(payload)',

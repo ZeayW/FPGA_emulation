@@ -34,7 +34,8 @@ reserves separate forwarded-clock pairs; Phase 6 emits a source-bound bank plan
 with an explicit native IP and receive-alignment selection.
 The native word-link qualification driver also exposes explicit registered
 receive-alignment candidates, with complete generated-IP interface checks.
-The indexed provider exposes a native-bank physical qualification path. Full-flow
+The indexed provider exposes a native-bank physical qualification path with
+buffered reference clocks. Full-flow
 word-PHY execution and global physical event projection remain unqualified;
 unsupported full-flow physical bindings are rejected.
 Its required [timing contract](docs/global-opensta-qualification.md#ratio-estimates-and-schedule-resolved-phy-timing)

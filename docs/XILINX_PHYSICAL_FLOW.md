@@ -448,8 +448,10 @@ The native word top exposes RIU, common TX readiness, global PLL lock,
 held alignment and payload-enable service inputs, plus local readiness/error
 outputs. RX reset remains asserted until the common TX-ready input. Global
 startup/readiness consensus and pausible DUT-clock generation are external OOC
-services. These ports do not implement a distributed barrier. Primary clocks
-are explicit: TDM at 5 ns, RIU at 10 ns, and each RX forwarded clock at 1.25 ns.
+services. These ports do not implement a distributed barrier. The TDM and RIU
+references feed explicit global buffers; the mapped transport and native bank
+application interfaces share the buffered TDM reference. Primary periods are
+explicit: TDM at 5 ns, RIU at 10 ns, and each RX forwarded clock at 1.25 ns.
 All generated clocks must trace to these declared roots; unexpected primary
 clocks, missing masters and cycles are rejected.
 The routed native clock census is retained. Infrastructure-only setup paths
