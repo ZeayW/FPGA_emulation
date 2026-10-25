@@ -204,6 +204,13 @@ atom relations retain their zero application/user PRAGMAs; their stage-owned
 metadata and ordered-record checks remain required. This integration does not
 complete the other physical exporters or full W0/W7 qualification.
 
+The OpenPARF bridge has one required typed output and consumes typed placement
+certificates. Its validator requires a record sink, instead of optionally returning
+a complete physical-cluster tree. The physical publisher binds source generations,
+rejects output/input aliases and rechecks sources at atomic publication. Separate
+packing/placement JSON output is retired; bounded test snapshots use the same
+producer. This does not make the remaining Python bridge data plane native.
+
 RWRoute's production API takes the mapped SQLite index and one typed physical
 handoff directly. JSON/object export is retired; the noninstalled
 `tests/rwroute_reference.py` remains an explicit differential oracle. Native request

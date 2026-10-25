@@ -204,8 +204,9 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 return atomic_source
 
             def materialize(
-                mapped, architecture_path, certificate, packed, placement, **kwargs
+                mapped, architecture_path, certificate, handoff, **kwargs
             ):
+                self.assertEqual(handoff, physical_handoff_path)
                 self.assertFalse((physical / "packed-sites.json").exists())
                 self.assertFalse((physical / "placement.json").exists())
                 self.assertEqual(mapped, physical / "partition.mapped.sqlite")
@@ -226,7 +227,6 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     "mapped_value": mapped_value,
                     "mapped_sha256": "0" * 64,
                     "architecture": architecture_object,
-                    "physical_handoff_path": physical_handoff_path,
                 })
                 packed_value_sink.update({"summary": {"clusters": 2}})
                 placement_value_sink.update({"summary": {"clusters": 1}})

@@ -71,6 +71,26 @@ retain the reference exporter for explicit compatibility and differential tests.
 This removes one graph-sized Python traversal; mapped lowering, physical macro
 preparation, and timing-query preparation are separate stages.
 
+## Typed placement handoff
+
+`materialize_xilinx_openparf_atomic_contract(mapped, architecture, certificate,
+physical_handoff, ...)` has one required SQLite output. The former pair of JSON
+output arguments and optional typed-mode selector are retired. Production requires
+the typed placement certificate and streams each validated site group directly to
+the handoff builder; no complete physical-cluster tree is returned by the validator.
+Packing and placement remain lazy views for independent circuit/site/BEL checks.
+
+The publisher binds the declared source files and certificate/atomic-source
+sidecars before consuming their records. It rejects aliased outputs, including hard
+links, and checks bound generations immediately before atomic replacement. A source
+change or failed independent validation preserves the previous published handoff.
+Bridge source checks and header assembly reuse the same operation-local digests,
+while publication checks bound generations. Independent native-device validation
+retains its own source checks.
+Small JSON validation fixtures are snapshots of this same typed producer under
+`tests/openparf_bridge_fixture.py`; this bounded helper is not installed and does
+not implement a second bridge algorithm.
+
 ## Native RWRoute export
 
 The production API is `export_rwroute_input(mapped_index, physical_handoff, output)`.

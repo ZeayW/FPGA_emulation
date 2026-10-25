@@ -1,3 +1,4 @@
+from tests.openparf_bridge_fixture import materialize_bridge_fixture as materialize_xilinx_openparf_atomic_contract
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,9 +10,6 @@ from emuflow.xilinx_openparf_atomic import (
     read_xilinx_openparf_atomic_source,
     read_xilinx_openparf_atomic_name_map,
     validate_xilinx_openparf_atomic_placement,
-)
-from emuflow.xilinx_openparf_bridge import (
-    materialize_xilinx_openparf_atomic_contract,
 )
 from emuflow.xilinx_packing import validate_xilinx_packing
 from emuflow.xilinx_placement import validate_xilinx_placement
@@ -130,6 +128,7 @@ class XilinxOpenparfAtomicCarryIntegrationTest(unittest.TestCase):
                 mapped,
                 architecture,
                 certificate_path,
+                packed_path=source,
                 native_constraints_path=native,
                 provider_manifest_path=provider,
             )

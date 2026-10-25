@@ -3,8 +3,8 @@
 The bridge does not run EmuFlow's historical site packer or site placer.  It
 independently checks a native OpenPARF atomic placement certificate, groups
 the atoms by their certified physical site, legalizes only intra-site FF BELs
-against the device's shared MUX-select pins, and emits the standard
-PackedSiteNetlist and Xilinx placement schemas consumed by RWRoute.
+against the device's shared MUX-select pins, and publishes one typed physical
+handoff exposing packing and placement views to independent validators and RWRoute.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Tuple
 
 from .architecture import ArchitectureDB
 from .errors import ValidationError
-from .io import file_sha256, read_json, write_json
+from .io import file_sha256, read_json
 from .xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
     OPENPARF_ATOMIC_PROVIDER,
@@ -53,7 +53,6 @@ from .xilinx_packing import (
     _validate_declared_slice_control_sets,
     _slice_ff_control_sets,
     legalize_xilinx_slice_site_pins,
-    validate_xilinx_packing,
 )
 from .xilinx_placement import (
     XILINX_OPENPARF_ATOMIC_BRIDGE_PROVIDER,
@@ -65,7 +64,6 @@ from .xilinx_placement import (
     _materialize_assignment_sites,
     _resolve_cluster_bels,
     _template_contracts,
-    validate_xilinx_placement,
 )
 from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 from .xilinx_physical_handoff import (
@@ -88,68 +86,6 @@ _CERTIFICATE_ASSIGNMENT_KEYS = {
     "instance", "cell_type", "bel", "physical_site", "placement_mode",
     "source_cluster", "bram_tile_group",
 }
-
-
-class _BridgeClusterSequence(Sequence[Mapping[str, Any]]):
-    """Expose packing or placement from one bridge-owned cluster tree."""
-
-    def __init__(
-        self, clusters: list[Dict[str, Any]], *, placement: bool
-    ) -> None:
-        self._clusters = clusters
-        self._placement = placement
-
-    def __len__(self) -> int:
-        return len(self._clusters)
-
-    def _render(self, cluster: Mapping[str, Any]) -> Mapping[str, Any]:
-        assignments = cluster["assignments"]
-        if self._placement:
-            metadata = cluster["_placement"]
-            return {
-                    "cluster": cluster["id"],
-                    "site": metadata["site"],
-                    "site_type": metadata["site_type"],
-                    "x": metadata["x"],
-                    "y": metadata["y"],
-                    "fixed": metadata["fixed"],
-                    "physical_region": metadata["physical_region"],
-                    "assignments": [{
-                        "instance": assignment["instance"],
-                        "cell_type": assignment["cell_type"],
-                        "bel": assignment["bel"],
-                        "placement_mode": assignment["_placement_mode"],
-                        "site": assignment["_physical_site"],
-                    } for assignment in sorted(
-                        assignments,
-                        key=lambda item: item["_placement_ordinal"],
-                    )],
-                }
-        value: Dict[str, Any] = {
-            "id": cluster["id"],
-            "kind": cluster["kind"],
-            "site_templates": cluster["site_templates"],
-            "control_set": cluster["control_set"],
-            "assignments": [{
-                "instance": assignment["instance"],
-                "cell_type": assignment["cell_type"],
-                "bel": assignment["bel"],
-            } for assignment in assignments],
-        }
-        if "control_sets" in cluster:
-            value["control_sets"] = cluster["control_sets"]
-        if "site_mode" in cluster:
-            value["site_mode"] = cluster["site_mode"]
-        return value
-
-    def __iter__(self) -> Iterator[Mapping[str, Any]]:
-        for cluster in self._clusters:
-            yield self._render(cluster)
-
-    def __getitem__(self, index: int | slice) -> Any:
-        if isinstance(index, slice):
-            return [self._render(cluster) for cluster in self._clusters[index]]
-        return self._render(self._clusters[index])
 
 
 def _sha256(path: Path) -> str:
@@ -236,11 +172,12 @@ def _validate_certificate(
     source_packed: Optional[Mapping[str, Any]] = None,
     certificate_clusters: Optional[Iterable[Mapping[str, Any]]] = None,
     native_bram_groups: Optional[Mapping[str, Mapping[str, Any]]] = None,
-    physical_cluster_sink: Optional[Callable[[Mapping[str, Any]], None]] = None,
+    *,
+    physical_cluster_sink: Callable[[Mapping[str, Any]], None],
     sink_enforces_assignment_uniqueness: bool = False,
     source_assignment_sink: Optional[Callable[[str, str], None]] = None,
 ) -> Tuple[
-    str, Mapping[str, Any], list[Dict[str, Any]], list[str],
+    str, Mapping[str, Any], list[str],
     list[Dict[str, Any]], Mapping[str, Any]
 ]:
     if (
@@ -376,7 +313,6 @@ def _validate_certificate(
         None if sink_enforces_assignment_uniqueness else set()
     )
     assignment_count = 0
-    physical_clusters: list[Dict[str, Any]] = []
     site_names: Optional[set[str]] = (
         None if sink_enforces_assignment_uniqueness else set()
     )
@@ -631,10 +567,7 @@ def _validate_certificate(
             occupied_local[local_key] += 1
         if kind == "carry":
             carry8_macros += 1
-        if physical_cluster_sink is None:
-            physical_clusters.append(physical_cluster)
-        else:
-            physical_cluster_sink(physical_cluster)
+        physical_cluster_sink(physical_cluster)
     actual_count = len(owners) if owners is not None else assignment_count
     if actual_count != expected_count:
         missing = (
@@ -682,10 +615,8 @@ def _validate_certificate(
         )
     if certificate.get("summary") != expected_summary:
         raise ValidationError("OpenPARF atomic placement summary is invalid")
-    if physical_cluster_sink is None:
-        physical_clusters.sort(key=lambda item: item["id"])
     return (
-        selected_top, cells, physical_clusters, constants, cascades,
+        selected_top, cells, constants, cascades,
         {
             "clusters": cluster_count,
             "cluster_kinds": dict(sorted(kind_counts.items())),
@@ -1154,8 +1085,7 @@ def materialize_xilinx_openparf_atomic_contract(
     mapped_path: Path,
     architecture_path: Path,
     atomic_placement_path: Path,
-    packed_output_path: Path,
-    placement_output_path: Path,
+    physical_handoff_path: Path,
     *,
     top: Optional[str] = None,
     source_packed_path: Optional[Path] = None,
@@ -1168,34 +1098,101 @@ def materialize_xilinx_openparf_atomic_contract(
     architecture: Optional[ArchitectureDB] = None,
     packed_value_sink: Optional[Dict[str, Any]] = None,
     placement_value_sink: Optional[Dict[str, Any]] = None,
-    physical_handoff_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Materialize standard contracts while preserving certified sites.
+    """Publish one typed handoff; separate JSON output is retired."""
 
-    ``physical_handoff_path`` selects the production single-file data plane.
-    The two JSON output paths remain the explicit compatibility export when it
-    is absent.
+    started = time.perf_counter()
+    sources = [mapped_path, architecture_path, atomic_placement_path]
+    sources.extend(path for path in (
+        source_packed_path, constraints_path, native_constraints_path,
+        provider_manifest_path, getattr(mapped_value, "path", None),
+        getattr(source_packed_value, "store_path", None),
+    ) if path is not None)
+    with XilinxPhysicalHandoffBuilder(physical_handoff_path, sources=sources) as builder:
+        result = _materialize_typed_physical_handoff(
+            mapped_path, architecture_path, atomic_placement_path,
+            handoff_builder=builder,
+            top=top,
+            source_packed_path=source_packed_path,
+            source_packed_value=source_packed_value,
+            constraints_path=constraints_path,
+            native_constraints_path=native_constraints_path,
+            provider_manifest_path=provider_manifest_path,
+            mapped_value=mapped_value,
+            mapped_sha256=mapped_sha256,
+            architecture=architecture,
+            packed_value_sink=packed_value_sink,
+            placement_value_sink=placement_value_sink,
+        )
+    result["runtime_breakdown"]["total_seconds"] = time.perf_counter() - started
+    return result
+
+
+def _materialize_typed_physical_handoff(
+    mapped_path: Path,
+    architecture_path: Path,
+    atomic_placement_path: Path,
+    *,
+    handoff_builder: XilinxPhysicalHandoffBuilder,
+    top: Optional[str] = None,
+    source_packed_path: Optional[Path] = None,
+    source_packed_value: Optional[Mapping[str, Any]] = None,
+    constraints_path: Optional[Path] = None,
+    native_constraints_path: Optional[Path] = None,
+    provider_manifest_path: Optional[Path] = None,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    mapped_sha256: Optional[str] = None,
+    architecture: Optional[ArchitectureDB] = None,
+    packed_value_sink: Optional[Dict[str, Any]] = None,
+    placement_value_sink: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Validate a typed placement certificate and publish one physical handoff.
+
+    Packing and placement are lazy views of the same authoritative SQLite
+    owner. Separate JSON outputs and inline placement certificates are retired.
     """
 
     bridge_started = time.perf_counter()
-    mapped = read_json(mapped_path) if mapped_value is None else mapped_value
+    physical_handoff_path = handoff_builder.path
+    source_digests: Dict[Path, str] = {}
+
+    def digest(path: Path) -> str:
+        # The publisher binds these immutable sources and rechecks their
+        # generations at rename. Reuse each strong hash within this operation.
+        key = Path(path).absolute()
+        if key not in source_digests:
+            source_digests[key] = _sha256(key)
+        return source_digests[key]
+
     certificate = read_json(atomic_placement_path)
-    if not isinstance(mapped, Mapping) or not isinstance(certificate, Mapping):
+    if not isinstance(certificate, Mapping):
         raise ValidationError("OpenPARF bridge inputs are invalid")
-    if physical_handoff_path is not None and "clusters" in certificate:
+    if 'clusters' in certificate:
         raise ValidationError(
             "production OpenPARF bridge requires the typed placement-certificate "
-            "store; inline legacy clusters require compatibility export"
+            "store; inline legacy clusters are retired"
         )
+    mapped = read_json(mapped_path) if mapped_value is None else mapped_value
+    if not isinstance(mapped, Mapping):
+        raise ValidationError("OpenPARF bridge inputs are invalid")
+    descriptor = certificate.get("cluster_storage")
+    if isinstance(descriptor, Mapping):
+        filename = descriptor.get("file")
+        if isinstance(filename, str) and Path(filename).name == filename:
+            handoff_builder.bind_sources([atomic_placement_path.with_name(filename)])
     architecture = (
         ArchitectureDB.load(architecture_path)
         if architecture is None else architecture
     )
-    mapped_sha = mapped_sha256 or _sha256(mapped_path)
+    mapped_sha = mapped_sha256 or digest(mapped_path)
     source_packed: Optional[Mapping[str, Any]] = None
     if source_packed_path is not None:
         if source_packed_value is None:
             candidate = read_json(source_packed_path)
+            if isinstance(candidate, Mapping) and candidate.get("schema") == OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA:
+                filename = candidate.get("artifact")
+                if isinstance(filename, str) and Path(filename).name == filename:
+                    handoff_builder.bind_sources([source_packed_path.with_name(filename)])
             loaded_source_packed = (
                 read_xilinx_openparf_atomic_source(
                     source_packed_path,
@@ -1228,15 +1225,12 @@ def materialize_xilinx_openparf_atomic_contract(
     if (
         not isinstance(source, Mapping)
         or source.get("mapped_sha256") != mapped_sha
-        or source.get("architecture_sha256") != _sha256(architecture_path)
+        or source.get("architecture_sha256") != digest(architecture_path)
         or not isinstance(source.get("native_placement_sha256"), str)
         or not isinstance(source.get("name_map_sha256"), str)
     ):
         raise ValidationError("OpenPARF atomic placement source identity is invalid")
-    if source_packed_path is not None and (
-        (physical_handoff_path is not None or "packed_sha256" in source)
-        and source.get("packed_sha256") != _sha256(source_packed_path)
-    ):
+    if source_packed_path is not None and source.get('packed_sha256') != digest(source_packed_path):
         raise ValidationError(
             "OpenPARF atomic placement packed-source identity is invalid"
         )
@@ -1253,9 +1247,9 @@ def materialize_xilinx_openparf_atomic_contract(
         certificate_source = certificate.get("source", {})
         if (
             certificate_source.get("native_constraints_sha256")
-            != _sha256(native_constraints_path)
+            != digest(native_constraints_path)
             or certificate_source.get("provider_manifest_sha256")
-            != _sha256(provider_manifest_path)
+            != digest(provider_manifest_path)
         ):
             raise ValidationError(
                 "OpenPARF native certificate source identity is invalid"
@@ -1272,15 +1266,11 @@ def materialize_xilinx_openparf_atomic_contract(
             group["anchor"]: group
             for group in native["payload"].get("bram_tile_groups", [])
         }
-    handoff_builder = (
-        XilinxPhysicalHandoffBuilder(physical_handoff_path)
-        if physical_handoff_path is not None else None
-    )
     certificate_view = None
     try:
         certificate_view = open_xilinx_openparf_atomic_placement(
             atomic_placement_path,
-            allow_legacy=physical_handoff_path is None,
+            allow_legacy=False,
         )
         if dict(certificate_view) != dict(certificate):
             raise ValidationError(
@@ -1289,15 +1279,13 @@ def materialize_xilinx_openparf_atomic_contract(
     except BaseException:
         if certificate_view is not None:
             certificate_view.close()
-        if handoff_builder is not None:
-            handoff_builder.close()
+        handoff_builder.close()
         raise
     assert certificate_view is not None
     certificate_clusters = certificate_view.iter_clusters()
     legalization_clusters: list[Dict[str, Any]] = []
 
     def stream_physical_cluster(cluster: Mapping[str, Any]) -> None:
-        assert handoff_builder is not None
         handoff_builder.append_bridge_cluster(cluster)
         if cluster.get("kind") == "slice" and any(
             assignment.get("cell_type") in MUX_TYPES
@@ -1312,26 +1300,21 @@ def materialize_xilinx_openparf_atomic_contract(
     try:
         validation_started = time.perf_counter()
         (
-            selected_top, cells, clusters, constants, cascades,
+            selected_top, cells, constants, cascades,
             certificate_statistics,
         ) = _validate_certificate(
             mapped, certificate, architecture, top, source_packed,
             certificate_clusters=certificate_clusters,
             native_bram_groups=native_bram_groups,
-            physical_cluster_sink=(
-                stream_physical_cluster
-                if handoff_builder is not None else None
-            ),
-            sink_enforces_assignment_uniqueness=(
-                handoff_builder is not None
-            ),
+            physical_cluster_sink=stream_physical_cluster,
+            sink_enforces_assignment_uniqueness=True,
             source_assignment_sink=(
                 handoff_builder.append_source_assignment
-                if handoff_builder is not None and source_packed is not None
+                if source_packed is not None
                 else None
             ),
         )
-        if handoff_builder is not None and source_packed is not None:
+        if source_packed is not None:
             handoff_builder.validate_source_ownership(
                 len(cells) - len(constants)
             )
@@ -1343,32 +1326,27 @@ def materialize_xilinx_openparf_atomic_contract(
                 "OpenPARF native hardblock bridge requires a source-sealed "
                 "native placement certificate"
             )
-        if handoff_builder is None:
-            site_pin_legalization = legalize_xilinx_slice_site_pins(
-                cells, clusters
-            )
-        else:
-            site_pin_legalization = legalize_xilinx_slice_site_pins(
-                cells, legalization_clusters
-            )
-            handoff_builder.update_assignment_bels(legalization_clusters)
-            legalization_clusters.clear()
-        certificate_sha = _sha256(atomic_placement_path)
-        architecture_sha = _sha256(architecture_path)
+        site_pin_legalization = legalize_xilinx_slice_site_pins(
+            cells, legalization_clusters
+        )
+        handoff_builder.update_assignment_bels(legalization_clusters)
+        legalization_clusters.clear()
+        certificate_sha = digest(atomic_placement_path)
+        architecture_sha = digest(architecture_path)
         constraints_sha = (
-            _sha256(constraints_path)
+            digest(constraints_path)
             if constraints_path is not None else None
         )
         native_constraints_sha = (
-            _sha256(native_constraints_path)
+            digest(native_constraints_path)
             if native_constraints_path is not None else None
         )
         provider_manifest_sha = (
-            _sha256(provider_manifest_path)
+            digest(provider_manifest_path)
             if provider_manifest_path is not None else None
         )
         source_packed_sha = (
-            _sha256(source_packed_path)
+            digest(source_packed_path)
             if source_packed_path is not None else None
         )
         cluster_count = int(certificate_statistics["clusters"])
@@ -1384,20 +1362,11 @@ def materialize_xilinx_openparf_atomic_contract(
             else 0
         )
     except BaseException:
-        if handoff_builder is not None:
-            handoff_builder.close()
+        handoff_builder.close()
         raise
     finally:
         certificate_view.close()
 
-    packed_clusters = (
-        _BridgeClusterSequence(clusters, placement=False)
-        if handoff_builder is None else ()
-    )
-    placement_clusters = (
-        _BridgeClusterSequence(clusters, placement=True)
-        if handoff_builder is None else ()
-    )
     packed = {
         "schema": PACKED_SITE_NETLIST_SCHEMA,
         "status": "pass",
@@ -1420,7 +1389,7 @@ def materialize_xilinx_openparf_atomic_contract(
                 "ultrascaleplus-half-slice-cksr-ff-lane-ce-v1"
             ),
         },
-        "clusters": packed_clusters,
+        "clusters": (),
         "cascade_chains": cascades,
         "unplaced_constants": constants,
         "summary": {
@@ -1459,7 +1428,7 @@ def materialize_xilinx_openparf_atomic_contract(
                 "constraints_sha256": constraints_sha,
                 "openparf_atomic_placement_sha256": certificate_sha,
             },
-            "clusters": placement_clusters,
+            "clusters": (),
             "summary": {
                 "clusters": cluster_count,
                 "cells": len(cells) - len(constants),
@@ -1480,131 +1449,68 @@ def materialize_xilinx_openparf_atomic_contract(
             "provider_manifest_sha256": provider_manifest_sha,
         })
 
-    if physical_handoff_path is not None:
-        assert handoff_builder is not None
-        try:
-            step_started = time.perf_counter()
-            handoff_builder.seal(
-                packed, placement, cascades=cascades, constants=constants
-            )
-            publication_steps["physical_handoff_write_seconds"] = (
-                time.perf_counter() - step_started
-            )
-            temporary_handoff = handoff_builder.temporary_path
-            step_started = time.perf_counter()
-            handoff_validation = validate_xilinx_physical_handoff(
-                temporary_handoff
-            )
-            publication_steps["physical_handoff_validation_seconds"] = (
-                time.perf_counter() - step_started
-            )
-            step_started = time.perf_counter()
-            validation_packed, validation_placement = (
-                open_xilinx_physical_handoff(
-                    temporary_handoff,
-                    validated_sha256=(
-                        handoff_validation["physical_handoff_sha256"]
-                    ),
-                )
-            )
-            publication_steps["physical_handoff_open_seconds"] = (
-                time.perf_counter() - step_started
-            )
-            step_started = time.perf_counter()
-            packing_validation, placement_validation = (
-                _validate_streamed_physical_handoff(
-                    temporary_handoff,
-                    handoff_sha=handoff_validation["physical_handoff_sha256"],
-                    mapped_sha=mapped_sha,
-                    selected_top=selected_top,
-                    cells=cells,
-                    architecture_path=architecture_path,
-                    architecture=architecture,
-                    packed=validation_packed,
-                    placement=validation_placement,
-                    constraints_path=constraints_path,
-                    native=native,
-                )
-            )
-            publication_steps["packing_validation_seconds"] = (
-                time.perf_counter() - step_started
-            )
-            publication_steps["placement_validation_seconds"] = 0.0
-            published_digest = handoff_validation[
-                "physical_handoff_sha256"
-            ]
-            handoff_builder.publish()
-            published_packed, published_placement = (
-                open_xilinx_physical_handoff(
-                    physical_handoff_path,
-                    validated_sha256=published_digest,
-                )
-            )
-        except BaseException:
-            handoff_builder.close()
-            raise
-        handoff_builder.close()
-    else:
-        packed_output_path.parent.mkdir(parents=True, exist_ok=True)
-        placement_output_path.parent.mkdir(parents=True, exist_ok=True)
-        packed_fd, packed_name = tempfile.mkstemp(
-            prefix=f".{packed_output_path.name}.", suffix=".tmp",
-            dir=packed_output_path.parent,
+    try:
+        step_started = time.perf_counter()
+        handoff_builder.seal(
+            packed, placement, cascades=cascades, constants=constants
         )
-        placement_fd, placement_name = tempfile.mkstemp(
-            prefix=f".{placement_output_path.name}.", suffix=".tmp",
-            dir=placement_output_path.parent,
+        publication_steps["physical_handoff_write_seconds"] = (
+            time.perf_counter() - step_started
         )
-        os.close(packed_fd)
-        os.close(placement_fd)
-        packed_temp = Path(packed_name)
-        placement_temp = Path(placement_name)
-        try:
-            step_started = time.perf_counter()
-            compatibility_packed = dict(packed)
-            compatibility_packed["clusters"] = list(packed_clusters)
-            compatibility_placement = dict(placement)
-            compatibility_placement["clusters"] = list(placement_clusters)
-            write_json(packed_temp, compatibility_packed, compact=True)
-            placement["source"]["packed_sha256"] = _sha256(packed_temp)
-            compatibility_placement["source"] = dict(placement["source"])
-            write_json(placement_temp, compatibility_placement, compact=True)
-            publication_steps["compatibility_json_write_seconds"] = (
-                time.perf_counter() - step_started
+        temporary_handoff = handoff_builder.temporary_path
+        step_started = time.perf_counter()
+        handoff_validation = validate_xilinx_physical_handoff(
+            temporary_handoff
+        )
+        publication_steps["physical_handoff_validation_seconds"] = (
+            time.perf_counter() - step_started
+        )
+        step_started = time.perf_counter()
+        validation_packed, validation_placement = (
+            open_xilinx_physical_handoff(
+                temporary_handoff,
+                validated_sha256=(
+                    handoff_validation["physical_handoff_sha256"]
+                ),
             )
-            step_started = time.perf_counter()
-            packing_validation = validate_xilinx_packing(
-                mapped_path, packed_temp, top=selected_top,
+        )
+        publication_steps["physical_handoff_open_seconds"] = (
+            time.perf_counter() - step_started
+        )
+        step_started = time.perf_counter()
+        packing_validation, placement_validation = (
+            _validate_streamed_physical_handoff(
+                temporary_handoff,
+                handoff_sha=handoff_validation["physical_handoff_sha256"],
+                mapped_sha=mapped_sha,
+                selected_top=selected_top,
+                cells=cells,
                 architecture_path=architecture_path,
-                mapped_value=mapped, mapped_sha256=mapped_sha,
-                packed_value=packed, architecture=architecture.value,
-            )
-            publication_steps["packing_validation_seconds"] = (
-                time.perf_counter() - step_started
-            )
-            step_started = time.perf_counter()
-            placement_validation = validate_xilinx_placement(
-                packed_temp, architecture_path, placement_temp,
+                architecture=architecture,
+                packed=validation_packed,
+                placement=validation_placement,
                 constraints_path=constraints_path,
-                native_constraints_path=native_constraints_path,
-                provider_manifest_path=provider_manifest_path,
-                architecture=architecture, packed_value=packed,
-                placement_value=placement,
+                native=native,
             )
-            publication_steps["placement_validation_seconds"] = (
-                time.perf_counter() - step_started
+        )
+        publication_steps["packing_validation_seconds"] = (
+            time.perf_counter() - step_started
+        )
+        publication_steps["placement_validation_seconds"] = 0.0
+        published_digest = handoff_validation[
+            "physical_handoff_sha256"
+        ]
+        handoff_builder.publish()
+        published_packed, published_placement = (
+            open_xilinx_physical_handoff(
+                physical_handoff_path,
+                validated_sha256=published_digest,
             )
-            step_started = time.perf_counter()
-            os.replace(packed_temp, packed_output_path)
-            os.replace(placement_temp, placement_output_path)
-            publication_steps["atomic_publish_seconds"] = (
-                time.perf_counter() - step_started
-            )
-        finally:
-            packed_temp.unlink(missing_ok=True)
-            placement_temp.unlink(missing_ok=True)
-        published_packed, published_placement = packed, placement
-        published_digest = None
+        )
+    except BaseException:
+        handoff_builder.close()
+        raise
+    handoff_builder.close()
 
     if packed_value_sink is not None:
         packed_value_sink.clear()
@@ -1628,12 +1534,9 @@ def materialize_xilinx_openparf_atomic_contract(
                 constraints_sha
             ),
         },
-        "packed_sha256": published_digest or _sha256(packed_output_path),
-        "placement_sha256": published_digest or _sha256(placement_output_path),
-        **(
-            {"physical_handoff_sha256": published_digest}
-            if published_digest is not None else {}
-        ),
+        "packed_sha256": published_digest,
+        "placement_sha256": published_digest,
+        "physical_handoff_sha256": published_digest,
         "cells": len(cells), "placed_cells": len(cells) - len(constants),
         "clusters": cluster_count,
         "site_pin_moved_ffs": site_pin_legalization["moved_ffs"],
@@ -1659,48 +1562,31 @@ def materialize_xilinx_openparf_atomic_contract(
             "bytes": {
                 "placement_certificate": atomic_placement_path.stat().st_size,
                 "placement_certificate_database": certificate_database_bytes,
-                "packed_output": (
-                    0 if physical_handoff_path is not None
-                    else packed_output_path.stat().st_size
-                ),
-                "placement_output": (
-                    0 if physical_handoff_path is not None
-                    else placement_output_path.stat().st_size
-                ),
+                "packed_output": 0,
+                "placement_output": 0,
                 "physical_handoff": (
                     physical_handoff_path.stat().st_size
-                    if physical_handoff_path is not None else 0
                 ),
             },
             "dataflow": {
-                "certificate": "streaming-sqlite-or-inline-compatibility",
+                "certificate": "streaming-sqlite",
                 "bridge_contracts": (
                     "incremental-typed-single-owner-dual-view-v1"
-                    if physical_handoff_path is not None
-                    else "single-owner-dual-view"
                 ),
                 "certificate_to_handoff": (
                     "validated-cluster-direct-typed-row"
-                    if physical_handoff_path is not None
-                    else "retained-compatibility-cluster-tree"
                 ),
                 "legalization_working_set": (
                     "mux-slice-clusters-only"
-                    if physical_handoff_path is not None
-                    else "all-physical-clusters"
                 ),
                 "certificate_assignment_ownership": (
                     "typed-unique-index-and-count"
-                    if physical_handoff_path is not None
-                    else "python-owner-set"
                 ),
                 "handoff_publication": (
                     "validate-temporary-before-atomic-replace"
-                    if physical_handoff_path is not None else None
                 ),
                 "physical_contract_validation": (
                     "sqlite-single-scan-ordered-merge-bounded-special-subgraph"
-                    if physical_handoff_path is not None else "python-contract-tree"
                 ),
                 "source_packed": (
                     "in-process-view" if source_packed_value is not None
@@ -1708,8 +1594,6 @@ def materialize_xilinx_openparf_atomic_contract(
                 ),
                 "published_values": (
                     "lazy-typed-sqlite-views"
-                    if physical_handoff_path is not None
-                    else "reused-in-process"
                 ),
                 "validation_replay": False,
             },

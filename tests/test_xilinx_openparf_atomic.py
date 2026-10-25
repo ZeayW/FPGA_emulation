@@ -1,3 +1,4 @@
+from tests.openparf_bridge_fixture import materialize_bridge_fixture as materialize_xilinx_openparf_atomic_contract
 from contextlib import closing
 import json
 import fcntl
@@ -42,9 +43,6 @@ from emuflow.xilinx_openparf_atomic import (
 )
 from emuflow.xilinx_openparf_source_storage import (
     OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA,
-)
-from emuflow.xilinx_openparf_bridge import (
-    materialize_xilinx_openparf_atomic_contract,
 )
 from emuflow.xilinx_packing import validate_xilinx_packing
 from tests.xilinx_site_reference import pack_xilinx_sites

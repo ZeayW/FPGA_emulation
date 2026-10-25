@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.openparf_bridge_fixture import materialize_bridge_fixture as materialize_xilinx_openparf_atomic_contract
 from emuflow.errors import ValidationError
 from emuflow.architecture import ArchitectureDB
 from emuflow.io import file_sha256
@@ -24,9 +25,7 @@ from emuflow.xilinx_openparf_atomic import (
     write_xilinx_openparf_atomic_placement_certificate,
 )
 from emuflow.xilinx_openparf_bridge import (
-    _BridgeClusterSequence,
     _validate_certificate,
-    materialize_xilinx_openparf_atomic_contract,
 )
 from emuflow.xilinx_packing import validate_xilinx_packing
 from emuflow.xilinx_placement import validate_xilinx_placement
@@ -109,44 +108,6 @@ def _native_certificate(
 
 
 class XilinxOpenparfBridgeTest(unittest.TestCase):
-    def test_bridge_cluster_random_access_does_not_expand_all_clusters(self):
-        class IndexedOnly(list):
-            def __iter__(self):
-                raise AssertionError("single cluster access expanded the tree")
-
-        clusters = IndexedOnly(
-            [
-                {
-                    "id": "cluster0",
-                    "kind": "slice",
-                    "site_templates": ["SLICEL"],
-                    "control_set": None,
-                    "assignments": [
-                        {
-                            "instance": "cell0",
-                            "cell_type": "LUT1",
-                            "bel": "A6LUT",
-                            "_placement_mode": "SLICEL",
-                            "_physical_site": "SLICE_X0Y0",
-                            "_placement_ordinal": 0,
-                        }
-                    ],
-                    "_placement": {
-                        "site": "SLICE_X0Y0",
-                        "site_type": "SLICEL",
-                        "x": 0,
-                        "y": 0,
-                        "fixed": False,
-                        "physical_region": None,
-                    },
-                }
-            ]
-        )
-        packed = _BridgeClusterSequence(clusters, placement=False)
-        placed = _BridgeClusterSequence(clusters, placement=True)
-        self.assertEqual(packed[0]["id"], "cluster0")
-        self.assertEqual(placed[0]["cluster"], "cluster0")
-
     def test_bram_tile_group_certificate_is_independently_fail_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -274,6 +235,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             _validate_certificate(
                 mapped, certificate, architecture, "top",
                 native_bram_groups=native_groups,
+                physical_cluster_sink=lambda _cluster: None,
             )
 
             for path, replacement in (
@@ -295,6 +257,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
                         _validate_certificate(
                             mapped, broken, architecture, "top",
                             native_bram_groups=native_groups,
+                            physical_cluster_sink=lambda _cluster: None,
                         )
 
             conflicting = copy.deepcopy(certificate)
@@ -326,7 +289,67 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
                 _validate_certificate(
                     conflicting_mapped, conflicting, architecture, "top",
                     native_bram_groups=native_groups,
+                    physical_cluster_sink=lambda _cluster: None,
                 )
+
+    def test_public_bridge_only_accepts_one_output(self):
+        from emuflow.xilinx_openparf_bridge import materialize_xilinx_openparf_atomic_contract as typed_bridge
+        with self.assertRaises(TypeError):
+            typed_bridge(Path('mapped'), Path('arch'), Path('cert'), Path('packed.json'), Path('placement.json'))
+
+    def test_public_bridge_rejects_source_aliases_without_modification(self):
+        from emuflow.xilinx_openparf_bridge import materialize_xilinx_openparf_atomic_contract as typed_bridge
+        import os
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, architecture, certificate = _native_certificate(root, include_hard=False)
+            descriptor = json.loads(certificate.read_text())['cluster_storage']
+            sidecar = certificate.with_name(descriptor['file'])
+            alias = root / 'mapped-hardlink.sqlite'
+            os.link(mapped, alias)
+            for target in (mapped, architecture, certificate, sidecar, alias):
+                before = file_sha256(target)
+                with self.subTest(target=target), self.assertRaisesRegex(ValidationError, 'output aliases an input'):
+                    typed_bridge(mapped, architecture, certificate, target)
+                self.assertEqual(file_sha256(target), before)
+                self.assertEqual(list(root.glob('.'+target.name+'.*.tmp')), [])
+
+    def test_bridge_header_reuses_source_digests(self):
+        from emuflow import xilinx_openparf_bridge as bridge
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, architecture, certificate = _native_certificate(root, include_hard=False)
+            with mock.patch.object(bridge, '_sha256', wraps=file_sha256) as digest:
+                bridge.materialize_xilinx_openparf_atomic_contract(
+                    mapped, architecture, certificate, root/'physical.sqlite',
+                )
+            self.assertEqual(digest.call_args_list.count(mock.call(architecture)), 1)
+            self.assertEqual(digest.call_args_list.count(mock.call(mapped)), 1)
+            self.assertEqual(digest.call_args_list.count(mock.call(certificate)), 1)
+
+    def test_source_generation_is_checked_immediately_before_publication(self):
+        from emuflow.xilinx_openparf_bridge import materialize_xilinx_openparf_atomic_contract as typed_bridge
+        from emuflow.xilinx_physical_handoff import XilinxPhysicalHandoffBuilder
+        import os
+        publish = XilinxPhysicalHandoffBuilder.publish
+        for changed in ('mapped', 'certificate', 'sidecar'):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                mapped, architecture, certificate = _native_certificate(root, include_hard=False)
+                descriptor = json.loads(certificate.read_text())['cluster_storage']
+                sidecar = certificate.with_name(descriptor['file'])
+                output = root / 'physical.sqlite'
+                output.write_bytes(b'previous-complete-artifact')
+                target = {'mapped': mapped, 'certificate': certificate, 'sidecar': sidecar}[changed]
+                def mutate_then_publish(builder):
+                    stat = target.stat()
+                    os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns+1_000_000))
+                    return publish(builder)
+                with mock.patch.object(XilinxPhysicalHandoffBuilder, 'publish', mutate_then_publish):
+                    with self.assertRaisesRegex(ValidationError, 'source generation changed'):
+                        typed_bridge(mapped, architecture, certificate, output)
+                self.assertEqual(output.read_bytes(), b'previous-complete-artifact')
+                self.assertEqual(list(root.glob('.physical.sqlite.*.tmp')), [])
 
     def test_native_legal_multi_control_set_slice_is_preserved(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -423,17 +446,17 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             packed = {}
             placement = {}
             with mock.patch(
-                "emuflow.xilinx_openparf_bridge._BridgeClusterSequence",
+                "emuflow.io.write_json",
                 side_effect=AssertionError(
                     "production handoff retained the physical cluster tree"
                 ),
             ), mock.patch(
-                "emuflow.xilinx_openparf_bridge.validate_xilinx_packing",
+                "emuflow.xilinx_packing.validate_xilinx_packing",
                 side_effect=AssertionError(
                     "production handoff rebuilt generic packing owner maps"
                 ),
             ), mock.patch(
-                "emuflow.xilinx_openparf_bridge.validate_xilinx_placement",
+                "emuflow.xilinx_placement.validate_xilinx_placement",
                 side_effect=AssertionError(
                     "production handoff rebuilt generic placement maps"
                 ),
@@ -738,7 +761,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
                     root / "packed.json", root / "placement.json",
                 )
 
-    def test_duplicate_site_group_fails_closed(self):
+    def test_duplicate_site_group_rejected_by_typed_certificate_writer(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             mapped, architecture, certificate = _native_certificate(
@@ -747,7 +770,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             value = _inline_certificate(certificate)
             value["clusters"].append(dict(value["clusters"][0]))
             certificate.write_text(json.dumps(value), encoding="utf-8")
-            with self.assertRaisesRegex(ValidationError, "duplicate physical site"):
+            with self.assertRaisesRegex(ValidationError, "cluster cannot be stored"):
                 materialize_xilinx_openparf_atomic_contract(
                     mapped, architecture, certificate,
                     root / "packed.json", root / "placement.json",

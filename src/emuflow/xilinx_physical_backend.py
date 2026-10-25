@@ -819,8 +819,7 @@ def run_rapidwright_openparf_native_candidate_backend(
         mapped_path,
         architecture_path,
         certificate_path,
-        packed_path,
-        placement_path,
+        physical_handoff_path,
         top=mapped_report["top"],
         source_packed_path=atomic_source_path,
         source_packed_value=atomic_source,
@@ -832,7 +831,6 @@ def run_rapidwright_openparf_native_candidate_backend(
         architecture=architecture,
         packed_value_sink=packed,
         placement_value_sink=placement,
-        physical_handoff_path=physical_handoff_path,
     )
     # The source view and shared physical handoff were already independently
     # validated before atomic publication. Reuse their lazy indexed views

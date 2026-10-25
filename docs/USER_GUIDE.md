@@ -327,6 +327,11 @@ emuflow arch export-xilinx-rwroute-input --mapped-index MAPPED.sqlite \
   --physical-handoff PHYSICAL.sqlite --output INPUT.tsv
 ```
 
+The OpenPARF bridge likewise requires one `physical_handoff` output argument and
+a typed placement certificate. Its former pair of packing/placement JSON outputs
+and `physical_handoff_path=None` mode are removed. Input aliases and source changes
+reject publication; independent packing, placement and macro checks remain.
+
 Separate packing/placement JSON export and Python mapping-object export are
 retired. Historical JSON qualification uses the noninstalled test oracle; the
 production entry never falls back after a native failure.
