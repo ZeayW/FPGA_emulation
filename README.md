@@ -142,7 +142,8 @@ cannot reintroduce retired provider programs or replace the rebuilt native entry
 Native clustering and PATRON joins share the live EmuIR reader's store.
 See the [W0 contract and acceptance gates](docs/FLOW_PLAN.md#shared-native-core-w0).
 The [publication qualification](docs/VALIDATION.md#native-store-publication-qualification)
-compares the complete Phase 6 API with fixed inputs and algorithms.
+compares the complete Phase 6 API with fixed inputs and algorithms. Offline
+full-record seals allow sequential comparison without retaining both arms' payloads.
 Production native stages require `emuflow-native`; an incomplete installation
 does not select an older standalone tool. `EMUFLOW_NATIVE_ROOT` selects one
 authoritative installation. Bookshelf export uses only the unified command.

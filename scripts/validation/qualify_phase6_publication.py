@@ -9,8 +9,9 @@ it is not another production flow or a fallback from a native error.
 from __future__ import annotations
 
 import argparse
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 import importlib
+import hashlib
 import json
 import math
 import os
@@ -18,6 +19,7 @@ from pathlib import Path
 import resource
 import sqlite3
 import stat
+import struct
 import subprocess
 import time
 import tempfile
@@ -78,97 +80,224 @@ def workspace_bytes(workspace):
     return tuple(sum(item[index] for item in sizes.values()) for index in (0, 1))
 
 
-def compare_sqlite_records(first: Path, second: Path):
-    """Compare every declared field in both directions; SQLite owns the joins."""
-    generations = [native_file_generation(path) for path in (first, second)]
-    hashes = [file_sha256(path) for path in (first, second)]
-    result = {
-        "file_sha256": hashes,
-        "file_identity": hashes[0] == hashes[1],
-        "logical_identity": True,
-    }
-    if hashes[0] != hashes[1]:
+SQLITE_RECORD_SEAL_SCHEMA = "emuflow.sqlite-ordered-record-seal/v1"
+RESULT_SCHEMA = "emuflow.phase6-publication-qualification-result/v2"
 
-        def quote(name):
-            return '"' + name.replace('"', '""') + '"'
 
-        connection = sqlite3.connect(immutable_sqlite_uri(first), uri=True)
-        try:
-            connection.execute("PRAGMA temp_store=FILE")
-            connection.execute(
-                "ATTACH DATABASE ? AS other", (immutable_sqlite_uri(second),)
+def _quote(name):
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _record_bytes(values):
+    """Unambiguous SQLite storage types and lengths; one record at a time."""
+    output = bytearray(b"R")
+    for value in values:
+        if value is None:
+            output += b"N"
+        elif isinstance(value, int):
+            output += b"I" + struct.pack(">q", value)
+        elif isinstance(value, float):
+            if math.isnan(value):
+                raise ValidationError("qualification cannot seal SQLite NaN")
+            # SQLite IS considers the two signed zero representations equal.
+            output += b"F" + struct.pack(">d", 0.0 if value == 0 else value)
+        elif isinstance(value, (str, bytes)):
+            data = value.encode("utf-8") if isinstance(value, str) else value
+            output += (
+                (b"T" if isinstance(value, str) else b"B")
+                + struct.pack(">Q", len(data))
+                + data
             )
-            names = []
-            for database in ("main", "other"):
-                names.append(
-                    [
-                        row[0]
-                        for row in connection.execute(
-                            f"SELECT name FROM {database}.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-                        )
-                    ]
+        else:
+            raise ValidationError("qualification SQLite storage type is unsupported")
+    return output
+
+
+def seal_sqlite_records(path: Path):
+    """Seal every typed field in primary-key order; retain no row population."""
+    generation = native_file_generation(path)
+    digest = file_sha256(path)
+    tables = []
+    with closing(sqlite3.connect(immutable_sqlite_uri(path), uri=True)) as connection:
+        connection.execute("PRAGMA temp_store=FILE")
+        application_id = connection.execute("PRAGMA application_id").fetchone()[0]
+        user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        names = [
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name"
+            )
+        ]
+        for name in names:
+            if any(
+                row[6] != 0
+                for row in connection.execute(f"PRAGMA table_xinfo({_quote(name)})")
+            ):
+                raise ValidationError(
+                    "qualification SQLite generated/hidden columns are unsupported: "
+                    + name
                 )
-            if names[0] != names[1]:
-                raise ValidationError("qualification SQLite table coverage differs")
-            for name in names[0]:
-                signatures = [
-                    list(
-                        connection.execute(
-                            f"PRAGMA {database}.table_info({quote(name)})"
-                        )
-                    )
-                    for database in ("main", "other")
-                ]
-                if signatures[0] != signatures[1] or not any(
-                    row[5] for row in signatures[0]
-                ):
+            columns = [
+                list(row)
+                for row in connection.execute(f"PRAGMA table_info({_quote(name)})")
+            ]
+            keys = sorted((row[5], row[0]) for row in columns if row[5])
+            if (
+                not columns
+                or not keys
+                or [key[0] for key in keys] != list(range(1, len(keys) + 1))
+            ):
+                raise ValidationError(
+                    "qualification requires declared primary identities: " + name
+                )
+            visible = [
+                item[0]
+                for item in connection.execute(
+                    f"SELECT * FROM {_quote(name)} LIMIT 0"
+                ).description
+            ]
+            if visible != [column[1] for column in columns]:
+                raise ValidationError(
+                    "qualification SQLite generated/hidden columns are unsupported: "
+                    + name
+                )
+            ordered = ",".join(
+                _quote(columns[index][1]) + " COLLATE BINARY"
+                for _position, index in keys
+            )
+            rows = connection.execute(
+                f"SELECT * FROM {_quote(name)} ORDER BY {ordered}"
+            )
+            records = hashlib.sha256(b"emuflow.sqlite-typed-records/v1\0")
+            records.update(
+                json.dumps(
+                    [name, columns], ensure_ascii=True, separators=(",", ":")
+                ).encode("utf-8")
+            )
+            count = 0
+            for row in rows:
+                if any(row[index] is None for _position, index in keys):
                     raise ValidationError(
-                        "qualification SQLite typed columns or primary key differ: "
-                        + name
+                        "qualification requires non-null primary identities: " + name
                     )
-                nullable_keys = [
-                    row[1] for row in signatures[0] if row[5] and not row[3]
-                ]
-                for database in ("main", "other"):
-                    if (
-                        nullable_keys
-                        and connection.execute(
-                            f"SELECT 1 FROM {database}.{quote(name)} WHERE "
-                            + " OR ".join(
-                                f"{quote(key)} IS NULL" for key in nullable_keys
-                            )
-                            + " LIMIT 1"
-                        ).fetchone()
-                        is not None
-                    ):
-                        raise ValidationError(
-                            "qualification requires non-null primary identities: "
-                            + name
-                        )
-                equal = " AND ".join(
-                    f"(a.{quote(row[1])} COLLATE BINARY IS b.{quote(row[1])} COLLATE BINARY AND "
-                    f"typeof(a.{quote(row[1])})=typeof(b.{quote(row[1])}))"
-                    for row in signatures[0]
-                )
-                for left, right in (("main", "other"), ("other", "main")):
-                    query = f"SELECT 1 FROM {left}.{quote(name)} a WHERE NOT EXISTS (SELECT 1 FROM {right}.{quote(name)} b WHERE {equal}) LIMIT 1"
-                    if connection.execute(query).fetchone() is not None:
-                        raise ValidationError(
-                            "qualification SQLite records differ: " + name + " " + left
-                        )
-        finally:
-            connection.close()
-    if generations != [native_file_generation(path) for path in (first, second)]:
-        raise ValidationError(
-            "qualification SQLite comparison input generation changed"
+                records.update(_record_bytes(row))
+                count += 1
+            records.update(b"E" + struct.pack(">Q", count))
+            tables.append(
+                {
+                    "name": name,
+                    "columns": columns,
+                    "records": count,
+                    "records_sha256": records.hexdigest(),
+                }
+            )
+    if native_file_generation(path) != generation:
+        raise ValidationError("qualification SQLite seal input generation changed")
+    return {
+        "schema": SQLITE_RECORD_SEAL_SCHEMA,
+        "file_sha256": digest,
+        "file_bytes": generation[2],
+        "application_id": application_id,
+        "user_version": user_version,
+        "tables": tables,
+    }
+
+
+def _validate_record_seal(value):
+    def digest(text):
+        return (
+            isinstance(text, str)
+            and len(text) == 64
+            and all(c in "0123456789abcdef" for c in text)
         )
-    return result
+
+    if (
+        not isinstance(value, dict)
+        or set(value)
+        != {
+            "schema",
+            "file_sha256",
+            "file_bytes",
+            "application_id",
+            "user_version",
+            "tables",
+        }
+        or value["schema"] != SQLITE_RECORD_SEAL_SCHEMA
+        or not digest(value["file_sha256"])
+        or any(
+            type(value[key]) is not int or value[key] < 0
+            for key in ("file_bytes", "application_id", "user_version")
+        )
+        or not isinstance(value["tables"], list)
+        or not value["tables"]
+    ):
+        raise ValidationError("qualification SQLite record seal is malformed")
+    previous = None
+    for table in value["tables"]:
+        if (
+            not isinstance(table, dict)
+            or set(table) != {"name", "columns", "records", "records_sha256"}
+            or not isinstance(table["name"], str)
+            or not table["name"]
+            or (previous is not None and previous >= table["name"])
+            or type(table["records"]) is not int
+            or table["records"] < 0
+            or not digest(table["records_sha256"])
+            or not isinstance(table["columns"], list)
+            or not table["columns"]
+        ):
+            raise ValidationError("qualification SQLite table seal is malformed")
+        previous = table["name"]
+        for index, column in enumerate(table["columns"]):
+            if (
+                not isinstance(column, list)
+                or len(column) != 6
+                or type(column[0]) is not int
+                or column[0] != index
+                or not isinstance(column[1], str)
+                or not column[1]
+                or not isinstance(column[2], str)
+                or type(column[3]) is not int
+                or column[3] not in (0, 1)
+                or column[4] is not None
+                and not isinstance(column[4], str)
+                or type(column[5]) is not int
+                or not 0 <= column[5] <= len(table["columns"])
+            ):
+                raise ValidationError("qualification SQLite column seal is malformed")
+        keys = sorted(column[5] for column in table["columns"] if column[5])
+        if (
+            not keys
+            or keys != list(range(1, len(keys) + 1))
+            or len({column[1] for column in table["columns"]}) != len(table["columns"])
+        ):
+            raise ValidationError("qualification SQLite primary-key seal is malformed")
+
+
+def compare_sqlite_seals(first, second):
+    for value in (first, second):
+        _validate_record_seal(value)
+    if any(
+        first[key] != second[key]
+        for key in ("application_id", "user_version", "tables")
+    ):
+        raise ValidationError("qualification SQLite records differ")
+    return {
+        "file_sha256": [first["file_sha256"], second["file_sha256"]],
+        "file_identity": first["file_sha256"] == second["file_sha256"],
+        "logical_identity": True,
+        "comparison": "all-fields-primary-key-ordered-type-length-sha256/v1",
+    }
+
+
+def compare_sqlite_records(first: Path, second: Path):
+    return compare_sqlite_seals(seal_sqlite_records(first), seal_sqlite_records(second))
 
 
 def compare_results(first, second):
     for result in (first, second):
         if (
-            result.get("schema") != "emuflow.phase6-publication-qualification-result/v1"
+            result.get("schema") != RESULT_SCHEMA
             or result.get("status") != "pass"
             or result.get("inputs_unchanged") is not True
         ):
@@ -186,12 +315,18 @@ def compare_results(first, second):
         "fpgas",
         "generated_text",
         "semantic_contract_sha256",
+        "input_generations",
     ):
         if first.get(key) != second.get(key):
             raise ValidationError("qualification arm configuration differs: " + key)
+    for result in (first, second):
+        if not isinstance(result.get("artifact_seals"), dict) or set(
+            result["artifact_seals"]
+        ) != {"split", "transport"}:
+            raise ValidationError("qualification arm lacks complete typed record seals")
     return {
-        name: compare_sqlite_records(
-            Path(first["artifacts"][name]), Path(second["artifacts"][name])
+        name: compare_sqlite_seals(
+            first["artifact_seals"][name], second["artifact_seals"][name]
         )
         for name in ("split", "transport")
     }
@@ -419,8 +554,22 @@ def qualify(request_path: Path, result_path: Path):
         for name, generation in generations.items()
     ):
         raise ValidationError("qualification input generation changed")
+    seal_started = time.perf_counter()
+    artifact_seals = {
+        name: seal_sqlite_records(output / filename)
+        for name, filename in (
+            ("split", "split-netlists.sqlite"),
+            ("transport", "transport.sqlite"),
+        )
+    }
+    seal_wall = time.perf_counter() - seal_started
+    if native_file_generation(request_path) != request_generation or any(
+        native_file_generation(sources[name]) != generation
+        for name, generation in generations.items()
+    ):
+        raise ValidationError("qualification input generation changed during sealing")
     result = {
-        "schema": "emuflow.phase6-publication-qualification-result/v1",
+        "schema": RESULT_SCHEMA,
         "status": "pass",
         "source_commit": commit,
         "design": report["design"],
@@ -445,6 +594,10 @@ def qualify(request_path: Path, result_path: Path):
         "cpu_scope": "self-process-interval; native child metrics are separate",
         "publications": publications,
         "inputs_unchanged": True,
+        "input_generations": {name: list(value) for name, value in generations.items()},
+        "artifact_seals": artifact_seals,
+        "record_seal_wall_seconds": seal_wall,
+        "record_seal_scope": "post-API verification, excluded from API wall/CPU/RSS/disk intervals; every record and storage type",
         "artifacts": {
             "split": str(output / "split-netlists.sqlite"),
             "transport": str(output / "transport.sqlite"),

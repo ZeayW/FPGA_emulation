@@ -7,6 +7,7 @@ import subprocess
 import shutil
 import os
 import sqlite3
+from copy import deepcopy
 from contextlib import closing
 
 import pytest
@@ -91,15 +92,34 @@ def test_both_qualification_modes_run_the_same_complete_api(tmp_path, monkeypatc
             ("native_metrics" in item) == (mode == "native")
             for item in result["publications"]
         )
-        results.append(result)
-    for name in ("split", "transport"):
-        assert (
-            Path(results[0]["artifacts"][name]).read_bytes()
-            == Path(results[1]["artifacts"][name]).read_bytes()
-        )
+        assert result["record_seal_wall_seconds"] > 0
+        assert set(result["artifact_seals"]) == {"split", "transport"}
+        results.append(json.loads((tmp_path / f"{mode}.result.json").read_text()))
+        # Sequential qualification retains full-record seals, not both payloads.
+        shutil.rmtree(tmp_path / mode)
     assert all(
         item["logical_identity"] for item in QUALIFY.compare_results(*results).values()
     )
+    assert all(
+        item["file_identity"] for item in QUALIFY.compare_results(*results).values()
+    )
+    for key, value in (
+        ("input_generations", {}),
+        ("generated_text", {}),
+        ("clock_periods", {"different": 10}),
+    ):
+        changed = deepcopy(results[1])
+        changed[key] = value
+        with pytest.raises(ValidationError, match="configuration differs"):
+            QUALIFY.compare_results(results[0], changed)
+    changed = deepcopy(results[1])
+    changed["artifact_seals"]["transport"]["tables"][0]["records"] += 1
+    with pytest.raises(ValidationError, match="records differ"):
+        QUALIFY.compare_results(results[0], changed)
+    changed = deepcopy(results[1])
+    del changed["artifact_seals"]["split"]
+    with pytest.raises(ValidationError, match="complete typed record seals"):
+        QUALIFY.compare_results(results[0], changed)
 
 
 def test_relation_comparison_accepts_page_layout_changes_and_rejects_record_changes(
@@ -119,6 +139,171 @@ def test_relation_comparison_accepts_page_layout_changes_and_rejects_record_chan
         db.execute("UPDATE records SET value='different' WHERE seq=2")
     with pytest.raises(ValidationError, match="records differ"):
         QUALIFY.compare_sqlite_records(first, second)
+
+
+def _typed_relation(path, values):
+    with closing(sqlite3.connect(path)) as db, db:
+        # No affinity: SQLite must preserve the supplied storage types.
+        db.execute("CREATE TABLE records(seq INTEGER PRIMARY KEY, a, b)")
+        db.executemany("INSERT INTO records VALUES (?,?,?)", values)
+
+
+def _independent_sql_identity(first, second):
+    with closing(sqlite3.connect(first)) as db:
+        db.execute("ATTACH DATABASE ? AS other", (str(second),))
+        fields = "seq, typeof(a), a COLLATE BINARY, typeof(b), b COLLATE BINARY"
+        return all(
+            db.execute(
+                f"SELECT {fields} FROM {left}.records EXCEPT "
+                f"SELECT {fields} FROM {right}.records LIMIT 1"
+            ).fetchone()
+            is None
+            for left, right in (("main", "other"), ("other", "main"))
+        )
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "equal"),
+    [
+        ((1, None), (1.0, None), False),
+        ((1, None), ("1", None), False),
+        (("a", None), (b"a", None), False),
+        ((None, b""), ("", b""), False),
+        (("ab", "c"), ("a", "bc"), False),
+        (("x\0y", "雪"), ("x\0y", "雪"), True),
+        ((b"\0\xffRNT", b""), (b"\0\xffRNT", b""), True),
+        ((-0.0, float("inf")), (0.0, float("inf")), True),
+        ((-(2**63), 2**63 - 1), (-(2**63), 2**63 - 1), True),
+        ((1.25, None), (1.2500000000000002, None), False),
+    ],
+)
+def test_record_seals_match_independent_sql_type_and_binary_field_comparison(
+    tmp_path,
+    left,
+    right,
+    equal,
+):
+    first, second = tmp_path / "one.sqlite", tmp_path / "two.sqlite"
+    _typed_relation(first, [(1, *left), (2, "unchanged", b"unchanged")])
+    _typed_relation(second, [(2, "unchanged", b"unchanged"), (1, *right)])
+    assert _independent_sql_identity(first, second) is equal
+    if equal:
+        assert QUALIFY.compare_sqlite_records(first, second)["logical_identity"]
+    else:
+        with pytest.raises(ValidationError, match="records differ"):
+            QUALIFY.compare_sqlite_records(first, second)
+
+
+def test_seal_orders_composite_keys_and_includes_every_user_table(tmp_path):
+    paths = [tmp_path / "one.sqlite", tmp_path / "two.sqlite"]
+    rows = [("a", 2, "second"), ("A", 1, "first"), ("雪", 0, "last")]
+    for index, path in enumerate(paths):
+        with closing(sqlite3.connect(path)) as db, db:
+            db.execute(
+                "CREATE TABLE records(a TEXT, b INTEGER, v TEXT, PRIMARY KEY(b,a))"
+            )
+            db.execute('CREATE TABLE "sqliteX"(k INTEGER PRIMARY KEY, v BLOB)')
+            db.executemany(
+                "INSERT INTO records VALUES (?,?,?)", rows[:: 1 if index else -1]
+            )
+            db.execute('INSERT INTO "sqliteX" VALUES (1,?)', (b"one",))
+    assert QUALIFY.compare_sqlite_records(*paths)["logical_identity"]
+    with closing(sqlite3.connect(paths[1])) as db, db:
+        db.execute('UPDATE "sqliteX" SET v=? WHERE k=1', (b"two",))
+    with pytest.raises(ValidationError, match="records differ"):
+        QUALIFY.compare_sqlite_records(*paths)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "PRAGMA application_id=42",
+        "PRAGMA user_version=3",
+        "ALTER TABLE records ADD COLUMN extra BLOB",
+        "CREATE TABLE another(k INTEGER PRIMARY KEY)",
+        "DELETE FROM records WHERE seq=1",
+        "UPDATE records SET seq=7 WHERE seq=1",
+    ],
+)
+def test_record_seals_reject_changed_schema_identity_or_row_population(
+    tmp_path, change
+):
+    first, second = tmp_path / "one.sqlite", tmp_path / "two.sqlite"
+    _typed_relation(first, [(1, "one", None)])
+    shutil.copyfile(first, second)
+    with closing(sqlite3.connect(second)) as db, db:
+        db.execute(change)
+    with pytest.raises(ValidationError, match="records differ"):
+        QUALIFY.compare_sqlite_records(first, second)
+
+
+@pytest.mark.parametrize(
+    ("ddl", "insert", "message"),
+    [
+        ("CREATE TABLE records(k TEXT, v TEXT)", None, "declared primary"),
+        (
+            "CREATE TABLE records(k TEXT PRIMARY KEY, v TEXT)",
+            'INSERT INTO records VALUES (NULL,"one")',
+            "non-null primary",
+        ),
+        (
+            "CREATE TABLE records(k INTEGER PRIMARY KEY, v AS (k+1))",
+            None,
+            "generated/hidden",
+        ),
+    ],
+)
+def test_record_seal_rejects_unsupported_or_nullable_identities(
+    tmp_path, ddl, insert, message
+):
+    path = tmp_path / "one.sqlite"
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute(ddl)
+        if insert:
+            db.execute(insert)
+    with pytest.raises(ValidationError, match=message):
+        QUALIFY.seal_sqlite_records(path)
+
+
+@pytest.mark.parametrize("during", ["hash", "records"])
+def test_record_seal_rejects_input_replacement_during_verification(
+    tmp_path, monkeypatch, during
+):
+    path, replacement = tmp_path / "one.sqlite", tmp_path / "replacement.sqlite"
+    _typed_relation(path, [(1, "one", None), (2, "two", None)])
+    _typed_relation(replacement, [(1, "different", None)])
+    name = "file_sha256" if during == "hash" else "_record_bytes"
+    original = getattr(QUALIFY, name)
+
+    def replace(*args):
+        value = original(*args)
+        if replacement.exists():
+            os.replace(replacement, path)
+        return value
+
+    monkeypatch.setattr(QUALIFY, name, replace)
+    with pytest.raises(ValidationError, match="generation changed"):
+        QUALIFY.seal_sqlite_records(path)
+
+
+@pytest.mark.parametrize("change", ["schema", "digest", "column", "pk", "count"])
+def test_record_seal_rejects_malformed_evidence(tmp_path, change):
+    path = tmp_path / "one.sqlite"
+    _typed_relation(path, [(1, "one", None)])
+    original = QUALIFY.seal_sqlite_records(path)
+    changed = deepcopy(original)
+    if change == "schema":
+        changed["schema"] = "unknown"
+    elif change == "digest":
+        changed["tables"][0]["records_sha256"] = "x" * 64
+    elif change == "column":
+        changed["tables"][0]["columns"][0][0] = 10
+    elif change == "pk":
+        changed["tables"][0]["columns"][0][5] = 0
+    else:
+        changed["tables"][0]["records"] = True
+    with pytest.raises(ValidationError, match="malformed"):
+        QUALIFY.compare_sqlite_seals(original, changed)
 
 
 def test_workspace_measurement_deduplicates_aliases_and_excludes_borrowed_symlinks(

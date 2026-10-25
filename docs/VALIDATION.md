@@ -124,11 +124,26 @@ sampled process-tree RSS and workspace logical/allocated file bytes. Its Linux
 disk sampler includes the producer's unlinked workspace file descriptors and
 deduplicates hardlinked inodes; borrowed symlinks are excluded. Record sampling
 and CPU scopes explicitly; these samples are not guaranteed high-water values.
-`compare_results()` requires matching source/configuration, all generated RTL/XDC
-hashes and complete records in both SQLite owners. It hashes each store once;
-different page layouts require exact typed-field joins in both directions rather
-than being treated as semantic changes. Unknown column/key contracts and changed
-generations fail closed. Three alternating pairs must meet the shared-core
+The current result contract is
+`emuflow.phase6-publication-qualification-result/v2`. `compare_results()` requires
+matching source/configuration and input generations, all generated RTL/XDC hashes,
+and full-record seals of both SQLite owners. Each seal records the file hash,
+application/version identity, every table's column/primary-key signature, row count
+and a SHA-256 over all fields in primary-key order. Type tags, explicit byte lengths
+and binary string encoding distinguish integers, reals, text, blobs and NULL;
+signed floating zero follows SQLite equality. Different page layouts or insertion
+orders do not change logical identity. Unknown columns/keys, nullable identities,
+generated/hidden columns and changed generations fail closed. Small differential
+fixtures compare the seals against independent two-direction typed SQL relations.
+
+Sealing is post-API verification. Its wall time is reported separately and excluded
+from the measured API wall/CPU/RSS/disk intervals; whole-worker measurements still
+include it. It is not a production handoff scan. Each arm may retain its compact
+result and full-record seals, prove worker termination, and retire its payloads
+before starting the next arm. Comparison must continue to work after that
+retirement, and may not substitute sampling or omit a field. Storage admission
+must cover one arm's construction/verification peak and the shared owned inputs.
+Three alternating pairs must meet the shared-core
 integration threshold of at most 5% wall-time regression. Preserve compact
 identities, comparison and resource evidence, then retire the invocation's
 scratch after its processes exit. Component qualification does not establish
