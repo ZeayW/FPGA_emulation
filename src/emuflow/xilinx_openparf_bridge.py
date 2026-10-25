@@ -31,8 +31,10 @@ from .xilinx_openparf_atomic import (
 )
 from .xilinx_openparf_source_storage import (
     OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA,
+    XilinxOpenparfAtomicSourceView,
     read_xilinx_openparf_atomic_source,
 )
+from .xilinx_netlist import is_xilinx_mapped_index
 from .xilinx_native_device_constraints import (
     load_xilinx_native_device_constraints,
 )
@@ -176,6 +178,7 @@ def _validate_certificate(
     physical_cluster_sink: Callable[[Mapping[str, Any]], None],
     sink_enforces_assignment_uniqueness: bool = False,
     source_assignment_sink: Optional[Callable[[str, str], None]] = None,
+    source_ownership_validation: Optional[Mapping[str, Any]] = None,
 ) -> Tuple[
     str, Mapping[str, Any], list[str],
     list[Dict[str, Any]], Mapping[str, Any]
@@ -226,8 +229,17 @@ def _validate_certificate(
         )
     expected_count = len(cells) - len(constants)
     cascades: list[Dict[str, Any]] = []
+    if source_ownership_validation is not None and (
+        source_packed is None or source_assignment_sink is not None
+        or source_ownership_validation.get("schema") != "emuflow.atomic-ownership-validation/v1"
+        or source_ownership_validation.get("status") != "pass"
+        or source_ownership_validation.get("implementation_id") != "native-atomic-ownership-merge-v1"
+        or source_ownership_validation.get("assignments") != expected_count
+        or source_ownership_validation.get("ownership_snapshots") != 0
+    ):
+        raise ValidationError("OpenPARF native source ownership validation disagrees")
     source_owner: Optional[Dict[str, str]] = (
-        None if source_assignment_sink is not None else {}
+        None if source_assignment_sink is not None or source_ownership_validation is not None else {}
     )
     source_owner_count = 0
     if source_packed is not None:
@@ -251,67 +263,70 @@ def _validate_certificate(
             raise ValidationError(
                 "OpenPARF atomic source PackedSiteNetlist is invalid"
             )
-        indexed_source_assignments = getattr(
-            source_packed, "iter_source_assignments", None
-        )
-        if callable(indexed_source_assignments):
-            for instance, source_cluster_id, source_cell_type in (
-                indexed_source_assignments()
-            ):
-                if (
-                    not isinstance(instance, str)
-                    or not isinstance(source_cluster_id, str)
-                    or not isinstance(source_cell_type, str)
-                    or source_cell_type in CONSTANT_TYPES
-                    or (source_owner is not None and instance in source_owner)
-                ):
-                    raise ValidationError(
-                        "OpenPARF atomic source cell ownership is invalid"
-                    )
-                if source_owner is not None:
-                    source_owner[instance] = source_cluster_id
-                else:
-                    assert source_assignment_sink is not None
-                    source_assignment_sink(instance, source_cluster_id)
-                source_owner_count += 1
+        if source_ownership_validation is not None:
+            source_owner_count = expected_count
         else:
-            for source_cluster in source_clusters:
-                if not isinstance(source_cluster, Mapping) or not isinstance(
-                    source_cluster.get("id"), str
+            indexed_source_assignments = getattr(
+                source_packed, "iter_source_assignments", None
+            )
+            if callable(indexed_source_assignments):
+                for instance, source_cluster_id, source_cell_type in (
+                    indexed_source_assignments()
                 ):
-                    raise ValidationError(
-                        "OpenPARF atomic source cluster identity is invalid"
-                    )
-                for assignment in source_cluster.get("assignments", []):
-                    if not isinstance(assignment, Mapping):
-                        raise ValidationError(
-                            "OpenPARF atomic source assignment is invalid"
-                        )
-                    instance = assignment.get("instance")
                     if (
                         not isinstance(instance, str)
-                        or (
-                            source_owner is not None
-                            and instance in source_owner
-                        )
-                    ):
-                        raise ValidationError(
-                            "OpenPARF atomic source cell ownership is invalid"
-                        )
-                    source_cell = cells.get(instance)
-                    if (
-                        not isinstance(source_cell, Mapping)
-                        or source_cell.get("type") in CONSTANT_TYPES
+                        or not isinstance(source_cluster_id, str)
+                        or not isinstance(source_cell_type, str)
+                        or source_cell_type in CONSTANT_TYPES
+                        or (source_owner is not None and instance in source_owner)
                     ):
                         raise ValidationError(
                             "OpenPARF atomic source cell ownership is invalid"
                         )
                     if source_owner is not None:
-                        source_owner[instance] = source_cluster["id"]
+                        source_owner[instance] = source_cluster_id
                     else:
                         assert source_assignment_sink is not None
-                        source_assignment_sink(instance, source_cluster["id"])
+                        source_assignment_sink(instance, source_cluster_id)
                     source_owner_count += 1
+            else:
+                for source_cluster in source_clusters:
+                    if not isinstance(source_cluster, Mapping) or not isinstance(
+                        source_cluster.get("id"), str
+                    ):
+                        raise ValidationError(
+                            "OpenPARF atomic source cluster identity is invalid"
+                        )
+                    for assignment in source_cluster.get("assignments", []):
+                        if not isinstance(assignment, Mapping):
+                            raise ValidationError(
+                                "OpenPARF atomic source assignment is invalid"
+                            )
+                        instance = assignment.get("instance")
+                        if (
+                            not isinstance(instance, str)
+                            or (
+                                source_owner is not None
+                                and instance in source_owner
+                            )
+                        ):
+                            raise ValidationError(
+                                "OpenPARF atomic source cell ownership is invalid"
+                            )
+                        source_cell = cells.get(instance)
+                        if (
+                            not isinstance(source_cell, Mapping)
+                            or source_cell.get("type") in CONSTANT_TYPES
+                        ):
+                            raise ValidationError(
+                                "OpenPARF atomic source cell ownership is invalid"
+                            )
+                        if source_owner is not None:
+                            source_owner[instance] = source_cluster["id"]
+                        else:
+                            assert source_assignment_sink is not None
+                            source_assignment_sink(instance, source_cluster["id"])
+                        source_owner_count += 1
         if source_owner_count != expected_count:
             raise ValidationError(
                 "OpenPARF atomic source cell coverage is incomplete"
@@ -482,7 +497,7 @@ def _validate_certificate(
                 "_physical_site": assignment["physical_site"],
                 "_placement_ordinal": assignment_index,
                 "_source_cluster": (
-                    source_cluster if source_packed is not None else None
+                    source_cluster if source_packed is not None and source_ownership_validation is None else None
                 ),
             }
             if cell_type in (
@@ -1242,6 +1257,8 @@ def _materialize_typed_physical_handoff(
         raise ValidationError("OpenPARF bridge inputs are invalid")
     if getattr(mapped, "schema", None) == "emuflow.xilinx-mapped-index/v2":
         mapped.require_source_unchanged()
+        if is_xilinx_mapped_index(mapped_path) and not os.path.samefile(mapped_path, mapped.path):
+            raise ValidationError("OpenPARF bridge borrowed mapped owner disagrees with input")
         handoff_builder.bind_sources([mapped.path])
     descriptor = certificate.get("cluster_storage")
     if isinstance(descriptor, Mapping):
@@ -1289,6 +1306,11 @@ def _materialize_typed_physical_handoff(
                 "OpenPARF atomic source PackedSiteNetlist seal is invalid"
             )
         source_packed = loaded_source_packed
+        if isinstance(source_packed, XilinxOpenparfAtomicSourceView):
+            source_packed.require_sources_unchanged()
+            if read_json(source_packed_path) != source_packed.selector:
+                raise ValidationError("OpenPARF bridge borrowed atomic source selector disagrees")
+            handoff_builder.bind_sources([source_packed.selector_path, source_packed.store_path])
     source = certificate.get("source")
     if (
         not isinstance(source, Mapping)
@@ -1367,6 +1389,24 @@ def _materialize_typed_physical_handoff(
 
     try:
         validation_started = time.perf_counter()
+        source_ownership_validation = None
+        if (
+            getattr(mapped, "schema", None) == "emuflow.xilinx-mapped-index/v2"
+            and isinstance(source_packed, XilinxOpenparfAtomicSourceView)
+            and is_xilinx_mapped_index(source_packed.mapped_path)
+        ):
+            from .physical_cells_native import validate_native_atomic_ownership
+            mapped.require_source_unchanged()
+            source_packed.require_sources_unchanged()
+            certificate_view.require_source_unchanged()
+            source_ownership_validation = validate_native_atomic_ownership(
+                mapped.path, source_packed.store_path, certificate_view.store_path,
+                mapped_sha256=mapped_sha,
+                source_logical_sha256=source_packed.selector["logical_sha256"],
+                certificate_logical_sha256=certificate_view.descriptor["logical_sha256"],
+                top=_select_module(mapped, top)[0],
+                scratch_parent=physical_handoff_path.parent,
+            )
         (
             selected_top, cells, constants, cascades,
             certificate_statistics,
@@ -1378,11 +1418,12 @@ def _materialize_typed_physical_handoff(
             sink_enforces_assignment_uniqueness=True,
             source_assignment_sink=(
                 handoff_builder.append_source_assignment
-                if source_packed is not None
+                if source_packed is not None and source_ownership_validation is None
                 else None
             ),
+            source_ownership_validation=source_ownership_validation,
         )
-        if source_packed is not None:
+        if source_packed is not None and source_ownership_validation is None:
             handoff_builder.validate_source_ownership(
                 len(cells) - len(constants)
             )
@@ -1613,6 +1654,8 @@ def _materialize_typed_physical_handoff(
         "cascade_chains": len(cascades),
         "validation": {
             "packing": packing_validation,
+            **({"source_ownership": source_ownership_validation}
+               if source_ownership_validation is not None else {}),
             "placement": placement_validation,
         },
         "runtime_breakdown": {
@@ -1638,7 +1681,11 @@ def _materialize_typed_physical_handoff(
                 "bridge_contracts": ("incremental-typed-single-owner-dual-view-v1"),
                 "certificate_to_handoff": ("validated-cluster-direct-typed-row"),
                 "legalization_working_set": ("mux-slice-clusters-only"),
-                "certificate_assignment_ownership": ("typed-unique-index-and-count"),
+                "certificate_assignment_ownership": (
+                    "native-source-certificate-ordered-merge-v1"
+                    if source_ownership_validation is not None
+                    else "typed-unique-index-and-count"
+                ),
                 "handoff_publication": ("validate-temporary-before-atomic-replace"),
                 "physical_contract_validation": (
                     "native-typed-population-with-local-site-semantics-v1"

@@ -17,6 +17,12 @@
 namespace emuflow::core {
 namespace {
 constexpr RegisteredSchema schemas[] = {
+    {"atomic-ownership-request-v1", ArtifactEncoding::kBinary, 0x314f5341464d5545ULL, 1},
+    {"atomic-ownership-summary-v1", ArtifactEncoding::kText, 0, 1},
+    {"openparf-atomic-source-store-v1", ArtifactEncoding::kSqlite, 0x454d5541, 1, false,
+     "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.openparf-atomic-source/v1"},
+    {"openparf-placement-certificate-v3", ArtifactEncoding::kSqlite, 0x454d5550, 3, false,
+     "SELECT value FROM metadata WHERE key='schema'","emuflow.openparf-atomic-placement-database/v3"},
     {"physical-cell-check-request-v1", ArtifactEncoding::kBinary, 0x31564350464d5545ULL, 1},
     {"physical-cell-check-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"assignment-publication-request-v1", ArtifactEncoding::kBinary, 0x31514241554d5545ULL, 1},

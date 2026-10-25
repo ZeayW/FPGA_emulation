@@ -37,6 +37,7 @@ constexpr const char* kUsage =
     "  phase6 group-signals --typed-input INPUT OUTPUT EXPECTED_SHA256\n"
     "  phase6 refine-groups --typed-input INPUT OUTPUT EXPECTED_SHA256\n"
     "  phase6 rudy INPUT OUTPUT\n"
+    "  phase7 validate-atomic-ownership MAPPED SOURCE CERTIFICATE REQUEST SUMMARY\n"
     "  phase7 validate-physical-cells MAPPED PHYSICAL REQUEST SUMMARY\n"
     "  phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL\n"
     "  phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY\n"
@@ -129,6 +130,8 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     request.expected_sha256 = sha;
     return Execute(std::move(request), report);
   };
+  if (phase == "phase7" && operation == "validate-atomic-ownership" && argc == 8)
+    return run(Stage::kValidateAtomicOwnership,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
   if (phase == "phase7" && operation == "validate-physical-cells" && argc == 7)
     return run(Stage::kValidatePhysicalCells,{argv[3],argv[4],argv[5]},argv[6]);
   if (phase == "phase7" && operation == "import-vivado-lineage" && argc >= 9) {

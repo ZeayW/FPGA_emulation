@@ -1,6 +1,7 @@
 #include "emuflow_core/native_pipeline.hpp"
 #include "emuflow_core/route_seal.hpp"
 #include "emuflow_core/physical_cells.hpp"
+#include "emuflow_core/atomic_ownership.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/native_stages.hpp"
 #include "emuflow_core/schedule_store.hpp"
@@ -23,6 +24,7 @@ namespace emuflow::native {
 const char* StageName(Stage stage) {
   switch (stage) {
     case Stage::kInvalid: return "native.request";
+    case Stage::kValidateAtomicOwnership: return "phase7.validate-atomic-ownership";
     case Stage::kValidatePhysicalCells: return "phase7.validate-physical-cells";
     case Stage::kSealRoutes: return "phase4.seal-routes";
     case Stage::kImportVivadoLineage: return "phase7.import-vivado-lineage";
@@ -53,6 +55,7 @@ namespace {
 std::vector<std::string> InputSchemas(const StageRequest& request) {
   switch (request.stage) {
     case Stage::kInvalid: break;
+    case Stage::kValidateAtomicOwnership: return {"xilinx-mapped-index-v2","openparf-atomic-source-store-v1","openparf-placement-certificate-v3","atomic-ownership-request-v1"};
     case Stage::kValidatePhysicalCells: return {"xilinx-mapped-index-v2","xilinx-physical-handoff-v1","physical-cell-check-request-v1"};
     case Stage::kSealRoutes: return {"system-route-store-v3","system-route-seal-request-v1"};
     case Stage::kImportVivadoLineage: {
@@ -209,6 +212,8 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       return;
     }
     switch (request.stage) {
+      case Stage::kValidateAtomicOwnership:
+        core::ValidateAtomicOwnership(inputs,output); break;
       case Stage::kValidatePhysicalCells:
         core::ValidatePhysicalCells(inputs[0],inputs[1],inputs[2],output); break;
       case Stage::kImportVivadoLineage:
@@ -244,6 +249,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
   }, [&]() {
     const char* schema = nullptr;
     switch (request.stage) {
+      case Stage::kValidateAtomicOwnership: schema = "atomic-ownership-summary-v1"; break;
       case Stage::kValidatePhysicalCells: schema = "physical-cell-check-summary-v1"; break;
       case Stage::kImportVivadoLineage: schema = "vivado-lineage-store-v2"; break;
       case Stage::kExportRwroute: schema = "rwroute-input-tsv-v1"; break;

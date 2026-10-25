@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 from .errors import ValidationError
 from .io import file_sha256, read_json, write_json
+from .native_tools import native_file_generation
 from .xilinx_netlist import open_xilinx_mapped_index, is_xilinx_mapped_index
 from .xilinx_packing import (
     CONSTANT_TYPES,
@@ -502,10 +503,12 @@ class XilinxOpenparfAtomicSourceView(Mapping[str, Any]):
         mapped_sha256: Optional[str] = None,
     ):
         self.selector_path = selector_path.resolve()
+        self.selector_generation = native_file_generation(self.selector_path)
         selector = _validate_selector_envelope(read_json(self.selector_path))
         header = selector["header"]
         counts_value = selector["counts"]
         self.store_path = _resolve_sealed_store(self.selector_path, selector)
+        self.store_generation = native_file_generation(self.store_path)
 
         mapped_descriptor = selector["mapped"]
         mapped_artifact = mapped_descriptor["artifact"]
@@ -516,6 +519,7 @@ class XilinxOpenparfAtomicSourceView(Mapping[str, Any]):
             else self.selector_path.with_name(mapped_artifact)
         )
         try:
+            self.mapped_generation = native_file_generation(self.mapped_path)
             mapped_stat = self.mapped_path.stat()
         except OSError as error:
             raise ValidationError("OpenPARF atomic-source mapped input is missing") from error
@@ -722,6 +726,22 @@ class XilinxOpenparfAtomicSourceView(Mapping[str, Any]):
             self.store_path, int(selector["counts"]["constant_cells"])
         )
         self._validate_mapped_ownership()
+        self.require_sources_unchanged()
+
+    def require_sources_unchanged(self) -> None:
+        try:
+            for path, generation in (
+                (self.selector_path, self.selector_generation),
+                (self.store_path, self.store_generation),
+                (self.mapped_path, self.mapped_generation),
+            ):
+                if native_file_generation(path) != generation:
+                    raise ValidationError("OpenPARF atomic source generation changed")
+            require = getattr(self._mapped_owner, "require_source_unchanged", None)
+            if callable(require):
+                require()
+        except OSError as error:
+            raise ValidationError("OpenPARF atomic source generation changed") from error
 
     def _validate_mapped_ownership(self) -> None:
         connection = _connect(self.store_path)
@@ -1132,9 +1152,17 @@ def write_xilinx_openparf_atomic_source_storage(
             selector_temporary, mapped_path=mapped_path, mapped_value=mapped_value,
             mapped_sha256=mapped_sha256,
         )
+        view.require_sources_unchanged()
         os.replace(selector_temporary, path)
         selector_committed = True
         view.selector_path = path.resolve()
+        # Rename may change ctime even though the verified inode/content remain
+        # the same. Bind the returned view to its committed selector, while
+        # retaining the original mapped/store generations.
+        committed_generation = native_file_generation(view.selector_path)
+        if committed_generation[:5] != view.selector_generation[:5]:
+            raise ValidationError("OpenPARF atomic source selector changed at publication")
+        view.selector_generation = committed_generation
         if (
             old_store is not None
             and old_store.resolve() != published_store.resolve()

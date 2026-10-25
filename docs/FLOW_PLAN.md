@@ -206,6 +206,18 @@ and validates MUX/CARRY topology and dedicated cascades. Native errors stop
 publication; they never select the Python checker as a fallback. Explicit logical
 JSON qualification inputs retain their existing mapping checks.
 
+For a typed atomic source bound to an indexed mapped owner, the bridge also
+calls `phase7 validate-atomic-ownership`. Registered source and certificate
+stores are read through `SqliteStore`. Ordered mapped cells, source macro and
+constant records, and certificate assignments are merged directly; singleton
+source IDs use the original mapped rank, including constants. No source or
+certificate ownership mirror is published or staged. Source seals, versions,
+counts, unmatched records and per-cell types remain mandatory. Borrowed source
+and certificate readers retain their original file generations, and the handoff
+publisher binds those same files through final replacement. Explicit logical
+qualification inputs keep their existing checks; a native failure stops the
+typed production path without fallback.
+
 Static Exact analysis and the four Chimew kernels have no standalone production
 wrappers or separate build targets. Chimew grouping, refinement and bank/channel
 assignment expose only typed inputs; the old text parsers, writers and registry

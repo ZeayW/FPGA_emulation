@@ -32,7 +32,7 @@ from .sqlite_artifacts import immutable_sqlite_uri
 from .architecture import ArchitectureDB
 from .errors import ImportError, ValidationError
 from .io import file_sha256, read_json, write_json
-from .native_tools import resolve_native_stage_command
+from .native_tools import native_file_generation, resolve_native_stage_command
 from .xilinx_netlist import _IndexedCells
 from .openparf import run_openparf, validate_openparf_runtime
 from .openparf_native_driver import (
@@ -1361,6 +1361,8 @@ class XilinxOpenparfAtomicPlacementView(MappingABC[str, Any]):
         self.path = path
         self.lease = _PlacementCertificateLease(path, exclusive=False)
         self.database: Optional[sqlite3.Connection] = None
+        self.store_path: Optional[Path] = None
+        self.store_generation: Optional[tuple[int, ...]] = None
         self.closed = False
         try:
             if path.is_symlink():
@@ -1443,6 +1445,8 @@ class XilinxOpenparfAtomicPlacementView(MappingABC[str, Any]):
                 )
             assert isinstance(descriptor, Mapping)
             self.descriptor = descriptor
+            self.store_path = database_path
+            self.store_generation = native_file_generation(database_path)
             database = sqlite3.connect(
                 immutable_sqlite_uri(database_path), uri=True
             )
@@ -1453,9 +1457,20 @@ class XilinxOpenparfAtomicPlacementView(MappingABC[str, Any]):
                 database, descriptor=descriptor, header=header,
                 legacy=self.legacy,
             )
+            self.require_source_unchanged()
         except BaseException:
             self.close()
             raise
+
+    def require_source_unchanged(self) -> None:
+        if self.closed:
+            raise ValidationError("OpenPARF atomic placement view is closed")
+        if self.store_path is not None:
+            try:
+                if native_file_generation(self.store_path) != self.store_generation:
+                    raise ValidationError("OpenPARF placement certificate generation changed")
+            except OSError as error:
+                raise ValidationError("OpenPARF placement certificate generation changed") from error
 
     def __getitem__(self, key: str) -> Any:
         return self.selector[key]

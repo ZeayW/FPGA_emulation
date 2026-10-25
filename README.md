@@ -143,7 +143,9 @@ index and one typed physical handoff. The OpenPARF bridge also publishes only
 that single store from a typed placement certificate; separate packing and
 placement JSON output is retired. Indexed physical handoffs independently check
 complete cell ownership, typed pin coverage and output-driver uniqueness in the
-shared native core; local FF, site/BEL and macro checks remain required.
+shared native core. Typed atomic sources and placement certificates are compared
+directly in mapped-name order, without copying ownership into temporary tables;
+local FF, site/BEL and macro checks remain required.
 The separate carry-only adapter/bridge is
 removed; CARRY8/LUT6_2 use the maintained mixed atomic backend. OpenPARF exposes all
 qualified sites; its density target does not remove physical sites or impose a
