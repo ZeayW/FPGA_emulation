@@ -1021,8 +1021,8 @@ def _bank_direction_allocations(
             result[key] = {
                 "bank_count": allocation[f"{prefix}_banks"],
                 "wires_per_bank": link.wires_per_bank,
-                "lane_offset": offset,
-                "lanes": allocation[f"{prefix}_lanes"],
+                "lane_offset": offset * link.tdm_word_bits,
+                "lanes": allocation[f"{prefix}_lanes"] * link.tdm_word_bits,
             }
     return result
 
@@ -1038,6 +1038,9 @@ def tdm_hop_latency_cycles(
     link: Any, ratio: int, *, base_delay_ns: Optional[float] = None,
 ) -> int:
     """Round a ratio-model hop delay up to physical fabric-clock cycles."""
+    if link.word_timing is not None:
+        link.word_timing.word_cycles_for_ratio(ratio)
+        return link.word_timing.fixed_latency_word_cycles
     if link.tdm_delay_model is None:
         return link.latency_cycles
     if isinstance(ratio, bool) or not isinstance(ratio, int) or ratio < 1:
@@ -1072,7 +1075,8 @@ def _baseline_ratio_hops(
         keys.sort()
         link = links[keys[0][1]]
         budget = allocations.get(keys[0][1:])
-        lanes = budget["lanes"] if budget else link.transport_bits_per_cycle_per_direction
+        lanes = (budget["lanes"] // link.tdm_word_bits if budget
+                 else link.tdm_ratio_lanes_per_direction)
         offset = budget["lane_offset"] if budget else 0
         if lanes <= 0:
             raise TDMScheduleInfeasibleError("active direction has no allocated bank")
@@ -1084,7 +1088,9 @@ def _baseline_ratio_hops(
             ratio = 1 if raw == 1 else math.ceil(raw / quantum) * quantum
             if ratio > constraints["tdm_max_ratio"]:
                 raise TDMScheduleInfeasibleError("baseline wire group exceeds maximum TDM ratio")
-            result[key] = {"lane": offset + local_lane, "discrete_ratio": ratio}
+            result[key] = {"lane": offset + local_lane * link.tdm_word_bits + (i // lanes) % link.tdm_word_bits, "discrete_ratio": ratio}
+            if link.word_timing is not None:
+                result[key]["phase_word"] = (i // lanes) // link.tdm_word_bits
     return result
 
 def _write_native_schedule_board_request(
@@ -1099,7 +1105,7 @@ def _write_native_schedule_board_request(
     capacity_index = {name:i for i,name in enumerate(capacity_keys)}
     links = _link_by_id(platform)
     with path.open("wb") as stream:
-        stream.write(struct.pack("<QI3Q4q6I",0x3142534D44544545,1,*generation,
+        stream.write(struct.pack("<QI3Q4q6I",0x3142534D44544545,2,*generation,
             constraints["frame_slots"],RUNTIME_BARRIER_SLOTS,COMBINATIONAL_SETTLE_SLOTS,
             int(constraints.get("tdm_min_ratio",1)),constraints["tdm_max_ratio"],constraints["tdm_ratio_quantum"]))
         for catalog in (fpga_ids,link_ids,capacity_keys):
@@ -1114,9 +1120,9 @@ def _write_native_schedule_board_request(
             offset = budget["lane_offset"] if budget else 0
             lanes = budget["lanes"] if budget else link.transport_bits_per_cycle_per_direction
             base,slope = route_link_delay_coefficients_ns(platform,*key,constraints)
-            stream.write(struct.pack("<8I3d",link_index[key[0]],fpga_index[key[1]],fpga_index[key[2]],
+            stream.write(struct.pack("<9I3d",link_index[key[0]],fpga_index[key[1]],fpga_index[key[2]],
                 capacity_index[arc["capacity_key"]],offset,lanes,int(link.tdm_delay_model is not None),
-                link.latency_cycles,base,slope,1000.0/link.fabric_clock_mhz))
+                link.latency_cycles,link.tdm_word_bits,base,slope,1000.0/link.fabric_clock_mhz))
 
 def _run_native_exact_schedule(command: Sequence[str]) -> None:
     completed = subprocess.run(list(command),capture_output=True,text=True,check=False)
@@ -1134,6 +1140,12 @@ def _entry_ratio_delay(
     """Keep physical TX events separate from the declared net-delay model."""
     slot_period = 1000.0 / link.fabric_clock_mhz
     tx_time = float(entry["slot"]) * slot_period
+    if link.word_timing is not None:
+        timing = link.word_timing
+        _physical_lane, bit = timing.channel_position(entry["lane"], link.data_lanes_per_direction)
+        event = timing.transfer(ready_ns=max(prior_arrival, entry["ready_slot"] * slot_period),
+            word_index=entry["slot"], bit_in_word=bit, ratio=entry["tdm_ratio"])
+        return event.delay_ns, event.rx_visible_ns, event.word_load_ns
     if link.tdm_delay_model is not None:
         ratio = entry.get("tdm_ratio")
         if isinstance(ratio, bool) or not isinstance(ratio, int) or ratio < 1:
@@ -1827,7 +1839,7 @@ def _validate_indexed_exact_tdm_schedule(
                             )
                         bank_key = (
                             entry.link,
-                            entry.lane // bank_budget["wires_per_bank"],
+                            entry.lane // (bank_budget["wires_per_bank"] * link.tdm_word_bits),
                         )
                         direction = (entry.source, entry.sink)
                         if (
@@ -1993,9 +2005,9 @@ def _validate_indexed_exact_tdm_schedule(
                     (entry.link, entry.source, entry.sink)
                 )
                 capacity_lanes = (
-                    budget["lanes"]
+                    budget["lanes"] // link.tdm_word_bits
                     if budget is not None
-                    else link.transport_bits_per_cycle_per_direction
+                    else link.tdm_ratio_lanes_per_direction
                 )
                 capacity_offset = (
                     budget["lane_offset"] if budget is not None else 0
@@ -2023,13 +2035,17 @@ def _validate_indexed_exact_tdm_schedule(
                     "baseline schedule exceeds the BoardDB maximum TDM ratio"
                 )
             if (
-                entry.lane != capacity_offset + local_lane
+                entry.lane != capacity_offset + local_lane * link.tdm_word_bits + (capacity_index // capacity_lanes) % link.tdm_word_bits
                 or entry.tdm_ratio != ratio
             ):
                 raise ValidationError(
                     "baseline schedule wire/ratio differs from fixed group"
                 )
-            if entry.slot - entry.ready_slot >= ratio:
+            if link.word_timing is not None:
+                phase = (capacity_index // capacity_lanes) // link.tdm_word_bits
+                if entry.slot % (ratio // link.tdm_word_bits) != phase:
+                    raise ValidationError("schedule entry differs from its periodic lane word phase")
+            if entry.slot - entry.ready_slot >= ratio // link.tdm_word_bits:
                 raise ValidationError(
                     "baseline schedule wait exceeds its ratio window"
                 )
@@ -2127,6 +2143,10 @@ def validate_tdm_schedule(
         TDM_EXACT_DEPENDENCY_PROVIDER, "deterministic-round-barrier-earliest-slot-v2",
     }:
         raise ValidationError("unsupported TDM schedule artifact provider")
+    from .tdm_word import WORD_EVENT_POLICY
+    expected_word_policy = WORD_EVENT_POLICY if any(link.word_timing is not None for link in platform.links) else None
+    if schedule.get("word_event_policy") != expected_word_policy:
+        raise ValidationError("schedule word event policy differs from the BoardDB transport format")
     exact_contract = _static_exact_contract_from_routes(routes)
     if schedule.get("schema") != TDM_SCHEDULE_SCHEMA:
         raise ValidationError(
@@ -2278,7 +2298,7 @@ def validate_tdm_schedule(
             offset = bank_budget["lane_offset"]
             if not offset <= lane < offset + bank_budget["lanes"]:
                 raise ValidationError("schedule entry wire lies outside its allocated direction banks")
-            bank_key = (entry["link"], lane // bank_budget["wires_per_bank"])
+            bank_key = (entry["link"], lane // (bank_budget["wires_per_bank"] * link.tdm_word_bits))
             direction = (entry["from"], entry["to"])
             if bank_directions.setdefault(bank_key, direction) != direction:
                 raise ValidationError("schedule bank is assigned to both directions")
@@ -2301,10 +2321,13 @@ def validate_tdm_schedule(
             baseline = baseline_hops[key]
             if lane != baseline["lane"] or entry.get("tdm_ratio") != baseline["discrete_ratio"]:
                 raise ValidationError("baseline schedule wire/ratio differs from fixed group")
-            if slot - entry["ready_slot"] >= entry["tdm_ratio"]:
+            if slot - entry["ready_slot"] >= entry["tdm_ratio"] // link.tdm_word_bits:
                 raise ValidationError("baseline schedule wait exceeds its ratio window")
         base, _slope = route_link_delay_coefficients_ns(
             platform, entry["link"], entry["from"], entry["to"], constraints)
+        if link.word_timing is not None and key in baseline_hops:
+            if slot % (entry["tdm_ratio"] // link.tdm_word_bits) != baseline_hops[key]["phase_word"]:
+                raise ValidationError("schedule entry differs from its periodic lane word phase")
         expected_arrival = slot + tdm_hop_latency_cycles(
             link, entry.get("tdm_ratio", 1), base_delay_ns=base)
         if entry.get("arrival_slot") != expected_arrival:

@@ -89,7 +89,7 @@ def resolve_timing_query(mapped: Path, functions: Path, lineage: Path, source: P
     changed or missing primitive that cannot be associated is rejected. No
     endpoint is preserved merely to make this query succeed.
     """
-    if stage not in {"synthesized", "routed"}:
+    if stage not in {"synthesized", "optimized", "routed"}:
         raise ValidationError("unsupported Vivado timing-query lineage stage")
     connection = sqlite3.connect(f"file:{lineage.resolve()}?mode=ro&immutable=1", uri=True)
     from .vivado_control_alias import ControlAliasLookup

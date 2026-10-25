@@ -410,6 +410,9 @@ def normalize_route_constraints(
             8,
         )
 
+    ratio_word_bits = min((link.tdm_word_bits for link in platform.links
+                           if link.tdm_delay_model is not None), default=1)
+    frame_ratio_capacity = raw_frame_slots * ratio_word_bits
     optimization_values = {}
     for key, default, integer in (
         ("reroute_rounds", 8, True),
@@ -419,7 +422,7 @@ def normalize_route_constraints(
         ("lambda_tdm", 0.1, False),
         ("tdm_ratio_quantum", platform_ratio_quantum, True),
         ("tdm_min_ratio", platform_min_ratio, True),
-        ("tdm_max_ratio", min(raw_frame_slots, platform_max_ratio), True),
+        ("tdm_max_ratio", min(frame_ratio_capacity, platform_max_ratio), True),
     ):
         value = raw.get(key, default)
         valid = (
@@ -456,10 +459,10 @@ def normalize_route_constraints(
             "route constraints.tdm_max_ratio: expected a multiple of "
             "tdm_ratio_quantum"
         )
-    if minimum_ratio > maximum_ratio or maximum_ratio > raw_frame_slots:
+    if minimum_ratio > maximum_ratio or maximum_ratio > frame_ratio_capacity:
         raise ValidationError(
             "route constraints TDM ratio bounds must satisfy "
-            "min_ratio <= max_ratio <= frame_slots"
+            "min_ratio <= max_ratio <= frame_slots * serial_bits_per_word"
         )
     if ratio_domains and (
         minimum_ratio < platform_min_ratio
@@ -628,6 +631,7 @@ def maximum_schedulable_tdm_ratio(
     *,
     ratio_quantum: Optional[int] = None,
     minimum_ratio: Optional[int] = None,
+    word_bits_per_lane: int = 1,
 ) -> int:
     """Return the largest discrete ratio that arrives before commit.
 
@@ -641,7 +645,7 @@ def maximum_schedulable_tdm_ratio(
         int(constraints["frame_slots"])
         - RUNTIME_BARRIER_SLOTS
         - int(latency_cycles)
-    )
+    ) * word_bits_per_lane
     if usable_slots <= 0:
         raise ValidationError(
             "TDM schedule has no transmit slot whose data arrives before "
@@ -749,6 +753,7 @@ def build_directed_graph(
                     usable_slots = maximum_schedulable_tdm_ratio(
                         constraints,
                         link.latency_cycles,
+                        word_bits_per_lane=link.tdm_word_bits,
                     )
                 if usable_slots <= 0:
                     raise ValidationError(
@@ -767,7 +772,7 @@ def build_directed_graph(
                         else f"{source}->{sink}"
                     ),
                     "capacity_bits": (
-                        link.transport_bits_per_cycle_per_direction
+                        link.tdm_ratio_lanes_per_direction
                         * usable_slots
                     ),
                     **bank_metadata,

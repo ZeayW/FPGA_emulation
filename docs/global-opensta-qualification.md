@@ -75,9 +75,15 @@ Post-schedule analysis must retain the following events per signal and hop:
 - `serial_tx`: its bit is transmitted within that word;
 - `rx_visible`: the receiving interface makes the value available to logic.
 
-The fixed word-load event must meet readiness and setup requirements. A
-source that misses its assigned event fails the schedule check; the analyzer
-must not move it to a later round or frame to manufacture a passing result.
+The execution policy must distinguish a periodic table from a one-shot
+calendar. For a declared periodic table, each physical lane repeats its
+assigned word phases every R/8 word cycles. Its execution resolver selects the
+first occurrence after complete source-cone readiness and setup; this wait is
+at most R serial UIs. Readiness must cover all contributing fanins, rather than
+one chosen original path in isolation. A concrete occurrence, once frozen for
+the event check, must meet readiness; a missed occurrence fails instead of
+being silently moved. One-shot calendars do not gain periodic semantics merely
+because wrapping would improve their reported result.
 Serial positions use UIs, parallel words use word-clock cycles, and event
 phases come from the actual clock/PHY binding. If a receiver exposes a complete
 word at once, bits in that word share its visibility event; changing only

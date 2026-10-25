@@ -173,11 +173,17 @@ def build_tdm_schedule(
                     if slot < frame_slots
                     else 0
                 )
+            elif link.word_timing is not None:
+                lane = assigned_hop["lane"]
+                words = ratio // link.tdm_word_bits
+                phase = assigned_hop["phase_word"]
+                rounds = max(0, (ready_slot - phase + words - 1) // words)
+                slot = phase + rounds * words
             else:
                 lane = assigned_hop["lane"]
                 ratio_window_end = min(
                     latest_exclusive,
-                    ready_slot + ratio,
+                    ready_slot + ratio // link.tdm_word_bits,
                 )
                 slot = ready_slot
                 while (
@@ -193,7 +199,7 @@ def build_tdm_schedule(
                     f"frame_slots={frame_slots}, "
                     f"latency={latency_cycles}"
                 )
-            if assigned_hop is not None and slot >= ready_slot + ratio:
+            if assigned_hop is not None and slot >= ready_slot + ratio // link.tdm_word_bits:
                 raise TDMScheduleInfeasibleError(
                     f"TDM ratio schedule is infeasible for demand "
                     f"{route['id']!r} edge {arc_key}: ready={ready_slot}, "
@@ -358,6 +364,7 @@ def build_tdm_schedule(
                     "minimum_capture_slack_slots": minimum_capture_slack,
                 }
             )
+    from emuflow.tdm_word import WORD_EVENT_POLICY
     result = {
         "schema": _tdm.TDM_SCHEDULE_SCHEMA,
         "design": routes.get("design"),
@@ -374,6 +381,8 @@ def build_tdm_schedule(
         ),
         "route_constraints": constraints,
         **({"bank_allocations": _tdm._bank_allocation_records(bank_allocations)} if bank_allocations else {}),
+        **({"word_event_policy": WORD_EVENT_POLICY}
+           if any(link.word_timing is not None for link in platform.links) else {}),
         "routes": (
             _tdm._ScheduleRouteProjection(raw_routes.ordered("demand"))
             if exact_contract is not None

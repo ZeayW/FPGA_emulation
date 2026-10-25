@@ -2733,7 +2733,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     "WHERE cut_index=0"
                 )
             with self.assertRaisesRegex(
-                ValidationError, "cut-record identity disagrees"
+                ValidationError, "assignment cut identity disagrees"
             ):
                 validate_phase3_assignment_index(root / "assignment.sqlite")
 
@@ -2950,7 +2950,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                             "to": sink,
                         }
                     ],
-                    "max_latency_cycles": 2,
+                    "max_latency_cycles": self.platform.links[0].latency_cycles,
                 }
             )
         _, _, capacities = build_directed_graph(

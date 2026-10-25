@@ -170,7 +170,7 @@ constexpr RegisteredSchema schemas[] = {
     {"phase3-exact-data-v2", ArtifactEncoding::kBinary, 0x5443415845554d45ULL, 2},
     {"exact-hash-request-v1", ArtifactEncoding::kBinary, 0x31484553464d5545ULL, 1},
     {"exact-section-request-v1", ArtifactEncoding::kBinary, 0x31574553464d5545ULL, 1},
-    {"exact-schedule-board-request-v1", ArtifactEncoding::kBinary, 0x3142534d44544545ULL, 1},
+    {"exact-schedule-board-request-v2", ArtifactEncoding::kBinary, 0x3142534d44544545ULL, 2},
     {"candidate-policy-request-v1", ArtifactEncoding::kBinary, 0x31514543464d5545ULL, 1},
     {"candidate-id-columns-v1", ArtifactEncoding::kBinary, 0x31544343464d5545ULL, 1},
     {"partition-cluster-request-v1", ArtifactEncoding::kBinary, 0x31515243464d5545ULL, 1},

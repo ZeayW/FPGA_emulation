@@ -16,6 +16,8 @@ struct ExactScheduleHop {
   std::uint32_t assigned_lane;
   std::uint32_t ratio;
   std::uint32_t latency;
+  std::uint32_t word_bits = 1;
+  std::uint32_t phase_word = 0;
 };
 
 struct ExactScheduleRoute {
@@ -54,6 +56,7 @@ struct ExactSchedulePublicationIdentity {
   std::vector<std::uint32_t> original_hop_order;
 };
 struct ExactScheduleBuildContext {
+  bool uses_word_links = false;
   ExactScheduleCatalogs catalogs;
   std::vector<ExactSchedulePublicationIdentity> identities;
 };

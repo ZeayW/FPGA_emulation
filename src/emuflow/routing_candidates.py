@@ -161,7 +161,7 @@ def exact_route_candidate_selection(
             link = link_by_id[capacity["link"]]
             ratios[key] = estimate_tdm_ratio(
                 usage[key],
-                link.transport_bits_per_cycle_per_direction,
+                link.tdm_ratio_lanes_per_direction,
                 constraints,
                 is_sll=capacity["link"] in sll_links,
             )

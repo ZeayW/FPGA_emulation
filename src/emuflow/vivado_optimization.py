@@ -74,7 +74,7 @@ def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Pat
     Unknown INIT is recorded as a legal initialization choice, rather than
     represented as equivalence for every possible initial state.
     """
-    if stage not in {"synthesized", "routed"}:
+    if stage not in {"synthesized", "optimized", "routed"}:
         raise ValidationError("unsupported Vivado optimization proof stage")
     if len(mapped_sha256) != 64 or any(c not in "0123456789abcdef" for c in mapped_sha256):
         raise ValidationError("invalid Vivado optimization mapped identity")
@@ -232,8 +232,8 @@ def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Pat
             db.execute("DELETE FROM constant_candidates WHERE origin IN (SELECT origin FROM eliminated_sources)")
         vendor_confirmed = 0
         if confirmation is not None:
-            if stage == "synthesized" and confirmation["source_inventory_sha256"] != stage_inventory_sha256:
-                raise ValidationError("constant confirmation belongs to a different synthesized snapshot")
+            if stage != "routed" and (confirmation["source_stage"] != stage or confirmation["source_inventory_sha256"] != stage_inventory_sha256):
+                raise ValidationError("constant confirmation belongs to a different preplacement snapshot")
             for source in confirmation["sources"]:
                 origin = int(source["source"][1:])
                 if db.execute("SELECT 1 FROM eliminated_sources WHERE origin=?", (origin,)).fetchone():
@@ -326,7 +326,9 @@ class OptimizationProofView(Mapping[str, Any]):
                         "observations_sha256","sources","frontiers","source_model_scope","native_input_policy"}
                 if (not isinstance(document,dict) or set(document) != keys
                         or document["schema"] != CONSTANT_CONFIRMATION_SCHEMA or document["status"] != "pass"
-                        or document["fpga"] != expected_fpga or document["source_stage"] != "synthesized"
+                        or document["fpga"] != expected_fpga or document["source_stage"] not in {"synthesized", "optimized"}
+                        or (stage != "routed" and document["source_stage"] != stage)
+                        or (stage != "routed" and document["source_inventory_sha256"] != self.header["stage_inventory_sha256"])
                         or document["mapped_index_sha256"] != self.header["mapped_index_sha256"]
                         or document["synthesized_checkpoint_sha256"] != self.header.get("synthesized_checkpoint_sha256")
                         or document["initialization_policy"] != CONSTANT_INITIALIZATION_POLICY

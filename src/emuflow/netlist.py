@@ -70,6 +70,9 @@ def build_split_artifacts(
     platform: Platform,
     pin_plan: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
+    from .tdm_word import require_word_transport_implementation
+    require_word_transport_implementation(platform)
+
     if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:
         raise ValidationError(
             f"assignment.schema: expected {PARTITION_ASSIGNMENT_SCHEMA!r}"
@@ -601,6 +604,9 @@ def transport_endpoint_port(endpoint: Mapping[str, Any]) -> str:
 def transport_to_systemverilog(
     transport: Mapping[str, Any], platform: Platform
 ) -> str:
+    from .tdm_word import require_word_transport_implementation
+    require_word_transport_implementation(platform)
+
     fpga_id = transport["fpga"]
     module_name = f"emuflow_transport_{_sv_name(fpga_id)}"
     links = {link.id: link for link in platform.links}

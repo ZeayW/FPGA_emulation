@@ -2179,7 +2179,7 @@ def _reconstruct_partition_pressure_model(
         capacity_records.append(
             {
                 **record,
-                "lanes": link.transport_bits_per_cycle_per_direction,
+                "lanes": link.tdm_ratio_lanes_per_direction,
                 "fabric_clock_mhz": link.fabric_clock_mhz,
             }
         )

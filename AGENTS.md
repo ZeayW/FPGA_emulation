@@ -449,6 +449,13 @@ requirements, not optional micro-optimizations.
   terminal comparison evidence.  If a scheduled cross-FPGA segment lacks the
   physical boundary/logic timing needed for that propagation, Phase 7C is
   incomplete rather than permitted to fall back to an estimate.
+- Explicit periodic eight-bit LVDS tables use a lane period of R/8 TDM word
+  cycles, where R counts serial UIs. Resolve the first legal occurrence from
+  complete source-cone readiness, including all fanins. This execution policy
+  must be declared in the schedule and matched by Phase 6 RTL and the PHY;
+  never infer repetition for a one-shot calendar. Frozen concrete occurrences
+  still fail if missed. The fixed TX-word-load to RX-word-visible arc includes
+  serialization exactly once; all bits in a received word share visibility.
 - Phase 5's pre-physical concrete-schedule objective must also rank paths by
   absolute fixed-slot TX events. `slot - ready_slot` is only a legal-window
   and capacity diagnostic: it must never be used as the target-clock latency

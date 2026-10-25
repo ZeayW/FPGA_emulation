@@ -1649,7 +1649,7 @@ def _prepare_native_model(
                 "direction_group": direction_group_by_link.get(link.id, -1),
                 "opposite_arc": arc_index.get(opposite_key, -1),
                 "capacity": capacity_bits,
-                "lanes": link.transport_bits_per_cycle_per_direction,
+                "lanes": link.tdm_ratio_lanes_per_direction,
                 "delay_ns": route_link_delay_ns(
                     platform,
                     link.id,

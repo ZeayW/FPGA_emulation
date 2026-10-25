@@ -45,7 +45,7 @@ def session_fixture(tmp_path, *, require_constant=True, dependent=False):
     end = "conditional/D" if require_constant else "front/I1"
     query.write_text("endpoint_hex\tkind\tstart_kind\tstart_object_hex\tend_kind\tend_object_hex\tcone_anchor_kind\tcone_anchor_object_hex\n"+
         "\t".join(["path0".encode().hex(), "local", "pin", "kept/Q".encode().hex(), "pin", end.encode().hex(), "", ""])+"\n")
-    session = dict(schema=SCHEMA, fpga="fpga0", part="xcvu19p-fsva3824-2-e", output=str(out),
+    session = dict(schema=SCHEMA, source_preflight_stage="synthesized", fpga="fpga0", part="xcvu19p-fsva3824-2-e", output=str(out),
         mapped_index=str(mapped), functions=str(functions), mapped_index_sha256=digest,
         synthesized_checkpoint=str(out/"synthesized.dcp"), synthesized_checkpoint_sha256=file_sha256(out/"synthesized.dcp"),
         queries={"local_path_timing": str(query)})
@@ -283,3 +283,34 @@ puts pass
     result = subprocess.run([shutil.which("tclsh")],input=script,text=True,capture_output=True,check=True)
     assert not result.stderr
     assert result.stdout.strip() == "pass"
+
+
+@pytest.mark.parametrize("dependent", [False, True])
+def test_postopt_preflight_confirms_states_removed_only_after_synthesis(tmp_path, dependent):
+    session, facts, origins = session_fixture(tmp_path, dependent=dependent)
+    session["source_preflight_stage"] = "optimized"
+    out = Path(session["output"])
+    shutil.copyfile(out/"mapped_cells.tsv", out/"optimized_mapped_cells.tsv")
+    # These endpoints existed in the synthesis snapshot and disappeared in opt_design.
+    with (out/"mapped_cells.tsv").open("a") as stream:
+        stream.write(f"p/conditional\tFDRE\ts{origins['conditional']}\t\t\t\t\t\t\n")
+    result = prepare_frontiers(session)
+    assert result["constant_sources"] == (2 if dependent else 1)
+    assert read_json(out/"optimized-source-preflight.json")["source_stage"] == "optimized"
+    shutil.copyfile(facts, out/"constant-frontiers.tsv")
+    confirm_frontiers(session)
+    assert read_json(out/"checked-constant-frontiers.json")["source_stage"] == "optimized"
+    prepare_timing(session)
+    with OptimizationProofView(out/"optimization-proofs.sqlite", expected_fpga="fpga0") as proof:
+        assert proof.require_eliminated_source(f"s{origins['conditional']}")["initialization"] == "vendor-confirmed"
+    assert not (out/"optimized_mapped_cells.tsv").exists()
+
+
+def test_postopt_preflight_rejects_a_facts_stage_mismatch(tmp_path):
+    session, facts, _ = session_fixture(tmp_path)
+    out = Path(session["output"])
+    prepare_frontiers(session)
+    shutil.copyfile(facts, out/"constant-frontiers.tsv")
+    session["source_preflight_stage"] = "optimized"
+    with pytest.raises(ValidationError, match="different preplacement stage"):
+        confirm_frontiers(session)

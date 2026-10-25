@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, replace
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -252,6 +253,23 @@ class BoardLink:
     tdm_delay_model: Optional[RatioDelayModel] = None
     cable_count: Optional[int] = None
     hp_banks_per_cable: Optional[int] = None
+
+    @cached_property
+    def word_timing(self):
+        """Explicit native LVDS format; abstract and GT links retain their own formats."""
+        if self.mode == "source_synchronous" and self.payload_bits_per_lane_per_cycle > 1:
+            from .tdm_word import LVDSWordTiming
+            return LVDSWordTiming.from_link(self)
+        return None
+
+    @property
+    def tdm_word_bits(self) -> int:
+        return self.word_timing.bits_per_word if self.word_timing is not None else 1
+
+    @property
+    def tdm_ratio_lanes_per_direction(self) -> int:
+        return (self.data_lanes_per_direction if self.word_timing is not None
+                else self.transport_bits_per_cycle_per_direction)
 
     @property
     def transport_bits_per_cycle_per_direction(self) -> int:
@@ -514,7 +532,7 @@ class Platform:
             if (
                 isinstance(frequency, bool)
                 or not isinstance(frequency, (int, float))
-                or frequency <= 0
+                or not math.isfinite(frequency) or frequency <= 0
             ):
                 raise ValidationError(
                     f"links[{index}].fabric_clock_mhz: expected a positive number"
@@ -539,10 +557,10 @@ class Platform:
                     f"links[{index}].payload_bits_per_lane_per_cycle: "
                     "expected a positive integer"
                 )
-            if mode != "serial" and payload_width != 1:
+            if mode not in {"serial", "source_synchronous"} and payload_width != 1:
                 raise ValidationError(
                     f"links[{index}].payload_bits_per_lane_per_cycle: "
-                    "values greater than one require serial mode"
+                    "values greater than one require serial or source_synchronous mode"
                 )
             bank_count = item.get("bank_count")
             wires_per_bank = item.get("wires_per_bank")
@@ -555,10 +573,11 @@ class Platform:
                         f"links[{index}].wires_per_bank: the XCVU19P HP bank has at most 24 differential pairs"
                     )
                 if (capacity_sharing != "shared_bidirectional" or mode == "serial"
-                        or payload_width != 1 or lanes != bank_count * wires_per_bank):
+                        or (payload_width != 1 and mode != "source_synchronous")
+                        or lanes != bank_count * wires_per_bank):
                     raise ValidationError(
                         f"links[{index}]: bank capacity requires shared_bidirectional, "
-                        "one bit per wire, and data_lanes_per_direction = bank_count * wires_per_bank"
+                        "physical data_lanes_per_direction = bank_count * wires_per_bank"
                     )
             raw_delay_model = item.get("tdm_delay_model")
             delay_model = (None if raw_delay_model is None else
@@ -578,15 +597,17 @@ class Platform:
             line_rate = item.get("max_line_rate_gbps_per_lane")
             if line_rate is not None:
                 if (
-                    mode != "serial"
+                    mode not in {"serial", "source_synchronous"}
                     or isinstance(line_rate, bool)
                     or not isinstance(line_rate, (int, float))
                     or float(line_rate) <= 0.0
                 ):
                     raise ValidationError(
                         f"links[{index}].max_line_rate_gbps_per_lane: "
-                        "expected a positive number for a serial link"
+                        "expected a positive number for a serial or source-synchronous link"
                     )
+                if not math.isfinite(line_rate):
+                    raise ValidationError("physical lane rate must be finite")
                 configured_rate = float(frequency) * payload_width / 1000.0
                 if configured_rate > float(line_rate) * (1.0 + 1e-9):
                     raise ValidationError(
@@ -753,6 +774,9 @@ class Platform:
                     ),
                 )
             )
+
+            if mode == "source_synchronous" and payload_width > 1:
+                links[-1].word_timing
 
         for fpga in fpgas:
             hp_banks_used = sum(link.bank_count for link in links

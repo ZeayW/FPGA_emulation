@@ -26,9 +26,9 @@ proc emuflow_session_source {script arguments} {
   }
 }
 proc emuflow_session_frontiers {directory} {
-  global emuflow_session_out
+  global emuflow_session_out emuflow_preflight_stage
   emuflow_session_child prepare-frontiers
-  set ::emuflow_native_export_stage synthesized
+  set ::emuflow_native_export_stage $emuflow_preflight_stage
   emuflow_session_source "$directory/inspect_constant_frontiers.tcl" \
     [list @current-design "$emuflow_session_out/constant-frontier-query.tsv" "$emuflow_session_out/constant-frontiers.tsv"]
   emuflow_session_child confirm-frontiers

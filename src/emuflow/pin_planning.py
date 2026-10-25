@@ -305,8 +305,8 @@ def _bank_pin_budgets(
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 0
                for value in (count, offset, lanes)):
             raise ValidationError("bank pin allocation requires nonnegative integers")
-        width = link.wires_per_bank
-        if (item.get("wires_per_bank") != width or offset % width
+        width = link.wires_per_bank * link.tdm_word_bits
+        if (item.get("wires_per_bank") != link.wires_per_bank or offset % width
                 or lanes != count * width
                 or offset + lanes > link.transport_bits_per_cycle_per_direction):
             raise ValidationError("bank pin allocation disagrees with BoardDB capacity")

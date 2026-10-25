@@ -39,7 +39,7 @@ FileGeneration ReadGeneration(BinaryReader& request) {
   return value;
 }
 struct Arc {
-  std::uint32_t link, from, to, capacity, offset, budget, affine, fixed_latency;
+  std::uint32_t link, from, to, capacity, offset, budget, affine, fixed_latency, word_bits;
   double base, slope, period;
 };
 using ArcKey = std::tuple<std::uint32_t,std::uint32_t,std::uint32_t>;
@@ -48,7 +48,7 @@ ExactScheduleModel BuildExactScheduleModel(const std::string& route_path,
                                           const std::string& request_path,
                                           ExactScheduleBuildContext& context) {
   BinaryReader request(request_path);
-  ReadAndValidateHeader(request,{0x3142534d44544545ULL,1,"exact schedule board request"});
+  ReadAndValidateHeader(request,{0x3142534d44544545ULL,2,"exact schedule board request"});
   const auto expected = ReadGeneration(request);
   const auto artifact = ArtifactRef::Bind(route_path,"system-route-store-v3");
   if (!(artifact.generation() == expected))
@@ -57,22 +57,35 @@ ExactScheduleModel BuildExactScheduleModel(const std::string& route_path,
   const auto minimum = request.Read<std::uint32_t>(), maximum = request.Read<std::uint32_t>(), quantum = request.Read<std::uint32_t>();
   const auto fpga = ReadCatalog(request), links = ReadCatalog(request), capacities = ReadCatalog(request);
   context.catalogs = {fpga,links,capacities};
-  Require(frame > barrier && !fpga.empty() && minimum && maximum >= minimum && maximum <= frame && quantum,
+  Require(frame > barrier && !fpga.empty() && minimum && maximum >= minimum && quantum,
           "schedule board request dimensions are invalid");
   const auto arc_count = request.Read<std::uint32_t>();
-  Require(arc_count <= request.remaining() / 56,"schedule board arcs are truncated");
+  Require(arc_count <= request.remaining() / 60,"schedule board arcs are truncated");
   std::map<ArcKey,Arc> arcs;
   for (std::uint32_t i = 0; i < arc_count; ++i) {
     Arc arc{request.Read<std::uint32_t>(),request.Read<std::uint32_t>(),request.Read<std::uint32_t>(),request.Read<std::uint32_t>(),
             request.Read<std::uint32_t>(),request.Read<std::uint32_t>(),request.Read<std::uint32_t>(),request.Read<std::uint32_t>(),
-            request.Read<double>(),request.Read<double>(),request.Read<double>()};
+            request.Read<std::uint32_t>(),request.Read<double>(),request.Read<double>(),request.Read<double>()};
     Require(arc.link < links.size() && arc.from < fpga.size() && arc.to < fpga.size() && arc.from != arc.to &&
-            arc.capacity < capacities.size() && arc.affine <= 1 && std::isfinite(arc.base) && arc.base >= 0 &&
+            arc.capacity < capacities.size() && (arc.word_bits == 1 || arc.word_bits == 8) && arc.affine <= 1
+            && arc.offset % arc.word_bits == 0 && arc.budget % arc.word_bits == 0 && std::isfinite(arc.base) && arc.base >= 0 &&
             std::isfinite(arc.slope) && arc.slope >= 0 && std::isfinite(arc.period) && arc.period > 0 &&
             std::uint64_t(arc.offset) + arc.budget <= UINT32_MAX &&
             arcs.emplace(ArcKey{arc.link,arc.from,arc.to},arc).second,"schedule board arc is invalid");
+    if (arc.word_bits > 1) {
+      context.uses_word_links = true;
+      const double fixed = arc.base - arc.slope;
+      Require(arc.affine == 1 && quantum % arc.word_bits == 0 && minimum % arc.word_bits == 0 &&
+              maximum % arc.word_bits == 0 && std::abs(arc.slope * arc.word_bits - arc.period) <= 1e-12 &&
+              fixed >= arc.period && std::ceil(fixed / arc.period) == arc.fixed_latency,
+              "LVDS word arc time units or fixed pipeline disagree");
+    }
   }
   request.RequireEnd();
+  std::uint32_t common_word_bits = 8;
+  for (const auto& item : arcs) common_word_bits = std::min(common_word_bits, item.second.word_bits);
+  if (arcs.empty()) common_word_bits = 1;
+  Require(std::uint64_t(maximum) <= std::uint64_t(frame) * common_word_bits, "ratio domain exceeds frame word capacity");
   RouteView source(artifact);
   Require(source.count() <= UINT32_MAX,"schedule has too many routes");
   Require(source.count() <= artifact.generation().bytes,"schedule route count exceeds source bounds");
@@ -122,7 +135,7 @@ ExactScheduleModel BuildExactScheduleModel(const std::string& route_path,
         used_capacity[arc->capacity] = true; model.capacity_lanes[arc->capacity] = arc->budget;
         route.maximum_depth = std::max(route.maximum_depth,depth);
         hop_indices.emplace(arc,static_cast<std::uint32_t>(route.hops.size()));
-        route.hops.push_back({depth,arc->capacity,arc->link,arc->from,arc->to,arc->offset,arc->budget,UINT32_MAX,1,arc->fixed_latency});
+        route.hops.push_back({depth,arc->capacity,arc->link,arc->from,arc->to,arc->offset,arc->budget,UINT32_MAX,1,arc->fixed_latency,arc->word_bits});
       }
     }
     Require(route.hops.size() == input.edges.size(),"schedule RouteStore route has disconnected tree edges");
@@ -163,15 +176,23 @@ ExactScheduleModel BuildExactScheduleModel(const std::string& route_path,
       return std::tie(model.routes[a.first].demand_rank,ah.link,ah.from,ah.to) < std::tie(model.routes[b.first].demand_rank,bh.link,bh.from,bh.to);
     });
     const auto& first = model.routes[group[0].first].hops[group[0].second];
-    const auto lanes = first.lane_budget, offset = first.lane_offset;
+    const auto width = first.word_bits;
+    const auto lanes = first.lane_budget / width, offset = first.lane_offset;
     for (std::uint64_t i = 0; i < group.size(); ++i) {
       auto& hop = model.routes[group[i].first].hops[group[i].second];
+      Require(hop.word_bits == width && hop.lane_budget == first.lane_budget, "wire group word format differs");
       const auto lane = i % lanes, count = (group.size() - 1 - lane) / lanes + 1;
       const auto raw = std::max(std::uint64_t(minimum),std::uint64_t(count));
       const auto ratio = raw == 1 ? 1 : ((raw + quantum - 1) / quantum) * quantum;
       Require(ratio <= maximum,"infeasible baseline wire group exceeds maximum TDM ratio");
-      hop.assigned_lane = static_cast<std::uint32_t>(offset + lane); hop.ratio = static_cast<std::uint32_t>(ratio);
+      hop.assigned_lane = static_cast<std::uint32_t>(offset + lane * width + (i / lanes) % width); hop.ratio = static_cast<std::uint32_t>(ratio);
+      hop.phase_word = static_cast<std::uint32_t>((i / lanes) / width);
       const auto& arc = arcs.at({hop.link,hop.from,hop.to});
+      if (width > 1) {
+        Require(ratio % width == 0, "ratio must contain complete serial words");
+        hop.latency = arc.fixed_latency;
+        continue;
+      }
       // Python rounds multiplication, addition and division as separate double
       // operations. Prevent FMA contraction from moving an integer boundary.
       volatile double scaled = arc.slope * (hop.ratio - 1);

@@ -66,8 +66,9 @@ if {[catch {
     close $stream
   }
   if {$emuflow_start_checkpoint eq ""} {write_checkpoint -force "$out/synthesized.dcp"}
-  emuflow_session_frontiers $emuflow_script_directory
   opt_design
+  emuflow_inventory "$out/optimized_mapped_cells.tsv" $prefix
+  emuflow_session_frontiers $emuflow_script_directory
   place_design -directive $place_directive
   phys_opt_design
   route_design -directive $route_directive

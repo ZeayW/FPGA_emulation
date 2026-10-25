@@ -53,7 +53,7 @@ def install_runtime(tmp_path, monkeypatch):
     monkeypatch.setenv("EMUFLOW_NATIVE_ROOT", str(bindir.parent))
 
 
-@pytest.mark.parametrize("affine,repeated", [(False, False), (True, False), (True, True), ("banks", False), ("tree", False)])
+@pytest.mark.parametrize("affine,repeated", [(False, False), (True, False), (True, True), ("banks", False), ("tree", False), ("word", False), ("word", True)])
 def test_complete_native_producer_matches_reference_records_certificates_and_hashes(tmp_path, monkeypatch, affine, repeated):
     case, routes = _case(tmp_path, affine, repeated)
     reference = build_tdm_schedule(routes, case.platform)
@@ -145,3 +145,33 @@ def test_empty_indexed_production_uses_native_and_matches_reference(tmp_path, mo
                side_effect=AssertionError("empty production retried Python")):
         write_tdm_schedule_storage(output, request)
     assert read_tdm_schedule(output, materialize=True) == reference
+
+
+def test_native_word_groups_eight_positions_per_lane_and_keeps_ratio_in_serial_uis(tmp_path, monkeypatch):
+    case, routes = _case(tmp_path, "word", True)
+    install_runtime(tmp_path, monkeypatch)
+    request = build_native_exact_schedule_request(routes, case.platform)
+    write_tdm_schedule_storage(tmp_path/"word/schedule.json", request)
+    schedule = read_tdm_schedule(tmp_path/"word/schedule.json", materialize=True)
+    entries = schedule["entries"]
+    from emuflow.tdm_word import WORD_EVENT_POLICY
+    assert schedule["word_event_policy"] == WORD_EVENT_POLICY
+    assert len(entries) == 40
+    assert {e["tdm_ratio"] for e in entries} == {24}
+    assert {e["arrival_slot"]-e["slot"] for e in entries} == {6}
+    assert {e["lane"]//8 for e in entries} == {0,1}
+    assert {e["slot"] for e in entries} == {1,2,3}
+    for word in (1,3):
+        members = [e for e in entries if e["slot"] == word]
+        assert {e["lane"] for e in members} == set(range(16))
+    from emuflow.tdm import validate_tdm_schedule
+    assert validate_tdm_schedule(routes, case.platform, schedule)["status"] == "pass"
+
+
+def test_word_schedule_requires_explicit_event_policy(tmp_path, monkeypatch):
+    case, routes = _case(tmp_path, "word", True)
+    schedule = build_tdm_schedule(routes, case.platform)
+    from emuflow.tdm import validate_tdm_schedule
+    schedule.pop("word_event_policy")
+    with pytest.raises(ValidationError, match="word event policy"):
+        validate_tdm_schedule(routes, case.platform, schedule)

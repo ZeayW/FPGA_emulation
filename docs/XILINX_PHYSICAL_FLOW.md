@@ -339,7 +339,11 @@ comparisons must remain separately labelled.
 `scripts/vivado/inspect_selectio_ip.tcl PART EMPTY_OUTPUT_DIRECTORY` records
 the installed High Speed SelectIO Wizard definition and its configurable defaults
 for PHY integration. It creates one private IP customization without synthesis
-or implementation; its observations do not qualify a serial PHY.
+or implementation; its observations do not qualify a serial PHY. An optional
+third argument names a literal TSV with header `property<TAB>value` and unique
+`CONFIG.*` properties. This explicitly configures the private IP and generates
+its output products and status report. The tool records resulting property
+values; it does not synthesize or qualify those outputs.
 
 The current fixed differential adapter supplies IBUFDS/OBUFDS boundaries; it
 does not implement the serializer/deserializer or forwarded-clock circuitry
@@ -508,8 +512,15 @@ The indexed provider `indexed-phase6-vivado-physical-v2` uses one native design
 session. Between stages, short Python children use SQLite indexes to classify
 all required endpoints, plan complete conditional-state frontiers, confirm the
 native facts, and resolve the final routed queries. Source indexes close before
-the next native algorithm or timing export proceeds. Before placement, unknown
-sources without supported associations or checked constant candidates fail.
+the next native algorithm or timing export proceeds. The version 2 session
+manifest explicitly selects the `optimized` preplacement snapshot. After
+`opt_design`, a fresh census identifies all required endpoints that optimization
+removed. Unknown sources without supported associations or checked constant
+candidates fail before `place_design`. Complete constant frontiers are observed
+and confirmed in that same optimized design; the version 3 confirmation names
+its observation stage and binds its inventory as well as the input synthesized
+checkpoint. Synthesis-only diagnostic snapshots remain explicitly labelled and
+cannot be substituted for an optimized observation.
 After routing, every query still requires a routed association or proof.
 
 The native session finalizes route status, DRC, utilization and vendor timing
@@ -591,9 +602,11 @@ the selected values against its current inductive model, and seals the compact
 confirmation document inside the partition proof database. Only those selected
 sources can gain `initialization: vendor-confirmed`; other conditional states
 remain unproved. Proof readers verify the document seal, complete frontier
-references, selected values, policy, and counts. A synthesis-only preflight must
-explicitly select the synthesized lineage stage and is never accepted as routed
-proof by a routed consumer. The native session recreates the checked facts
+references, selected values, policy, and counts. A preplacement confirmation
+must explicitly select its synthesized or optimized observation stage; same-stage
+proofs must match that inventory exactly. Neither preplacement source model is
+accepted as a routed elimination proof. The routed owner rechecks source closure
+and inductive constants against its own observed census. The native session recreates the checked facts
 from their bound inputs at the routed preparation boundary and imports them
 into the canonical partition proof owner before any timing skip is exported.
 

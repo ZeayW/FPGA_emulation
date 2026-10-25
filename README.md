@@ -25,7 +25,10 @@ rejected before mapping or vendor implementation. Physical capacity accounting
 handles native macro expansion and shared LUT halves.
 The [serial PHY reference](docs/HARDWARE_PLATFORM.md#serial-phy-time-units)
 distinguishes DUT and analysis clocks, parallel words, and serial bit intervals.
-The current direct LVDS adapter does not implement that 8:1 serial PHY.
+The native planner can represent periodic eight-bit LVDS lane tables, with
+ratios in serial UIs and word events in TDM cycles. These explicit plans are
+rejected at the current direct-adapter Phase 6 boundary until word transport
+and PHY integration are qualified.
 Its required [timing contract](docs/global-opensta-qualification.md#ratio-estimates-and-schedule-resolved-phy-timing)
 distinguishes pre-schedule ratio estimates from post-schedule per-signal events.
 The indexed provider exports routed reports and timing in one native session
@@ -41,10 +44,11 @@ identical LUT1 control drivers; clock and data identities remain exact. Source
 lineage still does not prove functional equivalence.
 Vivado uses explicit DUT implementation targets independently of runtime frames;
 a frequency override scales all DUT roots together while keeping the TDM clock
-fixed. The same documentation describes the installed SelectIO IP inspection
-used for PHY integration. See the [clock baseline](docs/XILINX_PHYSICAL_FLOW.md#local-implementation-clock-baseline).
+fixed. The same documentation describes installed SelectIO IP inspection and
+explicit configuration/output generation used for PHY integration. See the [clock baseline](docs/XILINX_PHYSICAL_FLOW.md#local-implementation-clock-baseline).
 Indexed mapped primitives carry provenance tags without global KEEP/DONT_TOUCH
-constraints; indexed source-bound coverage is checked after optimization. The timing
+constraints; indexed source-bound coverage and selected constant facts are checked
+after `opt_design`, before placement, and checked again after routing. The timing
 contract requires an explicit measured or proven optimized-away disposition for
 every original path; WNS/TNS use surviving implemented paths. Local paths,
 cross-FPGA logic segments, and shadow interfaces can retain eliminated records

@@ -1194,6 +1194,9 @@ def write_transport_systemverilog(
 ) -> None:
     """Stream production transport RTL from indexed endpoint cursors."""
 
+    from .tdm_word import require_word_transport_implementation
+    require_word_transport_implementation(platform)
+
     rtl_rows = getattr(transport, "iter_rtl_endpoints", None)
     endpoint_groups = getattr(transport, "endpoint_groups", None)
     if rtl_rows is None or endpoint_groups is None:
@@ -1463,6 +1466,9 @@ def write_transport_storage(
     virtual_board: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Publish Phase 6 transport relations without hop-sized Python lists."""
+
+    from .tdm_word import require_word_transport_implementation
+    require_word_transport_implementation(platform)
 
     if schedule.get("schema") != TDM_SCHEDULE_SCHEMA:
         raise ValidationError("schedule has an unsupported schema")

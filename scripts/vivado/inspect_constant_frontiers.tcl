@@ -5,7 +5,12 @@ lassign $argv checkpoint query output
 proc emuflow_frontier_hex {value} {return [binary encode hex [encoding convertto utf-8 $value]]}
 proc emuflow_frontier_decode {value} {return [encoding convertfrom utf-8 [binary decode hex $value]]}
 source [file join [file dirname [info script]] timing_contract.tcl]
-emuflow_open_export_design $checkpoint synthesized
+set stage synthesized
+if {$checkpoint eq "@current-design" && [info exists ::emuflow_native_export_stage]} {
+  set stage $::emuflow_native_export_stage
+  if {$stage ni {synthesized optimized}} {error "constant inspection requires a preplacement snapshot"}
+}
+emuflow_open_export_design $checkpoint $stage
 set input [open $query r]
 if {[gets $input header] < 0 || $header ne "source_origin\tnative_cell_hex"} {
   error "invalid constant-frontier query"

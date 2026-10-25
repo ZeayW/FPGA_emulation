@@ -27,6 +27,12 @@ def _case(tmp_path, affine, repeated):
         case.platform=replace(case.platform,links=(replace(link,data_lanes_per_direction=2,
             tdm_delay_model=RatioDelayModel("linear-ratio-v1",3.2,0.1,64 if affine=="wide-ratio" else 8,256,8),
             **({"bank_count":2,"wires_per_bank":1} if affine=="banks" else {})),))
+    if affine == "word":
+        link = case.platform.links[0]
+        case.platform = replace(case.platform, links=(replace(link, mode="source_synchronous",
+            data_lanes_per_direction=2, payload_bits_per_lane_per_cycle=8,
+            max_line_rate_gbps_per_lane=1.6, fabric_clock_mhz=200.0, latency_cycles=6,
+            tdm_delay_model=RatioDelayModel("linear-ratio-v1",30.0,0.625,8,256,8)),))
     _,assignment=case._exact_artifacts(dependent_return=True)
     routes=case._exact_routes(assignment,frame_slots=256 if repeated else 16)
     routes["semantic_contract"]={**routes["semantic_contract"],"indexed":True}

@@ -102,7 +102,7 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
         throw core::StageError(core::ErrorCode::kInvalidRequest, "PATRON requires typed input");
       return {"patron-input-v1"};
     case Stage::kRoute: return {"global-route-input-v1"};
-    case Stage::kBuildSchedule: return {"system-route-store-v3", "exact-schedule-board-request-v1", "exact-schedule-generation-request-v1"};
+    case Stage::kBuildSchedule: return {"system-route-store-v3", "exact-schedule-board-request-v2", "exact-schedule-generation-request-v1"};
     case Stage::kAssignBanks:
     case Stage::kGroupSignals:
     case Stage::kRefinePositions:

@@ -116,7 +116,7 @@ class NativePressureModel(dict):
                          clusters=range(len(self.clusters)), nets=range(0), paths=range(self.expected_paths),
                          capacities=range(len(capacities)))
         links = {link.id: link for link in platform.links}
-        self.domains = [dict(value, lanes=links[value["link"]].transport_bits_per_cycle_per_direction)
+        self.domains = [dict(value, lanes=links[value["link"]].tdm_ratio_lanes_per_direction)
                         for _key, value in sorted(capacities.items())]
         self.small_route_model = {"capacities": self.domains, "shortest_routes": ref._shortest_routes(platform, routes)}
 

@@ -144,6 +144,10 @@ emuflow::core::ExactScheduleSolution Compute(const emuflow::core::ExactScheduleM
     route_arrivals[route.source] = static_cast<std::int64_t>(source_ready) - 1;
     for (std::uint32_t hop_index = 0; hop_index < route.hops.size(); ++hop_index) {
       const auto& hop = route.hops[hop_index];
+      if ((hop.word_bits != 1 && hop.word_bits != 8) ||
+          (hop.assigned_lane != kUnassignedLane && hop.ratio % hop.word_bits)) {
+        throw std::runtime_error("invalid scheduled word format or ratio");
+      }
       std::uint32_t hop_ready = source_ready;
       if (hop.from != route.source) {
         if (route_arrivals[hop.from] == missing || route_arrivals[hop.from] < 0) {
@@ -167,14 +171,24 @@ emuflow::core::ExactScheduleSolution Compute(const emuflow::core::ExactScheduleM
       const auto latest = frame_slots - barrier_slots - hop.latency;
       std::uint32_t slot = hop_ready;
       std::uint32_t lane = 0;
-      if (hop.assigned_lane == kUnassignedLane) {
+      if (hop.word_bits > 1 && hop.assigned_lane != kUnassignedLane) {
+        const auto words = hop.ratio / hop.word_bits;
+        if (hop.phase_word >= words) throw std::runtime_error("word phase exceeds periodic lane table");
+        const std::uint64_t phase = hop.phase_word;
+        const std::uint64_t rounds = hop_ready <= phase ? 0 :
+            (std::uint64_t(hop_ready) - phase + words - 1) / words;
+        const auto selected = phase + rounds * words;
+        if (selected > UINT32_MAX) throw std::runtime_error("word event exceeds native time domain");
+        slot = static_cast<std::uint32_t>(selected);
+        lane = hop.assigned_lane;
+      } else if (hop.assigned_lane == kUnassignedLane) {
         slot = available[hop.capacity].First(hop_ready);
         if (slot < frame_slots) {
           lane = available[hop.capacity].Assign(slot, hop.lane_offset);
         }
       } else {
         lane = hop.assigned_lane;
-        const auto window_end = std::min(latest, hop_ready + hop.ratio);
+        const auto window_end = std::min<std::uint64_t>(latest, std::uint64_t(hop_ready) + hop.ratio / hop.word_bits);
         while (slot < window_end && occupied[hop.capacity].count({slot, lane})) {
           ++slot;
         }
@@ -193,7 +207,7 @@ emuflow::core::ExactScheduleSolution Compute(const emuflow::core::ExactScheduleM
                << " lane=" << lane << " reason=no-slot-before-frame-boundary";
         throw std::runtime_error(detail.str());
       }
-      if (hop.assigned_lane != kUnassignedLane && slot >= hop_ready + hop.ratio) {
+      if (hop.assigned_lane != kUnassignedLane && std::uint64_t(slot) >= std::uint64_t(hop_ready) + hop.ratio / hop.word_bits) {
         std::ostringstream detail;
         detail << "exact ratio window is infeasible: route=" << route_index
                << " demand_rank=" << route.demand_rank

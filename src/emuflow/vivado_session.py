@@ -22,7 +22,7 @@ from .vivado_lineage import import_cell_lineage, resolve_timing_query
 from .vivado_optimization import build_optimization_proofs
 from .vivado_clocks import implementation_clocks, implementation_timing_contract
 
-SCHEMA = "emuflow.vivado-native-session/v1"
+SCHEMA = "emuflow.vivado-native-session/v2"
 
 
 def _tcl_word(value):
@@ -41,6 +41,7 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
     clocks = implementation_clocks(runtime, ports, dut_frequency_mhz)
     manifest = {"schema": SCHEMA, "fpga": fpga, "part": part, "output": str(output),
         "implementation_timing": implementation_timing_contract(runtime, dut_frequency_mhz),
+        "source_preflight_stage": "optimized",
         "mapped_index": str(mapped_index.resolve()), "functions": str(functions.resolve()),
         "mapped_index_sha256": mapped_sha256, "queries": {key:str(value.resolve()) for key,value in queries.items()},
         "synthesized_checkpoint": str(checkpoint), "synthesized_checkpoint_sha256": synthesized_checkpoint_sha256}
@@ -62,6 +63,7 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
                sys.executable,"-m","emuflow.vivado_session"]
     settings = {"emuflow_session_out":str(output),"emuflow_session_manifest":str(output/"native-session.json"),
         "emuflow_start_checkpoint":str(checkpoint) if synthesized_checkpoint is not None else "",
+        "emuflow_preflight_stage":"optimized",
         "emuflow_clock_contract":str(output/"clock-contract.tsv"),"emuflow_io_timing_map":str(output/"fixed-io-timing-map.tsv") if (output/"fixed-io-timing-map.tsv").is_file() else ""}
     lines = [f"set {key} {_tcl_word(value)}" for key,value in settings.items()]
     lines.append("set emuflow_child_command [list "+" ".join(_tcl_word(value) for value in command)+"]")
@@ -73,6 +75,7 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
 def load_session(path: Path):
     value = read_json(path)
     if (value.get("schema") != SCHEMA or not isinstance(value.get("fpga"), str)
+            or value.get("source_preflight_stage") not in {"synthesized", "optimized"}
             or not isinstance(value.get("queries"), dict)
             or set(value["queries"])-{"boundary_timing", "logic_segment_timing", "local_path_timing"}):
         raise ValidationError("invalid Vivado native session manifest")
@@ -90,24 +93,33 @@ def _resolve(session, lineage, proof, kind, destination, diagnostic=None, stage=
         stage=stage, diagnostic_unresolved_path=diagnostic)
 
 
+def _preflight_snapshot(session):
+    stage = session.get("source_preflight_stage")
+    if stage not in {"synthesized", "optimized"}:
+        raise ValidationError("native source preflight requires a preplacement snapshot")
+    filename = "optimized_mapped_cells.tsv" if stage == "optimized" else "mapped_cells.tsv"
+    return stage, Path(session["output"])/filename
+
+
 def prepare_frontiers(session):
-    """Classify every required endpoint before choosing any unknown INIT."""
+    """Classify every required endpoint in the selected preplacement snapshot."""
     mapped, functions, out = _paths(session)
-    lineage, model = out/"synthesized-lineage.sqlite", out/"source-constant-model.sqlite"
+    stage, inventory = _preflight_snapshot(session)
+    lineage, model = out/(stage+"-lineage.sqlite"), out/"source-constant-model.sqlite"
     checkpoint = Path(session["synthesized_checkpoint"])
     checkpoint_sha = file_sha256(checkpoint)
     expected = session.get("synthesized_checkpoint_sha256")
     if expected is not None and checkpoint_sha != expected:
         raise ValidationError("synthesized continuation checkpoint differs")
-    coverage = import_cell_lineage(mapped, functions, {"synthesized": out/"mapped_cells.tsv"}, lineage,
-        mapped_sha256=session["mapped_index_sha256"], retain_stage="synthesized")
+    coverage = import_cell_lineage(mapped, functions, {stage: inventory}, lineage,
+        mapped_sha256=session["mapped_index_sha256"], retain_stage=stage)
     proof = build_optimization_proofs(mapped, lineage, model, mapped_sha256=session["mapped_index_sha256"],
-                                      stage="synthesized", fpga=session["fpga"])
+                                      stage=stage, fpga=session["fpga"])
     selected = set()
     resolutions = {}
     for kind in session["queries"]:
-        resolved, diagnostic = out/(kind+"-synthesis.tsv"), out/(kind+"-unassociated.sqlite")
-        resolutions[kind] = _resolve(session, lineage, model, kind, resolved, diagnostic, stage="synthesized")
+        resolved, diagnostic = out/(kind+"-"+stage+".tsv"), out/(kind+"-unassociated.sqlite")
+        resolutions[kind] = _resolve(session, lineage, model, kind, resolved, diagnostic, stage=stage)
         db = sqlite3.connect(f"{diagnostic.resolve().as_uri()}?mode=ro&immutable=1", uri=True)
         try:
             db.execute("ATTACH DATABASE ? AS proofs", (f"{model.resolve().as_uri()}?mode=ro&immutable=1",))
@@ -124,22 +136,22 @@ def prepare_frontiers(session):
         resolved.unlink()
     model_sha = file_sha256(model)
     if selected:
-        plan = prepare_constant_frontier_query(mapped, model, out/"mapped_cells.tsv",
+        plan = prepare_constant_frontier_query(mapped, model, inventory,
             mapped_sha256=session["mapped_index_sha256"], candidate_proofs_sha256=model_sha,
-            checkpoint_sha256=checkpoint_sha, fpga=session["fpga"], selected_sources=sorted(selected))
+            checkpoint_sha256=checkpoint_sha, fpga=session["fpga"], selected_sources=sorted(selected), source_stage=stage)
     else:
         plan = {"status": "not-required", "requested_sources": [], "sources": [], "query_objects": [],
-                "source_candidate_proofs_sha256": model_sha, "synthesized_checkpoint_sha256": checkpoint_sha}
+                "source_candidate_proofs_sha256": model_sha, "synthesized_checkpoint_sha256": checkpoint_sha, "source_stage":stage}
     write_json(out/"constant-frontier-plan.json", plan, compact=True)
     with (out/"constant-frontier-query.tsv").open("w") as stream:
         rows = csv.writer(stream, delimiter="\t", lineterminator="\n")
         rows.writerow(["source_origin", "native_cell_hex"])
         for item in plan["query_objects"]:
             rows.writerow([item["source_origin"], item["name"].encode().hex()])
-    write_json(out/"synthesized-source-preflight.json", {"status": "inspection-required" if selected else "pass",
+    write_json(out/(stage+"-source-preflight.json"), {"status": "inspection-required" if selected else "pass", "source_stage":stage,
         "coverage": coverage, "proof": proof, "queries": resolutions, "requested_constant_sources": len(selected),
         "closed_constant_sources": len(plan["sources"]), "native_frontiers": len(plan["query_objects"])}, compact=True)
-    # All children using this synthesized association have returned and closed
+    # All children using this preplacement association have returned and closed
     # their connections. Only the compact source model and plan are needed next.
     lineage.unlink()
     return {"status": "pass", "constant_sources": len(plan["sources"]), "native_frontiers": len(plan["query_objects"])}
@@ -151,12 +163,15 @@ def _check_constants(session):
     checkpoint_sha = file_sha256(Path(session["synthesized_checkpoint"]))
     if checkpoint_sha != plan["synthesized_checkpoint_sha256"]:
         raise ValidationError("native constant facts belong to a different synthesized checkpoint")
+    stage, inventory = _preflight_snapshot(session)
+    if plan.get("source_stage") != stage:
+        raise ValidationError("native constant facts belong to a different preplacement stage")
     if not plan["requested_sources"]:
         return None, checkpoint_sha
     checked = check_constant_sources(mapped, functions, out/"source-constant-model.sqlite",
-        out/"constant-frontiers.tsv", out/"mapped_cells.tsv", mapped_sha256=session["mapped_index_sha256"],
+        out/"constant-frontiers.tsv", inventory, mapped_sha256=session["mapped_index_sha256"],
         candidate_proofs_sha256=plan["source_candidate_proofs_sha256"], checkpoint_sha256=checkpoint_sha,
-        fpga=session["fpga"], selected_sources=plan["requested_sources"])
+        fpga=session["fpga"], selected_sources=plan["requested_sources"], source_stage=stage)
     return checked, checkpoint_sha
 
 
@@ -176,8 +191,9 @@ def prepare_timing(session):
     mapped, functions, out = _paths(session)
     checked, checkpoint_sha = _check_constants(session)
     lineage, proof_path = out/"cell-lineage.sqlite", out/"optimization-proofs.sqlite"
+    stage, inventory = _preflight_snapshot(session)
     coverage = import_cell_lineage(mapped, functions, {
-        "synthesized": out/"mapped_cells.tsv", "routed": out/"routed_mapped_cells.tsv"}, lineage,
+        stage: inventory, "routed": out/"routed_mapped_cells.tsv"}, lineage,
         mapped_sha256=session["mapped_index_sha256"])
     proof = build_optimization_proofs(mapped, lineage, proof_path, mapped_sha256=session["mapped_index_sha256"],
         fpga=session["fpga"], checked_constants=checked, synthesized_checkpoint_sha256=checkpoint_sha)
@@ -195,8 +211,8 @@ def prepare_timing(session):
     write_json(out/"routed-query-preparation.json", result, compact=True)
     # Native exporters consume only the sealed resolved queries and proof store.
     lineage.unlink()
-    for inventory in ("mapped_cells.tsv", "routed_mapped_cells.tsv"):
-        (out / inventory).unlink()
+    for inventory in ("mapped_cells.tsv", "optimized_mapped_cells.tsv", "routed_mapped_cells.tsv"):
+        (out / inventory).unlink(missing_ok=True)
     return {"status": "pass", "query_classes": len(resolutions)}
 
 

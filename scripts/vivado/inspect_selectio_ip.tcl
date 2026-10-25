@@ -1,7 +1,7 @@
 # Inspect the installed native SelectIO IP before constructing an LVDS PHY.
 # This creates one private IP customization, not an implemented design.
-if {$argc != 2} {error "expected PART EMPTY_OUTPUT_DIRECTORY"}
-lassign $argv part output
+if {$argc ni {2 3}} {error "expected PART EMPTY_OUTPUT_DIRECTORY ?CONFIG_TSV?"}
+lassign $argv part output configuration
 if {[file exists $output]} {
   if {![file isdirectory $output]} {error "SelectIO output is not a directory"}
   foreach entry [glob -nocomplain -tails -directory $output * .*] {
@@ -20,6 +20,25 @@ if {[catch {
   file mkdir [file join $output ip]
   create_ip -vlnv [lindex $definitions 0] -module_name emuflow_selectio_probe -dir [file join $output ip]
   set ip [get_ips emuflow_selectio_probe]
+  if {$configuration ne ""} {
+    set stream [open $configuration r]
+    if {[gets $stream header] < 0 || $header ne "property\tvalue"} {error "invalid SelectIO configuration header"}
+    set settings [dict create]
+    while {[gets $stream row] >= 0} {
+      if {[dict size $settings] >= 4096} {error "SelectIO configuration exceeds bound"}
+      set fields [split $row "\t"]
+      if {[llength $fields] != 2} {error "invalid SelectIO configuration record"}
+      lassign $fields property value
+      if {![regexp {^CONFIG\.[A-Za-z0-9_.]+$} $property] ||
+          [lsearch -exact [list_property $ip] $property] < 0 || [dict exists $settings $property]} {
+        error "unknown or duplicate SelectIO configuration property"
+      }
+      dict set settings $property $value
+    }
+    close $stream
+    if {[dict size $settings] == 0} {error "empty SelectIO configuration"}
+    set_property -dict $settings $ip
+  }
   set stream [open [file join $output ip-properties.tsv] w]
   puts $stream "property_hex\tvalue_hex"
   set count 0
@@ -37,6 +56,10 @@ if {[catch {
   puts $stream "ip_definition\t[lindex $definitions 0]"
   puts $stream "config_properties\t$count"
   close $stream
+  if {$configuration ne ""} {
+    generate_target all $ip
+    report_ip_status -file [file join $output ip-status.rpt]
+  }
   close_project
 } message options]} {
   puts stderr $message

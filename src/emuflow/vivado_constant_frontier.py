@@ -19,10 +19,10 @@ from typing import Any
 
 from .errors import ValidationError
 
-CONSTANT_CONFIRMATION_SCHEMA = "emuflow.vivado-selected-constant-confirmations/v2"
+CONSTANT_CONFIRMATION_SCHEMA = "emuflow.vivado-selected-constant-confirmations/v3"
 CONSTANT_INITIALIZATION_POLICY = "joint-inductive-source-model-with-explicit-vendor-selected-initialization"
 CONSTANT_MODEL_SCOPE = "selected-states-inductive-without-unconfirmed-state-assumptions"
-CONSTANT_NATIVE_INPUT_POLICY = "same-primitive-and-pin-bindings-at-synthesis"
+CONSTANT_NATIVE_INPUT_POLICY = "same-primitive-and-pin-bindings-at-preplacement-snapshot-v1"
 _CHECKED_CONSTANT_TOKEN = object()
 
 
@@ -356,7 +356,7 @@ def _require_inductive_selected_states(db, mapped_path: Path, values: Mapping[in
 def prepare_constant_frontier_query(mapped_path: Path, candidates_path: Path,
                                     inventory_path: Path, *, mapped_sha256: str,
                                     candidate_proofs_sha256: str, checkpoint_sha256: str,
-                                    fpga: str, selected_sources) -> dict[str, Any]:
+                                    fpga: str, selected_sources, source_stage: str = "synthesized") -> dict[str, Any]:
     """Close required state dependencies and fanouts before native inspection.
 
     Additional INIT choices become explicit source records with complete fanout
@@ -370,7 +370,7 @@ def prepare_constant_frontier_query(mapped_path: Path, candidates_path: Path,
         try:
             plan = _prepare_constant_frontier_query_once(mapped_path,candidates_path,inventory_path,
                 mapped_sha256=mapped_sha256,candidate_proofs_sha256=candidate_proofs_sha256,
-                checkpoint_sha256=checkpoint_sha256,fpga=fpga,selected_sources=selected)
+                checkpoint_sha256=checkpoint_sha256,fpga=fpga,selected_sources=selected,source_stage=source_stage)
         except _UnconfirmedStateDependencies as error:
             additional = [f"s{i}" for i in error.dependencies if f"s{i}" not in selected]
             if not additional or len(selected)+len(additional)>4096:
@@ -384,7 +384,7 @@ def prepare_constant_frontier_query(mapped_path: Path, candidates_path: Path,
 def _prepare_constant_frontier_query_once(mapped_path: Path, candidates_path: Path,
                                     inventory_path: Path, *, mapped_sha256: str,
                                     candidate_proofs_sha256: str, checkpoint_sha256: str,
-                                    fpga: str, selected_sources) -> dict[str, Any]:
+                                    fpga: str, selected_sources, source_stage: str = "synthesized") -> dict[str, Any]:
     """Plan a bounded closed state component before opening a native checkpoint.
 
     Follow state-to-state fanouts only through conditional candidates. Every
@@ -394,6 +394,8 @@ def _prepare_constant_frontier_query_once(mapped_path: Path, candidates_path: Pa
     """
     from .io import file_sha256
     from .vivado_lineage import INVENTORY_HEADER
+    if source_stage not in {"synthesized", "optimized"}:
+        raise ValidationError("constant confirmation needs an explicit preplacement observation stage")
     if (not isinstance(fpga, str) or not fpga or not isinstance(selected_sources, Sequence)
             or isinstance(selected_sources, (str, bytes)) or not 1 <= len(selected_sources) <= 4096
             or any(not isinstance(s, str) or not re.fullmatch(r"s(?:0|[1-9][0-9]*)", s) for s in selected_sources)
@@ -408,9 +410,9 @@ def _prepare_constant_frontier_query_once(mapped_path: Path, candidates_path: Pa
     try:
         db.execute("ATTACH DATABASE ? AS proofs", (f"file:{candidates_path.resolve()}?mode=ro&immutable=1",))
         owner = {key: json.loads(value) for key, value in db.execute("SELECT key,value FROM proofs.metadata")}
-        if (owner.get("stage") != "synthesized" or owner.get("mapped_index_sha256") != mapped_sha256
+        if (owner.get("stage") != source_stage or owner.get("mapped_index_sha256") != mapped_sha256
                 or owner.get("fpga") not in (None, fpga)):
-            raise ValidationError("constant confirmation needs the matching synthesized source model")
+            raise ValidationError("constant confirmation needs the matching preplacement source model")
         source_rows = []
         frontier_origins = set()
         selected_q = set()
@@ -500,7 +502,7 @@ def _prepare_constant_frontier_query_once(mapped_path: Path, candidates_path: Pa
         if {int(item["source_origin"][1:]) for item in expected_objects} != frontier_origins:
             raise ValidationError("conditional source has an unobserved or optimized frontier")
         return {"schema":"emuflow.vivado-constant-frontier-query-plan/v1", "status":"inspection-required",
-                "fpga":fpga, "mapped_index_sha256":mapped_sha256,
+                "fpga":fpga, "mapped_index_sha256":mapped_sha256, "source_stage":source_stage,
                 "synthesized_checkpoint_sha256":checkpoint_sha256,
                 "source_candidate_proofs_sha256":candidate_proofs_sha256,
                 "source_inventory_sha256":inventory_digest.hexdigest(),
@@ -517,7 +519,7 @@ def confirm_selected_constant_sources(mapped_path: Path, functions_path: Path,
                                       candidates_path: Path, observations_path: Path,
                                       inventory_path: Path, *, mapped_sha256: str,
                                       candidate_proofs_sha256: str, checkpoint_sha256: str,
-                                      fpga: str, selected_sources) -> dict[str, Any]:
+                                      fpga: str, selected_sources, source_stage: str = "synthesized") -> dict[str, Any]:
     """Confirm all retained LUT exits of a closed inductive state component.
 
     This refines unspecified initialization under an explicit vendor choice;
@@ -526,14 +528,14 @@ def confirm_selected_constant_sources(mapped_path: Path, functions_path: Path,
     from .io import file_sha256
     plan = prepare_constant_frontier_query(mapped_path,candidates_path,inventory_path,
         mapped_sha256=mapped_sha256,candidate_proofs_sha256=candidate_proofs_sha256,
-        checkpoint_sha256=checkpoint_sha256,fpga=fpga,selected_sources=selected_sources)
+        checkpoint_sha256=checkpoint_sha256,fpga=fpga,selected_sources=selected_sources,source_stage=source_stage)
     source_rows, expected_objects = plan["sources"], plan["query_objects"]
     selected_values = {int(row["source"][1:]):row["constant_value"] for row in source_rows}
     comparison = compare_selected_constant_frontiers(mapped_path, functions_path, candidates_path, observations_path,
         mapped_sha256=mapped_sha256, expected_objects=expected_objects,
         selected_constant_values=selected_values,require_input_identity=True)
     return {"schema":CONSTANT_CONFIRMATION_SCHEMA, "status":"pass", "fpga":fpga,
-            "mapped_index_sha256":mapped_sha256, "source_stage":"synthesized",
+            "mapped_index_sha256":mapped_sha256, "source_stage":source_stage,
             "initialization_policy":CONSTANT_INITIALIZATION_POLICY,
             "source_model_scope":CONSTANT_MODEL_SCOPE, "native_input_policy":CONSTANT_NATIVE_INPUT_POLICY,
             "synthesized_checkpoint_sha256":checkpoint_sha256,

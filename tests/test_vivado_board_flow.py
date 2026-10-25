@@ -244,7 +244,7 @@ for name in ('synthesized.dcp', 'placed.dcp', 'routed.dcp',
                         "fabric_to_dut_max_delay_ns": 20.0,
                     },
                     "virtual_dut_clocks": {
-                        "dut_clk": {"nominal_period_ns": 128.0}
+                        "dut_clk": {"target_period_ns": 10.0, "nominal_period_ns": 128.0}
                     },
                     "virtual_dut_clock": {"nominal_period_ns": 128.0},
                     "fabric_clock": {"period_ns": 20.0},

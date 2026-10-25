@@ -163,7 +163,7 @@ void PublishScheduleData(const std::vector<Route>& routes, const ExactScheduleSo
     const std::vector<std::string>& fpga, const std::vector<std::string>& links,
     const std::vector<std::string>& capacities, BinaryReader& request, const std::string& output_path,
     const std::vector<ArtifactRef>& sources, std::uint32_t frame, std::uint32_t barrier,
-    std::uint32_t settle) {
+    std::uint32_t settle, bool uses_word_links) {
   const auto route_count = routes.size(), fpga_count = fpga.size();
   const auto entry_count = solution.entries.size();
   Require(solution.completions.size() == route_count,"schedule publication completion coverage disagrees");
@@ -202,6 +202,9 @@ void PublishScheduleData(const std::vector<Route>& routes, const ExactScheduleSo
             header.count("provider") && header.at("provider").compact == "\"deterministic-dependency-earliest-slot-v1\"" &&
             header.count("qualification") && header.at("qualification").compact == "\"dependency-schedule-readiness-pass\"",
             "schedule publication requires the qualified exact contract");
+    Require(!header.count("word_event_policy"), "schedule word policy is producer owned");
+    if (uses_word_links)
+      header.emplace("word_event_policy", Encode(JsonRecord("periodic-lvds-8bit-word-load-to-rx-visible-v1")));
     const auto domains = request.Read<std::uint32_t>();
     Require(domains <= request.remaining() / 15, "schedule publication domain records are truncated");
     std::vector<std::pair<std::string, Encoded>> domain_records;
@@ -414,6 +417,6 @@ void BuildExactScheduleStore(const std::vector<ArtifactRef>& sources, const std:
   model.routes.clear(); model.routes.shrink_to_fit();
   context.identities.clear(); context.identities.shrink_to_fit();
   PublishScheduleData(routes,solution,catalogs.fpgas,catalogs.links,catalogs.capacities,request,
-                      output_path,sources,model.frame_slots,model.barrier_slots,model.settle_slots);
+                      output_path,sources,model.frame_slots,model.barrier_slots,model.settle_slots,context.uses_word_links);
 }
 }  // namespace emuflow::core
