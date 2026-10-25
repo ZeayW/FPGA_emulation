@@ -47,7 +47,12 @@ from .xilinx_packing import (
     FF_TYPES,
     LUT_TYPES,
     PACKED_SITE_NETLIST_SCHEMA,
+    SLICE_FF_BELS,
+    SLICE_LUT_BELS,
     _derive_cascade_chains,
+    _net_drivers,
+    _slice_site_pin_conflicts,
+    legalize_xilinx_slice_site_pins,
 )
 from .xilinx_physical_macros import build_xilinx_physical_macro_contract
 from .xilinx_openparf_source_storage import (
@@ -2119,6 +2124,73 @@ def _control_tuple(cell_type: str, cell: Mapping[str, Any]) -> Tuple[Any, Any, A
     )
 
 
+def _legalize_atomic_mux_site_pins(raw, atoms, cells, remember_move, evacuate_ff):
+    """Repack a bounded MUX site, evacuating FFs only if it is infeasible."""
+    mux_sites = {raw[name][:2] for name, atom in atoms.items()
+                 if atom["cell_type"] in _MUX_RESOURCES}
+    by_site = {coordinate: [] for coordinate in mux_sites}
+    for name in atoms:
+        coordinate = raw[name][:2]
+        if coordinate in by_site:
+            by_site[coordinate].append(name)
+    mux_roles = {
+        "MUXF7": ("F7MUX_AB", "F7MUX_CD", "F7MUX_EF", "F7MUX_GH"),
+        "MUXF8": ("F8MUX_BOT", "F8MUX_TOP"), "MUXF9": ("F9MUX",),
+    }
+    repacked, evicted = set(), set()
+    for coordinate, names in sorted(by_site.items()):
+        while True:
+            local_atoms = {atoms[name]["instance"]: name for name in names
+                           if raw[name][:2] == coordinate}
+            local_cells = {instance: cells[instance] for instance in local_atoms}
+            assignments = []
+            for instance, name in local_atoms.items():
+                atom, z = atoms[name], raw[name][2]
+                resource = atom["resource"]
+                if resource == "LUT":
+                    bel = SLICE_LUT_BELS[z // 2]
+                elif resource == "FF":
+                    bel = SLICE_FF_BELS[z]
+                elif atom["cell_type"] in mux_roles:
+                    bel = mux_roles[atom["cell_type"]][z]
+                else:
+                    raise ValidationError("MUX site contains a non-slice atom")
+                assignments.append(dict(instance=instance, cell_type=atom["cell_type"], bel=bel))
+            cluster = dict(id=f"atomic:{coordinate}", kind="slice", assignments=assignments)
+            # For this check only driver membership in this site matters.
+            # Missing outside drivers are correctly treated as external users.
+            drivers = _net_drivers(local_cells)
+            conflicts = _slice_site_pin_conflicts(local_cells, [cluster], drivers)
+            if not conflicts:
+                break
+            try:
+                legalize_xilinx_slice_site_pins(local_cells, [cluster])
+            except ValidationError as error:
+                if "cannot be legalized within certified site" not in str(error):
+                    raise
+                # Joint assignment proved the current site infeasible. Move
+                # one conflicting primary FF to a non-MUX site and retry;
+                # every failed attempt strictly reduces this site's FF count.
+                offender = next(use["instance"] for use in conflicts[0]["uses"]
+                                if local_cells[use["instance"]]["type"] in FF_TYPES)
+                name = local_atoms[offender]
+                remember_move(name)
+                evacuate_ff(name, mux_sites)
+                evicted.add(name)
+                continue
+            for assignment in assignments:
+                if assignment["cell_type"] not in FF_TYPES:
+                    continue
+                name = local_atoms[assignment["instance"]]
+                target = (*coordinate, SLICE_FF_BELS.index(assignment["bel"]))
+                if target != raw[name]:
+                    remember_move(name)
+                    raw[name] = target
+                    repacked.add(name)
+            break
+    return dict(site_pin_repacked_ffs=len(repacked), site_pin_evicted_ffs=len(evicted))
+
+
 def legalize_xilinx_openparf_ff_control_sets(
     placement_path: Path,
     name_map_path: Path,
@@ -2128,12 +2200,12 @@ def legalize_xilinx_openparf_ff_control_sets(
     mapped_value: Optional[Mapping[str, Any]] = None,
     packed_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Repair native FF control sets and full-slice carry exclusions.
+    """Repair native FF controls, carry exclusions, and shared MUX site pins.
 
     OpenPARF's generic direct legalizer models FF capacity but not the shared
     CK/SR and lane-local CE wires of an UltraScale+ half-slice.  Preserve every
-    already-compatible FF outside carry macros and all non-FF atoms, then move conflicting FFs
-    to the nearest compatible half-slice.  The independent placement importer
+    already-compatible FFs and all non-FF atoms. Repack MUX sites jointly and
+    evacuate conflicting FFs when no same-site assignment exists. The importer
     still rechecks the complete result after this bounded legalization pass.
     """
 
@@ -2295,9 +2367,12 @@ def legalize_xilinx_openparf_ff_control_sets(
     min_x = min(x for x, _y in ff_sites)
     max_y = max(y for _x, y in ff_sites)
     min_y = min(y for _x, y in ff_sites)
-    total_distance = 0
-    maximum_distance = 0
-    for name in sorted(moved, key=lambda item: (*raw[item][:2], item)):
+    original_moved_positions = {}
+
+    def remember_move(name):
+        original_moved_positions.setdefault(name, raw[name])
+
+    def nearest_ff(name, forbidden_sites=()):
         atom = atoms[name]
         clock, sr, enable = _control_tuple(
             atom["cell_type"], cells[atom["instance"]]
@@ -2317,7 +2392,7 @@ def legalize_xilinx_openparf_ff_control_sets(
                 )
                 for x in xs:
                     coordinate = (x, origin_y + delta_y)
-                    if coordinate not in ff_sites:
+                    if coordinate not in ff_sites or coordinate in forbidden_sites:
                         continue
                     original_half = 0 if origin_z < 8 else 1
                     for half in (original_half, 1 - original_half):
@@ -2333,14 +2408,36 @@ def legalize_xilinx_openparf_ff_control_sets(
                 if assigned is not None:
                     break
             if assigned is not None:
-                total_distance += radius
-                maximum_distance = max(maximum_distance, radius)
                 break
         if assigned is None:
             raise ValidationError(
                 "UltraScale+ FF control-set legalization exhausted all slice sites"
             )
-        raw[name] = assigned
+        return assigned
+
+    for name in sorted(moved, key=lambda item: (*raw[item][:2], item)):
+        remember_move(name)
+        raw[name] = nearest_ff(name)
+
+    def evacuate_ff(name, forbidden_sites):
+        origin = raw[name]
+        raw[name] = nearest_ff(name, forbidden_sites)
+        state = states[(origin[0], origin[1], 0 if origin[2] < 8 else 1)]
+        state["occupied"].remove(origin[2])
+        if not state["occupied"]:
+            state["signature"] = None
+        for lane in (0, 1):
+            if not any(z % 2 == lane for z in state["occupied"]):
+                state["lane_enable"].pop(lane, None)
+
+    pin_repair = _legalize_atomic_mux_site_pins(
+        raw, atoms, cells, remember_move, evacuate_ff,
+    )
+    moved = [name for name, original in original_moved_positions.items() if raw[name] != original]
+    distances = [abs(raw[name][0] - original_moved_positions[name][0])
+                 + abs(raw[name][1] - original_moved_positions[name][1]) for name in moved]
+    total_distance = sum(distances)
+    maximum_distance = max(distances, default=0)
 
     before_sha256 = _sha256(placement_path)
     if moved:
@@ -2356,7 +2453,7 @@ def legalize_xilinx_openparf_ff_control_sets(
     report = {
         "schema": OPENPARF_FF_CONTROL_LEGALIZATION_SCHEMA,
         "status": "pass",
-        "provider": "nearest-compatible-ultrascaleplus-half-slice-v1",
+        "provider": "nearest-compatible-ultrascaleplus-half-slice-v2",
         "placement_before_sha256": before_sha256,
         "placement_after_sha256": _sha256(placement_path),
         "ff_atoms": sum(atom.get("resource") == "FF" for atom in atoms.values()),
@@ -2364,6 +2461,7 @@ def legalize_xilinx_openparf_ff_control_sets(
         "moved_ff_atoms": len(moved),
         "total_manhattan_distance": total_distance,
         "maximum_manhattan_distance": maximum_distance,
+        **pin_repair,
     }
     write_json(output_path, report, compact=True)
     return report
@@ -5816,11 +5914,24 @@ def validate_xilinx_openparf_atomic_placement(
                 )
             half_cksr: Dict[int, Tuple[Any, Any]] = {}
             quarter_ce: Dict[Tuple[int, int], Any] = {}
+            mux_cells = (
+                {item["instance"]: cells[item["instance"]] for item in items}
+                if any(item["cell_type"] in _MUX_RESOURCES for item in items) else None
+            )
+            if mux_cells is not None and _slice_site_pin_conflicts(
+                mux_cells,
+                [dict(id=site_name, kind="slice", assignments=[
+                    dict(instance=item["instance"], cell_type=item["cell_type"], bel=item["bel"])
+                    for item in items
+                ])],
+                _net_drivers(mux_cells),
+            ):
+                raise ValidationError(f"site {site_name!r} violates shared MUX/FF site-pin legality")
             for item in items:
                 if item["resource"] != "FF":
                     continue
                 clock, sr, enable = _control_tuple(
-                    item["cell_type"], cells[item["instance"]]
+                    item["cell_type"], mux_cells[item["instance"]] if mux_cells is not None else cells[item["instance"]]
                 )
                 half = 0 if item["z"] < 8 else 1
                 quarter = (half, item["z"] % 2)

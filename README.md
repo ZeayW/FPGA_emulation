@@ -101,6 +101,8 @@ fixed full-slice carry macros reserve both LUT and FF roles. Each native stage
 checks for duplicate LUT/FF slots, moved fixed atoms, and FFs in carry macros.
 Physical handoff also repairs shared MUX-select/FF input pins with a bounded
 joint FF assignment when individual moves cannot exchange occupied clock halves.
+If a MUX site has no legal FF assignment, native FF legalization evacuates
+conflicting FFs to nearby compatible non-MUX sites before certification.
 The `0.10` global-placement overflow target remains the normal analytical
 criterion. A representative placement triggers RUDY/pin feedback at `0.65`,
 samples eight post-adjustment iterates, and restores the sample with the lowest

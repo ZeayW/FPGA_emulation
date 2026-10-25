@@ -72,6 +72,17 @@ site-pin validators recheck the result; genuinely infeasible sites still fail.
 Qualification covers occupied halves, an infeasible case, determinism, and a
 small exhaustive assignment oracle.
 
+Native FF legalization also consumes this site-pin model before certification.
+When joint assignment proves a MUX site infeasible, it relocates a conflicting
+primary FF to the nearest compatible non-MUX, non-carry site and retries. Each
+eviction reduces the source site's FF population, so the process is bounded by
+sixteen evictions per site. Feasible sites retain their membership; only FF BELs
+may change. Non-FF atoms and electrical connections stay fixed. The compact
+`nearest-compatible-ultrascaleplus-half-slice-v2` report counts same-site
+repacking and cross-site evictions separately; displacement uses each moved
+FF's initial and final coordinates. The independent atomic certificate now
+rejects shared MUX/FF input-pin conflicts itself, before the physical bridge.
+
 Native and continuous OpenPARF drivers load the calling EmuFlow package through
 an explicit package entry point under the selected OpenPARF interpreter. They
 do not require EmuFlow to be separately installed in that interpreter or add
