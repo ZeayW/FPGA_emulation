@@ -2128,11 +2128,11 @@ def legalize_xilinx_openparf_ff_control_sets(
     mapped_value: Optional[Mapping[str, Any]] = None,
     packed_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Repair only native FF slots that violate UltraScale+ control sets.
+    """Repair native FF control sets and full-slice carry exclusions.
 
     OpenPARF's generic direct legalizer models FF capacity but not the shared
     CK/SR and lane-local CE wires of an UltraScale+ half-slice.  Preserve every
-    already-compatible FF and all non-FF atoms, then move only conflicting FFs
+    already-compatible FF outside carry macros and all non-FF atoms, then move conflicting FFs
     to the nearest compatible half-slice.  The independent placement importer
     still rechecks the complete result after this bounded legalization pass.
     """
@@ -2218,6 +2218,12 @@ def legalize_xilinx_openparf_ff_control_sets(
     moved: List[str] = []
     illegal_halves = 0
     for half_key, names in sorted(ff_by_half.items()):
+        # A typed carry macro owns all LUT and FF positions in its slice.
+        # Compatible controls alone cannot make an FF legal at that site.
+        if half_key[:2] in exclusive_sites:
+            moved.extend(names)
+            illegal_halves += 1
+            continue
         scored: Counter = Counter()
         by_signature: Dict[Tuple[Any, Any], Dict[int, Counter]] = defaultdict(
             lambda: {0: Counter(), 1: Counter()}

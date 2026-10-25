@@ -241,6 +241,38 @@ def write_openparf_fixed_mux_fixture(root: Path) -> Tuple[Path, Path, Path]:
     return mapped_path, packed_path, architecture_path
 
 
+def write_openparf_fixed_carry_fixture(root: Path) -> Tuple[Path, Path, Path]:
+    """Exercise every LUT/FF matching role around a fixed full-slice macro."""
+    mapped_path, packed_path, architecture_path = write_openparf_runtime_fixture(root)
+    mapped = json.loads(mapped_path.read_text())
+    cells = mapped["modules"]["top"]["cells"]
+    for index in range(8):
+        cells[f"fixed_carry_lut_{index}"] = _cell("LUT6_2", {
+            "I0": [20_000 + index], "I1": [20_000 + index + 8],
+            "I2": ["0"], "I3": ["0"], "I4": ["0"], "I5": ["1"],
+            "O5": [40_000 + index], "O6": [40_100 + index],
+        }, {"O5", "O6"})
+    cells["fixed_carry"] = _cell("CARRY8", {
+        "CI": ["0"], "CI_TOP": ["0"],
+        "DI": list(range(40_000, 40_008)), "S": list(range(40_100, 40_108)),
+        "CO": list(range(40_200, 40_208)), "O": list(range(40_300, 40_308)),
+    }, {"CO", "O"})
+    for index in range(8):
+        cells[f"ff_{index:02d}"]["connections"]["D"] = [40_300 + index]
+    mapped_path.write_text(json.dumps(mapped), encoding="utf-8")
+    architecture = json.loads(architecture_path.read_text())
+    bels = architecture["site_templates"]["SLICEL"]["bels"]
+    for index, bel in enumerate(bels[:8]):
+        bel["z"] = 2 * index + 1
+        bel["compatible_cells"].append("LUT6_2")
+    bels.append({"name": "CARRY8", "type": "CARRY8", "z": 0,
+                 "compatible_cells": ["CARRY8"], "placement_mode": "SLICEL"})
+    architecture_path.write_text(json.dumps(architecture), encoding="utf-8")
+    from emuflow.xilinx_packing import pack_xilinx_sites
+    pack_xilinx_sites(mapped_path, packed_path, top="top")
+    return mapped_path, packed_path, architecture_path
+
+
 def write_openparf_ramb18_fixture(root: Path) -> Tuple[Path, Path, Path]:
     """Write two connected RAMB18E2 cells packed by the production packer."""
 

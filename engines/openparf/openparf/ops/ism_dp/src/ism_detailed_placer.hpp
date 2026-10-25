@@ -214,6 +214,14 @@ class ISMDetailedPlacer {
     auto const &site_map = db_.db()->layout().siteMap();
     std::vector<uint64_t> lut_masks(site_map.width() * site_map.height(), 0);
     std::vector<uint64_t> ff_masks(lut_masks.size(), 0);
+    std::vector<uint8_t> fixed_carry_sites(lut_masks.size(), 0);
+    for (IndexType inst_id = 0; inst_id < db_.numInsts(); ++inst_id) {
+      if (!param_.fixedMask[inst_id]) continue;
+      auto categories = db_.instResourceCategory(inst_id);
+      if (std::find(categories.begin(), categories.end(), ResourceCategory::kCarry) == categories.end()) continue;
+      auto const &site = getValidSite(state_.pos[inst_id * 3], state_.pos[inst_id * 3 + 1]);
+      fixed_carry_sites[site_map.index1D(site.siteMapId().x(), site.siteMapId().y())] = 1;
+    }
     auto slot_count = db_.numBLEsPerCLB() * db_.BLECapacity();
     if (slot_count > 64) throw std::invalid_argument("ISM logic slot count exceeds occupancy mask");
     for (IndexType inst_id = 0; inst_id < db_.numInsts(); ++inst_id) {
@@ -233,6 +241,10 @@ class ISMDetailedPlacer {
       if (z < 0 || z >= slot_count) throw std::runtime_error("ISM logic z slot is invalid");
       auto const &site = getValidSite(state_.pos[inst_id * 3], state_.pos[inst_id * 3 + 1]);
       auto id = site_map.index1D(site.siteMapId().x(), site.siteMapId().y());
+      if (is_ff && fixed_carry_sites[id]) {
+        throw std::runtime_error(std::string("ISM FF occupies a fixed full-slice carry macro after ") + stage +
+                                 ": " + getInstName(inst_id));
+      }
       auto &mask = is_lut ? lut_masks[id] : ff_masks[id];
       uint64_t bit = uint64_t(1) << z;
       if (mask & bit) {
@@ -939,8 +951,24 @@ class ISMDetailedPlacer {
     // Fixed terminals still occupy matching sites. Reserve at the current
     // CLB/BLE/LUT-FF granularity before considering whitespace candidates.
     prob.reservedSites.assign(siteToCluster.size(), 0);
+    auto x_scale = siteToCluster.xSize() / db_.siteMapDim().x();
+    auto y_scale = siteToCluster.ySize() / db_.siteMapDim().y();
+    openparfAssert(x_scale > 0 && y_scale > 0);
     for (IndexType inst_id = 0; inst_id < db_.numInsts(); ++inst_id) {
       if (!param_.fixedMask[inst_id]) continue;
+      auto categories = db_.instResourceCategory(inst_id);
+      if (std::find(categories.begin(), categories.end(), ResourceCategory::kCarry) != categories.end()) {
+        // The typed fixed carry macro owns the entire slice. In pair matching,
+        // LUT and FF roles have separate columns: reserving only the carry's
+        // LUT column leaves sixteen apparently empty FF positions available.
+        auto const &site = getValidSite(state_.pos[inst_id * 3], state_.pos[inst_id * 3 + 1]);
+        for (IndexType dx = 0; dx < x_scale; ++dx) {
+          for (IndexType dy = 0; dy < y_scale; ++dy) {
+            prob.reservedSites[siteToCluster.xyToIndex(site.siteMapId().x() * x_scale + dx,
+                                                       site.siteMapId().y() * y_scale + dy)] = 1;
+          }
+        }
+      }
       auto site_id = siteIdGetter(inst_id, state_.pos[inst_id * 3],
                                  state_.pos[inst_id * 3 + 1], state_.pos[inst_id * 3 + 2]);
       if (site_id >= 0 && site_id < siteToCluster.size()) prob.reservedSites[site_id] = 1;

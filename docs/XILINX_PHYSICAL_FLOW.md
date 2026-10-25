@@ -96,11 +96,15 @@ bin area. These estimates guide whitespace selection; they do not certify
 physical routing capacity or replace exact RWRoute validation.
 Fixed atoms also reserve their occupied matching sites at CLB, BLE, or
 LUT/FF-role granularity. Co-occupants stay fixed for that stage, and reserved
-sites cannot receive whitespace fillers. This is required for fixed carry
+sites cannot receive whitespace fillers. A fixed full-slice carry macro reserves
+all matching positions, including the separate FF column in LUT/FF matching.
+The FF control-set legalizer also evacuates any FF already at a carry site,
+even when its controls match. This is required for fixed carry
 and LUT/MUX macros: keeping their coordinates unchanged alone does not stop
 another cluster from moving onto the same BELs. Native checks run before and
-after each stage to reject duplicate logic slots or moved fixed atoms. Runtime
-qualification must include a fixed LUT macro, alongside the ordinary logic
+after each stage to reject duplicate logic slots, moved fixed atoms, or FFs
+inside fixed full-slice carry macros. Runtime qualification must include fixed
+LUT and full-slice carry macros, alongside the ordinary logic
 fixture; an ordinary movable-only fixture cannot establish this property.
 An operator-only qualification build is available through
 `scripts/validation/build_openparf_ism.py`. The checked overlay installer

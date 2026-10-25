@@ -79,6 +79,8 @@ CMake build can replace ISM without modifying the base runtime.
 The integration's fixed-mask extension reserves occupied matching sites before
 creating fillers. Every matching stage checks fixed coordinates and duplicate
 LUT/FF slots, including collisions between movable clusters and fixed macros.
+Fixed full-slice carry macros reserve both LUT and FF matching columns; native
+stage checks also reject FF occupants in those slices.
 
 Large router example netlists are omitted because they are input data rather
 than implementation source.

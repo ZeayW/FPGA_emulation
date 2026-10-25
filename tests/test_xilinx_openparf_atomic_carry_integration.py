@@ -3,12 +3,14 @@ import unittest
 from pathlib import Path
 
 from emuflow.io import read_json, write_json
+from emuflow.errors import ValidationError
 from emuflow.xilinx_openparf_atomic import (
     build_xilinx_openparf_atomic_source,
     export_xilinx_openparf_atomic,
     read_xilinx_openparf_atomic_source,
     read_xilinx_openparf_atomic_name_map,
     validate_xilinx_openparf_atomic_placement,
+    legalize_xilinx_openparf_ff_control_sets,
 )
 from emuflow.xilinx_openparf_bridge import (
     materialize_xilinx_openparf_atomic_contract,
@@ -41,6 +43,49 @@ def _write_atomic_placement(path: Path, name_map: dict) -> None:
 
 
 class XilinxOpenparfAtomicCarryIntegrationTest(unittest.TestCase):
+    def test_compatible_ffs_must_leave_exclusive_carry_sites(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture, native, provider = _write_fixture(root)
+            output = root / "openparf"
+            export_xilinx_openparf_atomic(
+                mapped, packed, architecture, output,
+                native_constraints_path=native, provider_manifest_path=provider,
+            )
+            name_map = read_xilinx_openparf_atomic_name_map(output / "name_map.json")
+            placement = root / "native.pl"
+            _write_atomic_placement(placement, name_map)
+            ff_names = {atom["openparf"] for atom in name_map["atoms"]
+                        if atom["resource"] == "FF"}
+            rows = [line.split() for line in placement.read_text().splitlines()]
+            for row in rows:
+                if row[0] in ff_names:
+                    row[1:3] = ["0", "0"]
+            placement.write_text("\n".join(" ".join(row) for row in rows) + "\n")
+            fixed = {row[0]: row[1:] for row in rows if row[0] not in ff_names}
+            with self.assertRaisesRegex(ValidationError, "exclusive full-slice"):
+                validate_xilinx_openparf_atomic_placement(
+                    placement, output / "name_map.json", mapped, architecture,
+                    native_constraints_path=native, provider_manifest_path=provider,
+                )
+            report = legalize_xilinx_openparf_ff_control_sets(
+                placement, output / "name_map.json", mapped, root / "repair.json",
+                packed_path=packed,
+            )
+            self.assertEqual(report["moved_ff_atoms"], 2)
+            after = {row[0]: row[1:] for row in
+                     (line.split() for line in placement.read_text().splitlines())}
+            self.assertEqual({key: after[key] for key in fixed}, fixed)
+            validate_xilinx_openparf_atomic_placement(
+                placement, output / "name_map.json", mapped, architecture,
+                native_constraints_path=native, provider_manifest_path=provider,
+            )
+            repeat = legalize_xilinx_openparf_ff_control_sets(
+                placement, output / "name_map.json", mapped, root / "repeat.json",
+                packed_path=packed,
+            )
+            self.assertEqual(repeat["moved_ff_atoms"], 0)
+
     def test_atomic_source_keeps_ramb18_halves_unpaired(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

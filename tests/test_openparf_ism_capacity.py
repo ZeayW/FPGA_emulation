@@ -11,6 +11,20 @@ import torch
 
 
 class ISMCapacityTests(unittest.TestCase):
+    def test_fixed_carry_runtime_fixture_has_full_slice_and_movable_ffs(self):
+        from tests.openparf_runtime_fixture import write_openparf_fixed_carry_fixture
+        from emuflow.xilinx_openparf_atomic import export_xilinx_openparf_atomic
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            mapped, packed, architecture = write_openparf_fixed_carry_fixture(root / 'inputs')
+            export_xilinx_openparf_atomic(mapped, packed, architecture, root / 'native')
+            groups = json.loads((root / 'native/physical-macro-groups.json').read_text())['groups']
+            macros = [g for g in groups if g['kind'] == 'site_macro']
+            self.assertEqual(len(macros), 1)
+            self.assertEqual(len(macros[0]['instances']), 9)
+            cells = json.loads(mapped.read_text())['modules']['top']['cells']
+            self.assertEqual(sum(c['type'] == 'FDRE' for c in cells.values()), 64)
+
     def test_fixed_macro_runtime_fixture_exercises_locked_lut_occupancy(self):
         from tests.openparf_runtime_fixture import write_openparf_fixed_mux_fixture
         from emuflow.xilinx_openparf_atomic import export_xilinx_openparf_atomic
