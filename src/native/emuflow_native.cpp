@@ -31,6 +31,7 @@ constexpr const char* kUsage =
     "  phase3 refine-patron-from-primary EMUIR TIMING PRIMARY INITIAL REQUEST OUTPUT\n"
     "  phase3 build-candidate-ids EMUIR POLICY OUTPUT\n"
     "  phase3 build-clusters EMUIR REQUEST OUTPUT\n"
+    "  phase3 validate-cuts ASSIGNMENT SUMMARY\n"
     "  phase3 publish-assignment EMUIR PRIMARY REQUEST [NATIVE_NODES] OUTPUT\n"
     "  phase3 publish-cluster-catalog EMUIR PRIMARY REQUEST [CANDIDATES] OUTPUT\n"
     "  phase3 reduce-loads EMUIR PRIMARY REQUEST OUTPUT\n"
@@ -166,6 +167,8 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     if(argc==8) inputs.push_back(argv[6]);
     return run(Stage::kPublishClusterCatalog,inputs,argv[argc-1]);
   }
+  if (phase == "phase3" && operation == "validate-cuts" && argc == 5)
+    return run(Stage::kValidateAssignmentCuts,{argv[3]},argv[4]);
   if (phase == "phase3" && operation == "publish-assignment" && (argc == 7 || argc == 8)) {
     std::vector<std::string> inputs{argv[3],argv[4],argv[5]};
     if(argc==8) inputs.emplace_back(argv[6]);

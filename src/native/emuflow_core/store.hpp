@@ -109,11 +109,17 @@ class PartitionStoreView {
   SqliteStore store_;
   std::vector<std::string> parts_;
 };
+struct AssignmentCutSummary {
+  std::uint64_t records=0,sinks=0;
+  std::string sha256;
+};
 class AssignmentView : public PartitionStoreView {
  public:
   explicit AssignmentView(const ArtifactRef& artifact);
   std::uint64_t source_cells() const { return source_cells_; }
   void VisitCopies(const std::function<void(const InstanceCopy&)>& visitor);
+  // Independently validate current cut columns and stream their logical hash.
+  AssignmentCutSummary ValidateCuts();
  private:
   std::uint64_t source_cells_=0;
 };

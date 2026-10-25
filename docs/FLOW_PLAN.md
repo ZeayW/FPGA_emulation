@@ -197,7 +197,10 @@ out of their Python adapters. Final native Phase 3 semantic nodes feed assignmen
 publication directly through the shared bounded decoder. Its request passes
 packed ownership and endpoint counts; it does not repeat cut names or predecessor
 lists. Original node/capture generations remain bound through final pair commit,
-and the independent typed-index/exact-binary checks remain required.
+and the independent typed-index/exact-binary checks remain required. The shared
+`AssignmentView` validates v4 cut relations using ordered cursors and streams
+their canonical digest; it does not call the producer or replay Python records.
+The host retains bounded identity checks and the separate exact-binary gate.
 
 | Artifact family | Producer owner | Maintained consumers |
 | --- | --- | --- |

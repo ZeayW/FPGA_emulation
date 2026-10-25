@@ -284,8 +284,22 @@ noncanonical source order, sparse endpoint ordinals and zero cuts. Malformed
 requests and source-bound node envelopes, identities, ownership, offsets and
 launch flags must reject without replacing the prior index/binary pair. Node and
 capture generation changes, including ctime-only changes after independent
-validation, must fail before pair commit. These are component gates; full Phase 3
-and complete NVDLA acceptance still require their declared real-design evidence.
+validation, must fail before pair commit.
+
+Independent native cut validation compares its complete count/digest with a host
+record oracle on semantic, nonsemantic, Unicode, sparse and empty inputs. Poisoned
+host iteration and JSON formatting must not affect normal validation. Negative
+cases cover orphan/missing/self references, ownership, order, incomplete and
+mistyped scalars, metadata, versions and invalid UTF-8; the source and previous
+summary must remain unchanged. A large ordered storage fixture verifies complete
+identity and bounded host memory; it is not circuit or feature qualification.
+Malformed or oversized native summaries and source-generation changes reject
+without a host fallback. Native node/capture fixture scopes explicitly close
+mapped owners on success and exceptions before replacing files or retiring their
+directories; retained scalar borrowers must then reject access. This ordering
+also applies to differential hashing and publication tests on network filesystems.
+These are component gates; full Phase 3 and complete NVDLA acceptance still
+require their declared real-design evidence.
 
 ## Timing acceptance
 

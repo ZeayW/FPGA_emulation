@@ -89,6 +89,7 @@ constexpr RegisteredSchema schemas[] = {
      "AND EXISTS(SELECT 1 FROM pragma_table_info('section_chunks') WHERE name='payload') "
      "AND json_valid((SELECT value FROM metadata WHERE key='counts'))", "emuflow.phase3-clusters-storage/v3"},
     {"assignment-publication-request-v1", ArtifactEncoding::kBinary, 0x31514241554d5545ULL, 1},
+    {"assignment-cut-validation-v1", ArtifactEncoding::kText, 0, 1},
     {"assignment-publication-request-v2", ArtifactEncoding::kBinary, 0x31514241554d5545ULL, 2},
     {"xilinx-physical-handoff-v1", ArtifactEncoding::kSqlite, 0x454d5550, 1, true,
      "SELECT schema FROM manifest WHERE singleton=1","emuflow.xilinx-physical-handoff-sqlite/v1"},

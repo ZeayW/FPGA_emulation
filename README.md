@@ -112,8 +112,10 @@ without requiring an unused OpenROAD executable.
 Assignment summaries and independent capacity/balance validation also reduce
 the shared primary columns in C++, without decoding cluster member records.
 Assignment publication consumes final native cut records directly, carrying only
-the compact endpoint-count column through Python; index and exact-binary validation
-remain independent. See the [publication contract](docs/PHASE3_NATIVE_MIGRATION.md#assignment-index-publication).
+the compact endpoint-count column through Python. Independent shared-core cut
+validation merges typed rows and computes their logical hash without host record
+expansion; exact-binary checks remain separate. See the
+[publication contract](docs/PHASE3_NATIVE_MIGRATION.md#assignment-index-publication).
 Compact exact captures are produced and independently checked in the shared
 core before publication, without Python capture replay or per-record lookups.
 The superseded `resolve-captures` entry and persistent capture seq index are

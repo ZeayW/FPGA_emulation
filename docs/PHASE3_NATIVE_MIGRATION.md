@@ -586,8 +586,20 @@ The producer checks source generations, counts, ownership, cut order and
 predecessor coverage. Original node and capture generations remain bound through
 independent validation and final index/binary pair publication, including ctime
 changes. The separate typed-index validator still checks the output,
-canonical cut digest and exact contract. Only then does the host publish the
-index/binary pair and its descriptor. Failed requests or validation preserve the
+canonical cut digest and exact contract. For assignment v4,
+`phase3 validate-cuts ASSIGNMENT SUMMARY` invokes `AssignmentView::ValidateCuts()`
+through the shared stage API. It reads the published SQL relation independently
+of the producer, merges cuts with the sink table's native net/sink order and the
+predecessor table's index/ordinal order, and streams canonical fields into the
+logical hash. It retains no per-cut dictionary, child list or global name map.
+A separate indexed join verifies predecessor-name existence; the merge checks
+parent coordinates, ownership, scalar types, completeness, order and orphans.
+It does not sort the complete sink relation through a parent join. Only a bounded
+count/digest summary returns to Python, which retains the design/instance and
+exact-binary validation gates. The superseded Python digest-only replay is
+removed; record iteration remains for consumers that actually need cut records.
+Selected native validation failures never retry that iterator. Only then does
+the host publish the index/binary pair and its descriptor. Failed requests or validation preserve the
 previous pair, including failures before the previous binary can be moved aside.
 A selected native failure does not retry through the reference writer.
 
@@ -595,8 +607,8 @@ The phase report records `assignment_index_writer_implementation_id` and native
 writer metrics, including native/host cut counts and request bytes. This closes
 the Python instance-row and final native-cut request boundaries; policy
 conversion, initial cut construction, reference inputs and other remaining
-publication work retain their explicit migration obligations. It does not qualify complete Phase 3 costs
-or complete native compilation without the required real-design measurements.
+publication work retain their explicit migration obligations. It does not qualify
+complete Phase 3 costs or complete native compilation without the required real-design measurements.
 
 ## Physical and timing contracts
 

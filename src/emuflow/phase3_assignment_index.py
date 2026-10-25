@@ -264,18 +264,6 @@ def _iter_cut_records(
         raise ValidationError("assignment index contains orphan cut records")
 
 
-def _cut_record_identity(
-    connection: sqlite3.Connection,
-) -> tuple[int, str]:
-    digest = hashlib.sha256()
-    records = 0
-    for record in _iter_cut_records(connection):
-        digest.update(_json(record).encode("utf-8"))
-        digest.update(b"\n")
-        records += 1
-    return records, digest.hexdigest()
-
-
 def iter_phase3_cut_records(
     path: Path,
     descriptor: Mapping[str, Any] | None = None,
@@ -916,78 +904,15 @@ def validate_phase3_assignment_index(
                 raise ValidationError(
                     "Phase 3 assignment index lacks typed cut records"
                 )
-            expected_records = metadata.get("cut_records")
-            expected_digest = metadata.get("cut_records_sha256")
-            if (
-                metadata.get("cut_records_schema") != CUT_RECORDS_SCHEMA
-                or isinstance(expected_records, bool)
-                or not isinstance(expected_records, int)
-                or expected_records < 0
-                or not isinstance(expected_digest, str)
-                or len(expected_digest) != 64
-                or any(
-                    character not in "0123456789abcdef"
-                    for character in expected_digest
-                )
-            ):
-                raise ValidationError(
-                    "Phase 3 cut-record metadata is invalid"
-                )
-            invalid_relations = int(
-                connection.execute(
-                    """
-                    SELECT count(*) FROM (
-                      SELECT c.cut_index
-                        FROM cuts c LEFT JOIN parts p
-                          ON p.part_index=c.source_part_index
-                       WHERE p.part_index IS NULL
-                      UNION ALL
-                      SELECT s.net_id
-                        FROM cut_sinks s LEFT JOIN cuts c USING(net_id)
-                        LEFT JOIN parts p
-                          ON p.part_index=s.sink_part_index
-                       WHERE c.cut_index IS NULL
-                          OR p.part_index IS NULL
-                          OR s.source_part_index!=c.source_part_index
-                      UNION ALL
-                      SELECT c.cut_index
-                        FROM cuts c LEFT JOIN cut_sinks s USING(net_id)
-                       WHERE s.net_id IS NULL
-                      UNION ALL
-                      SELECT q.cut_index
-                        FROM cut_predecessors q
-                        LEFT JOIN cuts c ON c.cut_index=q.cut_index
-                        LEFT JOIN cuts p ON p.net_id=q.predecessor_net_id
-                       WHERE c.cut_index IS NULL OR p.cut_index IS NULL
-                          OR c.net_id=q.predecessor_net_id
-                    )
-                    """
-                ).fetchone()[0]
+            from .phase3_assignment_native import validate_native_assignment_cuts
+
+            cuts = phase3_runtime_call(
+                "assignment_index.validate_cuts", validate_native_assignment_cuts, path
             )
-            invalid_dependencies = int(
-                connection.execute(
-                    """
-                    SELECT count(*) FROM cuts c
-                     WHERE (c.dependency_level IS NULL)
-                           != (c.combinational_dependency_depth IS NULL)
-                        OR (c.dependency_level IS NULL AND EXISTS (
-                             SELECT 1 FROM cut_predecessors q
-                              WHERE q.cut_index=c.cut_index
-                           ))
-                        OR (? IS NOT NULL AND c.dependency_level IS NULL)
-                    """,
-                    (metadata.get("semantic_contract_sha256"),),
-                ).fetchone()[0]
-            )
-            if invalid_relations or invalid_dependencies:
-                raise ValidationError(
-                    "Phase 3 typed cut-record relation is invalid"
-                )
-            cut_records, cut_records_sha256 = _cut_record_identity(connection)
-            if (
-                cut_records != expected_records
-                or cut_records_sha256 != expected_digest
-            ):
+            cut_records, cut_records_sha256 = cuts["records"], cuts["sha256"]
+            if cut_records != metadata.get(
+                "cut_records"
+            ) or cut_records_sha256 != metadata.get("cut_records_sha256"):
                 raise ValidationError("Phase 3 cut-record identity disagrees")
         has_exact_payloads = False
         exact_segment_bindings = 0
@@ -1021,20 +946,18 @@ def validate_phase3_assignment_index(
             "schema": metadata["schema"],
             "design": metadata["design"],
             "platform": metadata["platform"],
-            "parts": connection.execute(
-                "SELECT count(*) FROM parts"
-            ).fetchone()[0],
+            "parts": connection.execute("SELECT count(*) FROM parts").fetchone()[0],
             "source_instances": primary,
             "replicas": replicas,
-            "cut_sinks": connection.execute(
-                "SELECT count(*) FROM cut_sinks"
-            ).fetchone()[0],
+            "cut_sinks": (
+                cuts["sinks"]
+                if version == ASSIGNMENT_INDEX_USER_VERSION
+                else connection.execute("SELECT count(*) FROM cut_sinks").fetchone()[0]
+            ),
             "cut_records_schema": metadata.get("cut_records_schema"),
             "cut_records": cut_records,
             "cut_records_sha256": cut_records_sha256,
-            "semantic_contract_sha256": metadata.get(
-                "semantic_contract_sha256"
-            ),
+            "semantic_contract_sha256": metadata.get("semantic_contract_sha256"),
             "exact_segment_bindings": exact_segment_bindings,
             "exact_capture_requirements": exact_capture_requirements,
             "indexed_semantic_payloads": has_exact_payloads,

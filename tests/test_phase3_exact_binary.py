@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from contextlib import closing
 from unittest.mock import patch
 
 from tests.native_build import emuflow_native
@@ -706,47 +707,152 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                         capture_records.append(struct.pack("<B5I", kind, *(len(value) for value in fields)) + b"".join(fields))
                     artifact(nodes_path, 0x314E4553464D5545, 2, node_records)
                     artifact(captures_path, 0x31434553464D5545, 1, capture_records)
-                    nodes = read_native_static_exact_cut_node_stream(nodes_path)
-                    native_captures = read_native_static_exact_capture_stream(captures_path)
-                    streamed = {**contract, "cut_nodes": nodes, "capture_requirements": native_captures}
-                    streamed.update(build_static_exact_record_streams(
-                        nodes, native_captures, bytes([flag, 0]), integer_topology=self._IntegerTopology([[], [0]])
-                    ))
-                    with patch("emuflow.native_tools.resolve_native_stage_command", return_value=[str(executable), "phase3", "hash-semantics"]), patch(
-                        "emuflow.phase3_exact_records._emit_direct_cut_nodes", side_effect=AssertionError("Python must not hash the native graph")
+                    with (
+                        closing(
+                            read_native_static_exact_cut_node_stream(nodes_path)
+                        ) as nodes,
+                        closing(
+                            read_native_static_exact_capture_stream(captures_path)
+                        ) as native_captures,
                     ):
-                        self.assertEqual(semantic_contract_sha256(streamed), expected)
-                    streamed["invalid_header"] = {1: "not-a-string-key"}
-                    with self.assertRaises(ValidationError):
-                        semantic_contract_sha256(streamed)
-                    del streamed["invalid_header"]
-                    expected_path, actual_path = root / "expected.bin", root / "native.bin"
-                    expected_descriptor = write_phase3_exact_binary(expected_path, contract, ["fpga0", "fpga1"], semantic_digest=expected)
-                    def native_command(phase, operation):
-                        return [str(executable), phase, operation]
-                    with patch("emuflow.native_tools.resolve_native_stage_command", side_effect=native_command), patch(
-                        "emuflow.phase3_exact_binary._write_raw_string", side_effect=AssertionError("Python must not encode native exact sections")
-                    ), patch("emuflow.phase3_exact_binary._Spool", side_effect=AssertionError("native publication must not stage duplicate section files")), patch(
-                        "emuflow.phase3_exact_binary._copy_section", side_effect=AssertionError("Python must not recopy native section bytes")
-                    ):
-                        actual_descriptor = write_phase3_exact_binary(actual_path, streamed, ["fpga0", "fpga1"], semantic_digest=expected)
-                    self.assertEqual(actual_path.read_bytes(), expected_path.read_bytes())
-                    self.assertEqual(actual_descriptor, expected_descriptor)
-                    if bit < 2**32 - 1:
-                        write_phase3_exact_binary(expected_path, contract, ["fpga0", "fpga1"], semantic_digest=expected, _format_version=1)
-                        with patch("emuflow.native_tools.resolve_native_stage_command", side_effect=native_command):
-                            write_phase3_exact_binary(actual_path, streamed, ["fpga0", "fpga1"], semantic_digest=expected, _format_version=1)
+                        streamed = {
+                            **contract,
+                            "cut_nodes": nodes,
+                            "capture_requirements": native_captures,
+                        }
+                        streamed.update(
+                            build_static_exact_record_streams(
+                                nodes,
+                                native_captures,
+                                bytes([flag, 0]),
+                                integer_topology=self._IntegerTopology([[], [0]]),
+                            )
+                        )
+                        with (
+                            patch(
+                                "emuflow.native_tools.resolve_native_stage_command",
+                                return_value=[
+                                    str(executable),
+                                    "phase3",
+                                    "hash-semantics",
+                                ],
+                            ),
+                            patch(
+                                "emuflow.phase3_exact_records._emit_direct_cut_nodes",
+                                side_effect=AssertionError(
+                                    "Python must not hash the native graph"
+                                ),
+                            ),
+                        ):
+                            self.assertEqual(
+                                semantic_contract_sha256(streamed), expected
+                            )
+                        streamed["invalid_header"] = {1: "not-a-string-key"}
+                        with self.assertRaises(ValidationError):
+                            semantic_contract_sha256(streamed)
+                        del streamed["invalid_header"]
+                        expected_path, actual_path = (
+                            root / "expected.bin",
+                            root / "native.bin",
+                        )
+                        expected_descriptor = write_phase3_exact_binary(
+                            expected_path,
+                            contract,
+                            ["fpga0", "fpga1"],
+                            semantic_digest=expected,
+                        )
+
+                        def native_command(phase, operation):
+                            return [str(executable), phase, operation]
+
+                        with (
+                            patch(
+                                "emuflow.native_tools.resolve_native_stage_command",
+                                side_effect=native_command,
+                            ),
+                            patch(
+                                "emuflow.phase3_exact_binary._write_raw_string",
+                                side_effect=AssertionError(
+                                    "Python must not encode native exact sections"
+                                ),
+                            ),
+                            patch(
+                                "emuflow.phase3_exact_binary._Spool",
+                                side_effect=AssertionError(
+                                    "native publication must not stage duplicate section files"
+                                ),
+                            ),
+                            patch(
+                                "emuflow.phase3_exact_binary._copy_section",
+                                side_effect=AssertionError(
+                                    "Python must not recopy native section bytes"
+                                ),
+                            ),
+                        ):
+                            actual_descriptor = write_phase3_exact_binary(
+                                actual_path,
+                                streamed,
+                                ["fpga0", "fpga1"],
+                                semantic_digest=expected,
+                            )
                         self.assertEqual(actual_path.read_bytes(), expected_path.read_bytes())
-                    else:
-                        actual_path.write_bytes(b"previous-generation")
-                        with patch("emuflow.native_tools.resolve_native_stage_command", side_effect=native_command), self.assertRaises(ValidationError):
-                            write_phase3_exact_binary(actual_path, streamed, ["fpga0", "fpga1"], semantic_digest=expected, _format_version=1)
-                        self.assertEqual(actual_path.read_bytes(), b"previous-generation")
-                    broken = root / "broken-nodes.bin"
-                    broken.write_bytes(nodes_path.read_bytes()[:-1])
-                    nodes.native_semantic_artifact_path = broken
-                    with patch("emuflow.native_tools.resolve_native_stage_command", return_value=[str(executable), "phase3", "hash-semantics"]), self.assertRaises(ValidationError):
-                        semantic_contract_sha256(streamed)
+                        self.assertEqual(actual_descriptor, expected_descriptor)
+                        if bit < 2**32 - 1:
+                            write_phase3_exact_binary(
+                                expected_path,
+                                contract,
+                                ["fpga0", "fpga1"],
+                                semantic_digest=expected,
+                                _format_version=1,
+                            )
+                            with patch(
+                                "emuflow.native_tools.resolve_native_stage_command",
+                                side_effect=native_command,
+                            ):
+                                write_phase3_exact_binary(
+                                    actual_path,
+                                    streamed,
+                                    ["fpga0", "fpga1"],
+                                    semantic_digest=expected,
+                                    _format_version=1,
+                                )
+                            self.assertEqual(
+                                actual_path.read_bytes(), expected_path.read_bytes()
+                            )
+                        else:
+                            actual_path.write_bytes(b"previous-generation")
+                            with (
+                                patch(
+                                    "emuflow.native_tools.resolve_native_stage_command",
+                                    side_effect=native_command,
+                                ),
+                                self.assertRaises(ValidationError),
+                            ):
+                                write_phase3_exact_binary(
+                                    actual_path,
+                                    streamed,
+                                    ["fpga0", "fpga1"],
+                                    semantic_digest=expected,
+                                    _format_version=1,
+                                )
+                            self.assertEqual(
+                                actual_path.read_bytes(), b"previous-generation"
+                            )
+                        broken = root / "broken-nodes.bin"
+                        broken.write_bytes(nodes_path.read_bytes()[:-1])
+                        nodes.native_semantic_artifact_path = broken
+                        with (
+                            patch(
+                                "emuflow.native_tools.resolve_native_stage_command",
+                                return_value=[
+                                    str(executable),
+                                    "phase3",
+                                    "hash-semantics",
+                                ],
+                            ),
+                            self.assertRaises(ValidationError),
+                        ):
+                            semantic_contract_sha256(streamed)
             # Independent command-envelope rejection must preserve the previous
             # output and cannot silently fall back to the Python hasher.
             tags = [("capture_requirements", 1), ("cut_nodes", 2), ("dependency_edges", 3), ("logic_segments", 4)]
