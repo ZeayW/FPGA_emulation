@@ -342,7 +342,10 @@ for PHY integration. It creates one private IP customization without synthesis
 or implementation; its observations do not qualify a serial PHY. An optional
 third argument names a literal TSV with header `property<TAB>value` and unique
 `CONFIG.*` properties, ordered so enabling controls precede their dependents.
-Ignored or changed requested settings fail before generation. This explicitly
+Pin-enable fields (`CONFIG.ENABLE_BYTE<n>_PIN<n>`) require lowercase `true`
+or `false`: the native wizard contains string-sensitive consumers of these
+Boolean values, so an accepted noncanonical spelling can produce different
+ports. Ignored or changed requested settings fail before generation. This explicitly
 configures the private IP and generates
 its output products and status report. The tool records resulting property
 values; it does not synthesize or qualify those outputs.

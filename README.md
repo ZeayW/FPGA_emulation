@@ -45,7 +45,7 @@ lineage still does not prove functional equivalence.
 Vivado uses explicit DUT implementation targets independently of runtime frames;
 a frequency override scales all DUT roots together while keeping the TDM clock
 fixed. The same documentation describes installed SelectIO IP inspection and
-explicit configuration/output generation used for PHY integration. See the [clock baseline](docs/XILINX_PHYSICAL_FLOW.md#local-implementation-clock-baseline).
+explicit, checked configuration/output generation used for PHY integration. See the [clock baseline](docs/XILINX_PHYSICAL_FLOW.md#local-implementation-clock-baseline).
 Indexed mapped primitives carry provenance tags without global KEEP/DONT_TOUCH
 constraints; indexed source-bound coverage and selected constant facts are checked
 after `opt_design`, before placement, and checked again after routing. The timing

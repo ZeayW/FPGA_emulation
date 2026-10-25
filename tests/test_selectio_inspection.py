@@ -26,9 +26,9 @@ proc create_project {args} {}
 proc get_ipdefs {args} {return xilinx.com:ip:high_speed_selectio_wiz:3.6}
 proc create_ip {args} {}
 proc get_ips {args} {return probe}
-proc list_property {ip} {return {CONFIG.BUS_DIR CONFIG.SERIALIZATION_FACTOR}}
+proc list_property {ip} {return {CONFIG.BUS_DIR CONFIG.SERIALIZATION_FACTOR CONFIG.ENABLE_BYTE0_PIN0}}
 proc set_property {property value ip} {dict set ::properties $property $value}
-proc get_property {property ip} {return [dict get $::properties $property]}
+proc get_property {property ip} {if {[dict exists $::properties $property]} {return [dict get $::properties $property]} {return false}}
 proc version {args} {return 2024.2}
 proc generate_target {target ip} {set ::generated 1}
 proc report_ip_status {flag path} {set stream [open $path w];puts $stream generated;close $stream}
@@ -54,13 +54,15 @@ def test_literal_configuration_generates_outputs_without_evaluating_values(tmp_p
     for row in (output/'ip-properties.tsv').read_text().splitlines()[1:]:
         key, value = row.split('\t')
         properties[bytes.fromhex(key).decode()] = bytes.fromhex(value).decode()
-    assert properties == {'CONFIG.BUS_DIR': literal, 'CONFIG.SERIALIZATION_FACTOR': '8'}
+    assert properties == {'CONFIG.BUS_DIR': literal, 'CONFIG.SERIALIZATION_FACTOR': '8', 'CONFIG.ENABLE_BYTE0_PIN0': 'false'}
     assert (output/'ip-status.rpt').read_text().strip() == 'generated'
 
 
 @pytest.mark.parametrize('rows', [
     'property\tvalue\nCONFIG.BUS_DIR\t0\nCONFIG.BUS_DIR\t1\n',
     'property\tvalue\nCONFIG.UNKNOWN\t0\n',
+    'property\tvalue\nCONFIG.ENABLE_BYTE0_PIN0\tTRUE\n',
+    'property\tvalue\nCONFIG.ENABLE_BYTE0_PIN0\t1\n',
     'property\tvalue\nCONFIG.BUS_DIR\t0\textra\n',
     'bad\theader\nCONFIG.BUS_DIR\t0\n',
     'property\tvalue\n',

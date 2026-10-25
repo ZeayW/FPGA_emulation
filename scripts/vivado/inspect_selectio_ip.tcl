@@ -33,6 +33,10 @@ if {[catch {
           [lsearch -exact [list_property $ip] $property] < 0 || [dict exists $settings $property]} {
         error "unknown or duplicate SelectIO configuration property"
       }
+      if {[regexp {^CONFIG\.ENABLE_BYTE[0-3]_PIN([0-9]|1[0-2])$} $property] &&
+          $value ni {true false}} {
+        error "SelectIO pin-enable values must use lowercase true or false"
+      }
       dict set settings $property $value
     }
     close $stream
