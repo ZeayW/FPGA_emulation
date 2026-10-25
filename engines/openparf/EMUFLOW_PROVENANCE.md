@@ -76,6 +76,9 @@ nonfinite values. Its three matching stages reset demand maps before kernel
 accumulation and normalize pin demand by pin-bin area. This avoids mixing
 previous normalized utilization into fresh demand. A checked operator-only
 CMake build can replace ISM without modifying the base runtime.
+The integration's fixed-mask extension reserves occupied matching sites before
+creating fillers. Every matching stage checks fixed coordinates and duplicate
+LUT/FF slots, including collisions between movable clusters and fixed macros.
 
 Large router example netlists are omitted because they are input data rather
 than implementation source.

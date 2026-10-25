@@ -176,26 +176,31 @@ class ISMDetailedPlacer {
   /// Top function to run DP
   void run(T *pos) {
     std::copy(pos, pos + db_.numInsts() * 3, state_.pos.data());
+    validateLogicSlots(pos, "input");
 
     if (param_.verbose > 0) {
       openparfPrint(kInfo, "--------------- CLB ISM ---------------\n");
     }
     updateRoutePinUtil();
     runCLBISM();
+    validateLogicSlots(pos, "CLB");
     if (param_.verbose > 0) {
       openparfPrint(kInfo, "--------------- BLE ISM ---------------\n");
     }
     updateRoutePinUtil();
     runBLEISM();
+    validateLogicSlots(pos, "BLE");
 
     if (param_.verbose > 0) {
       openparfPrint(kInfo, "----------- LUT/FF Pair ISM -----------\n");
     }
     updateRoutePinUtil();
     runPairISM();
+    validateLogicSlots(pos, "LUT/FF");
 
     // Perform final intra-CLB optimization
     optimizeCLBs();
+    validateLogicSlots(pos, "intra-CLB");
 
     // Check placement feasibility
     // db_.checkPlaceFeasibility();
@@ -205,6 +210,38 @@ class ISMDetailedPlacer {
   }
 
  protected:
+  void validateLogicSlots(const T *initial_pos, const char *stage) const {
+    auto const &site_map = db_.db()->layout().siteMap();
+    std::vector<uint64_t> lut_masks(site_map.width() * site_map.height(), 0);
+    std::vector<uint64_t> ff_masks(lut_masks.size(), 0);
+    auto slot_count = db_.numBLEsPerCLB() * db_.BLECapacity();
+    if (slot_count > 64) throw std::invalid_argument("ISM logic slot count exceeds occupancy mask");
+    for (IndexType inst_id = 0; inst_id < db_.numInsts(); ++inst_id) {
+      if (param_.fixedMask[inst_id]) {
+        for (IndexType axis = 0; axis < 3; ++axis) {
+          if (std::abs(state_.pos[inst_id * 3 + axis] - initial_pos[inst_id * 3 + axis]) > 1e-5) {
+            throw std::runtime_error(std::string("ISM moved a fixed atom after ") + stage);
+          }
+        }
+      }
+      auto categories = db_.instResourceCategory(inst_id);
+      bool is_lut = std::find(categories.begin(), categories.end(), ResourceCategory::kLUTL) != categories.end() ||
+                    std::find(categories.begin(), categories.end(), ResourceCategory::kLUTM) != categories.end();
+      bool is_ff = std::find(categories.begin(), categories.end(), ResourceCategory::kFF) != categories.end();
+      if (!is_lut && !is_ff) continue;
+      auto z = IndexType(state_.pos[inst_id * 3 + 2]);
+      if (z < 0 || z >= slot_count) throw std::runtime_error("ISM logic z slot is invalid");
+      auto const &site = getValidSite(state_.pos[inst_id * 3], state_.pos[inst_id * 3 + 1]);
+      auto id = site_map.index1D(site.siteMapId().x(), site.siteMapId().y());
+      auto &mask = is_lut ? lut_masks[id] : ff_masks[id];
+      uint64_t bit = uint64_t(1) << z;
+      if (mask & bit) {
+        throw std::runtime_error(std::string("ISM duplicate logic slot after ") + stage + ": " + getInstName(inst_id));
+      }
+      mask |= bit;
+    }
+  }
+
   /// @brief a function for debug
   std::string getInstName(IndexType inst_id) const {
     auto const &design          = db_.db()->design();
@@ -899,8 +936,21 @@ class ISMDetailedPlacer {
     prob.instCKs.clear();
     nodeToCluster.assign(db_.numInsts(), kIndexTypeMax);
 
+    // Fixed terminals still occupy matching sites. Reserve at the current
+    // CLB/BLE/LUT-FF granularity before considering whitespace candidates.
+    prob.reservedSites.assign(siteToCluster.size(), 0);
     for (IndexType inst_id = 0; inst_id < db_.numInsts(); ++inst_id) {
-      if (param_.fixedMask[inst_id]) {
+      if (!param_.fixedMask[inst_id]) continue;
+      auto site_id = siteIdGetter(inst_id, state_.pos[inst_id * 3],
+                                 state_.pos[inst_id * 3 + 1], state_.pos[inst_id * 3 + 2]);
+      if (site_id >= 0 && site_id < siteToCluster.size()) prob.reservedSites[site_id] = 1;
+    }
+
+    for (IndexType inst_id = 0; inst_id < db_.numInsts(); ++inst_id) {
+      auto site_id = siteIdGetter(inst_id, state_.pos[inst_id * 3],
+                                 state_.pos[inst_id * 3 + 1], state_.pos[inst_id * 3 + 2]);
+      bool reserved = site_id >= 0 && site_id < siteToCluster.size() && prob.reservedSites[site_id];
+      if (param_.fixedMask[inst_id] || reserved) {
         IndexType idx = clusters.size();
         clusters.emplace_back();
         if (honorClockConstraints) {
@@ -913,10 +963,7 @@ class ISMDetailedPlacer {
         }
         nodeToCluster[inst_id] = idx;
       } else {
-        auto  inst_x  = state_.pos[inst_id * 3];
-        auto  inst_y  = state_.pos[inst_id * 3 + 1];
-        auto  inst_z  = state_.pos[inst_id * 3 + 2];
-        auto  site_id = siteIdGetter(inst_id, inst_x, inst_y, inst_z);
+        openparfAssert(site_id >= 0 && site_id < siteToCluster.size());
         auto &idx     = siteToCluster(site_id);
         if (idx == kIndexTypeMax) {
           idx = clusters.size();
@@ -970,6 +1017,10 @@ class ISMDetailedPlacer {
     prob.instToSite.resize(numInsts + siteToCluster.size(), kIndexTypeMax);
     for (IndexType site_id = 0; site_id < siteToCluster.size(); ++site_id) {
       auto &id = siteToCluster[site_id];
+      if (prob.reservedSites[site_id]) {
+        openparfAssert(id == kIndexTypeMax);
+        continue;
+      }
       if (id == kIndexTypeMax && addFiller(site_id)) {
         // Add a filler instance at this site
         id = numInsts++;
@@ -981,6 +1032,10 @@ class ISMDetailedPlacer {
     }
     prob.instTypes.resize(numInsts);
     prob.instToSite.resize(numInsts);
+    if (param_.verbose > 0) {
+      openparfPrint(kInfo, "ISM reserved matching sites: %zu\n",
+                    static_cast<size_t>(std::count(prob.reservedSites.begin(), prob.reservedSites.end(), 1)));
+    }
   }
 
   void initISMProblemFixedInst(const std::vector<IndexVector> &clusters, ISMProblem &prob) const {

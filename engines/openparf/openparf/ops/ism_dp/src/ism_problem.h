@@ -43,6 +43,7 @@ struct ISMProblem {
   IndexVector
                             instToSite;  // Size = #inst, the initial site ID of each instance. Infinity means this instance is fixed.
   std::vector<XY<RealType>> instXYs;     // Size = #insts, position of fixed instance
+  std::vector<uint8_t> reservedSites;    // Fixed occupants exclude these matching sites.
   std::vector<IndexVector>
                                                        instToMates;        // Size = #inst, the mate ID of each instance that should be given extra credit
   IndexVector                                          pinToInst;          // Size = #pin, instance ID of each pin

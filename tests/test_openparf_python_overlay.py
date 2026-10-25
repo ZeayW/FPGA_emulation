@@ -89,7 +89,7 @@ class OpenParfPythonOverlayTests(unittest.TestCase):
                 MODULE.deploy(source, base, root / "ism-output", ism_commit, baseline)
             rebuilt = root / module_name
             rebuilt.write_bytes(b"rebuilt ISM")
-            receipt = dict(status="built", provider="ism-utilization-capacity-and-fresh-demand-v1",
+            receipt = dict(status="built", provider="ism-utilization-and-fixed-site-reservations-v2",
                            source_commit=ism_commit, source_root=str(source.resolve()),
                            binary=dict(path=str(rebuilt), sha256=hashlib.sha256(rebuilt.read_bytes()).hexdigest()))
             receipt_path = root / "build.json"

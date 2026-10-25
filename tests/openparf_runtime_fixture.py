@@ -216,6 +216,31 @@ def write_openparf_runtime_fixture(
     return mapped_path, packed_path, architecture_path
 
 
+def write_openparf_fixed_mux_fixture(root: Path) -> Tuple[Path, Path, Path]:
+    """Exercise fixed LUT macro occupancy alongside movable LUT/FF logic."""
+    mapped_path, packed_path, architecture_path = write_openparf_runtime_fixture(root)
+    mapped = json.loads(mapped_path.read_text())
+    cells = mapped['modules']['top']['cells']
+    cells['fixed_mux'] = _cell('MUXF7', {
+        'I0': [10000], 'I1': [10001], 'S': [20063], 'O': [31000],
+    }, {'O'})
+    cells['ff_00']['connections']['D'] = [31000]
+    mapped_path.write_text(json.dumps(mapped), encoding='utf-8')
+    architecture = json.loads(architecture_path.read_text())
+    for primitive, roles in {
+        'MUXF7': ('F7MUX_AB', 'F7MUX_CD', 'F7MUX_EF', 'F7MUX_GH'),
+        'MUXF8': ('F8MUX_BOT', 'F8MUX_TOP'), 'MUXF9': ('F9MUX',),
+    }.items():
+        architecture['site_templates']['SLICEL']['bels'].extend({
+            'name': bel, 'type': primitive, 'z': index,
+            'compatible_cells': [primitive], 'placement_mode': 'SLICEL',
+        } for index, bel in enumerate(roles))
+    architecture_path.write_text(json.dumps(architecture), encoding='utf-8')
+    from emuflow.xilinx_packing import pack_xilinx_sites
+    pack_xilinx_sites(mapped_path, packed_path, top='top')
+    return mapped_path, packed_path, architecture_path
+
+
 def write_openparf_ramb18_fixture(root: Path) -> Tuple[Path, Path, Path]:
     """Write two connected RAMB18E2 cells packed by the production packer."""
 

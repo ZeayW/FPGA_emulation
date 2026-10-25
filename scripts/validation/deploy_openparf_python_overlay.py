@@ -26,6 +26,7 @@ REPLACEMENTS = (
 )
 PLACER = "openparf/placement/placer.py"
 ISM_SOURCE = "engines/openparf/openparf/ops/ism_dp/src/ism_detailed_placer.hpp"
+ISM_PROBLEM = "engines/openparf/openparf/ops/ism_dp/src/ism_problem.h"
 
 
 def git(source, *args):
@@ -47,13 +48,14 @@ def deploy(source, base, output, commit, baseline, native_ism_manifest=None):
         if (receipt.get("source_commit") != commit
                 or receipt.get("source_root") != str(source)
                 or receipt.get("status") != "built"
-                or receipt.get("provider") != "ism-utilization-capacity-and-fresh-demand-v1"):
+                or receipt.get("provider") != "ism-utilization-and-fixed-site-reservations-v2"):
             raise RuntimeError("ISM build does not match the exact source checkout")
         native_ism = Path(receipt["binary"]["path"]).resolve()
         if (not native_ism.name.startswith("ism_dp_cpp.") or native_ism.suffix != ".so"
                 or hashlib.sha256(native_ism.read_bytes()).hexdigest() != receipt["binary"]["sha256"]):
             raise RuntimeError("ISM native binary does not match its build receipt")
         allowed.add(ISM_SOURCE)
+        allowed.add(ISM_PROBLEM)
     if not changed or not changed.issubset(allowed):
         raise RuntimeError("OpenPARF changes are not the supported Python-only patch")
     original = git(source, "show", baseline + ":engines/openparf/" + PLACER)

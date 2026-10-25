@@ -94,6 +94,14 @@ whitespace from matching. Each CLB/BLE/LUT-FF stage clears demand maps before
 accumulating current demand, then normalizes once. Pin demand uses its own
 bin area. These estimates guide whitespace selection; they do not certify
 physical routing capacity or replace exact RWRoute validation.
+Fixed atoms also reserve their occupied matching sites at CLB, BLE, or
+LUT/FF-role granularity. Co-occupants stay fixed for that stage, and reserved
+sites cannot receive whitespace fillers. This is required for fixed carry
+and LUT/MUX macros: keeping their coordinates unchanged alone does not stop
+another cluster from moving onto the same BELs. Native checks run before and
+after each stage to reject duplicate logic slots or moved fixed atoms. Runtime
+qualification must include a fixed LUT macro, alongside the ordinary logic
+fixture; an ordinary movable-only fixture cannot establish this property.
 An operator-only qualification build is available through
 `scripts/validation/build_openparf_ism.py`. The checked overlay installer
 accepts that exact-commit build receipt using `--native-ism-manifest`, checks

@@ -53,7 +53,7 @@ def main():
         raise RuntimeError("ISM build did not produce exactly one native operator")
     binary = binaries[0].resolve()
     receipt = dict(
-        status="built", provider="ism-utilization-capacity-and-fresh-demand-v1",
+        status="built", provider="ism-utilization-and-fixed-site-reservations-v2",
         source_commit=args.commit, source_root=str(source),
         python=str(Path(args.python).resolve()), commands=commands,
         seconds=time.time() - start,
