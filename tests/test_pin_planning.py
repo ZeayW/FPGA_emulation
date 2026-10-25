@@ -1,3 +1,4 @@
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 from tests.pin_plan_fixture import make_pin_plan_fixture
 import copy
 import os
@@ -23,10 +24,9 @@ from emuflow.pin_planning import (
 from emuflow.platform import Platform
 from emuflow.tdm_schedule_storage import (
     ScheduleRecordSequence,
-    TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+    TDM_SCHEDULE_STORAGE_SCHEMA,
     TypedScheduleEntrySequence,
     read_tdm_schedule,
-    write_tdm_schedule_storage,
 )
 
 
@@ -68,6 +68,9 @@ class ChimewPinContractTest(unittest.TestCase):
             "entries": [
                 {
                     "id": f"entry{index}",
+                    "demand": f"demand{index}", "net": f"net{index}",
+                    "hop": 0, "capacity_key": "link0:fpga0:fpga1",
+                    "ready_slot": index % 3, "arrival_slot": index % 3 + 1,
                     "link": "link0",
                     "from": "fpga0",
                     "to": "fpga1",
@@ -263,23 +266,13 @@ class ChimewPinContractTest(unittest.TestCase):
             malformed_schedule_document = copy.deepcopy(schedule_document)
             malformed_schedule_document["entries"][0].pop("link")
             malformed_schedule_path = root / "malformed-schedule.json"
-            write_tdm_schedule_storage(
-                malformed_schedule_path, malformed_schedule_document
-            )
-            malformed_schedule = read_tdm_schedule(
-                malformed_schedule_path
-            )
-            with self.assertRaisesRegex(
-                ValidationError, "schedule entry .* malformed"
-            ):
-                validate_pin_plan(
-                    malformed_schedule,
-                    self.platform,
-                    self.positions,
-                    indexed_plan,
+            with self.assertRaisesRegex(ValidationError, "typed schedule entry is malformed"):
+                write_tdm_schedule_storage(
+                    malformed_schedule_path, malformed_schedule_document
                 )
+            self.assertFalse(malformed_schedule_path.exists())
 
-    def test_static_exact_v3_validation_reads_typed_entry_relation(self) -> None:
+    def test_static_exact_v4_validation_reads_typed_entry_relation(self) -> None:
         plan = make_pin_plan_fixture(
             self.schedule,
             self.platform,
@@ -302,7 +295,12 @@ class ChimewPinContractTest(unittest.TestCase):
             "provider": "deterministic-dependency-earliest-slot-v1",
             "design": self.schedule["design"],
             "platform": self.schedule["platform"],
-            "routes": [{"id": entry["demand"]} for entry in entries],
+            "routes": [
+                {"id": entry["demand"], "net": entry["net"],
+                 "source": entry["from"], "sinks": [entry["to"]],
+                 "tree_edges": [{"link": entry["link"], "from": entry["from"], "to": entry["to"]}]}
+                for entry in entries
+            ],
             "entries": entries,
             "demand_completions": [],
             "domain_schedules": [],
@@ -314,7 +312,7 @@ class ChimewPinContractTest(unittest.TestCase):
                 schedule_path, schedule_document
             )
             self.assertEqual(
-                manifest["schema"], TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+                manifest["schema"], TDM_SCHEDULE_STORAGE_SCHEMA
             )
             indexed_schedule = read_tdm_schedule(schedule_path)
             indexed_plan = write_pin_plan_storage(
@@ -327,7 +325,7 @@ class ChimewPinContractTest(unittest.TestCase):
                 TypedScheduleEntrySequence,
                 "__iter__",
                 side_effect=AssertionError(
-                    "v3 pin validation expanded typed schedule entries"
+                    "v4 pin validation expanded typed schedule entries"
                 ),
             ):
                 validation = validate_pin_plan(

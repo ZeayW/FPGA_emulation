@@ -1,4 +1,6 @@
 """Native/SQL contract fixtures, not placement, QoR or NVDLA qualification."""
+
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 from contextlib import closing
 import copy
 import json
@@ -15,7 +17,7 @@ from emuflow.chimew_pipeline import run_chimew_phase6_pipeline
 from emuflow.default_platform import research_platform_path
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json, file_sha256
-from emuflow.tdm_schedule_storage import write_tdm_schedule_storage
+
 from emuflow.vivado_lineage import import_cell_lineage, PLACEMENT_COORDINATE_SYSTEM
 from emuflow.xilinx_chimew_geometry import XilinxChimewGeometry, read_xilinx_package_geometry
 from tests.test_chimew_fixed_wiring import fixed_case
@@ -92,7 +94,8 @@ def case(tmp_path, fixed_case, request):
         records.append({'fpga':fpga.id,'status':'pass','active':True,'stages':stages})
     schedule_path = tmp_path/'schedule.json'
     for e in schedule['entries']:
-        e['net'] = 'n5'
+        e.update(net='n5', capacity_key=f"{e['link']}:{e['from']}:{e['to']}",
+                 ready_slot=e['slot'], arrival_slot=e['slot'] + 1)
     for section in ("routes", "demand_completions", "domain_schedules"):
         schedule.setdefault(section, [])
     write_tdm_schedule_storage(schedule_path, schedule)

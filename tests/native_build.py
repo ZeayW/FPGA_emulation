@@ -49,8 +49,8 @@ def _build_native_stage_program(entry: Path, executable: Path) -> Path:
         raise RuntimeError("a C++17 compiler is required for native API tests")
     executable.parent.mkdir(parents=True, exist_ok=True)
     generated = Path(_BUILD_ROOT.name) / "generated"
-    subprocess.run([sys.executable, str(ROOT / 'scripts/generate_assignment_schema_header.py'),
-        str(generated / 'emuflow_core/assignment_schema.hpp')], check=True)
+    subprocess.run([sys.executable, str(ROOT / 'scripts/generate_store_schema_headers.py'),
+        str(generated / 'emuflow_core')], check=True)
     subprocess.run(
         [compiler, "-std=c++17", *_runtime_link_flags(), "-O2", "-pthread",
          "-DEMUFLOW_NATIVE_STAGE_LIBRARY=1", str(entry),

@@ -120,8 +120,8 @@ done < "$source_dir/src/native/emuflow_core/sources.txt"
 test "$core_seen" != " " || { echo "empty shared native source manifest" >&2; exit 2; }
 objects=()
 generated_dir="$object_dir/generated"
-python3 "$source_dir/scripts/generate_assignment_schema_header.py" \
-  "$generated_dir/emuflow_core/assignment_schema.hpp"
+python3 "$source_dir/scripts/generate_store_schema_headers.py" \
+  "$generated_dir/emuflow_core"
 for source in "${core_sources[@]}"; do
   object="$object_dir/${source//\//_}.o"
   "$selected_cxx" -std=c++17 -O3 -pthread -DEMUFLOW_NATIVE_STAGE_LIBRARY=1 \

@@ -1,4 +1,6 @@
 """Current ScheduleStore source/identity negatives, with no retired wire protocol."""
+
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -13,7 +15,7 @@ from emuflow.errors import ValidationError
 from emuflow.native_tools import native_file_generation
 from emuflow.tdm import build_native_exact_schedule_request
 from tests.schedule_reference import build_tdm_schedule
-from emuflow.tdm_schedule_storage import read_tdm_schedule, write_tdm_schedule_storage
+from emuflow.tdm_schedule_storage import (read_tdm_schedule)
 from tests.native_build import emuflow_native
 from tests.native_schedule_case import _case
 from tests.test_native_schedule_generation import install_runtime
@@ -63,7 +65,7 @@ def test_complete_producer_rejects_invalid_sources_without_replacing_commit(tmp_
             else:db.execute("UPDATE metadata SET value=json_set(value,'$.routes.records',?) WHERE key='sections'", (2**32-1 if corruption == 'oversized_count' else 1,))
         # Forging fresh local metadata does not make malformed records valid.
         request = replace(request, route_generation=native_file_generation(request.route_store))
-    with patch('emuflow.tdm_schedule_storage._publish_logical_schedule', side_effect=AssertionError('silent Python fallback')):
+    with patch('tests.schedule_store_fixture._publish_fixture_records', side_effect=AssertionError('silent Python fallback')):
         with pytest.raises(ValidationError):
             write_tdm_schedule_storage(manifest, request)
     assert manifest.read_bytes() == previous

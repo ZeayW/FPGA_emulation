@@ -1,3 +1,4 @@
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 import copy
 import json
 import tempfile
@@ -30,7 +31,6 @@ from emuflow.tdm_schedule_storage import (
     ScheduleRecordSequence,
     TypedScheduleEntrySequence,
     read_tdm_schedule,
-    write_tdm_schedule_storage,
 )
 from tests import test_combinational_cut as combinational_fixture
 

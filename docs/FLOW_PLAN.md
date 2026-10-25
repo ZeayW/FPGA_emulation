@@ -184,7 +184,12 @@ replica names, top endpoints and synthetic
 shadow identities. References to upstream source sequences require an explicitly
 paired source artifact; equal integers never prove a cross-store identity.
 `RouteView` and the native ScheduleStore producer use the same ownership and
-publication facilities. Candidate construction, primary clustering and PATRON
+publication facilities. ScheduleStore has one installed storage contract, v4;
+older storage readers, Python snapshot publication and native version aliases
+are retired. Assignment and ScheduleStore DDL each have one canonical SQL owner
+under `src/emuflow/data/schema`; native headers are generated from those files,
+and bounded test snapshots use the same SQL. Logical and child-relation version
+numbers remain independent of the storage envelope. Candidate construction, primary clustering and PATRON
 joins borrow the existing `EmuirView` store, sharing its source connection/cache
 and lifetime. The schema registry also names mapped/physical handoffs
 and boundary, logic-segment and local-path timing stores. Their phase-specific

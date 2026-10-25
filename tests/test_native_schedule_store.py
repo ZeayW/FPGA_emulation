@@ -1,4 +1,6 @@
 """Differential tests of the production native ScheduleStore owner."""
+
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 import json
 import sqlite3
 import struct
@@ -10,10 +12,7 @@ import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.native_tools import native_file_generation
-from emuflow.tdm_schedule_storage import (
-    FULLY_TYPED_DDL, TYPED_INDEX_DDL, read_tdm_schedule,
-    tdm_schedule_store_path, write_tdm_schedule_storage,
-)
+from emuflow.tdm_schedule_storage import (read_tdm_schedule, tdm_schedule_store_path)
 from tests.native_build import emuflow_native
 
 
@@ -41,7 +40,7 @@ def test_unified_typed_route_producer_selects_native_store(tmp_path,monkeypatch)
     assignment_path.write_text(json.dumps(assignment),encoding="utf-8")
     output=tmp_path/"phase5"
     # Production must select the complete native producer from its indexed contract.
-    with patch("emuflow.tdm_schedule_storage._publish_logical_schedule",side_effect=AssertionError("Python publisher used")), \
+    with patch("tests.schedule_store_fixture._publish_fixture_records",side_effect=AssertionError("Python publisher used")), \
          patch("emuflow.tdm._indexed_certificate",side_effect=AssertionError("Python producer certificate used")), \
          patch("emuflow.tdm._baseline_ratio_hops",side_effect=AssertionError("Python hop map rebuilt before validation")):
         report=run_phase5(route_path,PLATFORM_PATH,output,assignment_path)

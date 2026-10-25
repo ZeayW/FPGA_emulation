@@ -52,12 +52,7 @@ def read_json(path: Path) -> Dict[str, Any]:
         from .managed_json_storage import expand_managed_json
 
         return expand_managed_json(value, path)
-    if schema in {
-        "emuflow.tdm-schedule-storage/v1",
-        "emuflow.tdm-schedule-storage/v2",
-        "emuflow.tdm-schedule-storage/v3",
-        "emuflow.tdm-schedule-storage/v4",
-    }:
+    if isinstance(schema, str) and schema.startswith("emuflow.tdm-schedule-storage/"):
         from .tdm_schedule_storage import expand_tdm_schedule_storage
 
         return expand_tdm_schedule_storage(value, path)

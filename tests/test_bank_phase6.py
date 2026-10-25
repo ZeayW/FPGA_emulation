@@ -1,4 +1,6 @@
 """Phase 6 cannot turn direction-fixed banks into independently reusable wires."""
+
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 import copy
 from types import SimpleNamespace
 
@@ -21,11 +23,7 @@ from emuflow.pin_planning import (
 from emuflow.pin_plan_storage import write_pin_plan_storage
 from emuflow.platform import Platform
 from emuflow.tdm import TDM_SCHEDULE_SCHEMA
-from emuflow.tdm_schedule_storage import (
-    canonical_tdm_schedule_sha256,
-    read_tdm_schedule,
-    write_tdm_schedule_storage,
-)
+from emuflow.tdm_schedule_storage import (canonical_tdm_schedule_sha256, read_tdm_schedule)
 
 
 def fixture():
@@ -40,7 +38,10 @@ def fixture():
             [("fpga0", "fpga1", 7, 0), ("fpga1", "fpga0", 11, 140)]
         ],
         "entries": [
-            {"id": f"e{i}", "link": link.id, "from": source, "to": sink,
+            {"id": f"e{i}", "demand": f"d{i}", "net": f"n{i}",
+             "hop": 0, "link": link.id, "from": source, "to": sink,
+             "capacity_key": f"{link.id}:{source}:{sink}",
+             "ready_slot": i, "arrival_slot": i + 1,
              "lane": lane, "slot": i, "tdm_ratio": 1}
             for i, (source, sink, lane) in enumerate(
                 [("fpga0", "fpga1", 0), ("fpga1", "fpga0", 140)])

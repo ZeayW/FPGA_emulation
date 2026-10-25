@@ -1,4 +1,6 @@
 """Complete native Phase 5 producer: no Python route/result reconstruction."""
+
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 import json
 import math
 import os
@@ -15,7 +17,7 @@ from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.tdm import build_native_exact_schedule_request
 from tests.schedule_reference import build_tdm_schedule
-from emuflow.tdm_schedule_storage import read_tdm_schedule, write_tdm_schedule_storage
+from emuflow.tdm_schedule_storage import (read_tdm_schedule)
 from emuflow.system_route_storage import read_system_routes, write_system_route_storage
 from tests.native_build import emuflow_native, native_json_record
 from tests.native_schedule_case import _case
@@ -70,7 +72,7 @@ def test_complete_native_producer_matches_reference_records_certificates_and_has
          patch.object(type(routes["routes"]), "iter_native_exact_records", side_effect=AssertionError("Python H metadata")), \
          patch("emuflow.tdm._indexed_certificate", side_effect=AssertionError("Python readiness certificate")), \
          patch("emuflow.tdm._baseline_ratio_hops", side_effect=AssertionError("Python wire map")), \
-         patch("emuflow.tdm_schedule_storage._publish_logical_schedule", side_effect=AssertionError("Python record publisher")), \
+         patch("tests.schedule_store_fixture._publish_fixture_records", side_effect=AssertionError("Python record publisher")), \
          patch("emuflow.tdm.subprocess.run", side_effect=record):
         request = build_native_exact_schedule_request(routes, case.platform)
         assert request is not None
@@ -110,7 +112,7 @@ def test_native_generation_rejects_corruption_without_replacing_published_schedu
             path.write_bytes(payload[:-1] if corruption == "board" else b"unknown!" + payload[8:])
 
         monkeypatch.setattr(type(request), "write_board_request", broken)
-    with patch("emuflow.tdm_schedule_storage._publish_logical_schedule", side_effect=AssertionError("silent reference retry")):
+    with patch("tests.schedule_store_fixture._publish_fixture_records", side_effect=AssertionError("silent reference retry")):
         with pytest.raises(ValidationError):
             write_tdm_schedule_storage(manifest, request)
     assert manifest.read_bytes() == previous
@@ -139,7 +141,7 @@ def test_empty_indexed_production_uses_native_and_matches_reference(tmp_path, mo
     request = build_native_exact_schedule_request(routes, case.platform)
     assert request is not None
     output = tmp_path / "schedule.json"
-    with patch("emuflow.tdm_schedule_storage._publish_logical_schedule",
+    with patch("tests.schedule_store_fixture._publish_fixture_records",
                side_effect=AssertionError("empty production retried Python")):
         write_tdm_schedule_storage(output, request)
     assert read_tdm_schedule(output, materialize=True) == reference

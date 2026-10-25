@@ -1,6 +1,4 @@
-#pragma once
-namespace emuflow::core {
-inline constexpr const char* kScheduleStoreDDL = R"SQL(
+
 CREATE TABLE metadata(
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -76,12 +74,3 @@ CREATE TABLE schedule_completion_arrivals(
   UNIQUE(completion_seq,sink_fpga)
 ) WITHOUT ROWID;
 CREATE INDEX schedule_routes_net ON schedule_routes(net);
-)SQL";
-inline constexpr const char* kScheduleStoreIndexDDL = R"SQL(
-CREATE INDEX schedule_entries_seq ON schedule_entries(seq);
-CREATE INDEX schedule_entries_capacity_order
-  ON schedule_entries(capacity_key,demand,link_id,source_fpga,sink_fpga);
-CREATE INDEX schedule_entries_collision
-  ON schedule_entries(capacity_key,slot,lane);
-)SQL";
-}

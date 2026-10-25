@@ -1,3 +1,4 @@
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 import os
 import subprocess
 from array import array
@@ -1144,10 +1145,7 @@ def test_indexed_physical_binding_streams_routes_paths_and_schedule(tmp_path):
         read_system_routes,
         write_system_route_storage,
     )
-    from emuflow.tdm_schedule_storage import (
-        read_tdm_schedule,
-        write_tdm_schedule_storage,
-    )
+    from emuflow.tdm_schedule_storage import (read_tdm_schedule)
 
     fixture = StaticExactSystemTimingTest()
     fixture.setUp()
@@ -1197,10 +1195,7 @@ def test_indexed_timing_stream_delegates_path_order_to_route_store(tmp_path):
         write_system_route_storage,
     )
     from emuflow.tdm import open_tdm_schedule_timing_path_stream
-    from emuflow.tdm_schedule_storage import (
-        read_tdm_schedule,
-        write_tdm_schedule_storage,
-    )
+    from emuflow.tdm_schedule_storage import (read_tdm_schedule)
 
     fixture = StaticExactSystemTimingTest()
     fixture.setUp()

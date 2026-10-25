@@ -1,3 +1,4 @@
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 from tests.pin_plan_fixture import make_pin_plan_fixture
 from contextlib import closing
 import copy
@@ -35,7 +36,11 @@ from emuflow.netlist import (
     transport_to_systemverilog,
     validate_split_artifacts,
 )
-from emuflow.partition import (build_partition_assignment, build_clusters, normalize_partition_constraints)
+from emuflow.partition import (
+    build_partition_assignment,
+    build_clusters,
+    normalize_partition_constraints,
+)
 from tests.partition_reference import assign_clusters
 from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.phase3_assignment_index import (
@@ -71,10 +76,7 @@ from emuflow.open_transport_characterization import (
 )
 from emuflow.routing import normalize_route_constraints
 from tests.schedule_reference import build_tdm_schedule
-from emuflow.tdm_schedule_storage import (
-    open_tdm_schedule_view,
-    write_tdm_schedule_storage,
-)
+from emuflow.tdm_schedule_storage import (open_tdm_schedule_view)
 from emuflow.transport_storage import (
     LANE_MAP_STORAGE_SCHEMA,
     TRANSPORT_STORAGE_SCHEMA,
@@ -120,6 +122,19 @@ class Phase6Test(unittest.TestCase):
             executable=str(tlr_router()),
         )
         self.schedule = build_tdm_schedule(self.routes, self.platform)
+        # The bounded legacy scheduling oracle still tests registered transport.
+        # Persist current typed completion facts, not its retired round record.
+        for route in self.schedule["routes"]:
+            route.pop("transport_round", None)
+        routes_by_id = {route["id"]: route for route in self.schedule["routes"]}
+        for completion in self.schedule["demand_completions"]:
+            completion.pop("transport_round", None)
+            sinks = routes_by_id[completion["demand"]]["sinks"]
+            completion["sink_arrival_slots"] = {
+                entry["to"]: entry["arrival_slot"]
+                for entry in self.schedule["entries"]
+                if entry["demand"] == completion["demand"] and entry["to"] in sinks
+            }
 
     def _chimew_certificate(self, schedule, positions, plan):
         chimew_plan = copy.deepcopy(plan)

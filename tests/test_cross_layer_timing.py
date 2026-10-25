@@ -1,3 +1,4 @@
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 import copy
 import json
 import sqlite3
@@ -22,11 +23,7 @@ from emuflow.cross_layer_timing import (
 from emuflow.errors import ValidationError
 from emuflow.platform import Platform
 from tests.phase3_index_fixture import write_assignment_v3_fixture
-from emuflow.tdm_schedule_storage import (
-    ScheduleRecordSequence,
-    read_tdm_schedule,
-    write_tdm_schedule_storage,
-)
+from emuflow.tdm_schedule_storage import (ScheduleRecordSequence, read_tdm_schedule)
 from emuflow.system_route_storage import (
     SystemRouteSequence,
     read_system_routes,
@@ -100,6 +97,8 @@ def _schedule(*, exact=False):
             {
                 "id": "s000000",
                 "demand": "d000000",
+                "net": "n0", "hop": 0, "capacity_key": "ab:a:b",
+                "slot": 0, "lane": 0, "ready_slot": 0, "arrival_slot": 1,
                 "link": "ab",
                 "from": "a",
                 "to": "b",
@@ -107,6 +106,8 @@ def _schedule(*, exact=False):
             {
                 "id": "s000001",
                 "demand": "d000000",
+                "net": "n0", "hop": 1, "capacity_key": "bc:b:c",
+                "slot": 1, "lane": 0, "ready_slot": 1, "arrival_slot": 2,
                 "link": "bc",
                 "from": "b",
                 "to": "c",
@@ -278,7 +279,7 @@ class CrossLayerTimingContractTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "does not cover"):
                 build_cross_layer_timing_contract(routes, indexed)
 
-    def test_indexed_schedule_hop_binding_rejects_malformed_record(self):
+    def test_typed_schedule_publication_rejects_missing_hop_field(self):
         routes = _routes()
         schedule = {
             **_schedule(),
@@ -289,10 +290,9 @@ class CrossLayerTimingContractTest(unittest.TestCase):
         del schedule["entries"][1]["from"]
         with tempfile.TemporaryDirectory() as temporary_directory:
             path = Path(temporary_directory) / "schedule.json"
-            write_tdm_schedule_storage(path, schedule)
-            indexed = read_tdm_schedule(path)
             with self.assertRaisesRegex(ValidationError, "malformed"):
-                build_cross_layer_timing_contract(routes, indexed)
+                write_tdm_schedule_storage(path, schedule)
+            self.assertFalse(path.exists())
 
     def test_indexed_semantic_contract_stays_compact(self):
         semantic = {

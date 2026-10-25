@@ -185,12 +185,13 @@ int main() {
 
     // Every registered public SQLite envelope uses the same reader/writer.
     using namespace emuflow::core;
-    std::set<std::string> registered_names;
+    std::set<std::string> registered_names, round_trip_names;
     std::vector<ArtifactRef> stores;
     for (const auto& schema:SchemaRegistry()) {
       if (!registered_names.insert(schema.name).second) throw std::runtime_error("duplicate schema name");
       if (schema.encoding!=ArtifactEncoding::kSqlite || !schema.sqlite_schema_query) continue;
       if (std::string(schema.sqlite_schema_query).find("pragma_table_info")!=std::string::npos) continue;
+      round_trip_names.insert(schema.name);
       auto path=(root/(std::string(schema.name)+".sqlite")).string();
       SqliteArtifactWriter writer(path,schema.name);
       {
@@ -219,7 +220,16 @@ int main() {
       if (rows.Step()) throw std::runtime_error("shared store added rows");
       stores.push_back(ref);
     }
-    if (stores.size()<19) throw std::runtime_error("public store registry coverage is incomplete");
+    const std::set<std::string> expected_public_stores = {
+        "xilinx-physical-handoff-v1", "vivado-lineage-store-v2",
+        "vivado-source-functions-v1", "emuir-compact-v2", "emuir-indexed-v1",
+        "assignment-index-v3", "assignment-index-v4", "split-netlists-v2",
+        "boundary-identity-store-v1", "boundary-timing-store-v1",
+        "logic-segment-identity-store-v1", "logic-segment-timing-store-v1",
+        "local-path-timing-store-v1", "xilinx-mapped-index-v2",
+        "system-route-store-v3", "tdm-schedule-store-v4"};
+    if (round_trip_names != expected_public_stores || stores.size() != round_trip_names.size())
+      throw std::runtime_error("public store registry coverage is incomplete");
     ArtifactScope a(stores[0]),b(stores[1]);
     auto first=a.Id<emuflow::core::NetTag>(0); a.Require(first);
     bool foreign=false;try { b.Require(first); } catch (const StageError& e) { foreign=e.code()==ErrorCode::kMixedGeneration; }

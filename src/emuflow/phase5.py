@@ -28,8 +28,6 @@ from .tdm import (
 )
 
 from .tdm_schedule_storage import (
-    FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
-    TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
     read_tdm_schedule,
     tdm_schedule_store_path,
     write_tdm_schedule_storage,
@@ -400,17 +398,7 @@ def _finish_phase5_generation(
             "producer_implementation_id": (
                 "native-exact-phase5-producer-v1"
             ),
-            "dataflow": (
-                "typed-sqlite-route-entry-completion-relations-v1"
-                if schedule_storage["schema"]
-                == FULLY_TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
-                else (
-                    "typed-sqlite-entry-relation-v1"
-                    if schedule_storage["schema"]
-                    == TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
-                    else "indexed-sqlite-ordered-records-v1"
-                )
-            ),
+            "dataflow": "typed-sqlite-route-entry-completion-relations-v1",
             "wall_seconds": schedule_storage_wall_seconds,
             "wall_scope": (
                 "native-model-schedule-certificate-publication-and-store-seal"

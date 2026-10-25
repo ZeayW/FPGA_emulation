@@ -232,17 +232,19 @@ foreach(source IN LISTS EMUFLOW_CORE_SOURCE_NAMES)
   endif()
   list(APPEND EMUFLOW_CORE_SOURCE_FILES "${CMAKE_SOURCE_DIR}/src/native/${source}")
 endforeach()
-set(EMUFLOW_ASSIGNMENT_SCHEMA_GENERATOR "${CMAKE_SOURCE_DIR}/scripts/generate_assignment_schema_header.py")
+set(EMUFLOW_STORE_SCHEMA_GENERATOR "${CMAKE_SOURCE_DIR}/scripts/generate_store_schema_headers.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-  "${EMUFLOW_ASSIGNMENT_SCHEMA_GENERATOR}"
+  "${EMUFLOW_STORE_SCHEMA_GENERATOR}"
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/assignment_schema.hpp.in"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_assignment_core.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_assignment_cuts.sql")
-execute_process(COMMAND "${Python3_EXECUTABLE}" "${EMUFLOW_ASSIGNMENT_SCHEMA_GENERATOR}"
-  "${CMAKE_BINARY_DIR}/generated/emuflow_core/assignment_schema.hpp"
-  RESULT_VARIABLE EMUFLOW_ASSIGNMENT_SCHEMA_STATUS)
-if(NOT EMUFLOW_ASSIGNMENT_SCHEMA_STATUS EQUAL 0)
-  message(FATAL_ERROR "Could not generate shared assignment schema")
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_assignment_cuts.sql"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase5_schedule.sql"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase5_schedule_indexes.sql")
+execute_process(COMMAND "${Python3_EXECUTABLE}" "${EMUFLOW_STORE_SCHEMA_GENERATOR}"
+  "${CMAKE_BINARY_DIR}/generated/emuflow_core"
+  RESULT_VARIABLE EMUFLOW_STORE_SCHEMA_STATUS)
+if(NOT EMUFLOW_STORE_SCHEMA_STATUS EQUAL 0)
+  message(FATAL_ERROR "Could not generate shared store schemas")
 endif()
 add_library(emuflow_core STATIC ${EMUFLOW_CORE_SOURCE_FILES})
 target_compile_features(emuflow_core PUBLIC cxx_std_17)

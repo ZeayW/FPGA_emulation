@@ -520,8 +520,21 @@ model/result scheduling and separate publication commands are retired, along
 with the standalone Exact scheduler and its build option. Use the complete
 `emuflow-native phase5 build-schedule` operation. Production Phase 5 accepts only `deterministic-dependency-earliest-slot-v1`
 and requires a current typed RouteStore plus its Phase 3 Static Exact binding.
-The Python schedule oracle is test-only and bounded to 4096 routes. Explicit
-legacy artifact legality checks do not restore a legacy production scheduler.
+The Python schedule oracle is test-only and bounded to 4096 routes.
+
+ScheduleStore supports only `emuflow.tdm-schedule-storage/v4`; storage v1--v3
+readers, writers and native registry aliases are retired. Historical stores
+require their matching Git revision. The logical `emuflow.tdm-schedule/v1`
+schema and the typed child relation v1 schemas are still current. The installed
+writer accepts only a native Exact generation request, never a Python schedule
+dictionary. Tests may publish bounded current-v4 snapshots through a noninstalled
+fixture helper; that helper is not a production fallback. Explicit logical JSON
+inputs remain available for qualification and do not restore a legacy scheduler.
+Current-v4 stores without the optional route-net lookup index remain readable:
+the deadline reader builds a temporary SQLite lookup from typed route columns,
+without reconstructing Python route or hop records. New producers write that
+index directly. Independent completion validation compares all typed scalar and
+sink-arrival rows without duplicating each completion as JSON.
 
 The independent ratio/KKT, timing-DAG and slot optimizers, their tuning flags,
 `ratio_plan.json`, and the cross-stage/partition-feedback commands are retired.

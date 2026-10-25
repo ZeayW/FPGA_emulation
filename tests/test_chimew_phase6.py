@@ -1,3 +1,4 @@
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 from contextlib import closing
 import copy
 import hashlib
@@ -55,11 +56,10 @@ from emuflow.pin_plan_storage import (
 from emuflow.platform import Platform
 from emuflow.tdm_schedule_storage import (
     ScheduleRecordSequence,
-    TYPED_TDM_SCHEDULE_STORAGE_SCHEMA,
+    TDM_SCHEDULE_STORAGE_SCHEMA,
     TypedScheduleEntrySequence,
     canonical_tdm_schedule_sha256,
     read_tdm_schedule,
-    write_tdm_schedule_storage,
 )
 
 
@@ -109,6 +109,9 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             "entries": [
                 {
                     "id": "s0",
+                    "demand": "demand0", "net": "net0",
+                    "hop": 0, "capacity_key": "AB_link:A:B",
+                    "ready_slot": 0, "arrival_slot": 1,
                     "link": "AB_link",
                     "from": "A",
                     "to": "B",
@@ -118,6 +121,9 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 },
                 {
                     "id": "s1",
+                    "demand": "demand1", "net": "net1",
+                    "hop": 0, "capacity_key": "AB_link:B:A",
+                    "ready_slot": 0, "arrival_slot": 1,
                     "link": "AB_link",
                     "from": "B",
                     "to": "A",
@@ -518,7 +524,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             self.assertEqual(len(observed_connections), 1)
             self.assertEqual(observed_connections[0].close_calls, 1)
 
-    def test_static_exact_v3_binding_validation_uses_typed_relation(self) -> None:
+    def test_static_exact_v4_binding_validation_uses_typed_relation(self) -> None:
         result = build_chimew_phase6_pin_plan(
             self.schedule,
             self.platform,
@@ -542,7 +548,12 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
         schedule_document = {
             **self.schedule,
             "provider": "deterministic-dependency-earliest-slot-v1",
-            "routes": [{"id": entry["demand"]} for entry in entries],
+            "routes": [
+                {"id": entry["demand"], "net": entry["net"],
+                 "source": entry["from"], "sinks": [entry["to"]],
+                 "tree_edges": [{"link": entry["link"], "from": entry["from"], "to": entry["to"]}]}
+                for entry in entries
+            ],
             "entries": entries,
             "demand_completions": [],
             "domain_schedules": [],
@@ -554,7 +565,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 schedule_path, schedule_document
             )
             self.assertEqual(
-                manifest["schema"], TYPED_TDM_SCHEDULE_STORAGE_SCHEMA
+                manifest["schema"], TDM_SCHEDULE_STORAGE_SCHEMA
             )
             indexed_schedule = read_tdm_schedule(schedule_path)
             schedule_sha256 = canonical_tdm_schedule_sha256(indexed_schedule)
@@ -574,7 +585,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 TypedScheduleEntrySequence,
                 "__iter__",
                 side_effect=AssertionError(
-                    "Chimew v3 validation expanded typed schedule entries"
+                    "Chimew v4 validation expanded typed schedule entries"
                 ),
             ):
                 with mock.patch.object(
@@ -609,7 +620,12 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
         schedule_document = {
             **self.schedule,
             "provider": "deterministic-dependency-earliest-slot-v1",
-            "routes": [{"id": entry["demand"]} for entry in entries],
+            "routes": [
+                {"id": entry["demand"], "net": entry["net"],
+                 "source": entry["from"], "sinks": [entry["to"]],
+                 "tree_edges": [{"link": entry["link"], "from": entry["from"], "to": entry["to"]}]}
+                for entry in entries
+            ],
             "entries": entries,
             "demand_completions": [],
             "domain_schedules": [],
