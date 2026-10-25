@@ -130,6 +130,8 @@ Clock routing negotiates shared clock resources using congestion costs, while
 protecting ordinary signals and foreign clock endpoints. It requires zero
 cross-net node sharing before signal routing.
 Each clock iteration attributes conflicts to device resources and clock owners.
+After the initial pass, clock negotiation reroutes only owners of shared nodes,
+retaining unrelated paths within a finite 64-pass search budget.
 Typed placement export checks its required C++ exporter before full-design
 preparation; external native installs must be selected with `EMUFLOW_NATIVE_ROOT`.
 Its output requires remapping and a new placement/routing validation; see

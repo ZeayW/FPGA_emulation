@@ -67,7 +67,8 @@ public final class EmuFlowRWRoute {
     private static final String SCHEMA = "emuflow.xilinx-route-db/v2";
     private static final String ROUTER_STRATEGY =
         "CUFR-HUS-non-timing-driven-uturn-enabled-parallel-unroutable-"
-        + "recovery-negotiated-clock-tree-v2";
+        + "recovery-negotiated-clock-tree-v3";
+    private static final int MAX_CLOCK_NEGOTIATION_ITERATIONS = 64;
     private static final double MAX_RECOVERY_ITERATION_SECONDS = 600.0;
     private static final Set<String> EXTENDED_LCB_CLOCK_NETS =
         ConcurrentHashMap.newKeySet();
@@ -150,6 +151,15 @@ public final class EmuFlowRWRoute {
             .put("maximum_users",maximum).put("shared_node_intents",new JSONObject(intents))
             .put("shared_node_tile_regions",new JSONObject(regions))
             .put("examples",new JSONArray(examples.values()));
+    }
+
+    /** Reconsider every owner of a shared node, retaining unrelated routes. */
+    static <T> Set<String> congestedClockOwners(Map<T, Set<String>> users) {
+        Set<String> owners = new HashSet<>();
+        for (Set<String> nodeUsers : users.values()) {
+            if (nodeUsers.size() > 1) owners.addAll(nodeUsers);
+        }
+        return owners;
     }
 
     static List<PIP> extendedClockPathPIPs(List<Node> sourceToSinkPath) {
@@ -563,9 +573,15 @@ public final class EmuFlowRWRoute {
                 routingGraph.unpreserve(node);
             }
             boolean solved=false;
-            for (int iteration=0; iteration<24; iteration++) {
+            for (int iteration=0; iteration<MAX_CLOCK_NEGOTIATION_ITERATIONS; iteration++) {
                 long start=System.nanoTime();
+                // Snapshot before rip-up: removing the first conflicting owner
+                // must not make the second owner disappear from this pass.
+                Set<String> rerouteOwners=congestedClockOwners(clockUsers);
+                int rerouted=0;
                 for (Net clock : clocks) {
+                    if (iteration>0 && !rerouteOwners.contains(clock.getName())) continue;
+                    rerouted++;
                     for (Node node : clockRouteNodes(clock)) {
                         Set<String> owners=clockUsers.get(node);
                         if (owners==null || !owners.remove(clock.getName()))
@@ -585,6 +601,7 @@ public final class EmuFlowRWRoute {
                 }
                 System.out.println("INFO: EmuFlow clock negotiation: " + new JSONObject()
                     .put("iteration",iteration+1).put("shared_nodes",shared).put("excess_users",excess)
+                    .put("rerouted_clock_nets",rerouted).put("clock_nets",clocks.size())
                     .put("maximum_users",maximum).put("seconds",(System.nanoTime()-start)/1e9)
                     .put("conflicts",clockConflictSummary(clockUsers,Node::toString,
                         node -> node.getIntentCode().name(),node -> {
@@ -594,7 +611,8 @@ public final class EmuFlowRWRoute {
                 if (shared==0) { solved=true;break; }
                 clockPresentFactor*=1.5;
             }
-            if (!solved) throw new IllegalStateException("clock negotiation exhausted 24 iterations; no legal clock route produced");
+            if (!solved) throw new IllegalStateException("clock negotiation exhausted "
+                + MAX_CLOCK_NEGOTIATION_ITERATIONS + " iterations; no legal clock route produced");
             for (Net clock : clocks) {
                 preserveNet(clock,false);
                 for (SitePinInst pin : clock.getPins()) pin.setRouted(true);

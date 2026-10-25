@@ -284,6 +284,18 @@ public final class EmuFlowClockPathProbe {
                 throw new IllegalStateException("clock conflict attribution/count/order/bound is invalid: "+conflicts);
             System.out.println("PASS: repeated PIP endpoints do not duplicate clock users; shared-node ownership is exact");
             System.out.println("PASS: clock conflict summaries retain exact totals and eight deterministic owner examples");
+            Map<String,Set<String>> routes=new TreeMap<>();
+            routes.put("shared",new HashSet<>(Set.of("a","b")));
+            routes.put("unrelated",new HashSet<>(Set.of("c")));
+            Set<String> selected=EmuFlowRWRoute.congestedClockOwners(routes);
+            routes.get("shared").remove("a");
+            if (!selected.equals(Set.of("a","b"))
+                || !EmuFlowRWRoute.congestedClockOwners(routes).isEmpty())
+                throw new IllegalStateException("clock rip-up changed the pass snapshot or selected a clean route");
+            routes.put("new-shared",new HashSet<>(Set.of("b","c")));
+            if (!EmuFlowRWRoute.congestedClockOwners(routes).equals(Set.of("b","c")))
+                throw new IllegalStateException("new conflicts did not enlist a previously clean clock");
+            System.out.println("PASS: selective clock rerouting snapshots all conflicting owners and admits newly affected clocks");
             return;
         }
         if (args.length == 4 && args[0].equals("--audit-site-clocks")) {

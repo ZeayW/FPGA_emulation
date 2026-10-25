@@ -221,8 +221,11 @@ Dedicated-clock routing uses a bounded negotiation loop. Ordinary signal
 reservations and other clock endpoints remain unavailable on every edge.
 Clock route-node overlaps are temporary search states, penalized by present
 occupancy and accumulated historical excess. Clocks are processed by descending
-fanout with stable name ties. Each iteration rips up and recomputes weighted
-source trees, then selects the cheapest join among all nearest reachable sink
+fanout with stable name ties. The first iteration routes every clock. Later
+iterations snapshot all owners of shared nodes before any rip-up and recompute
+only those clocks' weighted source trees; unrelated routes retain their PIPs
+and occupancy. A newly shared node enlists all its owners in the next pass,
+including previously clean clocks. Each rerouted tree selects the cheapest join among all nearest reachable sink
 leaves. The search includes routing/distribution nodes and `CLK_` connector
 wires that the device labels `INTENT_DEFAULT`. A sink's uphill search must
 join a leaf reachable from that source; an available but unreachable leaf is
@@ -242,14 +245,17 @@ clock exploration must not index a shorter sparse array inferred from another
 tile of the same type. Ordinary signal tiles retain upstream sparse allocation.
 Only selected paths contribute to clock occupancy. Inter-site clock PIPs enter
 the preserved signal-routing graph only after an entire iteration has zero
-cross-clock shared nodes. The loop has a 24-iteration work bound and fails
+cross-clock shared nodes. Iteration reports include the number of rerouted
+clocks and total clocks. The loop has a 64-iteration work bound and fails
 explicitly if no legal clock routing is produced. This removes unconstrained helper calls
 from the source/centroid/distribution path. It is a connectivity/resource policy,
 not a clock-skew or timing guarantee. The producer identifies this policy as
-`recovery-negotiated-clock-tree-v2`; historical sealed route strategies remain
+`recovery-negotiated-clock-tree-v3`; historical sealed route strategies remain
 readable by the validator.
 
-`EmuFlowClockPathProbe --clock-owner-self-test` checks distinct-user counters.
+`EmuFlowClockPathProbe --clock-owner-self-test` checks distinct-user counters,
+snapshot stability during rip-up, clean-route exclusion, and enlistment of
+newly conflicting clocks.
 `--clock-tree-self-test` exercises blocked resources, dedicated-graph boundaries,
 cycles, unreachable nearer leaves, occupied sources and bounded sink tails
 without loading a device. `--clock-graph DEVICE SOURCE_NODE SINK_NODE` additionally
