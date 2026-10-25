@@ -545,10 +545,6 @@ class LogicSegmentTimingTest(unittest.TestCase):
             result,
         )
 
-
-
-
-
     def test_local_path_timing_accepts_repeatable_lazy_path_sequence(self):
         record = {
             "id": "local-a",
@@ -714,8 +710,6 @@ class LogicSegmentTimingTest(unittest.TestCase):
             ),
             ("port", "input_bus[1]"),
         )
-
-
 
     def test_import_is_identity_and_coverage_strict(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -1354,7 +1348,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
             real_replace = os.replace
 
             def fail_selector(source, target):
-                if Path(target) == identity and str(source).endswith(".selector.tmp"):
+                if Path(target) == identity and str(source).endswith(".tmp"):
                     raise OSError("injected selector failure")
                 return real_replace(source, target)
 

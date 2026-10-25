@@ -212,8 +212,13 @@ physical generation checks remain at input, validation and publication boundarie
 not one filesystem call per cell. Final catalog SQL keeps its logical/storage
 schema but uses `clusters.<sha256>.sqlite` generations behind `clusters.json`.
 Readers also accept the prior fixed basename for identified historical inputs.
-The common selector commit preserves the old pair on failed publication or
-partial backup, and retains recovery files if rollback itself fails. Old payloads
+The common selector commit preserves the old pair on failed publication,
+directory synchronization or partial backup, and retains recovery files if
+rollback itself fails. Durable commits sync the selector's parent directory.
+Logic-segment identity uses that same commit owner instead of a separate selector
+backup/restore implementation. Its query TSV remains a separately published
+companion: failed identity commits restore the prior query, and callers still
+require successful stage completion for the complete set. Old payloads
 remain invocation scratch until process-aware terminal retirement.
 
 Current compact EmuIR, final assignment v4, RouteStore v3 and ScheduleStore v4

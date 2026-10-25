@@ -16,7 +16,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import sqlite3
 import tempfile
 from typing import Any, Optional
@@ -26,11 +25,12 @@ from .errors import ValidationError
 from .store_publication import (
     StoreSource,
     bind_store_source,
+    commit_store_selector,
     publish_sqlite_store,
     require_store_sources_unchanged,
     validate_store_destination,
 )
-from .io import file_sha256, read_json, write_json
+from .io import file_sha256, read_json
 
 
 LOGIC_SEGMENT_IDENTITY_SCHEMA = "emuflow.logic-segment-identity/v1"
@@ -1125,13 +1125,11 @@ def write_logic_segment_identity_storage(
     path.parent.mkdir(parents=True, exist_ok=True)
     lease: Optional[_Lease] = _Lease(path, exclusive=True)
     temporary: Optional[Path] = None
-    selector_temporary: Optional[Path] = None
     connection: Optional[sqlite3.Connection] = None
     published_store: Optional[Path] = None
     created_store = False
     selector_committed = False
-    selector_published = False
-    selector_backup: Optional[Path] = None
+    selector_commit_started = False
     sidecar_published = False
     sidecar_backup: Optional[Path] = None
     sidecar_temporary = (
@@ -1152,11 +1150,6 @@ def write_logic_segment_identity_storage(
         )
         os.close(descriptor)
         temporary = Path(name)
-        descriptor, name = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".selector.tmp", dir=path.parent
-        )
-        os.close(descriptor)
-        selector_temporary = Path(name)
         connection = sqlite3.connect(temporary)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=OFF")
@@ -1277,9 +1270,6 @@ def write_logic_segment_identity_storage(
             "store_sha256": store_sha,
         })
         _validate_selector(selector)
-        write_json(selector_temporary, selector, compact=True)
-        with selector_temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
         if sidecar_temporary is not None and sidecar_target is not None:
             if (
                 sidecar_temporary.is_symlink()
@@ -1304,22 +1294,18 @@ def write_logic_segment_identity_storage(
             os.replace(sidecar_temporary, sidecar_target)
             sidecar_published = True
             _fsync_directory(sidecar_target.parent)
-        if path.exists():
-            descriptor, backup_name = tempfile.mkstemp(
-                prefix=f".{path.name}.", suffix=".rollback.tmp", dir=path.parent
-            )
-            os.close(descriptor)
-            selector_backup = Path(backup_name)
-            shutil.copyfile(path, selector_backup)
-            with selector_backup.open("rb") as stream:
-                os.fsync(stream.fileno())
-        require_store_sources_unchanged(source_bindings)
-        os.replace(selector_temporary, path)
-        selector_published = True
-        _fsync_directory(path.parent)
+        # The common commit owns selector backup and SQL generation recovery.
+        # Once entered, its retained payloads must survive a failed rollback.
+        selector_commit_started = True
+        commit_store_selector(
+            path,
+            selector,
+            source_bindings,
+            published_store,
+            created_store,
+            durable=True,
+        )
         selector_committed = True
-        if selector_backup is not None:
-            selector_backup.unlink(missing_ok=True)
         if sidecar_backup is not None:
             sidecar_backup.unlink(missing_ok=True)
             _fsync_directory(sidecar_target.parent)
@@ -1339,17 +1325,13 @@ def write_logic_segment_identity_storage(
             connection.close()
         if temporary is not None:
             temporary.unlink(missing_ok=True)
-        if selector_temporary is not None:
-            selector_temporary.unlink(missing_ok=True)
-        if published_store is not None and created_store and not selector_committed:
+        if (
+            published_store is not None
+            and created_store
+            and not selector_committed
+            and not selector_commit_started
+        ):
             published_store.unlink(missing_ok=True)
-        if not selector_committed:
-            if selector_backup is not None and selector_backup.is_file():
-                os.replace(selector_backup, path)
-                _fsync_directory(path.parent)
-            elif selector_published:
-                path.unlink(missing_ok=True)
-                _fsync_directory(path.parent)
         if not selector_committed and sidecar_target is not None:
             if sidecar_backup is not None and sidecar_backup.is_file():
                 os.replace(sidecar_backup, sidecar_target)
@@ -1365,8 +1347,6 @@ def write_logic_segment_identity_storage(
             sidecar_temporary.unlink(missing_ok=True)
         if sidecar_backup is not None and selector_committed:
             sidecar_backup.unlink(missing_ok=True)
-        if selector_backup is not None:
-            selector_backup.unlink(missing_ok=True)
         if lease is not None:
             lease.close()
 

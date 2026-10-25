@@ -10,7 +10,7 @@ from pathlib import Path
 import tempfile
 
 from .errors import ValidationError
-from .io import file_sha256, write_json
+from .io import file_sha256, json_writes_are_durable, write_json
 from .native_protocol import CheckedRequestWriter
 from .native_tools import native_file_generation, resolve_native_executable
 from .tool_runtime import NativeToolProcess
@@ -189,6 +189,12 @@ def commit_store_selector(path, artifact, sources, payload, created, *, durable=
             backup_ready = True
         require_store_sources_unchanged(sources)
         write_json(path, artifact, compact=True, durable=durable)
+        if json_writes_are_durable() if durable is None else durable:
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     except BaseException:
         if backup_ready:
             try:

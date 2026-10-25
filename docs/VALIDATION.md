@@ -102,6 +102,13 @@ successful aliases must share the sealed inode. Rejected lazy readers must close
 their SQLite connections and generation leases even when the exception traceback
 remains alive; NFS cleanup must not depend on garbage collection.
 
+Logic-segment identity commits use the common selector helper. Fail its selector
+backup after writing a partial file, both with and without a query companion;
+the old selector, SQL and query must remain intact. Fail before/after selector
+replacement and at parent-directory sync. If selector restoration itself fails,
+retain both SQL generations and the previous-selector recovery file instead of
+deleting the SQL referenced by the visible selector. The stage must report failure.
+
 
 The noninstalled `scripts/validation/qualify_phase6_publication.py` executes the
 complete production Phase 6 API. Its bounded JSON request uses
