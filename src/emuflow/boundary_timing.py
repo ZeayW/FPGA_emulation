@@ -26,6 +26,10 @@ _MEASUREMENTS_BY_SCOPE = {
         "tx": "routed-launch-through-tx-boundary-to-interface-endpoint",
         "rx": "interface-startpoint-through-rx-boundary-to-shadow-capture",
     },
+    "native-word-registered-interface": {
+        "tx": "logical-source-to-native-tx-word-sampling-pin",
+        "rx": "registered-native-rx-word-to-shadow-capture-within-fixed-arc",
+    },
 }
 
 

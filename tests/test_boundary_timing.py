@@ -183,6 +183,14 @@ class BoundaryTimingIdentityTest(unittest.TestCase):
             board_by_id["tx0"]["measurement"],
             "routed-launch-through-tx-boundary-to-interface-endpoint",
         )
+        word_timing=build_boundary_timing_database(database,{
+            'tx0':{'delay_ns':2.0,'start_object':'launch/C','end_object':'serializer/D[0]'},
+            'rx0':{'delay_ns':1.5,'start_object':'native-align/C','end_object':'shadow_ff/D'}},
+            provider='word-timer',qualification='native-word',measurement_scope='native-word-registered-interface')
+        validate_boundary_timing_database(word_timing,database)
+        self.assertEqual({item['kind']:item['measurement']for item in word_timing['endpoints']},{
+            'tx':'logical-source-to-native-tx-word-sampling-pin',
+            'rx':'registered-native-rx-word-to-shadow-capture-within-fixed-arc'})
 
     def test_forwarded_endpoint_binds_synthesized_transport_shadow(self):
         transport = {

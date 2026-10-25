@@ -435,6 +435,53 @@ bounds to equal six word cycles. A shorter variable or constant latency does
 not by itself match a six-cycle table: it would require explicit normalization.
 Neither this field nor the deadline-only field qualifies the fitted board arc.
 
+The indexed provider's explicit native-word preparation consumes the v2 word
+PHY plan and canonical wiring. It checks bank direction, peer, logical slices,
+package pairs and forwarded-clock identity before emitting a top. Each active
+bank instantiates the complete twenty-lane native IP and its wrapper. Unused
+receive-bank slices are tied off; no original circuit graph is reconstructed.
+The preparation's sources/configurations are sealed in its report. It selects
+the plan's receive policy explicitly, generates the unmodified vendor IP during
+top synthesis and does not impose KEEP/DONT_TOUCH on design cells.
+
+The native word top exposes RIU, common TX readiness, global PLL lock,
+held alignment and payload-enable service inputs, plus local readiness/error
+outputs. RX reset remains asserted until the common TX-ready input. Global
+startup/readiness consensus and pausible DUT-clock generation are external OOC
+services. These ports do not implement a distributed barrier. Primary clocks
+are explicit: TDM at 5 ns, RIU at 10 ns, and each RX forwarded clock at 1.25 ns.
+All generated clocks must trace to these declared roots; unexpected primary
+clocks, missing masters and cycles are rejected.
+The routed native clock census is retained. Infrastructure-only setup paths
+must meet their fixed clocks before this PHY model is admitted; a slow DUT
+target cannot relax them. DUT-to-TX paths remain physical measurements for
+schedule readiness, rather than being counted as infrastructure closure.
+
+Word timing queries use native sampling boundaries. A TX query resolves its
+serializer through the fixed P pad and differential output buffer, then checks
+the requested parallel-bit data net. Aliased payload nets cannot select a
+different lane's capture pin. RX queries start at the registered alignment
+output. These bounded physical resolutions are cached only within one export.
+The `native-word-registered-interface` boundary scope distinguishes these
+measurements from pad-to-pad timing. Its RX word-to-shadow path lies inside the
+fixed transfer window; it must not be added to the fixed PHY arc again. The
+following shadow-to-DUT cone still includes the shadow register's clock-to-Q.
+
+Run the separate synthetic native-bank physical/query qualification with:
+
+```bash
+PYTHONPATH=src python3 scripts/validation/qualify_vivado_word_physical.py \
+  --vivado vivado --out build/native-word-physical
+```
+
+This uses the common indexed implementation and source-proof machinery, fixed
+P/N pins and a 10 MHz local DUT target. It is an integration fixture, not a
+Phase 1--7 or global-design timing result. Serial-data pads do not receive the
+one-bit adapter's zero-delay constraint relative to the TDM clock. Their fixed
+transfer remains the external link model; routed serial-pad/board/SI signoff is
+outside this qualification. Full-flow word execution remains rejected until
+complete-fanin event projection and independent global timing are integrated.
+
 The current fixed differential adapter supplies IBUFDS/OBUFDS boundaries; it
 does not implement the serializer/deserializer or forwarded-clock circuitry
 of the [8:1 serial PHY reference](HARDWARE_PLATFORM.md#serial-phy-time-units).

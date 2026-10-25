@@ -88,8 +88,8 @@ while {[gets $input line] >= 0} {
   }
   set port_bit [format {%s[%d]} $port $bit]
   if {[dict exists $fixed_io_map $port_bit]} {
-    set port_bit [dict get $fixed_io_map $port_bit]
-    set port_object [get_ports -quiet [list $port_bit]]
+    set port_object [emuflow_fixed_io_object $fixed_io_map $port_bit]
+    set port_bit [get_property NAME $port_object]
   } elseif {$hierarchy_prefix eq ""} {
     set port_object [get_ports -quiet [list $port_bit]]
   } else {

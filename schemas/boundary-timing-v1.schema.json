@@ -119,6 +119,8 @@
               "rx-port-to-shadow-capture",
               "routed-launch-through-tx-boundary-to-interface-endpoint",
               "interface-startpoint-through-rx-boundary-to-shadow-capture",
+              "logical-source-to-native-tx-word-sampling-pin",
+              "registered-native-rx-word-to-shadow-capture-within-fixed-arc",
               "optimized-away"
             ]
           },
@@ -181,7 +183,8 @@
     "measurement_scope": {
       "enum": [
         "partition-boundary",
-        "board-integrated-interface"
+        "board-integrated-interface",
+        "native-word-registered-interface"
       ]
     }
   },

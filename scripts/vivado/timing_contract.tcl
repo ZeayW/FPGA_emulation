@@ -16,31 +16,107 @@ proc emuflow_use_data_path_constraints {} {
   # winning a cone query merely through worse slack instead of longer delay.
   # Implementation reports are finalized before the native-session exports.
   set clocks [get_clocks -quiet]
-  foreach launch $clocks {
-    foreach capture $clocks {
-      set_max_delay -reset_path -datapath_only -from $launch -to $capture 1000000
-    }
-  }
+  if {[llength $clocks] != 0} {set_max_delay -reset_path -datapath_only -from $clocks -to $clocks 1000000}
 }
 
 proc emuflow_load_fixed_io_map {path} {
+  # Bound the cache to physical word lanes, and reset it for each export/design.
+  set ::emuflow_fixed_io_cache [dict create]
   set result [dict create]
   if {$path eq ""} {return $result}
   set stream [open $path r]
-  if {[gets $stream header] < 0 || $header ne "logical_hex\tphysical_hex"} {
+  if {[gets $stream header] < 0 || $header ni [list "logical_hex\tphysical_hex" "logical_hex\tkind\tphysical_hex\tanchor_hex"]} {
     error "invalid fixed I/O timing map header"
   }
   while {[gets $stream row] >= 0} {
-    lassign [split $row "\t"] logical physical
-    set logical [encoding convertfrom utf-8 [binary decode hex $logical]]
-    set physical [encoding convertfrom utf-8 [binary decode hex $physical]]
+    set fields [split $row "\t"]
+    set kind port
+    set anchor ""
+    if {$header eq "logical_hex\tphysical_hex" && [llength $fields] == 2} {
+      lassign $fields logical physical
+    } elseif {$header ne "logical_hex\tphysical_hex" && [llength $fields] == 4} {
+      lassign $fields logical kind physical anchor
+      if {$kind ni {word-tx word-rx} || $anchor eq ""} {error "invalid native word timing boundary kind/anchor"}
+      set anchor [encoding convertfrom utf-8 [binary format H* $anchor]]
+    } else {error "invalid fixed I/O timing map record"}
+    set logical [encoding convertfrom utf-8 [binary format H* $logical]]
+    set physical [encoding convertfrom utf-8 [binary format H* $physical]]
     if {$logical eq "" || $physical eq "" || [dict exists $result $logical]} {
       error "invalid or duplicate fixed I/O timing map"
     }
-    dict set result $logical $physical
+    dict set result $logical [list $kind $physical $anchor]
   }
   close $stream
   return $result
+}
+
+proc emuflow_exact_hier_pin {name} {
+  set pin [get_pins -quiet -hier [list $name]]
+  if {[llength $pin] == 1 && [get_property NAME $pin] eq $name} {return $pin}
+  set separator [string last / $name]
+  if {$separator <= 0} {error "native word boundary lacks a hierarchical owner: $name"}
+  set parent [string range $name 0 [expr {$separator-1}]]
+  set cells [get_cells -quiet -hier -filter "NAME == $parent"]
+  if {[llength $cells] != 1} {error "native word boundary owner is absent: $parent"}
+  foreach candidate [get_pins -quiet -of_objects $cells] {
+    if {[get_property NAME $candidate] eq $name} {return $candidate}
+  }
+  error "native word boundary pin is absent: $name"
+}
+
+proc emuflow_fixed_io_object {mapping logical} {
+  global emuflow_fixed_io_cache
+  if {![info exists emuflow_fixed_io_cache]} {set emuflow_fixed_io_cache [dict create]}
+  set key [dict get $mapping $logical]
+  if {[dict exists $emuflow_fixed_io_cache $key]} {return [dict get $emuflow_fixed_io_cache $key]}
+  lassign [dict get $mapping $logical] kind name anchor
+  if {$kind eq "port"} {
+    set object [get_ports -quiet [list $name]]
+  } elseif {$kind in {word-tx word-rx}} {
+    set hierarchical [emuflow_exact_hier_pin $name]
+    set nets [get_nets -quiet -segments -of_objects $hierarchical]
+    if {$kind eq "word-tx"} {
+      # A shared payload net may feed several serializer lanes. Resolve this
+      # lane through its fixed package pad, rather than choosing any sink of
+      # that aliased logical net or relying on generated primitive names.
+      if {![regexp {\[([0-7])\]$} $name _ bit]} {error "invalid native TX word bit"}
+      set pad [get_ports -quiet [list $anchor]]
+      if {[llength $pad] != 1} {error "native TX lane pad is absent: $anchor"}
+      set pad_nets [get_nets -quiet -segments -of_objects $pad]
+      set buffers [get_cells -quiet -of_objects [get_pins -quiet -leaf -of_objects $pad_nets] -filter {REF_NAME == OBUFDS}]
+      if {[llength $buffers] != 1} {error "native TX lane lacks its unique OBUFDS: $anchor"}
+      set input [get_pins -quiet -of_objects $buffers -filter {REF_PIN_NAME == I}]
+      set serial [get_nets -quiet -segments -of_objects $input]
+      set drivers [get_pins -quiet -leaf -of_objects $serial -filter {DIRECTION == OUT}]
+      set serializers [get_cells -quiet -of_objects $drivers -filter {REF_NAME == TX_BITSLICE}]
+      if {[llength $serializers] != 1} {error "native TX lane lacks its unique TX_BITSLICE: $anchor"}
+      set object [list]
+      foreach pin [get_pins -quiet -of_objects $serializers -filter {DIRECTION == IN}] {
+        if {[get_property REF_PIN_NAME $pin] eq [format {D[%d]} $bit]} {lappend object $pin}
+      }
+    } else {
+      set object [get_pins -quiet -leaf -of_objects $nets -filter {DIRECTION == OUT}]
+      if {[llength $object] == 1} {
+        set cell [get_cells -quiet -of_objects $object]
+        if {[get_property REF_NAME $cell] ne "FDRE" || [get_property REF_PIN_NAME $object] ne "Q"} {
+          error "native RX word boundary is not its registered alignment output: $logical"
+        }
+      }
+    }
+    if {[llength $object] == 1} {
+      set leaf_nets [get_nets -quiet -segments -of_objects $object]
+      set shared false
+      foreach net $leaf_nets {if {[lsearch -exact $nets $net] >= 0} {set shared true}}
+      set bank [lindex [split $name /] 0]
+      if {!$shared || [string first "$bank/" [get_property NAME $object]] != 0} {
+        error "native word boundary leaf has a different bank or data net: $logical"
+      }
+    }
+  } else {error "unsupported fixed I/O timing object kind: $kind"}
+  if {[llength $object] != 1} {error "fixed I/O boundary is absent or ambiguous: $logical"}
+  if {[dict size $emuflow_fixed_io_cache] >= 16384} {error "fixed I/O resolution exceeds device boundary scope"}
+  dict set emuflow_fixed_io_cache $key $object
+  return $object
 }
 
 proc emuflow_validate_segment_extent {path start end measurement} {

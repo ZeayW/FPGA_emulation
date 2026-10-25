@@ -31,7 +31,7 @@ def _tcl_word(value):
 
 def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mapped_sha256,
                      queries, runtime, ports, synthesized_checkpoint=None, synthesized_checkpoint_sha256=None,
-                     dut_frequency_mhz=None):
+                     dut_frequency_mhz=None,word_phy_directory=None):
     """Prepare small native/child contracts after all source views have closed."""
     output = output.resolve()
     checkpoint = Path(synthesized_checkpoint).resolve() if synthesized_checkpoint is not None else output/"synthesized.dcp"
@@ -39,12 +39,23 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
     if any(str(value.resolve()) in reserved for value in queries.values()):
         raise ValidationError("native timing input overlaps a generated query/measurement output")
     clocks = implementation_clocks(runtime, ports, dut_frequency_mhz)
+    if word_phy_directory is not None:
+        table=Path(word_phy_directory)/'native-word-clocks.tsv'
+        if not table.is_file()or table.stat().st_size>65536:raise ValidationError('native word root clock table is missing or oversized')
+        with table.open()as stream:
+            if next(stream,'').rstrip('\n')!='clock_hex\tport_hex\tperiod_ns':raise ValidationError('invalid native word root clock header')
+            for row in csv.reader(stream,delimiter='\t'):
+                if len(row)!=3:raise ValidationError('invalid native word root clock row')
+                clocks.append((bytes.fromhex(row[0]).decode(),bytes.fromhex(row[1]).decode(),float(row[2])))
+        if len({name for name,port,period in clocks})!=len(clocks)or len({port for name,port,period in clocks})!=len(clocks):
+            raise ValidationError('native word clock names or source ports overlap')
     manifest = {"schema": SCHEMA, "fpga": fpga, "part": part, "output": str(output),
         "implementation_timing": implementation_timing_contract(runtime, dut_frequency_mhz),
         "source_preflight_stage": "optimized",
         "mapped_index": str(mapped_index.resolve()), "functions": str(functions.resolve()),
         "mapped_index_sha256": mapped_sha256, "queries": {key:str(value.resolve()) for key,value in queries.items()},
-        "synthesized_checkpoint": str(checkpoint), "synthesized_checkpoint_sha256": synthesized_checkpoint_sha256}
+        "synthesized_checkpoint": str(checkpoint), "synthesized_checkpoint_sha256": synthesized_checkpoint_sha256,
+        "word_phy_directory":str(Path(word_phy_directory).resolve())if word_phy_directory is not None else None}
     write_json(output/"native-session.json",manifest,compact=True)
     with (output/"clock-contract.tsv").open("w") as stream:
         stream.write("clock_hex\tport_hex\tperiod_ns\n")
@@ -64,6 +75,7 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
     command = ["/usr/bin/env","-i",*(f"{key}={value}" for key,value in environment.items()),
                sys.executable,"-m","emuflow.vivado_session"]
     settings = {"emuflow_session_out":str(output),"emuflow_session_manifest":str(output/"native-session.json"),
+        "emuflow_word_phy_directory":str(Path(word_phy_directory).resolve())if word_phy_directory is not None else "",
         "emuflow_start_checkpoint":str(checkpoint) if synthesized_checkpoint is not None else "",
         "emuflow_preflight_stage":"optimized",
         "emuflow_clock_contract":str(output/"clock-contract.tsv"),"emuflow_io_timing_map":str(output/"fixed-io-timing-map.tsv") if (output/"fixed-io-timing-map.tsv").is_file() else ""}
@@ -81,6 +93,10 @@ def load_session(path: Path):
             or not isinstance(value.get("queries"), dict)
             or set(value["queries"])-{"boundary_timing", "logic_segment_timing", "local_path_timing"}):
         raise ValidationError("invalid Vivado native session manifest")
+    if value.get('word_phy_directory')is not None and(
+        not isinstance(value['word_phy_directory'],str)
+        or Path(value['word_phy_directory']).resolve()!=Path(value['output']).resolve()):
+        raise ValidationError('native word configuration must belong to its physical output')
     return value
 
 

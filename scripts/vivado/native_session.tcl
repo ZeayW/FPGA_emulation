@@ -60,14 +60,14 @@ proc emuflow_session_timings {directory prefix fixed_io_map} {
   close $stream
   unset ::emuflow_native_export_stage
 }
-proc emuflow_validate_clock_contract {path} {
+proc emuflow_validate_clock_contract {path {allow_generated false}} {
   set stream [open $path r]
   if {[gets $stream header] < 0 || $header ne "clock_hex\tport_hex\tperiod_ns"} {error "invalid native clock contract"}
   set seen [dict create]
   while {[gets $stream row] >= 0} {
     lassign [split $row "\t"] clock_hex port_hex period
-    set name [encoding convertfrom utf-8 [binary decode hex $clock_hex]]
-    set port [encoding convertfrom utf-8 [binary decode hex $port_hex]]
+    set name [encoding convertfrom utf-8 [binary format H* $clock_hex]]
+    set port [encoding convertfrom utf-8 [binary format H* $port_hex]]
     set clock [get_clocks -quiet [list $name]]
     set object [get_ports -quiet [list $port]]
     if {[dict exists $seen $name] || [llength $clock] != 1 || [llength $object] != 1 ||
@@ -79,5 +79,20 @@ proc emuflow_validate_clock_contract {path} {
     dict set seen $name 1
   }
   close $stream
-  if {[llength [get_clocks -quiet]] != [dict size $seen]} {error "native design has unexpected clocks"}
+  foreach clock [get_clocks -quiet] {
+    set name [get_property NAME $clock]
+    if {[dict exists $seen $name]} {continue}
+    if {!$allow_generated} {error "native design has unexpected clocks"}
+    set chain [dict create]
+    while {![dict exists $seen [get_property NAME $clock]]} {
+      set name [get_property NAME $clock]
+      if {[dict exists $chain $name] || ![get_property IS_GENERATED $clock] || [get_property PERIOD $clock] <= 0} {
+        error "native word clock is not derived from a declared root: $name"
+      }
+      dict set chain $name 1
+      set master [get_property MASTER_CLOCK $clock]
+      set clock [get_clocks -quiet [list $master]]
+      if {[llength $clock] != 1} {error "native word clock master is absent or ambiguous: $master"}
+    }
+  }
 }

@@ -143,6 +143,7 @@ def run_indexed_vivado_partition(
     executable: str | None = None, place_directive: str = "Default", route_directive: str = "Default",
     synthesized_checkpoint: Path | None = None, synthesized_checkpoint_sha256: str | None = None,
     continuation_source_report: Path | None = None, dut_frequency_mhz: float | None = None,
+    word_phy_plan_path:Path|None=None,word_wiring_path:Path|None=None,
 ) -> dict[str, Any]:
     from .vivado_backend import _resolve_vivado, _read_metrics, _integer, _number, vivado_runtime_xdc, write_vivado_boundary_timing_query
     from .vivado_physical_timing import import_indexed_vivado_boundary, import_vivado_local_timing
@@ -150,6 +151,11 @@ def run_indexed_vivado_partition(
     from .vivado_session import prepare_manifest
 
     continuation = (synthesized_checkpoint,synthesized_checkpoint_sha256,continuation_source_report)
+    word_mode=word_phy_plan_path is not None or word_wiring_path is not None
+    if word_mode and (word_phy_plan_path is None or word_wiring_path is None or virtual_io_contract is not None):
+        raise ValidationError('native word implementation requires its plan and wiring together, without a bit-adapter contract')
+    if word_mode and any(value is not None for value in continuation):
+        raise ValidationError('native word synthesized continuation requires a dedicated source/IP admission contract')
     if any(value is not None for value in continuation) and not all(value is not None for value in continuation):
         raise ValidationError("synthesized continuation requires checkpoint, digest and source report together")
     from .emuir_storage import is_emuir_sqlite
@@ -187,6 +193,21 @@ def run_indexed_vivado_partition(
     xdc.write_text(vivado_runtime_xdc(ir_path, runtime, dut_frequency_mhz), encoding="utf-8")
     prefix, adapter, wrapper, io_xdc, io_query = "", "", "", "", ""
     top_report = None
+    word_sources=()
+    if word_mode:
+        from .vivado_word_top import write_vivado_word_top
+        for path in (word_phy_plan_path,word_wiring_path):
+            if not path.is_file()or path.stat().st_size>16*1024*1024:
+                raise ValidationError('native word plan/wiring source is missing or exceeds its bounded board scope')
+        word_sources=tuple(bind_store_source(path,'native-word-physical-source-v1')for path in (word_phy_plan_path,word_wiring_path))
+        top_report=write_vivado_word_top(ir_path,output_dir,fpga=fpga,
+            board=read_json(word_wiring_path),plan=read_json(word_phy_plan_path))
+        if top_report['part']!=part or implementation_timing['tdm_clock']['period_ns']!=5.0:
+            raise ValidationError('native word part or TDM clock differs from its PHY model')
+        write_json(output_dir/'native-word-preparation.json',top_report,compact=True)
+        top,prefix=top_report['top'],top_report['hierarchy_prefix']
+        adapter,wrapper=str(output_dir/'native-word-banks.sv'),str(output_dir/'physical_top.sv')
+        io_xdc,io_query=str(output_dir/'native-word-fixed-io.xdc'),str(output_dir/'fixed-io-query.tsv')
     if virtual_io_contract is not None:
         wrapper_path = output_dir / "physical_top.sv"
         top_report = write_vivado_physical_top(ir_path, wrapper_path, virtual_io_contract)
@@ -201,6 +222,8 @@ def run_indexed_vivado_partition(
                 stream.write("\t".join([entry["direction"], *(value.encode("utf-8").hex() for value in values)]) + "\n")
         io_query = str(query_path)
     io_timing_map = output_dir / "fixed-io-timing-map.tsv"
+    if word_mode:
+        io_timing_map.write_bytes((output_dir/'native-word-boundaries.tsv').read_bytes())
     if virtual_io_contract is not None:
         with io_timing_map.open("w", encoding="utf-8") as stream:
             stream.write("logical_hex\tphysical_hex\n")
@@ -229,12 +252,13 @@ def run_indexed_vivado_partition(
     configuration = prepare_manifest(output_dir,fpga=fpga,part=part,mapped_index=index_path,functions=functions_path,
         mapped_sha256=mapped_report["mapped_index"]["sha256"],queries=queries,runtime=runtime,ports=ports,
         synthesized_checkpoint=synthesized_checkpoint,synthesized_checkpoint_sha256=synthesized_checkpoint_sha256,
-        dut_frequency_mhz=dut_frequency_mhz)
+        dut_frequency_mhz=dut_frequency_mhz,word_phy_directory=output_dir if word_mode else None)
     threads = int(os.environ.get("EMUFLOW_VIVADO_THREADS", "2"))
     if threads < 1:
         raise ValidationError("Vivado thread count must be positive")
     input_files = {"physical_ir":ir_path,"mapped_index":index_path,"source_functions":functions_path,
                    "mapped_verilog":mapped_verilog_path,**{f"query_{kind}":path for kind,path in queries.items()}}
+    if word_mode:input_files.update(word_phy_plan=word_phy_plan_path,word_wiring=word_wiring_path)
     input_identity = {key:{"path":str(path.resolve()),"sha256":file_sha256(path)} for key,path in input_files.items()}
     input_identity["runtime_sha256"] = hashlib.sha256(json.dumps(runtime,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
     for key,expected_sha in (("mapped_index",mapped_report["mapped_index"]["sha256"]),
@@ -279,7 +303,7 @@ def run_indexed_vivado_partition(
         measured = output_dir/"boundary_timing.tsv"
         with OptimizationProofView(proof_path, expected_fpga=fpga) as proof_reader:
             imported = import_indexed_vivado_boundary(measured, boundary_identity_path, output_dir / "boundary-timing.json",
-                measurement_scope="board-integrated-interface" if virtual_io_contract is not None else "partition-boundary",
+                measurement_scope="native-word-registered-interface" if word_mode else("board-integrated-interface" if virtual_io_contract is not None else "partition-boundary"),
                 optimization_proofs=proof_reader)
         measured.unlink()
         stages["boundary_timing"] = {"status":"pass","query":boundary_query_report,
@@ -308,6 +332,15 @@ def run_indexed_vivado_partition(
             "contract_sha256": hashlib.sha256(json.dumps(virtual_io_contract, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
             "differential_pairs": pairs, "physical_ports": 2 * pairs,
             "top": top_report, "route_validation": {"unrouted_nets": _integer(metrics, "unrouted_nets")}}
+    if word_mode:
+        pairs=_integer(metrics,'virtual_io_pairs')
+        if pairs!=top_report['data_pairs']+top_report['forwarded_clock_pairs']:
+            raise ValidationError('native word fixed pair count differs from its data/clock bank plan')
+        word_checks=_integer(metrics,'native_word_infrastructure_checks')
+        word_wns=_number(metrics,'native_word_infrastructure_wns_ns')if word_checks else None
+        if (top_report['active_banks']and not word_checks)or(word_wns is not None and word_wns<0):
+            raise ValidationError('native word infrastructure lacks passing fixed-clock timing evidence')
+        require_store_sources_unchanged(word_sources)
     require_store_sources_unchanged((lineage_binding,))
     artifacts = {"cell-lineage.sqlite":lineage_artifact}
     for name in ("route_status.rpt", "drc.rpt", "timing_summary.rpt", "utilization.rpt", "implementation_metrics.tsv",
@@ -317,6 +350,10 @@ def run_indexed_vivado_partition(
         if not path.is_file() or path.stat().st_size == 0:
             raise ValidationError(f"Vivado physical artifact is missing: {name}")
         artifacts[name] = {"path": str(path), "sha256": file_sha256(path), "bytes": path.stat().st_size}
+    if word_mode:
+        for name in ('native-word-preparation.json','native-word-clock-census.tsv'):
+            path=output_dir/name
+            artifacts[name]={'path':str(path),'sha256':file_sha256(path),'bytes':path.stat().st_size}
     result = {"schema": PHYSICAL_PARTITION_RESULT_SCHEMA, "status": "pass",
         "identity": {"backend": "vivado", "fpga": fpga, "part": part},
         "analysis_scope": {"implementation_mode": "out-of-context",
@@ -340,6 +377,9 @@ def run_indexed_vivado_partition(
             "clock_domain_delays_ns": {domain: _number(metrics, name) for domain, name in (("overall", "critical_path_ns"), ("dut", "dut_delay_ns"), ("fabric", "fabric_delay_ns"), ("cross", "fabric_to_dut_delay_ns"))}},
         "resource_usage": usage, "hard_resources": counts, "artifacts": artifacts}
     validation = validate_physical_partition_result(result, backend="vivado", fpga=fpga, part=part, original_cells=original_cells, transport_cells=transport_cells)
+    native_scripts=("native_session.tcl","source_inventory.tcl","resource_inventory.tcl","timing_contract.tcl",
+        "inspect_constant_frontiers.tcl","export_boundary_timing.tcl","export_logic_segment_timing.tcl")
+    if word_mode:native_scripts+=("word_native_physical.tcl","selectio_ip.tcl")
     report = {"schema": "emuflow.vivado-partition-report/v1", "status": "pass", "provider": "indexed-phase6-vivado-physical-v2",
         "tool": {"executable": executable, "version": metrics["vivado_version"], "threads": threads},
         "implementation": implementation, "continuation": continuation_validation, "input_identity": input_identity,
@@ -347,12 +387,13 @@ def run_indexed_vivado_partition(
         "implementation_options": {"place_directive": place_directive, "route_directive": route_directive,
                                    "dut_frequency_mhz": dut_frequency_mhz},
         "native_session": {"mode":"current-design-stage-exports-v1",
-            "scripts_sha256": {name:file_sha256(_vivado_script(name)) for name in (
-                "native_session.tcl","source_inventory.tcl","resource_inventory.tcl","timing_contract.tcl",
-                "inspect_constant_frontiers.tcl","export_boundary_timing.tcl","export_logic_segment_timing.tcl")},
+            "scripts_sha256": {name:file_sha256(_vivado_script(name)) for name in native_scripts},
             "planner_sha256":file_sha256(Path(__file__).with_name("vivado_session.py"))},
         "cell_coverage": coverage, "optimization_proofs": proof_report, **stages,
         **({"virtual_io_implementation": virtual_io} if virtual_io is not None else {}),
+        **({'word_phy_implementation':{'status':'pass','preparation':top_report,
+            'infrastructure_timing':{'checks':word_checks,'wns_ns':word_wns,'fixed_clock_contract_met':True},
+            'differential_pairs':pairs,'serial_pad_timing_scope':'fixed-link-model-external-to-local-STA; no board/SI signoff'}}if word_mode else{}),
         "result": result, "validation": validation}
     write_json(output_dir / "vivado-partition-report.json", report, compact=True)
     return report

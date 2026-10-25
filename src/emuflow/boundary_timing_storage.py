@@ -145,7 +145,7 @@ def _validate_header(raw: Any, counts: Optional[Mapping[str, int]] = None) -> di
         header.get("schema") != BOUNDARY_TIMING_SCHEMA
         or header.get("status") != "pass"
         or header.get("measurement_scope") not in {
-            "partition-boundary", "board-integrated-interface",
+            "partition-boundary", "board-integrated-interface", "native-word-registered-interface",
         }
         or any(
             not isinstance(header.get(field), str) or not header[field]

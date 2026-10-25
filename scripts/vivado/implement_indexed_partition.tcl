@@ -26,6 +26,10 @@ if {[catch {
   if {[llength [get_parts -quiet $part]] != 1} {error "target part is not installed: $part"}
   if {$emuflow_start_checkpoint eq ""} {
     create_project -in_memory -part $part emuflow_indexed_partition
+    if {$emuflow_word_phy_directory ne ""} {
+      source [file join $emuflow_script_directory word_native_physical.tcl]
+      emuflow_word_prepare $emuflow_word_phy_directory
+    }
     read_verilog $netlist
     if {$adapter ne ""} {read_verilog -sv $adapter}
     if {$wrapper ne ""} {read_verilog -sv $wrapper}
@@ -37,7 +41,7 @@ if {[catch {
     emuflow_validate_synthesized_identity $part $top
   }
   if {[llength [get_pblocks -quiet]] != 0} {error "native implementation contains an undeclared placement region"}
-  emuflow_validate_clock_contract $emuflow_clock_contract
+  emuflow_validate_clock_contract $emuflow_clock_contract [expr {$emuflow_word_phy_directory ne ""}]
   if {[llength [get_cells -quiet -hier -filter {IS_BLACKBOX == 1}]] != 0} {error "unresolved black boxes"}
   emuflow_inventory "$out/mapped_cells.tsv" $prefix
   set dut_clocks [get_clocks -quiet emuflow_dut_clk*]
@@ -47,7 +51,7 @@ if {[catch {
   }
   # Virtual pads represent an already scheduled board boundary. Their local
   # physical delay is measured separately and is never the board-link model.
-  if {$io_query ne ""} {
+  if {$io_query ne "" && $emuflow_word_phy_directory eq ""} {
     set stream [open $io_query r]
     gets $stream header
     while {[gets $stream row] >= 0} {
@@ -99,7 +103,7 @@ if {[catch {
       lassign $fields direction p n p_pin n_pin standard
       # UltraScale+ expands IBUFDS into DIFFINBUF plus IBUFCTRL. The P/N
       # package pads must still meet the same physical differential primitive.
-      set expected_ref [expr {$direction eq "tx" ? "REF_NAME == OBUFDS" : "REF_NAME == IBUFDS || REF_NAME == DIFFINBUF"}]
+      set expected_ref [expr {$direction eq "tx" ? "REF_NAME == OBUFDS" : "REF_NAME == IBUFDS || REF_NAME == IBUFDS_DIFF_OUT || REF_NAME == DIFFINBUF"}]
       set pair_cell ""
       foreach port_hex [list $p $n] pin_hex [list $p_pin $n_pin] {
         set name [emuflow_decode $port_hex]
@@ -125,6 +129,11 @@ if {[catch {
   set paths [get_timing_paths -quiet -max_paths 1 -nworst 1]
   if {[llength $paths] != 1} {error "implemented design has no analyzed timing path"}
   set resources [emuflow_resource_inventory]
+  set word_checks {0 {}}
+  if {$emuflow_word_phy_directory ne ""} {
+    emuflow_validate_clock_contract $emuflow_clock_contract true
+    set word_checks [emuflow_word_routed_checks $out]
+  }
   set metrics [open "$out/implementation_metrics.tsv" w]
   puts $metrics "metric\tvalue"
   foreach {key value} [list \
@@ -140,6 +149,10 @@ if {[catch {
   }
   dict for {key value} $resources {
     puts $metrics "$key\t$value"
+  }
+  if {$emuflow_word_phy_directory ne ""} {
+    puts $metrics "native_word_infrastructure_checks\t[lindex $word_checks 0]"
+    puts $metrics "native_word_infrastructure_wns_ns\t[lindex $word_checks 1]"
   }
   close $metrics
   emuflow_session_timings $emuflow_script_directory $prefix $emuflow_io_timing_map

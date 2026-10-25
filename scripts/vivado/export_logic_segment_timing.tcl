@@ -75,7 +75,7 @@ proc emuflow_resolve_object {kind name prefix {resolved_hex ""}} {
     }
   } elseif {$kind eq "port"} {
     set lookup $name
-    if {[dict exists $fixed_io_map $name]} {set lookup [dict get $fixed_io_map $name]}
+    if {[dict exists $fixed_io_map $name]} {return [emuflow_fixed_io_object $fixed_io_map $name]}
     set object [get_ports -quiet [list $lookup]]
     if {[llength $object] == 0 && $prefix ne ""} {
       set object [get_pins -quiet -hier [list $physical_name]]
