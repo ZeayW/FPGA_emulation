@@ -32,11 +32,21 @@ def main():
          "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
          "-DBUILD_TESTING=OFF", "-DENABLE_ROUTER=OFF",
          "-DPython3_EXECUTABLE=" + str(Path(args.python).resolve()),
+         "-DPYTHON_EXECUTABLE=" + str(Path(args.python).resolve()),
          "-DCMAKE_INSTALL_PREFIX=" + str(output / "install"), *args.cmake_arg],
         [args.cmake, "--build", str(build), "--target", "ism_dp_cpp", "--parallel", str(args.jobs)],
     ]
     for command in commands:
         subprocess.run(command, cwd=output, check=True)
+        if command is commands[0]:
+            cache = (build / "CMakeCache.txt").read_text().splitlines()
+            interpreters = [line.split("=", 1)[1] for line in cache
+                            if line.startswith(("Python3_EXECUTABLE:", "PYTHON_EXECUTABLE:"))]
+            if len(interpreters) != 2 or any(
+                Path(value).resolve() != Path(args.python).resolve()
+                for value in interpreters
+            ):
+                raise RuntimeError("CMake selected a different Python ABI for ISM")
     binaries = list((build / "openparf/ops/ism_dp").glob("ism_dp_cpp.*.so"))
     if len(binaries) != 1:
         raise RuntimeError("ISM build did not produce exactly one native operator")
