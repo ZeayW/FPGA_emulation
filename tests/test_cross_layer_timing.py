@@ -21,10 +21,7 @@ from emuflow.cross_layer_timing import (
 )
 from emuflow.errors import ValidationError
 from emuflow.platform import Platform
-from emuflow.phase3_assignment_index import (
-    ASSIGNMENT_INDEX_APPLICATION_ID,
-    LEGACY_ASSIGNMENT_INDEX_SCHEMA,
-)
+from tests.phase3_index_fixture import write_assignment_v3_fixture
 from emuflow.tdm_schedule_storage import (
     ScheduleRecordSequence,
     read_tdm_schedule,
@@ -347,42 +344,16 @@ class CrossLayerTimingContractTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temporary_directory:
             index = Path(temporary_directory) / "assignment.sqlite"
-            with sqlite3.connect(index) as connection:
-                connection.executescript(
-                    f"""
-                    PRAGMA application_id={ASSIGNMENT_INDEX_APPLICATION_ID};
-                    PRAGMA user_version=1;
-                    CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-                    CREATE TABLE parts(part_index INTEGER PRIMARY KEY,fpga TEXT NOT NULL);
-                    CREATE TABLE exact_segment_bindings(
-                      segment_id TEXT PRIMARY KEY,kind TEXT NOT NULL,
-                      part_index INTEGER NOT NULL,payload_json TEXT NOT NULL);
-                    CREATE TABLE exact_capture_requirements(
-                      capture_id TEXT PRIMARY KEY,part_index INTEGER NOT NULL,
-                      payload_json TEXT NOT NULL);
-                    """
-                )
-                connection.executemany(
-                    "INSERT INTO metadata VALUES (?,?)",
-                    [
-                        ("schema", json.dumps(LEGACY_ASSIGNMENT_INDEX_SCHEMA)),
-                        ("semantic_contract_schema", json.dumps(semantic["schema"])),
-                        ("semantic_contract_sha256", json.dumps("a" * 64)),
-                    ],
-                )
-                connection.executemany(
-                    "INSERT INTO parts VALUES (?,?)",
-                    enumerate(("a", "b", "c")),
-                )
-                connection.execute(
-                    "INSERT INTO exact_segment_bindings VALUES (?,?,?,?)",
-                    (
-                        segment["id"],
-                        segment["kind"],
-                        0,
-                        json.dumps(segment, sort_keys=True),
-                    ),
-                )
+            write_assignment_v3_fixture(
+                index, parts=("a", "b", "c"),
+                semantic={
+                    **semantic,
+                    "cut_nodes": [{"net": "n0", "source_segment_ids": [segment["id"]]}],
+                    "logic_segments": [segment],
+                    "capture_requirements": [],
+                },
+                metadata={"semantic_contract_sha256": "a" * 64},
+            )
             binding = build_cross_layer_physical_binding(
                 contract,
                 schedule,

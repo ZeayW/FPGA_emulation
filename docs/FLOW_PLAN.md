@@ -176,9 +176,11 @@ connectivity semantics. Interned pin IDs exist only in v2; validated v1 pins
 retain their original port/bit fields without inventing an integer string pool.
 No read silently rewrites or upgrades its input.
 
-`AssignmentView` supports public assignment v1–v4 and checks primary coverage as
-its ordered copy cursor is consumed. `SplitView` supports split v2, with scoped
-partition/cell/net/pin coordinates, replica names, top endpoints and synthetic
+`AssignmentView` supports public assignment v3/v4 and checks primary coverage as
+its ordered copy cursor is consumed. Assignment v1/v2 and their migration writer
+are retired; historical artifacts require their matching Git revision.
+`SplitView` supports split v2, with scoped partition/cell/net/pin coordinates,
+replica names, top endpoints and synthetic
 shadow identities. References to upstream source sequences require an explicitly
 paired source artifact; equal integers never prove a cross-store identity.
 `RouteView` and the native ScheduleStore producer use the same ownership and

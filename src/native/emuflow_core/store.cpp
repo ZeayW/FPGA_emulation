@@ -85,8 +85,8 @@ void RequireRecord(bool valid,const char* message) {
 }
 const ArtifactRef& AssignmentArtifact(const ArtifactRef& artifact) {
   const auto& name=artifact.schema();
-  RequireRecord(name=="assignment-index-v1" || name=="assignment-index-v2" ||
-      name=="assignment-index-v3" || name=="assignment-index-v4","assignment view requires registered v1-v4 storage");
+  RequireRecord(name=="assignment-index-v3" || name=="assignment-index-v4",
+      "assignment view requires registered v3/v4 storage");
   return artifact;
 }
 const ArtifactRef& SplitArtifact(const ArtifactRef& artifact) {

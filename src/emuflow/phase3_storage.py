@@ -1485,10 +1485,10 @@ class IndexedInstanceAssignment(Mapping[str, str]):
 
     def __init__(self, path: Path):
         self.path = path.resolve()
-        self.connection = sqlite3.connect(
-            f"file:{self.path}?mode=ro&immutable=1",
-            uri=True,
-            check_same_thread=False,
+        from .phase3_assignment_index import open_phase3_assignment_index
+
+        self.connection = open_phase3_assignment_index(
+            self.path, check_same_thread=False
         )
         row = self.connection.execute(
             "SELECT value FROM metadata WHERE key='source_instance_count'"
@@ -1857,10 +1857,9 @@ def _enrich_indexed_cut_dependencies(
     predecessors: List[List[int]] = [[] for _ in cuts]
     successors: List[List[int]] = [[] for _ in cuts]
     segment_sinks = array("i")
-    connection = sqlite3.connect(
-        f"file:{index_path.resolve()}?mode=ro&immutable=1",
-        uri=True,
-    )
+    from .phase3_assignment_index import open_phase3_assignment_index
+
+    connection = open_phase3_assignment_index(index_path)
     try:
         metadata = {
             str(row[0]): json.loads(row[1])
@@ -1898,21 +1897,7 @@ def _enrich_indexed_cut_dependencies(
                 if isinstance(segment.get("source_cut_net"), str)
             )
         else:
-            node_rows = (
-                (str(row[0]), [
-                    _segment_number(item[0])
-                    for item in connection.execute(
-                        "SELECT segment_id FROM exact_cut_sources "
-                        "WHERE net_id=? ORDER BY ordinal", (row[0],)
-                    )
-                ])
-                for row in connection.execute(
-                    "SELECT net_id FROM exact_cut_nodes ORDER BY net_id"
-                )
-            )
-            segment_rows = connection.execute(
-                "SELECT source_cut_net,segment_id FROM exact_logic_segments"
-            )
+            raise ValueError("assignment index lacks its Static Exact binary descriptor")
 
         exact_nodes = set()
         for net_id, segment_numbers in node_rows:
@@ -2022,10 +2007,9 @@ def read_phase3_cut_timing_view(
             include_semantic_contract=False,
         )
 
-    connection = sqlite3.connect(
-        f"file:{index_path.resolve()}?mode=ro&immutable=1",
-        uri=True,
-    )
+    from .phase3_assignment_index import open_phase3_assignment_index
+
+    connection = open_phase3_assignment_index(index_path)
     connection.row_factory = sqlite3.Row
     try:
         metadata = {
@@ -2033,8 +2017,6 @@ def read_phase3_cut_timing_view(
             for row in connection.execute("SELECT key,value FROM metadata")
         }
         if metadata.get("schema") not in {
-            "emuflow.phase3-assignment-sqlite/v1",
-            "emuflow.phase3-assignment-sqlite/v2",
             "emuflow.phase3-assignment-sqlite/v3",
             "emuflow.phase3-assignment-sqlite/v4",
         }:
@@ -2092,12 +2074,7 @@ def read_phase3_cut_timing_view(
                     )
                 ]
             else:
-                exact_nets = [
-                    str(row["net_id"])
-                    for row in connection.execute(
-                        "SELECT net_id FROM exact_cut_nodes ORDER BY net_id"
-                    )
-                ]
+                raise ValueError("assignment index lacks its Static Exact binary descriptor")
             if exact_nets != sorted(cut_records):
                 raise ValueError(
                     "assignment index exact-cut coverage is inconsistent"

@@ -35,7 +35,7 @@ The linked operations use a versioned schema registry, `ArtifactRef`,
 `StageRequest` and `StageResult`. `SqliteStore`, `EmuirView`, `AssignmentView`,
 `SplitView` and `RouteView` share artifact binding and connection ownership;
 `SqliteArtifactWriter` owns staged SQLite publication, including ScheduleStore.
-EmuIR v1/v2, assignment v1–v4 and split v2 have explicit versioned readers.
+EmuIR v1/v2, assignment v3/v4 and split v2 have explicit versioned readers.
 The [W0 contract](FLOW_PLAN.md#shared-native-core-w0) specifies shared interfaces,
 compatibility and acceptance separately from the later phase algorithm migrations.
 An integer identity is meaningful only with its owning artifact;

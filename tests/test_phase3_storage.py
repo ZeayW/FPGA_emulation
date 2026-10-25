@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.phase3_index_fixture import write_assignment_v3_fixture
 from emuflow.io import read_json, write_json
 from emuflow.phase3_storage import (
     CLUSTERS_SQLITE_APPLICATION_ID,
@@ -357,6 +358,8 @@ class Phase3StorageTest(unittest.TestCase):
             with closing(sqlite3.connect(root / "assignment.sqlite")) as connection, connection:
                 connection.executescript(
                     """
+                    PRAGMA application_id=0x454D5541;
+                    PRAGMA user_version=3;
                     CREATE TABLE metadata(
                       key TEXT PRIMARY KEY,
                       value TEXT NOT NULL
@@ -372,6 +375,10 @@ class Phase3StorageTest(unittest.TestCase):
                       is_replica INTEGER NOT NULL
                     );
                     """
+                )
+                connection.execute(
+                    "INSERT INTO metadata VALUES (?,?)",
+                    ("schema", json.dumps("emuflow.phase3-assignment-sqlite/v3")),
                 )
                 connection.execute(
                     "INSERT INTO metadata VALUES (?,?)",
@@ -431,60 +438,33 @@ class Phase3StorageTest(unittest.TestCase):
                 "data": "invalid-on-purpose",
             }
             write_json(root / "assignment.json", packed, compact=True)
-            with closing(sqlite3.connect(root / "assignment.sqlite")) as connection, connection:
-                connection.executescript(
-                    """
-                    CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-                    CREATE TABLE parts(part_index INTEGER PRIMARY KEY,fpga TEXT NOT NULL);
-                    CREATE TABLE copies(source_instance_seq INTEGER,part_index INTEGER,copy_id TEXT,is_replica INTEGER);
-                    CREATE TABLE cut_sinks(net_id TEXT,source_part_index INTEGER,sink_part_index INTEGER);
-                    CREATE TABLE exact_cut_nodes(net_id TEXT PRIMARY KEY);
-                    CREATE TABLE exact_cut_sources(net_id TEXT,ordinal INTEGER,segment_id TEXT);
-                    CREATE TABLE exact_logic_segments(source_cut_net TEXT,part_index INTEGER,segment_id TEXT);
-                    """
-                )
-                metadata = {
-                    "schema": "emuflow.phase3-assignment-sqlite/v1",
-                    "design": "large",
-                    "platform": "four",
-                    "provider": "test",
-                    "seed": 1,
-                    "constraints": {"balance_tolerance": 0.25},
-                    "source_instance_count": 8,
-                    "semantic_contract_sha256": "a" * 64,
-                }
-                connection.executemany(
-                    "INSERT INTO metadata VALUES (?,?)",
-                    ((key, json.dumps(value)) for key, value in metadata.items()),
-                )
-                connection.executemany(
-                    "INSERT INTO parts VALUES (?,?)",
-                    [(0, "fpga0"), (1, "fpga1")],
-                )
-                connection.executemany(
-                    "INSERT INTO copies VALUES (?,?,?,0)",
-                    [(0, 0, "i0"), (1, 1, "i1")],
-                )
-                connection.executemany(
-                    "INSERT INTO cut_sinks VALUES (?,?,?)",
-                    [("n0", 0, 1), ("n1", 1, 0)],
-                )
-                connection.executemany(
-                    "INSERT INTO exact_cut_nodes VALUES (?)",
-                    [("n0",), ("n1",)],
-                )
-                connection.executemany(
-                    "INSERT INTO exact_cut_sources VALUES (?,?,?)",
-                    [("n0", 0, "segment000000"), ("n1", 0, "segment000001")],
-                )
-                connection.executemany(
-                    "INSERT INTO exact_logic_segments VALUES (?,?,?)",
-                    [
-                        ("n0", 1, "segment000001"),
-                        ("n0", 1, "segment000002"),
-                        ("n1", 0, "segment000003"),
+            write_assignment_v3_fixture(
+                root / "assignment.sqlite", parts=("fpga0", "fpga1"),
+                metadata={
+                    "design": "large", "platform": "four", "provider": "test",
+                    "seed": 1, "constraints": {"balance_tolerance": 0.25},
+                    "source_instance_count": 2, "semantic_contract_sha256": "a" * 64,
+                },
+                copies=[(0, 0, "i0", 0), (1, 1, "i1", 0)],
+                cut_sinks=[("n0", 0, 1), ("n1", 1, 0)],
+                semantic={
+                    "schema": "emuflow.static-exact-combinational-cut/v3",
+                    "cut_nodes": [
+                        {"net": "n0", "source_segment_ids": ["segment000000"]},
+                        {"net": "n1", "source_segment_ids": ["segment000001"]},
                     ],
-                )
+                    "logic_segments": [
+                        {"id": "segment000000", "kind": "launch_to_tx", "fpga": "fpga0", "sink_cut_net": "n0"},
+                        {"id": "segment000001", "kind": "rx_to_tx", "fpga": "fpga1", "source_cut_net": "n0", "sink_cut_net": "n1"},
+                        {"id": "segment000002", "kind": "rx_to_capture", "fpga": "fpga1", "source_cut_net": "n0", "capture_requirement": "capture000000"},
+                        {"id": "segment000003", "kind": "rx_to_capture", "fpga": "fpga0", "source_cut_net": "n1", "capture_requirement": "capture000001"},
+                    ],
+                    "capture_requirements": [
+                        {"id": "capture000000", "cut_net": "n0", "fpga": "fpga1", "kind": "top-output", "endpoint": "o0"},
+                        {"id": "capture000001", "cut_net": "n1", "fpga": "fpga0", "kind": "top-output", "endpoint": "o1"},
+                    ],
+                },
+            )
             view = read_phase3_cut_timing_view(
                 root / "assignment.json",
                 include_instance_assignment=True,

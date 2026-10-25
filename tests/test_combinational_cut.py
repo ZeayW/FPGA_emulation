@@ -59,7 +59,10 @@ from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.split_netlist_storage import SplitNetlistView
 from emuflow.phase3_assignment_index import (
     ASSIGNMENT_INDEX_APPLICATION_ID,
-    migrate_phase3_assignment_index,
+    open_phase3_assignment_index,
+    phase3_exact_semantic_counts,
+    phase3_exact_relation_counts,
+    read_phase3_exact_split_relations,
     read_phase3_exact_semantic_contract,
     read_phase3_exact_semantic_partition,
     validate_phase3_assignment_index,
@@ -2762,7 +2765,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             self.assertEqual(list(view["cut_nets"]), [])
             self.assertEqual(read_json(root / "assignment.json"), assignment)
 
-    def _legacy_exact_assignment_with_bit(self, bit):
+    def _exact_assignment_with_bit(self, bit):
         _, assignment = self._exact_artifacts(dependent_return=True)
         assignment = copy.deepcopy(assignment)
         capture = next(
@@ -2778,217 +2781,70 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         )
         return assignment, capture["id"], capture["fpga"]
 
-    def test_legacy_migration_uses_canonical_v2_bit_storage_boundaries(self):
-        cases = (
-            ((1 << 63) - 1, "integer", None),
-            (1 << 63, "blob", 8),
-            (1 << 8191, "blob", 1024),
-        )
-        for bit, storage_type, storage_bytes in cases:
+
+
+
+
+
+
+    def test_current_assignment_binary_preserves_capture_bit_boundaries(self):
+        for bit in ((1 << 63) - 1, 1 << 63, 1 << 8191):
             with self.subTest(bit_length=bit.bit_length()):
-                assignment, capture_id, fpga = (
-                    self._legacy_exact_assignment_with_bit(bit)
-                )
-                with tempfile.TemporaryDirectory() as temporary_directory:
-                    root = Path(temporary_directory)
-                    ir_path = root / "design.emuir.sqlite"
-                    assignment_path = root / "assignment.json"
-                    index_path = root / "assignment.sqlite"
-                    write_compact_emuir(ir_path, self.ir.to_dict())
-                    write_json(assignment_path, assignment)
-
-                    summary = migrate_phase3_assignment_index(
-                        index_path, ir_path, assignment_path
-                    )
+                assignment, capture_id, fpga = self._exact_assignment_with_bit(bit)
+                with tempfile.TemporaryDirectory() as temporary:
+                    index = Path(temporary) / "assignment.sqlite"
+                    summary = write_phase3_assignment_index(index, self.ir, assignment)
                     self.assertEqual(summary["status"], "pass")
-                    with closing(sqlite3.connect(index_path)) as connection, connection:
-                        stored = connection.execute(
-                            "SELECT typeof(bit),CASE WHEN typeof(bit)='blob' "
-                            "THEN length(bit) END "
-                            "FROM exact_capture_requirements "
-                            "WHERE capture_id=?",
-                            (capture_id,),
-                        ).fetchone()
-                    self.assertEqual(stored, (storage_type, storage_bytes))
+                    partition = read_phase3_exact_semantic_partition(index, fpga)
+                    capture = next(r for r in partition["capture_requirements"] if r["id"] == capture_id)
+                    self.assertEqual(capture["bit"], bit)
+                    self.assertEqual(read_phase3_exact_semantic_contract(index, assignment), assignment["semantic_contract"])
+                    self.assertEqual(validate_phase3_assignment_index(index)["status"], "pass")
 
-                    partition = read_phase3_exact_semantic_partition(
-                        index_path, fpga
-                    )
-                    observed = next(
-                        item
-                        for item in partition["capture_requirements"]
-                        if item["id"] == capture_id
-                    )
-                    self.assertEqual(observed["bit"], bit)
-                    reconstructed = read_phase3_exact_semantic_contract(
-                        index_path, assignment
-                    )
-                    self.assertEqual(
-                        reconstructed["capture_requirements"],
-                        assignment["semantic_contract"][
-                            "capture_requirements"
-                        ],
-                    )
-                    self.assertEqual(
-                        validate_phase3_assignment_index(index_path)["status"],
-                        "pass",
-                    )
-
-    def test_legacy_json_migration_rejects_8193_bit_capture_before_digest(self):
-        assignment, _, _ = self._legacy_exact_assignment_with_bit(0)
-        capture = next(
-            item
-            for item in assignment["semantic_contract"][
-                "capture_requirements"
-            ]
-            if item["kind"] == "architectural-state"
-        )
+    def test_current_assignment_rejects_oversized_capture_without_publishing(self):
+        assignment, _, _ = self._exact_assignment_with_bit(0)
+        capture = next(r for r in assignment["semantic_contract"]["capture_requirements"] if r["kind"] == "architectural-state")
         capture["bit"] = 1 << 8192
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            ir_path = root / "design.emuir.sqlite"
-            assignment_path = root / "assignment.json"
-            index_path = root / "assignment.sqlite"
-            write_compact_emuir(ir_path, self.ir.to_dict())
-            write_json(assignment_path, assignment)
-            with patch(
-                "emuflow.phase3_assignment_index.semantic_contract_sha256",
-                side_effect=AssertionError("digest must follow capture validation"),
-            ), self.assertRaisesRegex(ValidationError, "at most 8192 bits"):
-                migrate_phase3_assignment_index(
-                    index_path, ir_path, assignment_path
-                )
-            self.assertFalse(index_path.exists())
+        with tempfile.TemporaryDirectory() as temporary:
+            index = Path(temporary) / "assignment.sqlite"
+            with self.assertRaisesRegex(ValidationError, "at most 8192 bits"):
+                write_phase3_assignment_index(index, self.ir, assignment)
+            self.assertEqual(list(index.parent.iterdir()), [])
 
-    def test_legacy_v1_and_v2_reads_reject_oversized_capture_bits(self):
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            v1_path = root / "assignment-v1.sqlite"
-            for bit, accepted in ((1 << 8191, True), (1 << 8192, False)):
-                if v1_path.exists():
-                    v1_path.unlink()
-                capture = {
-                    "id": "capture000000",
-                    "cut_net": "net0",
-                    "fpga": "fpga0",
-                    "kind": "architectural-state",
-                    "endpoint": "state/D",
-                    "port": "D",
-                    "bit": bit,
-                }
-                with closing(sqlite3.connect(v1_path)) as connection, connection:
-                    connection.executescript(
-                        f"""
-                        PRAGMA application_id={ASSIGNMENT_INDEX_APPLICATION_ID};
-                        PRAGMA user_version=1;
-                        CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);
-                        CREATE TABLE parts(
-                          part_index INTEGER PRIMARY KEY,fpga TEXT
-                        );
-                        CREATE TABLE copies(
-                          source_instance_seq INTEGER,part_index INTEGER,
-                          copy_id TEXT,is_replica INTEGER
-                        );
-                        CREATE TABLE cut_sinks(
-                          net_id TEXT,source_part_index INTEGER,
-                          sink_part_index INTEGER
-                        );
-                        CREATE TABLE exact_segment_bindings(
-                          segment_id TEXT,part_index INTEGER,payload_json TEXT
-                        );
-                        CREATE TABLE exact_capture_requirements(
-                          capture_id TEXT,part_index INTEGER,payload_json TEXT
-                        );
-                        """
-                    )
-                    connection.executemany(
-                        "INSERT INTO metadata VALUES (?,?)",
-                        [
-                            (
-                                "schema",
-                                json.dumps(
-                                    "emuflow.phase3-assignment-sqlite/v1"
-                                ),
-                            ),
-                            ("design", json.dumps("legacy")),
-                            ("platform", json.dumps("test")),
-                            ("source_instance_count", json.dumps(0)),
-                            ("semantic_contract_schema", json.dumps("schema")),
-                            ("semantic_contract_sha256", json.dumps("0" * 64)),
-                        ],
-                    )
-                    connection.execute(
-                        "INSERT INTO parts VALUES (0,'fpga0')"
-                    )
-                    connection.execute(
-                        "INSERT INTO exact_capture_requirements VALUES (?,?,?)",
-                        ("capture000000", 0, json.dumps(capture)),
-                    )
-                if accepted:
-                    partition = read_phase3_exact_semantic_partition(
-                        v1_path, "fpga0"
-                    )
-                    self.assertEqual(
-                        partition["capture_requirements"][0]["bit"], bit
-                    )
-                    self.assertEqual(
-                        validate_phase3_assignment_index(v1_path)["status"],
-                        "pass",
-                    )
-                else:
-                    for reader in (
-                        lambda: read_phase3_exact_semantic_partition(
-                            v1_path, "fpga0"
-                        ),
-                        lambda: validate_phase3_assignment_index(v1_path),
-                    ):
-                        with self.assertRaisesRegex(
-                            ValidationError, "at most 8192 bits"
-                        ):
-                            reader()
+    def test_retired_assignment_versions_rejected_by_all_readers(self):
+        from emuflow.phase3_storage import (
+            IndexedInstanceAssignment, _enrich_indexed_cut_dependencies,
+            read_phase3_cut_timing_view,
+        )
+        from emuflow import phase3_assignment_index
 
-            assignment, capture_id, fpga = (
-                self._legacy_exact_assignment_with_bit(0)
-            )
-            ir_path = root / "design.emuir.sqlite"
-            assignment_path = root / "assignment.json"
-            v2_path = root / "assignment-v2.sqlite"
-            write_compact_emuir(ir_path, self.ir.to_dict())
-            write_json(assignment_path, assignment)
-            migrate_phase3_assignment_index(
-                v2_path, ir_path, assignment_path
-            )
-            invalid_blobs = (
-                (b"\x00", "encoding is invalid"),
-                (b"\x01", "encoding is invalid"),
-                (((1 << 63) - 1).to_bytes(8, "big"), "encoding is invalid"),
-                (b"\x01" + b"\x00" * 1024, "at most 8192 bits"),
-            )
-            for encoded, message in invalid_blobs:
-                with self.subTest(encoded_bytes=len(encoded), message=message):
-                    with closing(sqlite3.connect(v2_path)) as connection, connection:
-                        connection.execute(
-                            "UPDATE exact_capture_requirements SET bit=? "
-                            "WHERE capture_id=?",
-                            (sqlite3.Binary(encoded), capture_id),
-                        )
-                    readers = (
-                        lambda: read_phase3_exact_semantic_partition(
-                            v2_path, fpga
-                        ),
-                        lambda: read_phase3_exact_semantic_contract(
-                            v2_path, assignment
-                        ),
-                        lambda: validate_phase3_assignment_index(v2_path),
-                    )
-                    for reader in readers:
-                        with self.assertRaisesRegex(ValidationError, message):
-                            reader()
+        self.assertFalse(hasattr(phase3_assignment_index, "migrate_phase3_assignment_index"))
+        with tempfile.TemporaryDirectory() as temporary:
+            index = Path(temporary) / "assignment.sqlite"
+            (index.parent / "assignment.json").write_text("{}")
+            for version in (1, 2):
+                index.unlink(missing_ok=True)
+                with closing(sqlite3.connect(index)) as db, db:
+                    db.executescript(f"PRAGMA application_id={ASSIGNMENT_INDEX_APPLICATION_ID}; PRAGMA user_version={version};")
+                for reader in (
+                    lambda: open_phase3_assignment_index(index),
+                    lambda: IndexedInstanceAssignment(index),
+                    lambda: read_phase3_cut_timing_view(index.parent / "assignment.json"),
+                    lambda: _enrich_indexed_cut_dependencies({"cut_nets": []}, index),
+                    lambda: read_phase3_exact_semantic_partition(index, "fpga0"),
+                    lambda: read_phase3_exact_semantic_contract(index, {}),
+                    lambda: phase3_exact_semantic_counts(index),
+                    lambda: phase3_exact_relation_counts(index),
+                    lambda: read_phase3_exact_split_relations(index),
+                    lambda: validate_phase3_assignment_index(index),
+                ):
+                    with self.subTest(version=version, reader=reader), self.assertRaisesRegex(ValidationError, "unsupported Phase 3 assignment index"):
+                        reader()
 
     def test_indexed_assignment_publish_reuses_owned_exact_digest(self):
         _, assignment = self._exact_artifacts(dependent_return=True)
         with tempfile.TemporaryDirectory() as temporary_directory, patch(
-            "emuflow.phase3_assignment_index.semantic_contract_sha256",
+            "emuflow.phase3_exact_binary.semantic_contract_sha256",
             side_effect=AssertionError(
                 "production publication must not rehash the resident contract"
             ),

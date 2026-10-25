@@ -117,7 +117,14 @@ int main() {
       if (state_count!=2 || pin_count!=3 || net_count!=2) throw std::runtime_error("v1 ordered coverage changed");
     }
 
-    for (unsigned version=1;version<=4;++version) {
+    for (const auto* retired : {"assignment-index-v1", "assignment-index-v2"}) {
+      bool rejected=false;
+      try { emuflow::core::FindSchema(retired); }
+      catch (const emuflow::core::StageError& error) { rejected=error.code()==ErrorCode::kInvalidRequest; }
+      if (!rejected) throw std::runtime_error("retired assignment schema is registered");
+    }
+
+    for (unsigned version=3;version<=4;++version) {
       const auto schema="assignment-index-v"+std::to_string(version);
       const auto path=(root/(schema+".sqlite")).string();
       {

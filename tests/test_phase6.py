@@ -39,7 +39,6 @@ from emuflow.partition import (build_partition_assignment, build_clusters, norma
 from tests.partition_reference import assign_clusters
 from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.phase3_assignment_index import (
-    migrate_phase3_assignment_index,
     write_phase3_assignment_index,
 )
 from emuflow.split_netlist_storage import (
@@ -869,25 +868,7 @@ class Phase6Test(unittest.TestCase):
                 }
             self.assertEqual(direct_value, read_json(legacy_boundary))
 
-    def test_legacy_assignment_migration_does_not_load_emuir_graph(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            ir_path = root / "design.emuir.sqlite"
-            assignment_path = root / "assignment.json"
-            index_path = root / "assignment.sqlite"
-            write_compact_emuir(ir_path, self.ir.to_dict())
-            assignment_path.write_text(
-                json.dumps(self.assignment), encoding="utf-8"
-            )
-            with mock.patch(
-                "emuflow.phase3_assignment_index.EmuIR.load",
-                side_effect=AssertionError("whole EmuIR must not load"),
-            ):
-                summary = migrate_phase3_assignment_index(
-                    index_path, ir_path, assignment_path
-                )
-            self.assertEqual(summary["status"], "pass")
-            self.assertEqual(summary["source_instances"], 8)
+
 
     def test_lowering_overlay_spool_bounds_batches_and_preserves_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
