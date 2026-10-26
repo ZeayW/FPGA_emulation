@@ -276,7 +276,7 @@ def test_indexed_routed_opensta_staging_matches_graph_semantics(tmp_path):
     }
 
 
-def _indexed_routed_fixture(tmp_path):
+def _indexed_routed_fixture(tmp_path, *, registered_launch=False):
     mapped = {
         "creator": "fixture",
         "modules": {"top": {
@@ -311,6 +311,16 @@ def _indexed_routed_fixture(tmp_path):
             },
         }},
     }
+    if registered_launch:
+        # The physical STA adapter deliberately adds no implicit input delay.
+        # Exercise a real clocked startpoint rather than an unconstrained port.
+        module = mapped["modules"]["top"]
+        module["ports"].pop("a")
+        module["cells"]["launch"] = {
+            "type": "FDRE", "parameters": {}, "attributes": {},
+            "port_directions": {"C": "input", "CE": "input", "D": "input", "Q": "output", "R": "input"},
+            "connections": {"C": [2], "CE": ["1"], "D": ["0"], "Q": [3], "R": ["0"]},
+        }
     source = tmp_path / "mapped-source.json"
     source.write_text(json.dumps(mapped), encoding="utf-8")
     ir_path = tmp_path / "mapped-source.emuir.sqlite"
@@ -430,7 +440,7 @@ def test_routed_finalizer_rejects_disconnected_or_shorted_delay_cell(tmp_path, m
 
 @pytest.mark.skipif(not os.environ.get("EMUFLOW_TEST_OPENSTA"), reason="real OpenSTA not configured")
 def test_real_opensta_accounts_for_each_inserted_route_delay(tmp_path):
-    mapped, timing = _indexed_routed_fixture(tmp_path)
+    mapped, timing = _indexed_routed_fixture(tmp_path, registered_launch=True)
     original = json.loads(timing.read_text())
     records = original.pop("endpoints")
     payload = tmp_path / "routed-endpoints.jsonl"
