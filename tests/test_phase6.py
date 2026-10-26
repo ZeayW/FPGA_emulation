@@ -870,6 +870,13 @@ class Phase6Test(unittest.TestCase):
                     direct_output,
                     boundary_identity_path=direct_boundary,
                 )
+            # Both lowering implementations have finished. The indexed result
+            # and its boundary owner must remain independent of this scratch.
+            from emuflow.multi_fpga_physical_flow import _retire_consumed_physical_input
+            _retire_consumed_physical_input(
+                transport_ir_path, {"status": "pass", "output": str(transport_ir_path)},
+                last_consumer="placement-ir-lowering-test",
+            )
             self.assertEqual(
                 EmuIR.load(direct_output).to_dict(),
                 EmuIR.load(legacy_output).to_dict(),

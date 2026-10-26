@@ -25,6 +25,7 @@ from emuflow.multi_fpga_physical_flow import (
     _open_position_hint_lookup,
     _partition_has_physical_work,
     _record_chimew_fixed_io_target,
+    _retire_consumed_physical_input,
     _validate_transport_resource_reservation,
     run_multi_fpga_physical_flow,
     validate_multi_fpga_physical_report,
@@ -89,6 +90,54 @@ def _merged_ir(fpga):
 
 
 class MultiFpgaPhysicalFlowTest(unittest.TestCase):
+    def test_mapped_owner_remains_consumable_after_placement_input_retirement(self):
+        from emuflow.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            placement, mapped = root / "placement.emuir.sqlite", root / "mapped.sqlite"
+            _merged_ir("fpga0").save(placement)
+            report = emit_xilinx_mapped_index(placement, mapped)
+            _retire_consumed_physical_input(
+                placement, {"status": "pass", "output": str(placement)},
+                last_consumer="mapped-export-test",
+            )
+            self.assertFalse(placement.exists())
+            with open_xilinx_mapped_index(mapped) as value:
+                cells = value["modules"][report["top"]]["cells"]
+                self.assertEqual(set(cells), {"fpga0_original", "fpga0_transport"})
+                self.assertEqual([cells[name]["type"] for name in sorted(cells)], ["LUT1", "LUT1"])
+
+    def test_consumed_input_retirement_rejects_unfinished_or_unowned_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path, source = root / "placement.emuir.sqlite", root / "source.sqlite"
+            path.write_bytes(b"completed derived input")
+            source.write_bytes(b"shared source")
+            report = {"status": "pass", "output": str(source)}
+            with self.assertRaises(ValidationError):
+                _retire_consumed_physical_input(path, report, last_consumer="test")
+            self.assertTrue(path.is_file())
+            report["output"] = str(path)
+            for status in ("running", "fail"):
+                report["status"] = status
+                with self.assertRaises(ValidationError):
+                    _retire_consumed_physical_input(path, report, last_consumer="test")
+                self.assertTrue(path.is_file())
+            report["status"] = "pass"
+            for suffix in ("-wal", "-journal"):
+                journal = Path(str(path) + suffix)
+                journal.write_bytes(b"unclosed writer")
+                with self.assertRaises(ValidationError):
+                    _retire_consumed_physical_input(path, report, last_consumer="test")
+                self.assertTrue(path.is_file())
+                journal.unlink()
+            path.unlink()
+            path.symlink_to(source)
+            with self.assertRaises(ValidationError):
+                _retire_consumed_physical_input(path, report, last_consumer="test")
+            self.assertEqual(source.read_bytes(), b"shared source")
+
     def test_transport_resources_must_fit_sealed_phase3_reservation(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "transport.emuir.sqlite"
@@ -457,6 +506,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 )
 
             def fake_lower(netlist, _transport, _transport_ir, output, report):
+                self.assertTrue(_transport_ir.is_file())
                 fpga = netlist["instances"][0]["id"].removesuffix("_original")
                 value = _merged_ir(fpga)
                 value.save(output)
@@ -519,6 +569,9 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 from emuflow.boundary_timing import boundary_timing_header
                 from emuflow.boundary_timing_storage import write_boundary_timing_storage
                 from emuflow.resource_budget import validate_device_resource_usage
+                self.assertFalse(kwargs["ir_path"].with_name("transport.emuir.sqlite").exists())
+                self.assertTrue(kwargs["ir_path"].is_file())
+                self.assertTrue(kwargs["mapped_verilog_path"].is_file())
                 output = kwargs["output_dir"]
                 output.mkdir(parents=True)
                 timing_path = output / "boundary-timing.json"
@@ -581,6 +634,14 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 physical_summary = read_json(
                     root / "physical/physical-summary.json"
                 )
+                for record in report["fpgas"]:
+                    for stage in ("transport_synthesis", "placement_ir", "mapped_verilog"):
+                        producer = record["stages"][stage]
+                        self.assertFalse(Path(producer["output"]).exists())
+                        self.assertEqual(producer["intermediate_lifecycle"]["state"], "retired")
+                        self.assertGreater(producer["intermediate_lifecycle"]["bytes"], 0)
+                    persisted = read_json(root / "physical" / record["fpga"] / "placement-ir-report.json")
+                    self.assertEqual(persisted, record["stages"]["placement_ir"])
                 self.assertTrue(all(
                     item["schema"] == PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA
                     for item in physical_summary["boundary_identities"].values()
@@ -658,6 +719,30 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     output_dir=root / "joined-workers",
                 )
                 self.assertEqual(joined["summary"]["fpgas"], 2)
+                # A failed last consumer leaves its input available for failure
+                # diagnosis; neither another worker nor the shared split is retired.
+                worker_barrier = threading.Barrier(1, timeout=5.0)
+                with patch(
+                    "emuflow.multi_fpga_physical_flow.run_indexed_vivado_partition",
+                    side_effect=ValidationError("physical implementation rejected"),
+                ), self.assertRaisesRegex(ValidationError, "physical implementation rejected"):
+                    run_multi_fpga_physical_flow(
+                        split, PLATFORM, root / "schedule.json", root / "failed-physical",
+                        backend="vivado", fpga_ids=["fpga0"],
+                    )
+                self.assertTrue((root / "failed-physical/fpga0/placement.emuir.sqlite").is_file())
+                self.assertTrue((root / "failed-physical/fpga0/partition.v").is_file())
+                self.assertFalse((root / "failed-physical/fpga0/partition-record.json").exists())
+                with patch(
+                    "emuflow.multi_fpga_physical_flow.run_placement_ir_lowering_from_value",
+                    side_effect=ValidationError("lowering rejected"),
+                ), self.assertRaisesRegex(ValidationError, "lowering rejected"):
+                    run_multi_fpga_physical_flow(
+                        split, PLATFORM, root / "schedule.json", root / "failed-lowering",
+                        backend="vivado", fpga_ids=["fpga0"],
+                    )
+                self.assertTrue((root / "failed-lowering/fpga0/transport.emuir.sqlite").is_file())
+                self.assertTrue((split / "manifest.json").is_file())
 
         self.assertEqual(report["summary"]["fpgas"], 2)
         self.assertEqual(report["summary"]["original_cells"], 2)

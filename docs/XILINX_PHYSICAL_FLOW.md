@@ -48,6 +48,19 @@ to deterministic balanced LUT1 buffer trees before native OpenPARF placement.
 Clock and reset networks keep their dedicated handling. The added LUTs remain
 subject to the same per-FPGA resource limits as all other cells.
 
+Physical inputs have an explicit last consumer in the ordinary flow. A closed
+transport EmuIR is retired once placement-IR lowering succeeds. The merged
+placement EmuIR, and Vivado's emitted Verilog when selected, are retired once
+that partition's query construction, physical implementation and timing checks
+have completed. Producer reports retain their counts and retirement state;
+retirement does not rehash or reload the graph. Failed consumers retain their
+inputs for diagnosis until the failed attempt is safely retired. This applies
+to both controllers and separately executed FPGA workers, without a cache flag.
+Boundary identities and typed timing owners remain available for aggregation
+and complete global STA. Mapped indexes, physical handoffs and site/lineage
+owners remain available to the retained Chimew lookahead consumer. Per-partition
+retirement does not constitute complete physical/global timing acceptance.
+
 The mapped SQLite exporter retains primary-key and pin constraints during
 insertion, then bulk-builds the auxiliary pin indexes before atomic publication.
 No consumer can observe a partially indexed netlist. This avoids per-pin random

@@ -576,6 +576,36 @@ def validate_multi_fpga_physical_report(
     }
 
 
+def _retire_consumed_physical_input(
+    path: Path, report: Dict[str, Any], *, last_consumer: str,
+    report_path: Optional[Path] = None,
+) -> None:
+    """Release a closed, invocation-owned input after its last consumer exits.
+
+    These are the producer's exact output paths, never a directory sweep or a
+    traversal of source references. Timing owners and Chimew geometry remain
+    live independently. Keep the existing producer evidence without rehashing
+    or replaying the consumed graph just to retire it.
+    """
+    if (
+        report.get("status") != "pass"
+        or Path(report.get("output", "")).absolute() != path.absolute()
+        or path.is_symlink()
+        or not path.is_file()
+        or any(Path(str(path) + suffix).exists() for suffix in ("-wal", "-journal"))
+    ):
+        raise ValidationError("consumed physical input is not a closed producer output")
+    size = path.stat().st_size
+    path.unlink()
+    report["intermediate_lifecycle"] = {
+        "state": "retired",
+        "last_consumer": last_consumer,
+        "bytes": size,
+    }
+    if report_path is not None:
+        write_json(report_path, report, compact=True)
+
+
 def run_multi_fpga_physical_flow(
     split_root: Path,
     platform_path: Path,
@@ -1022,6 +1052,10 @@ def run_multi_fpga_physical_flow(
                 raise ValidationError(
                     f"inactive partition {fpga_id} produced physical cells"
                 )
+            _retire_consumed_physical_input(
+                transport_ir_path, transport_report,
+                last_consumer="placement-ir-lowering",
+            )
             boundary_identity_path = Path(
                 lowering_report["boundary_identity"]["output"]
             )
@@ -1210,6 +1244,14 @@ def run_multi_fpga_physical_flow(
                 original_cells=0,
                 transport_cells=0,
             )
+            _retire_consumed_physical_input(
+                merged_ir, lowering_report,
+                last_consumer="empty-partition-query-and-timing-validation",
+                report_path=fpga_root / "placement-ir-report.json",
+            )
+            physical_result["artifacts"]["placement_ir"]["retention"] = (
+                "retired-consumed-intermediate"
+            )
             record = {
                 "fpga": fpga_id,
                 "part": fpga_part,
@@ -1284,6 +1326,10 @@ def run_multi_fpga_physical_flow(
 
         merged_ir = fpga_root / "placement.emuir.sqlite"
         lowering_report = lower_placement_ir(transport_ir_path, merged_ir)
+        _retire_consumed_physical_input(
+            transport_ir_path, transport_report,
+            last_consumer="placement-ir-lowering",
+        )
         transport_cells = lowering_report["transport_instances"]
         stages = {
             "transport_synthesis": transport_report,
@@ -1475,6 +1521,17 @@ def run_multi_fpga_physical_flow(
             original_cells=original_cells,
             transport_cells=transport_cells,
         )
+        _retire_consumed_physical_input(
+            merged_ir, lowering_report,
+            last_consumer=f"{backend}-physical-and-timing-validation",
+            report_path=fpga_root / "placement-ir-report.json",
+        )
+        if backend == "vivado":
+            _retire_consumed_physical_input(
+                mapped_verilog, mapped_report,
+                last_consumer="vivado-physical-and-timing-validation",
+                report_path=fpga_root / "mapped-verilog-report.json",
+            )
         record = {
             "fpga": fpga_id,
             "part": fpga_part,

@@ -236,6 +236,9 @@ publication is distinguished from changed content. See the
 [Phase 6 interface](docs/USER_GUIDE.md#phase-6-providers).
 These production outputs stay compact without requiring a managed-storage flag;
 Python still publishes the compact manifest.
+Physical workers release consumed transport and placement inputs after their
+last successful consumer; typed timing and Chimew geometry owners remain live.
+See the [physical input lifecycle](docs/XILINX_PHYSICAL_FLOW.md#placement-preparation).
 The shared core also supervises external tools with process-group cancellation,
 resource limits, literal arguments and environment values (including empty
 values), and bounded diagnostics. Installed Yosys streaming and OpenSTA
