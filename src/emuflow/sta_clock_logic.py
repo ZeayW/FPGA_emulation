@@ -24,14 +24,28 @@ def lut_clock_model(instance, base):
         raise ValidationError('clock LUT requires a fully defined binary INIT')
     if not 0 <= init < 1 << (1 << width):
         raise ValidationError('clock LUT INIT exceeds its truth-table width')
+    mask = value = 0
+    for constant in instance.get('constant_connections', []):
+        pin = re.fullmatch(r'I([0-5])', str(constant.get('port', '')))
+        if (not pin or int(pin[1]) >= width or constant.get('bit') != 0 or
+                constant.get('value') not in ('0', '1')):
+            raise ValidationError('clock LUT has an unsupported constant input')
+        bit = 1 << int(pin[1])
+        incoming = int(constant['value']) << int(pin[1])
+        if mask & bit and value & bit != incoming:
+            raise ValidationError('clock LUT constant drivers conflict')
+        mask |= bit
+        value |= incoming
     senses = {}
     outputs = {'O': width} if match else {'O5': 5, 'O6': 6}
     for output, size in outputs.items():
         arcs = {}
         for bit in range(size):
+            if mask & (1 << bit):
+                continue
             changes = set()
             for index in range(1 << size):
-                if not index & (1 << bit):
+                if not index & (1 << bit) and index & (mask & ((1 << size)-1)) == value & ((1 << size)-1):
                     changes.add(((init >> (index | (1 << bit))) & 1) - ((init >> index) & 1))
             changes.discard(0)
             if changes:
@@ -40,7 +54,8 @@ def lut_clock_model(instance, base):
         senses[output] = arcs
     model = deepcopy(base)
     model['timing_sense'] = senses
-    return cell_type + '__CLOCK_INIT_' + format(init, 'x'), model
+    suffix = '' if not mask else '_CONST_' + format(mask, 'x') + '_' + format(value, 'x')
+    return cell_type + '__CLOCK_INIT_' + format(init, 'x') + suffix, model
 
 
 def specialize_clock_logic(ir, model):
@@ -63,10 +78,13 @@ def specialize_clock_logic(ir, model):
             if name in model['cells'] and model['cells'][name] != specialized:
                 raise ValidationError('clock LUT timing model identity collision')
             model['cells'][name] = specialized
+            ir.bind_clock_logic_type(instance['id'], name)
             variants.add(name)
             cells += 1
         elif base.get('kind') == 'combinational' and 'timing_sense' not in base:
             # Unknown polarity must not silently introduce two clock edges.
             raise ValidationError('clock-cone cell lacks explicit arc polarity: ' + cell_type)
+        else:
+            ir.bind_clock_logic_type(instance['id'], cell_type)
     return {'policy': 'indexed-init-clock-sense-v1', 'lut_instances': cells,
             'distinct_lut_models': len(variants)}

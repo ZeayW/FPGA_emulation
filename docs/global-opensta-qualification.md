@@ -240,8 +240,12 @@ The policy requires compact indexed EmuIR and projects combinational clock
 cones in a temporary SQLite relation, leaving the source store read-only.
 For clock-cone LUT1--LUT6 and LUT6_2 instances, fully defined INIT truth tables
 select distinct timing models with positive, negative or non-unate arcs for
-each input/output pair. Functionally unused inputs have no arc. Data-only LUTs
-keep their scalar model; distinct clock LUT models, rather than a second
+each input/output pair. Functionally unused inputs have no arc.
+Direct constant inputs and indexed GND/VCC drivers are folded before polarity
+is calculated; a tied-input XOR can therefore become a buffer or inverter.
+Unknown or conflicting clock-LUT constants are rejected. Derived timing types
+remain in the temporary SQLite relation and are streamed with source cells.
+Data-only LUTs keep their scalar model; distinct clock LUT models, rather than a second
 instance map or complete Python graph, supply the Liberty/Verilog adapter.
 Unknown INIT or clock-cone cells without explicit arc polarity fail closed.
 The manifest binds `clock_logic_policy=indexed-init-clock-sense-v1`.
@@ -264,7 +268,8 @@ safe-frequency reporting remain unqualified until their consumers use these
 budgets and physical margins.
 
 The separate indexed producer qualification uses real positive and negative
-`FDRE` models behind an INIT-defined AND clock gate, a pinned architecture
+`FDRE` models behind an INIT-defined AND clock gate and two cancelling
+inversions (a tied-input XOR and an inverter), a pinned architecture
 timing database and explicit output delay:
 
 ```bash

@@ -25,12 +25,17 @@ def prepare(root):
     # the instance INIT, rather than merely the FF's IS_C_INVERTED parameter.
     cells={'clock_gate': {'type':'LUT2','parameters':{'INIT':'1000'},'attributes':{},
         'port_directions':{'I0':'input','I1':'input','O':'output'},
-        'connections':{'I0':[2],'I1':[9],'O':[8]}}}
+        'connections':{'I0':[2],'I1':[9],'O':[8]}},
+        'clock_xor': {'type':'LUT2','parameters':{'INIT':'0110'},'attributes':{},
+            'port_directions':{'I0':'input','I1':'input','O':'output'},
+            'connections':{'I0':[8],'I1':['1'],'O':[10]}},
+        'clock_inv': {'type':'LUT1','parameters':{'INIT':'01'},'attributes':{},
+            'port_directions':{'I0':'input','O':'output'},'connections':{'I0':[10],'O':[11]}}}
     for name,data,out,inverted in (('launch_pos',4,3,False),('capture_pos',3,4,False),
         ('capture_neg',3,5,True),('launch_neg',7,6,True),('capture_from_neg',6,7,False)):
         cells[name]={'type':'FDRE','parameters':{'IS_C_INVERTED':'1'if inverted else'0'},'attributes':{},
             'port_directions':{'C':'input','D':'input','Q':'output','CE':'input','R':'input'},
-            'connections':{'C':[8],'D':[data],'Q':[out],'CE':['1'],'R':['0']}}
+            'connections':{'C':[11],'D':[data],'Q':[out],'CE':['1'],'R':['0']}}
     source=root/'fixture.json';source.write_text(json.dumps({'modules':{'clock_budget_fixture':{
         'attributes':{'top':'1'},'ports':ports,'cells':cells,'netnames':{}}}}))
     ir=root/'fixture.emuir.sqlite';import_yosys_json(source,clocks=['clk']).save(ir)

@@ -14,16 +14,16 @@ from .errors import ValidationError
 def _timing_instances(connection, clock_logic=False):
     """Do not decode resources, attributes or LUT/RAM INIT data for STA."""
     join = 'LEFT JOIN temp.timing_clock_cells t ON t.seq=c.seq' if clock_logic else ''
-    flag = 't.seq IS NOT NULL' if clock_logic else '0'
+    timing_type = 't.timing_type' if clock_logic else 'NULL'
     for row in connection.execute(f"""SELECT c.id,c.type,
-        CASE WHEN c.type IN ('FDCE','FDPE','FDRE','FDSE') OR {flag} THEN p.value END AS parameters_json,
-        {flag} AS timing_clock,
+        CASE WHEN c.type IN ('FDCE','FDPE','FDRE','FDSE') THEN p.value END AS parameters_json,
+        {timing_type} AS timing_type,
         k.value AS constants_json FROM cell_records c
         LEFT JOIN payloads p ON p.seq=c.parameters_seq
         LEFT JOIN payloads k ON k.seq=c.constants_seq {join} ORDER BY c.seq"""):
         yield {"id": row["id"], "type": row["type"],
                "parameters": {} if row["parameters_json"] is None else _decode(row["parameters_json"], "parameters"),
-               **({'timing_clock': True} if row['timing_clock'] else {}),
+               **({'_timing_type': row['timing_type']} if row['timing_type'] else {}),
                "constant_connections": _decode(row["constants_json"], "constants")}
 
 
@@ -126,9 +126,8 @@ class _TimingTypes(Mapping):
     def for_instance(instance):
         from .opensta import _integer_parameter
         cell_type = instance["type"]
-        if instance.get('timing_clock') and (cell_type.startswith('LUT')):
-            from .sta_clock_logic import lut_clock_model
-            return lut_clock_model(instance, {})[0]
+        if instance.get('_timing_type'):
+            return instance['_timing_type']
         if cell_type in {"FDCE", "FDPE", "FDRE", "FDSE"} and _integer_parameter(instance, "IS_C_INVERTED", 0) == 1:
             return cell_type + "__NEG"
         return cell_type
@@ -136,13 +135,13 @@ class _TimingTypes(Mapping):
     def __getitem__(self, key):
         from .emuir_compact import _decode
         enabled = getattr(self.view, '_clock_logic_enabled', False)
-        flag = 't.seq IS NOT NULL' if enabled else '0'
+        timing_type = 't.timing_type' if enabled else 'NULL'
         join = 'LEFT JOIN temp.timing_clock_cells t ON t.seq=c.seq' if enabled else ''
-        row = self.view.connection.execute(f"""SELECT c.type,p.value,{flag} FROM cell_records c
+        row = self.view.connection.execute(f"""SELECT c.type,p.value,{timing_type} FROM cell_records c
             LEFT JOIN payloads p ON p.seq=c.parameters_seq {join} WHERE c.id=?""", (key,)).fetchone()
         if row is None:
             raise KeyError(key)
-        return self.for_instance({"type": row[0], 'timing_clock': bool(row[2]),
+        return self.for_instance({"type": row[0], '_timing_type': row[2],
             "parameters": {} if row[1] is None else _decode(row[1], "parameters")})
 
     def __iter__(self):
@@ -160,12 +159,12 @@ class IndexedTimingView:
                   if cell['kind'] in {'rising_edge_ff', 'falling_edge_ff', 'rising_edge_bank'}]
         combinational = [name for name, cell in model['cells'].items() if cell['kind'] == 'combinational']
         if not clocks or not combinational:
-            self.connection.execute('CREATE TEMP TABLE timing_clock_cells(seq INTEGER PRIMARY KEY)')
+            self.connection.execute('CREATE TEMP TABLE timing_clock_cells(seq INTEGER PRIMARY KEY,timing_type TEXT)')
         else:
             # UNION is the visited set: reconvergence/cycles never construct a
             # Python graph. The source connection remains read-only.
-            self.connection.execute('CREATE TEMP TABLE timing_clock_cells(seq INTEGER PRIMARY KEY)')
-            self.connection.execute('''INSERT INTO temp.timing_clock_cells
+            self.connection.execute('CREATE TEMP TABLE timing_clock_cells(seq INTEGER PRIMARY KEY,timing_type TEXT)')
+            self.connection.execute('''INSERT INTO temp.timing_clock_cells(seq)
                 WITH RECURSIVE roots(type,pin) AS (VALUES ''' + ','.join('(?,?)' for _ in clocks) + '''),
                 comb(type) AS (VALUES ''' + ','.join('(?)' for _ in combinational) + '''),
                 cone(seq) AS (
@@ -184,10 +183,22 @@ class IndexedTimingView:
         self.value['instances'] = _Rows(self, 'cell_records', lambda c: _timing_instances(c, True))
 
     def clock_logic_instances(self):
-        for row in self.connection.execute('''SELECT c.id,c.type,p.value FROM temp.timing_clock_cells t
-            JOIN cell_records c ON c.seq=t.seq LEFT JOIN payloads p ON p.seq=c.parameters_seq ORDER BY c.seq'''):
-            yield {'id': row[0], 'type': row[1], 'timing_clock': True,
+        for row in self.connection.execute('''SELECT c.id,c.type,p.value,c.seq,k.value FROM temp.timing_clock_cells t
+            JOIN cell_records c ON c.seq=t.seq LEFT JOIN payloads p ON p.seq=c.parameters_seq
+            JOIN payloads k ON k.seq=c.constants_seq ORDER BY c.seq'''):
+            constants = _decode(row[4], 'constants')
+            for pin in self.connection.execute('''SELECT p.name,e.bit,driver.type FROM endpoint_records e
+                JOIN pin_names p ON p.seq=e.port_seq
+                JOIN endpoint_records d ON d.net_seq=e.net_seq AND d.role=0
+                JOIN cell_records driver ON driver.seq=d.instance_seq
+                WHERE e.instance_seq=? AND e.role=1 AND driver.type IN ('GND','VCC')''', (row[3],)):
+                constants.append({'port': pin[0], 'bit': pin[1], 'value': '0' if pin[2] == 'GND' else '1'})
+            yield {'id': row[0], 'type': row[1], 'constant_connections': constants,
                    'parameters': {} if row[2] is None else _decode(row[2], 'parameters')}
+
+    def bind_clock_logic_type(self, instance, timing_type):
+        self.connection.execute('''UPDATE temp.timing_clock_cells SET timing_type=?
+            WHERE seq=(SELECT seq FROM cell_records WHERE id=?)''', (timing_type, instance))
 
     def __init__(self, path: Path):
         self.connection = open_emuir_sqlite_read_only(path)
