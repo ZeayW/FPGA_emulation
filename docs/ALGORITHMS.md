@@ -41,6 +41,14 @@ separate qualification evidence and does not expand the Phase 4/5 population
 implicitly. Removing the endpoint-count cap alone does not restore omitted
 alternative paths; post-partition timing must also use complete-fanin timing
 connectivity with the implemented communication costs.
+The explicit `communication_delays_path` OpenSTA API can re-search the entire
+source timing graph with additive per-driver/per-sink communication costs.
+It requires uncapped, clock-aware extraction and validates each named data
+wire in the engine. Exported members retain their original local delay and
+slack, so a partition evaluator does not add communication twice. This is a
+path-discovery primitive; the production PATRON move evaluator still needs
+the complete-graph update integration and convergence check. A refreshed
+path population alone is not a certificate for subsequent assignments.
 Prepared physical continuations must carry the uncapped selection provenance;
 historical capped or undeclared selections must be regenerated from the
 existing source boundary before partitioning or physical acceptance.

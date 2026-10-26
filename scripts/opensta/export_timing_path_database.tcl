@@ -39,6 +39,17 @@ if {![string is integer -strict $max_paths] || $max_paths < 0} {
 
 set emuflow_allowed_clocks [emuflow_read_design_context]
 set clock_count [llength $emuflow_allowed_clocks]
+set emuflow_communication_active 0
+if {[info exists env(EMUFLOW_STA_COMMUNICATION_DELAYS)] &&
+    $env(EMUFLOW_STA_COMMUNICATION_DELAYS) ne ""} {
+  if {$max_paths != 0 || $emuflow_budget_policy ne "engine-edge-v1" ||
+      ([info exists env(EMUFLOW_STA_THROUGH_NETS)] && $env(EMUFLOW_STA_THROUGH_NETS) ne "")} {
+    error "communication re-search requires uncapped clock-aware endpoint search"
+  }
+  source [file join [file dirname [info script]] communication_delays.tcl]
+  emuflow_apply_communication_delays $env(EMUFLOW_STA_COMMUNICATION_DELAYS)
+  set emuflow_communication_active 1
+}
 
 set map_input [open $map_path r]
 if {[gets $map_input map_header] < 0} {
@@ -82,7 +93,7 @@ set queried_paths 0
 # of retaining those handles across the per-cut-net loop.
 proc emuflow_emit_timing_paths {
     timing_paths output_var emitted_var {required_net ""}} {
-  global emuir_by_mapped_net emuir_by_pin_full_name emuflow_budget_policy emuflow_budget_fields
+  global emuir_by_mapped_net emuir_by_pin_full_name emuflow_budget_policy emuflow_budget_fields emuflow_communication_active
   upvar 1 $output_var output
   upvar 1 $emitted_var emitted
   foreach path_end $timing_paths {
@@ -105,6 +116,13 @@ proc emuflow_emit_timing_paths {
       }
       if {[dict get $budget target_clock] ne $clock_name} {error "clock budget capture clock differs"}
       set fixed_delay [dict get $budget launch_relative_arrival_ns]
+    }
+    if {$emuflow_communication_active} {
+      # Selection used the reweighted *whole* timing graph. Restore source
+      # costs on each newly discovered member for the partition evaluator.
+      set communication [emuflow_path_communication_delay $points]
+      set fixed_delay [expr {$fixed_delay - $communication}]
+      set slack [expr {$slack + $communication}]
     }
     set startpoint [get_property $path_end startpoint]
     set endpoint [get_property $path_end endpoint]

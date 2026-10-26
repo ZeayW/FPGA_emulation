@@ -1405,6 +1405,7 @@ def _run_opensta_path_database(
     _stream_output: bool = False,
     _ir=None,
     clock_budget_policy: str = 'legacy-absolute-arrival-v1',
+    communication_delays_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     if not isinstance(clock_budget_policy,str)or clock_budget_policy not in {'legacy-absolute-arrival-v1','engine-edge-v1'}:
         raise ValidationError('unsupported OpenSTA clock budget export policy')
@@ -1413,6 +1414,16 @@ def _run_opensta_path_database(
         require_native_schema('timing-path-store-v2')
     if max_paths is not None and (isinstance(max_paths,bool) or not isinstance(max_paths,int) or max_paths<=0):
         raise ValidationError("OpenSTA max_paths must be a positive integer or None for all endpoints")
+    communication_seal = None
+    if communication_delays_path is not None:
+        if not _stream_output or clock_budget_policy != 'engine-edge-v1' or max_paths is not None or through_nets:
+            raise ValidationError('communication re-search requires uncapped indexed clock-aware endpoint search')
+        from .store_publication import VerifiedStoreFile
+        communication_seal = VerifiedStoreFile(Path(communication_delays_path), 'sta-source-document-v1')
+        if output_path.resolve() == communication_seal.source.path or (
+            output_path.exists() and os.path.samefile(output_path, communication_seal.source.path)
+        ):
+            raise ValidationError('communication re-search output aliases its cost source')
     if _stream_output and _return_database:
         raise ValidationError(
             "streamed OpenSTA output cannot return an inline database"
@@ -1497,6 +1508,9 @@ def _run_opensta_path_database(
                 "EMUFLOW_STA_OUTPUT": str(raw_path),
                 "EMUFLOW_STA_MAX_PATHS": str(0 if max_paths is None else max_paths),
                 "EMUFLOW_STA_CLOCK_BUDGET_POLICY": clock_budget_policy,
+                "EMUFLOW_STA_COMMUNICATION_DELAYS": (
+                    str(communication_seal.source.path) if communication_seal is not None else ""
+                ),
                 "EMUFLOW_STA_THROUGH_NETS": (
                     str(through_path) if through_net_ids else ""
                 ),
@@ -1527,6 +1541,8 @@ def _run_opensta_path_database(
             )
         expected_records=(check_opensta_export_completion(completed.stdout,output_path=raw_path,clock_count=len(clock_map))
             if clock_budget_policy=='engine-edge-v1'else None)
+        if communication_seal is not None:
+            communication_seal.require_unchanged()
         source_value = {
             'model_pin_coverage':'checked-source-emission-directions-v1',
             # This owner records the search that selected the source members.
@@ -1552,6 +1568,13 @@ def _run_opensta_path_database(
         if clock_budget_policy=='engine-edge-v1':
             source_value['clock_budget_script_sha256']=file_sha256(OPENSTA_EXPORT_SCRIPT.with_name('clock_budget.tcl'))
             source_value['clock_logic_policy']=clock_logic['policy']
+        if communication_seal is not None:
+            source_value['communication_research'] = {
+                'policy': 'whole-source-graph-additive-data-wire-delays-v1',
+                'costs_sha256': communication_seal.sha256,
+                'script_sha256': file_sha256(OPENSTA_EXPORT_SCRIPT.with_name('communication_delays.tcl')),
+                'exported_costs': 'original-local-delay-and-slack',
+            }
         if _stream_output:
             imported = import_sta_path_database_tsv_streaming(
                 raw_path,
@@ -1699,6 +1722,7 @@ def run_opensta_path_database(
     through_coverage_path: Optional[Path] = None, validate_output: bool = True,
     _return_database: bool = False, _stream_output: bool = False,
     clock_budget_policy: str = 'legacy-absolute-arrival-v1',
+    communication_delays_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Use compact streaming input for production Xilinx timing extraction."""
     from .emuir_storage import is_emuir_sqlite
@@ -1717,6 +1741,7 @@ def run_opensta_path_database(
             through_coverage_path=through_coverage_path, validate_output=validate_output,
             _return_database=_return_database, _stream_output=_stream_output, _ir=view,
             clock_budget_policy=clock_budget_policy,
+            communication_delays_path=communication_delays_path,
         )
     finally:
         if view is not None:
