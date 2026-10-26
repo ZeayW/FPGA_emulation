@@ -65,7 +65,7 @@ def qualify(sta, root):
     rejected=[]
     for label,rows,error in [
         ('combinational',['0\t'+b'buffer/O'.hex()],'not an architectural startpoint'),
-        ('unclocked',['0\t'+b'unclocked/Q'.hex()],'no data-clock facts'),
+        ('unclocked',['0\t'+b'unclocked/Q'.hex()],'architectural launch has no clock edge'),
         ('missing-coordinate',['1\t'+b'positive/Q'.hex()],'missing, repeated or out of order'),
         ('truncated-name',['0\t'+b'positive/Q'.hex()[:-1]],'bounded hexadecimal UTF-8'),
         ('repeated-coordinate',['0\t'+b'positive/Q'.hex(),'0\t'+b'negative/Q'.hex()],'missing, repeated or out of order'),
