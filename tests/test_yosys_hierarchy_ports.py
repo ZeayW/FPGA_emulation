@@ -20,7 +20,7 @@ def expand(value):
         store = Path(directory)/"hierarchy.sqlite"
         native = str(emuflow_native())
         with patch("emuflow.yosys_hierarchy_native.resolve_native_executable",return_value=native), patch("emuflow.yosys_hierarchy_native.require_native_schema"):
-            _,ports,_ = stage_hierarchy(Path("<test-stream>"),store,"top",source_stream=io.StringIO(json.dumps(value)))
+            _,ports,_,_ = stage_hierarchy(Path("<test-stream>"),store,"top",source_stream=io.StringIO(json.dumps(value)))
         with sqlite3.connect(store) as connection:
             cells = {row[0]:json.loads(row[1]) for row in connection.execute("SELECT id,record_json FROM staging_instances")}
             names = {}

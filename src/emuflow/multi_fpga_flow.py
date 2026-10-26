@@ -1397,6 +1397,9 @@ def _compile_preflight(ctx: _CompileContext):
     )
     from .native_tools import require_native_schema
 
+    if ctx.prepared_frontend is None and ctx.yosys_json is None:
+        require_native_schema("yosys-hierarchy-request-v2")
+        require_native_schema("external-tool-request-v2")
     require_native_schema("phase5-stage-request-v1")
     require_native_schema("boarddb-v1")
     ctx.output_dir.mkdir(parents=True, exist_ok=True)

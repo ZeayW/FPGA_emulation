@@ -56,8 +56,10 @@ selected BoardDB for Phases 3–7. See the
 [user guide](docs/USER_GUIDE.md) for input requirements and failure behavior.
 The indexed frontend streams Yosys hierarchy into the shared C++ core for
 module expansion and signal/constant alias resolution, preserving constant child
-outputs even when consumers were visited first. Xilinx normalization and final
-EmuIR construction still require migration; this does not complete Phase 1 or W7.
+outputs even when consumers were visited first. The hierarchical production
+frontend normalizes Xilinx primitives in that same native staging owner. Final
+EmuIR construction and remaining indexed-source adapters still require migration;
+this does not complete Phase 1 or W7.
 The saved BoardDB supplies only the mapping device identity; older link-model
 fields do not need migration to continue with the current BoardDB.
 Terminal validation also verifies the declared read-only EmuIR binding and

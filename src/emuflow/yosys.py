@@ -580,8 +580,12 @@ def import_yosys_json_indexed(
             if top is None or _source_value is not None or _source_index_path is not None:
                 raise ImportError("hierarchical indexed Yosys import requires an explicit top and a stream or path")
             from .yosys_hierarchy_native import stage_hierarchy
-            creator, raw_ports, hierarchy_report = stage_hierarchy(
+            from .xilinx_primitives import normalize_xilinx_indexed_staging, DEFAULT_XILINX_PRIMITIVE_LIBRARY
+            native_normalization_library = (DEFAULT_XILINX_PRIMITIVE_LIBRARY
+                if staging_transform is normalize_xilinx_indexed_staging else None)
+            creator, raw_ports, hierarchy_report, transform_report = stage_hierarchy(
                 path, staging_path, top, source_stream=_source_stream,
+                normalization_library=native_normalization_library,
             )
         connection = sqlite3.connect(staging_path, uri=True)
         connection.row_factory = sqlite3.Row
@@ -852,12 +856,13 @@ def import_yosys_json_indexed(
         if top_name is None:
             raise ImportError(f"{path}: unable to determine top module")
         if staging_transform is not None:
-            transform_report = staging_transform(
-                connection,
-                raw_ports,
-                path,
-                top_name,
-            )
+            if transform_report is None:
+                transform_report = staging_transform(
+                    connection,
+                    raw_ports,
+                    path,
+                    top_name,
+                )
             if hierarchy_report is not None:
                 transform_report = {
                     **transform_report,

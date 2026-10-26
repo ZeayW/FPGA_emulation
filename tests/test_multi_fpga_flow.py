@@ -74,6 +74,31 @@ class MultiFpgaFlowTest(unittest.TestCase):
         ):
             self.assertTrue(_schedule_has_entries(Path("schedule.json")))
 
+    def test_native_frontend_contract_is_checked_before_yosys_launch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            timing = root / "timing.json"
+            write_json(timing, {"schema": "emuflow.xilinx-preplacement-timing-db/v1"})
+            def require(schema):
+                if schema == "yosys-hierarchy-request-v2":
+                    raise EmuFlowError("missing native frontend contract")
+            with (
+                patch("emuflow.multi_fpga_flow.resolve_native_executable", return_value=str(FAKE_OPENSTA)),
+                patch("emuflow.multi_fpga_flow.check_opensta_engine_version"),
+                patch("emuflow.native_tools.require_native_schema", side_effect=require),
+                patch("emuflow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream") as mapper,
+            ):
+                with self.assertRaisesRegex(EmuFlowError, "missing native frontend contract"):
+                    run_multi_fpga_flow_fixture(
+                        platform_path=PLATFORM, output_dir=root / "flow",
+                        sources=[ROOT / "examples/rtl/counter.v"], top="counter",
+                        clocks=["clk"], clock_periods={"clk": 10},
+                        architecture_timing_db=timing,
+                        mapping_profile="xilinx-ultrascaleplus-open-v1",
+                        cut_mode="static-exact-combinational", partition_provider="tritonpart",
+                    )
+                mapper.assert_not_called()
+
     def test_multiple_static_exact_clocks_reach_streaming_frontend(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

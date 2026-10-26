@@ -115,7 +115,7 @@ def test_host_only_pumps_bytes_and_imports_indexed_rows(native,tmp_path,monkeypa
         def read(self,size=-1):
             assert 0 < size <= 65536
             return super().read(size)
-    creator,ports,report = stage_hierarchy(Path("<stream>"),store,"top",source_stream=Source(json.dumps(circuit(2))))
+    creator,ports,report,_ = stage_hierarchy(Path("<stream>"),store,"top",source_stream=Source(json.dumps(circuit(2))))
     assert creator == "native differential" and ports["out"]["bits"][-1] == "1"
     assert report["expanded_module_instances"] == 9
     with sqlite3.connect(store) as db:
@@ -175,7 +175,7 @@ def test_large_host_has_bounded_python_population(native,tmp_path,monkeypatch):
         out.write('}}}}')
     tracemalloc.start()
     try:
-        _,_,report = stage_hierarchy(source,tmp_path/"large.sqlite","top")
+        _,_,report,_ = stage_hierarchy(source,tmp_path/"large.sqlite","top")
         _,peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()

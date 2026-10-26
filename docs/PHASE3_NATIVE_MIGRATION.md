@@ -488,7 +488,7 @@ there is no silent implementation or provider fallback.
 
 | Stage | Existing native/indexed foundation | Remaining delivery obligation |
 | --- | --- | --- |
-| Phase 1–2 | Native synthesis/STA engines; native streamed Yosys hierarchy expansion/alias resolution; native OpenSTA input export, indexed path-result import, timing-weight generation and independent validators | Migrate Xilinx normalization, final EmuIR generation and remaining phase lifecycle under the shared artifact API |
+| Phase 1–2 | Native synthesis/STA engines; native streamed Yosys hierarchy expansion/alias resolution and hierarchical Xilinx normalization; native OpenSTA input export, indexed path-result import, timing-weight generation and independent validators | Migrate final EmuIR generation, remaining indexed-source adapters and phase lifecycle under the shared artifact API |
 | Phase 3 | Shared-core candidate eligibility and primary clustering; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Migrate remaining policy/assignment publication and reference modes; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
@@ -803,9 +803,28 @@ to 512; it does not bound the total design population. Invalid/truncated records
 duplicate defined identities, recursive modules and incompatible port/constant
 bindings reject before a completed staging owner is returned. The former Python
 hierarchy producer is test-only and supplies an independent differential oracle.
-This closes hierarchy expansion, not the complete frontend: Xilinx primitive
-normalization, final EmuIR construction, stage ownership and real-design
-qualification remain open.
+With a bound primitive library, request v2 runs Xilinx normalization inside this
+same private native owner. The kernel preserves CARRY4 pairing and single-half
+lowering, CI/CYINIT handling, carry shared-exit XOR reconstruction, physical
+DI/S LUT6_2 sources, INV lowering, negative-edge FF aliases and MUXF7 constant
+leaves. Helper identity collisions reject instead of overwriting source cells.
+Library policy/resources and original generation are checked; a separate final
+primitive census validates types/directions and reduces resource totals from the
+finished rows. File and logical summaries keep the current schemas and policies.
+
+Consumer exposure is reduced to counts per carry-output signal, with a compact
+CI[0] exception index for cascade exclusion. It does not store every consumer's
+repeated identity. Negative-edge FF metadata updates its existing rows directly,
+without creating a second full FF relation. Carry and helper rewrites use
+SQLite-owned records rather than Python name/consumer/replacement dictionaries.
+The production hierarchical frontend never retries the Python normalizer after
+native failure. The existing Python normalizer still serves explicit flat and
+mapped-index consumers; those consumers must migrate before that implementation
+can retire. Independent differential tests use it as an oracle.
+
+This closes hierarchy expansion and hierarchical Xilinx normalization, not the
+complete frontend: final EmuIR construction, remaining indexed-source consumers,
+stage ownership and real-design qualification remain open.
 
 ## Validation and completion
 

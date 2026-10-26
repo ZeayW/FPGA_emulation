@@ -562,3 +562,22 @@ consumer and retire its private writer files. A large distinct-cell source check
 that the Python byte host has bounded memory and that the importer adopts one
 staging database without copying cell/name populations. These component gates do
 not establish NVDLA equivalence, speedup or complete Phase 1–7 qualification.
+
+
+### Native hierarchical Xilinx normalization validation
+
+Compare the entire normalized cell population and primitive audit against the
+independent existing Python normalizer on the same expanded records. Coverage
+includes paired/single CARRY4, omitted O/CO ports, CI/CYINIT helpers, external
+versus cascade consumers, shared carry exits, LUT6_2 route-throughs, INV,
+negative-edge FF parameters and MUXF7 constant leaves. Preserve exact helper
+names and allocated signal identities, not only total counts.
+
+Reject unknown primitives, invalid widths/directions, conflicting clock
+parameters, helper/source identity collisions, changed primitive-library
+generations and inconsistent library resources before completed output. A large
+negative-edge FF population checks bounded Python host memory and in-place FF
+updates. An integration test forbids the Python primitive normalizer in the
+production hierarchical path. Final native primitive census remains separate
+from rewrite decisions. These are component gates; they do not establish
+complete frontend ownership or real NVDLA Phase 1–7 equivalence/performance.
