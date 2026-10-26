@@ -31,6 +31,19 @@ proc emuflow_use_clock_aware_reference_constraints {} {
   if {[llength $clocks] != 0} {set_max_delay -reset_path -from $clocks -to $clocks 1.0}
 }
 
+proc emuflow_reference_path_cost {path} {
+  set requirement [get_property REQUIREMENT $path]
+  set slack [get_property SLACK $path]
+  set data [get_property DATAPATH_DELAY $path]
+  if {![string is double -strict $requirement] || abs($requirement-1.0)>0.00001 ||
+      ![string is double -strict $slack] || ![string is double -strict $data] ||
+      abs($slack)==Inf || abs($data)==Inf || $data<0} {
+    error "timing query did not obtain finite data and the common 1 ns reference"
+  }
+  set cost [expr {$requirement-$slack}]
+  return [list $cost [expr {$cost-$data}]]
+}
+
 proc emuflow_load_fixed_io_map {path} {
   # Bound the cache to physical word lanes, and reset it for each export/design.
   set ::emuflow_fixed_io_cache [dict create]

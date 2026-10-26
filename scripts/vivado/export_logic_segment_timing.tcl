@@ -1,7 +1,7 @@
 # Export routed endpoint-to-endpoint DUT logic delays for Phase 7C.
 
-if {$argc < 3 || $argc > 5} {
-  error "usage: export_logic_segment_timing.tcl INPUT_DCP QUERY_TSV OUTPUT_TSV ?HIERARCHY_PREFIX? ?allow-missing|FIXED_IO_MAP?"
+if {$argc < 3 || $argc > 6} {
+  error "usage: export_logic_segment_timing.tcl INPUT_DCP QUERY_TSV OUTPUT_TSV ?HIERARCHY_PREFIX? ?allow-missing|FIXED_IO_MAP? ?clock-aware-reference?"
 }
 set input_dcp [lindex $argv 0]
 set query_path [file normalize [lindex $argv 1]]
@@ -11,9 +11,13 @@ if {$argc >= 4} {
   set hierarchy_prefix [string trimright [lindex $argv 3] "/"]
 }
 source [file join [file dirname [info script]] timing_contract.tcl]
+set sampling_costs [expr {$argc == 6}]
+if {$sampling_costs && [lindex $argv 5] ne "clock-aware-reference"} {
+  error "unsupported logic segment timing measurement mode"
+}
 set allow_missing false
 set fixed_io_map [dict create]
-if {$argc == 5} {
+if {$argc >= 5} {
   if {[lindex $argv 4] eq "allow-missing"} {
     set allow_missing true
   } else {
@@ -90,7 +94,11 @@ proc emuflow_resolve_object {kind name prefix {resolved_hex ""}} {
 }
 
 emuflow_open_export_design $input_dcp routed
-emuflow_use_data_path_constraints
+if {$sampling_costs} {
+  emuflow_use_clock_aware_reference_constraints
+} else {
+  emuflow_use_data_path_constraints
+}
 set input [open $query_path r]
 gets $input header
 set legacy_header "endpoint_hex\tkind\tstart_kind\tstart_object_hex\tend_kind\tend_object_hex"
@@ -103,7 +111,9 @@ set cone_queries [expr {$header ne $legacy_header}]
 set resolved_queries [expr {$header eq $resolved_header}]
 
 set output [open $output_path w]
-puts $output "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex\tmeasurement\tactual_start_object_hex\tactual_end_object_hex"
+set output_header "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex\tmeasurement\tactual_start_object_hex\tactual_end_object_hex"
+if {$sampling_costs} {append output_header "\treference_cost_ns\tcheck_clock_adjustment_ns"}
+puts $output $output_header
 set emitted 0
 set missing 0
 while {[gets $input line] >= 0} {
@@ -149,7 +159,9 @@ while {[gets $input line] >= 0} {
   }
   if {$eliminated ne ""} {
     # This is an explicit source disposition, never a zero-delay measurement.
-    puts $output "$endpoint_hex\t$kind\t\t[emuflow_hex_encode $start_name]\t[emuflow_hex_encode $end_name]\toptimized-away:$eliminated\t\t"
+    set row "$endpoint_hex\t$kind\t\t[emuflow_hex_encode $start_name]\t[emuflow_hex_encode $end_name]\toptimized-away:$eliminated\t\t"
+    if {$sampling_costs} {append row "\t\t"}
+    puts $output $row
     incr emitted
     continue
   }
@@ -249,7 +261,12 @@ while {[gets $input line] >= 0} {
   if {$actual_start eq "" || $actual_end eq ""} {
     error "logic segment [emuflow_hex_decode $endpoint_hex] has no physical endpoint trace"
   }
-  puts $output "$endpoint_hex\t$kind\t$delay\t[emuflow_hex_encode $start_name]\t[emuflow_hex_encode $end_name]\t$measurement\t[emuflow_hex_encode $actual_start]\t[emuflow_hex_encode $actual_end]"
+  set row "$endpoint_hex\t$kind\t$delay\t[emuflow_hex_encode $start_name]\t[emuflow_hex_encode $end_name]\t$measurement\t[emuflow_hex_encode $actual_start]\t[emuflow_hex_encode $actual_end]"
+  if {$sampling_costs} {
+    lassign [emuflow_reference_path_cost [lindex $paths 0]] cost adjustment
+    append row "\t$cost\t$adjustment"
+  }
+  puts $output $row
   incr emitted
 }
 close $output

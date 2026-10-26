@@ -110,6 +110,8 @@ proc get_property {key object} {
     STARTPOINT_PIN {return b/C}
     ENDPOINT_PIN {return $actual_end}
     DATAPATH_DELAY {return 4.25}
+    REQUIREMENT {return $::reference_requirement}
+    SLACK {return -2.75}
     default {error "unexpected property $key"}
   }
 }
@@ -121,14 +123,23 @@ proc get_timing_paths {args} {
 }
 '''
             wrapper = root/"run.tcl"
-            for end, success in (("y/D", True), ("z/D", False)):
-                wrapper.write_text(f"set actual_end {end}\nset argc 3\nset argv [list checkpoint {{{query}}} {{{output}}}]\n"+mock+f"\nsource {{{helper}}}\n")
+            for end, mode, reference, success in (
+                ("y/D", "", 1, True), ("z/D", "", 1, False),
+                ("y/D", "clock-aware-reference", 1, True),
+                ("y/D", "clock-aware-reference", 5, False),
+            ):
+                extra = " {} {} clock-aware-reference" if mode else ""
+                wrapper.write_text(f"set actual_end {end}\nset reference_requirement {reference}\nset argv [list checkpoint {{{query}}} {{{output}}}{extra}]\nset argc [llength $argv]\n"+mock+f"\nsource {{{helper}}}\n")
                 completed = subprocess.run([shutil.which("tclsh"),str(wrapper)],text=True,capture_output=True)
                 self.assertEqual(completed.returncode==0,success,completed.stderr)
                 if success:
                     self.assertIn("4.25", output.read_text())
+                    if mode:
+                        row = output.read_text().splitlines()[1].split("\t")
+                        self.assertEqual(len(row), 10)
+                        self.assertEqual([float(v) for v in row[-2:]], [3.75, -0.5])
                 else:
-                    self.assertIn("suffix beyond requested endpoint",completed.stderr)
+                    self.assertIn("suffix beyond requested endpoint" if end == "z/D" else "common 1 ns reference",completed.stderr)
 
     def prepare(self, root, *, alias_init="0", prefix=""):
         cells = {}

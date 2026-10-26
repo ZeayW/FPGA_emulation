@@ -18,16 +18,9 @@ if {[llength $path] != 1} {error "no timing path for provider inspection"}
 set stream [open "$out/timing-properties.txt" w]
 puts $stream "constraint_mode = $mode"
 if {$mode ne "original"} {
-  set requirement [get_property REQUIREMENT $path]
-  set slack [get_property SLACK $path]
-  set data [get_property DATAPATH_DELAY $path]
-  if {![string is double -strict $requirement] || abs($requirement-1.0)>0.00001 ||
-      ![string is double -strict $slack] || ![string is double -strict $data]} {
-    error "timing diagnostic did not obtain the common 1 ns reference"
-  }
-  set cost [expr {$requirement-$slack}]
+  lassign [emuflow_reference_path_cost $path] cost adjustment
   puts $stream "reference_cost_ns = $cost"
-  puts $stream "check_clock_adjustment_ns = [expr {$cost-$data}]"
+  puts $stream "check_clock_adjustment_ns = $adjustment"
   puts $stream "selection_policy = worst-slack-under-common-reference"
 }
 foreach property [list_property $path] {

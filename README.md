@@ -68,7 +68,8 @@ lineage still does not prove functional equivalence.
 Vivado uses explicit DUT implementation targets independently of runtime frames;
 a frequency override scales all DUT roots together while keeping the TDM clock
 fixed. The same documentation describes bounded checkpoint diagnostics for word
-boundaries and original, datapath-only or clock-aware reference timing, installed SelectIO IP inspection and
+boundaries and original, datapath-only or clock-aware reference timing, including
+bounded endpoint sampling-cost queries, installed SelectIO IP inspection and
 package-derived bank recipes, checked output generation and optional out-of-context
 IP synthesis used for PHY integration, with a bounded configuration/port audit.
 Native bank wrappers bind training, complete words and receive FIFO clocks;

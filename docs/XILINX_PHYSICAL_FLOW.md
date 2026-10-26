@@ -759,6 +759,16 @@ closure target. Original implementation reports precede these query overrides.
 This read-only diagnostic helps distinguish clock/skew/check adjustments from
 raw data delay; it is not a timing-result producer or acceptance certificate.
 
+For a bounded endpoint-query qualification, `export_logic_segment_timing.tcl`
+accepts a sixth argument `clock-aware-reference` after the hierarchy and
+fixed-I/O-map arguments. It appends `reference_cost_ns` and the signed
+`check_clock_adjustment_ns` to the ordinary eight-column query result. Missing
+common-reference requirements fail the query, including ignored paths that do
+not expose a usable slack. Optimized-away records keep both values absent.
+This optional format is diagnostic input for sampling-cost qualification;
+the production eight-column importer does not yet consume it. The maximum
+effective sampling cost and its associated raw delay are separate quantities.
+
 `scripts/vivado/inspect_constant_frontiers.tcl INPUT_DCP QUERY_TSV OUTPUT_TSV`
 exports selected LUT INIT values and every input driver with its source tag.
 The query has `source_origin` and `native_cell_hex` columns. The bounded
