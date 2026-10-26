@@ -74,7 +74,8 @@ std::string SqliteImmutableUri(const std::string& path);
 
 class SqliteTransaction {
  public:
-  explicit SqliteTransaction(SqliteDatabase& database);
+  enum class Mode { kImmediate, kDeferred };
+  explicit SqliteTransaction(SqliteDatabase& database, Mode mode = Mode::kImmediate);
   ~SqliteTransaction();
 
   SqliteTransaction(const SqliteTransaction&) = delete;

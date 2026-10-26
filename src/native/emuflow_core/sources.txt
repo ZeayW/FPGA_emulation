@@ -42,3 +42,4 @@ emuflow_core/store_publication.cpp
 emuflow_core/cluster_catalog.cpp
 hop_partition_refiner.cpp
 emuflow_core/vivado_export.cpp
+emuflow_core/routed_segments.cpp

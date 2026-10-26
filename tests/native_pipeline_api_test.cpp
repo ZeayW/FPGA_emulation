@@ -73,6 +73,103 @@ int main() {
       if(emuflow::native::ExecuteStage(alias).error!=ErrorCode::kInvalidRequest)
         throw std::runtime_error("bound Vivado output alias was accepted");
       ref.RequireUnchanged();
+      {
+        SqliteDatabase db(mapped,SqliteDatabase::Mode::kReadOnly);
+        // A deferred transaction permits invocation-local TEMP work without
+        // turning an immutable circuit owner into a writable main database.
+        emuflow::core::SqliteTransaction work(db,emuflow::core::SqliteTransaction::Mode::kDeferred);
+        db.Execute("CREATE TEMP TABLE local_rows(value INTEGER); INSERT INTO local_rows VALUES(1)");
+        work.Commit();
+      }
+    }
+    {
+      using emuflow::core::SqliteDatabase;
+      const auto mapped=(root/"routed-mapped.sqlite").string(),ir=(root/"routed-ir.sqlite").string();
+      const auto identity=(root/"routed-boundary.sqlite").string(),timing=(root/"routed-timing.json").string();
+      const auto endpoints=(root/"routed-endpoints.jsonl").string(),configuration=(root/"routed-request.bin").string();
+      {
+        SqliteDatabase db(mapped,SqliteDatabase::Mode::kCreateExclusive);
+        db.Execute(R"SQL(CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+          INSERT INTO metadata VALUES('schema','emuflow.xilinx-mapped-index/v2'),('top_json','"empty"'),('ports_json','{}');
+          CREATE TABLE cells(id TEXT PRIMARY KEY,type TEXT);
+          CREATE TABLE netnames(id TEXT PRIMARY KEY,record_json TEXT);
+          CREATE TABLE cell_pins(cell_id TEXT,port TEXT,port_bit INTEGER,port_width INTEGER,direction INTEGER,value_kind INTEGER,net_bit INTEGER);
+        )SQL");
+      }
+      {
+        SqliteDatabase db(ir,SqliteDatabase::Mode::kCreateExclusive);
+        db.Execute(R"SQL(PRAGMA application_id=0x454d5549; PRAGMA user_version=2;
+          CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+          INSERT INTO metadata VALUES('storage_schema','emuflow.emuir-sqlite/v2');
+          CREATE TABLE net_records(seq INTEGER PRIMARY KEY,id TEXT,cut_class TEXT);
+          CREATE TABLE endpoint_records(net_seq INTEGER,role INTEGER);
+        )SQL");
+      }
+      {
+        SqliteDatabase db(identity,SqliteDatabase::Mode::kCreateExclusive);
+        db.Execute(R"SQL(
+CREATE TABLE metadata(
+  key TEXT PRIMARY KEY NOT NULL,
+  value TEXT NOT NULL
+) WITHOUT ROWID;
+CREATE TABLE endpoints(
+  id TEXT PRIMARY KEY NOT NULL CHECK(length(id) > 0),
+  kind TEXT NOT NULL CHECK(kind IN ('tx','rx')),
+  schedule_entry TEXT NOT NULL CHECK(length(schedule_entry) > 0),
+  demand TEXT NOT NULL CHECK(length(demand) > 0),
+  logical_net TEXT NOT NULL CHECK(length(logical_net) > 0),
+  link TEXT NOT NULL CHECK(length(link) > 0),
+  peer TEXT NOT NULL CHECK(length(peer) > 0),
+  lane INTEGER NOT NULL CHECK(lane >= 0),
+  logical_lane INTEGER NOT NULL CHECK(logical_lane >= 0),
+  internal_signal TEXT NOT NULL CHECK(length(internal_signal) > 0),
+  source_class TEXT NOT NULL CHECK(
+    source_class IN ('dut-net','forwarded-shadow','captured-shadow')
+  ),
+  external_port TEXT NOT NULL CHECK(length(external_port) > 0),
+  external_port_bit INTEGER NOT NULL CHECK(external_port_bit >= 0),
+  external_net TEXT NOT NULL CHECK(length(external_net) > 0),
+  merged_logical_net TEXT
+) WITHOUT ROWID;
+CREATE UNIQUE INDEX endpoints_schedule_kind_unique
+  ON endpoints(schedule_entry,kind);
+CREATE INDEX endpoints_kind_id ON endpoints(kind,id);
+CREATE TABLE boundary_registers(
+  endpoint_id TEXT NOT NULL,
+  ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+  instance TEXT NOT NULL CHECK(length(instance) > 0),
+  PRIMARY KEY(endpoint_id,ordinal),
+  UNIQUE(endpoint_id,instance),
+  FOREIGN KEY(endpoint_id) REFERENCES endpoints(id)
+) WITHOUT ROWID;
+)SQL");
+        db.Execute(R"SQL(PRAGMA application_id=0x454d5542; PRAGMA user_version=1;
+          INSERT INTO metadata VALUES('header','{"schema":"emuflow.boundary-identity/v1","design":"empty","fpga":"fpga0"}');
+        )SQL");
+      }
+      {std::ofstream out(endpoints);}
+      {std::ofstream out(timing);out<<R"JSON({"schema":"emuflow.xilinx-routed-timing/v2","top":"empty","qualification":{"logic_coefficients_ps":{"lut_a1":70,"ff_clock_to_q":25,"carry_co":10}},"payloads":{"endpoints":{"records":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}})JSON";}
+      std::vector<ArtifactRef> inputs{ArtifactRef::Bind(mapped,"xilinx-mapped-index-v2"),ArtifactRef::Bind(ir,"emuir-compact-v2"),
+        ArtifactRef::Bind(timing,"xilinx-routed-timing-v2"),ArtifactRef::Bind(endpoints,"xilinx-routed-endpoints-v1"),ArtifactRef::Bind(identity,"boundary-identity-store-v1")};
+      {
+        std::ofstream out(configuration,std::ios::binary);std::uint32_t crc=0;
+        const auto put=[&](const auto& value){out.write(reinterpret_cast<const char*>(&value),sizeof(value));emuflow::core::UpdateCrc32(crc,reinterpret_cast<const unsigned char*>(&value),sizeof(value));};
+        const auto text=[&](const std::string& value){put(std::uint32_t(value.size()));out.write(value.data(),value.size());emuflow::core::UpdateCrc32(crc,reinterpret_cast<const unsigned char*>(value.data()),value.size());};
+        put(std::uint64_t{0x31544752464d5545ULL});put(std::uint32_t{1});put(std::uint32_t{0});
+        for(const auto& input:inputs){const auto& g=input.generation();put(g.device);put(g.inode);put(g.bytes);put(g.modified_seconds);put(g.modified_nanoseconds);put(g.changed_seconds);put(g.changed_nanoseconds);}
+        text(R"JSON({"schema":"emuflow.boundary-timing/v1","status":"pass","design":"empty","platform":"board","fpga":"fpga0","provider":"fixture","qualification":"fixture","measurement_scope":"partition-boundary","coverage":{"endpoints":0,"tx":0,"rx":0}})JSON");
+        text("");text("");out.write(reinterpret_cast<const char*>(&crc),sizeof(crc));
+      }
+      inputs.push_back(ArtifactRef::Bind(configuration,"routed-segment-request-v1"));
+      StageRequest request;request.stage=Stage::kBuildRoutedSegments;request.input_artifacts=inputs;
+      request.output_path=(root/"routed-summary.json").string();request.auxiliary_output_path=(root/"routed-stores").string();fs::create_directory(request.auxiliary_output_path);
+      const auto result=emuflow::native::ExecuteStage(request);
+      if(!result.ok() || result.inputs.size()!=6 || result.outputs.size()!=2 || result.outputs[1].schema()!="boundary-timing-store-v1")
+        throw std::runtime_error("bound native routed graph operation failed: "+result.message);
+      auto alias=request;alias.output_path=timing;
+      if(emuflow::native::ExecuteStage(alias).error!=ErrorCode::kInvalidRequest)
+        throw std::runtime_error("routed graph accepted an output alias");
+      for(const auto& input:inputs)input.RequireUnchanged();
     }
     const auto emuir_path = (root / "emuir.sqlite").string();
     {

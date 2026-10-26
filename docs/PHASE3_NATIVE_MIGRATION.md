@@ -678,8 +678,19 @@ and seal the final typed records in the shared core. Their Python measurement
 spools and row reconstruction are retired; the legacy identity importer remains
 only as an independent small fixture oracle in tests; local query identity is shared with
 the existing typed owner rather than stored as private JSON rows. Source query
-construction, the RapidWright routed graph and other phase adapters remain;
-this boundary alone does not complete W6/W7.
+construction, routed-endpoint production and other phase adapters remain.
+RapidWright segment measurement now consumes the mapped index and routed endpoint
+stream directly in the shared core. One integer CSR graph serves the boundary,
+logic-segment and local-path owners; the graph has no reverse-edge copy. Queries
+are grouped by start and reuse reachable-cone work arrays rather than initialize
+whole-graph dictionaries for each original path. The existing launch offsets,
+sequential barriers, primitive delay bounds, fixed-I/O terms, source-declared
+floating inputs, reachability/cycle rejection and deterministic tie ordering are
+preserved. Output records are sealed directly in the existing typed owners.
+The old Python graph/builders are independent fixture oracles under `tests/`,
+with no production fallback. Graph counters and the undriven-bit count are
+bounded summaries; diagnostic copies of the undriven population are retired.
+This boundary alone does not complete W6/W7 or qualify physical timing.
 See [global timing semantics](global-opensta-qualification.md).
 
 ## Validation and completion

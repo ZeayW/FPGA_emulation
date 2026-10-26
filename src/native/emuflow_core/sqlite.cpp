@@ -255,9 +255,9 @@ bool SqliteDatabase::InTransaction() const {
   return sqlite3_get_autocommit(database_)==0;
 }
 
-SqliteTransaction::SqliteTransaction(SqliteDatabase& database)
+SqliteTransaction::SqliteTransaction(SqliteDatabase& database, Mode mode)
     : database_(&database) {
-  database_->Execute("BEGIN IMMEDIATE");
+  database_->Execute(mode==Mode::kDeferred?"BEGIN":"BEGIN IMMEDIATE");
 }
 
 SqliteTransaction::~SqliteTransaction() {

@@ -4,7 +4,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
-from emuflow import xilinx_segment_timing as timing
+from tests import xilinx_segment_timing_reference as timing
 from emuflow.errors import ValidationError
 
 
@@ -58,7 +58,8 @@ class SharedBoundaryTests(unittest.TestCase):
         captured = {}
 
         @contextmanager
-        def writer(_path, _header, records):
+        def writer(_path, _header, records, *, source_bindings=()):
+            assert source_bindings == ()
             captured.update((record["id"], record) for record in records)
             yield {}
 

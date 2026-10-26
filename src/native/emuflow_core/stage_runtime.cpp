@@ -29,6 +29,10 @@ constexpr RegisteredSchema schemas[] = {
     {"xilinx-mapped-json-v1", ArtifactEncoding::kText, 0, 1},
     {"transport-selector-v1", ArtifactEncoding::kText, 0, 1},
     {"physical-timing-measurements-v1", ArtifactEncoding::kText, 0, 1},
+    {"xilinx-routed-timing-v2", ArtifactEncoding::kText, 0, 2},
+    {"xilinx-routed-endpoints-v1", ArtifactEncoding::kText, 0, 1},
+    {"routed-segment-request-v1", ArtifactEncoding::kBinary, 0x31544752464d5545ULL, 1},
+    {"routed-segment-summary-v1", ArtifactEncoding::kText, 0, 1},
 
     {"physical-input-document-v1", ArtifactEncoding::kText, 0, 1},
     {"openparf-name-map-selector-v1", ArtifactEncoding::kText, 0, 1},

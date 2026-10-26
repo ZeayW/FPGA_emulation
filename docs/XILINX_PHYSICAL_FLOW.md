@@ -484,3 +484,24 @@ It does not replace routing, fixed-I/O, resource-budget or final timing acceptan
 Cascade discovery queries only its requested primitive families. Topology driver
 lookups read the required bits from the mapped pin owner after the complete native
 uniqueness check, rather than rebuilding the complete driver population.
+
+Routed boundary, logic-segment and same-FPGA path measurements use
+`emuflow-native physical build-routed-segments`. Its checked request binds the
+current mapped index, source placement IR, routed timing manifest/endpoint stream
+and typed identity owners. The operation constructs one forward CSR graph and
+emits the three existing typed timing owners directly. It groups queries by
+start and resets only the reached cone between groups. No graph, path array or
+intermediate measurement TSV crosses the Python boundary. The host publishes
+closed owners through the common source-bound selector publisher after all
+requested projections succeed. The physical report retains the common engine
+wall/CPU/RSS metrics and bounded graph/query counters. Native capability is required before synthesis;
+missing capability or a failed native measurement cannot select a Python route.
+The former graph/builders are independent small-fixture test oracles.
+
+This preserves the lightweight provider's delay/qualification limits, sequential
+barriers, exact endpoint coverage, fixed-I/O terms, cycle and unreachable-path
+rejection. It does not extend device characterization or replace final global
+OpenSTA qualification. `source_constraints` records a bounded undriven-bit count
+and canonical source reference instead of copying the source population into
+every physical report. Routed-endpoint construction remains a separate adapter
+boundary; this graph migration is not completion of the complete native flow.

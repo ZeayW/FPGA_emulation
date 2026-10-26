@@ -490,10 +490,7 @@ def _finish_rapidwright_routed_backend(
         if "local_path" in segment_imports else None
     )
 
-    inventory = Counter(
-        cell["type"]
-        for cell in mapped_value["modules"][mapped_report["top"]]["cells"].values()
-    )
+    inventory = mapped_report["audit"]["cell_types"]
     # All mapped-graph consumers have finished. Release their storage before
     # OpenSTA stages a routed timing graph of its own.
     close_mapped = getattr(mapped_value, "close", None)
@@ -641,6 +638,7 @@ def _finish_rapidwright_routed_backend(
         },
         "boundary_timing": {"status": "pass", "import": boundary_import},
         "source_constraints": segment_imports["source_constraints"],
+        **({"routed_graph": segment_imports["native_graph"]} if "native_graph" in segment_imports else {}),
         **(
             {
                 "virtual_io_implementation": {
@@ -712,6 +710,7 @@ def run_rapidwright_openparf_native_candidate_backend(
 
     from .native_tools import require_native_schema
     require_native_schema("rwroute-export-request-v2")
+    require_native_schema("routed-segment-request-v1")
     architecture = ArchitectureDB.load(architecture_path)
     if architecture.part != part:
         raise ValidationError(

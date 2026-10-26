@@ -7,8 +7,8 @@ import pytest
 from emuflow.boundary_timing_storage import read_boundary_timing_storage
 from emuflow.errors import ValidationError
 
-import emuflow.xilinx_segment_timing as xilinx_segment_timing
-from emuflow.xilinx_segment_timing import (
+import tests.xilinx_segment_timing_reference as xilinx_segment_timing
+from tests.xilinx_segment_timing_reference import (
     build_xilinx_boundary_timing,
     build_xilinx_local_path_timing,
     build_xilinx_segment_timing_bundle,

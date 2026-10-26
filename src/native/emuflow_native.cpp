@@ -60,6 +60,7 @@ constexpr const char* kUsage =
     "  phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL\n"
     "  phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY\n"
     "  phase7 export-vivado MAPPED REQUEST RTL FUNCTIONS SUMMARY\n"
+    "  physical build-routed-segments SUMMARY DIRECTORY MAPPED IR TIMING ENDPOINTS BOUNDARY [LOGIC] [LOCAL] REQUEST\n"
     "  phase7 import-vivado-lineage MAPPED FUNCTIONS REQUEST STORE SUMMARY INVENTORY...\n";
 
 int Finish(emuflow::core::StageResult result, const std::string& report) {
@@ -160,6 +161,12 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if (phase == "phase7" && operation == "export-vivado" && argc == 8) {
     StageRequest request{Stage::kExportVivado,{argv[3],argv[4]},argv[5]};
     request.auxiliary_output_path=argv[6];request.scratch_path=argv[7];
+    return Execute(std::move(request),report);
+  }
+  if(phase=="physical" && operation=="build-routed-segments" && argc>=11 && argc<=13) {
+    StageRequest request;request.stage=Stage::kBuildRoutedSegments;
+    request.output_path=argv[3];request.auxiliary_output_path=argv[4];
+    for(int i=5;i<argc;++i)request.input_paths.emplace_back(argv[i]);
     return Execute(std::move(request),report);
   }
   if (phase == "phase7" && operation == "import-vivado-lineage" && argc >= 9) {
