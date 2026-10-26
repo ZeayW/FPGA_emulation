@@ -680,8 +680,10 @@ are checked against actual timing endpoints; a sequential Q launch may start
 at the same primitive's clock to include clock-to-Q, while an unrelated prefix
 or any suffix beyond the requested endpoint is rejected. After implementation
 reports are finalized, the routed snapshot receives equal datapath-only
-requirements across clock pairs so a cone
-query ranks physical delay rather than nominal clock slack. This measurement
+requirements across clock pairs to remove nominal clock-period bias. Vivado
+still ranks data delay plus the endpoint library check; the selected path's
+`DATAPATH_DELAY` is not independently proven to be the largest raw delay across
+endpoint aliases or different capture transitions. This measurement
 constraint is excluded from implementation WNS/TNS and global event deadlines. The
 indexed provider does not use the legacy sampled Vivado TimingPathDB as terminal
 evidence. Per-FPGA vendor WNS/TNS describe vendor endpoint constraints; global
@@ -744,7 +746,12 @@ check and does not qualify placement, routing, or numerical timing.
 `scripts/vivado/inspect_timing_points.tcl INPUT_DCP OUTPUT_DIRECTORY ?MODE?`
 records one worst path's native timing properties and report. `original` keeps
 the checkpoint constraints; `datapath-only` applies the same uniform data-path
-requirements used by delay exporters. The mode is recorded with the properties.
+requirements used by delay exporters. `clock-aware-reference` uses the uniform
+reference while retaining native clock and capture-check adjustments. Both
+reference modes record requirement minus slack as `reference_cost_ns`, its
+signed difference from `DATAPATH_DELAY`, and the selection policy. A favorable
+clock adjustment may be negative and must not be clamped or called raw delay.
+The mode is recorded with the properties.
 These snapshot queries use a common 1 ns reference requirement to avoid loss
 of floating-point precision from a very large requirement. Negative query
 slack is allowed; this reference is not a DUT/TDM clock or implementation

@@ -12,14 +12,23 @@ proc emuflow_open_export_design {selector stage} {
 
 proc emuflow_use_data_path_constraints {} {
   # These snapshot readers export physical DELAY, never closure slack.
-  # Equal datapath-only requirements prevent a short-period clock domain from
-  # winning a cone query merely through worse slack instead of longer delay.
+  # Equal datapath-only requirements remove nominal clock-period bias.
+  # Vivado still includes the endpoint library check when ranking slack;
+  # DATAPATH_DELAY alone is not necessarily the maximum over endpoint aliases.
   # A 1 ns query reference also avoids single-precision cancellation from a
   # huge positive requirement. Negative query slack is permitted: this is
   # applied only after implementation, never as a clock or closure target.
   # Implementation reports are finalized before the native-session exports.
   set clocks [get_clocks -quiet]
   if {[llength $clocks] != 0} {set_max_delay -reset_path -datapath_only -from $clocks -to $clocks 1.0}
+}
+
+proc emuflow_use_clock_aware_reference_constraints {} {
+  # Diagnostic snapshot only: retain setup, clock skew, uncertainty and native
+  # compensation while giving every clock pair the same reference requirement.
+  # Reference minus slack is the effective sampling cost, not raw data delay.
+  set clocks [get_clocks -quiet]
+  if {[llength $clocks] != 0} {set_max_delay -reset_path -from $clocks -to $clocks 1.0}
 }
 
 proc emuflow_load_fixed_io_map {path} {

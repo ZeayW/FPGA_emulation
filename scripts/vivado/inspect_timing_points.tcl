@@ -1,18 +1,35 @@
 # Bounded provider qualification diagnostic, never a production timing owner.
-if {$argc ni {2 3}} {error "expected INPUT_DCP OUTPUT_DIRECTORY ?original|datapath-only?"}
+if {$argc ni {2 3}} {error "expected INPUT_DCP OUTPUT_DIRECTORY ?original|datapath-only|clock-aware-reference?"}
 lassign $argv checkpoint out mode
 if {$argc==2} {set mode original}
-if {$mode ni {original datapath-only}} {error "unsupported timing inspection mode"}
+if {$mode ni {original datapath-only clock-aware-reference}} {error "unsupported timing inspection mode"}
 file mkdir $out
 open_checkpoint $checkpoint
-if {$mode eq "datapath-only"} {
+if {$mode ne "original"} {
   source [file join [file dirname [info script]] timing_contract.tcl]
-  emuflow_use_data_path_constraints
+  if {$mode eq "datapath-only"} {
+    emuflow_use_data_path_constraints
+  } else {
+    emuflow_use_clock_aware_reference_constraints
+  }
 }
 set path [get_timing_paths -quiet -max_paths 1 -nworst 1]
 if {[llength $path] != 1} {error "no timing path for provider inspection"}
 set stream [open "$out/timing-properties.txt" w]
 puts $stream "constraint_mode = $mode"
+if {$mode ne "original"} {
+  set requirement [get_property REQUIREMENT $path]
+  set slack [get_property SLACK $path]
+  set data [get_property DATAPATH_DELAY $path]
+  if {![string is double -strict $requirement] || abs($requirement-1.0)>0.00001 ||
+      ![string is double -strict $slack] || ![string is double -strict $data]} {
+    error "timing diagnostic did not obtain the common 1 ns reference"
+  }
+  set cost [expr {$requirement-$slack}]
+  puts $stream "reference_cost_ns = $cost"
+  puts $stream "check_clock_adjustment_ns = [expr {$cost-$data}]"
+  puts $stream "selection_policy = worst-slack-under-common-reference"
+}
 foreach property [list_property $path] {
   if {[string match *POINTS* $property]} {
     set points [get_property $property $path]
