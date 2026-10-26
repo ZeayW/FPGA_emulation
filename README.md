@@ -116,7 +116,9 @@ frontier checks, including direct output-port constants, and checkpoint binding;
 state dependencies and fanouts before native observations are checked. Complete physical
 coverage and global timing remain required qualification gates; the physical evidence
 schemas follow this disposition contract. Explicit checkpoint I/O, unresolved endpoint, and selected constant-state
-diagnostics are documented with the provider. See the
+diagnostics are documented with the provider. An explicit active-run diagnostic
+can retain optimized/routed snapshots and finish routing after a proof failure;
+the failure still prevents timing export and physical acceptance. See the
 [Xilinx physical flow](docs/XILINX_PHYSICAL_FLOW.md#vivado-indexed-provider) and
 [user guide](docs/USER_GUIDE.md#physical-implementation).
 The virtual BoardDB is a declared academic platform model rather than evidence

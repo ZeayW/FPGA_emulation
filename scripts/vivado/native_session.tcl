@@ -34,6 +34,30 @@ proc emuflow_session_frontiers {directory} {
   emuflow_session_child confirm-frontiers
   unset ::emuflow_native_export_stage
 }
+
+# An explicit active-run diagnostic may continue physical implementation after
+# a proof failure. Both snapshots are scratch, and the original error remains
+# fatal: it is never converted into a source disposition or a passing result.
+proc emuflow_session_preplacement {directory out retain route_after_failure} {
+  if {$route_after_failure && !$retain} {error "proof-failure routing requires retained snapshots"}
+  if {$route_after_failure} {write_checkpoint -force "$out/optimized.dcp"}
+  if {[catch {emuflow_session_frontiers $directory} message options]} {
+    unset -nocomplain ::emuflow_native_export_stage
+    if {!$route_after_failure} {return -options $options $message}
+    set stream [open "$out/source-proof-failure.txt" w]
+    puts $stream [dict get $options -errorinfo]
+    close $stream
+    puts "EMUFLOW_SOURCE_PROOF status=failed physical_diagnostic=continuing acceptance=pending"
+    return [list failed $message]
+  }
+  return [list pass ""]
+}
+
+proc emuflow_session_require_proof {failure} {
+  if {[llength $failure] != 2 || [lindex $failure 0] ne "pass"} {
+    error "source proof failed; routed snapshots are diagnostic only: [lindex $failure 1]"
+  }
+}
 proc emuflow_session_timings {directory prefix fixed_io_map} {
   global emuflow_session_out emuflow_timing_query_mode
   if {$emuflow_timing_query_mode ni {datapath-only clock-aware-reference}} {

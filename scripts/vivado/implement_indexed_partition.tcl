@@ -72,7 +72,8 @@ if {[catch {
   if {$emuflow_start_checkpoint eq ""} {write_checkpoint -force "$out/synthesized.dcp"}
   opt_design
   emuflow_inventory "$out/optimized_mapped_cells.tsv" $prefix
-  emuflow_session_frontiers $emuflow_script_directory
+  set proof_failure [emuflow_session_preplacement $emuflow_script_directory $out \
+      $emuflow_retain_routed_checkpoint $emuflow_route_after_proof_failure]
   place_design -directive $place_directive
   phys_opt_design
   route_design -directive $route_directive
@@ -159,6 +160,7 @@ if {[catch {
     puts $metrics "native_word_infrastructure_wns_ns\t[lindex $word_checks 1]"
   }
   close $metrics
+  emuflow_session_require_proof $proof_failure
   emuflow_session_timings $emuflow_script_directory $prefix $emuflow_io_timing_map
   puts "EMUFLOW_INDEXED_VIVADO status=pass part=$part fixed_pairs=$pairs"
 } message options]} {

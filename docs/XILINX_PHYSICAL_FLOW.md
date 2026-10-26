@@ -744,6 +744,20 @@ container label and does not identify the HDL top module.
 Continuation runs opt/place/physical optimization/route from that synthesis
 boundary. This interface does not publish a persistent checkpoint cache.
 
+For an active debugging continuation, the explicit Python option
+`route_after_proof_failure=True` requires `retain_routed_checkpoint=True`.
+It saves `optimized.dcp` in the same optimized snapshot as the source census,
+then attempts the normal source proof. If that proof fails, it records the
+original error in `source-proof-failure.txt` and continues placement and routing.
+The routed scratch still undergoes clock, pin, DRC, route, and infrastructure
+checks. After saving `routed.dcp` and implementation diagnostics, the original
+proof failure remains fatal, including an empty error message. No routed timing
+queries, elimination facts, successful physical result, or global STA acceptance
+are produced from that failed proof. Both snapshots are temporary work products
+of this active experiment; later proof repair must inspect the saved optimized
+snapshot and bind it to its source census before accepting any result. The
+default remains to stop immediately on a preplacement proof failure.
+
 `scripts/vivado/inspect_checkpoint_identity.tcl INPUT_DCP` reports native design
 and fileset identity properties without implementation or checkpoint writes.
 

@@ -31,10 +31,13 @@ def _tcl_word(value):
 
 def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mapped_sha256,
                      queries, runtime, ports, synthesized_checkpoint=None, synthesized_checkpoint_sha256=None,
-                     dut_frequency_mhz=None,word_phy_directory=None,retain_routed_checkpoint=False):
+                     dut_frequency_mhz=None,word_phy_directory=None,retain_routed_checkpoint=False,
+                     route_after_proof_failure=False):
     """Prepare small native/child contracts after all source views have closed."""
     output = output.resolve()
     if not isinstance(retain_routed_checkpoint,bool):raise ValidationError('routed checkpoint retention must be Boolean')
+    if not isinstance(route_after_proof_failure,bool) or (route_after_proof_failure and not retain_routed_checkpoint):
+        raise ValidationError('routing after a proof failure requires explicit Boolean checkpoint retention')
     checkpoint = Path(synthesized_checkpoint).resolve() if synthesized_checkpoint is not None else output/"synthesized.dcp"
     reserved = {str((output/(kind+suffix)).resolve()) for kind in queries for suffix in ("-synthesis.tsv","-resolved.tsv",".tsv")}
     if any(str(value.resolve()) in reserved for value in queries.values()):
@@ -58,7 +61,8 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
         "mapped_index_sha256": mapped_sha256, "queries": {key:str(value.resolve()) for key,value in queries.items()},
         "synthesized_checkpoint": str(checkpoint), "synthesized_checkpoint_sha256": synthesized_checkpoint_sha256,
         "word_phy_directory":str(Path(word_phy_directory).resolve())if word_phy_directory is not None else None,
-        "retain_routed_checkpoint":retain_routed_checkpoint}
+        "retain_routed_checkpoint":retain_routed_checkpoint,
+        "route_after_proof_failure":route_after_proof_failure}
     write_json(output/"native-session.json",manifest,compact=True)
     with (output/"clock-contract.tsv").open("w") as stream:
         stream.write("clock_hex\tport_hex\tperiod_ns\n")
@@ -81,6 +85,7 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
         "emuflow_word_phy_directory":str(Path(word_phy_directory).resolve())if word_phy_directory is not None else "",
         "emuflow_timing_query_mode":manifest["timing_query_mode"],
         "emuflow_retain_routed_checkpoint":"true"if retain_routed_checkpoint else"false",
+        "emuflow_route_after_proof_failure":"true"if route_after_proof_failure else"false",
         "emuflow_start_checkpoint":str(checkpoint) if synthesized_checkpoint is not None else "",
         "emuflow_preflight_stage":"optimized",
         "emuflow_clock_contract":str(output/"clock-contract.tsv"),"emuflow_io_timing_map":str(output/"fixed-io-timing-map.tsv") if (output/"fixed-io-timing-map.tsv").is_file() else ""}
@@ -103,6 +108,9 @@ def load_session(path: Path):
         not isinstance(value['word_phy_directory'],str)
         or Path(value['word_phy_directory']).resolve()!=Path(value['output']).resolve()):
         raise ValidationError('native word configuration must belong to its physical output')
+    if not isinstance(value.get('route_after_proof_failure',False),bool) or (
+        value.get('route_after_proof_failure',False) and value.get('retain_routed_checkpoint')is not True):
+        raise ValidationError('native proof-failure routing requires retained snapshots')
     return value
 
 

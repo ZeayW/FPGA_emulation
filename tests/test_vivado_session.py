@@ -249,6 +249,16 @@ def test_routed_debug_checkpoint_is_explicit_and_keeps_the_native_control_contra
         prepare_manifest(tmp_path,**args,retain_routed_checkpoint=1)
 
 
+@pytest.mark.parametrize('retain,defer', [(False,True),(True,1),(True,'true')])
+def test_proof_failure_routing_cannot_be_enabled_without_explicit_retained_snapshots(tmp_path,retain,defer):
+    runtime={'fabric_clock':{'period_ns':5},'virtual_dut_clocks':{'clk':{'target_period_ns':20,'nominal_period_ns':200}},
+        'timing_model':{'fabric_clock_port':'fabric_clk','dut_clock_ports':['clk']}}
+    with pytest.raises(ValidationError,match='routing after a proof failure'):
+        prepare_manifest(tmp_path,fpga='fpga0',part='xcpart',mapped_index=tmp_path/'mapped.sqlite',
+            functions=tmp_path/'functions.sqlite',mapped_sha256='a'*64,queries={},runtime=runtime,
+            ports={'clk','fabric_clk'},retain_routed_checkpoint=retain,route_after_proof_failure=defer)
+
+
 def test_native_word_session_selects_sampling_costs_and_rejects_downgrades(tmp_path):
     from emuflow.vivado_session import load_session
     table=tmp_path/'native-word-clocks.tsv'
@@ -303,7 +313,8 @@ proc emuflow_session_source {script arguments} {
 
 @pytest.mark.skipif(TCL86 is None, reason="native stage bridge requires Tcl 8.6")
 @pytest.mark.parametrize("resume", [False, True])
-def test_native_stage_bridge_runs_real_sqlite_children_without_placed_or_routed_checkpoints(tmp_path, resume):
+@pytest.mark.parametrize("proof_mode", ["pass", "fail", "pass-diagnostic", "fail-diagnostic", "empty-diagnostic"])
+def test_native_stage_bridge_keeps_proof_failures_fatal_after_optional_diagnostic_routing(tmp_path, resume, proof_mode):
     session, _, _ = session_fixture(tmp_path, require_constant=False)
     out = Path(session["output"])
     template = tmp_path/"observed.tsv";shutil.copyfile(out/"mapped_cells.tsv", template)
@@ -315,14 +326,17 @@ def test_native_stage_bridge_runs_real_sqlite_children_without_placed_or_routed_
     (out/".tmp").mkdir()
     runtime = {"fabric_clock": {"period_ns": 4}, "virtual_dut_clocks": {"clk": {"target_period_ns": 20, "nominal_period_ns": 200}},
                "timing_model": {"fabric_clock_port": "fabric_clk", "dut_clock_ports": ["clk"]}}
+    diagnostic = proof_mode.endswith("-diagnostic")
     config = prepare_manifest(out, fpga="fpga0", part="xcpart", mapped_index=Path(session["mapped_index"]),
         functions=Path(session["functions"]), mapped_sha256=session["mapped_index_sha256"], queries={}, runtime=runtime,
         ports={"clk", "fabric_clk"}, synthesized_checkpoint=prior if resume else None,
-        synthesized_checkpoint_sha256=file_sha256(prior) if resume else None)
+        synthesized_checkpoint_sha256=file_sha256(prior) if resume else None,
+        retain_routed_checkpoint=diagnostic,route_after_proof_failure=diagnostic)
     native = ROOT/"scripts/vivado/implement_indexed_partition.tcl"
     arguments = ["xcpart", "netlist.v", "dut", "runtime.xdc", str(out), "3", "", "", "", "", "", "Default", "Default", "1", "2", str(config)]
     script = "set argv [list "+" ".join(_tcl_word(v) for v in arguments)+"]\nset argc [llength $argv]\n"
     script += f"set template {_tcl_word(template)}\nset trace_path {_tcl_word(out/'trace.txt')}\n"
+    script += f"set proof_mode {_tcl_word(proof_mode)}\n"
     script += r'''
 set trace {}
 rename source original_source
@@ -340,6 +354,13 @@ proc source {path} {
     }
   } elseif {[file tail $path] eq "resource_inventory.tcl"} {
     proc emuflow_resource_inventory {} {return {lut 1 ff 1 carry8 0 dsp48 0 uram288 0 ramb18_cells 0 ramb36_cells 0 routed_cells 2 physical_cells 2 infrastructure_cells 0 optimization_cells 0}}
+  } elseif {[file tail $path] eq "native_session.tcl" && $::proof_mode ni {pass pass-diagnostic}} {
+    uplevel 1 [list original_source $path]
+    proc emuflow_session_frontiers {directory} {
+      set ::emuflow_native_export_stage optimized
+      if {$::proof_mode eq "empty-diagnostic"} {error ""}
+      error "unresolved selected-state frontier"
+    }
   } else {uplevel 1 [list original_source $path]}
 }
 rename exit process_exit
@@ -376,7 +397,10 @@ proc get_property {property object} {
 }
 proc write_checkpoint {args} {set p [lindex $args end];lappend ::trace [file tail $p];set f [open $p w];puts $f snapshot;close $f}
 proc opt_design {} {lappend ::trace opt}
-proc place_design {args} {lappend ::trace place}
+proc place_design {args} {
+  if {[info exists ::emuflow_native_export_stage]} {error "stale optimized export stage leaked into placement"}
+  lappend ::trace place
+}
 proc phys_opt_design {} {lappend ::trace phys_opt}
 proc route_design {args} {lappend ::trace route}
 foreach cmd {report_route_status report_drc report_timing_summary report_utilization report_design_analysis} {
@@ -392,13 +416,28 @@ set env(PYTHONPATH) /invalid-vendor-package
 '''
     script += f"source {_tcl_word(native)}\n"
     completed = subprocess.run([TCL86], input=script, text=True, capture_output=True)
-    assert completed.returncode == 0, completed.stdout+completed.stderr
     trace = (out/"trace.txt").read_text().split()
-    assert trace[-4:] == ["opt", "place", "phys_opt", "route"]
     assert ("synth" in trace) is (not resume)
     assert ("open" in trace) is resume
-    assert "placed.dcp" not in trace and "routed.dcp" not in trace
-    assert read_json(out/"routed-query-preparation.json")["status"] == "pass"
+    assert "placed.dcp" not in trace
+    if proof_mode in {"pass", "pass-diagnostic"}:
+        assert completed.returncode == 0, completed.stdout+completed.stderr
+        assert read_json(out/"routed-query-preparation.json")["status"] == "pass"
+    else:
+        assert completed.returncode != 0, completed.stdout+completed.stderr
+        assert "EMUFLOW_INDEXED_VIVADO status=pass" not in completed.stdout
+        assert not (out/"routed-query-preparation.json").exists()
+        assert not (out/"optimization-proofs.sqlite").exists()
+    if diagnostic:
+        assert trace[trace.index("opt"):] == ["opt", "optimized.dcp", "place", "phys_opt", "route", "routed.dcp"]
+        assert (out/"optimized.dcp").is_file() and (out/"routed.dcp").is_file()
+        if proof_mode != "pass-diagnostic":
+            assert "diagnostic only" in completed.stderr
+            assert (out/"source-proof-failure.txt").is_file()
+    elif proof_mode == "pass":
+        assert trace[-4:] == ["opt", "place", "phys_opt", "route"]
+    else:
+        assert trace[-1] == "opt" and "place" not in trace and "route" not in trace
 
 
 @pytest.mark.skipif(shutil.which("tclsh") is None, reason="Tcl interpreter required")

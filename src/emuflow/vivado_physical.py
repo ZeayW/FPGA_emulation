@@ -165,6 +165,7 @@ def run_indexed_vivado_partition(
     continuation_source_report: Path | None = None, dut_frequency_mhz: float | None = None,
     word_phy_plan_path:Path|None=None,word_wiring_path:Path|None=None,
     retain_routed_checkpoint:bool=False,
+    route_after_proof_failure:bool=False,
     dut_timing_io:Mapping[str,Any]|None=None,
 ) -> dict[str, Any]:
     from .vivado_backend import _resolve_vivado, _read_metrics, _integer, _number, vivado_runtime_xdc, write_vivado_boundary_timing_query
@@ -178,6 +179,8 @@ def run_indexed_vivado_partition(
     if word_mode and (word_phy_plan_path is None or word_wiring_path is None or virtual_io_contract is not None):
         raise ValidationError('native word implementation requires its plan and wiring together, without a bit-adapter contract')
     if not isinstance(retain_routed_checkpoint,bool):raise ValidationError('routed-checkpoint retention must be explicit Boolean')
+    if not isinstance(route_after_proof_failure,bool) or (route_after_proof_failure and not retain_routed_checkpoint):
+        raise ValidationError('proof-failure routing requires explicit retained snapshots')
     if any(value is not None for value in continuation) and not all(value is not None for value in continuation):
         raise ValidationError("synthesized continuation requires checkpoint, digest and source report together")
     from .emuir_storage import is_emuir_sqlite
@@ -277,7 +280,7 @@ def run_indexed_vivado_partition(
         mapped_sha256=mapped_report["mapped_index"]["sha256"],queries=queries,runtime=runtime,ports=ports,
         synthesized_checkpoint=synthesized_checkpoint,synthesized_checkpoint_sha256=synthesized_checkpoint_sha256,
         dut_frequency_mhz=dut_frequency_mhz,word_phy_directory=output_dir if word_mode else None,
-        retain_routed_checkpoint=retain_routed_checkpoint)
+        retain_routed_checkpoint=retain_routed_checkpoint,route_after_proof_failure=route_after_proof_failure)
     threads = int(os.environ.get("EMUFLOW_VIVADO_THREADS", "2"))
     if threads < 1:
         raise ValidationError("Vivado thread count must be positive")
@@ -386,6 +389,10 @@ def run_indexed_vivado_partition(
         path=output_dir/'routed.dcp'
         if not path.is_file():raise ValidationError('requested routed debug checkpoint is missing')
         artifacts[path.name]={'path':str(path),'sha256':file_sha256(path),'bytes':path.stat().st_size}
+    if route_after_proof_failure:
+        path=output_dir/'optimized.dcp'
+        if not path.is_file():raise ValidationError('requested optimized debug snapshot is missing')
+        artifacts[path.name]={'path':str(path),'sha256':file_sha256(path),'bytes':path.stat().st_size}
     result = {"schema": PHYSICAL_PARTITION_RESULT_SCHEMA, "status": "pass",
         "identity": {"backend": "vivado", "fpga": fpga, "part": part},
         "analysis_scope": {"implementation_mode": "out-of-context",
@@ -418,6 +425,7 @@ def run_indexed_vivado_partition(
         "implementation_timing": implementation_timing,
         "implementation_options": {"place_directive": place_directive, "route_directive": route_directive,
                                    "dut_frequency_mhz": dut_frequency_mhz,"retain_routed_checkpoint":retain_routed_checkpoint,
+                                   "route_after_proof_failure":route_after_proof_failure,
                                    **({'dut_timing_io_sha256':timing_io_sha256(dut_timing_io)}if dut_timing_io is not None else {})},
         "native_session": {"mode":"current-design-stage-exports-v2","timing_query_mode":query_mode,
             "scripts_sha256": {name:file_sha256(_vivado_script(name)) for name in native_scripts},
