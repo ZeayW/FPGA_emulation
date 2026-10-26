@@ -500,6 +500,12 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
         self.assertNotIn("paths", manifest)
         self.assertEqual(report["path_qor"]["wns_ns"], -0.25)
         self.assertEqual(report["timing_io"]["output_ports"], 1)
+        self.assertEqual(manifest["source"]["path_selection"], report["path_selection"])
+        self.assertEqual(report["path_selection"], {
+            "policy":"worst-per-endpoint-per-path-group-v1",
+            "scope":"selected-source-paths", "max_paths_per_group":200000,
+            "endpoint_path_count":1,
+        })
         self.assertRegex(report["timing_io"]["sha256"], r"^[0-9a-f]{64}$")
         self.assertEqual(
             manifest["source"]["timing_io"], report["timing_io"]

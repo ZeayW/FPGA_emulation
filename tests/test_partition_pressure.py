@@ -1386,6 +1386,7 @@ class PartitionPressureTest(unittest.TestCase):
             max_moves=0,
         )
         self.assertEqual(trace["final_metrics"]["maximum_path_hops"], 1)
+        self.assertEqual(trace["path_metric_scope"], "supplied-timing-pathdb-estimates")
         self.assertEqual(
             trace["final_metrics"]["maximum_path_tdm_ratio_sum"], 2
         )

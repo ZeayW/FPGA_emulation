@@ -30,6 +30,14 @@ and TDM optimization. This upstream producer is shared by both maintained
 Xilinx physical backends. The independent Vivado timing producer is retired;
 vendor post-route measurement belongs to Phase 7.
 
+The default export selects one worst path per endpoint, bounded by
+`--sta-max-paths` per path group. Its sealed `source.path_selection` records
+that selection policy and limit. The resulting population does not certify
+coverage of every endpoint or every alternative path: partitioning and TDM
+can make an unselected source path critical. A directed through-net query is
+separate qualification evidence and does not expand the Phase 4/5 population
+implicitly.
+
 This is pre-physical timing: inter-FPGA route, TDM events, and routed FPGA delays
 are resolved later. Phase 7 performs the final global analysis.
 
@@ -108,6 +116,12 @@ then minimize negative paths, maximum estimated TDM ratio, maximum estimated
 link load, path transitions or snaking, bit-hops, and cut bits. Slacks use the
 TimingPathDB clock-normalization policy. These are partition-search proxies,
 not final physical WNS/TNS.
+
+The refinement report labels these metrics with
+`path_metric_scope=supplied-timing-pathdb-estimates`. In particular,
+`maximum_path_hops` bounds only the supplied path population under estimated
+routes; it is neither a whole-design maximum nor a bound on a complete-fanin
+schedule dependency chain.
 
 Estimated per-link capacity pressure is reported by Phase 3 but is not a hard
 PATRON acceptance gate. Phase 3 uses a fixed shortest-route estimate and cannot

@@ -315,7 +315,8 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
   puts "EMUFLOW_OPENSTA_DATABASE status=pass clocks=$clock_count queried_paths=$queried_paths emitted_paths=$emitted output=$output_path"
 } else {
   # OpenSTA 3.1 fixes the legacy PathEnd/Tcl object-lifetime corruption, so
-  # request the bounded endpoint-complete collection once.  Re-running the
+  # request the bounded worst-per-endpoint selection once. This is not a
+  # certificate of all endpoint or alternative-path coverage. Re-running the
   # path search separately for every endpoint is correct but prohibitively
   # expensive on large designs.
   set endpoints [all_registers -data_pins]

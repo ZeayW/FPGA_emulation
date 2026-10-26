@@ -174,6 +174,9 @@ EmuIR view with artifact-scoped record IDs and ordered connectivity traversal.
 PATRON production supports only v14. Earlier search versions, their native
 execution/protocol/certificate branches and the old reference-search CLI are
 retired; independent current-model and objective validation remain.
+Path-hop metrics describe the supplied TimingPathDB selection, whose search
+policy is recorded by Phase 2; they do not certify a whole-design maximum.
+See [timing coverage](docs/global-opensta-qualification.md#current-event-stream-contract).
 PATRON search uses this unified entry; its separate executable and legacy text
 input are retired. Explicit input copies use the same checked typed binary
 protocol as streamed input.

@@ -4089,6 +4089,7 @@ def run_partition_pressure_native(
             ),
         },
         "initial_metrics": initial_metrics,
+        "path_metric_scope": "supplied-timing-pathdb-estimates",
         "move_count": output_summary["moves"],
         "batch_count": output_summary["batches"],
         "change_count": output_summary["changes"],

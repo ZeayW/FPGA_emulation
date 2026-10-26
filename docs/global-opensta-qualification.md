@@ -40,6 +40,17 @@ transport hardware.
 
 ## Current event-stream contract
 
+Original-member coverage and whole-source coverage are distinct. Replaying
+every member of a bounded Phase 2 selection proves coverage of that immutable
+TimingPathDB, not of omitted endpoints or alternative paths. Read its
+`source.path_selection` policy and limit; older artifacts without this field
+provide no positive source-coverage certificate. A supplied-path hop maximum
+must not be promoted to a whole-design maximum. Conversely, a complete-fanin
+schedule dependency chain requires an ordered source-STA query before it can
+be called a complete original timing path. Whole-design frequency claims also
+require coverage of the implemented source timing graph beyond any selected
+path population.
+
 Checks and imported OpenSTA measurements must contain one contiguous bundle
 per original path, including exactly one target and one runtime observation.
 A path cannot reappear after its bundle ends. Interleaved historical records

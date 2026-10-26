@@ -1491,6 +1491,14 @@ def _run_opensta_path_database(
         expected_records=(check_opensta_export_completion(completed.stdout,output_path=raw_path,clock_count=len(clock_map))
             if clock_budget_policy=='engine-edge-v1'else None)
         source_value = {
+            # This owner records the search that selected the source members.
+            # Replaying every member downstream does not prove coverage of
+            # omitted endpoints or alternative paths after partitioning.
+            'path_selection': ({'policy':'directed-through-net-qualification-v1',
+                                'scope':'selected-source-paths'} if through_net_ids else
+                               {'policy':'worst-per-endpoint-per-path-group-v1',
+                                'scope':'selected-source-paths',
+                                'max_paths_per_group':max_paths,'endpoint_path_count':1}),
             'clock_budget_policy':clock_budget_policy,
             'export_script_sha256':file_sha256(OPENSTA_EXPORT_SCRIPT),
             'design_context_script_sha256':file_sha256(OPENSTA_EXPORT_SCRIPT.with_name('design_context.tcl')),
@@ -1621,6 +1629,7 @@ def _run_opensta_path_database(
         "clocks": clock_map,
         "timing_io": timing_io_summary,
         "paths": imported["paths"],
+        "path_selection": source_value['path_selection'],
         "max_paths": max_paths,
         "through_nets": through_net_ids,
         "covered_through_nets": covered_through_nets,
