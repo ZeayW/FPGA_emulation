@@ -504,6 +504,17 @@ separate required evidence.
 
 ## Fair algorithm comparisons
 
+Phase 3's original-owner decision gates compare candidate selection and every
+partition resource/balance field with the independent reference, covering
+reordered sources, sparse endpoint ordinals, exact balance and reservations.
+Exercise path-priority ties, ties-to-even objective quantization and ranks beyond
+int64. Fixed/group violations, unknown cells, inactive/minimum device counts,
+capacity violations, CRC damage and changed source generations must reject.
+An audit from another owner or policy cannot qualify an assignment. Poison host
+ownership iteration, comparison and column serialization while executing native
+decision/reduction and the maintained Phase 3 final-directory transaction.
+These component gates do not replace complete NVDLA stage and flow qualification.
+
 Use real RTL and an explicitly identified platform. Raw contest communication
 graphs cannot substitute for synthesis and FPGA-internal physical implementation.
 

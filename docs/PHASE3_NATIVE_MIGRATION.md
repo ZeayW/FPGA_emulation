@@ -166,6 +166,26 @@ the whole-phase memory measurement.
 Normal handoff still runs the independent assignment validator and candidate
 selection before final semantic/index publication.
 
+For original native initializer/PATRON owners, `phase3 audit-decision` now owns
+that decision boundary. It borrows both original ownership files and the PATRON
+coordinate file, validates both candidates, and selects using the existing v14
+path-hop/ratio/objective ordering. The candidate comparison never scans Python
+ownership columns or accepts a separately reconstructed host objective. Rank
+quantization preserves Python ties-to-even and integer values beyond int64.
+One source-cell cursor independently reduces resources for both assignments;
+primary resource totals, reserved capacity, strict balance, active/minimum device
+counts and fixed/group source identities must agree before selection. This does
+not introduce a schedule-feasibility gate. A reused bounded audit remains bound
+to its original ownership, source generations and effective policy.
+
+Owned resource queries consume those same original artifacts through the v2
+request instead of copying a cluster-part column back through Python. Assignment
+construction reuses their bounded counts and exposes any part-coordinate
+translation as a borrowed read-only view, without another cluster-sized array.
+Explicit reference owners retain the existing record request. Configuration,
+hard-hop handling and complete Phase 3/controller ownership still require
+migration and real NVDLA stage qualification.
+
 `phase3 reduce-loads EMUIR PRIMARY REQUEST OUTPUT` independently reduces the
 primary resource columns under the final packed assignment. Construction of
 compact partition summaries, balance validation and final online validation use
@@ -520,7 +540,7 @@ there is no silent implementation or provider fallback.
 | Stage | Existing native/indexed foundation | Remaining delivery obligation |
 | --- | --- | --- |
 | Phase 1–2 | Complete native ordinary RTL frontend under native control, including engine/import/clock/resource/report publication; native OpenSTA input export, indexed path-result import, timing-weight generation and independent validators | Migrate supplied/prepared/other indexed-source adapters and complete timing-stage lifecycle; qualify the whole current-design frontend |
-| Phase 3 | Shared-core candidate eligibility, primary clustering, complete TritonPart initialization and native v14 search; selected-owner semantics and complete native final-directory publication with independent binary/index validation | Complete native configuration, candidate selection/hop auditing and stage lifecycle/controller integration; qualify complete stage costs |
+| Phase 3 | Shared-core candidate eligibility, primary clustering, complete TritonPart initialization/native v14 search; original-owner candidate decision and independent resource/constraint audit; selected semantics and complete native final-directory publication | Complete native configuration, hard-hop handling and stage lifecycle/controller integration; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |

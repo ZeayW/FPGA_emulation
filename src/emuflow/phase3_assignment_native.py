@@ -31,6 +31,8 @@ def reduce_native_partition_loads(clusters, assignment, fpga_ids, *, metrics=Non
     generations = (clusters.native_source_generation, clusters.native_generation)
     if tuple(native_file_generation(path) for path in (source, primary)) != generations:
         raise ValidationError('native partition load source generation changed')
+    from .phase3_decision_native import ownership_sources
+    owned = ownership_sources(clusters, assignment)
     if isinstance(assignment, _PackedClusterAssignment):
         parts, indices = assignment.part_ids, assignment.part_indices
     else:
@@ -47,18 +49,28 @@ def reduce_native_partition_loads(clusters, assignment, fpga_ids, *, metrics=Non
         request, output = root/'request.bin', root/'loads.json'
         writer = _Writer(request)
         try:
-            writer.put('QI', 0x3151454C504D5545, 1)
-            for generation in generations:
-                writer.put('3Q4q', *generation)
-            writer.put('QI', len(clusters), len(parts))
-            for part in parts:
-                writer.text(part)
-            writer.bytes(indices)
+            if owned is not None:
+                writer.put('QI', 0x3251454C504D5545, 2)
+                for item in (owned[1], owned[2], *owned[3]):
+                    writer.put('3Q4q', *item.generation)
+                writer.put('I', len(parts))
+                for part in parts:
+                    writer.text(part)
+            else:
+                writer.put('QI', 0x3151454C504D5545, 1)
+                for generation in generations:
+                    writer.put('3Q4q', *generation)
+                writer.put('QI', len(clusters), len(parts))
+                for part in parts:
+                    writer.text(part)
+                writer.bytes(indices)
             writer.finish()
         finally:
             writer.close()
         executable = resolve_native_executable('emuflow-native')
-        command = [executable, 'phase3', 'reduce-loads', str(source), str(primary), str(request), str(output)]
+        owner_sources = () if owned is None else tuple(owned[3])
+        command = [executable, 'phase3', 'reduce-loads', str(source), str(primary), str(request),
+                   *(str(item.path) for item in owner_sources), str(output)]
         with NativeToolProcess(executable, command, environment=dict(os.environ),
                                timeout_ms=21600000, scratch_parent=root) as process:
             completed = process.finish()
@@ -66,6 +78,8 @@ def reduce_native_partition_loads(clusters, assignment, fpga_ids, *, metrics=Non
             raise ValidationError('native partition load reduction failed: '+completed.stdout)
         if tuple(native_file_generation(path) for path in (source, primary)) != generations:
             raise ValidationError('native partition load source generation changed')
+        from .store_publication import require_store_sources_unchanged
+        require_store_sources_unchanged(owner_sources)
         if output.stat().st_size > 4096+len(parts)*512:
             raise ValidationError('native partition load summary exceeds bound')
         summary = json.loads(output.read_text())
@@ -73,6 +87,12 @@ def reduce_native_partition_loads(clusters, assignment, fpga_ids, *, metrics=Non
             raise ValidationError('native partition load summary disagrees')
         if metrics is not None:
             metrics.update(completed.native_metrics)
+    if owned is not None and summary.get('parts') != list(parts):
+        raise ValidationError('native partition load part catalog disagrees')
+    return decode_partition_load_summary(summary, clusters, parts, fpga_ids)
+
+
+def decode_partition_load_summary(summary, clusters, parts, fpga_ids):
     def integers(values, count):
         return (isinstance(values, list) and len(values) == count and
                 all(type(value) is int and value >= 0 for value in values))

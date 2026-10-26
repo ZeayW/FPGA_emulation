@@ -24,6 +24,7 @@
 #include "emuflow_core/patron_ingress.hpp"
 #include "emuflow_core/partition_clusters.hpp"
 #include "emuflow_core/partition_loads.hpp"
+#include "emuflow_core/partition_decision.hpp"
 #include "emuflow_core/assignment_publish.hpp"
 #include "emuflow_core/phase3_exact_binary.hpp"
 #include "emuflow_core/assignment_cuts.hpp"
@@ -66,6 +67,7 @@ const char* StageName(Stage stage) {
     case Stage::kValidateAssignmentCuts: return "phase3.validate-cuts";
     case Stage::kPublishClusterCatalog: return "phase3.publish-cluster-catalog";
     case Stage::kReducePartitionLoads: return "phase3.reduce-loads";
+    case Stage::kAuditPartitionDecision: return "phase3.audit-decision";
     case Stage::kAnalyzeExact: return "phase3.analyze";
     case Stage::kFinalizeExact: return "phase3.finalize-semantics";
     case Stage::kHashSemantics: return "phase3.hash-semantics";
@@ -183,7 +185,31 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
       if(count==4) schemas.push_back("candidate-id-columns-v1");
       return schemas;
     }
-    case Stage::kReducePartitionLoads: return {"emuir-compact-v2","partition-cluster-columns-v2","partition-load-request-v1"};
+    case Stage::kAuditPartitionDecision:
+    case Stage::kReducePartitionLoads: {
+      const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
+      if(count<3 || count>6)throw core::StageError(core::ErrorCode::kInvalidRequest,"partition owner input coverage disagrees");
+      const auto path=request.input_artifacts.empty()?request.input_paths[2]:request.input_artifacts[2].path();
+      if(!std::filesystem::exists(path))
+        throw core::StageError(core::ErrorCode::kMissingArtifact,"partition ownership request is missing: "+path);
+      core::CheckedRequestReader input(path,8*1024*1024);
+      const auto magic=input.Read<std::uint64_t>();const auto version=input.Read<std::uint32_t>();
+      std::vector<std::string> schemas{"emuir-compact-v2","partition-cluster-columns-v2"};
+      if(request.stage==Stage::kAuditPartitionDecision) {
+        if(magic!=0x31514450464d5545ULL || version!=1 || input.Read<std::uint32_t>()!=count-3)
+          throw core::StageError(core::ErrorCode::kInvalidRequest,"partition decision request kind disagrees");
+        schemas.push_back("partition-decision-request-v1");
+      } else {
+        if(magic==0x3151454c504d5545ULL && version==1 && count==3)
+          return {"emuir-compact-v2","partition-cluster-columns-v2","partition-load-request-v1"};
+        if(magic!=0x3251454c504d5545ULL || version!=2 || count>5)
+          throw core::StageError(core::ErrorCode::kInvalidRequest,"partition load request kind disagrees");
+        schemas.push_back("partition-load-request-v2");
+      }
+      if(count==4 || count==6)schemas.push_back("patron-initial-columns-v1");
+      if(count>=5) {schemas.push_back("patron-output-v1");schemas.push_back("patron-cluster-order-v1");}
+      return schemas;
+    }
     case Stage::kAnalyzeExact:
       return request.indexed_input
           ? std::vector<std::string>{"emuir-compact-v2", "exact-indexed-request-v4"}
@@ -415,7 +441,10 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kPublishAssignmentDescriptor: core::PublishAssignmentDescriptor(inputs,output); break;
       case Stage::kValidateAssignmentCuts: core::ValidateAssignmentCuts(inputs[0],output); break;
       case Stage::kPublishClusterCatalog: core::PublishClusterCatalog(inputs,output); break;
-      case Stage::kReducePartitionLoads: core::ReducePartitionLoads(inputs,output); break;
+      case Stage::kReducePartitionLoads:
+        if(inputs[2].schema()=="partition-load-request-v2")core::ReduceOwnedPartitionLoads(inputs,output);
+        else core::ReducePartitionLoads(inputs,output);break;
+      case Stage::kAuditPartitionDecision: core::AuditPartitionDecision(inputs,output); break;
       case Stage::kBuildCaptures: core::BuildExactCaptures(inputs,output); break;
       case Stage::kValidateCaptures: core::ValidateExactCaptures(inputs,output); break;
       case Stage::kAnalyzeExact:
@@ -478,6 +507,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kValidateAssignmentCuts: schema = "assignment-cut-validation-v1"; break;
       case Stage::kPublishClusterCatalog: schema = "phase3-cluster-catalog-v3"; break;
       case Stage::kReducePartitionLoads: schema = "partition-load-summary-v1"; break;
+      case Stage::kAuditPartitionDecision: schema = "partition-decision-summary-v1"; break;
       case Stage::kBuildCaptures: schema = "exact-captures-v1"; break;
       case Stage::kValidateCaptures: schema = "exact-capture-validation-v1"; break;
       case Stage::kAnalyzeExact: schema = "exact-topology-v3"; break;

@@ -614,6 +614,24 @@ class _StaticExactCutNetRecords(list):
     __imul__ = _immutable
 
 
+class _TranslatedPartColumn(Sequence[int]):
+    """Read-only coordinate view; a board-sized translation owns no C column."""
+    itemsize = 4
+    readonly = True
+
+    def __init__(self, source, translation):
+        self.source = source
+        self.translation = translation
+
+    def __len__(self):
+        return len(self.source)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return array('I', (self[i] for i in range(*index.indices(len(self)))))
+        return self.translation[self.source[index]]
+
+
 class _CompactInstanceAssignment(Mapping[str, str]):
     """Bounded-memory instance assignment over compact EmuIR ordinals."""
 
@@ -622,6 +640,8 @@ class _CompactInstanceAssignment(Mapping[str, str]):
         path: Path,
         clusters: _CompactClusterRecords,
         cluster_assignment: Mapping[str, str],
+        *,
+        _known_used_parts=None,
     ) -> None:
         self.path = path
         self._native_publication = getattr(clusters, "implementation_id", None) == "native-primary-clusters-v1"
@@ -634,7 +654,8 @@ class _CompactInstanceAssignment(Mapping[str, str]):
         _validate_cluster_assignment_coverage(clusters, cluster_assignment)
         self._cluster_member_offsets = clusters._member_offsets
         if isinstance(cluster_assignment, _PackedClusterAssignment):
-            used = set(cluster_assignment.part_indices)
+            used = (set(cluster_assignment.part_indices) if _known_used_parts is None else
+                    {index for index, part in enumerate(cluster_assignment.part_ids) if part in _known_used_parts})
             if any(index >= len(cluster_assignment.part_ids) for index in used):
                 raise ValidationError("compact partition cluster ownership is invalid")
             self.part_ids = tuple(sorted(cluster_assignment.part_ids[index] for index in used))
@@ -643,12 +664,17 @@ class _CompactInstanceAssignment(Mapping[str, str]):
             else:
                 lookup = {part: index for index, part in enumerate(self.part_ids)}
                 translation = {index: lookup[cluster_assignment.part_ids[index]] for index in used}
-                self._cluster_parts = array("I", (translation[index] for index in cluster_assignment.part_indices))
+                self._cluster_parts = (_TranslatedPartColumn(cluster_assignment.part_indices, translation)
+                    if _known_used_parts is not None else
+                    array("I", (translation[index] for index in cluster_assignment.part_indices)))
         else:
             self.part_ids = tuple(sorted(set(cluster_assignment.values())))
             part_index = {part: index for index, part in enumerate(self.part_ids)}
             self._cluster_parts = array("I", (part_index[cluster_assignment[f"c{i:06d}"]] for i in range(len(clusters))))
         self._source_clusters = clusters.source_cluster_indices
+        self._original_cluster_assignment = cluster_assignment
+        self._original_cluster_parts = self._cluster_parts
+        self._original_part_ids = self.part_ids
         if (self._cluster_member_offsets[0] != 0 or
                 self._cluster_member_offsets[-1] != len(self._source_clusters)):
             raise ValidationError("compact partition instance coverage is invalid")
@@ -2167,7 +2193,14 @@ def build_partition_assignment(
     fpga_ids = {
         fpga.id for fpga in active_partition_fpgas(platform, constraints)
     }
-    assigned_fpgas = ({cluster_assignment.part_ids[index] for index in set(cluster_assignment.part_indices)}
+    native_summary = None
+    if _stream_semantic_records and getattr(cluster_records, 'native_artifact', None) is not None:
+        from .phase3_decision_native import ownership_sources
+        if ownership_sources(cluster_records, cluster_assignment) is not None:
+            native_summary = _cluster_assignment_summary(cluster_records, cluster_assignment,
+                tuple(fpga.id for fpga in platform.fpgas))
+    assigned_fpgas = ({part for part, count in native_summary[2].items() if count} if native_summary is not None else
+                     {cluster_assignment.part_ids[index] for index in set(cluster_assignment.part_indices)}
                       if isinstance(cluster_assignment, _PackedClusterAssignment)
                       else set(cluster_assignment.values()))
     unknown_fpgas = sorted(assigned_fpgas - fpga_ids)
@@ -2185,7 +2218,8 @@ def build_partition_assignment(
     instance_assignment: Mapping[str, str]
     if compact_assignment:
         instance_assignment = _CompactInstanceAssignment(
-            compact_path, cluster_records, cluster_assignment
+            compact_path, cluster_records, cluster_assignment,
+            _known_used_parts=assigned_fpgas if native_summary is not None else None,
         )
     else:
         instance_assignment = {
@@ -2304,7 +2338,7 @@ def build_partition_assignment(
         for fpga in platform.fpgas
     }
     if not retain_partition_clusters:
-        _totals, loads, counts = _cluster_assignment_summary(
+        _totals, loads, counts = native_summary if native_summary is not None else _cluster_assignment_summary(
             cluster_records, cluster_assignment, tuple(partition_state)
         )
         for part, state in partition_state.items():
@@ -2422,6 +2456,8 @@ def validate_partition_artifacts_online(
     platform: Platform,
     clusters_artifact: Mapping[str, Any],
     assignment_artifact: Mapping[str, Any],
+    *,
+    _native_audit=None,
 ) -> Dict[str, Any]:
     """Check the final Phase-3 assignment contract without optimizer replay.
 
@@ -2471,18 +2507,34 @@ def validate_partition_artifacts_online(
                 raw_assignment.path.resolve() != Path(raw_clusters.native_source_path).resolve()):
             raise ValidationError("online compact cluster membership disagrees")
         _validate_cluster_assignment_coverage(raw_clusters, cluster_assignment)
-        if isinstance(cluster_assignment, _PackedClusterAssignment):
-            if raw_assignment.part_ids == cluster_assignment.part_ids:
-                same_parts = raw_assignment._cluster_parts == cluster_assignment.part_indices
-            else:
-                same_parts = all(raw_assignment.cluster_part(i) == cluster_assignment.part_for_index(i)
-                                 for i in range(len(raw_clusters)))
+        from .phase3_decision_native import audit_assignment, _OwnershipAudit
+        from .phase3_assignment_native import decode_partition_load_summary
+        audit = _native_audit
+        if audit is None:
+            audit = audit_assignment(platform, clusters_artifact, assignment_artifact)
+        if audit is not None:
+            if not isinstance(audit, _OwnershipAudit):
+                raise ValidationError("online native audit is not source-bound evidence")
+            audit = audit.require(platform, assignment_artifact)
+            if (getattr(raw_assignment, '_original_cluster_assignment', None) is not cluster_assignment
+                    or getattr(raw_assignment, '_original_cluster_parts', None) is not raw_assignment._cluster_parts
+                    or getattr(raw_assignment, '_original_part_ids', None) != raw_assignment.part_ids):
+                raise ValidationError("online original ownership/instance view disagrees")
+            _totals, loads, native_counts = decode_partition_load_summary(
+                audit, raw_clusters, audit['parts'], tuple(fpga_by_id))
         else:
-            same_parts = all(raw_assignment.cluster_part(i) == cluster_assignment.get(f"c{i:06d}")
-                             for i in range(len(raw_clusters)))
-        if not same_parts:
-            raise ValidationError("online cluster assignment disagrees with instances")
-        _totals, loads, native_counts = _cluster_assignment_summary(raw_clusters, cluster_assignment, tuple(fpga_by_id))
+            if isinstance(cluster_assignment, _PackedClusterAssignment):
+                if raw_assignment.part_ids == cluster_assignment.part_ids:
+                    same_parts = raw_assignment._cluster_parts == cluster_assignment.part_indices
+                else:
+                    same_parts = all(raw_assignment.cluster_part(i) == cluster_assignment.part_for_index(i)
+                                     for i in range(len(raw_clusters)))
+            else:
+                same_parts = all(raw_assignment.cluster_part(i) == cluster_assignment.get(f"c{i:06d}")
+                                 for i in range(len(raw_clusters)))
+            if not same_parts:
+                raise ValidationError("online cluster assignment disagrees with instances")
+            _totals, loads, native_counts = _cluster_assignment_summary(raw_clusters, cluster_assignment, tuple(fpga_by_id))
         for part in fpga_by_id:
             resource_totals[part] = {field: loads[part][field] for field in RESOURCE_FIELDS}
     else:
@@ -2556,16 +2608,17 @@ def validate_partition_artifacts_online(
             raise ValidationError(
                 "online cluster assignment disagrees with instances"
             )
-    for fixed in constraints.get("fixed", []):
-        if raw_assignment.get(fixed.get("instance")) != fixed.get("fpga"):
-            raise ValidationError("online assignment violates a fixed instance")
-    for group in constraints.get("groups", []):
-        parts = {
-            raw_assignment.get(instance)
-            for instance in group.get("instances", [])
-        }
-        if len(parts) != 1 or next(iter(parts), None) not in fpga_by_id:
-            raise ValidationError("online assignment splits a fixed group")
+    if not native_compact or audit is None:
+        for fixed in constraints.get("fixed", []):
+            if raw_assignment.get(fixed.get("instance")) != fixed.get("fpga"):
+                raise ValidationError("online assignment violates a fixed instance")
+        for group in constraints.get("groups", []):
+            parts = {
+                raw_assignment.get(instance)
+                for instance in group.get("instances", [])
+            }
+            if len(parts) != 1 or next(iter(parts), None) not in fpga_by_id:
+                raise ValidationError("online assignment splits a fixed group")
     resources_by_fpga = {
         fpga_id: ResourceVector.from_mapping(totals)
         for fpga_id, totals in resource_totals.items()

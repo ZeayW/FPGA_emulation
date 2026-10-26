@@ -1404,6 +1404,8 @@ def _compile_preflight(ctx: _CompileContext):
         require_native_schema("yosys-emuir-import-request-v1")
         require_native_schema("external-tool-request-v2")
     require_native_schema("partition-initialization-request-v1")
+    require_native_schema("partition-decision-request-v1")
+    require_native_schema("partition-load-request-v2")
     require_native_schema("partition-finalization-request-v1")
     require_native_schema("assignment-publication-request-v3")
     require_native_schema("assignment-descriptor-request-v1")

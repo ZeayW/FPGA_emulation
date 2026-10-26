@@ -50,7 +50,8 @@ constexpr const char* kUsage =
     "  phase3 publish-assignment EMUIR PRIMARY REQUEST [NATIVE_NODES [COUNTS [OWNER [ORDER]]]] OUTPUT\n"
     "  phase3 publish-assignment-descriptor EMUIR PRIMARY INDEX REQUEST OUTPUT\n"
     "  phase3 publish-cluster-catalog EMUIR PRIMARY REQUEST [CANDIDATES] OUTPUT\n"
-    "  phase3 reduce-loads EMUIR PRIMARY REQUEST OUTPUT\n"
+    "  phase3 reduce-loads EMUIR PRIMARY REQUEST [OWNER [ORDER]] OUTPUT\n"
+    "  phase3 audit-decision EMUIR PRIMARY REQUEST [INITIAL [CANDIDATE ORDER]] OUTPUT\n"
     "  phase4 route --typed-output INPUT OUTPUT\n"
     "  phase4 seal-routes STORE REQUEST SUMMARY\n"
     "  phase5 timing-contract ROUTE_STORE [SCHEDULE_STORE [BOARD_REQUEST]] REQUEST SUMMARY\n"
@@ -306,8 +307,10 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     for(int i=6;i<argc-1;++i)inputs.emplace_back(argv[i]);
     return run(Stage::kPublishAssignmentIndex,inputs,argv[argc-1]);
   }
-  if (phase == "phase3" && operation == "reduce-loads" && argc == 7)
-    return run(Stage::kReducePartitionLoads,{argv[3],argv[4],argv[5]},argv[6]);
+  if(phase=="phase3" && (operation=="reduce-loads" || operation=="audit-decision") && argc>=7 && argc<=10) {
+    std::vector<std::string> inputs;for(int i=3;i<argc-1;++i)inputs.emplace_back(argv[i]);
+    return run(operation=="reduce-loads"?Stage::kReducePartitionLoads:Stage::kAuditPartitionDecision,inputs,argv[argc-1]);
+  }
   if (phase == "phase3" && operation == "build-candidate-ids" && argc == 6)
     return run(Stage::kBuildCandidateIds,{argv[3],argv[4]},argv[5]);
   if (phase == "phase3" && operation == "build-clusters" && argc == 6)

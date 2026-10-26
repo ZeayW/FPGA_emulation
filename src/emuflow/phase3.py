@@ -747,12 +747,17 @@ def run_phase3(
                 timing_database_path=timing_database_path,
             )
         else:
+            from .phase3_decision_native import select_assignment
+            native_decision = phase3_runtime_call(
+                "patron.native_decision", select_assignment, platform, clusters,
+                initial, assignment)
             initial_validation = phase3_runtime_call(
                 "patron.validate_initial_assignment",
                 validate_partition_artifacts_online,
                 platform,
                 clusters,
                 initial,
+                _native_audit=None if native_decision is None else native_decision['native_audits'][0],
             )
             candidate_validation = phase3_runtime_call(
                 "patron.validate_candidate_assignment",
@@ -760,6 +765,7 @@ def run_phase3(
                 platform,
                 clusters,
                 assignment,
+                _native_audit=None if native_decision is None else native_decision['native_audits'][1],
             )
             move_count = patron_trace.get("move_count")
             batch_count = patron_trace.get("batch_count")
@@ -824,13 +830,20 @@ def run_phase3(
             if native_store_model:
                 patron_validation["model_implementation_id"] = patron_trace["model_implementation_id"]
                 patron_validation["native_model_metrics"] = patron_trace["native_model_metrics"]
-        assignment, candidate_selection = phase3_runtime_call(
-            "patron.select_candidate",
-            _select_patron_timing_assignment,
-            initial,
-            assignment,
-            patron_trace,
-        )
+        if not retain_diagnostics and native_decision is not None:
+            candidate_selection = native_decision['selection']
+            assignment = assignment if candidate_selection['selected'] == 'candidate' else initial
+            patron_validation['decision_implementation_id'] = native_decision['implementation_id']
+            patron_validation['native_decision_metrics'] = native_decision['native_metrics']
+            del native_decision
+        else:
+            assignment, candidate_selection = phase3_runtime_call(
+                "patron.select_candidate",
+                _select_patron_timing_assignment,
+                initial,
+                assignment,
+                patron_trace,
+            )
         patron_validation["candidate_selection"] = candidate_selection
         if not retain_diagnostics:
             # The pressure graph, timing source and native trace are no longer
