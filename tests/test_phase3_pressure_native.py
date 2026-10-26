@@ -19,12 +19,12 @@ from emuflow.partition_pressure import (build_partition_pressure_model, run_part
     _write_patron_native_input, _NativeBinaryPipeWriter)
 from emuflow.phase3_pressure_native import NativePressureModel
 from emuflow.native_tools import native_file_generation
-from emuflow.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
+from emuflow.sta import STA_PATH_DATABASE_TSV_HEADER, STA_PATH_DATABASE_CLOCK_TSV_HEADER, import_sta_path_database_tsv_streaming
 from tests.native_build import emuflow_native, patron_ingress_oracle, hop_partition_refiner
 from tests import test_partition_pressure as reference_fixture
 
 
-@pytest.fixture(params=['normal','reordered','duplicate-sinks','sparse','balanced'])
+@pytest.fixture(params=['normal','reordered','duplicate-sinks','sparse','balanced','clock-budgets'])
 def inputs(tmp_path, monkeypatch,request):
     native=tmp_path/"native"; (native/"bin").mkdir(parents=True)
     for name,binary in (("emuflow-native",emuflow_native()),):
@@ -50,11 +50,15 @@ def inputs(tmp_path, monkeypatch,request):
     initial=build_partition_assignment(ir,fixture.platform,clusters,fixture.constraints,
         {f'c{i:06d}':('a' if i%2==0 else 'b') for i in range(len(clusters['clusters']))},'fixture',7,
         _include_semantic_contract=False,_stream_semantic_records=True,_defer_derived_records=True)
-    rows=[STA_PATH_DATABASE_TSV_HEADER]
+    rows=[STA_PATH_DATABASE_CLOCK_TSV_HEADER if request.param=='clock-budgets'else STA_PATH_DATABASE_TSV_HEADER]
     for i,path in enumerate(fixture.timing['paths']):
         identity=f"{path['startpoint']['instance']}/O->{path['endpoint']['instance']}/I#{i:08d}"
-        rows.append('\t'.join([identity.encode().hex(),'clk'.encode().hex(),str(path['clock_period_ns']),str(path['slack_ns']),
-            str(path['fixed_delay_ns']),','.join(n.encode().hex() for n in path['path_nets'])]))
+        row=[identity.encode().hex(),'clk'.encode().hex(),str(path['clock_period_ns']),str(path['slack_ns']),
+            str(path['fixed_delay_ns']),','.join(n.encode().hex() for n in path['path_nets'])]
+        if request.param=='clock-budgets':
+            period=path['clock_period_ns'];margin=period-path['fixed_delay_ns']-path['slack_ns']
+            row += ['clk'.encode().hex(),str(period),'0','0','0',str(period),'0',str(margin),'0','0','0','0','0','0']
+        rows.append('\t'.join(row))
     tsv=tmp_path/'paths.tsv'; tsv.write_text('\n'.join(rows)+'\n')
     timing=tmp_path/'timing.json'; import_sta_path_database_tsv_streaming(tsv,raw,timing,provider=OPENSTA_PROVIDER)
     manifest=read_json(timing)

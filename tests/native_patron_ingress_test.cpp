@@ -3,6 +3,7 @@
 // an entire graph again for this comparison.
 #include "emuflow_core/patron_ingress.hpp"
 #include "emuflow_core/hash.hpp"
+#include "emuflow_core/sqlite.hpp"
 #include <iostream>
 #include <iomanip>
 #include <type_traits>
@@ -59,8 +60,14 @@ int main(int argc,char** argv) {
     const int first=emit?2:1, count=argc-first-(emit?0:1);
     if (count!=5) return 2;
     using emuflow::core::ArtifactRef;
+    std::string timing_schema="timing-path-store-v1";
+    {
+      emuflow::core::SqliteDatabase db(argv[first+1],emuflow::core::SqliteDatabase::Mode::kReadOnly);
+      auto version=db.Prepare("PRAGMA user_version");
+      if(version.Step() && version.Integer(0)==2) timing_schema="timing-path-store-v2";
+    }
     std::vector<ArtifactRef> refs{
-      ArtifactRef::Bind(argv[first],"emuir-compact-v2"), ArtifactRef::Bind(argv[first+1],"timing-path-store-v1"),
+      ArtifactRef::Bind(argv[first],"emuir-compact-v2"), ArtifactRef::Bind(argv[first+1],timing_schema),
       ArtifactRef::Bind(argv[first+2],"partition-cluster-columns-v2")};
     refs.push_back(ArtifactRef::Bind(argv[first+3],"patron-initial-columns-v1"));
     refs.push_back(ArtifactRef::Bind(argv[first+count-1],"patron-board-request-v2"));

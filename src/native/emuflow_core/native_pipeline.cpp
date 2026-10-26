@@ -115,8 +115,18 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     case Stage::kExportBookshelf: return {"xilinx-mapped-index-v2", "openparf-atom-index-private-v1"};
     case Stage::kBuildCandidateIds: return {"emuir-compact-v2","candidate-policy-request-v1"};
     case Stage::kBuildPartitionClusters: return {"emuir-compact-v2","partition-cluster-request-v1"};
-    case Stage::kRefinePatronFromPrimary:
-      return {"emuir-compact-v2","timing-path-store-v1","partition-cluster-columns-v2","patron-initial-columns-v1","patron-board-request-v2"};
+    case Stage::kRefinePatronFromPrimary: {
+      std::string timing_schema="timing-path-store-v1";
+      if(request.input_artifacts.size()>1) timing_schema=request.input_artifacts[1].schema();
+      else if(request.input_paths.size()>1) {
+        core::SqliteDatabase db(request.input_paths[1],core::SqliteDatabase::Mode::kReadOnly);
+        auto version=db.Prepare("PRAGMA user_version");
+        if(version.Step() && version.Integer(0)==2) timing_schema="timing-path-store-v2";
+      }
+      if(timing_schema!="timing-path-store-v1" && timing_schema!="timing-path-store-v2")
+        throw core::StageError(core::ErrorCode::kInvalidArtifact,"unsupported PATRON TimingPathDB schema");
+      return {"emuir-compact-v2",timing_schema,"partition-cluster-columns-v2","patron-initial-columns-v1","patron-board-request-v2"};
+    }
   }
   throw core::StageError(core::ErrorCode::kInvalidRequest, "unknown native stage");
 }

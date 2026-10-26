@@ -28,6 +28,10 @@ from .phase3_storage import (
     read_phase3_cut_timing_view,
 )
 from .timing_routing import STA_PATHS_SCHEMA, compress_sta_paths
+from .sta_clock_budgets import (SCHEMA as STA_PATH_DATABASE_CLOCK_SCHEMA,
+    FORMAT as STA_PATH_DATABASE_CLOCK_FORMAT,STORE_SCHEMA as CLOCK_STORE_SCHEMA,
+    FIELDS as CLOCK_BUDGET_FIELDS,TSV_SUFFIX as CLOCK_BUDGET_TSV_SUFFIX,
+    DDL as CLOCK_BUDGET_DDL,ClockBudgetCursor,parse_tsv_budget,validate_clock_budget)
 
 
 STA_PATH_DATABASE_SCHEMA = "emuflow.sta-path-database/v1"
@@ -37,6 +41,8 @@ STA_PATH_DATABASE_PAYLOAD_FORMAT_V1 = "jsonl-object/v1"
 STA_PATH_DATABASE_PAYLOAD_FORMAT_V2 = "jsonl-sta-path-raw/v2"
 STA_PATH_DATABASE_PAYLOAD_FORMAT = "jsonl-sta-path-row/v3"
 STA_PATH_DATABASE_SQLITE_FORMAT = "sqlite-sta-path/v1"
+STA_PATH_DATABASE_INDEX_SCHEMAS = {STA_PATH_DATABASE_INDEX_SCHEMA,STA_PATH_DATABASE_CLOCK_SCHEMA}
+STA_PATH_DATABASE_SQLITE_FORMATS = {STA_PATH_DATABASE_SQLITE_FORMAT,STA_PATH_DATABASE_CLOCK_FORMAT}
 PARTITION_NET_WEIGHTS_SCHEMA = "emuflow.partition-net-weights/v1"
 PARTITION_NET_WEIGHTS_INDEX_SCHEMA = "emuflow.partition-net-weights/v2"
 PARTITION_NET_WEIGHTS_SQLITE_FORMAT = "sqlite-net-weights/v1"
@@ -48,6 +54,7 @@ STA_PATH_DATABASE_TSV_HEADER = (
     "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\t"
     "fixed_delay_ns\tpath_nets_hex"
 )
+STA_PATH_DATABASE_CLOCK_TSV_HEADER=STA_PATH_DATABASE_TSV_HEADER+'\t'+CLOCK_BUDGET_TSV_SUFFIX
 
 
 def _file_sha256(path: Path) -> str:
@@ -74,6 +81,7 @@ def _sta_path_payload(
             STA_PATH_DATABASE_PAYLOAD_FORMAT_V2,
             STA_PATH_DATABASE_PAYLOAD_FORMAT,
             STA_PATH_DATABASE_SQLITE_FORMAT,
+            STA_PATH_DATABASE_CLOCK_FORMAT,
         }
         or not isinstance(relative, str)
         or not relative
@@ -89,6 +97,8 @@ def _sta_path_payload(
     path = manifest_path.parent / relative
     if not path.is_file():
         raise ValidationError("STA path database payload is missing")
+    if (value.get('schema')==STA_PATH_DATABASE_CLOCK_SCHEMA)!=(descriptor['format']==STA_PATH_DATABASE_CLOCK_FORMAT):
+        raise ValidationError('STA path database clock schema/payload mismatch')
     return path, digest, records, str(descriptor["format"])
 
 
@@ -109,6 +119,7 @@ def sta_path_database_payload_path(
     if value.get("schema") not in {
         STA_PATH_DATABASE_STREAM_SCHEMA,
         STA_PATH_DATABASE_INDEX_SCHEMA,
+        STA_PATH_DATABASE_CLOCK_SCHEMA,
     }:
         raise ValidationError("STA path database schema is invalid")
     return _sta_path_payload(manifest_path, value)[0]
@@ -139,6 +150,8 @@ def _sta_path_endpoint_row(endpoint: Mapping[str, Any]) -> list[Any]:
 def _sta_path_record_row(record: Mapping[str, Any]) -> list[Any]:
     """Encode one path without repeating JSON object keys per endpoint."""
 
+    if 'clock_budget'in record:
+        raise ValidationError('clock-budget paths require indexed v4 storage')
     row: list[Any] = [
         record.get("id"),
         record.get("clock_domain"),
@@ -219,6 +232,7 @@ def iter_sta_path_database_paths(
     if schema not in {
         STA_PATH_DATABASE_STREAM_SCHEMA,
         STA_PATH_DATABASE_INDEX_SCHEMA,
+        STA_PATH_DATABASE_CLOCK_SCHEMA,
     }:
         raise ValidationError("STA path database schema is invalid")
     payload_path, expected_digest, expected_records, payload_format = _sta_path_payload(
@@ -230,11 +244,12 @@ def iter_sta_path_database_paths(
             STA_PATH_DATABASE_PAYLOAD_FORMAT_V2,
             STA_PATH_DATABASE_PAYLOAD_FORMAT,
             STA_PATH_DATABASE_SQLITE_FORMAT,
+            STA_PATH_DATABASE_CLOCK_FORMAT,
         }
         else None
     )
-    if payload_format == STA_PATH_DATABASE_SQLITE_FORMAT:
-        if schema != STA_PATH_DATABASE_INDEX_SCHEMA:
+    if payload_format in STA_PATH_DATABASE_SQLITE_FORMATS:
+        if schema not in STA_PATH_DATABASE_INDEX_SCHEMAS:
             raise ValidationError("STA path database payload/schema mismatch")
         if verify_payload:
             _verify_file_digest(
@@ -244,6 +259,7 @@ def iter_sta_path_database_paths(
             )
         connection = _open_sqlite_read_only(payload_path)
         try:
+            budgets=ClockBudgetCursor(connection)if payload_format==STA_PATH_DATABASE_CLOCK_FORMAT else None
             cursor = connection.execute(
                 """
                 SELECT p.ordinal, p.path_id, p.clock_domain,
@@ -290,6 +306,7 @@ def iter_sta_path_database_paths(
                     record["normalized_slack"] = _normalized_slack(
                         float(row[3]), float(row[4]), normalization
                     )
+                    if budgets is not None:budgets.attach(ordinal,record)
                 if record is None or int(row[14]) != len(record["path_nets"]):
                     raise ValidationError(
                         "STA path database SQLite net ordering is invalid"
@@ -300,6 +317,7 @@ def iter_sta_path_database_paths(
                 yield record
             if count != expected_records:
                 raise ValidationError("STA path database payload count disagrees")
+            if budgets is not None:budgets.finish()
         except sqlite3.DatabaseError as error:
             raise ValidationError(
                 "STA path database SQLite payload is invalid"
@@ -376,11 +394,11 @@ def iter_selected_sta_path_database_paths(
     if not requested:
         return
     schema = value.get("schema")
-    if schema == STA_PATH_DATABASE_INDEX_SCHEMA:
+    if schema in STA_PATH_DATABASE_INDEX_SCHEMAS:
         payload_path, expected_digest, _records, payload_format = (
             _sta_path_payload(path, value)
         )
-        if payload_format == STA_PATH_DATABASE_SQLITE_FORMAT:
+        if payload_format in STA_PATH_DATABASE_SQLITE_FORMATS:
             if verify_payload:
                 _verify_file_digest(
                     payload_path,
@@ -396,6 +414,7 @@ def iter_selected_sta_path_database_paths(
             try:
                 for offset in range(0, len(ordered_requested), 400):
                     batch = ordered_requested[offset : offset + 400]
+                    budgets=ClockBudgetCursor(connection,batch)if payload_format==STA_PATH_DATABASE_CLOCK_FORMAT else None
                     placeholders = ",".join("?" for _ in batch)
                     cursor = connection.execute(
                         f"""
@@ -447,6 +466,7 @@ def iter_selected_sta_path_database_paths(
                                     "port": row[12],
                                     "bit": int(row[13]),
                                 }
+                            if budgets is not None:budgets.attach(ordinal,record)
                         if (
                             record is None
                             or int(row[14]) != len(record["path_nets"])
@@ -458,6 +478,7 @@ def iter_selected_sta_path_database_paths(
                     if record is not None:
                         found.add(record["id"])
                         yield record
+                    if budgets is not None:budgets.finish()
             except sqlite3.DatabaseError as error:
                 raise ValidationError(
                     "STA path database SQLite payload is invalid"
@@ -521,6 +542,7 @@ def load_sta_path_database(
     if manifest.get("schema") not in {
         STA_PATH_DATABASE_STREAM_SCHEMA,
         STA_PATH_DATABASE_INDEX_SCHEMA,
+        STA_PATH_DATABASE_CLOCK_SCHEMA,
     }:
         raise ValidationError("STA path database schema is invalid")
     return {
@@ -808,11 +830,12 @@ def _parse_sta_path_database_tsv_record(
     *,
     known_nets: set[str],
     object_index: Mapping[str, Mapping[str, Any]],
+    clock_budgets: bool = False,
 ) -> Dict[str, Any]:
     fields = line.split("\t")
-    if len(fields) != 6:
+    if len(fields) != 6+(len(CLOCK_BUDGET_FIELDS)if clock_budgets else 0):
         raise ValidationError(
-            f"STA path database TSV line {index}: expected six fields"
+            f"STA path database TSV line {index}: invalid field count"
         )
     path_id = _hex_decode(
         fields[0], f"STA path database TSV line {index} path"
@@ -871,6 +894,7 @@ def _parse_sta_path_database_tsv_record(
         "fixed_delay_ns": fixed_delay,
         "path_nets": path_nets,
     }
+    if clock_budgets:parse_tsv_budget(fields[6:],record)
     try:
         startpoint, endpoint = sta_path_endpoints(record, object_index)
     except ValidationError:
@@ -893,6 +917,16 @@ def import_sta_path_database_tsv(
 ) -> Dict[str, Any]:
     if provider not in STA_PATH_DATABASE_PROVIDERS:
         raise ValidationError("STA path database provider is invalid")
+    with input_path.open()as stream:
+        budget_format=stream.readline().rstrip('\r\n')==STA_PATH_DATABASE_CLOCK_TSV_HEADER
+    if source is not None and 'clock_budget_policy'in source and source['clock_budget_policy']!=(
+            'engine-edge-v1'if budget_format else'legacy-absolute-arrival-v1'):
+        raise ValidationError('STA clock budget policy/header mismatch')
+    if budget_format:
+        report=import_sta_path_database_tsv_streaming(input_path,ir_path,output_path,
+            provider=provider,source=source,_ir=_ir)
+        if _return_value:report['_value']=load_sta_path_database(output_path,verify_payload=False)
+        return report
     # Large physical timing graphs can exceed hundreds of MiB.  The OpenSTA
     # producer already owns the validated EmuIR object, so let that producer
     # pass the object through rather than reparsing the same JSON solely for
@@ -1085,8 +1119,15 @@ def import_sta_path_database_tsv_streaming(
         )
         with input_path.open("r", encoding="utf-8") as source_stream:
             header = source_stream.readline().rstrip("\r\n")
-            if header != STA_PATH_DATABASE_TSV_HEADER:
+            if header not in {STA_PATH_DATABASE_TSV_HEADER,STA_PATH_DATABASE_CLOCK_TSV_HEADER}:
                 raise ValidationError("STA path database TSV: invalid header")
+            clock_budgets=header==STA_PATH_DATABASE_CLOCK_TSV_HEADER
+            if source is not None and 'clock_budget_policy'in source and source['clock_budget_policy']!=(
+                    'engine-edge-v1'if clock_budgets else'legacy-absolute-arrival-v1'):
+                raise ValidationError('STA clock budget policy/header mismatch')
+            if clock_budgets:
+                connection.execute('PRAGMA user_version=2')
+                connection.executescript(CLOCK_BUDGET_DDL)
             for index, raw in enumerate(source_stream, start=2):
                 line = raw.rstrip("\r\n")
                 if not line:
@@ -1096,6 +1137,7 @@ def import_sta_path_database_tsv_streaming(
                     index,
                     known_nets=known_nets,
                     object_index=object_index,
+                    clock_budgets=clock_budgets,
                 )
                 path_id = record["id"]
                 if path_id in path_ids:
@@ -1160,6 +1202,9 @@ def import_sta_path_database_tsv_streaming(
                         )
                     ),
                 )
+                if clock_budgets:
+                    connection.execute('INSERT INTO clock_budgets VALUES ('+','.join('?'for _ in range(1+len(CLOCK_BUDGET_FIELDS)))+')',
+                        (count,*(record['clock_budget'][key]for key in CLOCK_BUDGET_FIELDS)))
                 count += 1
         if count == 0:
             raise ValidationError(
@@ -1172,7 +1217,7 @@ def import_sta_path_database_tsv_streaming(
             temporary_path,
             output_path,
             "paths",
-            "timing-path-store-v1",
+            CLOCK_STORE_SCHEMA if clock_budgets else "timing-path-store-v1",
             source_bindings,
         )
     finally:
@@ -1195,6 +1240,7 @@ def import_sta_path_database_tsv_streaming(
 
     source_value = dict(source) if source is not None else {}
     source_value.update({"provider": provider, "input": str(input_path)})
+    if clock_budgets:source_value['clock_budget_policy']='engine-edge-v1'
     qor = {
         "wns_ns": worst_slack,
         "tns_ns": math.fsum(negative_slacks),
@@ -1202,7 +1248,7 @@ def import_sta_path_database_tsv_streaming(
         "timed_endpoints": count,
     }
     artifact = {
-        "schema": STA_PATH_DATABASE_INDEX_SCHEMA,
+        "schema": STA_PATH_DATABASE_CLOCK_SCHEMA if clock_budgets else STA_PATH_DATABASE_INDEX_SCHEMA,
         "design": ir.value["design"]["name"],
         "source": source_value,
         "normalization": normalization,
@@ -1214,13 +1260,14 @@ def import_sta_path_database_tsv_streaming(
         },
         "payloads": {
             "paths": {
-                "format": STA_PATH_DATABASE_SQLITE_FORMAT,
+                "format": STA_PATH_DATABASE_CLOCK_FORMAT if clock_budgets else STA_PATH_DATABASE_SQLITE_FORMAT,
                 "path": payload_path.name,
                 "sha256": payload_sha256,
                 "records": count,
             }
         },
     }
+    if clock_budgets:artifact['summary']['clock_budget_paths']=count
     commit_store_selector(
         output_path, artifact, source_bindings, payload_path, created_payload
     )
@@ -1243,6 +1290,7 @@ def _validate_sta_path_database_stream(
     if database.get("schema") not in {
         STA_PATH_DATABASE_STREAM_SCHEMA,
         STA_PATH_DATABASE_INDEX_SCHEMA,
+        STA_PATH_DATABASE_CLOCK_SCHEMA,
     }:
         raise ValidationError("STA path database schema is invalid")
     if database.get("design") != ir.value["design"]["name"]:
@@ -1276,6 +1324,9 @@ def _validate_sta_path_database_stream(
             "fixed_delay_ns", "path_nets", "normalized_slack",
         }
         endpoint_keys = {"startpoint", "endpoint"}
+        if database.get('schema')==STA_PATH_DATABASE_CLOCK_SCHEMA or 'clock_budget'in path:
+            required_keys.add('clock_budget')
+            validate_clock_budget(path)
         if not (
             set(path) == required_keys
             or set(path) == required_keys | endpoint_keys
@@ -1354,6 +1405,9 @@ def _validate_sta_path_database_stream(
         "failing_endpoints": len(negative_slacks),
         "timed_endpoints": count,
     }
+    if database.get('schema')==STA_PATH_DATABASE_CLOCK_SCHEMA and (
+            not isinstance(summary,dict)or summary.get('clock_budget_paths')!=count):
+        raise ValidationError('STA clock budget population summary disagrees')
     if not isinstance(summary, dict) or (
         summary.get("paths") != count
         or summary.get("structured_endpoint_paths")
@@ -1439,6 +1493,9 @@ def validate_sta_path_database_value(
             "normalized_slack",
         }
         endpoint_keys = {"startpoint", "endpoint"}
+        if database.get('schema')==STA_PATH_DATABASE_CLOCK_SCHEMA or 'clock_budget'in path:
+            required_keys.add('clock_budget')
+            validate_clock_budget(path)
         if not (
             set(path) == required_keys
             or set(path) == required_keys | endpoint_keys
@@ -1545,6 +1602,7 @@ def validate_sta_path_database(
         if database.get("schema") in {
             STA_PATH_DATABASE_STREAM_SCHEMA,
             STA_PATH_DATABASE_INDEX_SCHEMA,
+            STA_PATH_DATABASE_CLOCK_SCHEMA,
         }:
             return _validate_sta_path_database_stream(
                 database_path, database, ir
@@ -1565,6 +1623,7 @@ def validate_sta_path_database_path_value(
     if database.get("schema") in {
         STA_PATH_DATABASE_STREAM_SCHEMA,
         STA_PATH_DATABASE_INDEX_SCHEMA,
+        STA_PATH_DATABASE_CLOCK_SCHEMA,
     }:
         return _validate_sta_path_database_stream(
             database_path, database, ir
@@ -1595,7 +1654,7 @@ def derive_partition_net_weights(
         + _sta_ir_source_bindings(ir_path),
     )
     database = read_json(database_path)
-    if database.get("schema") == STA_PATH_DATABASE_INDEX_SCHEMA:
+    if database.get("schema") in STA_PATH_DATABASE_INDEX_SCHEMAS:
         source_payload, _digest, _records, source_format = _sta_path_payload(
             database_path, database
         )
@@ -1605,6 +1664,7 @@ def derive_partition_net_weights(
                 (
                     "timing-path-store-v1"
                     if source_format == STA_PATH_DATABASE_SQLITE_FORMAT
+                    else CLOCK_STORE_SCHEMA if source_format==STA_PATH_DATABASE_CLOCK_FORMAT
                     else "sta-source-document-v1"
                 ),
             ),
@@ -2099,6 +2159,7 @@ def project_sta_path_database_value(
         STA_PATH_DATABASE_SCHEMA,
         STA_PATH_DATABASE_STREAM_SCHEMA,
         STA_PATH_DATABASE_INDEX_SCHEMA,
+        STA_PATH_DATABASE_CLOCK_SCHEMA,
     }:
         raise ValidationError("STA path database schema is invalid")
     if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:

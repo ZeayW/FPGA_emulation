@@ -42,7 +42,7 @@ from .routing import static_exact_contract_from_assignment, system_route_timing_
 from .system_route_storage import pretty_system_routes_sha256, read_system_routes
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
-    STA_PATH_DATABASE_INDEX_SCHEMA,
+    STA_PATH_DATABASE_INDEX_SCHEMA, STA_PATH_DATABASE_CLOCK_SCHEMA,
     STA_PATH_DATABASE_STREAM_SCHEMA,
     iter_selected_sta_path_database_paths,
     sta_object_index,
@@ -681,7 +681,7 @@ def prepare_logic_segment_query_inputs(
     if path_database.get("schema") not in {
         STA_PATH_DATABASE_SCHEMA,
         STA_PATH_DATABASE_STREAM_SCHEMA,
-        STA_PATH_DATABASE_INDEX_SCHEMA,
+        STA_PATH_DATABASE_INDEX_SCHEMA, STA_PATH_DATABASE_CLOCK_SCHEMA,
     }:
         raise ValidationError("logic segment STA database schema is invalid")
 

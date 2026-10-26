@@ -26,14 +26,14 @@ from .resources import RESOURCE_FIELDS
 def supports_native_pressure_model(ir, clusters, timing):
     from .partition_ir import CompactPartitionIR
     from .partition import _CompactClusterRecords, CUT_MODE_STATIC_EXACT
-    from .sta import STA_PATH_DATABASE_INDEX_SCHEMA, STA_PATH_DATABASE_SQLITE_FORMAT
+    from .sta import STA_PATH_DATABASE_INDEX_SCHEMA, STA_PATH_DATABASE_CLOCK_SCHEMA, STA_PATH_DATABASE_SQLITE_FORMAT, STA_PATH_DATABASE_CLOCK_FORMAT
     payloads = timing.get("payloads")
     descriptor = payloads.get("paths") if isinstance(payloads, dict) else None
     return (isinstance(ir, CompactPartitionIR)
             and isinstance(clusters.get("clusters"), _CompactClusterRecords)
             and clusters.get("policy", {}).get("cut_mode") == CUT_MODE_STATIC_EXACT
-            and timing.get("schema") == STA_PATH_DATABASE_INDEX_SCHEMA
-            and isinstance(descriptor, dict) and descriptor.get("format") == STA_PATH_DATABASE_SQLITE_FORMAT)
+            and timing.get("schema") in {STA_PATH_DATABASE_INDEX_SCHEMA,STA_PATH_DATABASE_CLOCK_SCHEMA}
+            and isinstance(descriptor, dict) and descriptor.get("format") in {STA_PATH_DATABASE_SQLITE_FORMAT,STA_PATH_DATABASE_CLOCK_FORMAT})
 
 
 class _NativeClusterOrder(Sequence):

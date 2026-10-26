@@ -58,8 +58,8 @@ from .routing import (
     route_hop_delay_ns,
 )
 from .sta import (
-    STA_PATH_DATABASE_INDEX_SCHEMA,
-    STA_PATH_DATABASE_SQLITE_FORMAT,
+    STA_PATH_DATABASE_INDEX_SCHEMA, STA_PATH_DATABASE_CLOCK_SCHEMA,
+    STA_PATH_DATABASE_SQLITE_FORMAT, STA_PATH_DATABASE_CLOCK_FORMAT,
     _normalized_slack,
     _validate_database_normalization,
     iter_sta_path_database_paths,
@@ -1308,10 +1308,10 @@ def _compact_partition_pressure_graph(
     indexed_timing = (
         timing_database_path is not None
         and isinstance(timing_database, Mapping)
-        and timing_database.get("schema") == STA_PATH_DATABASE_INDEX_SCHEMA
+        and timing_database.get("schema") in {STA_PATH_DATABASE_INDEX_SCHEMA,STA_PATH_DATABASE_CLOCK_SCHEMA}
         and isinstance(timing_descriptor, Mapping)
         and timing_descriptor.get("format")
-        == STA_PATH_DATABASE_SQLITE_FORMAT
+        in {STA_PATH_DATABASE_SQLITE_FORMAT,STA_PATH_DATABASE_CLOCK_FORMAT}
     )
     connection = open_emuir_sqlite_read_only(ir.path)
     try:
@@ -1763,7 +1763,7 @@ def _append_indexed_pressure_paths(
         version = connection.execute(
             f"PRAGMA {alias}.user_version"
         ).fetchone()[0]
-        if version != 1:
+        if version not in {1,2}:
             raise ValidationError(
                 "indexed timing database SQLite version is invalid"
             )
@@ -1952,9 +1952,9 @@ def _reconstruct_partition_pressure_model(
     )
     indexed_unique_path_ids = (
         timing_database_path is not None
-        and timing_database.get("schema") == STA_PATH_DATABASE_INDEX_SCHEMA
+        and timing_database.get("schema") in {STA_PATH_DATABASE_INDEX_SCHEMA,STA_PATH_DATABASE_CLOCK_SCHEMA}
         and isinstance(path_descriptor, Mapping)
-        and path_descriptor.get("format") == STA_PATH_DATABASE_SQLITE_FORMAT
+        and path_descriptor.get("format") in {STA_PATH_DATABASE_SQLITE_FORMAT,STA_PATH_DATABASE_CLOCK_FORMAT}
     )
     from .partition_ir import CompactPartitionIR
 

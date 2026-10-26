@@ -39,7 +39,7 @@ from .routing import system_route_timing_paths
 from .system_route_storage import read_system_routes
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
-    STA_PATH_DATABASE_INDEX_SCHEMA,
+    STA_PATH_DATABASE_INDEX_SCHEMA, STA_PATH_DATABASE_CLOCK_SCHEMA,
     STA_PATH_DATABASE_STREAM_SCHEMA,
     iter_sta_path_database_paths,
     sta_object_index,
@@ -830,7 +830,7 @@ def prepare_local_path_query_inputs(
     if database.get("schema") not in {
         STA_PATH_DATABASE_SCHEMA,
         STA_PATH_DATABASE_STREAM_SCHEMA,
-        STA_PATH_DATABASE_INDEX_SCHEMA,
+        STA_PATH_DATABASE_INDEX_SCHEMA, STA_PATH_DATABASE_CLOCK_SCHEMA,
     }:
         raise ValidationError("local path STA database schema is invalid")
     if assignment.get("schema") != PARTITION_ASSIGNMENT_SCHEMA:

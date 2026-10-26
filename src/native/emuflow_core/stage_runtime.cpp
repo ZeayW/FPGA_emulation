@@ -157,6 +157,15 @@ constexpr RegisteredSchema schemas[] = {
      "WHERE name IN ('ordinal','path_id','clock_domain','clock_period_ns','slack_ns','start_instance','end_instance'))=7 "
      "AND (SELECT count(*) FROM pragma_table_info('path_nets') WHERE name IN ('path_ordinal','net_ordinal','net_id'))=3",
      "timing-path-store-v1"},
+    {"timing-path-store-v2", ArtifactEncoding::kSqlite, 0, 2, true,
+     "SELECT 'timing-path-store-v2' WHERE (SELECT count(*) FROM pragma_table_info('paths') "
+     "WHERE name IN ('ordinal','path_id','clock_domain','clock_period_ns','slack_ns','start_instance','end_instance'))=7 "
+     "AND (SELECT count(*) FROM pragma_table_info('path_nets') WHERE name IN ('path_ordinal','net_ordinal','net_id'))=3 "
+     "AND (SELECT count(*) FROM pragma_table_info('clock_budgets') WHERE name IN "
+     "('path_ordinal','source_clock','source_period_ns','launch_edge_ns','capture_edge_ns','source_offset_ns',"
+     "'target_cycle_time_ns','multicycle_adjustment_ns','check_margin_ns','source_latency_ns','target_clock_delay_ns',"
+     "'clock_skew_ns','output_delay','path_delay','latch_check'))=15",
+     "timing-path-store-v2"},
     {"patron-cluster-order-v1", ArtifactEncoding::kBinary, 0x3152444f54415045ULL, 1},
     {"patron-model-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"exact-analysis-input-v3", ArtifactEncoding::kBinary, 0x31584553464d5545ULL, 3},

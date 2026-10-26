@@ -30,6 +30,17 @@ proc emuflow_hex_encode {value} {
   binary scan [encoding convertto utf-8 $value] H* encoded
   return $encoded
 }
+set emuflow_budget_policy legacy-absolute-arrival-v1
+if {[info exists env(EMUFLOW_STA_CLOCK_BUDGET_POLICY)]} {set emuflow_budget_policy $env(EMUFLOW_STA_CLOCK_BUDGET_POLICY)}
+if {$emuflow_budget_policy ni {legacy-absolute-arrival-v1 engine-edge-v1}} {error "unsupported clock budget export policy"}
+set emuflow_path_header "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
+set emuflow_budget_fields {source_clock source_period_ns launch_edge_ns capture_edge_ns source_offset_ns target_cycle_time_ns multicycle_adjustment_ns check_margin_ns source_latency_ns target_clock_delay_ns clock_skew_ns output_delay path_delay latch_check}
+if {$emuflow_budget_policy eq "engine-edge-v1"} {
+  source [file join [file dirname [info script]] clock_budget.tcl]
+  foreach key $emuflow_budget_fields {
+    append emuflow_path_header "\t" [expr {$key eq "source_clock" ? "source_clock_hex" : $key}]
+  }
+}
 
 set liberty_path [file normalize [emuflow_required_env EMUFLOW_STA_LIBERTY]]
 set verilog_path [file normalize [emuflow_required_env EMUFLOW_STA_VERILOG]]
@@ -164,7 +175,7 @@ set queried_paths 0
 # of retaining those handles across the per-cut-net loop.
 proc emuflow_emit_timing_paths {
     timing_paths output_var emitted_var {required_net ""}} {
-  global emuir_by_mapped_net emuir_by_pin_full_name
+  global emuir_by_mapped_net emuir_by_pin_full_name emuflow_budget_policy emuflow_budget_fields
   upvar 1 $output_var output
   upvar 1 $emitted_var emitted
   foreach path_end $timing_paths {
@@ -180,6 +191,14 @@ proc emuflow_emit_timing_paths {
       continue
     }
     set fixed_delay [get_property [lindex $points end] arrival]
+    if {$emuflow_budget_policy eq "engine-edge-v1"} {
+      set budget [emuflow_clock_budget $path_end]
+      if {[dict get $budget path_delay] || [dict get $budget latch_check]} {
+        error "clock-edge export requires a supported clocked setup/output check"
+      }
+      if {[dict get $budget target_clock] ne $clock_name} {error "clock budget capture clock differs"}
+      set fixed_delay [dict get $budget launch_relative_arrival_ns]
+    }
     set startpoint [get_property $path_end startpoint]
     set endpoint [get_property $path_end endpoint]
     set start_name [get_property $startpoint full_name]
@@ -223,7 +242,15 @@ proc emuflow_emit_timing_paths {
       lappend path_hex [emuflow_hex_encode $net]
     }
     set path_id "$start_name->$end_name#[format %08d $emitted]"
-    puts $output "[emuflow_hex_encode $path_id]\t[emuflow_hex_encode $clock_name]\t$clock_period\t$slack\t$fixed_delay\t[join $path_hex ,]"
+    set row "[emuflow_hex_encode $path_id]\t[emuflow_hex_encode $clock_name]\t$clock_period\t$slack\t$fixed_delay\t[join $path_hex ,]"
+    if {$emuflow_budget_policy eq "engine-edge-v1"} {
+      foreach key $emuflow_budget_fields {
+        set value [dict get $budget $key]
+        if {$key eq "source_clock"} {set value [emuflow_hex_encode $value]}
+        append row "\t" $value
+      }
+    }
+    puts $output $row
     incr emitted
   }
 }
@@ -231,7 +258,7 @@ proc emuflow_emit_timing_paths {
 if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     $env(EMUFLOW_STA_THROUGH_NETS) ne ""} {
   set output [open $output_path w]
-  puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
+  puts $output $emuflow_path_header
   if {![info exists env(EMUFLOW_STA_THROUGH_COVERAGE)] ||
       $env(EMUFLOW_STA_THROUGH_COVERAGE) eq ""} {
     error "EMUFLOW_STA_THROUGH_COVERAGE is required for directed extraction"
@@ -394,7 +421,7 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     error "OpenSTA found no timing endpoints"
   }
   set output [open $output_path w]
-  puts $output "path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
+  puts $output $emuflow_path_header
   set timing_paths [find_timing_paths -path_delay max \
       -group_path_count $report_limit -endpoint_path_count 1 \
       -sort_by_slack]

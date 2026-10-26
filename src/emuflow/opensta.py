@@ -1317,7 +1317,13 @@ def _run_opensta_path_database(
     _return_database: bool = False,
     _stream_output: bool = False,
     _ir=None,
+    clock_budget_policy: str = 'legacy-absolute-arrival-v1',
 ) -> Dict[str, Any]:
+    if not isinstance(clock_budget_policy,str)or clock_budget_policy not in {'legacy-absolute-arrival-v1','engine-edge-v1'}:
+        raise ValidationError('unsupported OpenSTA clock budget export policy')
+    if clock_budget_policy=='engine-edge-v1':
+        from .native_tools import require_native_schema
+        require_native_schema('timing-path-store-v2')
     if max_paths <= 0:
         raise ValidationError("OpenSTA max_paths must be positive")
     if _stream_output and _return_database:
@@ -1424,6 +1430,7 @@ def _run_opensta_path_database(
                 "EMUFLOW_STA_TIMING_IO": str(timing_io_path),
                 "EMUFLOW_STA_OUTPUT": str(raw_path),
                 "EMUFLOW_STA_MAX_PATHS": str(max_paths),
+                "EMUFLOW_STA_CLOCK_BUDGET_POLICY": clock_budget_policy,
                 "EMUFLOW_STA_THROUGH_NETS": (
                     str(through_path) if through_net_ids else ""
                 ),
@@ -1453,6 +1460,8 @@ def _run_opensta_path_database(
                 "OpenSTA reported success but did not create its path TSV"
             )
         source_value = {
+            'clock_budget_policy':clock_budget_policy,
+            'export_script_sha256':file_sha256(OPENSTA_EXPORT_SCRIPT),
             "timing_model": model["name"],
             "timing_model_qualification": model["source"]["qualification"],
             "engine": engine,
@@ -1462,6 +1471,8 @@ def _run_opensta_path_database(
             ),
             "timing_io": timing_io_summary,
         }
+        if clock_budget_policy=='engine-edge-v1':
+            source_value['clock_budget_script_sha256']=file_sha256(OPENSTA_EXPORT_SCRIPT.with_name('clock_budget.tcl'))
         if _stream_output:
             imported = import_sta_path_database_tsv_streaming(
                 raw_path,
@@ -1605,6 +1616,7 @@ def run_opensta_path_database(
     log_path: Optional[Path] = None, through_nets: Optional[Sequence[str]] = None,
     through_coverage_path: Optional[Path] = None, validate_output: bool = True,
     _return_database: bool = False, _stream_output: bool = False,
+    clock_budget_policy: str = 'legacy-absolute-arrival-v1',
 ) -> Dict[str, Any]:
     """Use compact streaming input for production Xilinx timing extraction."""
     from .emuir_storage import is_emuir_sqlite
@@ -1622,6 +1634,7 @@ def run_opensta_path_database(
             executable=executable, max_paths=max_paths, log_path=log_path, through_nets=through_nets,
             through_coverage_path=through_coverage_path, validate_output=validate_output,
             _return_database=_return_database, _stream_output=_stream_output, _ir=view,
+            clock_budget_policy=clock_budget_policy,
         )
     finally:
         if view is not None:

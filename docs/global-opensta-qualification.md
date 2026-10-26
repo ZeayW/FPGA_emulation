@@ -219,6 +219,46 @@ there is no fabricated engine log or numerical-execution claim.
 
 ## Qualification
 
+### Phase 2 clock-budget owner
+
+The explicit `run_opensta_path_database(..., clock_budget_policy="engine-edge-v1")`
+policy publishes `emuflow.sta-path-database/v4` with `sqlite-sta-path/v2` storage.
+One `clock_budgets` row references each original `paths.ordinal`; it shares the
+same immutable SQLite generation and publication seal as paths and ordered nets.
+The relation owns source clock/period, launch and capture edges, cycle offset,
+target cycle time, multicycle adjustment, check margin, clock latency/skew and
+check classification. Target clock/period remain owned by the path row.
+Import checks these facts while streaming the producer output; readers stream
+budgets once per path, including indexed selections, rather than per net.
+Missing/extra records and schema/format mixtures are rejected. Native PATRON
+retains its direct indexed path projection for both storage versions.
+
+For this policy, `fixed_delay_ns` is the engine arrival relative to the source
+launch edge after removing the engine cycle offset. It includes any explicit
+source-clock latency; it is not a routed physical datapath measurement. The
+engine's check margin is a reference-model fact, not a substitute for routed
+setup/skew evidence. Edge windows are computed from engine cycle accounting,
+not inferred from slack or a register's name. Latch, absolute-delay and missing
+clock-edge cases fail explicitly rather than receiving an assumed full cycle.
+
+The named `legacy-absolute-arrival-v1` policy remains the default during global
+budget integration. Historical indexed v3/v1 data remains readable without
+inventing missing clock facts. Clock-budget rows cannot be repacked through the
+legacy key-free JSON row writer. Full-flow word physical/global execution and
+safe-frequency reporting remain unqualified until their consumers use these
+budgets and physical margins.
+
+The separate indexed producer qualification uses real positive and negative
+`FDRE` models, a pinned architecture timing database and explicit output delay:
+
+```bash
+PYTHONPATH=src python3 scripts/validation/qualify_opensta_phase2_clock_budget.py \
+  --sta sta --architecture-timing-db path/to/xilinx-preplacement-timing.json \
+  --out build/phase2-clock-budget
+```
+
+This is synthetic Phase 2/API evidence, not whole-design or physical timing.
+
 The standalone engine exposes its source clock edge/offset, target cycle time
 and multicycle adjustment through read-only PathEnd methods. The separate
 `scripts/validation/qualify_opensta_clock_budget.py --sta sta --out build/clock-budget`
