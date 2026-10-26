@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -96,6 +98,40 @@ def test_typed_boundary_timing_rejects_duplicate_schedule_kind(
         write_boundary_timing_storage(
             tmp_path / "boundary-timing.json", _header(), [first, second]
         )
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_existing_data_only_boundary_stores_are_readable(tmp_path, version):
+    import emuflow.boundary_timing_storage as storage
+    current = tmp_path/"current.json"
+    rows = [_record("rx-0", "rx", 0), _record("tx-1", "tx", 1)]
+    with write_boundary_timing_storage(current, _header(), rows) as view:
+        selector = dict(view.selector)
+        old = tmp_path/"old.sqlite"
+        with sqlite3.connect(old) as db:
+            db.executescript(storage._DDL_V1 if version == 1 else storage._DDL_V2)
+            db.execute(f"PRAGMA application_id={storage.BOUNDARY_TIMING_APPLICATION_ID}")
+            db.execute(f"PRAGMA user_version={version}")
+            db.execute("ATTACH DATABASE ? AS current", (str(view.store_path),))
+            columns = ",".join(r[1] for r in db.execute("PRAGMA table_info(timings)"))
+            db.execute(f"INSERT INTO timings SELECT {columns} FROM current.timings")
+            db.execute("INSERT INTO metadata SELECT * FROM current.metadata")
+        digest = hashlib.sha256(old.read_bytes()).hexdigest()
+        owner = tmp_path/"old.json";artifact = owner.with_name(storage._store_name(owner, digest))
+        old.rename(artifact)
+        selector.update(schema=f"emuflow.boundary-timing-storage/v{version}", user_version=version,
+                        artifact=artifact.name, store_bytes=artifact.stat().st_size, store_sha256=digest)
+        owner.write_text(json.dumps(selector))
+    with read_boundary_timing_storage(owner) as view:
+        assert list(view["endpoints"]) == rows
+
+
+def test_boundary_sampling_cost_requires_every_implemented_endpoint(tmp_path):
+    from emuflow.sampling_cost import SAMPLING_COST_POLICY
+    with pytest.raises(ValidationError):
+        write_boundary_timing_storage(tmp_path/"bad.json",
+            {**_header(), "sampling_cost_policy": SAMPLING_COST_POLICY},
+            [{**_record("rx-0", "rx", 0), "sampling_cost_ns": 1.}, _record("tx-1", "tx", 1)])
 
 
 def test_typed_boundary_timing_rejects_store_tampering(tmp_path: Path) -> None:

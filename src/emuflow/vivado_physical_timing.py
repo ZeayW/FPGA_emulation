@@ -154,19 +154,21 @@ def import_indexed_vivado_boundary(
             source_bindings = bind_view_sources(
                 (identities, "boundary-identity-store-v1")
             ) + (measurement_source,)
-            connection.execute("CREATE TABLE measurements(id TEXT PRIMARY KEY,kind TEXT,delay REAL,start TEXT,end TEXT,optimization_source TEXT)")
+            connection.execute("CREATE TABLE measurements(id TEXT PRIMARY KEY,kind TEXT,delay REAL,start TEXT,end TEXT,optimization_source TEXT,sampling_cost_ns REAL)")
             with input_path.open(encoding="utf-8") as stream:
                 header = next(stream, "").rstrip("\n")
                 base_header = "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex"
-                if header not in {base_header, base_header+"\tmeasurement"}:
+                cost_header = base_header+"\tmeasurement\treference_cost_ns\tcheck_clock_adjustment_ns"
+                if header not in {base_header, base_header+"\tmeasurement", cost_header}:
                     raise ValidationError("Vivado boundary timing header is invalid")
                 extended = header != base_header
+                sampling_costs = header == cost_header
                 for line in stream:
                     if not line.strip():
                         continue
                     fields = line.rstrip("\n").split("\t")
                     try:
-                        if len(fields) != (6 if extended else 5):
+                        if len(fields) != (8 if sampling_costs else 6 if extended else 5):
                             raise ValueError("invalid field count")
                         eliminated = extended and fields[5].startswith(OPTIMIZED_AWAY+":")
                         source = fields[5].split(":",1)[1] if eliminated else None
@@ -175,13 +177,14 @@ def import_indexed_vivado_boundary(
                         row = (bytes.fromhex(fields[0]).decode("utf-8"), fields[1], None if eliminated else float(fields[2]),
                                None if eliminated else bytes.fromhex(fields[3]).decode("utf-8"),
                                None if eliminated else bytes.fromhex(fields[4]).decode("utf-8"), source)
-                        connection.execute("INSERT INTO measurements VALUES (?,?,?,?,?,?)", row)
+                        cost = parse_reference_cost_fields(fields[6:], row[2], eliminated=eliminated) if sampling_costs else None
+                        connection.execute("INSERT INTO measurements VALUES (?,?,?,?,?,?,?)", (*row, cost))
                     except (ValueError, UnicodeDecodeError, sqlite3.IntegrityError) as error:
                         raise ValidationError("Vivado boundary timing row is invalid or duplicated") from error
             def records():
                 count = 0
                 for identity in identities["endpoints"]:
-                    row = connection.execute("SELECT kind,delay,start,end,optimization_source FROM measurements WHERE id=?", (identity["id"],)).fetchone()
+                    row = connection.execute("SELECT kind,delay,start,end,optimization_source,sampling_cost_ns FROM measurements WHERE id=?", (identity["id"],)).fetchone()
                     if row is None or row[0] != identity["kind"]:
                         raise ValidationError("Vivado boundary timing coverage disagrees")
                     measurement = {"delay_ns": row[1], "start_object": row[2], "end_object": row[3]}
@@ -190,11 +193,18 @@ def import_indexed_vivado_boundary(
                         validate_optimization_record(measurement)
                         require_boundary_optimization_proof({"optimization_proofs":{identities["fpga"]:optimization_proofs}},
                                                             identities["fpga"],measurement,identity)
-                    yield boundary_timing_record(identity, measurement, measurement_scope=measurement_scope)
+                    if row[5] is not None:
+                        measurement["sampling_cost_ns"] = float(row[5])
+                    yield boundary_timing_record(identity, measurement, measurement_scope=measurement_scope,
+                                                 sampling_cost_policy=SAMPLING_COST_POLICY if sampling_costs else None)
                     count += 1
                 if count != connection.execute("SELECT count(*) FROM measurements").fetchone()[0]:
                     raise ValidationError("Vivado boundary timing has unexpected endpoints")
             header = boundary_timing_header(identities, provider=provider, qualification=qualification, measurement_scope=measurement_scope)
+            if sampling_costs:
+                header.update(sampling_cost_policy=SAMPLING_COST_POLICY)
+                if provider == "vivado-indexed-routed-boundary-v1":
+                    header["provider"] = "vivado-indexed-routed-boundary-sampling-cost-v1"
             with write_boundary_timing_storage(
                 output_path, header, records(), source_bindings=source_bindings
             ) as view:

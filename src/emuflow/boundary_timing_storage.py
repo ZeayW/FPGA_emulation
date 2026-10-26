@@ -27,13 +27,18 @@ from .store_publication import (
 )
 from .io import file_sha256, read_json, write_json
 from .timing_disposition import OPTIMIZED_AWAY, is_optimized_away, validate_optimization_record
+from .sampling_cost import SAMPLING_COST_POLICY, validate_sampling_cost
 
 
 BOUNDARY_TIMING_SCHEMA = "emuflow.boundary-timing/v1"
 BOUNDARY_TIMING_STORAGE_SCHEMA_V1 = "emuflow.boundary-timing-storage/v1"
-BOUNDARY_TIMING_STORAGE_SCHEMA = "emuflow.boundary-timing-storage/v2"
+BOUNDARY_TIMING_STORAGE_SCHEMA_V2 = "emuflow.boundary-timing-storage/v2"
+BOUNDARY_TIMING_STORAGE_SCHEMA = "emuflow.boundary-timing-storage/v3"
 BOUNDARY_TIMING_APPLICATION_ID = 0x454D5554  # ASCII "EMUT"
-BOUNDARY_TIMING_USER_VERSION = 2
+BOUNDARY_TIMING_USER_VERSION = 3
+_STORAGE_VERSIONS = {BOUNDARY_TIMING_STORAGE_SCHEMA_V1: 1,
+                     BOUNDARY_TIMING_STORAGE_SCHEMA_V2: 2,
+                     BOUNDARY_TIMING_STORAGE_SCHEMA: 3}
 
 _HEADER_KEYS = {
     "schema", "status", "design", "platform", "fpga", "provider",
@@ -65,7 +70,7 @@ CREATE INDEX timings_kind_id ON timings(kind,id);
 """
 
 
-_DDL = _DDL_V1.replace(
+_DDL_V2 = _DDL_V1.replace(
     "delay_ns REAL NOT NULL CHECK(delay_ns >= 0.0)", "delay_ns REAL CHECK(delay_ns >= 0.0)"
 ).replace("start_object TEXT NOT NULL", "start_object TEXT").replace("end_object TEXT NOT NULL", "end_object TEXT").replace(
     "measurement TEXT NOT NULL CHECK(length(measurement) > 0)",
@@ -73,6 +78,13 @@ _DDL = _DDL_V1.replace(
     "CHECK((measurement='optimized-away' AND delay_ns IS NULL AND start_object IS NULL AND end_object IS NULL "
     "AND optimization_source IS NOT NULL) OR (measurement!='optimized-away' AND delay_ns IS NOT NULL "
     "AND start_object IS NOT NULL AND end_object IS NOT NULL AND optimization_source IS NULL))"
+)
+
+_DDL = _DDL_V2.replace(
+    "optimization_source TEXT, ", "optimization_source TEXT, sampling_cost_ns REAL, "
+).replace(
+    "AND optimization_source IS NOT NULL)",
+    "AND optimization_source IS NOT NULL AND sampling_cost_ns IS NULL)"
 )
 
 
@@ -102,11 +114,11 @@ def _normalized_sql(value: Any) -> str:
     return " ".join(str(value).split())
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=3)
 def _expected_sqlite_objects(version: int = BOUNDARY_TIMING_USER_VERSION) -> tuple[tuple[str, str, str, str], ...]:
     connection = sqlite3.connect(":memory:")
     try:
-        connection.executescript(_DDL_V1 if version == 1 else _DDL)
+        connection.executescript(_DDL_V1 if version == 1 else _DDL_V2 if version == 2 else _DDL)
         return tuple(
             (str(row[0]), str(row[1]), str(row[2]), _normalized_sql(row[3]))
             for row in connection.execute(
@@ -123,7 +135,7 @@ def _exact_sqlite_envelope(connection: sqlite3.Connection) -> None:
         connection.execute("PRAGMA application_id").fetchone()[0]
         != BOUNDARY_TIMING_APPLICATION_ID
         or connection.execute("PRAGMA user_version").fetchone()[0]
-        not in {1, BOUNDARY_TIMING_USER_VERSION}
+        not in {1, 2, BOUNDARY_TIMING_USER_VERSION}
     ):
         raise ValidationError("unsupported boundary timing store")
     objects = tuple(
@@ -138,8 +150,10 @@ def _exact_sqlite_envelope(connection: sqlite3.Connection) -> None:
 
 
 def _validate_header(raw: Any, counts: Optional[Mapping[str, int]] = None) -> dict[str, Any]:
-    if not isinstance(raw, Mapping) or set(raw) != _HEADER_KEYS:
+    if not isinstance(raw, Mapping) or set(raw) not in (_HEADER_KEYS, _HEADER_KEYS | {"sampling_cost_policy"}):
         raise ValidationError("boundary timing header is malformed")
+    if "sampling_cost_policy" in raw and raw["sampling_cost_policy"] != SAMPLING_COST_POLICY:
+        raise ValidationError("boundary timing sampling cost policy is invalid")
     header = dict(raw)
     if (
         header.get("schema") != BOUNDARY_TIMING_SCHEMA
@@ -167,14 +181,19 @@ def _validate_header(raw: Any, counts: Optional[Mapping[str, int]] = None) -> di
     return header
 
 
-def _normalize_record(raw: Any) -> dict[str, Any]:
+def _normalize_record(raw: Any, sampling_cost_policy=None) -> dict[str, Any]:
     expected = {"id", "kind", "schedule_entry", "delay_ns", "start_object", "end_object", "measurement"}
     if isinstance(raw, Mapping) and is_optimized_away(raw):
         expected.add("optimization_source")
+    elif sampling_cost_policy is not None:
+        expected.add("sampling_cost_ns")
     if not isinstance(raw, Mapping) or set(raw) != expected:
         raise ValidationError("boundary timing endpoint fields are invalid")
     record = dict(raw)
     eliminated = validate_optimization_record(record)
+    validate_sampling_cost(record, sampling_cost_policy)
+    if "sampling_cost_ns" in record:
+        record["sampling_cost_ns"] = float(record["sampling_cost_ns"])
     delay = record.get("delay_ns")
     if (
         record.get("kind") not in {"tx", "rx"}
@@ -205,6 +224,8 @@ def _record_from_row(row: sqlite3.Row) -> dict[str, Any]:
     }
     if "optimization_source" in row.keys() and row["optimization_source"] is not None:
         record["optimization_source"] = str(row["optimization_source"])
+    if "sampling_cost_ns" in row.keys() and row["sampling_cost_ns"] is not None:
+        record["sampling_cost_ns"] = float(row["sampling_cost_ns"])
     return record
 
 
@@ -269,10 +290,10 @@ def _validate_selector(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict) or set(raw) != _SELECTOR_KEYS:
         raise ValidationError("boundary timing selector is malformed")
     if (
-        raw.get("schema") not in {BOUNDARY_TIMING_STORAGE_SCHEMA_V1, BOUNDARY_TIMING_STORAGE_SCHEMA}
+        raw.get("schema") not in _STORAGE_VERSIONS
         or raw.get("logical_schema") != BOUNDARY_TIMING_SCHEMA
         or raw.get("application_id") != BOUNDARY_TIMING_APPLICATION_ID
-        or raw.get("user_version") != (1 if raw.get("schema") == BOUNDARY_TIMING_STORAGE_SCHEMA_V1 else BOUNDARY_TIMING_USER_VERSION)
+        or raw.get("user_version") != _STORAGE_VERSIONS.get(raw.get("schema"))
     ):
         raise ValidationError("unsupported boundary timing selector")
     counts = raw.get("counts")
@@ -447,7 +468,7 @@ class BoundaryTimingView(Mapping[str, Any]):
                 counts = {"endpoints": 0, "tx": 0, "rx": 0}
                 previous = None
                 for row in connection.execute("SELECT * FROM timings ORDER BY id"):
-                    record = _normalize_record(_record_from_row(row))
+                    record = _normalize_record(_record_from_row(row), self.selector["header"].get("sampling_cost_policy"))
                     if previous is not None and record["id"] <= previous:
                         raise ValidationError("boundary timing order is invalid")
                     previous = record["id"]
@@ -542,17 +563,18 @@ def write_boundary_timing_storage(
         def flush() -> None:
             if rows:
                 connection.executemany(
-                    "INSERT INTO timings VALUES (?,?,?,?,?,?,?,?)", rows
+                    "INSERT INTO timings VALUES (?,?,?,?,?,?,?,?,?)", rows
                 )
                 rows.clear()
 
         try:
             for raw in records:
-                record = _normalize_record(raw)
+                record = _normalize_record(raw, base_header.get("sampling_cost_policy"))
                 rows.append((
                     record["id"], record["kind"], record["schedule_entry"],
                     record["delay_ns"], record["start_object"],
                     record["end_object"], record["measurement"], record.get("optimization_source"),
+                    record.get("sampling_cost_ns"),
                 ))
                 if len(rows) >= 8192:
                     flush()
@@ -607,7 +629,7 @@ def write_boundary_timing_storage(
             publish_sqlite_store(
                 temporary,
                 published_store,
-                "boundary-timing-store-v2",
+                "boundary-timing-store-v3",
                 sources=source_bindings,
             )
             created_store = True
@@ -678,7 +700,7 @@ def read_boundary_timing_storage(
     ):
         raise ValidationError("boundary timing selector digest disagrees")
     value = read_json(path)
-    if value.get("schema") in {BOUNDARY_TIMING_STORAGE_SCHEMA_V1, BOUNDARY_TIMING_STORAGE_SCHEMA}:
+    if value.get("schema") in _STORAGE_VERSIONS:
         view = BoundaryTimingView(path)
         if any(
             expected is not None and view.get(field) != expected

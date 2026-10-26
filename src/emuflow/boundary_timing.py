@@ -510,6 +510,7 @@ def boundary_timing_record(
     measurement: Mapping[str, Any],
     *,
     measurement_scope: str = "partition-boundary",
+    sampling_cost_policy=None,
 ) -> Dict[str, Any]:
     """Validate and bind one measurement without retaining adjacent records."""
 
@@ -525,6 +526,8 @@ def boundary_timing_record(
         raise ValidationError(
             f"boundary timing {endpoint_id!r} schedule entry is invalid"
         )
+    from .sampling_cost import validate_sampling_cost
+    validate_sampling_cost(measurement, sampling_cost_policy)
     if validate_optimization_record(measurement):
         return {"id": endpoint_id, "kind": identity["kind"], "schedule_entry": schedule_entry,
                 "delay_ns": None, "start_object": None, "end_object": None,
@@ -553,6 +556,8 @@ def boundary_timing_record(
         "start_object": start,
         "end_object": end,
         "measurement": _MEASUREMENTS_BY_SCOPE[measurement_scope][identity["kind"]],
+        **({"sampling_cost_ns": float(measurement["sampling_cost_ns"])}
+           if "sampling_cost_ns" in measurement else {}),
     }
 
 
@@ -593,6 +598,9 @@ def validate_boundary_timing_database(
         raise ValidationError("boundary timing schema is invalid")
     if database.get("status") != "pass":
         raise ValidationError("boundary timing database did not pass")
+    from .sampling_cost import SAMPLING_COST_POLICY, validate_sampling_cost
+    if "sampling_cost_policy" in database and database["sampling_cost_policy"] != SAMPLING_COST_POLICY:
+        raise ValidationError("boundary timing sampling cost policy is invalid")
     for field in ("provider", "qualification"):
         if not isinstance(database.get(field), str) or not database[field]:
             raise ValidationError(f"boundary timing {field} is invalid")
@@ -621,6 +629,7 @@ def validate_boundary_timing_database(
         endpoint_id = item["id"]
         if item.get("kind") not in {"tx", "rx"}:
             raise ValidationError("boundary timing endpoint identity is invalid")
+        validate_sampling_cost(item, database.get("sampling_cost_policy"))
         eliminated = validate_optimization_record(item)
         optimized_count += int(eliminated)
         delay = item.get("delay_ns")

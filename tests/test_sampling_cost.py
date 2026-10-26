@@ -113,6 +113,28 @@ def test_original_local_path_import_retains_cost_and_data(tmp_path):
         assert [row["delay_ns"] for row in view["paths"]] == [2.25, 2.25]
 
 
+def test_boundary_import_keeps_signed_costs_and_traceability(tmp_path):
+    from tests.test_boundary_identity_storage import _header, _record
+    from emuflow.boundary_identity_storage import write_boundary_identity_storage
+    from emuflow.boundary_timing_storage import read_boundary_timing_storage
+    from emuflow.vivado_physical_timing import import_indexed_vivado_boundary
+    from emuflow.boundary_timing import validate_boundary_timing_database
+    identity_path = tmp_path/"boundary-identities.json"
+    identities = [_record("rx-0", "rx", 0), _record("tx-1", "tx", 1)]
+    write_boundary_identity_storage(identity_path, _header(), identities).close()
+    raw, output = tmp_path/"boundary.tsv", tmp_path/"boundary-timing.json"
+    raw.write_text("endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex\tmeasurement\treference_cost_ns\tcheck_clock_adjustment_ns\n"+
+                   "\n".join("\t".join([r["id"].encode().hex(), r["kind"], "2.25", "start".encode().hex(),
+                                            "end".encode().hex(), "endpoint-exact", cost, adjust])
+                             for r, cost, adjust in zip(identities, ["1.5", "-0.5"], ["-0.75", "-2.75"]))+"\n")
+    assert import_indexed_vivado_boundary(raw, identity_path, output)["implemented_endpoints"] == 2
+    with read_boundary_timing_storage(output) as view:
+        assert view["sampling_cost_policy"] == SAMPLING_COST_POLICY
+        assert [r["sampling_cost_ns"] for r in view["endpoints"]] == [1.5, -0.5]
+        assert [r["delay_ns"] for r in view["endpoints"]] == [2.25, 2.25]
+        assert validate_boundary_timing_database(view, {**_header(), "endpoints": identities})["endpoints"] == 2
+
+
 @pytest.mark.parametrize("version", [1, 2])
 def test_existing_data_only_stores_remain_readable(tmp_path, version):
     header = dict(schema="emuflow.logic-segment-timing/v1", status="pass", design="dut",

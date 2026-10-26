@@ -130,6 +130,8 @@ constexpr RegisteredSchema schemas[] = {
      "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.boundary-timing/v1"},
     {"boundary-timing-store-v2", ArtifactEncoding::kSqlite, 0x454d5554, 2, true,
      "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.boundary-timing/v1"},
+    {"boundary-timing-store-v3", ArtifactEncoding::kSqlite, 0x454d5554, 3, true,
+     "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.boundary-timing/v1"},
     {"logic-segment-identity-store-v1", ArtifactEncoding::kSqlite, 0x454d5549, 1, true,
      "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.logic-segment-identity/v1"},
     {"logic-segment-timing-store-v1", ArtifactEncoding::kSqlite, 0x454d5547, 1, true,

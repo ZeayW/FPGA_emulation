@@ -72,7 +72,7 @@ boundaries and original, datapath-only or clock-aware reference timing, includin
 bounded endpoint sampling-cost queries, installed SelectIO IP inspection and
 package-derived bank recipes, checked output generation and optional out-of-context
 IP synthesis used for PHY integration, with a bounded configuration/port audit.
-Indexed logic and original local-path timing can retain signed sampling costs
+Indexed logic, original local-path and boundary timing can retain signed sampling costs
 beside data delay in sealed stores, with explicit policies and complete cost
 coverage. The legacy global event binder rejects these policies until it can
 consume their clock/check adjustments.

@@ -1,7 +1,7 @@
 # Export one routed timing measurement for every EmuFlow TDM endpoint.
 
-if {$argc < 3 || $argc > 5} {
-  error "usage: export_boundary_timing.tcl INPUT_DCP QUERY_TSV OUTPUT_TSV ?HIERARCHY_PREFIX? ?FIXED_IO_MAP?"
+if {$argc < 3 || $argc > 6} {
+  error "usage: export_boundary_timing.tcl INPUT_DCP QUERY_TSV OUTPUT_TSV ?HIERARCHY_PREFIX? ?FIXED_IO_MAP? ?clock-aware-reference?"
 }
 set input_dcp [lindex $argv 0]
 set query_path [file normalize [lindex $argv 1]]
@@ -12,8 +12,12 @@ if {$argc >= 4} {
 }
 
 source [file join [file dirname [info script]] timing_contract.tcl]
+set sampling_costs [expr {$argc == 6}]
+if {$sampling_costs && [lindex $argv 5] ne "clock-aware-reference"} {
+  error "unsupported boundary timing measurement mode"
+}
 set fixed_io_map [dict create]
-if {$argc == 5} {set fixed_io_map [emuflow_load_fixed_io_map [lindex $argv 4]]}
+if {$argc >= 5} {set fixed_io_map [emuflow_load_fixed_io_map [lindex $argv 4]]}
 
 proc emuflow_hier_name {prefix name} {
   if {$prefix eq ""} {
@@ -50,7 +54,11 @@ proc emuflow_hex_encode {value} {
 }
 
 emuflow_open_export_design $input_dcp routed
-emuflow_use_data_path_constraints
+if {$sampling_costs} {
+  emuflow_use_clock_aware_reference_constraints
+} else {
+  emuflow_use_data_path_constraints
+}
 set input [open $query_path r]
 set legacy_header "endpoint_hex\tkind\texternal_port_hex\tbit\tlogical_net_hex\tboundary_cell_hex"
 if {[gets $input header] < 0 || $header ni [list $legacy_header "$legacy_header\tresolved_boundary_cells_hex"]} {
@@ -58,9 +66,10 @@ if {[gets $input header] < 0 || $header ni [list $legacy_header "$legacy_header\
 }
 
 set output [open $output_path w]
-set disposition_format [expr {[llength [split $header "\t"]] == 7}]
+set disposition_format [expr {[llength [split $header "\t"]] == 7 || $sampling_costs}]
 set output_header "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex"
 if {$disposition_format} {append output_header "\tmeasurement"}
+if {$sampling_costs} {append output_header "\treference_cost_ns\tcheck_clock_adjustment_ns"}
 puts $output $output_header
 set emitted 0
 while {[gets $input line] >= 0} {
@@ -82,7 +91,9 @@ while {[gets $input line] >= 0} {
     if {![regexp {^optimized-away:s(0|[1-9][0-9]*)$} $boundary_hint] || !$disposition_format} {
       error "invalid boundary elimination proof reference"
     }
-    puts $output "$endpoint_hex\t$kind\t\t\t\t$boundary_hint"
+    set row "$endpoint_hex\t$kind\t\t\t\t$boundary_hint"
+    if {$sampling_costs} {append row "\t\t"}
+    puts $output $row
     incr emitted
     continue
   }
@@ -199,6 +210,10 @@ while {[gets $input line] >= 0} {
   }
   set output_row "$endpoint_hex\t$kind\t$delay\t[emuflow_hex_encode $start_object]\t[emuflow_hex_encode $end_object]"
   if {$disposition_format} {append output_row "\tendpoint-exact"}
+  if {$sampling_costs} {
+    lassign [emuflow_reference_path_cost [lindex $paths 0]] cost adjustment
+    append output_row "\t$cost\t$adjustment"
+  }
   puts $output $output_row
   incr emitted
 }

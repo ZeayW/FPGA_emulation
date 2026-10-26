@@ -366,6 +366,15 @@ proc get_timing_paths {args} {error "removed interface must not have a numerical
                 report = import_indexed_vivado_boundary(measured,path,root/"timing.json",optimization_proofs=proof)
                 self.assertIsNone(report["maximum_delay_ns"])
                 self.assertEqual(report["optimized_away_endpoints"],1)
+                cost_measured = root/"costs.tsv"
+                wrapper.write_text(mock+f"\nset argv [list fake.dcp {{{resolved}}} {{{cost_measured}}} {{}} {{}} clock-aware-reference]\nset argc 6\nsource {{{helper}}}\n")
+                exported = subprocess.run([shutil.which("tclsh"),str(wrapper)],capture_output=True,text=True)
+                self.assertEqual(exported.returncode,0,exported.stderr)
+                assert len(cost_measured.read_text().splitlines()[1].split("\t")) == 8
+                import_indexed_vivado_boundary(cost_measured,path,root/"cost-timing.json",optimization_proofs=proof)
+                with read_boundary_timing_storage(root/"cost-timing.json") as cost_timing:
+                    self.assertNotIn("sampling_cost_ns",cost_timing["endpoints"][0])
+                    self.assertEqual(cost_timing["sampling_cost_policy"],"vivado-clock-aware-reference-v1")
                 from emuflow.boundary_identity_storage import read_boundary_identity_storage
                 with read_boundary_timing_storage(root/"timing.json") as timing, read_boundary_identity_storage(path) as identities:
                     physical = {"boundary_timing":{"fpga0":timing},"boundary_identities":{"fpga0":identities},

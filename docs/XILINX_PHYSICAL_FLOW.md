@@ -775,7 +775,13 @@ explicitly without a sampling-cost policy, and existing version 1/2 stores
 remain readable. The original local-path importer accepts the same vendor
 columns and retains each cost in its version 3 local-path owner, with the same
 policy and absent-value rules. Identity projection hides both numerical
-measurements. Boundary timing retains its separate format. The legacy global
+measurements. `export_boundary_timing.tcl` also accepts the sixth
+`clock-aware-reference` argument and emits eight columns: the endpoint,
+kind, data delay, start/end objects, disposition, reference cost and signed
+adjustment. Its indexed boundary importer stores costs under the same policy
+in a version 3 boundary owner, including complete TX/RX coverage and absent
+costs for proven optimized-away endpoints. Version 1/2 boundary owners remain
+readable. The legacy global
 event binder rejects sampling-cost policies instead of silently dropping
 clock/check adjustments; these storage extensions do not enable word-global
 timing. The maximum effective sampling cost and its associated raw delay are
