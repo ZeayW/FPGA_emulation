@@ -230,12 +230,17 @@ class SparsePathMembership {
             "duplicate PATRON domain/path dependency");
   }
 
-  void append_to(std::vector<int>& output) const {
+  template <typename Callback>
+  void for_each(Callback callback) const {
     require(finalized_, "PATRON domain/path population is not finalized");
     for (int path : base_) {
-      if (!removed_.count(path)) output.push_back(path);
+      if (!removed_.count(path)) callback(path);
     }
-    output.insert(output.end(), added_.begin(), added_.end());
+    for (int path : added_) callback(path);
+  }
+
+  void append_to(std::vector<int>& output) const {
+    for_each([&](int path) { output.push_back(path); });
   }
 
  private:
@@ -243,6 +248,41 @@ class SparsePathMembership {
   std::vector<int> base_;
   std::set<int> added_;
   std::set<int> removed_;
+};
+
+// Several changed nets and ratio domains can reach the same timing path.
+// Keep that union bounded by the path population instead of sorting a list
+// containing one copy for every incidence. Reset only the previous union;
+// small candidates must not clear the entire timing population either.
+class AffectedPathSet {
+ public:
+  void begin(int paths) {
+    if (marked_.empty()) marked_.assign(paths, 0);
+    require(marked_.size() == static_cast<std::size_t>(paths),
+            "PATRON affected path population changed");
+    for (int path : paths_) marked_[path] = 0;
+    paths_.clear();
+  }
+
+  void add(int path) {
+    require(path >= 0 && static_cast<std::size_t>(path) < marked_.size(),
+            "invalid PATRON affected path identity");
+    if (!marked_[path]) {
+      marked_[path] = 1;
+      paths_.push_back(path);
+    }
+  }
+
+  const std::vector<int>& sorted() {
+    std::sort(paths_.begin(), paths_.end());
+    return paths_;
+  }
+
+  bool contains(int path) const { return marked_[path] != 0; }
+
+ private:
+  std::vector<unsigned char> marked_;
+  std::vector<int> paths_;
 };
 
 struct Transition {
@@ -453,6 +493,7 @@ struct ProxyState {
   std::vector<ProxyNetState> net;
   std::vector<ProxyPathState> path;
   std::vector<SparsePathMembership> domain_paths;
+  AffectedPathSet affected_paths;
   SparsePathOrder<std::pair<double, int>> slack_path_order;
   SparsePathOrder<std::pair<long long, int>> hop_path_order;
   SparsePathOrder<std::pair<long long, int>> ratio_sum_path_order;
@@ -3447,19 +3488,15 @@ ProxyDelta evaluate_proxy_changes(
     if (projected_ratios[domain] != state.domain_ratio[domain])
       ratio_changed_domains.push_back(domain);
   }
-  std::vector<int> affected_paths;
+  state.affected_paths.begin(model.paths);
   for (const auto& item : delta.nets) {
-    affected_paths.insert(affected_paths.end(),
-                          net_paths[item.first].begin(),
-                          net_paths[item.first].end());
+    for (int path : net_paths[item.first]) state.affected_paths.add(path);
   }
   for (int domain : ratio_changed_domains) {
-    state.domain_paths[domain].append_to(affected_paths);
+    state.domain_paths[domain].for_each(
+        [&](int path) { state.affected_paths.add(path); });
   }
-  std::sort(affected_paths.begin(), affected_paths.end());
-  affected_paths.erase(
-      std::unique(affected_paths.begin(), affected_paths.end()),
-      affected_paths.end());
+  const auto& affected_paths = state.affected_paths.sorted();
   for (int path : affected_paths) {
     delta.paths.emplace(
         path,
@@ -3493,8 +3530,7 @@ ProxyDelta evaluate_proxy_changes(
     worst = std::min(worst, item.second.normalized_slack);
   }
   state.slack_path_order.for_each_ascending([&](const auto& item) {
-    if (!std::binary_search(
-            affected_paths.begin(), affected_paths.end(), item.second)) {
+    if (!state.affected_paths.contains(item.second)) {
       worst = std::min(worst, item.first);
       return false;
     }
@@ -3509,16 +3545,14 @@ ProxyDelta evaluate_proxy_changes(
         maximum_path_ratio_sum, item.second.ratio_sum);
   }
   state.hop_path_order.for_each_descending([&](const auto& item) {
-    if (!std::binary_search(
-            affected_paths.begin(), affected_paths.end(), item.second)) {
+    if (!state.affected_paths.contains(item.second)) {
       maximum_path_hops = std::max(maximum_path_hops, item.first);
       return false;
     }
     return true;
   });
   state.ratio_sum_path_order.for_each_descending([&](const auto& item) {
-    if (!std::binary_search(
-            affected_paths.begin(), affected_paths.end(), item.second)) {
+    if (!state.affected_paths.contains(item.second)) {
       maximum_path_ratio_sum = std::max(
           maximum_path_ratio_sum, item.first);
       return false;
