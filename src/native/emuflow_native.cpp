@@ -8,6 +8,7 @@
 #include "emuflow_core/tool_runtime.hpp"
 #include "emuflow_core/compile.hpp"
 #include "emuflow_core/yosys_hierarchy.hpp"
+#include "emuflow_core/frontend.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/store_publication.hpp"
 
@@ -20,6 +21,7 @@ constexpr const char* kUsage =
     "  publish-store REQUEST OUTPUT\n"
     "  compile REQUEST_JSON\n"
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
+    "  phase1 run REQUEST\n"
     "  phase1 import-yosys REQUEST EMUIR SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
     "  run-tool REQUEST RESULT_JSON\n"
     "  phase3 analyze INPUT OUTPUT\n"
@@ -149,6 +151,10 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if (argc == 4 && std::string(argv[1]) == "publish-store") {
     const auto request = emuflow::core::ArtifactRef::Bind(argv[2],"sqlite-publication-request-v1");
     return Finish(emuflow::core::PublishSqliteStore(request,argv[3],report),report);
+  }
+  if((argc==4 || argc==5) && std::string(argv[1])=="phase1" && std::string(argv[2])=="run") {
+    ToolSignals signals;
+    return Finish(emuflow::core::RunFrontend(emuflow::core::ArtifactRef::Bind(argv[3],"frontend-request-v1"),&tool_cancelled,argc==5?argv[4]:""),report);
   }
   if ((argc == 6 || argc == 7) && std::string(argv[1]) == "phase1" && std::string(argv[2]) == "import-yosys") {
     std::ios::sync_with_stdio(false);std::cin.tie(nullptr);

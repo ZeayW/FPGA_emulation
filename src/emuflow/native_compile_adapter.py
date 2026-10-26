@@ -84,6 +84,13 @@ def _unpack(value, depth=0):
             if native_file_generation(path) != expected:
                 raise EmuFlowError("native phase report generation changed")
             return _stage_summary("tdm", report)
+        if kind == "frontend-report":
+            if (type(body) is not dict or set(body) != {"schema", "path", "generation"}
+                    or body.get("schema") != "phase1-summary-v1" or not isinstance(body.get("path"), str)
+                    or not Path(body["path"]).is_absolute() or type(body.get("generation")) is not list or len(body["generation"]) != 7):
+                raise EmuFlowError("invalid native frontend report reference")
+            from .frontend_native import read_frontend_summary
+            return read_frontend_summary(body["path"], body["generation"])
         if kind == "path" and isinstance(body, str):
             return Path(body)
         if kind == "map" and type(body) is dict and len(body) <= 16384:

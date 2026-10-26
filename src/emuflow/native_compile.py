@@ -79,7 +79,7 @@ def _request(args, kwargs):
 def run_native_multi_fpga_flow(*args, **kwargs):
     """Select native orchestration explicitly; never retry the Python compiler.
 
-    The C++ controller runs TDM natively and other shared phase adapters. This entry does
+    The C++ controller runs RTL frontend/TDM natively and other shared phase adapters. This entry does
     not assert that their remaining Python data planes have been migrated.
     """
     from .native_tools import require_native_schema

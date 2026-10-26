@@ -4,6 +4,7 @@
 
 #include <csignal>
 #include <utility>
+#include <istream>
 
 namespace emuflow::core {
 // Canonical current binary identity for isolated native phase processes.
@@ -37,6 +38,13 @@ struct ToolResult {
 ToolResult RunExternalTool(const ToolRequest& request,
                           const volatile std::sig_atomic_t* cancelled = nullptr,
                           const std::vector<ArtifactRef>& inputs = {});
+// Consume engine stdout in-process with bounded pipe backpressure. The engine
+// is forked before the consumer thread starts; stderr/deadlines remain serviced
+// by the common supervisor. Consumer failure cancels and reaps the whole group.
+ToolResult RunExternalToolStream(const ToolRequest& request,
+    const std::function<void(std::istream&)>& consume,
+    const volatile std::sig_atomic_t* cancelled = nullptr,
+    const std::vector<ArtifactRef>& inputs = {});
 ToolRequest ReadToolRequest(const std::string& path);
 std::string ToolResultJson(const ToolResult& result);
 void PublishToolResult(const std::string& path, const ToolResult& result);

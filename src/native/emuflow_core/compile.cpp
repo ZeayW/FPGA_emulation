@@ -12,6 +12,7 @@
 #include <sstream>
 #include <unistd.h>
 #include <fcntl.h>
+#include <optional>
 
 namespace emuflow::core {
 namespace {
@@ -46,6 +47,24 @@ class ControlJson {
     auto value = field.Text(1);
     Require(value.find('\0') == std::string::npos,"NUL in native compiler field");
     return value;
+  }
+  bool Has(const std::string& path) {
+    auto row=db_.Prepare("SELECT json_type(?1,?2)");row.BindText(1,data_);row.BindText(2,path);
+    return row.Step() && !row.IsNull(0) && row.Text(0)!="null";
+  }
+  ArtifactRef FrontendRequest() {
+    auto result=ArtifactRef::Bind(StatePath("native_frontend_request"),"frontend-request-v1");
+    const auto& g=result.generation();const std::string fields[]={std::to_string(g.device),std::to_string(g.inode),std::to_string(g.bytes),std::to_string(g.modified_seconds),std::to_string(g.modified_nanoseconds),std::to_string(g.changed_seconds),std::to_string(g.changed_nanoseconds)};
+    Require(String("$.state[1].native_frontend_generation[0]")=="tuple","native frontend request binding is invalid");
+    for(unsigned i=0;i<7;++i)Require(String("$.state[1].native_frontend_generation[1]["+std::to_string(i)+"]")==fields[i],"native frontend request generation changed");
+    return result;
+  }
+  std::string FrontendState(const std::string& reference,const fs::path& root) {
+    auto row=db_.Prepare("SELECT json_remove(json_set(?1,'$.stage','frontend','$.state[1].frontend_report',json(?2),'$.state[1].phase1_root',json(?3),'$.state[1].ir_path',json(?4)),'$.state[1].native_frontend_request','$.state[1].native_frontend_generation')");
+    row.BindText(1,data_);row.BindText(2,reference);
+    row.BindText(3,"[\"path\","+JsonQuote((root/"phase1").string())+"]");
+    row.BindText(4,"[\"path\","+JsonQuote((root/"phase1/design.emuir.sqlite").string())+"]");
+    Require(row.Step(),"cannot construct native frontend compiler state");return row.TypedText(0);
   }
   void Envelope() {
     auto fields = db_.Prepare("SELECT count(*),sum(key IN ('schema','python_executable',"
@@ -188,8 +207,19 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
       fs::create_directory(temporary);
       ToolRequest tool;
       const bool native_phase5=std::string(stage)=="tdm";
-      std::string phase5_report;
-      if(native_phase5) {
+      const bool native_frontend=std::string(stage)=="frontend" && ControlJson(previous.string()).Has("$.state[1].native_frontend_request");
+      if(std::string(stage)=="frontend") {
+        ControlJson prior(previous.string());
+        const bool raw_rtl=prior.Has("$.state[1].sources[1][0]") && !prior.Has("$.state[1].yosys_json") && !prior.Has("$.state[1].prepared_frontend");
+        Require(!raw_rtl || native_frontend,"native RTL frontend request is missing; Python fallback is forbidden");
+      }
+      std::string phase5_report,frontend_summary;
+      std::optional<ArtifactRef> frontend_request;
+      if(native_frontend) {
+        ControlJson prior(previous.string());Require(prior.String("$.stage")=="preflight","invalid native frontend predecessor");
+        frontend_request=prior.FrontendRequest();frontend_summary=(output/"frontend/phase1/frontend-summary.json").string();
+        tool.argv={inputs[3].path(),"--report",(temporary/"native-result.json").string(),"phase1","run",frontend_request->path(),(output/"frontend/phase1").string()};
+      } else if(native_phase5) {
         ControlJson prior(previous.string());
         Require(prior.String("$.stage")=="route" && prior.String("$.state[1].effective_tdm_provider")=="deterministic-dependency-earliest-slot-v1","invalid native Phase 5 compiler predecessor/provider");
         const auto phase5_root=fs::path(prior.StatePath("phase5_root"));
@@ -213,12 +243,23 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
       tool.termination_grace_ms = 10000;
       auto step_inputs = inputs;
       if (!previous.empty()) step_inputs.push_back(ArtifactRef::Bind(previous.string(),"native-compile-state-v1"));
+      if(frontend_request)step_inputs.push_back(*frontend_request);
       const auto step = RunExternalTool(tool,cancelled,step_inputs);
-      result.steps.push_back({stage,step.operation.ok(),native_phase5?"native-exact-phase5-v1":"isolated-python-adapter-v1",step.wall_seconds,step.user_cpu_seconds,
+      result.steps.push_back({stage,step.operation.ok(),native_phase5?"native-exact-phase5-v1":native_frontend?"native-rtl-frontend-v1":"isolated-python-adapter-v1",step.wall_seconds,step.user_cpu_seconds,
                              step.system_cpu_seconds,step.maximum_process_rss_kib});
       if (!step.operation.ok())
         throw StageError(ErrorCode::kExecutionFailed,"native compile " + std::string(stage) + ": " +
                          step.operation.message + "\n" + step.diagnostic_tail);
+      if(native_frontend) {
+        ControlJson producer((temporary/"native-result.json").string());auto summary=ArtifactRef::Bind(frontend_summary,"phase1-summary-v1");
+        Require(producer.String("$.schema")=="emuflow.native-stage-result/v1" && producer.String("$.stage")=="phase1.run" && producer.String("$.status")=="pass" && producer.OutputGeneration(summary),"native frontend producer binding disagrees");
+        const auto& g=summary.generation();std::vector<JsonRecord> generation;
+        for(const auto& item:{std::to_string(g.device),std::to_string(g.inode),std::to_string(g.bytes),std::to_string(g.modified_seconds),std::to_string(g.modified_nanoseconds),std::to_string(g.changed_seconds),std::to_string(g.changed_nanoseconds)})generation.emplace_back(item);
+        const auto reference=JsonRecord(std::vector<JsonRecord>{JsonRecord("frontend-report"),JsonRecord(std::map<std::string,JsonRecord>{{"schema",summary.schema()},{"path",summary.path()},{"generation",std::move(generation)}})}).Encode();
+        ControlJson prior(previous.string());auto bindings=step_inputs;bindings.push_back(summary);
+        const auto state=prior.FrontendState(reference,output/"frontend");
+        PublishTextArtifact(next.string(),bindings,[&](std::ostream& stream){stream<<state<<'\n';});
+      }
       if(native_phase5) {
         ControlJson producer((temporary/"native-result.json").string());
         auto published=ArtifactRef::Bind(phase5_report,"phase5-report-v1");
@@ -254,6 +295,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
         throw StageError(ErrorCode::kPublicationFailed,
                          "cannot retire native phase temporary files: " + std::string(error.what()));
       }
+      if(frontend_request)fs::remove(frontend_request->path());
       if (!previous.empty()) fs::remove(previous);
       previous = next;
       std::cout << "COMPILE_STAGE_COMPLETE " << stage << " " << step.wall_seconds << "s\n" << std::flush;
@@ -270,7 +312,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
 std::string CompileResultJson(const CompileResult& result) {
   std::ostringstream out; out << std::setprecision(17);
   out << "{\"schema\":\"emuflow.native-compile-result/v2\",\"implementation_id\":\"native-orchestration-v1\","
-      << "\"phase_implementation\":\"native-phase5-and-isolated-python-adapters-v1\",\"native_data_plane_complete\":false,"
+      << "\"phase_implementation\":\"native-rtl-frontend-phase5-and-isolated-python-adapters-v1\",\"native_data_plane_complete\":false,"
       << "\"operation\":" << StageResultJson(result.operation) << ",\"output_directory\":" << JsonQuote(result.output_directory)
       << ",\"request_configuration\":" << (result.request_configuration.empty() ? "null" : result.request_configuration)
       << ",\"effective_configuration\":" << (result.effective_configuration.empty() ? "null" : result.effective_configuration)

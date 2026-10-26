@@ -10,7 +10,7 @@ A native command that only invokes the Python compiler is not this target.
 
 The current native executable links real Phase 3, 4, 5 and 6 kernels through a
 shared typed operation API, including PATRON search. An opt-in native controller
-now owns the ordinary one-shot phase sequence with native TDM execution and
+now owns the ordinary one-shot phase sequence with native RTL frontend/TDM execution and
 isolated shared Python adapters for remaining phases. Advanced orchestration and
 remaining native data-plane ownership are unfinished. W0 supplies the shared
 infrastructure contract; complete-stage ownership and native compilation are W7
@@ -408,7 +408,9 @@ preflight → frontend → timing → partition → route-policy → route → T
 physical → signoff → finalize sequence. The opt-in CLI bridge is
 `multi-fpga compile --compile-implementation native-control-v1`. The native owner
 does not call the Python compiler. TDM consumes the current route selector, assignment index and normalized BoardDB
-directly in C++; it has no Python phase adapter. Each remaining transitional
+directly in C++; it has no Python phase adapter. The ordinary RTL frontend also
+executes directly in C++, using a checked configuration prepared by preflight.
+Each remaining transitional
 Python adapter invokes one shared phase body and exits, releasing its working population before the next
 phase starts. The existing Python controller uses the same phase bodies and
 retains advanced modes. Current defaults resolve from the shared phase API
@@ -488,7 +490,7 @@ there is no silent implementation or provider fallback.
 
 | Stage | Existing native/indexed foundation | Remaining delivery obligation |
 | --- | --- | --- |
-| Phase 1–2 | Native synthesis/STA engines; native source-to-compact hierarchical Yosys import, alias resolution and Xilinx normalization; native OpenSTA input export, indexed path-result import, timing-weight generation and independent validators | Migrate remaining indexed-source adapters, Phase 1 clock analysis/reporting and phase lifecycle under the shared artifact API |
+| Phase 1–2 | Complete native ordinary RTL frontend under native control, including engine/import/clock/resource/report publication; native OpenSTA input export, indexed path-result import, timing-weight generation and independent validators | Migrate supplied/prepared/other indexed-source adapters and complete timing-stage lifecycle; qualify the whole current-design frontend |
 | Phase 3 | Shared-core candidate eligibility and primary clustering; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Migrate remaining policy/assignment publication and reference modes; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
@@ -845,8 +847,48 @@ custom Python transform fallback. Stage-only output remains a component
 qualification interface, not the production handoff.
 
 This closes hierarchical source-to-compact generation, not the complete frontend:
-remaining flat/mapped-index consumers, Phase 1 clock analysis/reporting, complete
-stage ownership and real-design qualification remain open.
+remaining flat/mapped-index consumers, complete timing-stage ownership and
+real-design qualification remain open. The native-controlled RTL stage below
+owns its clock analysis/reporting and phase lifecycle.
+
+### Complete native RTL frontend
+
+`core::RunFrontend` and `phase1 run REQUEST [EXPECTED_OUTPUT]` own the maintained
+Xilinx RTL frontend as one stage. Preflight produces a bounded, CRC-checked
+request containing the existing Yosys script/argv, normalized board configuration,
+clock policy, primitive library and original source generations. It constructs no
+circuit records. Native control verifies that original request binding, starts
+this stage directly and rejects an output outside its claimed flow directory.
+
+The shared `RunExternalToolStream` forks the engine before starting its in-process
+consumer thread. A bounded pipe feeds the existing hierarchy/normalization/compact
+producer directly; the supervisor continues draining bounded stderr and servicing
+deadlines/cancellation. Consumer failure cancels and reaps the engine group.
+Detached stdout writers reject without blocking cleanup. A syntactically complete
+stream is insufficient: the engine must exit successfully before publication.
+
+The stage uses ordered native resource/clock queries, including all clock sinks
+and fabric drivers, and retains the existing capacity and fabric-clock policy.
+Detailed clock evidence is streamed into the derived phase report; it never enters
+Python or subsequent control state. The existing source-to-compact independent
+endpoint/net-classification audit remains required. After readers close, the
+shared publisher synchronizes the complete private stage and exposes its new
+absent destination through one directory rename. Failed engines, malformed data,
+changed sources, strict clock/capacity failures and existing destinations leave
+no partially published Phase 1. The stage does not replace a previous generation.
+
+The controller carries a generation-bound `frontend-summary.json` reference and
+canonical EmuIR/board paths; the following adapter reads only that bounded summary.
+It retires the small configuration after successful state validation. Result v2
+records `native-rtl-frontend-v1` for this stage and retains
+`native_data_plane_complete:false`. Supplied JSON/prepared inputs remain explicit
+adapter modes; they are not automatic retries after a native failure. The default
+Python controller remains a separate transitional consumer of the shared importer.
+
+The physical logic-segment reader accepts both supported assignment v3/v4
+contracts through their sealed binary cursors. Current v4 is never classified as
+legacy or reconstructed through the compatibility reader. Unknown versions still
+reject at the shared assignment boundary.
 
 ## Validation and completion
 

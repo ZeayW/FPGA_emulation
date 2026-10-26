@@ -1403,8 +1403,14 @@ def _compile_preflight(ctx: _CompileContext):
     require_native_schema("phase5-stage-request-v1")
     require_native_schema("boarddb-v1")
     ctx.output_dir.mkdir(parents=True, exist_ok=True)
+    if ctx._native_mode and ctx.prepared_frontend is None and ctx.yosys_json is None and ctx.sources:
+        from .frontend_native import prepare_frontend
+        prepare_frontend(ctx)
 
 def _compile_frontend(ctx: _CompileContext):
+    if (getattr(ctx, "native_frontend_request", None) is not None or
+            (ctx._native_mode and ctx.prepared_frontend is None and ctx.yosys_json is None and ctx.sources)):
+        raise EmuFlowError("native compiler RTL frontend is owned by the C++ stage")
     source_list = [path.resolve() for path in ctx.sources]
     include_dir_list = [path.resolve() for path in ctx.include_dirs]
     define_list = list(ctx.defines)

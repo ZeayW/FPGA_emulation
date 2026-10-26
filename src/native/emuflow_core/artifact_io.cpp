@@ -237,6 +237,30 @@ void PublishTextArtifact(const std::string& target,
   writer.Commit();
 }
 
+void PublishNewDirectory(const std::string& temporary,const std::string& target,
+                         const std::vector<ArtifactRef>& inputs) {
+  namespace fs=std::filesystem;
+  const fs::path source=temporary,destination=target;
+  if(fs::is_symlink(source) || !fs::is_directory(source) || fs::exists(destination) || fs::is_symlink(destination) ||
+      fs::weakly_canonical(source.parent_path())!=fs::weakly_canonical(destination.parent_path()))
+    throw StageError(ErrorCode::kPublicationFailed,"invalid new stage directory publication");
+  for(const auto& input:inputs)input.RequireUnchanged();
+  for(const auto& member:fs::directory_iterator(source)) {
+    if(member.is_symlink() || !member.is_regular_file())throw StageError(ErrorCode::kPublicationFailed,"stage directory contains a non-file member");
+    for(const auto& input:inputs)if(fs::equivalent(member.path(),input.path()))throw StageError(ErrorCode::kPublicationFailed,"stage directory member aliases source");
+    SyncFile(member.path().string());
+  }
+  SyncDirectory(source);
+  for(const auto& input:inputs)input.RequireUnchanged();
+  fs::rename(source,destination);
+  try {SyncDirectory(destination.parent_path());for(const auto& input:inputs)input.RequireUnchanged();}
+  catch(...) {
+    try{fs::rename(destination,source);SyncDirectory(source.parent_path());}
+    catch(...){throw StageError(ErrorCode::kPublicationFailed,"stage directory rollback failed; published generation retained at "+target);}
+    throw;
+  }
+}
+
 void PublishTemporaryFile(const std::string& temporary_path_, const std::string& target_path_,
                           const std::vector<ArtifactRef>& inputs) {
   if (std::filesystem::weakly_canonical(std::filesystem::absolute(temporary_path_).parent_path()) !=

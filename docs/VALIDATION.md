@@ -601,3 +601,20 @@ The final catalog must contain only the current compact schema and required
 index, without source staging tables or raw-record free-page inflation. These
 checks qualify the producer boundary; full Phase 1–7 NVDLA provenance, runtime,
 process-tree RSS, disk, physical and global timing acceptance remain separate.
+
+
+### Complete native RTL frontend qualification
+
+The native frontend component gate compares complete hierarchical/normalized
+EmuIR records against the independent former source producer and compares
+resource, cut-class and clock reports with the independent Phase 1 API. It
+exercises a large fanout alongside stderr exceeding pipe capacity, real engine
+failure after a complete JSON stream, early parser failure, original source
+mutation, strict fabric-clock rejection, checksum corruption, wrong output
+ownership, existing publication, deadline and signal cancellation, detached pipe
+writers and complete-stage controller dispatch without a Python frontend adapter.
+The controller result must satisfy its current schema and retain implementation
+and RSS scopes. Both supported assignment generations must stream exact physical
+segments/captures without a compatibility fallback or full reconstruction.
+These component gates do not qualify the NVDLA design; current-source complete
+physical/global timing evidence remains a separate required gate.

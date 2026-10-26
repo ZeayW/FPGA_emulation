@@ -13,6 +13,10 @@
 #include <map>
 #include <sstream>
 #include <thread>
+#include <atomic>
+#include <exception>
+#include <memory>
+#include <streambuf>
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/resource.h>
@@ -134,8 +138,45 @@ void Limit(int resource, std::uint64_t value, int errors) {
     if (setrlimit(resource, &limit) != 0) ChildFailure(errors, errno);
   }
 }
+class PipeBuffer : public std::streambuf {
+ public:
+  PipeBuffer(int fd,std::atomic<bool>& stopping,std::atomic<bool>& waiting)
+      :fd_(fd),stopping_(stopping),waiting_(waiting){setg(buffer_.data(),buffer_.data(),buffer_.data());}
+ protected:
+  int_type underflow() override {
+    if(gptr()<egptr())return traits_type::to_int_type(*gptr());
+    while(true) {
+      if(stopping_)throw std::runtime_error("external tool stream cancelled");
+      const auto n=read(fd_,buffer_.data(),buffer_.size());
+      if(n<0 && errno==EINTR)continue;
+      if(n<0 && (errno==EAGAIN || errno==EWOULDBLOCK)) {
+        waiting_=true;struct pollfd descriptor{fd_,POLLIN|POLLHUP,0};
+        if(poll(&descriptor,1,20)<0 && errno!=EINTR)throw std::runtime_error("cannot observe external tool stream");
+        continue;
+      }
+      waiting_=false;
+      if(n<0)throw std::runtime_error("cannot read external tool stream");
+      if(!n)return traits_type::eof();
+      setg(buffer_.data(),buffer_.data(),buffer_.data()+n);return traits_type::to_int_type(*gptr());
+    }
+  }
+ private:int fd_;std::atomic<bool>& stopping_;std::atomic<bool>& waiting_;std::array<char,65536> buffer_{};
+};
+struct StreamWorker {
+  Pipe& pipe;pid_t pid;std::atomic<bool> done{false},failed{false},stopping{false},waiting{false};
+  std::exception_ptr error;std::thread thread;
+  StreamWorker(Pipe& value,pid_t child,const std::function<void(std::istream&)>& consume):pipe(value),pid(child),thread([this,consume]{
+    try {PipeBuffer buffer(pipe.read,stopping,waiting);std::istream input(&buffer);input.exceptions(std::ios::badbit);consume(input);
+      if(input.peek()!=std::char_traits<char>::eof())throw std::runtime_error("external tool consumer left unread output");
+    }catch(...){error=std::current_exception();failed=true;}
+    pipe.CloseRead();done=true;
+  }){}
+  ~StreamWorker(){if(thread.joinable()){stopping=true;if(!done)kill(-pid,SIGKILL);thread.join();}}
+  void Finish(){thread.join();if(error)std::rethrow_exception(error);}
+};
 void Execute(const ToolRequest& request, ToolResult& result,
-             const volatile std::sig_atomic_t* cancelled) {
+             const volatile std::sig_atomic_t* cancelled,
+             const std::function<void(std::istream&)>* consume=nullptr) {
   std::map<std::string, std::string> environment;
   if (request.inherit_environment) {
     for (auto item = environ; item && *item; ++item) {
@@ -154,6 +195,7 @@ void Execute(const ToolRequest& request, ToolResult& result,
   // eventually be called by a compiler with multiple worker threads).
   std::vector<char> ring(request.tail_bytes); std::size_t cursor = 0;
   Pipe diagnostics, errors;
+  std::unique_ptr<Pipe> output;if(consume)output=std::make_unique<Pipe>();
   if (fcntl(diagnostics.read, F_SETFL, O_NONBLOCK) < 0 ||
       fcntl(errors.read, F_SETFL, O_NONBLOCK) < 0)
     throw std::runtime_error("cannot configure external tool pipe");
@@ -175,10 +217,11 @@ void Execute(const ToolRequest& request, ToolResult& result,
     const int input = request.forward_stdin ? STDIN_FILENO : open("/dev/null", O_RDONLY);
     if (input < 0 || dup2(input, STDIN_FILENO) < 0 ||
         dup2(diagnostics.write, STDERR_FILENO) < 0 ||
-        (!request.forward_stdout && dup2(diagnostics.write, STDOUT_FILENO) < 0))
+        (output ? dup2(output->write,STDOUT_FILENO)<0 : (!request.forward_stdout && dup2(diagnostics.write, STDOUT_FILENO) < 0)))
       ChildFailure(errors.write, errno);
     if (input > STDERR_FILENO) close(input);
     close(diagnostics.read); close(diagnostics.write); close(errors.read);
+    if(output){close(output->read);close(output->write);}
     Limit(RLIMIT_CPU, request.cpu_seconds, errors.write);
     Limit(RLIMIT_AS, request.address_space_bytes, errors.write);
     Limit(RLIMIT_FSIZE, request.file_size_bytes, errors.write);
@@ -190,16 +233,18 @@ void Execute(const ToolRequest& request, ToolResult& result,
   if (setpgid(pid, pid) != 0 && errno != EACCES && errno != ESRCH)
     throw std::runtime_error("cannot isolate external tool process group");
   diagnostics.CloseWrite(); errors.CloseWrite();
+  std::unique_ptr<StreamWorker> worker;
+  if(output){output->CloseWrite();if(fcntl(output->read,F_SETFL,O_NONBLOCK)<0)throw std::runtime_error("cannot configure external stream");worker=std::make_unique<StreamWorker>(*output,pid,*consume);}
   bool terminating = false; auto terminate_at = start, reaped_at = start;
   int status = 0; struct rusage usage{};
   std::array<char, 65536> buffer{};
-  while (!child.reaped || diagnostics.read >= 0) {
+  while (!child.reaped || diagnostics.read >= 0 || (worker && !worker->done)) {
     const auto now = Clock::now();
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count();
-    if (!terminating && ((cancelled && *cancelled) ||
+    if (!terminating && ((worker && worker->failed) || (cancelled && *cancelled) ||
         (request.timeout_ms && elapsed >= static_cast<std::int64_t>(request.timeout_ms)))) {
       result.cancelled_signal = cancelled ? *cancelled : 0;
-      result.timed_out = !result.cancelled_signal;
+      result.timed_out = !result.cancelled_signal && !(worker && worker->failed);
       terminating = true; terminate_at = now; kill(-pid, SIGTERM);
     }
     if (terminating && now - terminate_at >= std::chrono::milliseconds(request.termination_grace_ms))
@@ -218,6 +263,8 @@ void Execute(const ToolRequest& request, ToolResult& result,
         now - reaped_at > std::chrono::milliseconds(1000))
       throw StageError(ErrorCode::kExecutionFailed,
                        "external tool left a detached diagnostic writer");
+    if(child.reaped && worker && worker->waiting && now-reaped_at>std::chrono::milliseconds(1000))
+      throw StageError(ErrorCode::kExecutionFailed,"external tool left a detached stdout writer");
     // Drain only a bounded number of chunks per tick; a noisy engine must not
     // starve deadline/cancellation processing by keeping its pipe readable.
     for (unsigned chunk = 0; chunk < 16 && diagnostics.read >= 0; ++chunk) {
@@ -228,7 +275,7 @@ void Execute(const ToolRequest& request, ToolResult& result,
       else if (errno == EAGAIN || errno == EWOULDBLOCK) break;
       else throw std::runtime_error("cannot read external tool diagnostics");
     }
-    if (child.reaped && diagnostics.read < 0) break;
+    if (child.reaped && diagnostics.read < 0 && (!worker || worker->done)) break;
     struct pollfd descriptor{diagnostics.read, POLLIN | POLLHUP, 0};
     if (poll(&descriptor, 1, 20) < 0 && errno != EINTR)
       throw std::runtime_error("cannot observe external tool");
@@ -247,6 +294,7 @@ void Execute(const ToolRequest& request, ToolResult& result,
   result.maximum_process_rss_kib /= 1024;
 #endif
   FinishTail(result, ring, cursor);
+  if(worker)worker->Finish();
   if (result.timed_out || result.cancelled_signal || result.spawn_errno || result.return_code)
     throw StageError(ErrorCode::kExecutionFailed,
         result.timed_out ? "external tool exceeded wall-time limit" :
@@ -295,6 +343,18 @@ ToolResult RunExternalTool(const ToolRequest& request,
     if (access(executable.path().c_str(), X_OK) != 0) Invalid("external tool is not executable");
     refs.push_back(std::move(executable)); return refs;
   }, [&](const auto&) { Execute(request, result, cancelled); });
+  return result;
+}
+ToolResult RunExternalToolStream(const ToolRequest& request,
+    const std::function<void(std::istream&)>& consume,
+    const volatile std::sig_atomic_t* cancelled,const std::vector<ArtifactRef>& inputs) {
+  ToolResult result;
+  result.operation=RunStage("native.external-tool-stream",[&]{
+    Validate(request);if(!consume || request.forward_stdout)Invalid("invalid external stream consumer/mode");
+    auto refs=inputs;auto executable=ArtifactRef::Bind(request.argv[0],"external-tool-executable-v1");
+    if(access(executable.path().c_str(),X_OK)!=0)Invalid("external tool is not executable");
+    refs.push_back(std::move(executable));return refs;
+  },[&](const auto&){Execute(request,result,cancelled,&consume);});
   return result;
 }
 std::string ToolResultJson(const ToolResult& result) {

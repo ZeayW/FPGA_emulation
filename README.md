@@ -57,8 +57,10 @@ selected BoardDB for Phases 3–7. See the
 The hierarchical RTL frontend streams Yosys into the shared C++ core for module
 expansion, alias resolution, Xilinx normalization and direct compact EmuIR
 production, preserving late constant outputs and complete endpoint order.
-Remaining indexed-source adapters, Phase 1 clock analysis/reporting and complete
-stage orchestration still require migration; this does not complete Phase 1 or W7.
+Native control now executes the complete ordinary RTL frontend in C++: Yosys
+process ownership, streamed import, resource/clock checks and atomic Phase 1
+publication. Supplied-JSON/prepared-input adapters, other phase data planes and
+current-design qualification remain; W7 is unfinished.
 The saved BoardDB supplies only the mapping device identity; older link-model
 fields do not need migration to continue with the current BoardDB.
 Terminal validation also verifies the declared read-only EmuIR binding and
@@ -262,9 +264,10 @@ indexed TimingPathDB. The shared core owns result import, timing-weight generati
 and their independent validators; hosts carry file references and bounded
 summaries. See the [migration contract](docs/PHASE3_NATIVE_MIGRATION.md).
 An opt-in `multi-fpga compile --compile-implementation native-control-v1` uses
-the C++ one-shot `emuflow-native compile` controller. Its TDM stage prepares
-configuration and executes directly in an isolated native process; other stages
-retain shared Python adapters. Baseline and retained Chimew comparison are supported with
+the C++ one-shot `emuflow-native compile` controller. Ordinary RTL frontend and
+TDM execute directly in isolated native processes. Preflight carries only bounded
+frontend configuration; the frontend returns a sealed summary reference. Other
+stages and supplied/prepared frontend modes retain shared Python adapters. Baseline and retained Chimew comparison are supported with
 either Xilinx physical backend; fixed wiring and full physical/global timing
 checks remain required. The default remains `python-control-v1`; provider and
 algorithm defaults are unchanged. This is transitional orchestration, not
