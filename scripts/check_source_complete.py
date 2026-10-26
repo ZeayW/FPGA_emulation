@@ -171,6 +171,7 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "scripts/opensta/export_timing_path_database.tcl",
     "scripts/opensta/design_context.tcl",
     "scripts/opensta/export_launch_clock_edges.tcl",
+    "src/emuflow/source_launch_clocks.py",
     "scripts/yosys/logic_only_map.v",
     "tests/test_openparf_runtime.py",
     "resources/timing/ultrascaleplus-softlogic-v1.json",

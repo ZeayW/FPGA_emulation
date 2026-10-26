@@ -150,6 +150,11 @@ to reuse its RX capture edge. Subtracting such a guard from a chosen TX edge
 does not, by itself, measure physical TDM waiting or characterize the fixed PHY
 arc. The kernel therefore exports occurrences, not a claimed physical wait,
 raw end-to-end delay or operating frequency.
+A bounded [Vivado phase-reference diagnostic](../scripts/vivado/qualify_clock_reference_phase.tcl)
+keeps one routed FF-to-TX endpoint pair fixed and shifts only its in-memory
+primary-clock waveform. It tests whether the common-reference data and sampling
+cost remain independent of nominal source phase. Its three query cases do not
+modify the saved checkpoint or qualify whole-design timing.
 Changing the DUT period can change architectural launch phases and selected
 table rounds. Feasibility need not be monotone: a half-cycle launch at 40 ns
 can use a 45 ns load and arrive at 75 ns within an 80 ns period, while a launch
@@ -351,6 +356,40 @@ source, with explicit source and fact completion counts. Missing, repeated or
 unordered source coordinates, noncanonical names, combinational through-pins
 and unclocked sources fail. This interchange is not yet the canonical
 source-bound launch-fact store or a whole-design timing certificate.
+
+`emuflow-native phase7 build-launch-clocks` consumes current clock-aware logic
+and local-path timing stores together with an already source-sealed OpenSTA
+model. The bounded Python control bridge is
+`source_launch_clocks.build_source_launch_clock_store`; it passes only file
+identities, parent seals and tool options. C++ scans implemented complete-contract
+launch queries and original local starts, resolves logical Vivado names against
+original driver endpoints, deduplicates original `(cell, port, bit)` coordinates,
+runs the streamed engine query and atomically publishes
+`emuflow.source-launch-clocks/v1`. Optimized physical aliases are not original
+endpoint identities. Top-level inputs must be connected original drivers;
+cell names must match the exact escaped-name recipe, and bus pins use the
+original connected width. Unsupported or ambiguous names fail.
+
+This store owns each requested original coordinate once, declared and engine
+clock periods once per clock, and every distinct source clock/phase fact. Query
+names and TSV files are invocation scratch. Physical source, route, schedule,
+semantic and timing-policy bindings must agree. Existing emitter/probe hashes
+identify the model, engine and script inputs; retained file generations must
+remain unchanged through tool execution and publication.
+The control bridge requires the parents' original validated generation bindings;
+taking a fresh snapshot cannot renew an older content seal. Missing, duplicate,
+unordered, nonfinite or undeclared engine facts, inconsistent periods and
+missing terminal counts cannot replace an existing owner. Cancellation reaps
+the engine before retiring its scratch.
+
+`SourceLaunchClockView` requires the original source seal and explicit target
+periods. It scales each engine phase as `phase / engine_period * target_period`;
+using the engine period preserves exact half-cycle ratios despite its floating
+time representation. It does not invent a zero launch for a missing clock.
+This supplies original launch phases to the native word resolver; the full
+physical-fanin joins, original-path clock budgets and independent global event
+checks remain required before word-mode global acceptance is enabled.
+
 The shared `clock_budget` reader preserves this edge window under uniform
 source/capture clock scaling, rejects independent rescaling and unsupported
 latch/absolute-delay checks, and keeps setup and physical margins separate.

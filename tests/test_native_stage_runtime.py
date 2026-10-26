@@ -95,6 +95,7 @@ class NativeStageRuntimeTest(unittest.TestCase):
                 ["phase6", "refine-groups", "--typed-input", missing],
                 ["phase6", "rudy", missing],
                 ["phase7", "export-rwroute", missing, missing, missing],
+                ["phase7", "build-launch-clocks", missing, missing, missing],
             ]
             for args in cases:
                 with self.subTest(operation=args[:2]):

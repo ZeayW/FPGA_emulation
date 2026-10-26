@@ -18,6 +18,7 @@
 #include "emuflow_core/exact_captures.hpp"
 #include "emuflow_core/candidate_ids.hpp"
 #include "emuflow_core/sqlite.hpp"
+#include "emuflow_core/source_launch_clocks.hpp"
 
 #include <filesystem>
 #include <iostream>
@@ -26,6 +27,7 @@ namespace emuflow::native {
 const char* StageName(Stage stage) {
   switch (stage) {
     case Stage::kInvalid: return "native.request";
+    case Stage::kBuildSourceLaunchClocks: return "phase7.build-launch-clocks";
     case Stage::kRefinePartitionHops: return "phase3.refine-hops";
     case Stage::kValidateAtomicOwnership: return "phase7.validate-atomic-ownership";
     case Stage::kValidatePhysicalCells: return "phase7.validate-physical-cells";
@@ -60,6 +62,15 @@ namespace {
 std::vector<std::string> InputSchemas(const StageRequest& request) {
   switch (request.stage) {
     case Stage::kInvalid: break;
+    case Stage::kBuildSourceLaunchClocks: {
+      const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
+      if(count<3)throw core::StageError(core::ErrorCode::kInvalidRequest,"source launch inputs are missing");
+      const auto control=request.input_artifacts.empty()?core::ArtifactRef::Bind(request.input_paths[1],"source-launch-build-request-v1"):
+          request.input_artifacts[1];
+      if(control.schema()!="source-launch-build-request-v1")
+        throw core::StageError(core::ErrorCode::kInvalidArtifact,"source launch control schema differs");
+      control.RequireUnchanged();return core::SourceLaunchInputSchemas(control.path());
+    }
     case Stage::kRefinePartitionHops: return {"hop-refiner-input-v1"};
     case Stage::kValidateAtomicOwnership: return {"xilinx-mapped-index-v2","openparf-atomic-source-store-v1","openparf-placement-certificate-v3","atomic-ownership-request-v1"};
     case Stage::kValidatePhysicalCells: return {"xilinx-mapped-index-v2","xilinx-physical-handoff-v1","physical-cell-check-request-v1"};
@@ -241,6 +252,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       return;
     }
     switch (request.stage) {
+      case Stage::kBuildSourceLaunchClocks: core::BuildSourceLaunchClocksFromRequest(inputs,output,request.cancelled); break;
       case Stage::kRefinePartitionHops:
         RefinePartitionHops(inputs,output,!request.summary_output); break;
       case Stage::kValidateAtomicOwnership:
@@ -282,6 +294,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
   }, [&]() {
     const char* schema = nullptr;
     switch (request.stage) {
+      case Stage::kBuildSourceLaunchClocks: schema="source-launch-clock-store-v1"; break;
       case Stage::kRefinePartitionHops: schema = "hop-refiner-output-v1"; break;
       case Stage::kValidateAtomicOwnership: schema = "atomic-ownership-summary-v1"; break;
       case Stage::kValidatePhysicalCells: schema = "physical-cell-check-summary-v1"; break;

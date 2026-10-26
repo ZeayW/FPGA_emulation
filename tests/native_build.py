@@ -98,6 +98,14 @@ def exact_semantic_view_test() -> Path:
 
 
 @lru_cache(maxsize=1)
+def source_launch_clocks_test() -> Path:
+    return _build_native_stage_program(
+        ROOT / "tests/native_source_launch_clocks_test.cpp",
+        Path(_BUILD_ROOT.name) / "native-source-launch-clocks-test",
+    )
+
+
+@lru_cache(maxsize=1)
 def native_json_record() -> Path:
     compiler = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
     if compiler is None:

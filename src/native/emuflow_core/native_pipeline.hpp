@@ -1,10 +1,11 @@
 #pragma once
 
 #include "emuflow_core/stage_runtime.hpp"
+#include <csignal>
 
 namespace emuflow::native {
 enum class Stage {
-  kInvalid, kSealRoutes, kValidatePhysicalCells, kValidateAtomicOwnership,
+  kInvalid, kBuildSourceLaunchClocks, kSealRoutes, kValidatePhysicalCells, kValidateAtomicOwnership,
   kAnalyzeExact, kFinalizeExact, kHashSemantics,
   kWriteExactSections, kRefinePatron, kRoute,
   kAssignBanks, kGroupSignals, kRefinePositions, kRudy,
@@ -27,6 +28,7 @@ struct StageRequest {
   // relation is owned by that invocation and is never a downstream artifact.
   std::string auxiliary_output_path;
   std::string scratch_path;
+  const volatile std::sig_atomic_t* cancelled = nullptr;
 };
 
 // Typed in-process interface for native orchestration. CLI argument parsing is

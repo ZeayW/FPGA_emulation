@@ -70,7 +70,7 @@ Vivado uses explicit DUT implementation targets independently of runtime frames;
 a frequency override scales all DUT roots together while keeping the TDM clock
 fixed. The same documentation describes bounded checkpoint diagnostics for word
 boundaries and original, datapath-only or clock-aware reference timing, including
-bounded endpoint sampling-cost queries, installed SelectIO IP inspection and
+bounded endpoint sampling-cost and source-phase checks, installed SelectIO IP inspection and
 package-derived bank recipes, checked output generation and optional out-of-context
 IP synthesis used for PHY integration, with a bounded configuration/port audit.
 Native word implementations export clock-aware sampling costs for all indexed
@@ -89,7 +89,9 @@ unnecessarily delayed occurrences without recomputing data arrivals.
 An explicit OpenSTA launch-clock qualifier reads architectural source phases
 without selecting a representative timing path.
 Streamed launch-tag export shares Phase 2's original clock and I/O setup;
-canonical launch-fact storage and global binding remain under integration.
+a native producer binds implemented physical starts to original driver
+coordinates and stores their clock/phase tags once. Full word-mode global
+timing binding remains under integration.
 Native bank wrappers bind training, complete words and receive FIFO clocks;
 an explicit vendor-model loopback tool examines word integrity and latency.
 See the [clock baseline](docs/XILINX_PHYSICAL_FLOW.md#local-implementation-clock-baseline).

@@ -44,6 +44,7 @@ constexpr const char* kUsage =
     "  phase6 rudy INPUT OUTPUT\n"
     "  phase7 validate-atomic-ownership MAPPED SOURCE CERTIFICATE REQUEST SUMMARY\n"
     "  phase7 validate-physical-cells MAPPED PHYSICAL REQUEST SUMMARY\n"
+    "  phase7 build-launch-clocks ORIGINAL_IR REQUEST TOOL_REQUEST LOGIC... LOCAL... TIMING_INPUT... OUTPUT\n"
     "  phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL\n"
     "  phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY\n"
     "  phase7 import-vivado-lineage MAPPED FUNCTIONS REQUEST STORE SUMMARY INVENTORY...\n";
@@ -243,6 +244,11 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     StageRequest request{Stage::kExportBookshelf,{argv[3],argv[4]},argv[5]};
     request.auxiliary_output_path = argv[6]; request.scratch_path = argv[7];
     return Execute(std::move(request),report);
+  }
+  if (phase == "phase7" && operation == "build-launch-clocks" && argc >= 7) {
+    ToolSignals signals;
+    StageRequest request{Stage::kBuildSourceLaunchClocks,std::vector<std::string>(argv+3,argv+argc-1),argv[argc-1]};
+    request.cancelled=&tool_cancelled;return Execute(std::move(request),report);
   }
   emuflow::core::StageResult result;
   result.stage = "native.request"; result.error = emuflow::core::ErrorCode::kInvalidRequest;
