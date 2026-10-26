@@ -19,6 +19,7 @@
 #include "emuflow_core/routed_endpoints.hpp"
 #include "emuflow_core/routed_opensta.hpp"
 #include "emuflow_core/opensta_export.hpp"
+#include "emuflow_core/sta_paths.hpp"
 #include "emuflow_core/patron_ingress.hpp"
 #include "emuflow_core/partition_clusters.hpp"
 #include "emuflow_core/partition_loads.hpp"
@@ -49,6 +50,8 @@ const char* StageName(Stage stage) {
     case Stage::kBuildRoutedEndpoints: return "physical.build-routed-endpoints";
     case Stage::kStageRoutedOpensta: return "physical.stage-routed-opensta";
     case Stage::kExportOpenstaInputs: return "physical.export-opensta-inputs";
+    case Stage::kImportStaPaths: return "physical.import-sta-paths";
+    case Stage::kValidateStaPaths: return "physical.validate-sta-paths";
     case Stage::kImportVivadoLineage: return "phase7.import-vivado-lineage";
     case Stage::kExportRwroute: return "phase7.export-rwroute";
     case Stage::kBuildCaptures: return "phase3.build-captures";
@@ -132,6 +135,8 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     }
     case Stage::kStageRoutedOpensta: return {"xilinx-mapped-index-v2","xilinx-routed-timing-v2","xilinx-routed-endpoints-v1","routed-opensta-request-v1"};
     case Stage::kExportOpenstaInputs: return {"emuir-compact-v2","opensta-input-export-request-v1"};
+    case Stage::kImportStaPaths: return {"emuir-compact-v2","sta-source-document-v1","sta-path-request-v1"};
+    case Stage::kValidateStaPaths: return {"emuir-compact-v2","timing-path-store-v1","sta-path-request-v1"};
     case Stage::kBuildRoutedEndpoints: return {"xilinx-mapped-index-v2","xilinx-physical-handoff-v1","xilinx-route-manifest-v2","xilinx-route-nets-v1","routed-endpoint-request-v1"};
     case Stage::kExportVivado: return {"xilinx-mapped-index-v2","vivado-export-request-v1"};
     case Stage::kExportRwroute: return {"xilinx-mapped-index-v2","xilinx-physical-handoff-v1","rwroute-export-request-v2"};
@@ -245,7 +250,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
         if(Equivalent(input,request.output_path) || std::filesystem::weakly_canonical(input)==std::filesystem::weakly_canonical(request.output_path))
           throw core::StageError(core::ErrorCode::kInvalidRequest,"routed segment summary aliases an input");
     }
-    if (request.stage == Stage::kExportOpenstaInputs || request.stage == Stage::kStageRoutedOpensta || request.stage == Stage::kBuildRoutedEndpoints || request.stage == Stage::kExportVivado || request.stage == Stage::kExportBookshelf || request.stage == Stage::kExportRwroute || request.stage == Stage::kImportVivadoLineage || request.stage == Stage::kImportPhysicalBoundary || request.stage == Stage::kImportPhysicalLogic || request.stage == Stage::kImportPhysicalLocal) {
+    if (request.stage == Stage::kImportStaPaths || request.stage == Stage::kExportOpenstaInputs || request.stage == Stage::kStageRoutedOpensta || request.stage == Stage::kBuildRoutedEndpoints || request.stage == Stage::kExportVivado || request.stage == Stage::kExportBookshelf || request.stage == Stage::kExportRwroute || request.stage == Stage::kImportVivadoLineage || request.stage == Stage::kImportPhysicalBoundary || request.stage == Stage::kImportPhysicalLogic || request.stage == Stage::kImportPhysicalLocal) {
       if (!bound) {
         try { for (auto& path : paths) path = core::SqliteFilePath(path); }
         catch (const std::exception& error) {
@@ -364,6 +369,10 @@ core::StageResult ExecuteStage(const StageRequest& request) {
         core::StageRoutedOpensta(inputs,output,request.auxiliary_output_path,request.scratch_path);break;
       case Stage::kExportOpenstaInputs:
         core::ExportOpenstaInputs(inputs,output,request.auxiliary_output_path,request.scratch_path);break;
+      case Stage::kImportStaPaths:
+        core::ImportStaPaths(inputs,output,request.auxiliary_output_path);break;
+      case Stage::kValidateStaPaths:
+        core::ValidateStaPaths(inputs,output);break;
       case Stage::kBuildRoutedEndpoints:
         core::BuildRoutedEndpoints(inputs,output,request.auxiliary_output_path,request.scratch_path);break;
       case Stage::kExportVivado:
@@ -423,6 +432,8 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kBuildRoutedSegments: schema = "routed-segment-summary-v1"; break;
       case Stage::kStageRoutedOpensta: schema = "emuir-compact-v2"; break;
       case Stage::kExportOpenstaInputs: schema = "opensta-input-export-summary-v1"; break;
+      case Stage::kImportStaPaths: schema = "timing-path-store-v1"; break;
+      case Stage::kValidateStaPaths: schema = "sta-path-validation-v1"; break;
       case Stage::kBuildRoutedEndpoints: schema = "xilinx-routed-endpoints-v1"; break;
       case Stage::kExportVivado: schema = "vivado-primitive-verilog-v1"; break;
       case Stage::kExportRwroute: schema = "rwroute-input-tsv-v1"; break;
@@ -462,6 +473,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       default: throw core::StageError(core::ErrorCode::kInvalidRequest, "unknown native stage");
     }
     std::vector<core::ArtifactRef> refs{core::ArtifactRef::Bind(request.output_path, schema, request.output_path == "-")};
+    if(request.stage==Stage::kImportStaPaths)refs.push_back(core::ArtifactRef::Bind(request.auxiliary_output_path,"sta-path-import-summary-v1"));
     if(request.stage==Stage::kExportOpenstaInputs) {
       if(!request.auxiliary_output_path.empty())refs.push_back(core::ArtifactRef::Bind(request.auxiliary_output_path,"opensta-timing-verilog-v1"));
       if(!request.scratch_path.empty())refs.push_back(core::ArtifactRef::Bind(request.scratch_path,"opensta-net-map-v1"));

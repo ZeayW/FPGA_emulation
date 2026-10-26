@@ -1395,10 +1395,10 @@ class PartitionPressureTest(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            ir_path = root / "ir.json"
+            ir_path = root / "ir.emuir.sqlite"
             tsv_path = root / "paths.tsv"
             database_path = root / "paths.json"
-            write_json(ir_path, self.ir.value)
+            write_compact_emuir(ir_path, self.ir.value)
             rows = [STA_PATH_DATABASE_TSV_HEADER]
             for index, path in enumerate(self.timing["paths"]):
                 path_id = (

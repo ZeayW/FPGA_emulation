@@ -56,7 +56,7 @@ def inputs(tmp_path, monkeypatch,request):
         rows.append('\t'.join([identity.encode().hex(),'clk'.encode().hex(),str(path['clock_period_ns']),str(path['slack_ns']),
             str(path['fixed_delay_ns']),','.join(n.encode().hex() for n in path['path_nets'])]))
     tsv=tmp_path/'paths.tsv'; tsv.write_text('\n'.join(rows)+'\n')
-    timing=tmp_path/'timing.json'; import_sta_path_database_tsv_streaming(tsv,raw,timing,provider=OPENSTA_PROVIDER)
+    timing=tmp_path/'timing.json'; import_sta_path_database_tsv_streaming(tsv,compact,timing,provider=OPENSTA_PROVIDER)
     manifest=read_json(timing)
     args=(ir,fixture.platform,clusters,fixture.constraints,manifest,fixture.route_constraints)
     return args,initial,timing

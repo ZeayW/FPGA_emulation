@@ -65,6 +65,8 @@ constexpr const char* kUsage =
     "  physical build-routed-segments SUMMARY DIRECTORY MAPPED IR TIMING ENDPOINTS BOUNDARY [LOGIC] [LOCAL] REQUEST\n"
     "  physical stage-routed-opensta MAPPED TIMING ENDPOINTS REQUEST EMUIR LIBERTY SUMMARY\n"
     "  physical export-opensta-inputs EMUIR REQUEST VERILOG|- NET_MAP|- SUMMARY\n"
+    "  physical import-sta-paths EMUIR TSV REQUEST STORE SUMMARY\n"
+    "  physical validate-sta-paths EMUIR STORE REQUEST SUMMARY\n"
     "  physical build-routed-endpoints MAPPED PHYSICAL ROUTE NETS REQUEST ENDPOINTS MANIFEST SUMMARY\n"
     "  phase7 import-vivado-lineage MAPPED FUNCTIONS REQUEST STORE SUMMARY INVENTORY...\n";
 
@@ -179,6 +181,11 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     StageRequest request{Stage::kStageRoutedOpensta,{argv[3],argv[4],argv[5],argv[6]},argv[7]};
     request.auxiliary_output_path=argv[8];request.scratch_path=argv[9];return Execute(std::move(request),report);
   }
+  if(phase=="physical" && operation=="import-sta-paths" && argc==8) {
+    StageRequest request{Stage::kImportStaPaths,{argv[3],argv[4],argv[5]},argv[6]};request.auxiliary_output_path=argv[7];return Execute(std::move(request),report);
+  }
+  if(phase=="physical" && operation=="validate-sta-paths" && argc==7)
+    return run(Stage::kValidateStaPaths,{argv[3],argv[4],argv[5]},argv[6]);
   if(phase=="physical" && operation=="export-opensta-inputs" && argc==8) {
     StageRequest request{Stage::kExportOpenstaInputs,{argv[3],argv[4]},argv[7]};
     if(std::string(argv[5])!="-")request.auxiliary_output_path=argv[5];

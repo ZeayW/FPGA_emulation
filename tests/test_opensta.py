@@ -77,8 +77,8 @@ class OpenStaProviderTest(unittest.TestCase):
     def test_streamed_path_database_is_sealed_and_validated(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            ir_path = root / "ir.json"
-            ir_path.write_text(json.dumps(self.ir.value), encoding="utf-8")
+            ir_path = root / "ir.emuir.sqlite"
+            self.ir.save(ir_path)
             net = self.ir.value["nets"][0]["id"]
             objects = sorted(sta_object_index(self.ir))
             path_id = f"{objects[0]}->{objects[-1]}#00000000"
@@ -130,8 +130,8 @@ class OpenStaProviderTest(unittest.TestCase):
     def test_indexed_paths_are_relational_not_json_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            ir_path = root / "ir.json"
-            ir_path.write_text(json.dumps(self.ir.value), encoding="utf-8")
+            ir_path = root / "ir.emuir.sqlite"
+            self.ir.save(ir_path)
             net = self.ir.value["nets"][0]["id"]
             raw = root / "paths.tsv"
             rows = [
@@ -447,10 +447,10 @@ print("fake OpenSTA pass")
     def test_runner_streams_physical_path_database(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            ir_path = root / "ir.json"
+            ir_path = root / "ir.emuir.sqlite"
             output_path = root / "database.json"
             executable = root / "fake-opensta"
-            ir_path.write_text(json.dumps(self.ir.value), encoding="utf-8")
+            self.ir.save(ir_path)
             net = self.ir.value["nets"][0]["id"]
             executable.write_text(
                 f"""#!/usr/bin/env python3

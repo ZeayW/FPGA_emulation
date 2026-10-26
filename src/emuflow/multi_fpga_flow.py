@@ -1374,6 +1374,7 @@ def _compile_preflight(ctx: _CompileContext):
     if ctx.internal_timing_database:
         from .native_tools import require_native_schema
         require_native_schema("opensta-input-export-request-v1")
+        require_native_schema("sta-path-request-v1")
         ctx.opensta = resolve_native_executable("sta", ctx.opensta)
         check_opensta_engine_version(ctx.opensta)
     if ctx.physical:

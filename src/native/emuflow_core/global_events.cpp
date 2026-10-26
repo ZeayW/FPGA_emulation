@@ -1,4 +1,5 @@
 #include "emuflow_core/global_events.hpp"
+#include "emuflow_core/exact_sum.hpp"
 #include "emuflow_core/global_event_schema.hpp"
 #include "emuflow_core/store.hpp"
 #include "emuflow_core/hash.hpp"
@@ -352,28 +353,7 @@ Scalars ReadScalars(const std::string& bytes) {
   for(auto value:result)Check(std::isfinite(value),"measurement is nonfinite");return result;
 }
 std::string ScalarBytes(const Scalars& numbers) {return std::string(reinterpret_cast<const char*>(numbers.data()),24);}
-class ExactSum {
- public:
-  void Add(double value) {
-    std::size_t used=0;
-    for(double partial:partials_) {
-      if(std::abs(value)<std::abs(partial))std::swap(value,partial);
-      const double high=value+partial,low=partial-(high-value);
-      Check(std::isfinite(high),"numerical sum overflows");if(low)partials_[used++]=low;value=high;
-    }
-    partials_.resize(used);if(value)partials_.push_back(value);
-  }
-  double Finish() const {
-    auto n=partials_.size();if(!n)return 0.0;double high=partials_[--n],low=0;
-    while(n) {const double x=high,y=partials_[--n];high=x+y;low=y-(high-x);if(low)break;}
-    if(n && ((low<0 && partials_[n-1]<0)||(low>0 && partials_[n-1]>0))) {
-      const double y=low*2,x=high+y;if(x-high==y)high=x;
-    }
-    Check(std::isfinite(high),"numerical sum overflows");return high;
-  }
- private:
-  std::vector<double> partials_;
-};
+
 void VerifyScalars(const Numbers& source,const Scalars& actual) {
   ExactSum sum;for(std::size_t i=2;i<source.size();++i)sum.Add(source.At(i));
   const double arrival=sum.Finish(),required=source.At(1)-source.At(0);

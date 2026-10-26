@@ -107,6 +107,8 @@ class NativeStageRuntimeTest(unittest.TestCase):
                 ["phase6", "refine-groups", "--typed-input", missing],
                 ["phase6", "rudy", missing],
                 ["phase7", "export-rwroute", missing, missing, missing],
+                ["physical", "import-sta-paths", missing, missing, missing],
+                ["physical", "validate-sta-paths", missing, missing, missing],
                 ["physical", "export-opensta-inputs", missing, missing, str(root/"rtl"), str(root/"map")],
             ]
             for args in cases:
@@ -115,7 +117,7 @@ class NativeStageRuntimeTest(unittest.TestCase):
                     command = [str(binary), "--report", str(report), *args, str(output)]
                     if args[:2] in (["phase6", "group-signals"], ["phase6", "refine-groups"]):
                         command.append("0" * 64)
-                    if args[:2] == ["phase7", "export-rwroute"]:
+                    if args[:2] in (["phase7", "export-rwroute"], ["physical", "import-sta-paths"]):
                         command.append(str(root / "summary.json"))
                     result = subprocess.run(command, capture_output=True, text=True)
                     self.assertEqual(result.returncode, 1, result.stderr)

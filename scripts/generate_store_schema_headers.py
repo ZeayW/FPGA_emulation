@@ -59,6 +59,14 @@ def generate(directory):
     if not output.exists() or output.read_text(encoding="utf-8") != compact:
         output.write_text(compact, encoding="utf-8")
 
+    ddl = (root / "src/emuflow/data/schema/sta_paths.sql").read_text(encoding="utf-8")
+    if ')EMUFLOW_SQL"' in ddl:
+        raise ValueError("SQL schema contains the native raw-string delimiter")
+    paths = '#pragma once\nnamespace emuflow::core {\ninline constexpr const char* kStaPathStoreDDL = R"EMUFLOW_SQL(' + ddl + ')EMUFLOW_SQL";\n}\n'
+    output = Path(directory) / "sta_path_schema.hpp"
+    if not output.exists() or output.read_text(encoding="utf-8") != paths:
+        output.write_text(paths, encoding="utf-8")
+
     events = "#pragma once\nnamespace emuflow::core {\n"
     for symbol, filename in (
         ("kGlobalEventsDDL", "global_events.sql"),

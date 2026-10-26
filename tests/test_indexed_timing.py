@@ -67,10 +67,12 @@ def test_compact_stream_uses_real_provider_protocol_without_ir_reload(tmp_path):
     old = tmp_path / "old.emuir.sqlite"
     _write_emuir_sqlite_v1(old, ir.value)
     old_out = tmp_path / "old-paths.json"
-    old_report = run_opensta_path_database(
-        old, old_out, clocks={"clk": 10},
-        executable=str(ROOT / "tests/fixtures/fake_opensta_paths.py"), _stream_output=True,
-    )
+    from tests.sta_path_reference import import_sta_path_database_tsv_streaming as reference_import
+    with patch("emuflow.opensta.import_sta_path_database_tsv_streaming", reference_import):
+        old_report = run_opensta_path_database(
+            old, old_out, clocks={"clk": 10},
+            executable=str(ROOT / "tests/fixtures/fake_opensta_paths.py"), _stream_output=True,
+        )
     assert records == list(iter_sta_path_database_paths(old_out, json.loads(old_out.read_text())))
     assert report["path_qor"] == old_report["path_qor"]
 

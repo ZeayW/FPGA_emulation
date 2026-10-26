@@ -233,6 +233,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/assignment_schema.hpp.in"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_clusters.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/emuir_compact.sql"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/sta_paths.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_assignment_core.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_assignment_cuts.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase5_schedule.sql"

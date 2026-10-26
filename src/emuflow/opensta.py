@@ -1510,10 +1510,11 @@ def _run_opensta_path_database(
             else {}
         )
 
+    proof = getattr(imported, "validation", None)
     checked = (
-        validate_sta_path_database_path_value(output_path, database, ir)
-        if validate_output
-        else {"status": "deferred-to-managed-stage"}
+        proof.require(output_path, database, ir) if proof is not None and validate_output
+        else validate_sta_path_database_path_value(output_path, database, ir)
+        if validate_output else {"status": "deferred-to-managed-stage"}
     )
     covered_through_nets = []
     through_coverage: Dict[str, Any] | None = None
@@ -1615,6 +1616,11 @@ def _run_opensta_path_database(
     }
     if input_export is not None:
         result["input_export"] = input_export
+    if getattr(imported, "validation", None) is not None:
+        result["path_import"] = {
+            "implementation_id": imported["implementation_id"],
+            "native_metrics": imported["native_metrics"],
+        }
     if "path_qor" in imported:
         result["path_qor"] = imported["path_qor"]
     if _return_database:

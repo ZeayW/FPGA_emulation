@@ -337,6 +337,23 @@ to its original members before original-path TNS is accumulated. The metric is
 not conventional unique-register-endpoint TNS. See
 [global timing scope](global-opensta-qualification.md).
 
+## Native OpenSTA path import
+
+Compare every imported path, endpoint certificate, ordered net membership,
+normalization value and original-path QoR with the test-only independent
+producer. Include escaped provider identities, constants, scalar/bus top ports,
+legacy path IDs and cancellation-sensitive sums. Poison Python path parsing,
+object-table construction and full-graph loading in the native path.
+Malformed hex/UTF-8, duplicate IDs/nets, unknown nets, invalid timing, request
+version/CRC/truncation and changed source generations must reject without
+replacing a previous selector or payload. Independently mutate final ordering,
+membership, source endpoint identities, schema/index definitions, normalization
+and summary seals to exercise the final-record auditor. Verify bounded Python
+memory with distinct path/net populations and avoid enumerating unreached wide
+port bits. Immediate proof reuse must reject altered manifests or generations
+and must not trigger another full-row validation. Fixtures establish component
+correctness only; complete real NVDLA qualification remains required.
+
 ## Independent native schedule validation
 
 Native compiler gates must prove that TDM never invokes a Python adapter. Compare

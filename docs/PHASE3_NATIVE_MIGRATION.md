@@ -488,7 +488,7 @@ there is no silent implementation or provider fallback.
 
 | Stage | Existing native/indexed foundation | Remaining delivery obligation |
 | --- | --- | --- |
-| Phase 1–2 | Native synthesis/STA engines; compact indexed inputs | Consolidate import, identities and timing adapters under the shared artifact API |
+| Phase 1–2 | Native synthesis/STA engines; compact indexed inputs; native OpenSTA input export, path-result import and final-record validation | Migrate Yosys import, remaining weight production and phase lifecycle under the shared artifact API |
 | Phase 3 | Shared-core candidate eligibility and primary clustering; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Migrate remaining policy/assignment publication and reference modes; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
@@ -718,11 +718,35 @@ now use one shared-core stage over compact EmuIR, including source-bound negativ
 clock specialization, instance-local pin merging, constants and escaped-name
 ambiguity rejection. The Python indexed emitter is retired; standalone text
 exporters select only the requested output. Pre- and post-route OpenSTA use the
-same producer and grouped publication. Independent route qualification and
-path-result import still have Python data-plane work.
+same producer and grouped publication. Independent route qualification,
+timing-weight production and phase orchestration still have Python data-plane
+work.
 These remaining boundaries, the complete native entry/lifecycle and current-source
 whole-design qualification keep W6/W7 incomplete.
 See [global timing semantics](global-opensta-qualification.md).
+
+`physical import-sta-paths EMUIR TSV REQUEST STORE SUMMARY` parses OpenSTA path
+records into the current indexed TimingPathDB in the shared core. The source is
+compact EmuIR v2; the output retains the existing path-store schema. Uniqueness
+and net membership use SQLite keys and ordered joins. Reached endpoint identities
+use source queries and a bounded cache rather than a graph-wide object map; top
+port scalar lookup does not expand every port bit per query. The importer does
+not retain path IDs, all reached nets or a negative-slack list in Python.
+Normalization, WNS and original-path TNS retain their existing definitions, with
+the shared exact summation used by global timing. TNS counts each original
+TimingPathDB record once, rather than deduplicating register endpoints.
+
+Before publication, a separate final-row audit rebinds endpoint certificates to
+the source, merges ordered memberships, checks uniqueness, numerical domains,
+normalization and coverage, and computes its own reductions. It receives no
+parser endpoint cache or counters. `physical validate-sta-paths` exposes this
+audit for a published owner. The normal immediate consumer instead reuses the
+already completed audit through an invocation-scoped proof bound to the original
+EmuIR, selector, payload generations and exact manifest; it does not reopen or
+hash the population a second time. The shared publisher seals the store once,
+then commits the bounded selector. Rejection preserves the previous publication.
+The former Python streaming producer is test-only; native failure never selects
+it. This closes path-result import and validation, not complete Phase 1–2 or W7.
 
 ## Validation and completion
 

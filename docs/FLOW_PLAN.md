@@ -102,6 +102,14 @@ the old VTR/virtual-package lookahead and implicit `auto` dispatch are retired.
 One owner supplies each large population; reports summarize it rather than
 embedding duplicate netlists, maps, or timing-path trees.
 
+Pre- and post-route OpenSTA TSV results use the same native TimingPathDB
+importer. The core parses records directly into the current indexed owner,
+resolves reached endpoints against compact EmuIR, checks final ordered records
+independently, and reduces normalization and original-path QoR without a Python
+path population. The bounded host publishes the selector through the common
+publication API. Immediate consumers reuse the invocation's generation-bound
+validation proof; an explicit standalone audit reopens the canonical owner.
+
 The optional native one-shot controller runs TDM directly through an isolated
 native process, including BoardDB/route configuration preparation. Other phases
 retain isolated shared adapters. It exchanges bounded configuration, artifact paths
