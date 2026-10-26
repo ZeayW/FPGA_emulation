@@ -1236,6 +1236,9 @@ Path *target_clk_path() { return self->targetClkPath(); }
 }
 
 %extend Path {
+// EmuFlow: read existing launch tags without an endpoint/path-group selection.
+const ClockEdge *source_clk_edge() { return self->clkEdge(Sta::sta()); }
+bool is_clock() { return self->isClock(Sta::sta()); }
 float
 arrival()
 {

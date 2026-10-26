@@ -316,6 +316,14 @@ cycle offsets and output-delay paths in the
 real engine. Its source-relative arrivals remove the launch phase and engine
 cycle offset explicitly. This is a synthetic API check; it does not supply
 physical margins or qualify full-flow operating-frequency fields.
+The separate `scripts/validation/qualify_opensta_launch_clocks.py --sta sta
+--out build/launch-clocks` reads every clock/data launch tag at requested
+architectural pins, including unselected fanins and shared macro outputs with
+multiple source clocks. It requires declared clock identities, preserves
+distinct phases, and rejects unclocked or combinational-through pins. The
+read-only Path accessors use existing engine tags; no timing algorithm changes.
+This is bounded synthetic API qualification, separate from the production
+canonical launch-fact owner and full original-path coverage.
 The shared `clock_budget` reader preserves this edge window under uniform
 source/capture clock scaling, rejects independent rescaling and unsupported
 latch/absolute-delay checks, and keeps setup and physical margins separate.

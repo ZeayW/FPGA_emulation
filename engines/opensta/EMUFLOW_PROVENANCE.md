@@ -24,3 +24,6 @@ The standalone SWIG interface additionally exposes the existing PathEnd source
 clock edge/offset and target cycle time/multicycle adjustment. These read-only
 accessors preserve engine cycle accounting for clock-budget qualification;
 they do not change the timing algorithm or add an inferred frequency model.
+Path additionally exposes its existing source clock edge and clock/data tag
+classification. These read-only accessors permit complete launch-tag queries
+at an architectural output without selecting an endpoint or representative path.

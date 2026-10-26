@@ -81,6 +81,8 @@ consume their clock/check adjustments.
 The shared native periodic-word kernel resolves complete fanin DAGs and strict
 relay capture ordering; production clock/fanin binding into global STA remains
 under integration.
+An explicit OpenSTA launch-clock qualifier reads architectural source phases
+without selecting a representative timing path.
 Native bank wrappers bind training, complete words and receive FIFO clocks;
 an explicit vendor-model loopback tool examines word integrity and latency.
 See the [clock baseline](docs/XILINX_PHYSICAL_FLOW.md#local-implementation-clock-baseline).
