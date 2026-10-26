@@ -464,6 +464,10 @@ serializer through the fixed P pad and differential output buffer, then checks
 the requested parallel-bit data net. Aliased payload nets cannot select a
 different lane's capture pin. RX queries start at the registered alignment
 output. These bounded physical resolutions are cached only within one export.
+For a read-only connection diagnostic, `scripts/vivado/inspect_word_boundaries.tcl`
+accepts `INPUT_DCP WORD_BOUNDARIES_TSV OUTPUT_TSV`. It inspects two boundaries
+of each direction and the pad-anchored serializer data pins; this does not
+qualify implementation or timing.
 The `native-word-registered-interface` boundary scope distinguishes these
 measurements from pad-to-pad timing. Its RX word-to-shadow path lies inside the
 fixed transfer window; it must not be added to the fixed PHY arc again. The

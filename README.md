@@ -55,7 +55,8 @@ identical LUT1 control drivers; clock and data identities remain exact. Source
 lineage still does not prove functional equivalence.
 Vivado uses explicit DUT implementation targets independently of runtime frames;
 a frequency override scales all DUT roots together while keeping the TDM clock
-fixed. The same documentation describes installed SelectIO IP inspection and
+fixed. The same documentation describes bounded checkpoint word-boundary
+connection diagnostics, installed SelectIO IP inspection and
 package-derived bank recipes, checked output generation and optional out-of-context
 IP synthesis used for PHY integration, with a bounded configuration/port audit.
 Native bank wrappers bind training, complete words and receive FIFO clocks;
