@@ -96,7 +96,7 @@ def test_large_repeated_source_groups_use_only_typed_owner_pair(source,tmp_path)
             for identity in identities)
     contract['metrics']=dict(transported_cut_nets=count,logic_segments=count*4,capture_requirements=0,dependency_edges=0)
     descriptor=write_phase3_exact_binary(binary,contract,['a','b'])
-    with sqlite3.connect(path)as db:
+    with closing(sqlite3.connect(path))as db, db:
         db.execute('DELETE FROM cut_predecessors');db.execute('DELETE FROM cut_sinks');db.execute('DELETE FROM cuts')
         db.executemany('INSERT INTO cuts VALUES(?,?,?,?,?,?,?,?)',
             ((cut,f'net{cut:07d}',cut%2,'combinational',1,None,0,0)for cut in range(count)))
@@ -116,7 +116,7 @@ def rewrite(path,binary,descriptor,manifest,payload):
     struct.pack_into('<8sIQQ',data,0,b'EMUEXACT',2,len(payload),len(encoded))
     binary.write_bytes(data)
     descriptor={**descriptor,'bytes':len(data),'manifest_sha256':hashlib.sha256(encoded).hexdigest()}
-    with sqlite3.connect(path)as db:
+    with closing(sqlite3.connect(path))as db, db:
         db.execute("UPDATE metadata SET value=? WHERE key='semantic_contract_binary'",(json.dumps(descriptor),))
 
 
@@ -131,7 +131,7 @@ def test_corrupt_or_mixed_semantics_are_rejected(source,tmp_path,damage):
     elif damage=='truncated':binary.write_bytes(data[:-1])
     elif damage=='manifest-seal':
         descriptor['manifest_sha256']='0'*64
-        with sqlite3.connect(path)as db:db.execute("UPDATE metadata SET value=? WHERE key='semantic_contract_binary'",(json.dumps(descriptor),))
+        with closing(sqlite3.connect(path))as db, db:db.execute("UPDATE metadata SET value=? WHERE key='semantic_contract_binary'",(json.dumps(descriptor),))
     elif damage=='changed-generation':args=['mutate']
     elif damage=='checksum':
         section=next(s for name,s in manifest['sections'].items()if name.startswith('segments:')and s['records'])

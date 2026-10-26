@@ -159,14 +159,14 @@ def test_catalog_keeps_raw_periods_for_clocks_without_requested_launch_tags(prep
     result=execute(prepared);assert result.returncode==0,result.stderr
     result=execute(prepared,'clock-references');assert result.returncode==0,result.stderr
     assert json.loads(result.stdout)==[['clk',10.,10.000000222044612],['unused',20.,20.000000444089224]]
-    with sqlite3.connect(output)as db:
+    with closing(sqlite3.connect(output))as db, db:
         assert db.execute('SELECT count(*) FROM facts WHERE clock_seq=1').fetchone()[0]==0
 
 
 @pytest.mark.parametrize('damage',['missing-raw','text-raw','nonpositive-raw','nonfinite-raw'])
 def test_clock_catalog_never_substitutes_a_displayed_period(prepared,damage):
     assert execute(prepared).returncode==0
-    with sqlite3.connect(prepared[2])as db:
+    with closing(sqlite3.connect(prepared[2]))as db, db:
         value={'missing-raw':None,'text-raw':'bad','nonpositive-raw':0.,'nonfinite-raw':float('inf')}[damage]
         db.execute('UPDATE clocks SET engine_period_ns=?',(value,))
     result=execute(prepared,'clock-references')
@@ -191,7 +191,7 @@ def test_mixed_source_and_physical_contexts_are_rejected(prepared,damage):
     elif damage=='unbound-context':config['inputs']=config['inputs'][:-1]
     else:
         local=damage=='local-source';path=config['local'if local else'logic'][0]
-        with sqlite3.connect(path)as db:
+        with closing(sqlite3.connect(path))as db, db:
             header=json.loads(db.execute("SELECT value FROM metadata WHERE key='header'").fetchone()[0])
             if local:header['source']['original_ir_sha256']='0'*64
             else:header[dict(routes='system_routes_sha256',schedule='tdm_schedule_sha256',semantic='semantic_contract_sha256',

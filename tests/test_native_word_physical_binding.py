@@ -54,7 +54,7 @@ def physical(tmp_path):
         ['phase3_assignment_core.sql','phase3_assignment_cuts.sql'])
     database(assignment,0x454d5541,4,assignment_ddl,dict(schema='emuflow.phase3-assignment-sqlite/v4',
         semantic_contract_binary=descriptor,semantic_contract_sha256=descriptor['semantic_contract_sha256'],cut_records=2))
-    with sqlite3.connect(assignment)as db:
+    with closing(sqlite3.connect(assignment))as db, db:
         db.executemany('INSERT INTO parts VALUES(?,?)',enumerate(parts))
         db.executemany('INSERT INTO cuts VALUES(?,?,?,?,?,?,?,?)',[
             (0,'net0',0,'combinational',2,None,0,0),(1,'net1',2,'combinational',1,None,1,1)])
@@ -69,7 +69,7 @@ def physical(tmp_path):
     entries=[('e0','d0','net0',0,'l0','fpga0','fpga1',1,7),
              ('e1','d0','net0',1,'l1','fpga1','fpga2',9,15),
              ('e2','d1','net1',0,'l2','fpga2','fpga0',17,23)]
-    with sqlite3.connect(schedule)as db:
+    with closing(sqlite3.connect(schedule))as db, db:
         db.executemany('INSERT INTO schedule_routes VALUES(?,?,?,?)',[(0,'d0','net0','fpga0'),(1,'d1','net1','fpga2')])
         db.executemany('INSERT INTO schedule_entries VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
             ((i,e,d,n,h,l,f,t,l,s,0,0,a,16)for i,(e,d,n,h,l,f,t,s,a)in enumerate(entries)))
@@ -79,7 +79,7 @@ def physical(tmp_path):
         CREATE TABLE clocks(clock_seq INTEGER PRIMARY KEY,name TEXT,declared_period_ns REAL,engine_period_ns REAL);
         CREATE TABLE facts(source_seq INTEGER,clock_seq INTEGER,phase_ns REAL,PRIMARY KEY(source_seq,clock_seq,phase_ns)) WITHOUT ROWID;'''
     database(clocks,0x454d534c,1,clock_ddl,dict(source=identity))
-    with sqlite3.connect(clocks)as db,closing(sqlite3.connect(source))as original:
+    with closing(sqlite3.connect(clocks))as db, db,closing(sqlite3.connect(source))as original:
         db.execute("INSERT INTO metadata VALUES('schema','emuflow.source-launch-clocks/v1')")
         period=10.000000222044612
         db.execute('INSERT INTO clocks VALUES(0,?,?,?)',('clk',10.,period))
@@ -198,7 +198,7 @@ def test_invalid_binding_never_guesses_fanins_or_zero_cost(physical,damage):
     elif damage=='text-phase':target=config['clocks'];sql="UPDATE facts SET phase_ns='bad' WHERE source_seq=1"
     elif damage=='zero-hop-relay':target=config['schedule'];sql='UPDATE schedule_entries SET hop=0 WHERE seq=1'
     if sql:
-        with sqlite3.connect(target)as db:db.execute(sql)
+        with closing(sqlite3.connect(target))as db, db:db.execute(sql)
     result=run(physical);assert result.returncode!=0,(damage,result.stdout)
 
 
@@ -228,15 +228,15 @@ def replace_semantic(physical):
     config,_=physical
     descriptor=write_phase3_exact_binary(Path(config['semantic']),config['_fixture_contract'],['fpga0','fpga1','fpga2'])
     seal=descriptor['semantic_contract_sha256'];config['identity']['semantic_sha256']=seal
-    with sqlite3.connect(config['assignment'])as db:
+    with closing(sqlite3.connect(config['assignment']))as db, db:
         db.executemany('UPDATE metadata SET value=? WHERE key=?',[
             (json.dumps(descriptor),'semantic_contract_binary'),(json.dumps(seal),'semantic_contract_sha256')])
-    with sqlite3.connect(config['schedule'])as db:
+    with closing(sqlite3.connect(config['schedule']))as db, db:
         db.execute("UPDATE metadata SET value=json_set(value,'$.semantic_contract_sha256',?) WHERE key='header'",(seal,))
-    with sqlite3.connect(config['clocks'])as db:
+    with closing(sqlite3.connect(config['clocks']))as db, db:
         db.execute("UPDATE metadata SET value=json_set(value,'$.semantic_sha256',?) WHERE key='source'",(seal,))
     for part in config['partitions']:
-        with sqlite3.connect(part['logic'])as db:
+        with closing(sqlite3.connect(part['logic']))as db, db:
             db.execute("UPDATE metadata SET value=json_set(value,'$.semantic_contract_sha256',?) WHERE key='header'",(seal,))
 
 
@@ -244,7 +244,7 @@ def test_only_explicit_semantic_constant_can_have_no_dynamic_launches(physical):
     config,_=physical
     config['_fixture_contract']['logic_segments'][0]['source_semantics']='configuration-stable-constant'
     replace_semantic(physical)
-    with sqlite3.connect(config['partitions'][0]['logic'])as db:
+    with closing(sqlite3.connect(config['partitions'][0]['logic']))as db, db:
         db.execute("DELETE FROM segments WHERE system_path GLOB 'static-exact-contract:*'")
     result=run(physical);assert result.returncode==0,result.stderr
     report=json.loads(result.stdout)
@@ -258,7 +258,7 @@ def test_root_ids_are_canonical_across_multiple_source_partitions(physical):
     contract['cut_nodes'][1]['source_segment_ids'].append('segment000003')
     contract['metrics']['logic_segments']=4
     replace_semantic(physical)
-    with sqlite3.connect(config['partitions'][0]['logic'])as src,sqlite3.connect(config['partitions'][2]['logic'])as dst:
+    with closing(sqlite3.connect(config['partitions'][0]['logic']))as src, src,closing(sqlite3.connect(config['partitions'][2]['logic']))as dst, dst:
         row=src.execute("SELECT * FROM segments WHERE segment_id='root1'").fetchone()
         fields=[r[1]for r in src.execute('PRAGMA table_info(segments)')];data=dict(zip(fields,row))
         src.execute("DELETE FROM segments WHERE segment_id='root1'")
@@ -326,7 +326,7 @@ def test_repeated_sources_and_twelve_partitions_do_not_require_all_store_attachm
         contract['logic_segments'].append(dict(id=group,kind='launch_to_tx',fpga=parts[0],sink_cut_net=net))
     descriptor=write_phase3_exact_binary(Path(config['semantic']),contract,parts)
     config['identity']['semantic_sha256']=descriptor['semantic_contract_sha256']
-    with sqlite3.connect(config['assignment'])as db:
+    with closing(sqlite3.connect(config['assignment']))as db, db:
         db.execute('DELETE FROM parts');db.executemany('INSERT INTO parts VALUES(?,?)',enumerate(parts))
         db.execute('DELETE FROM cuts')
         db.executemany('INSERT INTO cuts VALUES(?,?,?,?,?,?,?,?)',
@@ -334,13 +334,13 @@ def test_repeated_sources_and_twelve_partitions_do_not_require_all_store_attachm
         db.executemany('UPDATE metadata SET value=? WHERE key=?',[
             (json.dumps(descriptor),'semantic_contract_binary'),(json.dumps(descriptor['semantic_contract_sha256']),'semantic_contract_sha256'),
             (json.dumps(cuts),'cut_records')])
-    with sqlite3.connect(config['clocks'])as db:
+    with closing(sqlite3.connect(config['clocks']))as db, db:
         db.execute("UPDATE metadata SET value=json_set(value,'$.semantic_sha256',?) WHERE key='source'",(descriptor['semantic_contract_sha256'],))
     entries=[]
     for cut in range(cuts):
         for sink in range(1,len(parts)):
             seq=len(entries);entries.append((seq,f'e{seq}',f'd{cut}',f'net{cut:06d}',0,f'l{sink}',parts[0],parts[sink],f'l{sink}',1,cut,0,7,16))
-    with sqlite3.connect(config['schedule'])as db:
+    with closing(sqlite3.connect(config['schedule']))as db, db:
         db.execute('DELETE FROM schedule_entries');db.execute('DELETE FROM schedule_routes')
         db.executemany('INSERT INTO schedule_entries VALUES('+','.join('?'for _ in range(14))+')',entries)
         db.executemany('INSERT INTO schedule_routes VALUES(?,?,?,?)',((i,f'd{i}',f'net{i:06d}',parts[0])for i in range(cuts)))

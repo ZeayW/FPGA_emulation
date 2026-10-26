@@ -1,3 +1,5 @@
+
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -111,7 +113,7 @@ def conditional_model(tmp_path, *, expose_state=False, duplicate_frontier=False,
     ir=tmp_path/"ir.emuir.sqlite";import_yosys_json(source).save(ir)
     report=emit_vivado_mapped_verilog(ir,tmp_path/"dut.v")
     mapped=Path(report["mapped_index"]["path"]);functions=Path(report["source_functions"]["path"])
-    with sqlite3.connect(mapped) as db:origins=dict(db.execute("SELECT id,seq FROM cells"))
+    with closing(sqlite3.connect(mapped)) as db, db:origins=dict(db.execute("SELECT id,seq FROM cells"))
     inventory=tmp_path/"inventory.tsv"
     with inventory.open("w") as stream:
         writer=csv.writer(stream,delimiter="\t",lineterminator="\n");writer.writerow(INVENTORY_HEADER)
@@ -202,7 +204,7 @@ def test_only_checked_constant_sources_can_enter_a_bound_routed_proof(tmp_path,c
         assert result["initialization"] == "vendor-confirmed"
     # Even a refreshed document digest cannot make a different constant
     # agree with the proof rows sealed by the source-model owner.
-    with sqlite3.connect(final) as db:
+    with closing(sqlite3.connect(final)) as db, db:
         document=json.loads(db.execute("SELECT document FROM vendor_confirmation_document").fetchone()[0])
         document["schema"]="emuflow.vivado-selected-constant-confirmations/v1"
         raw=json.dumps(document,sort_keys=True,separators=(",",":"))
@@ -211,7 +213,7 @@ def test_only_checked_constant_sources_can_enter_a_bound_routed_proof(tmp_path,c
                    (json.dumps(hashlib.sha256(raw.encode()).hexdigest()),))
     with pytest.raises(ValidationError,match="source or initialization policy"):
         OptimizationProofView(final,expected_fpga="fpga0")
-    with sqlite3.connect(final) as db:
+    with closing(sqlite3.connect(final)) as db, db:
         from emuflow.vivado_constant_frontier import CONSTANT_CONFIRMATION_SCHEMA
         document["schema"]=CONSTANT_CONFIRMATION_SCHEMA
         document["sources"][0]["constant_value"]=1
@@ -258,7 +260,7 @@ def test_constant_proof_does_not_borrow_unselected_initialization_hypotheses(tmp
     assert result["status"] == "pass"
     import sqlite3
     from emuflow.vivado_constant_frontier import _require_inductive_selected_states, _UnconfirmedStateDependencies
-    with sqlite3.connect(mapped) as db:
+    with closing(sqlite3.connect(mapped)) as db, db:
         db.execute("ATTACH DATABASE ? AS proofs",(str(proof),))
         with pytest.raises(_UnconfirmedStateDependencies) as error:
             _require_inductive_selected_states(db,mapped,{origins['conditional']:0})
@@ -329,7 +331,7 @@ def test_internal_state_must_be_absent_from_the_native_snapshot(tmp_path):
         csv.writer(stream,delimiter="\t",lineterminator="\n").writerow(["p/relay","FDRE",f"s{origins['relay']}","", "", "", "", "", ""])
     # Bind this altered observation owner, so failure exercises the internal
     # state's actual presence rather than a mismatched inventory seal.
-    with sqlite3.connect(proof) as db:
+    with closing(sqlite3.connect(proof)) as db, db:
         db.execute("UPDATE metadata SET value=? WHERE key='stage_inventory_sha256'",(json.dumps(file_sha256(inventory)),))
     with pytest.raises(ValidationError,match="still implemented"):
         prepare_constant_frontier_query(mapped,proof,inventory,mapped_sha256=digest,

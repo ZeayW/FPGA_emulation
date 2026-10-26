@@ -240,7 +240,7 @@ proc get_timing_paths {args} {error "eliminated path was numerically measured"}
                       "measurement":"endpoint-longest-path-fallback","path_pins":[]}
             del record["delay_ns"]
             identity = root/"identity.sqlite"
-            with sqlite3.connect(identity) as db:
+            with closing(sqlite3.connect(identity)) as db, db:
                 db.execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT)")
                 db.execute("CREATE TABLE paths(id TEXT PRIMARY KEY,record_json TEXT)")
                 db.execute("INSERT INTO metadata VALUES ('header',?)",(json.dumps({**header,"schema":"emuflow.local-path-identity/v2"}),))
@@ -297,7 +297,7 @@ proc get_timing_paths {args} {error "eliminated path was numerically measured"}
                     # Removing the nullable SQL guard is rejected even with a
                     # refreshed byte seal; it is part of the typed contract.
                     import emuflow.logic_segment_timing_storage as store
-                    with sqlite3.connect(view.store_path) as db:
+                    with closing(sqlite3.connect(view.store_path)) as db, db:
                         with self.assertRaises(sqlite3.IntegrityError):
                             db.execute("UPDATE segments SET delay_ns=0 WHERE measurement='optimized-away'")
                         with self.assertRaises(sqlite3.IntegrityError):

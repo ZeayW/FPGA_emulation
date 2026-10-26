@@ -87,7 +87,7 @@ def test_prepared_generations_and_point_source_binding_are_required(proof,damage
         # Explicit offline corruption qualifies native per-query rejection,
         # beyond the normal stale-receipt rejection tested above.
         index=2 if damage=='routed-inventory'else 0
-        with sqlite3.connect(config['inputs'][index]['path'])as db:
+        with closing(sqlite3.connect(config['inputs'][index]['path']))as db, db:
             if damage=='routed-inventory':
                 value=json.loads(db.execute("SELECT value FROM metadata WHERE key='stages_json'").fetchone()[0]);value['routed']['inventory_sha256']='0'*64
                 db.execute("UPDATE metadata SET value=? WHERE key='stages_json'",(json.dumps(value),))
@@ -149,7 +149,7 @@ def test_vendor_claims_require_the_exact_bounded_confirmation(vendor,damage):
     if damage=='checkpoint':config['synthesized_checkpoint_sha256']='b'*64
     else:
         path=Path(config['inputs'][0]['path'])
-        with sqlite3.connect(path)as db:
+        with closing(sqlite3.connect(path))as db, db:
             raw=db.execute('SELECT document FROM vendor_confirmation_document').fetchone()[0];doc=json.loads(raw)
             if damage=='document-value':doc['sources'][0]['constant_value']=1
             elif damage=='frontier':doc['frontiers']=[]

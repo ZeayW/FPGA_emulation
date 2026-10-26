@@ -90,7 +90,7 @@ def test_incomplete_or_incompatible_clock_and_physical_contexts_fail(original,da
     if damage in {'source-raw-period','target-displayed-period','negative-window','latch','absolute-delay'}:
         column,value={'source-raw-period':('source_period_ns',10.),'target-displayed-period':('clock_period_ns',20.),
             'negative-window':('target_cycle_time_ns',0.),'latch':('latch_check',1),'absolute-delay':('path_delay',1)}[damage]
-        with sqlite3.connect(original[1])as db:
+        with closing(sqlite3.connect(original[1]))as db, db:
             db.execute(f'UPDATE {"paths"if column=="clock_period_ns"else"clock_budgets"} SET {column}=? WHERE {"ordinal"if column=="clock_period_ns"else"path_ordinal"}=0',(value,))
     else:
         def alter(d):
@@ -119,7 +119,7 @@ def test_all_original_coverage_and_sealed_owner_relations_are_required(original,
             else:d['payloads']['paths']['path']='../paths.sqlite'
         change_json(original[0],alter)
     elif damage!='seal':
-        with sqlite3.connect(original[1])as db:
+        with closing(sqlite3.connect(original[1]))as db, db:
             if damage=='missing-budget':db.execute('DELETE FROM clock_budgets WHERE path_ordinal=0')
             elif damage=='orphan-budget':db.execute('INSERT INTO clock_budgets SELECT 100,source_clock,source_period_ns,launch_edge_ns,capture_edge_ns,source_offset_ns,target_cycle_time_ns,multicycle_adjustment_ns,check_margin_ns,source_latency_ns,target_clock_delay_ns,clock_skew_ns,output_delay,path_delay,latch_check FROM clock_budgets WHERE path_ordinal=0')
             elif damage=='missing-endpoint':db.execute('UPDATE paths SET start_port=NULL WHERE ordinal=0')
