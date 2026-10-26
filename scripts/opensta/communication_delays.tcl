@@ -42,9 +42,11 @@ proc emuflow_apply_communication_delays {filename {mode delay-ns}} {
   global emuflow_communication_by_pair emuflow_communication_arcs
   global emuflow_communication_binding_edges
   global emuflow_communication_owner emuflow_design_context_epoch
-  if {$mode ni {delay-ns metric-integer-seconds-v1}} {
+  if {$mode ni {delay-ns metric-integer-seconds-v1 patron-source-delay-ns patron-source-hops patron-source-ratio}} {
     error "unsupported source wire annotation mode"
   }
+  set proxy [expr {$mode in {patron-source-delay-ns patron-source-hops patron-source-ratio}}]
+  set integer_metric [expr {$mode in {metric-integer-seconds-v1 patron-source-hops patron-source-ratio}}]
   if {![info exists emuflow_design_context_epoch]} {
     error "communication delays require a linked source design context"
   }
@@ -66,14 +68,24 @@ proc emuflow_apply_communication_delays {filename {mode delay-ns}} {
   set stream [open $filename r]
   try {
     set expected_header [expr {$mode eq "delay-ns" ? "from_pin_hex\tto_pin_hex\textra_delay_ns" : "from_pin_hex\tto_pin_hex\tinteger_weight"}]
+    if {$proxy} {set expected_header "from_pin_hex\tto_pin_hex\tphysical_hops\tmaximum_net_route_ratio\tpredicted_delay_ns"}
     if {[gets $stream header] < 0 || $header ne $expected_header} {
       error "invalid communication delay header"
     }
     while {[gets $stream line] >= 0} {
       if {$line eq ""} {error "empty communication delay row"}
       set fields [split $line "\t"]
-      if {[llength $fields] != 3} {error "malformed communication delay row"}
-      lassign $fields from_hex to_hex extra
+      if {[llength $fields] != ($proxy ? 5 : 3)} {error "malformed communication delay row"}
+      if {$proxy} {
+        lassign $fields from_hex to_hex hops ratio delay
+        foreach value [list $hops $ratio] {
+          if {![string is integer -strict $value] || $value <= 0 || $value >= 8388608} {error "invalid PATRON source integer metric"}
+        }
+        if {![string is double -strict $delay] || ![expr {abs(double($delay)) < Inf && double($delay) >= 0}]} {
+          error "invalid PATRON source delay"
+        }
+        set extra [expr {$mode eq "patron-source-delay-ns" ? $delay : $mode eq "patron-source-hops" ? $hops : $ratio}]
+      } else {lassign $fields from_hex to_hex extra}
       if {![string is double -strict $extra] ||
           ![expr {abs(double($extra)) < Inf && double($extra) >= 0}]} {
         error "communication delay must be finite and nonnegative"
@@ -84,7 +96,7 @@ proc emuflow_apply_communication_delays {filename {mode delay-ns}} {
       if {[dict exists $extra_by_pair $key]} {
         error "duplicate communication wire"
       }
-      if {$mode eq "metric-integer-seconds-v1"} {
+      if {$integer_metric} {
         # Distinct typed columns prevent a metric from being read as physical
         # nanoseconds. Use exact native integer seconds without UI conversion.
         if {$extra <= 0 || $extra >= 8388608.0} {
@@ -96,7 +108,7 @@ proc emuflow_apply_communication_delays {filename {mode delay-ns}} {
         set extra_sta [sta::time_ui_sta $extra]
       }
       if {![expr {abs(double($extra_sta)) < Inf}]} {error "communication delay exceeds engine units"}
-      dict set extra_by_pair $key [expr {$mode eq "delay-ns" ? double($extra) : double($extra)*1.0e9}]
+      dict set extra_by_pair $key [expr {$integer_metric ? double($extra)*1.0e9 : double($extra)}]
       lappend records [list $from $to $extra_sta]
     }
   } finally {close $stream}
@@ -133,7 +145,7 @@ proc emuflow_apply_communication_delays {filename {mode delay-ns}} {
               if {[dict exists $emuflow_communication_arcs $key]} {
                 set base [lindex [dict get $emuflow_communication_arcs $key] 0]
               }
-              if {$mode eq "metric-integer-seconds-v1" && $base != 0.0} {
+              if {$integer_metric && $base != 0.0} {
                 error "integer metric scoring requires zero source wire baselines"
               }
               set delay [expr {$base + $extra_sta}]

@@ -72,6 +72,9 @@ while {[gets $map_input line] >= 0} {
   }
   set mapped_name [emuflow_hex_decode [lindex $fields 0]]
   set emuir_name [emuflow_hex_decode [lindex $fields 1]]
+  if {[info exists emuir_by_mapped_net($mapped_name)] && $emuir_by_mapped_net($mapped_name) ne $emuir_name} {
+    error "ambiguous source net-map identity: $mapped_name"
+  }
   set emuir_by_mapped_net($mapped_name) $emuir_name
 }
 close $map_input
@@ -99,6 +102,7 @@ proc emuflow_emit_timing_paths {
   foreach path_end $timing_paths {
     set endpoint_clock [get_property $path_end endpoint_clock]
     if {$endpoint_clock eq "NULL"} {
+      if {$required_net eq ""} {error "source timing path has no capture clock"}
       continue
     }
     set clock_name [get_property $endpoint_clock name]
@@ -106,6 +110,7 @@ proc emuflow_emit_timing_paths {
     set slack [get_property $path_end slack]
     set points [get_property $path_end points]
     if {[llength $points] == 0} {
+      if {$required_net eq ""} {error "source timing path has no points"}
       continue
     }
     set fixed_delay [get_property [lindex $points end] arrival]
@@ -160,6 +165,7 @@ proc emuflow_emit_timing_paths {
       continue
     }
     if {[llength $path_nets] == 0} {
+      if {$required_net eq ""} {error "source timing path cannot resolve original nets: $start_name -> $end_name"}
       continue
     }
     set path_hex [list]

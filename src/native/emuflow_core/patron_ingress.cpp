@@ -85,12 +85,12 @@ std::vector<std::uint32_t> CanonicalPatronClusterOrder(std::uint32_t count) {
   Check(order.size()==count,"PATRON canonical cluster order is incomplete"); return order;
 }
 
-patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBuildContext& context) {
-  Check(inputs.size()==5,"PATRON primary store input coverage is invalid");
+patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBuildContext& context, bool read_paths) {
+  Check(inputs.size()==(read_paths?5U:4U),"PATRON primary store input coverage is invalid");
   for (const auto& input:inputs) input.RequireUnchanged();
   Reader request(inputs.back().path());
-  Check(request.input.size()<=1024*1024 && request.get<std::uint64_t>()==0x3151455254415045ULL &&
-        request.get<std::uint32_t>()==2U,"unsupported PATRON board request");
+  Check(request.input.size()<=1024*1024 && request.get<std::uint64_t>()==(read_paths?0x3151455254415045ULL:0x3151505354415045ULL) &&
+        request.get<std::uint32_t>()==(read_paths?2U:1U),"unsupported PATRON board request");
   for (unsigned i=0;i<inputs.size()-1;++i)
     if (!(Generation(request)==inputs[i].generation()))
       throw StageError(ErrorCode::kMixedGeneration,"PATRON source generation changed");
@@ -99,7 +99,7 @@ patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBui
   const auto transported=Catalog(request);
   const std::set<std::string> classes={"clock","reset","primary_input","register_output","register_input","combinational","multi_driver","undriven"};
   for (const auto& value:transported) Check(classes.count(value),"unknown PATRON cut class");
-  const auto expected_paths=request.get<std::uint64_t>();
+  const auto expected_paths=read_paths?request.get<std::uint64_t>():0U;
   patron::Model model; model.parts=parts.size();
   model.max_hops=request.get<std::int32_t>(); model.max_ratio=request.get<std::int32_t>();
   model.ratio_quantum=request.get<std::int32_t>(); model.min_used_parts=request.get<std::int32_t>();
@@ -153,8 +153,8 @@ patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBui
   }
   request.finish();
   EmuirView ir(inputs[0]);
-  Reader columns(inputs[3].path());
-  PrimaryClusterView primary_view(inputs[2],inputs[0]);
+  Reader columns(inputs[read_paths?3:2].path());
+  PrimaryClusterView primary_view(inputs[read_paths?2:1],inputs[0]);
   Check(columns.get<std::uint64_t>()==0x315450494e415045ULL && columns.get<std::uint32_t>()==1,"unsupported PATRON initial columns");
   const auto clusters=columns.get<std::uint64_t>(), cells=columns.get<std::uint64_t>();
   Check(clusters==primary_view.clusters() && cells==primary_view.cells(),"PATRON primary dimensions disagree");
@@ -208,6 +208,10 @@ patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBui
       model.hard_capacity[part][d]=hard; model.balance_capacity[part][d]=allowed;
     }
   }
+  if(!read_paths) {
+    context.source_cell_cluster.resize(cells);
+    for(std::uint64_t cell=0;cell<cells;++cell)context.source_cell_cluster[cell]=native.at(primary_view.Owner(cell));
+  }
   primary_view.ReleasePages();
   const auto owner_of=[&](std::uint64_t cell) { return primary_view.Owner(cell); };
   initial.clear(); initial.shrink_to_fit(); fixed.clear();
@@ -259,6 +263,11 @@ patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBui
   Check(seen_nets==ir.counts().nets,"PATRON net identity count disagrees");
   model.net=std::move(ordered); model.nets=model.net.size();
   Check(model.nets>0,"PATRON pressure graph has no transport nets"); patron::BindMembers(model);
+  if(!read_paths) {
+    context.source_net_native=std::move(pressure);
+    for(const auto& input:inputs)input.RequireUnchanged();
+    return model;
+  }
   SqliteStore timing_store(inputs[1]);
   auto& timing=timing_store.database();
   auto attach=timing.Prepare("ATTACH DATABASE ? AS emuir"); attach.BindText(1,SqliteImmutableUri(inputs[0].path())); attach.Execute();

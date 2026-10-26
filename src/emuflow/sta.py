@@ -793,26 +793,56 @@ def _write_net_map(
     *,
     _ir: Optional[EmuIR] = None,
 ) -> Dict[str, Any]:
-    # The caller may already own the validated graph. Exporting a two-column
-    # view must not reconstruct a second multi-million-cell Python graph.
-    ir = _ir if _ir is not None else EmuIR.load(ir_path)
+    from .emuir_storage import is_emuir_sqlite
+    from .emuir_compact import is_compact_emuir, write_compact_emuir
+    from .store_publication import StoreSource
+    from .native_protocol import CheckedRequestWriter
+    from .native_tools import resolve_native_executable
+    from .tool_runtime import NativeToolProcess
+
+    if header != EMUIR_NET_MAP_HEADER:
+        raise ValidationError('unsupported source net-map header')
+    original = bind_store_source(ir_path, 'sta-source-document-v1')
+    validate_store_destination(output_path, (original,))
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as output:
-        output.write(header + "\n")
-        net_rows = ir.net_rows() if hasattr(ir, "net_rows") else (
-            (index, net["id"]) for index, net in enumerate(ir.value["nets"])
-        )
-        for index, net_id in net_rows:
-            output.write(
-                f"{_hex_encode(f'__emuflow_net_{index}')}\t"
-                f"{_hex_encode(net_id)}\n"
-            )
-    return {
-        "status": "pass",
-        "design": ir.value["design"]["name"],
-        "nets": len(ir.value["nets"]),
-        "output": str(output_path),
-    }
+    with tempfile.TemporaryDirectory(prefix='.source-net-map-', dir=output_path.parent) as temporary:
+        root = Path(temporary)
+        if is_emuir_sqlite(ir_path) and is_compact_emuir(ir_path):
+            # Preserve the caller's initial lease; do not renew it after the
+            # format probe. The native producer reads indexed source rows.
+            parents = (StoreSource(original.path, 'emuir-compact-v2', original.generation),)
+        else:
+            # Legacy import reuses the existing serializer. The actual map
+            # and alias algorithm is the same native producer in both cases.
+            ir = _ir if _ir is not None else EmuIR.load(ir_path)
+            compact = root/'source.emuir.sqlite'
+            write_compact_emuir(compact, ir.value, source_bindings=(original,))
+            parents = (bind_store_source(compact, 'emuir-compact-v2'), original)
+        request = root/'request.bin'
+        writer = CheckedRequestWriter(request)
+        try:
+            writer.put('QII', 0x31514d4e534d5545, 1, len(parents))
+            for parent in parents:
+                writer.put('QQQqqqq', *parent.generation)
+            writer.finish()
+        finally:
+            writer.close()
+        executable = resolve_native_executable('emuflow-native')
+        command = [executable, 'phase2', 'export-net-map',
+                   *(str(p.path) for p in parents), str(request), str(output_path)]
+        with NativeToolProcess(executable, command, scratch_parent=root, maximum_bytes=65536) as process:
+            completed = process.finish()
+        if completed.returncode:
+            raise ValidationError('native source net-map export failed: ' + completed.stdout)
+        require_store_sources_unchanged(parents)
+        try:
+            result = json.loads(completed.stdout)
+        except (ValueError, TypeError) as error:
+            raise ValidationError('native source net-map lacks its terminal summary') from error
+        if (not isinstance(result, dict) or result.get('schema') != 'emuflow.source-net-map/v1'
+                or result.get('status') != 'pass'):
+            raise ValidationError('native source net-map summary is invalid')
+    return {**result, 'output': str(output_path)}
 
 
 def write_emuir_net_map(

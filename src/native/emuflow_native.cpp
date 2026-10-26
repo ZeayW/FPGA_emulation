@@ -47,6 +47,8 @@ constexpr const char* kUsage =
     "  phase7 build-launch-clocks ORIGINAL_IR REQUEST TOOL_REQUEST LOGIC... LOCAL... TIMING_INPUT... OUTPUT\n"
     "  phase7 export-source-communication ORIGINAL_IR ASSIGNMENT SCHEDULE REQUEST OUTPUT\n"
     "  phase7 export-source-metric-weights ORIGINAL_IR ASSIGNMENT SCHEDULE REQUEST OUTPUT\n"
+    "  phase3 export-source-proxy ORIGINAL_IR PRIMARY INITIAL REQUEST OUTPUT\n"
+    "  phase2 export-net-map ORIGINAL_IR [LEGACY_SOURCE] REQUEST OUTPUT\n"
     "  phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL\n"
     "  phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY\n"
     "  phase7 import-vivado-lineage MAPPED FUNCTIONS REQUEST STORE SUMMARY INVENTORY...\n";
@@ -148,6 +150,12 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     return run(Stage::kExportSourceCommunication,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
   if (phase == "phase7" && operation == "export-source-metric-weights" && argc == 8)
     return run(Stage::kExportSourceMetricWeights,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
+  if (phase == "phase3" && operation == "export-source-proxy" && argc == 8)
+    return run(Stage::kExportPatronSourceProxy,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
+  if (phase == "phase2" && operation == "export-net-map" && (argc == 6 || argc == 7)) {
+    std::vector<std::string> inputs;for(int i=3;i<argc-1;++i)inputs.push_back(argv[i]);
+    return run(Stage::kExportSourceNetMap,std::move(inputs),argv[argc-1]);
+  }
   if (phase == "phase7" && operation == "validate-physical-cells" && argc == 7)
     return run(Stage::kValidatePhysicalCells,{argv[3],argv[4],argv[5]},argv[6]);
   if (phase == "phase7" && operation == "import-vivado-lineage" && argc >= 9) {

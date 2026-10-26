@@ -147,7 +147,7 @@ class NativePressureModel(dict):
             writer.close()
         return current.part_ids
 
-    def write_requests(self, root, initial, max_moves):
+    def write_requests(self, root, initial, max_moves, *, source_proxy=False):
         from . import partition_pressure as ref
         from .routing import route_link_delay_coefficients_ns, route_link_delay_ns
         if self.primary_artifact is None:
@@ -162,14 +162,16 @@ class NativePressureModel(dict):
         links = {link.id: link for link in self.platform.links}
         writer = _Writer(board)
         try:
-            writer.put("QI", 0x3151455254415045, 2)
-            generations = (*self.generations, self.primary_generation, native_file_generation(columns))
+            writer.put("QI", 0x3151505354415045 if source_proxy else 0x3151455254415045, 1 if source_proxy else 2)
+            generations = ((self.generations[0],) if source_proxy else self.generations) + (
+                self.primary_generation, native_file_generation(columns))
             for generation in generations:
                 writer.put("3Q4q", *generation)
             writer.catalog(parts)
             writer.catalog(initial_parts)
             writer.catalog(self.transported)
-            writer.put("Q", self.expected_paths)
+            if not source_proxy:
+                writer.put("Q", self.expected_paths)
             cfg = self["configuration"]
             writer.put("10i", -1 if self.routes.get("max_route_hops") is None else self.routes["max_route_hops"],
                        self.routes["tdm_max_ratio"], self.routes["tdm_ratio_quantum"], self.constraints["min_used_fpgas"],
@@ -206,10 +208,43 @@ class NativePressureModel(dict):
             writer.finish()
         finally:
             writer.close()
-        for path, expected in zip((self.ir.path, self.timing_path), self.generations):
+        for path, expected in zip((self.ir.path,) if source_proxy else (self.ir.path, self.timing_path), self.generations):
             if native_file_generation(path) != expected:
                 raise ValidationError("native PATRON source generation changed")
         return columns, board
+
+    def export_source_proxy(self, root, output, assignment, *, environment=None, executable=None):
+        """Bind every actual remote data pin to PATRON's candidate estimates.
+
+        The native producer uses complete original connectivity, primary
+        ownership and the same route/load/ratio functions as the search. It
+        neither loads a selected path population nor needs a Phase-5 schedule.
+        Its table is input to full-source STA, not a global timing result.
+        """
+        from .store_publication import VerifiedStoreFile
+        output = Path(output).resolve()
+        if output in {Path(p).resolve() for p in (self.ir.path, self.primary_artifact, self.timing_path)}:
+            raise ValidationError('PATRON source proxy output aliases a parent')
+        columns, board = self.write_requests(root, assignment, 0, source_proxy=True)
+        executable = resolve_native_executable('emuflow-native', executable)
+        command = [executable, 'phase3', 'export-source-proxy', str(self.ir.path),
+                   str(self.primary_artifact), str(columns), str(board), str(output)]
+        with NativeToolProcess(executable, command, environment=environment, scratch_parent=root,
+                               maximum_bytes=65536) as process:
+            completed = process.finish()
+        if completed.returncode:
+            raise ValidationError('native PATRON source proxy failed: ' + completed.stdout)
+        try:
+            summary = json.loads(completed.stdout)
+        except (ValueError, TypeError) as error:
+            raise ValidationError('native PATRON source proxy lacks a terminal summary') from error
+        if (not isinstance(summary, dict) or summary.get('schema') != 'emuflow.patron-source-proxy/v1'
+                or summary.get('status') != 'pass' or summary.get('coverage') != 'complete-original-data-connectivity'
+                or summary.get('profile') != 'patron-predicted-routes-and-domain-ratios-v1'
+                or summary.get('selected_paths_loaded') != 0):
+            raise ValidationError('native PATRON source proxy summary is invalid')
+        seal = VerifiedStoreFile(output, 'patron-source-proxy-tsv-v1')
+        return {**summary, 'output': str(output), 'sha256': seal.sha256, 'bytes': seal.bytes}
 
     def execute(self, root, output, initial, max_moves, timeout_seconds, environment, executable=None):
         columns, board = self.write_requests(root, initial, max_moves)

@@ -41,6 +41,13 @@ separate qualification evidence and does not expand the Phase 4/5 population
 implicitly. Removing the endpoint-count cap alone does not restore omitted
 alternative paths; post-partition timing must also use complete-fanin timing
 connectivity with the implemented communication costs.
+The shared-native net-map producer includes scalarized top-level port aliases
+as well as generated internal wire names. OpenSTA can use an input port's name
+as the canonical name of the connected wire; retaining only the generated
+name loses direct input-to-register paths. Port widths, directions, source
+generations and alias collisions are checked before publication. An ordinary
+returned timing path with no resolvable original net fails export instead of
+being silently discarded.
 The explicit `communication_delays_path` OpenSTA API can re-search the entire
 source timing graph with additive per-driver/per-sink communication costs.
 It requires uncapped, clock-aware extraction and validates each named data
@@ -220,6 +227,17 @@ invoke or feed back actual Phase 4 routing, Phase 5 schedules, or Phase 7
 physical results. Any claim of final timing improvement therefore requires a
 separate complete-flow comparison. PATRON is the project's algorithm name,
 not a claim to reproduce one particular paper.
+
+The native `phase3 export-source-proxy` producer applies those same route,
+domain-load, ratio and boundary-fanout functions to every actual remote data
+sink in the original connectivity. Its source-bound request contains primary
+ownership and board configuration, without a TimingPathDB or Phase-5 schedule.
+The typed table carries a hop count, a maximum branch ratio and a predicted
+delay for each source/sink pin pair. The OpenSTA adapter can apply each column
+independently on the complete source graph. Missing transport nets or remote
+sink branches fail publication. This supplies candidate cost updates for the
+full-graph acceptance/critical-witness loop; that production feedback loop is
+still required and is not established by exporting the table alone.
 
 RePart and MFSPart initialization, replication and post-refinement routes are
 retired. Greedy partitioning is retained only as a small independent test oracle.

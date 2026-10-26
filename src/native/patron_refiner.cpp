@@ -1346,7 +1346,7 @@ Evaluation proxy_evaluation(const Model& model, const ProxyState& state) {
   return result;
 }
 
-ProxyState build_proxy_state(
+ProxyState build_proxy_transport_state(
     const Model& model,
     const std::vector<int>* assignment_override = nullptr) {
   ProxyState state;
@@ -1388,6 +1388,13 @@ ProxyState build_proxy_state(
   for (int domain = 0; domain < model.domains; ++domain) {
     state.ratio_order.insert(state.domain_ratio[domain]);
   }
+  return state;
+}
+
+ProxyState build_proxy_state(
+    const Model& model,
+    const std::vector<int>* assignment_override = nullptr) {
+  auto state=build_proxy_transport_state(model,assignment_override);
   state.path.resize(model.paths);
   state.domain_paths.resize(model.domains);
   const std::map<int, ProxyNetState> empty;
@@ -5194,6 +5201,35 @@ void run(const Model& model,
 }
 
 }  // namespace
+
+std::vector<emuflow::native::PatronSourceTransition>
+emuflow::native::BuildPatronSourceTransitions(const emuflow::core::patron::Model& model) {
+  require(model.paths==0 && model.path.empty() && model.path_nets.empty(),
+          "source communication profile must not use selected timing paths");
+  const auto state=build_proxy_transport_state(model);
+  for(int part=0;part<model.parts;++part)for(int dim=0;dim<model.dimensions;++dim)
+    require(state.resource_load[part][dim]<=model.hard_capacity[part][dim] &&
+            state.resource_load[part][dim]<=model.balance_capacity[part][dim],
+            "source communication assignment violates resource capacity");
+  std::vector<PatronSourceTransition> result;
+  for(int net=0;net<model.nets;++net) {
+    state.net[net].payload.for_each_transition([&](const Transition& transition) {
+      const auto& route=model.route[transition.source][transition.sink];
+      std::uint32_t ratio=0;
+      require(route.reachable && !route.arcs.empty() && route.arcs.size()<8388608,
+              "source communication profile has an invalid route");
+      for(const auto& arc:route.arcs) {
+        require(state.domain_ratio.at(arc.domain)>0,"source communication profile has an invalid ratio");
+        ratio=std::max(ratio,std::uint32_t(state.domain_ratio.at(arc.domain)));
+      }
+      const auto delay=predicted_transition_delay(model,route,state.domain_ratio,transition.sink_clusters);
+      require(std::isfinite(delay) && delay>=0 && ratio<8388608,
+              "source communication profile has an invalid delay or metric");
+      result.push_back({net,transition.source,transition.sink,std::uint32_t(route.arcs.size()),ratio,delay});
+    });
+  }
+  return result;
+}
 
 void emuflow::native::RefinePatron(const std::vector<emuflow::core::ArtifactRef>& inputs,
                                  const std::string& output_path,

@@ -101,6 +101,50 @@ def produce_metric(fixture, metric):
         executable=str(emuflow_native()))
 
 
+def test_native_net_map_retains_port_aliases_and_rejects_ambiguous_generated_names(fixture):
+    from emuflow.sta import write_emuir_net_map
+    original, _, _, output = fixture
+    result = write_emuir_net_map(original, output)
+    with output.open() as stream:
+        aliases = {bytes.fromhex(row['mapped_net_hex']).decode():bytes.fromhex(row['emuir_net_hex']).decode()
+                   for row in csv.DictReader(stream, delimiter='\t')}
+    with closing(sqlite3.connect(original)) as db:
+        net, identity = db.execute("SELECT e.net_seq,n.id FROM endpoint_records e JOIN pin_names p ON p.seq=e.port_seq "
+            "JOIN net_records n ON n.seq=e.net_seq WHERE e.instance_seq IS NULL AND p.name='a'").fetchone()
+    assert result['port_aliases'] > 0 and aliases['a'] == aliases[f'__emuflow_net_{net}'] == identity
+    before = output.read_bytes()
+    other = (net + 1) % result['nets']
+    name = f'__emuflow_net_{other}'
+    with closing(sqlite3.connect(original)) as db, db:
+        db.execute("UPDATE port_records SET record_json=json_set(record_json,'$.id',?,'$.name',?) "
+                   "WHERE json_extract(record_json,'$.id')='a'", (name,name))
+        db.execute("UPDATE pin_names SET name=? WHERE name='a'", (name,))
+    with pytest.raises(ValidationError, match='different generated timing wire'):
+        write_emuir_net_map(original, output)
+    assert output.read_bytes() == before
+
+
+def test_native_net_map_does_not_renew_an_old_parent_generation(fixture):
+    from emuflow.native_protocol import CheckedRequestWriter
+    original, _, _, output = fixture
+    parent = bind_store_source(original,'emuir-compact-v2')
+    request = output.with_suffix('.request')
+    writer = CheckedRequestWriter(request)
+    try:
+        writer.put('QII',0x31514d4e534d5545,1,1)
+        writer.put('QQQqqqq',*parent.generation)
+        writer.finish()
+    finally:
+        writer.close()
+    output.write_bytes(b'previous')
+    os.utime(original,None)
+    import subprocess
+    result = subprocess.run([str(emuflow_native()),'phase2','export-net-map',str(original),str(request),str(output)],
+                            capture_output=True,text=True)
+    assert result.returncode != 0 and 'mixed-generation' in result.stderr
+    assert output.read_bytes() == b'previous'
+
+
 @pytest.mark.parametrize('metric,values', [('physical-hops', (2, 1)),
     ('maximum-net-route-ratio', (16, 24)), ('serial-ratio-sum', (24, 24))])
 def test_metric_weights_are_explicit_integer_scores_not_communication_delays(fixture, metric, values):

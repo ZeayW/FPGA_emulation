@@ -156,6 +156,14 @@ inline void BindMembers(Model& model) {
 }  // namespace emuflow::core::patron
 
 namespace emuflow::native {
+struct PatronSourceTransition {
+  int net, source, sink;
+  std::uint32_t hops, maximum_ratio;
+  double delay_ns;
+};
+// Reuse the search's complete transport/load/ratio model, without path scores.
+std::vector<PatronSourceTransition> BuildPatronSourceTransitions(
+    const emuflow::core::patron::Model& model);
 emuflow::core::patron::Model ReadTypedPatronModel(const std::string& input);
 void RefinePatronModel(const emuflow::core::patron::Model& model,
                        const std::string& output, bool summary_output, bool typed_output,

@@ -1,5 +1,6 @@
 """Differential contracts for native model generation; NVDLA remains acceptance."""
 from contextlib import closing
+import csv
 import json
 import sqlite3
 import shutil
@@ -22,6 +23,72 @@ from emuflow.native_tools import native_file_generation
 from emuflow.sta import STA_PATH_DATABASE_TSV_HEADER, STA_PATH_DATABASE_CLOCK_TSV_HEADER, import_sta_path_database_tsv_streaming
 from tests.native_build import emuflow_native, patron_ingress_oracle, hop_partition_refiner
 from tests import test_partition_pressure as reference_fixture
+
+
+def test_source_proxy_matches_the_independent_transport_model_without_selected_paths(inputs, tmp_path):
+    from emuflow.partition_pressure import (evaluate_partition_pressure, _capacity_key_by_arc,
+                                           _predicted_route_delay, _boundary_fanout_penalty)
+    args, initial, timing = inputs
+    ir, platform, clusters, constraints, manifest, routes = args
+    reference = build_partition_pressure_model(*args, independent_validation=False,
+                                               timing_database_path=timing)
+    evaluated = evaluate_partition_pressure(ir, platform, clusters, constraints, routes, reference,
+                                           initial['cluster_assignment'])
+    ratios = {v['capacity_domain']: v['predicted_tdm_ratio'] for v in evaluated['capacity_domains']}
+    domains = _capacity_key_by_arc(reference)
+    parts = {cell: initial['cluster_assignment'][cluster['id']]
+             for cluster in clusters['clusters'] for cell in cluster['instances']}
+    expected = {}
+    for net in ir.value['nets']:
+        driver = net['drivers'][0]
+        source = parts[driver['instance']]
+        model_net = next(v for v in reference['nets'] if v['net'] == net['id'])
+        for sink in net['sinks']:
+            target = parts[sink['instance']]
+            if source == target:
+                continue
+            route = reference['shortest_routes'][source][target]
+            sinks = sum(initial['cluster_assignment'][c] == target for c in model_net['sinks'])
+            delay = _predicted_route_delay(platform, routes, domains, ratios, route,
+                                           include_tdm_wait=True) + _boundary_fanout_penalty(reference, sinks)
+            ratio = max(ratios[domains[a['link'], a['from'], a['to']]] for a in route)
+            expected[driver['instance']+'/'+driver['port'], sink['instance']+'/'+sink['port']] = (len(route), ratio, delay)
+    model = build_partition_pressure_model(*args, independent_validation=False,
+                                           timing_database_path=timing, native_store_model=True)
+    # Neither the source cost producer nor its board request may depend on
+    # the old selected path population remaining available.
+    model.timing_path.unlink()
+    result = model.export_source_proxy(tmp_path, tmp_path/'source-proxy.tsv', initial)
+    assert result['selected_paths_loaded'] == 0
+    assert result['connections'] == len(expected)
+    with (tmp_path/'source-proxy.tsv').open() as stream:
+        actual = {(bytes.fromhex(v['from_pin_hex']).decode(), bytes.fromhex(v['to_pin_hex']).decode()):
+                  (int(v['physical_hops']), int(v['maximum_net_route_ratio']), float(v['predicted_delay_ns']))
+                  for v in csv.DictReader(stream, delimiter='\t')}
+    assert actual.keys() == expected.keys()
+    for key, value in expected.items():
+        assert actual[key][:2] == value[:2]
+        assert actual[key][2] == pytest.approx(value[2], abs=1e-12)
+    changed = dict(initial['cluster_assignment'])
+    owner = {cell: cluster['id'] for cluster in clusters['clusters'] for cell in cluster['instances']}
+    changed[owner['u1']] = changed[owner['u0']]
+    changed[owner['u2']] = changed[owner['u3']]
+    local = model.export_source_proxy(tmp_path, tmp_path/'local-proxy.tsv', {'cluster_assignment':changed})
+    assert local['connections'] == local['crossing_nets'] == local['branches'] == 0
+    assert len((tmp_path/'local-proxy.tsv').read_text().splitlines()) == 1
+
+
+def test_source_proxy_rejects_path_search_requests_without_replacing_a_result(inputs, tmp_path):
+    args, initial, timing = inputs
+    model = build_partition_pressure_model(*args, independent_validation=False,
+                                           timing_database_path=timing, native_store_model=True)
+    columns, board = model.write_requests(tmp_path, initial, 0)
+    output = tmp_path/'preserved.tsv'
+    output.write_bytes(b'previous')
+    result = subprocess.run([str(emuflow_native()),'phase3','export-source-proxy',str(args[0].path),
+        str(model.primary_artifact),str(columns),str(board),str(output)], capture_output=True,text=True)
+    assert result.returncode != 0
+    assert output.read_bytes() == b'previous'
 
 
 @pytest.fixture(params=['normal','reordered','duplicate-sinks','sparse','balanced','clock-budgets'])

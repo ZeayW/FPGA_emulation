@@ -15,7 +15,7 @@ from emuflow.sta import iter_sta_path_database_paths, validate_sta_path_database
 from emuflow.yosys import import_yosys_json
 
 
-def prepare_source(root, *, negative_capture=False, fast_name='fast', fanout=0, clock_buffer=False):
+def prepare_source(root, *, negative_capture=False, fast_name='fast', fanout=0, clock_buffer=False, input_bus=False):
     def ff(data, q, negative=False):
         return dict(type='FDRE', parameters={'IS_C_INVERTED': '1' if negative else '0'},
                     port_directions=dict(C='input', D='input', Q='output', CE='input', R='input'),
@@ -42,6 +42,9 @@ def prepare_source(root, *, negative_capture=False, fast_name='fast', fanout=0, 
         cells[f'capture_{index}'] = ff(data, q)
     ports = {name: dict(direction=direction, bits=[bit]) for name, direction, bit in
              [('clk', 'input', 2), ('a', 'input', 3), ('b', 'input', 4), ('q', 'output', 17)]}
+    if input_bus:
+        del ports['a'], ports['b']
+        ports['payload'] = dict(direction='input', bits=[3, 4])
     yosys = root / 'source.json'
     yosys.write_text(json.dumps({'modules': {'retime': dict(attributes={'top': '1'},
                                                          ports=ports, cells=cells, netnames={})}}))
@@ -84,6 +87,37 @@ def test_partial_or_legacy_search_cannot_claim_communication_research(tmp_path, 
 
 real_engine = pytest.mark.skipif(not os.environ.get('EMUFLOW_OPENSTA_LAUNCH_ENGINE'),
                                 reason='explicit qualified OpenSTA required')
+
+
+@real_engine
+@pytest.mark.parametrize('input_bus', [False, True])
+@pytest.mark.parametrize('legacy_json', [False, True])
+def test_direct_primary_input_paths_survive_net_canonicalization(tmp_path, input_bus, legacy_json):
+    from emuflow.ir import EmuIR
+    from emuflow.io import write_json
+    source = prepare_source(tmp_path, input_bus=input_bus)
+    if legacy_json:
+        legacy = tmp_path/'legacy.json'
+        write_json(legacy, EmuIR.load(source).value)
+        source = legacy
+    output = tmp_path/'paths.json'
+    run_opensta_path_database(source, output, clocks={'clk':10.},
+        timing_io={'input_groups':[{'clock':'clk','delay_ns':0.,'ports':['payload'] if input_bus else ['a','b']}],
+                   'output_groups':[{'clock':'clk','delay_ns':0.,'ports':['q']}]},
+        executable=os.environ['EMUFLOW_OPENSTA_LAUNCH_ENGINE'], _stream_output=True,
+        # Clock-cone projection deliberately requires indexed source inputs;
+        # the legacy import exercises net aliasing under its supported policy.
+        clock_budget_policy='legacy-absolute-arrival-v1' if legacy_json else 'engine-edge-v1',
+        log_path=tmp_path/'opensta.log')
+    paths = list(iter_sta_path_database_paths(output, json.loads(output.read_text())))
+    assert {p['endpoint']['instance'] for p in paths} == {'launch_a','launch_b','capture',None}
+    direct = {p['endpoint']['instance']:p for p in paths if p['endpoint']['instance'] in {'launch_a','launch_b'}}
+    assert all(p['startpoint']['instance'] is None and len(p['path_nets']) == 1 for p in direct.values())
+    assert {p['startpoint']['port'] for p in direct.values()} == ({'payload'} if input_bus else {'a','b'})
+    if input_bus:
+        assert {p['startpoint']['bit'] for p in direct.values()} == {0,1}
+    counts = re.findall(r'queried_paths=(\d+) emitted_paths=(\d+)', (tmp_path/'opensta.log').read_text())
+    assert counts == [('4','4')]
 
 
 @real_engine

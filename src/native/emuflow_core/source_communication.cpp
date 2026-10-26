@@ -2,7 +2,9 @@
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/emuir_view.hpp"
 #include "emuflow_core/json_record.hpp"
+#include "emuflow_core/patron_ingress.hpp"
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
@@ -42,6 +44,21 @@ struct Route {
   std::vector<Edge> edges;
   std::map<std::uint32_t,double> delays;
 };
+void PrepareCommunicationPinShapes(SqliteDatabase& db) {
+  db.Execute("CREATE TEMP TABLE communication_shapes AS WITH bits AS ("
+      "SELECT e.instance_seq AS cell,p.name AS pin,e.bit AS bit,1 AS valid FROM communication_cells t "
+      "CROSS JOIN endpoint_records e INDEXED BY endpoint_owner ON e.instance_seq=t.seq JOIN pin_names p ON p.seq=e.port_seq "
+      "UNION ALL SELECT c.seq,json_extract(j.value,'$.port'),json_extract(j.value,'$.bit'),"
+      "json_type(j.value,'$.port')='text' AND json_type(j.value,'$.bit')='integer' AND json_extract(j.value,'$.bit')>=0 "
+      "FROM communication_cells t JOIN cell_records c ON c.seq=t.seq JOIN payloads p ON p.seq=c.constants_seq,json_each(p.value) j) "
+      "SELECT cell,pin,max(bit)+1 AS width,min(valid) AS valid FROM bits GROUP BY cell,pin;"
+      "CREATE UNIQUE INDEX communication_shapes_key ON communication_shapes(cell,pin);");
+}
+std::string CostPin(SqliteStatement& row,int cell,int port,int bit,int width,int valid) {
+  const auto b=row.TypedInteger(bit),w=row.TypedInteger(width);
+  Check(b>=0 && w>b && row.TypedInteger(valid)==1,"source communication pin shape is invalid");
+  return Sdc(row.TypedText(cell))+"/"+Sdc(row.TypedText(port)+(w==1?"":"__"+std::to_string(b)));
+}
 }
 
 void ExportSourceCommunication(const std::vector<ArtifactRef>& inputs,const std::string& output) {
@@ -223,14 +240,7 @@ void ExportSourceCommunication(const std::vector<ArtifactRef>& inputs,const std:
   }
   // Union connected and constant pin shapes for every participating cell.
   // A constant high bit still makes bit zero a scalarized bus pin.
-  db.Execute("CREATE TEMP TABLE communication_shapes AS WITH bits AS ("
-      "SELECT e.instance_seq AS cell,p.name AS pin,e.bit AS bit,1 AS valid FROM communication_cells t "
-      "CROSS JOIN endpoint_records e INDEXED BY endpoint_owner ON e.instance_seq=t.seq JOIN pin_names p ON p.seq=e.port_seq "
-      "UNION ALL SELECT c.seq,json_extract(j.value,'$.port'),json_extract(j.value,'$.bit'),"
-      "json_type(j.value,'$.port')='text' AND json_type(j.value,'$.bit')='integer' AND json_extract(j.value,'$.bit')>=0 "
-      "FROM communication_cells t JOIN cell_records c ON c.seq=t.seq JOIN payloads p ON p.seq=c.constants_seq,json_each(p.value) j) "
-      "SELECT cell,pin,max(bit)+1 AS width,min(valid) AS valid FROM bits GROUP BY cell,pin;"
-      "CREATE UNIQUE INDEX communication_shapes_key ON communication_shapes(cell,pin);");
+  PrepareCommunicationPinShapes(db);
   auto output_rows=db.Prepare("SELECT a.seq,f.id,fp.name,a.fbit,fs.width,fs.valid,t.id,tp.name,a.tbit,ts.width,ts.valid,a.delay "
       "FROM communication_arcs a LEFT JOIN cell_records f ON f.seq=a.fcell LEFT JOIN pin_names fp ON fp.seq=a.fpin "
       "LEFT JOIN communication_shapes fs ON fs.cell=a.fcell AND fs.pin=fp.name "
@@ -241,12 +251,7 @@ void ExportSourceCommunication(const std::vector<ArtifactRef>& inputs,const std:
   std::uint64_t emitted=0;
   while(output_rows.Step()) {
     Check(output_rows.TypedInteger(0)==static_cast<std::int64_t>(emitted++),"source communication emitted order differs");
-    const auto pin=[&](int cell,int port,int bit,int width,int valid) {
-      const auto b=output_rows.TypedInteger(bit),w=output_rows.TypedInteger(width);
-      Check(b>=0 && w>b && output_rows.TypedInteger(valid)==1,"source communication pin shape is invalid");
-      return Sdc(output_rows.TypedText(cell))+"/"+Sdc(output_rows.TypedText(port)+(w==1?"":"__"+std::to_string(b)));
-    };
-    stream<<Hex(pin(1,2,3,4,5))<<'\t'<<Hex(pin(6,7,8,9,10))<<'\t'<<output_rows.TypedReal(11)<<'\n';
+    stream<<Hex(CostPin(output_rows,1,2,3,4,5))<<'\t'<<Hex(CostPin(output_rows,6,7,8,9,10))<<'\t'<<output_rows.TypedReal(11)<<'\n';
   }
   Check(emitted==connections && stream.good(),"source communication emitted coverage differs");writer.Commit();
   if(metric_request) {
@@ -257,5 +262,164 @@ void ExportSourceCommunication(const std::vector<ArtifactRef>& inputs,const std:
   } else std::cout<<JsonRecord(std::map<std::string,JsonRecord>{{"schema","emuflow.source-communication-export/v1"},{"status","pass"},
     {"cost_policy","per-hop-fixed-plus-serial-ui-times-ratio-planning-bound-v1"},{"crossing_nets",crossing_nets},
     {"sink_partitions",sink_records},{"route_edges",entry_records},{"connections",connections},{"fixed_delay_ns",fixed},{"serial_ui_ns",ui}}).Encode()<<'\n';
+}
+
+void ExportPatronSourceProxy(const std::vector<ArtifactRef>& inputs,const std::string& output) {
+  PatronBuildContext context;
+  const auto model=BuildPatronModel(inputs,context,false);
+  const auto transitions=emuflow::native::BuildPatronSourceTransitions(model);
+  EmuirView original(inputs.at(0));
+  Check(context.source_cell_cluster.size()==original.counts().cells &&
+        context.source_net_native.size()==original.counts().nets,
+        "PATRON source profile ownership coverage differs");
+  using Key=std::tuple<int,int,int>;
+  std::map<Key,const emuflow::native::PatronSourceTransition*> by_branch;
+  for(const auto& branch:transitions)
+    Check(by_branch.emplace(Key{branch.net,branch.source,branch.sink},&branch).second,
+          "PATRON source profile repeats a branch");
+  std::set<Key> observed;
+  auto& db=original.store().database();
+  db.Execute("CREATE TEMP TABLE communication_arcs(seq INTEGER PRIMARY KEY,fcell INTEGER,fpin INTEGER,fbit INTEGER,"
+      "tcell INTEGER,tpin INTEGER,tbit INTEGER,delay REAL,hops INTEGER,ratio INTEGER,UNIQUE(tcell,tpin,tbit));"
+      "CREATE TEMP TABLE communication_cells(seq INTEGER PRIMARY KEY) WITHOUT ROWID;");
+  auto insert=db.Prepare("INSERT INTO communication_arcs VALUES(?,?,?,?,?,?,?,?,?,?)");
+  auto selected_cell=db.Prepare("INSERT OR IGNORE INTO communication_cells VALUES(?)");
+  auto classes=db.Prepare("SELECT seq,cut_class FROM net_records ORDER BY seq");
+  bool have_class=classes.Step();
+  const std::set<std::string> data_classes={"register_output","register_input","combinational"};
+  const std::set<std::string> all_classes={"clock","reset","primary_input","register_output","register_input","combinational","multi_driver","undriven"};
+  const auto owner=[&](const EmuirEndpoint& endpoint) {
+    Check(endpoint.cell.has_value(),"PATRON source data pin has no original cell");
+    return model.cluster.at(context.source_cell_cluster.at(endpoint.cell->sequence())).part;
+  };
+  std::vector<EmuirEndpoint> drivers,sinks;
+  std::uint64_t connections=0,crossing_nets=0;
+  {
+    SqliteTransaction transaction(db);
+    original.VisitConnectivity([&](const EmuirEndpoint& endpoint) {
+      Check(have_class && classes.TypedInteger(0)==static_cast<std::int64_t>(endpoint.net.sequence()),
+            "PATRON source net metadata differs");
+      if(!data_classes.count(classes.TypedText(1)))return;
+      if(endpoint.role==EndpointRole::kDriver)drivers.push_back(endpoint);
+      else if(endpoint.cell)sinks.push_back(endpoint);
+    },[&](EmuirNetId net) {
+      Check(have_class && classes.TypedInteger(0)==static_cast<std::int64_t>(net.sequence()) &&
+            all_classes.count(classes.TypedText(1)),"PATRON source net classification is invalid");
+      if(data_classes.count(classes.TypedText(1))) {
+        Check(drivers.size()==1 && drivers.front().cell.has_value(),"PATRON source data net has no unique original driver");
+        const auto& driver=drivers.front();const auto from=owner(driver);
+        bool crossing=false;
+        for(const auto& sink:sinks) {
+          const auto to=owner(sink);if(from==to)continue;
+          const auto native=context.source_net_native.at(net.sequence());
+          Check(native>=0,"PATRON model omits a crossing in complete original connectivity");
+          const Key key{native,from,to};const auto found=by_branch.find(key);
+          Check(found!=by_branch.end(),"PATRON model omits an actual remote data sink");
+          observed.insert(key);crossing=true;const auto& value=*found->second;
+          insert.BindInteger(1,connections++);insert.BindInteger(2,driver.cell->sequence());
+          insert.BindInteger(3,driver.pin->sequence());insert.BindInteger(4,driver.bit);
+          insert.BindInteger(5,sink.cell->sequence());insert.BindInteger(6,sink.pin->sequence());insert.BindInteger(7,sink.bit);
+          insert.BindReal(8,value.delay_ns);insert.BindInteger(9,value.hops);insert.BindInteger(10,value.maximum_ratio);
+          insert.Execute();insert.Reset();
+          for(const auto cell:{driver.cell->sequence(),sink.cell->sequence()}) {
+            selected_cell.BindInteger(1,cell);selected_cell.Execute();selected_cell.Reset();
+          }
+        }
+        if(crossing)++crossing_nets;
+      }
+      drivers.clear();sinks.clear();have_class=classes.Step();
+    },true);
+    Check(!have_class && observed.size()==by_branch.size(),"PATRON profile contains non-data or absent source branches");
+    transaction.Commit();
+  }
+  PrepareCommunicationPinShapes(db);
+  auto rows=db.Prepare("SELECT a.seq,f.id,fp.name,a.fbit,fs.width,fs.valid,t.id,tp.name,a.tbit,ts.width,ts.valid,a.delay,a.hops,a.ratio "
+      "FROM communication_arcs a LEFT JOIN cell_records f ON f.seq=a.fcell LEFT JOIN pin_names fp ON fp.seq=a.fpin "
+      "LEFT JOIN communication_shapes fs ON fs.cell=a.fcell AND fs.pin=fp.name "
+      "LEFT JOIN cell_records t ON t.seq=a.tcell LEFT JOIN pin_names tp ON tp.seq=a.tpin "
+      "LEFT JOIN communication_shapes ts ON ts.cell=a.tcell AND ts.pin=tp.name ORDER BY a.seq");
+  AtomicBinaryWriter writer(output,inputs);auto& stream=writer.stream();
+  stream<<"from_pin_hex\tto_pin_hex\tphysical_hops\tmaximum_net_route_ratio\tpredicted_delay_ns\n"<<std::setprecision(17);
+  std::uint64_t emitted=0;
+  while(rows.Step()) {
+    Check(rows.TypedInteger(0)==static_cast<std::int64_t>(emitted++),"PATRON source emitted order differs");
+    stream<<Hex(CostPin(rows,1,2,3,4,5))<<'\t'<<Hex(CostPin(rows,6,7,8,9,10))<<'\t'
+          <<rows.TypedInteger(12)<<'\t'<<rows.TypedInteger(13)<<'\t'<<rows.TypedReal(11)<<'\n';
+  }
+  Check(emitted==connections && stream.good(),"PATRON source emitted coverage differs");writer.Commit();
+  std::cout<<JsonRecord(std::map<std::string,JsonRecord>{{"schema","emuflow.patron-source-proxy/v1"},{"status","pass"},
+      {"coverage","complete-original-data-connectivity"},{"profile","patron-predicted-routes-and-domain-ratios-v1"},
+      {"connections",connections},{"crossing_nets",crossing_nets},{"branches",std::uint64_t(transitions.size())},
+      {"selected_paths_loaded",std::uint64_t(model.paths)}}).Encode()<<'\n';
+}
+
+void ExportSourceNetMap(const std::vector<ArtifactRef>& inputs,const std::string& output) {
+  Check(inputs.size()==2 || inputs.size()==3,"source net-map parent coverage differs");
+  CheckedRequestReader request(inputs.back().path(),1024);
+  Check(request.Read<std::uint64_t>()==0x31514d4e534d5545ULL && request.Read<std::uint32_t>()==1 &&
+        request.Read<std::uint32_t>()==inputs.size()-1,"unsupported source net-map request");
+  for(std::size_t i=0;i<inputs.size()-1;++i) {
+    const FileGeneration generation{request.Read<std::uint64_t>(),request.Read<std::uint64_t>(),request.Read<std::uint64_t>(),
+      request.Read<std::int64_t>(),request.Read<std::int64_t>(),request.Read<std::int64_t>(),request.Read<std::int64_t>()};
+    if(!(generation==inputs[i].generation()))throw StageError(ErrorCode::kMixedGeneration,"source net-map parent generation changed");
+  }
+  request.RequireEnd();
+  EmuirView source(inputs[0]);auto& db=source.store().database();
+  const auto design=Text(db,"SELECT json_extract(value,'$.name') FROM metadata WHERE key='design_json'");
+  JsonQuote(design);
+  struct Port { std::int64_t width;std::string direction; };
+  std::map<std::string,Port> ports;
+  auto declarations=db.Prepare("SELECT seq,json_extract(record_json,'$.id'),json_extract(record_json,'$.width'),"
+      "json_extract(record_json,'$.direction') FROM port_records ORDER BY seq");
+  while(declarations.Step()) {
+    const auto name=declarations.TypedText(1),direction=declarations.TypedText(3);
+    JsonQuote(name);
+    const auto width=declarations.TypedInteger(2);
+    Check(declarations.TypedInteger(0)==static_cast<std::int64_t>(ports.size()) && !name.empty() &&
+          width>0 && (direction=="input" || direction=="output" || direction=="inout") &&
+          ports.emplace(name,Port{width,direction}).second,"source net-map port declaration is invalid");
+  }
+  AtomicBinaryWriter writer(output,inputs);auto& stream=writer.stream();
+  stream<<"mapped_net_hex\temuir_net_hex\n";
+  auto nets=db.Prepare("SELECT seq,id FROM net_records ORDER BY seq");
+  std::uint64_t count=0;
+  while(nets.Step()) {
+    Check(nets.TypedInteger(0)==static_cast<std::int64_t>(count),"source net-map net order differs");
+    stream<<Hex("__emuflow_net_"+std::to_string(count++))<<'\t'<<Hex(nets.TypedText(1))<<'\n';
+  }
+  Check(count==source.counts().nets,"source net-map net coverage differs");
+  std::map<std::string,std::pair<std::uint64_t,std::string>> aliases;
+  auto endpoints=db.Prepare("SELECT p.name,e.bit,e.role,e.net_seq,n.id FROM endpoint_records e INDEXED BY endpoint_owner "
+      "JOIN pin_names p ON p.seq=e.port_seq JOIN net_records n ON n.seq=e.net_seq WHERE e.instance_seq IS NULL");
+  while(endpoints.Step()) {
+    const auto name=endpoints.TypedText(0);const auto port=ports.find(name);
+    const auto bit=endpoints.TypedInteger(1),role=endpoints.TypedInteger(2),net=endpoints.TypedInteger(3);
+    Check(port!=ports.end() && bit>=0 && bit<port->second.width && net>=0 && std::uint64_t(net)<count &&
+          (role==0 || role==1) && (port->second.direction=="inout" || (port->second.direction=="input"?role==0:role==1)),
+          "source net-map top-level endpoint differs from its declared port");
+    const auto alias=name+(port->second.width==1?"":"["+std::to_string(bit)+"]");
+    // get_property(net, name) is the raw net name, rather than the escaped
+    // hierarchical pin path used by the communication table.
+    const auto value=std::make_pair(std::uint64_t(net),endpoints.TypedText(4));
+    const auto found=aliases.find(alias);
+    Check(found==aliases.end() || found->second==value,"source net-map port alias is ambiguous");
+    aliases.emplace(alias,value);
+  }
+  std::uint64_t emitted_aliases=0;
+  for(const auto& [alias,value]:aliases) {
+    const std::string prefix="__emuflow_net_";
+    if(alias.compare(0,prefix.size(),prefix)==0) {
+      std::uint64_t index=0;
+      const auto parsed=std::from_chars(alias.data()+prefix.size(),alias.data()+alias.size(),index);
+      if(parsed.ec==std::errc{} && parsed.ptr==alias.data()+alias.size() && index<count && alias==prefix+std::to_string(index)) {
+        Check(index==value.first,"source port aliases a different generated timing wire");
+        continue;
+      }
+    }
+    stream<<Hex(alias)<<'\t'<<Hex(value.second)<<'\n';++emitted_aliases;
+  }
+  Check(stream.good(),"source net-map output failed");writer.Commit();
+  std::cout<<JsonRecord(std::map<std::string,JsonRecord>{{"schema","emuflow.source-net-map/v1"},{"status","pass"},
+      {"design",design},{"nets",count},{"port_aliases",emitted_aliases}}).Encode()<<'\n';
 }
 }

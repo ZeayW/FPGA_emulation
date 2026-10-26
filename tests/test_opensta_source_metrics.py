@@ -141,3 +141,36 @@ def test_native_routes_and_full_graph_find_different_maximum_hop_and_ratio_paths
   }
  }
 ''')
+
+
+@real_engine
+@pytest.mark.parametrize('negative_capture', [False, True])
+def test_one_source_proxy_table_updates_independent_hops_ratios_and_delay(tmp_path, negative_capture):
+    source = prepare_source(tmp_path, negative_capture=negative_capture)
+    header = 'from_pin_hex\tto_pin_hex\tphysical_hops\tmaximum_net_route_ratio\tpredicted_delay_ns\n'
+    rows = [('launch_b/Q', 'fast/I0', 2, 16, 75.), ('fast/O', 'join/I1', 1, 24, 45.)]
+    text = header + ''.join(f'{a.encode().hex()}\t{b.encode().hex()}\t{h}\t{r}\t{d}\n' for a,b,h,r,d in rows)
+    (tmp_path/'proxy.tsv').write_text(text)
+    (tmp_path/'bad.tsv').write_text(text.replace('\t1\t24\t', '\t1\t0\t'))
+    run_probe(source, tmp_path, '''
+ foreach {mode score} {patron-source-hops 3 patron-source-ratio 40} {
+  emuflow_apply_communication_delays [file join $env(PROBE_ROOT) proxy.tsv] $mode
+  set row [selected]
+  if {[lindex $row 0] ne "launch_b/Q" || [lindex $row 1] != $score || [lindex $row 3] != $score} {
+   error "source proxy metric differs: $mode $row"
+  }
+ }
+ emuflow_apply_communication_delays [file join $env(PROBE_ROOT) proxy.tsv] patron-source-delay-ns
+ set row [selected]
+ if {[lindex $row 0] ne "launch_b/Q" || abs([lindex $row 1]*1.0e9-120) > 0.00001 || abs([lindex $row 3]*1.0e9-120) > 0.00001} {
+  error "source proxy physical delay differs: $row"
+ }
+ set before [selected]
+ foreach mode {delay-ns metric-integer-seconds-v1} {
+  if {![catch {emuflow_apply_communication_delays [file join $env(PROBE_ROOT) proxy.tsv] $mode}]} {error "source proxy read with wrong schema"}
+ }
+ foreach mode {patron-source-hops patron-source-ratio patron-source-delay-ns} {
+  if {![catch {emuflow_apply_communication_delays [file join $env(PROBE_ROOT) bad.tsv] $mode}]} {error "invalid source proxy accepted"}
+  if {[selected] ne $before} {error "invalid source proxy changed graph"}
+ }
+''')
