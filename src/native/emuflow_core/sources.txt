@@ -17,6 +17,7 @@ emuflow_core/schedule_store.cpp
 emuflow_core/route_view.cpp
 emuflow_core/schedule_ingress.cpp
 emuflow_core/word_events.cpp
+emuflow_core/word_physical_binding.cpp
 emuflow_core/exact_semantic_view.cpp
 emuflow_core/source_launch_clocks.cpp
 emuflow_core/tool_runtime.cpp

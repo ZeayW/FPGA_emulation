@@ -120,10 +120,10 @@ Its explicit frame bound requires RX capture before `FRAME_SLOTS - 1`, matching
 the emitted RTL's drained region.
 Configuration-stable cones require an explicit classification. Its result owns
 only TX word indices; RX coordinates follow from the declared fixed latency.
-Phase 5 uses the same integer calendar selection primitive. This kernel does
-not yet bind the production canonical clock/fanin owners;
-word-mode global acceptance remains disabled until those bindings and the
-independent OpenSTA checks are integrated.
+Phase 5 uses the same integer calendar selection primitive. The physical
+binding below supplies measured fanins and source clocks to this kernel;
+word-mode global acceptance remains disabled until checked eliminations,
+original captures and the independent global OpenSTA checks are integrated.
 The native `ExactSemanticView` reads the published v4 assignment index and its
 v2 semantic sidecar as one owner pair. It checks the bounded manifest identity,
 part/cut identities, segment coordinates and complete per-cut source-group
@@ -140,8 +140,9 @@ capture ordering and frame drain. It does not call the projector, reuse its
 readiness guard or calculate another data-path arrival. Slack tolerance is an
 explicit consumer input. Missing, extra, nonfinite or failing engine records,
 and an earlier occurrence that has not been independently excluded, fail
-validation. Production still needs to bind those engine records and clock facts
-to the canonical physical/semantic owners.
+validation. The support-check visitor below supplies canonical measured fanins;
+production still needs to bind the complete combined engine execution and all
+original capture records.
 
 Sampling costs are effective nominal-edge guards, distinct from raw data
 arrival. Their signed clock/check adjustment shifts the OpenSTA deadline while
@@ -386,9 +387,52 @@ the engine before retiring its scratch.
 periods. It scales each engine phase as `phase / engine_period * target_period`;
 using the engine period preserves exact half-cycle ratios despite its floating
 time representation. It does not invent a zero launch for a missing clock.
-This supplies original launch phases to the native word resolver; the full
-physical-fanin joins, original-path clock budgets and independent global event
-checks remain required before word-mode global acceptance is enabled.
+Its typed facts retain source and clock coordinates within the single launch
+owner, with engine period, engine phase and the derived implementation phase.
+A fact from another owner fails even when its bytes and coordinates agree.
+The physical consumer also checks all six original source, path-population,
+route, schedule, semantic and I/O parent seals. Uniform implementation-phase
+scaling does not establish the waveform of an external paused runtime clock.
+
+`BindPhysicalWordModel` is the native indexed join for measured fanins. It
+consumes the paired assignment/semantic owner, current ScheduleStore, launch
+owner and each partition's already validated logic-cost, boundary-identity and
+boundary-cost owners. It checks dense transfer coordinates, route roots,
+unique arrivals, word ratios/phases, fixed PHY latency, frame drain, endpoint
+class and complete per-cut semantic source groups. The supplied word clock and
+fixed latency must come from the caller's validated Phase 6 PHY plan; they are
+independent of its explicit DUT implementation-clock periods. Physical input
+ownership must already be bound to the same validated Phase 7 invocation;
+matching design names alone do not certify their provenance.
+
+Only complete-contract launch/transition rows supply readiness, including
+architectural sources absent from selected original-path queries. Each launch
+expands all of its original clock/phase facts. Root indices are canonical within
+that clock owner, independent of physical worker enumeration. Each transition
+must start at its corresponding RX shadow. A forwarded relay must refer to that
+same shadow, and uses its TX boundary data delay and sampling cost once. The RX
+word-to-shadow cost must satisfy the word-stage timing check but is already
+inside the fixed PHY arc. It is never added again to a relay's readiness.
+Configuration stability requires the semantic producer's explicit constant
+classification; missing queries or clock facts cannot create it. Required
+optimized-away rows currently fail until their checked native disposition
+owner is connected. Such a rejection is not a numerical zero or a completed
+coverage record.
+
+The join retains native coordinates and references to canonical physical cost
+rows, not another Python circuit graph or persistent derived timing database.
+It uses at most three attachments per partition connection, independent of
+the number of FPGAs, and preserves all input generation leases. Its derived
+`VisitPhysicalWordSupportChecks` visitor emits launch time, nonnegative data
+arc and deadline shifted by `sampling_cost - data_delay` in canonical
+transfer/fanin order. Those support checks belong alongside original capture
+checks in one OpenSTA invocation. Its engine slacks feed the independent
+first-occurrence validator. The bounded qualification includes a late table
+occurrence whose engine slacks pass but whose first-occurrence check fails;
+synthetic observation checks are not original DUT capture coverage.
+The join and visitor do not supply the original-path clock budgets, prove
+physical delay exactness, derive the runtime pulse waveform, or release global
+WNS/TNS or an operating-frequency result on their own.
 
 The shared `clock_budget` reader preserves this edge window under uniform
 source/capture clock scaling, rejects independent rescaling and unsupported

@@ -21,14 +21,17 @@ class SourceLaunchResolver {
   SourceLaunchPoint Resolve(const std::string& physical_pin,
                             const std::string& object_kind = {});
   void RequireUnchanged() const;
+  const ArtifactRef& artifact() const { return source_.artifact(); }
  private:
   SqliteStore source_;
 };
 
-struct SourceLaunchContext {
+struct SourceLaunchIdentity {
   // These are existing, validated parent identities, not new graph payloads.
   std::string original_ir_sha256, path_database_sha256, routes_sha256;
   std::string schedule_sha256, semantic_sha256, timing_io_sha256;
+};
+struct SourceLaunchContext : SourceLaunchIdentity {
   // Paths in the tool environment bind the source Verilog, Liberty, original
   // clocks and I/O. The caller uses the same indexed source emitter as Phase2.
   ToolRequest tool;
@@ -38,6 +41,14 @@ struct SourceLaunchContext {
   std::map<std::string,std::string> timing_input_sha256;
   std::vector<ArtifactRef> control_inputs;
   const volatile std::sig_atomic_t* cancelled = nullptr;
+};
+
+struct LaunchSourceTag {};
+struct LaunchClockTag {};
+struct SourceLaunchFact {
+  ArtifactId<LaunchSourceTag> source;
+  ArtifactId<LaunchClockTag> clock;
+  double engine_period_ns, engine_phase_ns, launch_ns;
 };
 
 // One native owner and one tool invocation. Physical stores are scanned once
@@ -61,6 +72,13 @@ class SourceLaunchClockView {
   std::vector<double> LaunchTimes(const std::string& physical_pin,
       const std::string& object_kind,
       const std::map<std::string,double>& target_periods_ns);
+  std::vector<SourceLaunchFact> Facts(const std::string& physical_pin,
+      const std::string& object_kind,
+      const std::map<std::string,double>& target_periods_ns);
+  void RequireSourceIdentity(const SourceLaunchIdentity& identity);
+  void RequireOwner(const SourceLaunchFact& fact) const;
+  const ArtifactRef& artifact() const { return clocks_.artifact(); }
+  const ArtifactRef& original_artifact() const { return source_.artifact(); }
   void RequireUnchanged() const;
  private:
   SqliteStore clocks_;

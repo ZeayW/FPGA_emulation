@@ -363,18 +363,42 @@ SourceLaunchClockView::SourceLaunchClockView(const ArtifactRef& clocks,const Art
 void SourceLaunchClockView::RequireUnchanged() const {clocks_.RequireUnchanged();source_.RequireUnchanged();}
 std::vector<double> SourceLaunchClockView::LaunchTimes(const std::string& pin,const std::string& kind,
     const std::map<std::string,double>& targets) {
+  std::vector<double> result;
+  for(const auto& fact:Facts(pin,kind,targets))result.push_back(fact.launch_ns);
+  return result;
+}
+void SourceLaunchClockView::RequireSourceIdentity(const SourceLaunchIdentity& identity) {
+  auto row=clocks_.database().Prepare("SELECT json_extract(value,?1) FROM metadata WHERE key='source'");
+  for(const auto& item:std::map<std::string,std::string>{{"original_ir_sha256",identity.original_ir_sha256},
+      {"path_database_sha256",identity.path_database_sha256},{"routes_sha256",identity.routes_sha256},
+      {"schedule_sha256",identity.schedule_sha256},{"semantic_sha256",identity.semantic_sha256},
+      {"timing_io_sha256",identity.timing_io_sha256}}) {
+    Digest(item.second);row.BindText(1,"$."+item.first);
+    Check(row.Step() && row.TypedText(0)==item.second,"source launch context belongs to another run");row.Reset();
+  }
+}
+void SourceLaunchClockView::RequireOwner(const SourceLaunchFact& fact) const {
+  clocks_.RequireOwner(fact.source);clocks_.RequireOwner(fact.clock);
+}
+std::vector<SourceLaunchFact> SourceLaunchClockView::Facts(const std::string& pin,const std::string& kind,
+    const std::map<std::string,double>& targets) {
   const auto point=source_.Resolve(pin,kind);auto& db=clocks_.database();
-  auto rows=db.Prepare("SELECT c.name,c.engine_period_ns,f.phase_ns FROM sources s JOIN facts f ON f.source_seq=s.source_seq "
+  auto rows=db.Prepare("SELECT c.name,c.engine_period_ns,f.phase_ns,s.source_seq,c.clock_seq,typeof(c.engine_period_ns),typeof(f.phase_ns) "
+      "FROM sources s JOIN facts f ON f.source_seq=s.source_seq "
       "JOIN clocks c ON c.clock_seq=f.clock_seq WHERE s.cell_seq=? AND s.port_seq=? AND s.bit=? ORDER BY c.clock_seq,f.phase_ns");
-  BindPoint(rows,point);std::vector<double> result;
+  BindPoint(rows,point);std::vector<SourceLaunchFact> result;
   while(rows.Step()) {
     const auto target=targets.find(rows.TypedText(0));
     Check(target!=targets.end() && std::isfinite(target->second) && target->second>0 && !rows.IsNull(1),
           "source launch target clock is missing or invalid");
     const auto period=rows.Real(1),phase=rows.Real(2);
-    Check(std::isfinite(period) && period>0 && std::isfinite(phase),"source launch stored clock fact is invalid");
+    Check((rows.TypedText(5)=="real" || rows.TypedText(5)=="integer") &&
+          (rows.TypedText(6)=="real" || rows.TypedText(6)=="integer") &&
+          std::isfinite(period) && period>0 && std::isfinite(phase),"source launch stored clock fact is invalid");
     const auto launch=(phase/period)*target->second;
-    Check(std::isfinite(launch),"source launch target phase is unrepresentable");result.push_back(launch);
+    Check(std::isfinite(launch) && rows.TypedInteger(3)>=0 && rows.TypedInteger(4)>=0,
+          "source launch target phase or identity is unrepresentable");
+    result.push_back({clocks_.Id<LaunchSourceTag>(rows.Integer(3)),clocks_.Id<LaunchClockTag>(rows.Integer(4)),period,phase,launch});
   }
   Check(!result.empty(),"source launch original driver has no clock facts");return result;
 }
