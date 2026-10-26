@@ -9,6 +9,7 @@
 #include "emuflow_core/compile.hpp"
 #include "emuflow_core/yosys_hierarchy.hpp"
 #include "emuflow_core/frontend.hpp"
+#include "emuflow_core/partition_init.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/store_publication.hpp"
 
@@ -21,6 +22,7 @@ constexpr const char* kUsage =
     "  publish-store REQUEST OUTPUT\n"
     "  compile REQUEST_JSON\n"
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
+    "  phase3 initialize-tritonpart EMUIR PRIMARY REQUEST OUTPUT_DIR [WEIGHTS_SELECTOR WEIGHTS_STORE] [SOLUTION]\n"
     "  phase1 run REQUEST\n"
     "  phase1 import-yosys REQUEST EMUIR SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
     "  run-tool REQUEST RESULT_JSON\n"
@@ -151,6 +153,12 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if (argc == 4 && std::string(argv[1]) == "publish-store") {
     const auto request = emuflow::core::ArtifactRef::Bind(argv[2],"sqlite-publication-request-v1");
     return Finish(emuflow::core::PublishSqliteStore(request,argv[3],report),report);
+  }
+  if(argc>=7 && argc<=10 && std::string(argv[1])=="phase3" && std::string(argv[2])=="initialize-tritonpart") {
+    std::vector<emuflow::core::ArtifactRef> inputs{emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),emuflow::core::ArtifactRef::Bind(argv[4],"partition-cluster-columns-v2"),emuflow::core::ArtifactRef::Bind(argv[5],"partition-initialization-request-v1")};
+    if(argc==9 || argc==10){inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[7],"net-weight-selector-v2"));inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[8],"net-weight-store-v1"));}
+    if(argc==8 || argc==10)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[argc-1],"tritonpart-solution-v1"));
+    ToolSignals signals;return Finish(emuflow::core::InitializePartition(inputs,argv[6],&tool_cancelled),report);
   }
   if((argc==4 || argc==5) && std::string(argv[1])=="phase1" && std::string(argv[2])=="run") {
     ToolSignals signals;

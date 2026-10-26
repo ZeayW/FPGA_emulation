@@ -214,6 +214,10 @@ See the
 [physical export contract](docs/XILINX_PHYSICAL_FLOW.md#native-rwroute-export).
 The [offline handoff differential](docs/VALIDATION.md#primary-store-handoff-differential)
 can use the normal TritonPart initializer while keeping capacity/balance bounds.
+Production TritonPart initialization now runs in the shared core, from indexed
+weights and primary clusters through supervised OpenROAD execution to an
+independently checked selected ownership column. PATRON borrows that column
+directly. Final Phase 3 semantic/assignment orchestration still requires migration.
 The Phase 3 topology hop legalizer runs through the shared
 `emuflow-native phase3 refine-hops` operation, preserving its algorithm and
 independent hop audit. Production keeps assignment and counters; explicit

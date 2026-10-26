@@ -106,13 +106,33 @@ plus process success. Infrastructure acceptance is separate from the remaining
 adapter integration and W7's native data plane; a common interface is not
 whole-flow qualification.
 
+`phase3 initialize-tritonpart EMUIR PRIMARY REQUEST OUTPUT_DIR` owns the complete
+production initializer, including typed net-weight input, integer hypergraph and
+resource bounds, streamed OpenROAD inputs, supervised engine execution, seed
+selection and minimum-occupancy repair. Optional weight stores and imported
+solutions are explicit source references. Strict resource/balance validation runs
+before repair; neither initialization nor repair relaxes the constraints.
+An independent source-cell reduction checks each accepted candidate, and a
+separate source-connectivity traversal audits exported hyperedges and resources.
+Imported solutions do not generate unused solver inputs; unweighted inputs exist
+only for an explicitly enabled baseline.
+
+The small summary and existing `patron-initial-columns-v1` ownership file publish
+as one new directory. The host borrows the read-only column and passes the same
+original artifact to PATRON; it does not load net weights, reconstruct hyperedges,
+parse owner rows or re-emit the initial ownership. Original source generations
+remain bound across both operations. Algorithm policy and objective ordering are
+unchanged; the implementation identity distinguishes native execution from the
+explicit diagnostic reference. Complete final semantic/assignment publication and
+Phase 3 stage ownership still require migration and real-design qualification.
+
 `phase3 refine-patron-from-primary EMUIR TIMING PRIMARY INITIAL REQUEST OUTPUT`
 builds the PATRON v14 model and invokes the existing solver in one shared-core
 process. Normal compact native clustering selects this direct owner. The shared
 `PrimaryClusterView` reads source-scoped ownership and resource columns without
 copying them into another membership/resource artifact or transposed C++ matrix.
-The Python adapter carries board-sized configuration and packed initial ownership
-plus fixed constraints. It does not create pressure-net/path/name populations,
+The Python adapter carries board-sized configuration, fixed constraints and an
+initial ownership reference. It does not create pressure-net/path/name populations,
 derive a second model or stream per-record solver input. The snapshot command,
 cluster-column protocol and v1 board request are retired. Missing primary
 ownership fails without generating a replacement snapshot. Final semantic/index
@@ -491,7 +511,7 @@ there is no silent implementation or provider fallback.
 | Stage | Existing native/indexed foundation | Remaining delivery obligation |
 | --- | --- | --- |
 | Phase 1–2 | Complete native ordinary RTL frontend under native control, including engine/import/clock/resource/report publication; native OpenSTA input export, indexed path-result import, timing-weight generation and independent validators | Migrate supplied/prepared/other indexed-source adapters and complete timing-stage lifecycle; qualify the whole current-design frontend |
-| Phase 3 | Shared-core candidate eligibility and primary clustering; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Migrate remaining policy/assignment publication and reference modes; qualify complete stage costs |
+| Phase 3 | Shared-core candidate eligibility, primary clustering and complete TritonPart initialization; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Complete final cut projection, semantic/assignment publication and native stage lifecycle; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |

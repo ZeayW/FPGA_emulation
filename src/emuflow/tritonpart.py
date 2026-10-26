@@ -1029,6 +1029,7 @@ def run_tritonpart(
     run_unweighted_baseline: bool = False,
     defer_semantic_contract: bool = False,
     _defer_derived_records: bool = False,
+    net_weights_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     if not isinstance(_defer_derived_records, bool):
         raise ValidationError("TritonPart derived-record deferral is invalid")
@@ -1042,6 +1043,32 @@ def run_tritonpart(
         raise ValueError(
             "precomputed TritonPart solutions require seed_attempts=1"
         )
+    native_primary = getattr(clusters_artifact.get("clusters"), "native_artifact", None)
+    if native_primary is not None and not persist_input_manifest:
+        if net_weights is not None:
+            raise ValidationError("native initialization consumes a typed weight reference, not a Python net mapping")
+        from .partition_init_native import initialize
+        selected, summary = phase3_runtime_call(
+            "tritonpart.native_initialization", initialize,
+            ir, platform, clusters_artifact, constraints, seed=seed, executable=executable,
+            solution_input=solution_input, weights_path=net_weights_path,
+            timeout_seconds=timeout_seconds, seed_attempts=seed_attempts,
+            num_initial_solutions=num_initial_solutions, num_best_initial_solutions=num_best_initial_solutions,
+            repair_min_used_fpgas=repair_min_used_fpgas, run_unweighted_baseline=run_unweighted_baseline,
+        )
+        return phase3_runtime_call(
+            "tritonpart.build_assignment", build_partition_assignment,
+            ir, platform, clusters_artifact, constraints, selected,
+            provider=TRITONPART_PROVIDER, seed=summary["selected_seed"],
+            provider_metadata=summary["provider_metadata"],
+            _include_semantic_contract=not defer_semantic_contract,
+            _stream_semantic_records=defer_semantic_contract,
+            _defer_derived_records=_defer_derived_records,
+        )
+    if net_weights_path is not None:
+        if net_weights is not None:
+            raise ValidationError("TritonPart weight path and mapping cannot both be supplied")
+        net_weights = load_partition_net_weights(net_weights_path)
     tritonpart_input = phase3_runtime_call(
         "tritonpart.export_inputs",
         export_tritonpart_inputs,

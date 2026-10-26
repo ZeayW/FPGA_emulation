@@ -203,7 +203,9 @@ def test_phase3_production_selects_native_model_and_keeps_independent_validation
     solution.write_text('\n'.join('0' if initial['cluster_assignment'][c['id']]=='a' else '1'
                                    for c in args[2]['clusters'])+'\n')
     with (patch('emuflow.partition_pressure._compact_partition_pressure_graph',side_effect=AssertionError('Python pressure graph')),
-          patch('emuflow.partition_pressure._write_patron_native_input',side_effect=AssertionError('Python model protocol'))):
+          patch('emuflow.partition_pressure._write_patron_native_input',side_effect=AssertionError('Python model protocol')),
+          patch('emuflow.tritonpart.export_tritonpart_inputs',side_effect=AssertionError('Python initializer')),
+          patch.object(NativePressureModel,'_write_initial_ownership',side_effect=AssertionError('Python initial ownership rewrite'))):
         report=run_phase3(args[0].path,platform,tmp_path/'phase3',provider='patron',
                          min_used_fpgas=2,balance_tolerance=1.0,patron_max_moves=0,
                          tritonpart_solution=solution,route_constraints_path=routes,timing_database_path=timing,

@@ -827,7 +827,12 @@ class _PackedClusterAssignment(Mapping[str, str]):
     def __eq__(self, other: object) -> bool:
         if isinstance(other, _PackedClusterAssignment):
             if self.part_ids == other.part_ids:
-                return self.part_indices == other.part_indices
+                if self.part_indices is other.part_indices:
+                    return True
+                return len(self) == len(other) and all(
+                    left == right
+                    for left, right in zip(self.part_indices, other.part_indices)
+                )
         if not isinstance(other, Mapping) or len(self) != len(other):
             return False
         missing = object()

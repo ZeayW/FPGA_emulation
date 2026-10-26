@@ -339,6 +339,16 @@ without a host fallback. Native node/capture fixture scopes explicitly close
 mapped owners on success and exceptions before replacing files or retiring their
 directories; retained scalar borrowers must then reject access. This ordering
 also applies to differential hashing and publication tests on network filesystems.
+Initializer contracts compare complete hMetis, fixed ownership, resource-bound
+and Tcl inputs, selected owners, objective values and occupancy repair with the
+independent reference. Native initializer ownership feeds the actual PATRON
+kernel without host serialization, then the normal Phase 3 publication tests
+verify the final indexed output. Strictly unbalanced raw candidates cannot be
+rescued by occupancy repair. Corrupt weights, counts, seals, missing/invalid
+owners, engine failures and source mutation reject. A configured
+`EMUFLOW_TEST_OPENROAD` additionally exercises real TritonPart through final
+Phase 3 publication and indexed validation; an absent tool skips this gate.
+
 These are component gates; full Phase 3 and complete NVDLA acceptance still
 require their declared real-design evidence.
 

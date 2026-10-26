@@ -155,7 +155,23 @@ class NativePressureModel(dict):
         if native_file_generation(self.primary_artifact) != self.primary_generation:
             raise ValidationError("native primary column generation changed")
         columns, board = root / "initial.bin", root / "board.bin"
-        initial_parts = self._write_initial_ownership(columns, initial)
+        current = initial["cluster_assignment"]
+        native_initial = getattr(current, "native_initial_source", None)
+        if native_initial is not None:
+            from .store_publication import require_store_sources_unchanged
+            require_store_sources_unchanged((native_initial,current.native_primary_source,current.native_emuir_source))
+            if (current.part_indices is not current.native_initial_column
+                    or current.part_ids != current.native_initial_parts
+                    or current.native_primary_source.path != Path(self.primary_artifact).resolve()
+                    or current.native_primary_source.generation != self.primary_generation
+                    or current.native_emuir_source.path != Path(self.ir.path).resolve()
+                    or current.native_emuir_source.generation != self.generations[0]
+                    or current.native_initial_fixed != self.clusters._fixed_by_cluster
+                    or current.native_initial_fixed_parts != tuple(fpga.id for fpga in self.partition_fpgas)):
+                raise ValidationError("native initializer ownership belongs to another pressure model")
+            columns, initial_parts = native_initial.path, current.part_ids
+        else:
+            initial_parts = self._write_initial_ownership(columns, initial)
         parts = [fpga.id for fpga in self.partition_fpgas]
         domain_index = {domain["key"]: i for i, domain in enumerate(self.domains)}
         arc_domain = ref._capacity_key_by_arc(self.small_route_model)

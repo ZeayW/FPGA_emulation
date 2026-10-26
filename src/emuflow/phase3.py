@@ -35,7 +35,6 @@ from .partition_limits import planning_resource_capacities, strict_balance_limit
 from .resource_budget import validate_device_resource_usage
 from .resources import RESOURCE_FIELDS
 from .tritonpart import (
-    load_partition_net_weights,
     run_tritonpart,
 )
 from .routing import load_route_constraints
@@ -516,7 +515,7 @@ def run_phase3(
             seed=seed,
             executable=openroad,
             solution_input=tritonpart_solution,
-            net_weights=load_partition_net_weights(net_weights_path),
+            net_weights_path=net_weights_path,
             timeout_seconds=tritonpart_timeout_seconds,
             seed_attempts=tritonpart_seed_attempts,
             num_initial_solutions=tritonpart_num_initial_solutions,
@@ -564,7 +563,7 @@ def run_phase3(
                 seed=seed,
                 executable=openroad,
                 solution_input=tritonpart_solution,
-                net_weights=load_partition_net_weights(net_weights_path),
+                net_weights_path=net_weights_path,
                 timeout_seconds=tritonpart_timeout_seconds,
                 seed_attempts=tritonpart_seed_attempts,
                 num_initial_solutions=tritonpart_num_initial_solutions,

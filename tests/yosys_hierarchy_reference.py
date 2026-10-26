@@ -3,6 +3,7 @@ from emuflow.streaming_json import StreamingJSONObjectReader
 from emuflow.errors import ImportError
 from contextlib import nullcontext
 from typing import *
+from typing import TextIO
 from pathlib import Path
 import sqlite3, json, gzip
 
