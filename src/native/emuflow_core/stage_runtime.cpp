@@ -224,6 +224,8 @@ constexpr RegisteredSchema schemas[] = {
     {"global-qor-validation-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"exact-schedule-validation-request-v1", ArtifactEncoding::kBinary, 0x3156534d44544545ULL, 1},
     {"exact-schedule-validation-summary-v1", ArtifactEncoding::kText, 0, 1},
+    {"phase5-stage-request-v1", ArtifactEncoding::kBinary, 0x31535035464d5545ULL, 1},
+    {"phase5-report-v1", ArtifactEncoding::kText, 0, 1},
     {"exact-schedule-generation-request-v1", ArtifactEncoding::kBinary, 0x3147534d44544545ULL, 1},
     {"tdm-schedule-store-v4", ArtifactEncoding::kSqlite, 0x454d5554, 3, false,
      "SELECT json_extract(value,'$') FROM metadata WHERE key='logical_schema'","emuflow.tdm-schedule/v1"},

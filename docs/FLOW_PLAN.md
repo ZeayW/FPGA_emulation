@@ -33,7 +33,14 @@ RTL + constraints + mapping profile
 Phase 5 has one production provider, the native Static Exact dependency
 scheduler. It consumes the typed RouteStore and the Phase 3 semantic binding,
 writes one typed ScheduleStore, and publishes its compact selector and report
-only after independent native validation. The validator reconstructs readiness,
+only after independent native validation. `core::RunPhase5` owns the complete
+stage: model/solver execution, independent validation, timing projection, store
+and selector seals, phase report construction and report-last publication.
+Its `phase5 run` entry accepts the original RouteStore and bounded board,
+generation and source-binding requests. The Python API prepares only those
+requests and checks the bounded returned report; it does not call the individual
+producer, validator or timing subprocesses or assemble a second generation.
+The validator reconstructs readiness,
 wire/ratio, arrival and commit evidence directly from typed owners; it does not
 call the solver or replay route/hop records in Python. Full compilation rejects retired TDM
 providers and registered-boundary mode before frontend work. Minimum-frame

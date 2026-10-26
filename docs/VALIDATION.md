@@ -339,6 +339,20 @@ not conventional unique-register-endpoint TNS. See
 
 ## Independent native schedule validation
 
+Whole-stage gates invoke `phase5 run` and compare every logical schedule record
+with the independent reference for fixed/affine latency, shared direction banks,
+multicast and repeated demands. Poison Python producer, validator and projection
+entry points to prove that the complete stage owns their execution in C++.
+Verify the report's canonical identity and every generation-member seal using
+the normal consumer. The native API progress observer permits test-only injected
+exceptions or process exit after each of the four member publications. Exceptions
+must restore all previous bytes and retire uncommitted staging. Process exit
+must leave either the complete old generation, a generation rejected by its old
+report seal, or the complete new generation after the report commit. Reject
+invalid checked requests and original-source bindings before replacing any prior
+generation. These fixture gates do not establish real NVDLA performance or W7
+completion; the native compiler still has bounded Python configuration adapters.
+
 Compare the native indexed validator with the small independent dictionary oracle
 for fixed and affine latency, shared direction banks, dependency chains, multicast
 relays, different net/demand order and empty populations. Poison Python route/hop

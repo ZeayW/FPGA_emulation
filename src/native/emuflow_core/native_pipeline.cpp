@@ -6,6 +6,7 @@
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/native_stages.hpp"
 #include "emuflow_core/schedule_store.hpp"
+#include "emuflow_core/phase5.hpp"
 #include "emuflow_core/schedule_validation.hpp"
 #include "emuflow_core/schedule_timing.hpp"
 #include "emuflow_core/global_events.hpp"
@@ -62,6 +63,7 @@ const char* StageName(Stage stage) {
     case Stage::kWriteExactSections: return "phase3.write-exact-sections";
     case Stage::kRefinePatron: return "phase3.refine-patron";
     case Stage::kRoute: return "phase4.route";
+    case Stage::kRunPhase5: return "phase5.run";
     case Stage::kBuildSchedule: return "phase5.build-schedule";
     case Stage::kProjectScheduleTiming: return "phase5.timing-contract";
     case Stage::kBindGlobalEvents: return "global-sta.bind-events";
@@ -191,6 +193,7 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     }
     case Stage::kIndexGlobalEvents: return {"global-event-primary-v1"};
     case Stage::kExportGlobalEvents: return {"global-event-primary-v1","global-event-index-v1","global-event-export-request-v1"};
+    case Stage::kRunPhase5: return {"system-route-store-v3", "exact-schedule-board-request-v1", "exact-schedule-generation-request-v1", "phase5-stage-request-v1"};
     case Stage::kBuildSchedule: return {"system-route-store-v3", "exact-schedule-board-request-v1", "exact-schedule-generation-request-v1"};
     case Stage::kAssignBanks:
     case Stage::kGroupSignals:
@@ -380,6 +383,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kRefinePatron: RefinePatron(inputs, output, request.summary_output, request.typed_output); break;
       case Stage::kRoute: RouteTlr(inputs, output); break;
       case Stage::kSealRoutes: core::SealSystemRoutes(inputs,output); break;
+      case Stage::kRunPhase5: core::RunPhase5(inputs,output); break;
       case Stage::kBuildSchedule: core::BuildExactScheduleStore(inputs,output); break;
       case Stage::kProjectScheduleTiming: core::ProjectScheduleTiming(inputs,output); break;
       case Stage::kImportGlobalMeasurements: core::ImportGlobalMeasurements(inputs,output); break;
@@ -432,6 +436,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kRefinePatron: schema = request.typed_output ? "patron-output-v1" : "patron-output-text"; break;
       case Stage::kRoute: schema = "tlr-output-v1"; break;
       case Stage::kSealRoutes: schema = "system-route-seal-summary-v1"; break;
+      case Stage::kRunPhase5: schema = "phase5-report-v1"; break;
       case Stage::kBuildSchedule: schema = "tdm-schedule-store-v4"; break;
       case Stage::kProjectScheduleTiming: schema = "phase5-timing-summary-v1"; break;
       case Stage::kImportGlobalMeasurements: schema = "global-measurements-store-v1"; break;

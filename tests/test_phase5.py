@@ -243,220 +243,61 @@ class Phase5Test(unittest.TestCase):
             validate_tdm_schedule(routes, platform, mismatched)
 
     def test_native_schedule_publication_has_no_legacy_exports(self):
+        from tests.phase5_stage_fixture import interrupt_native_phase5
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             routes_path, platform_path, assignment_path = write_native_phase5_fixture(root)
             output = root / "phase5"
             report = run_phase5(routes_path, platform_path, output, assignment_path)
-            self.assertEqual(report["status"], "pass")
-            self.assertEqual(set(report["artifacts"]), {
-                "schedule", "schedule_store", "cross_layer_timing", "report",
-            })
-            self.assertEqual(validate_phase5(
-                routes_path, platform_path, output / "schedule.json", assignment_path,
-            )["status"], "pass")
+            self.assertEqual(report["phase_implementation"], "native-exact-phase5-v1")
+            self.assertEqual(set(report["artifacts"]), {"schedule", "schedule_store", "cross_layer_timing", "report"})
+            self.assertEqual(validate_phase5(routes_path, platform_path, output / "schedule.json", assignment_path)["status"], "pass")
             before = {name: (output / name).read_bytes() for name in report["artifacts"].values()}
-            with (
-                mock.patch(
-                    "emuflow.phase5.project_native_schedule_timing",
-                    side_effect=ValidationError("injected cross-layer failure"),
-                ),
-                self.assertRaisesRegex(ValidationError, "injected cross-layer failure"),
-            ):
-                run_phase5(routes_path, platform_path, output, assignment_path)
+            failed = interrupt_native_phase5(routes_path, platform_path, assignment_path, output, "scheduled")
+            self.assertEqual(failed.returncode, 71, failed.stderr)
+            self.assertIn("injected native Phase5 failure", failed.stderr)
             self.assertEqual({name: (output / name).read_bytes() for name in before}, before)
             self.assertFalse(list(output.glob(".phase5-generation-*")))
             for name in ("schedule.tsv", "transport_manifest.json", "transport_schedule_tb.sv", "tdm_feedback.json"):
                 self.assertFalse((output / name).exists())
 
-    def test_generation_rollback_restores_old_changed_route_outputs(self) -> None:
+    def test_generation_rollback_restores_old_changed_route_outputs(self):
+        from tests.phase5_stage_fixture import interrupt_native_phase5
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            old_routes_path, platform_path, old_assignment_path = write_native_phase5_fixture(root, prefix="old-")
-            changed_routes_path, _, changed_assignment_path = write_native_phase5_fixture(root, dependent_return=True, prefix="changed-")
-            output_dir = root / "phase5"
-            initial = run_phase5(
-                routes_path=old_routes_path,
-                platform_path=platform_path,
-                output_dir=output_dir,
-                assignment_path=old_assignment_path,
-            )
-            protected_names = {
-                "schedule.json",
-                "cross_layer_timing.json",
-                "phase5_report.json",
-                initial["artifacts"]["schedule_store"],
-            }
-            protected_bytes = {
-                name: (output_dir / name).read_bytes()
-                for name in protected_names
-            }
-            old_store_names = {
-                path.name for path in output_dir.glob("schedule.*.sqlite")
-            }
+            old, platform, assignment = write_native_phase5_fixture(root, prefix="old-")
+            changed, _, changed_assignment = write_native_phase5_fixture(root, dependent_return=True, prefix="changed-")
+            output = root / "phase5"
+            initial = run_phase5(old, platform, output, assignment)
+            before = {name: (output / name).read_bytes() for name in initial["artifacts"].values()}
+            inventory = {path.name for path in output.iterdir()}
+            for position in range(1, 5):
+                failed = interrupt_native_phase5(changed, platform, changed_assignment, output, position)
+                self.assertEqual(failed.returncode, 71, failed.stderr)
+                self.assertEqual({name: (output / name).read_bytes() for name in before}, before)
+                self.assertEqual({path.name for path in output.iterdir()}, inventory)
+                self.assertEqual(validate_phase5(old, platform, output / "schedule.json", assignment)["status"], "pass")
 
-            real_replace = os.replace
-            selector_visible = False
-
-            def fail_after_selector(source, destination):
-                nonlocal selector_visible
-                real_replace(source, destination)
-                if Path(destination).name == "schedule.json":
-                    selector_visible = True
-                elif (
-                    selector_visible
-                    and Path(destination).name == "cross_layer_timing.json"
-                ):
-                    raise OSError("injected post-selector publication failure")
-
-            with mock.patch(
-                "emuflow.phase5._replace_phase5_generation_file",
-                side_effect=fail_after_selector,
-            ), self.assertRaisesRegex(
-                OSError, "injected post-selector publication failure"
-            ):
-                run_phase5(
-                    routes_path=changed_routes_path,
-                    platform_path=platform_path,
-                    output_dir=output_dir,
-                    assignment_path=changed_assignment_path,
-                )
-
-            self.assertEqual(
-                {
-                    name: (output_dir / name).read_bytes()
-                    for name in protected_names
-                },
-                protected_bytes,
-            )
-            self.assertEqual(
-                {path.name for path in output_dir.glob("schedule.*.sqlite")},
-                old_store_names,
-            )
-            self.assertFalse(
-                any(
-                    path.name.startswith(".phase5-generation-")
-                    for path in output_dir.iterdir()
-                )
-            )
-            self.assertEqual(
-                validate_phase5(
-                    routes_path=old_routes_path,
-                    platform_path=platform_path,
-                    schedule_path=output_dir / "schedule.json",
-                    assignment_path=old_assignment_path,
-                )["status"],
-                "pass",
-            )
-
-    def test_report_last_seal_rejects_unrolled_partial_generations(self) -> None:
-        class SimulatedPowerLoss(Exception):
-            pass
-
+    def test_report_last_seal_rejects_unrolled_partial_generations(self):
+        from tests.phase5_stage_fixture import interrupt_native_phase5
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            old_routes_path, platform_path, old_assignment_path = write_native_phase5_fixture(root, prefix="old-")
-            changed_routes_path, _, changed_assignment_path = write_native_phase5_fixture(root, dependent_return=True, prefix="changed-")
-            output_dir = root / "phase5"
-            def interrupted_commit(replacements):
-                def commit(staging, output_dir, relative_paths):
-                    self.assertEqual(relative_paths[-1], "phase5_report.json")
-                    for relative in relative_paths[:replacements]:
-                        source = staging / relative
-                        destination = output_dir / relative
-                        destination.parent.mkdir(parents=True, exist_ok=True)
-                        os.replace(source, destination)
-                    raise SimulatedPowerLoss()
-
-                return commit
-
-            for replacements in (1, 2, 3):
-                output_dir = root / f"first-partial-{replacements}"
-                with mock.patch(
-                    "emuflow.phase5._commit_phase5_generation",
-                    side_effect=interrupted_commit(replacements),
-                ), self.assertRaises(SimulatedPowerLoss):
-                    run_phase5(
-                        routes_path=old_routes_path,
-                        platform_path=platform_path,
-                        output_dir=output_dir,
-                        assignment_path=old_assignment_path,
-                    )
-                with self.assertRaisesRegex(
-                    ValidationError, "commit report is missing"
-                ):
-                    validate_phase5(
-                        routes_path=old_routes_path,
-                        platform_path=platform_path,
-                        schedule_path=output_dir / "schedule.json",
-                        assignment_path=old_assignment_path,
-                    )
-
-            for replacements in (1, 2, 3):
-                output_dir = root / f"upgrade-partial-{replacements}"
-                run_phase5(
-                    routes_path=old_routes_path,
-                    platform_path=platform_path,
-                    output_dir=output_dir,
-                    assignment_path=old_assignment_path,
-                )
-                old_report_bytes = (
-                    output_dir / "phase5_report.json"
-                ).read_bytes()
-                with mock.patch(
-                    "emuflow.phase5._commit_phase5_generation",
-                    side_effect=interrupted_commit(replacements),
-                ), self.assertRaises(SimulatedPowerLoss):
-                    run_phase5(
-                        routes_path=changed_routes_path,
-                        platform_path=platform_path,
-                        output_dir=output_dir,
-                        assignment_path=changed_assignment_path,
-                    )
-                self.assertEqual(
-                    (output_dir / "phase5_report.json").read_bytes(),
-                    old_report_bytes,
-                )
-                if replacements == 1:
-                    # Only a new unreferenced content-addressed sidecar is
-                    # visible. The old report still names a complete old
-                    # generation, so consuming that generation remains safe.
-                    self.assertEqual(
-                        validate_phase5(
-                            routes_path=old_routes_path,
-                            platform_path=platform_path,
-                            schedule_path=output_dir / "schedule.json",
-                            assignment_path=old_assignment_path,
-                        )["status"],
-                        "pass",
-                    )
+            old, platform, assignment = write_native_phase5_fixture(root, prefix="old-")
+            changed, _, changed_assignment = write_native_phase5_fixture(root, dependent_return=True, prefix="changed-")
+            for position in range(1, 5):
+                output = root / ("phase5-" + str(position))
+                run_phase5(old, platform, output, assignment)
+                before = (output / "phase5_report.json").read_bytes()
+                stopped = interrupt_native_phase5(changed, platform, changed_assignment, output, position, "exit")
+                self.assertEqual(stopped.returncode, 72, stopped.stderr)
+                if position == 1:
+                    self.assertEqual(validate_phase5(old, platform, output / "schedule.json", assignment)["status"], "pass")
+                elif position < 4:
+                    self.assertEqual((output / "phase5_report.json").read_bytes(), before)
+                    with self.assertRaises(ValidationError):
+                        validate_phase5(old, platform, output / "schedule.json", assignment)
                 else:
-                    with self.assertRaisesRegex(
-                        ValidationError, "generation member seal is broken"
-                    ):
-                        validate_phase5(
-                            routes_path=old_routes_path,
-                            platform_path=platform_path,
-                            schedule_path=output_dir / "schedule.json",
-                            assignment_path=old_assignment_path,
-                        )
-
-            committed = root / "committed"
-            run_phase5(
-                routes_path=changed_routes_path,
-                platform_path=platform_path,
-                output_dir=committed,
-                assignment_path=changed_assignment_path,
-            )
-            self.assertEqual(
-                validate_phase5(
-                    routes_path=changed_routes_path,
-                    platform_path=platform_path,
-                    schedule_path=committed / "schedule.json",
-                    assignment_path=changed_assignment_path,
-                )["status"],
-                "pass",
-            )
+                    self.assertEqual(validate_phase5(changed, platform, output / "schedule.json", changed_assignment)["status"], "pass")
 
     def test_multihop_precedence_includes_store_and_forward_cycle(self) -> None:
         platform = Platform.from_dict(

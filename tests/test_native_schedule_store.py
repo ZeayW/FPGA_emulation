@@ -53,9 +53,10 @@ def test_unified_typed_route_producer_selects_native_store(tmp_path,monkeypatch)
 
     old_report=(output/"phase5_report.json").read_bytes()
     old_manifest=(output/"schedule.json").read_bytes()
-    with patch("emuflow.tdm._validate_indexed_exact_tdm_schedule",side_effect=ValidationError("independent validator rejected")):
-        with pytest.raises(ValidationError,match="independent validator rejected"):
-            run_phase5(route_path,PLATFORM_PATH,output,assignment_path)
+    from tests.phase5_stage_fixture import interrupt_native_phase5
+    rejected = interrupt_native_phase5(route_path, PLATFORM_PATH, assignment_path, output, "scheduled", "corrupt")
+    assert rejected.returncode == 71, rejected.stderr
+    assert "schedule" in rejected.stderr.lower()
     assert (output/"phase5_report.json").read_bytes()==old_report
     assert (output/"schedule.json").read_bytes()==old_manifest
     assert not list(output.glob(".phase5-generation-*"))

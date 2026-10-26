@@ -1064,6 +1064,29 @@ def _pretty_canonical_record(encoded: str) -> list[str]:
     return lines
 
 
+def write_native_exact_generation_request(path: Path, producer: "NativeExactScheduleRequest") -> None:
+    """Serialize only board-sized configuration for the common native producer."""
+    with path.open("wb") as stream:
+        def text(value: str) -> None:
+            encoded = value.encode("utf-8")
+            stream.write(struct.pack("<I", len(encoded)))
+            stream.write(encoded)
+
+        def value(item: Any) -> None:
+            text(_canonical(item))
+            text(json.dumps(item, ensure_ascii=True, sort_keys=True, indent=2, allow_nan=False))
+
+        stream.write(struct.pack("<QI3Q4q", 0x3147534D44544545, 1, *producer.route_generation))
+        stream.write(struct.pack("<I", len(producer.header)))
+        for key, item in sorted(producer.header.items()):
+            text(key)
+            value(item)
+        stream.write(struct.pack("<I", len(producer.domain_templates)))
+        for domain in producer.domain_templates:
+            text(domain["key"])
+            value(domain)
+
+
 def _publish_native_exact_generation(
     temporary: Path, producer: "NativeExactScheduleRequest",
 ) -> tuple[str, str, dict[str, dict[str, Any]], dict[str, int]]:
@@ -1074,25 +1097,7 @@ def _publish_native_exact_generation(
     request = temporary.with_name(temporary.name + ".generation-request")
     try:
         producer.write_board_request(board)
-        with request.open("wb") as stream:
-            def text(value: str) -> None:
-                encoded = value.encode("utf-8")
-                stream.write(struct.pack("<I", len(encoded)))
-                stream.write(encoded)
-
-            def value(item: Any) -> None:
-                text(_canonical(item))
-                text(json.dumps(item, ensure_ascii=True, sort_keys=True, indent=2, allow_nan=False))
-
-            stream.write(struct.pack("<QI3Q4q", 0x3147534D44544545, 1, *producer.route_generation))
-            stream.write(struct.pack("<I", len(producer.header)))
-            for key, item in sorted(producer.header.items()):
-                text(key)
-                value(item)
-            stream.write(struct.pack("<I", len(producer.domain_templates)))
-            for domain in producer.domain_templates:
-                text(domain["key"])
-                value(domain)
+        write_native_exact_generation_request(request, producer)
         _run_native_exact_schedule([
             *producer.command, str(producer.route_store), str(board), str(request), str(temporary),
         ])

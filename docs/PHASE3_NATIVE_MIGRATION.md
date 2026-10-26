@@ -489,7 +489,7 @@ there is no silent implementation or provider fallback.
 | Phase 1–2 | Native synthesis/STA engines; compact indexed inputs | Consolidate import, identities and timing adapters under the shared artifact API |
 | Phase 3 | Shared-core candidate eligibility and primary clustering; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Migrate remaining policy/assignment publication and reference modes; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
-| Phase 5 | Native model/solver/certificate/store producer, independent staged-store validation, and timing/cross-layer projection | Complete native stage lifecycle/report ownership and real-design qualification |
+| Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Replace remaining bounded Python configuration preparation in the native compiler; complete real-design qualification |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |
 | Phase 7 | Indexed lowering; typed physical handoff and native Bookshelf pin export | Complete remaining backend/export/validation ownership and full physical qualification |
 | Global STA | Native typed physical-to-event binding, event validation/model export, measurement import, full-original-path reduction and typed QoR publication | Migrate remaining physical producers and orchestration; qualify complete real-design physical/global timing |

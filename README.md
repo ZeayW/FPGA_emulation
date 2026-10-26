@@ -213,9 +213,11 @@ The Phase 3 topology hop legalizer runs through the shared
 `emuflow-native phase3 refine-hops` operation, preserving its algorithm and
 independent hop audit. Production keeps assignment and counters; explicit
 `--trace-output` retains diagnostic moves. The standalone executable is retired.
-Current indexed Static Exact Phase 5 runs use one shared-core call for model
-construction, scheduling, readiness certificates and ScheduleStore publication,
-without Python result import or numeric intermediate files. Independent native
+Current indexed Static Exact Phase 5 runs use one shared-core stage for model
+construction, scheduling, readiness certificates, independent validation,
+timing projection and report-last generation publication. Python supplies bounded
+configuration and artifact references; it no longer assembles the phase report
+or commits the output generation. Independent native
 validation reconstructs events and certificates directly from the typed stores
 before report publication, with no Python route/hop replay. Selection depends on
 the input contract, not its route count. Native timing projection produces the

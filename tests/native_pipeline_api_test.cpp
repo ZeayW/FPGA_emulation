@@ -5,13 +5,47 @@
 #include "emuflow_core/hash.hpp"
 #include "emuflow_core/routed_opensta.hpp"
 #include "emuflow_core/json_record.hpp"
+#include "emuflow_core/phase5.hpp"
+#include <iostream>
+#include <unistd.h>
+#include <sqlite3.h>
 
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
 
-int main() {
+int main(int argc,char** argv) {
+  if(argc==9 && std::string(argv[1])=="phase5-fault") {
+    using namespace emuflow::core;
+    const std::string mode=argv[2],point=argv[3];unsigned published=0;
+    try {
+      RunPhase5({ArtifactRef::Bind(argv[4],"system-route-store-v3"),
+          ArtifactRef::Bind(argv[5],"exact-schedule-board-request-v1"),
+          ArtifactRef::Bind(argv[6],"exact-schedule-generation-request-v1"),
+          ArtifactRef::Bind(argv[7],"phase5-stage-request-v1")},argv[8],[&](const std::string& stage) {
+        if(stage.rfind("published:",0)==0)++published;
+        if(stage!=point && !(stage.rfind("published:",0)==0 && std::to_string(published)==point))return;
+        if(mode=="corrupt") {
+          namespace fs=std::filesystem;
+          for(const auto& entry:fs::directory_iterator(fs::path(argv[8]).parent_path())) {
+            const auto path=entry.path()/"schedule.sqlite";
+            if(entry.path().filename().string().rfind(".phase5-generation-",0)!=0 || !fs::exists(path))continue;
+            sqlite3* database=nullptr;
+            if(sqlite3_open(path.c_str(),&database)!=SQLITE_OK)throw std::runtime_error("cannot corrupt test store");
+            const auto status=sqlite3_exec(database,"UPDATE schedule_entries SET slot=slot+1 WHERE seq=0",nullptr,nullptr,nullptr);
+            sqlite3_close(database);
+            if(status!=SQLITE_OK)throw std::runtime_error("cannot update test store");
+            return;
+          }
+          throw std::runtime_error("test stage did not expose private schedule");
+        }
+        if(mode=="exit")::_exit(72);
+        throw std::runtime_error("injected native Phase5 failure at "+stage);
+      });
+    } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 71;}
+    return 0;
+  }
   namespace fs = std::filesystem;
   using emuflow::core::ArtifactRef;
   using emuflow::core::ErrorCode;

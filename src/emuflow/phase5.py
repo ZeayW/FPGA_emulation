@@ -4,16 +4,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
-import tempfile
-import time
 from typing import Any, Dict, Mapping, Optional
 
 from .cross_layer_timing import (
     validate_cross_layer_timing_contract,
 )
 from .phase5_timing_native import project_native_schedule_timing
-from .errors import TDMScheduleInfeasibleError, ValidationError
+from .errors import ValidationError
 from .io import read_json, write_json
 
 from .phase3_storage import read_phase3_assignment_view
@@ -21,7 +18,6 @@ from .platform import Platform
 from .routing import semantic_contract_for_routes
 from .tdm import (
     TDM_EXACT_DEPENDENCY_PROVIDER,
-    NativeExactScheduleRequest,
     build_native_exact_schedule_request,
     reconstruct_tdm_schedule_timing,
     validate_tdm_schedule,
@@ -30,7 +26,6 @@ from .tdm import (
 from .tdm_schedule_storage import (
     read_tdm_schedule,
     tdm_schedule_store_path,
-    write_tdm_schedule_storage,
 )
 
 from .system_route_storage import read_system_routes
@@ -186,89 +181,6 @@ def validate_phase5_generation(
         raise ValidationError("Phase 5 schedule selector generation disagrees")
     return {"status": "pass", "report": report}
 
-def _replace_phase5_generation_file(source: Path, destination: Path) -> None:
-    """Atomic replacement hook kept separate for failure-injection tests."""
-
-    os.replace(source, destination)
-
-def _fsync_phase5_file(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-def _fsync_phase5_directory(path: Path) -> None:
-    descriptor = os.open(
-        path,
-        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
-    )
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-def _commit_phase5_generation(
-    staging: Path,
-    output_dir: Path,
-    relative_paths: list[str],
-) -> None:
-    """Publish one Phase 5 generation with complete exception rollback.
-
-    Every member is fully written in ``staging`` first. The report is ordered
-    last and is the generation commit point. If any replacement raises after
-    one or more members became visible, hard-linked backups restore the prior
-    generation byte-for-byte and newly introduced members are removed.
-    """
-
-    if not relative_paths or relative_paths[-1] != "phase5_report.json":
-        raise ValidationError("Phase 5 report must commit the generation")
-    rollback_root = staging / ".rollback"
-    changes: list[tuple[Path, Path | None]] = []
-    try:
-        # A durable report-last commit needs more than rename ordering. Every
-        # staged payload must reach stable storage, and the directory entries
-        # for all pre-report members must be durable before the report can
-        # become durable. A crash before the final directory sync therefore
-        # leaves either the old report or a report whose member seal rejects.
-        for relative in relative_paths:
-            source = staging / relative
-            if not source.is_file():
-                raise ValidationError(
-                    f"Phase 5 staged generation member is missing: {relative}"
-                )
-            _fsync_phase5_file(source)
-
-        for index, relative in enumerate(relative_paths):
-            source = staging / relative
-            destination = output_dir / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            backup = None
-            if destination.exists():
-                if not destination.is_file() or destination.is_symlink():
-                    raise ValidationError(
-                        f"Phase 5 generation destination is invalid: {relative}"
-                    )
-                backup = rollback_root / relative
-                backup.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    os.link(destination, backup)
-                except OSError:
-                    shutil.copy2(destination, backup)
-            changes.append((destination, backup))
-            _replace_phase5_generation_file(source, destination)
-            if index == len(relative_paths) - 2:
-                _fsync_phase5_directory(output_dir)
-        _fsync_phase5_directory(output_dir)
-    except BaseException:
-        for destination, backup in reversed(changes):
-            if backup is None:
-                destination.unlink(missing_ok=True)
-            elif backup.exists():
-                os.replace(backup, destination)
-        _fsync_phase5_directory(output_dir)
-        raise
-
 def _load_phase3_semantics(
     routes: Dict[str, Any], assignment_path: Optional[Path]
 ) -> tuple[Dict[str, Any], Optional[Mapping[str, Any]]]:
@@ -310,7 +222,7 @@ def run_phase5(
         raise ValueError(f"unsupported Phase 5 provider {provider!r}")
     from .native_tools import require_native_schema
 
-    require_native_schema("phase5-timing-request-v1")
+    require_native_schema("phase5-stage-request-v1")
     persisted_routes = read_system_routes(routes_path)
     routes, semantic_contract = _load_phase3_semantics(persisted_routes, assignment_path)
     if semantic_contract is None:
@@ -324,149 +236,10 @@ def run_phase5(
     )
     if schedule is None:
         raise ValidationError("Phase 5 requires the current typed RouteStore and indexed Static Exact contract")
-    return _finish_phase5_generation(
-        persisted_routes=persisted_routes, routes=routes,
-        semantic_contract=semantic_contract, schedule=schedule,
-        platform=platform, output_dir=output_dir,
-    )
+    from .phase5_native import run_native_phase5
 
-def _finish_phase5_generation(
-    *, persisted_routes: Mapping[str, Any], routes: Mapping[str, Any],
-    semantic_contract: Mapping[str, Any], schedule: NativeExactScheduleRequest,
-    platform: Platform, output_dir: Path,
-) -> Dict[str, Any]:
-    """Build every Phase 5 artifact in staging and commit the report last."""
+    return run_native_phase5(schedule, output_dir)
 
-    validation = None
-    timing_validation = None
-    output_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=".phase5-generation-", dir=output_dir
-    ) as temporary_directory:
-        staging = Path(temporary_directory)
-        staged_schedule_path = staging / "schedule.json"
-        schedule_storage_started = time.monotonic()
-        schedule_storage = write_tdm_schedule_storage(
-            staged_schedule_path, schedule
-        )
-        schedule_storage_wall_seconds = (
-            time.monotonic() - schedule_storage_started
-        )
-        persisted_schedule = read_tdm_schedule(staged_schedule_path, verify_store_hash=False)
-        # Independently reconstruct from typed cursor/join relations before
-        # committing the report; never inflate a private native result into
-        # the generic validator's full hop dictionaries.
-        validation = validate_tdm_schedule(routes, platform, persisted_schedule)
-        schedule = persisted_schedule
-        projected = project_native_schedule_timing(
-            persisted_routes,
-            persisted_schedule,
-            platform,
-            bind=True,
-            analyze=isinstance(routes.get("timing"), dict),
-        )
-        timing_validation = projected["timing_validation"]
-        cross_layer_timing = projected["contract"]
-        staged_store_path = tdm_schedule_store_path(staged_schedule_path)
-        if staged_store_path is None:
-            raise ValidationError("Phase 5 schedule store is missing")
-
-        cross_layer_validation = {
-            "status": "pass",
-            **cross_layer_timing.get("metrics", {}),
-        }
-
-        report: Dict[str, Any] = {
-            "schema": PHASE5_REPORT_SCHEMA,
-            "phase": 5,
-            "status": "pass",
-            "design": schedule["design"],
-            "platform": platform.name,
-            "provider": schedule["provider"],
-            "validation": validation,
-            "cross_layer_timing_validation": cross_layer_validation,
-            "timing_dataflow": projected["implementation_id"],
-            **(
-                {"timing_validation": timing_validation}
-                if timing_validation is not None
-                else {}
-            ),
-            "artifacts": {
-                "schedule": "schedule.json",
-                "cross_layer_timing": "cross_layer_timing.json",
-                "report": "phase5_report.json",
-            },
-        }
-        report["cut_mode"] = "static-exact-combinational"
-        report["qualification"] = "dependency-schedule-readiness-pass"
-
-        report["artifacts"]["schedule_store"] = schedule_storage["artifact"]
-        report["schedule_storage"] = {
-            "schema": schedule_storage["schema"],
-            "implementation_id": (
-                "native-exact-schedule-store-v1"
-            ),
-            "producer_implementation_id": (
-                "native-exact-phase5-producer-v1"
-            ),
-            "dataflow": "typed-sqlite-route-entry-completion-relations-v1",
-            "wall_seconds": schedule_storage_wall_seconds,
-            "wall_scope": (
-                "native-model-schedule-certificate-publication-and-store-seal"
-            ),
-            "bytes": schedule_storage["store_bytes"],
-            "logical_sha256": schedule_storage["logical_sha256"],
-            "records": {
-                section: record["records"]
-                for section, record in schedule_storage["sections"].items()
-            },
-        }
-        write_json(
-            staging / "cross_layer_timing.json",
-            cross_layer_timing,
-            compact=True,
-        )
-
-        generation_member_paths = [schedule_storage["artifact"]]
-        generation_member_paths.extend(
-            (
-                "schedule.json",
-                "cross_layer_timing.json",
-            )
-        )
-        generation_members = []
-        for relative in generation_member_paths:
-            path = staging / relative
-            generation_members.append(
-                {
-                    "path": relative,
-                    "bytes": path.stat().st_size,
-                    "sha256": (
-                        schedule_storage["store_sha256"]
-                        if relative == schedule_storage["artifact"]
-                        else _phase5_file_sha256(path)
-                    ),
-                }
-            )
-        report["generation"] = {
-            "schema": PHASE5_GENERATION_SCHEMA,
-            "commit_point": "phase5_report.json",
-            "members": generation_members,
-        }
-        report["generation"]["report_identity_sha256"] = (
-            _canonical_phase5_report_identity(report)
-        )
-        write_json(staging / "phase5_report.json", report)
-        validate_phase5_generation(
-            staging / "phase5_report.json",
-            managed_root_sealed=True,
-        )
-        _commit_phase5_generation(
-            staging,
-            output_dir,
-            [*generation_member_paths, "phase5_report.json"],
-        )
-        return report
 
 def validate_phase5(
     routes_path: Path, platform_path: Path, schedule_path: Path,
