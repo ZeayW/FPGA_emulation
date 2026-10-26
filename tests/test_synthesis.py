@@ -361,6 +361,8 @@ class SynthesisTest(unittest.TestCase):
             self.assertIn(option, script)
         self.assertIn("-run begin:check", script)
         self.assertIn("blackbox =A:whitebox", script)
+        self.assertEqual(script.count("hierarchy -check -top design"), 2)
+        self.assertIn("; hierarchy -check -top design; blackbox =A:whitebox;", script)
         self.assertIn("; flatten; check;", script)
         self.assertNotIn("; flatten; opt_clean;", script)
         self.assertIn(
@@ -432,6 +434,8 @@ class SynthesisTest(unittest.TestCase):
             hierarchical_interchange=True,
         )
         self.assertNotIn("; flatten;", script)
+        self.assertEqual(script.count("hierarchy -check -top design"), 2)
+        self.assertIn("; hierarchy -check -top design; blackbox =A:whitebox;", script)
         self.assertIn("; check;", script)
         self.assertTrue(
             script.endswith(

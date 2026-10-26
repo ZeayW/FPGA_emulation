@@ -180,9 +180,9 @@ def build_yosys_script(
         # lower those structures to audited LUT/FF primitives explicitly.
         # Stop before synth_xilinx's final ``check`` label.  That label also
         # runs ``stat -tech xilinx``; on large hierarchical designs the
-        # diagnostic hierarchy tree can consume tens of GiB even though it
-        # does not alter the mapped netlist.  The explicit post-flatten check
-        # below remains the authoritative structural validation.
+        # diagnostic hierarchy tree can consume tens of GiB. Restore the
+        # label's required hierarchy/port-width normalization explicitly
+        # below; a plain structural check does not perform that rewrite.
         synth_options.extend(
             ["-uram", "-nolutram", "-nosrl", "-run begin:check"]
         )
@@ -214,11 +214,13 @@ def build_yosys_script(
         " ".join(["read_verilog", "-sv", *read_options, read_sources]),
         f"hierarchy -check -top {top_identifier}",
         " ".join(synth_options),
-        # The skipped synth_xilinx check label normally performs this
-        # conversion after validating the mapped design.  Preserve it so the
-        # JSON backend treats Xilinx library whiteboxes as leaf primitives.
+        # Technology mapping can leave generic RAM buses wider than the
+        # physical primitive (for example RAMB18E2 DINADIN=64 instead of 16).
+        # The skipped check label first normalizes these connections against
+        # the library module declarations, then blackboxes whiteboxes.
+        # Preserve both operations before flattening or hierarchical export.
         *(
-            ["blackbox =A:whitebox"]
+            [f"hierarchy -check -top {top_identifier}", "blackbox =A:whitebox"]
             if mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE
             else []
         ),
