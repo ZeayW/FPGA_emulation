@@ -86,6 +86,8 @@ std::string JsonMemberToken(SqliteDatabase& db,const std::string& object,const s
 // large scalar spellings survive older SQLite scalar/key coercions.
 void VisitJsonObjectTokens(const std::string& object,
     const std::function<void(const std::string&,const std::string&)>& visitor);
+void VisitJsonArrayTokens(const std::string& array,
+    const std::function<void(const std::string&)>& visitor);
 std::string JsonIntegerMemberToken(SqliteDatabase& db,const std::string& object,
                                    const std::string& name);
 

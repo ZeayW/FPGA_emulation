@@ -132,6 +132,29 @@ void VisitJsonObjectTokens(const std::string& object,
     else break;
   }
 }
+void VisitJsonArrayTokens(const std::string& array,
+    const std::function<void(const std::string&)>& visitor) {
+  const auto Check=[](bool valid){if(!valid)throw StageError(ErrorCode::kInvalidArtifact,"invalid JSON array token");};
+  std::size_t at=0;const auto space=[&]{while(at<array.size() && (array[at]==' ' || array[at]=='\n' || array[at]=='\r' || array[at]=='\t'))++at;};
+  space();Check(at<array.size() && array[at++]=='[');space();
+  while(at<array.size() && array[at]!=']') {
+    const auto begin=at;unsigned depth=0;bool quoted=false,escaped=false;
+    while(at<array.size()) {
+      const auto c=array[at];
+      if(quoted) {if(escaped)escaped=false;else if(c=='\\')escaped=true;else if(c=='"')quoted=false;}
+      else if(c=='"')quoted=true;
+      else if(c=='[' || c=='{')++depth;
+      else if(c==']' || c=='}') {if(!depth)break;--depth;}
+      else if(c==',' && !depth)break;
+      ++at;
+    }
+    Check(!quoted && !depth);auto token=array.substr(begin,at-begin);
+    while(!token.empty() && (token.back()==' ' || token.back()=='\n' || token.back()=='\r' || token.back()=='\t'))token.pop_back();
+    Check(!token.empty());visitor(token);space();
+    if(at<array.size() && array[at]==',') {++at;space();Check(at<array.size() && array[at]!=']');}else break;
+  }
+  Check(at<array.size() && array[at++]==']');space();Check(at==array.size());
+}
 std::string JsonMemberToken(SqliteDatabase& db,const std::string& object,const std::string& name) {
   (void)db;std::string result;bool found=false;
   VisitJsonObjectTokens(object,[&](const auto& key,const auto& token){if(key==name && !found){result=token;found=true;}});

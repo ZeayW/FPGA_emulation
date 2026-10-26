@@ -25,6 +25,7 @@
 #include "emuflow_core/partition_clusters.hpp"
 #include "emuflow_core/partition_loads.hpp"
 #include "emuflow_core/partition_decision.hpp"
+#include "emuflow_core/partition_config.hpp"
 #include "emuflow_core/assignment_publish.hpp"
 #include "emuflow_core/phase3_exact_binary.hpp"
 #include "emuflow_core/assignment_cuts.hpp"
@@ -68,6 +69,7 @@ const char* StageName(Stage stage) {
     case Stage::kPublishClusterCatalog: return "phase3.publish-cluster-catalog";
     case Stage::kReducePartitionLoads: return "phase3.reduce-loads";
     case Stage::kAuditPartitionDecision: return "phase3.audit-decision";
+    case Stage::kNormalizePartitionConfiguration: return "phase3.normalize-configuration";
     case Stage::kAnalyzeExact: return "phase3.analyze";
     case Stage::kFinalizeExact: return "phase3.finalize-semantics";
     case Stage::kHashSemantics: return "phase3.hash-semantics";
@@ -184,6 +186,12 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
       std::vector<std::string> schemas{"emuir-compact-v2","partition-cluster-columns-v2","cluster-catalog-request-v1"};
       if(count==4) schemas.push_back("candidate-id-columns-v1");
       return schemas;
+    }
+    case Stage::kNormalizePartitionConfiguration: {
+      const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
+      if(count==2)return {"emuir-compact-v2","partition-configuration-request-v1"};
+      if(count==3)return {"emuir-compact-v2","partition-configuration-request-v1","partition-constraints-input-v1"};
+      throw core::StageError(core::ErrorCode::kInvalidRequest,"partition configuration input coverage disagrees");
     }
     case Stage::kAuditPartitionDecision:
     case Stage::kReducePartitionLoads: {
@@ -445,6 +453,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
         if(inputs[2].schema()=="partition-load-request-v2")core::ReduceOwnedPartitionLoads(inputs,output);
         else core::ReducePartitionLoads(inputs,output);break;
       case Stage::kAuditPartitionDecision: core::AuditPartitionDecision(inputs,output); break;
+      case Stage::kNormalizePartitionConfiguration: core::PreparePartitionConfiguration(inputs,output); break;
       case Stage::kBuildCaptures: core::BuildExactCaptures(inputs,output); break;
       case Stage::kValidateCaptures: core::ValidateExactCaptures(inputs,output); break;
       case Stage::kAnalyzeExact:
@@ -508,6 +517,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kPublishClusterCatalog: schema = "phase3-cluster-catalog-v3"; break;
       case Stage::kReducePartitionLoads: schema = "partition-load-summary-v1"; break;
       case Stage::kAuditPartitionDecision: schema = "partition-decision-summary-v1"; break;
+      case Stage::kNormalizePartitionConfiguration: schema = "partition-constraints-v1"; break;
       case Stage::kBuildCaptures: schema = "exact-captures-v1"; break;
       case Stage::kValidateCaptures: schema = "exact-capture-validation-v1"; break;
       case Stage::kAnalyzeExact: schema = "exact-topology-v3"; break;

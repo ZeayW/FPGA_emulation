@@ -1008,6 +1008,10 @@ def run_phase3(
     if cluster_implementation is not None:
         report["cluster_implementation_id"] = cluster_implementation
         report["native_cluster_metrics"] = clusters["clusters"].native_metrics
+    if getattr(constraints, 'implementation_id', None) is not None:
+        report['configuration_implementation_id'] = constraints.implementation_id
+        report['native_configuration_metrics'] = constraints.native_metrics
+        report['configuration_pattern_policy'] = constraints.pattern_range_policy
     candidate_implementation = getattr(clusters["clusters"], "candidate_implementation_id", None)
     if candidate_implementation is not None:
         report["candidate_implementation_id"] = candidate_implementation

@@ -72,6 +72,8 @@ class NativeStageRuntimeTest(unittest.TestCase):
                 ["phase3", "reduce-loads", missing, missing, missing, missing],
                 ["phase3", "reduce-loads", missing, missing, missing, missing, missing],
                 ["phase3", "audit-decision", missing, missing, missing],
+                ["phase3", "normalize-configuration", missing, missing],
+                ["phase3", "normalize-configuration", missing, missing, missing],
                 ["phase3", "audit-decision", missing, missing, missing, missing],
                 ["phase3", "audit-decision", missing, missing, missing, missing, missing],
                 ["phase3", "audit-decision", missing, missing, missing, missing, missing, missing],

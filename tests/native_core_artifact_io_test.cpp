@@ -36,6 +36,15 @@ std::uint64_t ProcessId() {
 }  // namespace
 
 int main() {
+  {
+    std::vector<std::string> tokens;
+    emuflow::core::VisitJsonArrayTokens(
+        R"(["opaque\u0000tail",184467440737095516161234567890,[false,{"key":"value"}]])",
+        [&](const auto& token){tokens.push_back(token);});
+    if(tokens.size()!=3 || emuflow::core::DecodeJsonString(tokens[0])!=std::string("opaque\0tail",11) ||
+        tokens[1]!="184467440737095516161234567890" || tokens[2]!=R"([false,{"key":"value"}])")
+      throw std::runtime_error("raw array token identity was coerced");
+  }
   static_assert(!std::is_convertible<CellId, NetId>::value,
                 "typed artifact identities must not mix implicitly");
   {

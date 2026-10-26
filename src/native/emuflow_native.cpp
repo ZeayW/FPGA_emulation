@@ -52,6 +52,7 @@ constexpr const char* kUsage =
     "  phase3 publish-cluster-catalog EMUIR PRIMARY REQUEST [CANDIDATES] OUTPUT\n"
     "  phase3 reduce-loads EMUIR PRIMARY REQUEST [OWNER [ORDER]] OUTPUT\n"
     "  phase3 audit-decision EMUIR PRIMARY REQUEST [INITIAL [CANDIDATE ORDER]] OUTPUT\n"
+    "  phase3 normalize-configuration EMUIR REQUEST [RAW_CONSTRAINTS] OUTPUT\n"
     "  phase4 route --typed-output INPUT OUTPUT\n"
     "  phase4 seal-routes STORE REQUEST SUMMARY\n"
     "  phase5 timing-contract ROUTE_STORE [SCHEDULE_STORE [BOARD_REQUEST]] REQUEST SUMMARY\n"
@@ -310,6 +311,10 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if(phase=="phase3" && (operation=="reduce-loads" || operation=="audit-decision") && argc>=7 && argc<=10) {
     std::vector<std::string> inputs;for(int i=3;i<argc-1;++i)inputs.emplace_back(argv[i]);
     return run(operation=="reduce-loads"?Stage::kReducePartitionLoads:Stage::kAuditPartitionDecision,inputs,argv[argc-1]);
+  }
+  if(phase=="phase3" && operation=="normalize-configuration" && (argc==6 || argc==7)) {
+    std::vector<std::string> inputs{argv[3],argv[4]};if(argc==7)inputs.emplace_back(argv[5]);
+    return run(Stage::kNormalizePartitionConfiguration,inputs,argv[argc-1]);
   }
   if (phase == "phase3" && operation == "build-candidate-ids" && argc == 6)
     return run(Stage::kBuildCandidateIds,{argv[3],argv[4]},argv[5]);

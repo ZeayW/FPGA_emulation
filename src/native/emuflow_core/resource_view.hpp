@@ -11,6 +11,10 @@ struct ResourceRecord {
   std::uint64_t present=0;
   bool exceeds_uint32=false;
   std::array<std::uint32_t,12> amounts{};
+  // Exact through uint128, saturated above that domain. Classification still
+  // accepts arbitrary nonnegative integers; bounded consumers compare against
+  // their own limits before narrowing. The cache remains fixed in bytes/rows.
+  std::array<unsigned __int128,12> wide_amounts{};
 };
 // Shared compact resource decoder, with a design-independent cache bound.
 // Classification can inspect arbitrary nonnegative JSON integers. Consumers of

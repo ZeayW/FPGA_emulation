@@ -186,6 +186,31 @@ Explicit reference owners retain the existing record request. Configuration,
 hard-hop handling and complete Phase 3/controller ownership still require
 migration and real NVDLA stage qualification.
 
+Compact production constraints now normalize through
+`phase3 normalize-configuration` in the shared core. The original constraint
+file is a generation-bound input reference; the host does not read or reconstruct
+its JSON. Only board-sized capacities/topology and scalar overrides enter the
+small request. Explicit API dictionaries are streamed into a private input file.
+The native producer expands case-sensitive Unicode instance patterns from an
+ordered source cursor, resolves explicit identities by indexed lookup and scans
+source resources only for minimum-capacity selection. It retains no complete
+source identity catalog. Homogeneous greedy selection and heterogeneous subset
+ranking preserve required fixed targets, directed reachability, endpoint boundary
+headroom, direct capacity/latency and platform-order ties; inactive devices
+remain legal transit nodes. Input order, normalized logical fields, dimension
+overrides and resource reservations keep their existing meanings.
+The request explicitly records the established character-range convention;
+changing the configuration host cannot silently change pattern expansion.
+
+The normalized result remains bounded by the existing publication metadata
+contract. Raw input size is separate: a large redundant input can still produce
+small effective constraints. Native code checks original generations and closes
+the result before the host reads that bounded configuration. Shared resource
+decoding preserves wide integer amounts and raw field names, including escaped
+NUL, without JSON scalar coercion. Phase 3 option assembly, hard-hop handling
+and complete native stage/controller ownership are still unfinished; this
+producer does not establish real NVDLA runtime/RSS gains or W7 completion.
+
 `phase3 reduce-loads EMUIR PRIMARY REQUEST OUTPUT` independently reduces the
 primary resource columns under the final packed assignment. Construction of
 compact partition summaries, balance validation and final online validation use
@@ -540,7 +565,7 @@ there is no silent implementation or provider fallback.
 | Stage | Existing native/indexed foundation | Remaining delivery obligation |
 | --- | --- | --- |
 | Phase 1–2 | Complete native ordinary RTL frontend under native control, including engine/import/clock/resource/report publication; native OpenSTA input export, indexed path-result import, timing-weight generation and independent validators | Migrate supplied/prepared/other indexed-source adapters and complete timing-stage lifecycle; qualify the whole current-design frontend |
-| Phase 3 | Shared-core candidate eligibility, primary clustering, complete TritonPart initialization/native v14 search; original-owner candidate decision and independent resource/constraint audit; selected semantics and complete native final-directory publication | Complete native configuration, hard-hop handling and stage lifecycle/controller integration; qualify complete stage costs |
+| Phase 3 | Native source-backed constraint normalization, candidate eligibility/primary clustering, complete TritonPart initialization/native v14 search; original-owner decision and independent audit; selected semantics and final-directory publication | Complete option assembly, hard-hop handling and stage lifecycle/controller integration; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |

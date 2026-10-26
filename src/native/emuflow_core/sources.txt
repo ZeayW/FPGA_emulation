@@ -56,3 +56,4 @@ emuflow_core/partition_semantics.cpp
 emuflow_core/phase3_exact_binary.cpp
 emuflow_core/partition_publish.cpp
 emuflow_core/partition_decision.cpp
+emuflow_core/partition_config.cpp

@@ -1242,6 +1242,20 @@ def normalize_partition_constraints(
     min_used_fpgas: Optional[int] = None,
     balance_tolerance: Optional[float] = None,
 ) -> Dict[str, Any]:
+    compact = _compact_partition_ir_path(ir)
+    if compact is not None:
+        from .partition_config_native import prepare_configuration
+        return prepare_configuration(compact, platform, value,
+            min_used_fpgas=min_used_fpgas, balance_tolerance=balance_tolerance)
+    return _normalize_partition_constraints_reference(value, ir, platform,
+        min_used_fpgas=min_used_fpgas, balance_tolerance=balance_tolerance)
+
+
+def _normalize_partition_constraints_reference(
+    value: Optional[Mapping[str, Any]], ir: EmuIR, platform: Platform,
+    min_used_fpgas: Optional[int] = None,
+    balance_tolerance: Optional[float] = None,
+) -> Dict[str, Any]:
     raw: Mapping[str, Any] = value or {}
     if raw and raw.get("schema") != PARTITION_CONSTRAINTS_SCHEMA:
         raise ValidationError(
@@ -1863,6 +1877,11 @@ def load_partition_constraints(
     min_used_fpgas: Optional[int] = None,
     balance_tolerance: Optional[float] = None,
 ) -> Dict[str, Any]:
+    compact = _compact_partition_ir_path(ir)
+    if compact is not None:
+        from .partition_config_native import prepare_configuration
+        return prepare_configuration(compact, platform, None, constraints_path=path,
+            min_used_fpgas=min_used_fpgas, balance_tolerance=balance_tolerance)
     value = read_json(path) if path is not None else None
     return normalize_partition_constraints(
         value,

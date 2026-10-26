@@ -515,6 +515,16 @@ ownership iteration, comparison and column serialization while executing native
 decision/reduction and the maintained Phase 3 final-directory transaction.
 These component gates do not replace complete NVDLA stage and flow qualification.
 
+Partition configuration gates compare every normalized field against the
+independent reference for defaults/overrides, explicit and minimum-capacity
+selection, homogeneous/heterogeneous boards, directed topology and fixed/group
+patterns. Cover Unicode/NUL identities, character classes, overlapping patterns,
+resource reservations and wide source integers. Poison Python cell/resource
+iteration, identity catalogs and reference normalization on compact production.
+Original constraint files must bypass host JSON parsing; distinguish raw input
+size from bounded effective metadata. Corrupt request CRCs, changed source/input
+generations and changed closed outputs must reject without a reference retry.
+
 Use real RTL and an explicitly identified platform. Raw contest communication
 graphs cannot substitute for synthesis and FPGA-internal physical implementation.
 
