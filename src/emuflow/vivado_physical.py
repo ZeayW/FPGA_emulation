@@ -28,6 +28,7 @@ from .vivado_physical_top import write_vivado_physical_top
 from .vivado_lineage import LINEAGE_POLICY
 from .vivado_optimization import OptimizationProofView
 from .vivado_clocks import implementation_timing_contract, validate_dut_frequency_mhz
+from .sampling_cost import SAMPLING_COST_POLICY
 
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -194,6 +195,8 @@ def run_indexed_vivado_partition(
     implementation_timing = implementation_timing_contract(runtime, dut_frequency_mhz)
     from .native_tools import require_native_schema
     require_native_schema("vivado-lineage-store-v2")
+    for schema in ("boundary-timing-store-v3", "logic-segment-timing-store-v3", "local-path-timing-store-v3"):
+        require_native_schema(schema)
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     if any((output_dir/name).exists() for name in ("native-session.json","mapped_cells.tsv","vivado-implementation.log")):
@@ -320,13 +323,16 @@ def run_indexed_vivado_partition(
     if "resource_budget" in runtime:
         usage = {"physical": validate_device_resource_usage(counts, runtime["resource_budget"], stage="post-physical-materialization")}
     stages = {}
-    export = {"status":"pass","mode":"current-routed-native-session","log":implementation["log"]}
+    query_mode = "clock-aware-reference" if word_mode else "datapath-only"
+    cost_expectation = {"expected_sampling_cost_policy": SAMPLING_COST_POLICY} if word_mode else {}
+    export = {"status":"pass","mode":"current-routed-native-session","log":implementation["log"],
+              "timing_query_mode":query_mode}
     if boundary_identity_path is not None:
         measured = output_dir/"boundary_timing.tsv"
         with OptimizationProofView(proof_path, expected_fpga=fpga) as proof_reader:
             imported = import_indexed_vivado_boundary(measured, boundary_identity_path, output_dir / "boundary-timing.json",
                 measurement_scope="native-word-registered-interface" if word_mode else("board-integrated-interface" if virtual_io_contract is not None else "partition-boundary"),
-                optimization_proofs=proof_reader)
+                optimization_proofs=proof_reader, **cost_expectation)
         measured.unlink()
         stages["boundary_timing"] = {"status":"pass","query":boundary_query_report,
             "resolution":preparation["resolutions"]["boundary_timing"],"export":export,"import":imported}
@@ -341,7 +347,7 @@ def run_indexed_vivado_partition(
         measured = output_dir / f"{kind}.tsv"
         resolution = preparation["resolutions"][kind]
         with OptimizationProofView(proof_path, expected_fpga=fpga) as proof_reader:
-            imported = importer(measured, identity, output_dir / f"{kind}.json", optimization_proofs=proof_reader)
+            imported = importer(measured, identity, output_dir / f"{kind}.json", optimization_proofs=proof_reader, **cost_expectation)
         measured.unlink()
         stages[kind] = {"status": "pass", "resolution": resolution, "export": export, "import": imported}
     virtual_io = None
@@ -406,19 +412,20 @@ def run_indexed_vivado_partition(
     native_scripts=("native_session.tcl","source_inventory.tcl","resource_inventory.tcl","timing_contract.tcl",
         "inspect_constant_frontiers.tcl","export_boundary_timing.tcl","export_logic_segment_timing.tcl")
     if word_mode:native_scripts+=("word_native_physical.tcl","selectio_ip.tcl")
-    report = {"schema": "emuflow.vivado-partition-report/v1", "status": "pass", "provider": "indexed-phase6-vivado-physical-v2",
+    report = {"schema": "emuflow.vivado-partition-report/v1", "status": "pass", "provider": "indexed-phase6-vivado-word-physical-v3" if word_mode else "indexed-phase6-vivado-physical-v2",
         "tool": {"executable": executable, "version": metrics["vivado_version"], "threads": threads},
         "implementation": implementation, "continuation": continuation_validation, "input_identity": input_identity,
         "implementation_timing": implementation_timing,
         "implementation_options": {"place_directive": place_directive, "route_directive": route_directive,
                                    "dut_frequency_mhz": dut_frequency_mhz,"retain_routed_checkpoint":retain_routed_checkpoint,
                                    **({'dut_timing_io_sha256':timing_io_sha256(dut_timing_io)}if dut_timing_io is not None else {})},
-        "native_session": {"mode":"current-design-stage-exports-v1",
+        "native_session": {"mode":"current-design-stage-exports-v2","timing_query_mode":query_mode,
             "scripts_sha256": {name:file_sha256(_vivado_script(name)) for name in native_scripts},
             "planner_sha256":file_sha256(Path(__file__).with_name("vivado_session.py"))},
         "cell_coverage": coverage, "optimization_proofs": proof_report, **stages,
         **({"virtual_io_implementation": virtual_io} if virtual_io is not None else {}),
         **({'word_phy_implementation':{'status':'pass','preparation':top_report,
+            'sampling_cost_policy':SAMPLING_COST_POLICY,
             'infrastructure_timing':{'checks':word_checks,'wns_ns':word_wns,'fixed_clock_contract_met':True},
             'differential_pairs':pairs,'serial_pad_timing_scope':'fixed-link-model-external-to-local-STA; no board/SI signoff'}}if word_mode else{}),
         "result": result, "validation": validation}

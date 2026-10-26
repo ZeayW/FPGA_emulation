@@ -22,7 +22,7 @@ from .vivado_lineage import import_cell_lineage, resolve_timing_query
 from .vivado_optimization import build_optimization_proofs
 from .vivado_clocks import implementation_clocks, implementation_timing_contract
 
-SCHEMA = "emuflow.vivado-native-session/v2"
+SCHEMA = "emuflow.vivado-native-session/v3"
 
 
 def _tcl_word(value):
@@ -53,6 +53,7 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
     manifest = {"schema": SCHEMA, "fpga": fpga, "part": part, "output": str(output),
         "implementation_timing": implementation_timing_contract(runtime, dut_frequency_mhz),
         "source_preflight_stage": "optimized",
+        "timing_query_mode": "clock-aware-reference" if word_phy_directory is not None else "datapath-only",
         "mapped_index": str(mapped_index.resolve()), "functions": str(functions.resolve()),
         "mapped_index_sha256": mapped_sha256, "queries": {key:str(value.resolve()) for key,value in queries.items()},
         "synthesized_checkpoint": str(checkpoint), "synthesized_checkpoint_sha256": synthesized_checkpoint_sha256,
@@ -78,6 +79,7 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
                sys.executable,"-m","emuflow.vivado_session"]
     settings = {"emuflow_session_out":str(output),"emuflow_session_manifest":str(output/"native-session.json"),
         "emuflow_word_phy_directory":str(Path(word_phy_directory).resolve())if word_phy_directory is not None else "",
+        "emuflow_timing_query_mode":manifest["timing_query_mode"],
         "emuflow_retain_routed_checkpoint":"true"if retain_routed_checkpoint else"false",
         "emuflow_start_checkpoint":str(checkpoint) if synthesized_checkpoint is not None else "",
         "emuflow_preflight_stage":"optimized",
@@ -93,6 +95,7 @@ def load_session(path: Path):
     value = read_json(path)
     if (value.get("schema") != SCHEMA or not isinstance(value.get("fpga"), str)
             or value.get("source_preflight_stage") not in {"synthesized", "optimized"}
+            or value.get("timing_query_mode") != ("clock-aware-reference" if value.get("word_phy_directory") is not None else "datapath-only")
             or not isinstance(value.get("queries"), dict)
             or set(value["queries"])-{"boundary_timing", "logic_segment_timing", "local_path_timing"}):
         raise ValidationError("invalid Vivado native session manifest")

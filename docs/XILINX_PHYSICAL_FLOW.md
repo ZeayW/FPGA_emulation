@@ -679,9 +679,10 @@ logical transport ports resolve to the declared physical P pad. Query extents
 are checked against actual timing endpoints; a sequential Q launch may start
 at the same primitive's clock to include clock-to-Q, while an unrelated prefix
 or any suffix beyond the requested endpoint is rejected. After implementation
-reports are finalized, the routed snapshot receives equal datapath-only
-requirements across clock pairs to remove nominal clock-period bias. Vivado
-still ranks data delay plus the endpoint library check; the selected path's
+reports are finalized, the routed snapshot receives equal reference requirements
+across clock pairs to remove nominal clock-period bias. Native word implementations
+retain clock/check adjustments; the data-only provider uses datapath-only
+requirements. Vivado ranks the effective timing cost; the selected path's
 `DATAPATH_DELAY` is not independently proven to be the largest raw delay across
 endpoint aliases or different capture transitions. This measurement
 constraint is excluded from implementation WNS/TNS and global event deadlines. The
@@ -700,12 +701,17 @@ directive is specific to this smoke test; the production provider remains
 synthetic physical/provider qualification only. `--exercise-continuation` also
 checks implementation from the same synthesized snapshot in a fresh attempt.
 
-The indexed provider `indexed-phase6-vivado-physical-v2` uses one native design
-session. Between stages, short Python children use SQLite indexes to classify
+The indexed data-only provider `indexed-phase6-vivado-physical-v2` and native
+word provider `indexed-phase6-vivado-word-physical-v3` use one native design
+session. Both preflight the native core's version 3 boundary, logic-segment and
+local-path timing stores before implementation; full compilation checks this
+capability before the frontend. Between stages, short Python children use SQLite indexes to classify
 all required endpoints, plan complete conditional-state frontiers, confirm the
 native facts, and resolve the final routed queries. Source indexes close before
-the next native algorithm or timing export proceeds. The version 2 session
-manifest explicitly selects the `optimized` preplacement snapshot. After
+the next native algorithm or timing export proceeds. The version 3 session
+manifest explicitly selects the `optimized` preplacement snapshot and timing
+query mode. Native word sessions require `clock-aware-reference`; other sessions
+select `datapath-only`. A missing or inconsistent mode fails validation. After
 `opt_design`, a fresh census identifies all required endpoints that optimization
 removed. Unknown sources without supported associations or checked constant
 candidates fail before `place_design`. Complete constant frontiers are observed
@@ -758,6 +764,14 @@ slack is allowed; this reference is not a DUT/TDM clock or implementation
 closure target. Original implementation reports precede these query overrides.
 This read-only diagnostic helps distinguish clock/skew/check adjustments from
 raw data delay; it is not a timing-result producer or acceptance certificate.
+
+The native word provider selects clock-aware queries for all three timing
+classes in its routed session. Imports require the declared sampling-cost policy,
+reject data-only results before publication, and record the policy in each
+import receipt. Worker assembly verifies those receipts and the sealed timing
+store headers and rejects mixed measurement policies. Older explicitly versioned
+data-only word results remain readable for local physical validation; they do not
+acquire sampling costs or qualify word-global timing.
 
 For a bounded endpoint-query qualification, `export_logic_segment_timing.tcl`
 accepts a sixth argument `clock-aware-reference` after the hierarchy and

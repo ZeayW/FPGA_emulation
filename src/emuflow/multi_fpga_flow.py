@@ -1385,6 +1385,8 @@ def _compile_preflight(ctx: _CompileContext):
     if ctx.physical and ctx.physical_backend == "vivado":
         from .native_tools import require_native_schema
         require_native_schema("vivado-lineage-store-v2")
+        for schema in ("boundary-timing-store-v3", "logic-segment-timing-store-v3", "local-path-timing-store-v3"):
+            require_native_schema(schema)
     if ctx.internal_timing_database:
         ctx.opensta = resolve_native_executable("sta", ctx.opensta)
         check_opensta_engine_version(ctx.opensta)

@@ -150,6 +150,9 @@ def _require_native_word_evidence(record, source_hashes):
         return
     stages = record.get('stages', {})
     native = stages.get('vivado_implementation', {})
+    provider = native.get('provider')
+    if provider not in {'indexed-phase6-vivado-physical-v2','indexed-phase6-vivado-word-physical-v3'}:
+        raise ValidationError('completed native word PHY provider version is unsupported')
     evidence = stages.get('word_phy_implementation')
     if (not isinstance(evidence, Mapping) or evidence.get('status') != 'pass' or
             evidence != native.get('word_phy_implementation') or
@@ -162,6 +165,27 @@ def _require_native_word_evidence(record, source_hashes):
     if (preparation.get('fpga') != record['fpga'] or preparation.get('part') != record['part'] or
             evidence.get('differential_pairs') != preparation.get('data_pairs', -1) + preparation.get('forwarded_clock_pairs', -1)):
         raise ValidationError('completed native word PHY device or fixed-pair evidence differs')
+    if provider == 'indexed-phase6-vivado-word-physical-v3':
+        from .sampling_cost import SAMPLING_COST_POLICY
+        if (native.get('native_session', {}).get('timing_query_mode') != 'clock-aware-reference'
+                or evidence.get('sampling_cost_policy') != SAMPLING_COST_POLICY):
+            raise ValidationError('completed word PHY lacks its sampling cost measurement policy')
+        for kind in ('logic_segment_timing','local_path_timing','boundary_timing'):
+            if kind in native and native[kind].get('import', {}).get('sampling_cost_policy') != SAMPLING_COST_POLICY:
+                raise ValidationError('completed word PHY imported a different sampling cost policy')
+        return SAMPLING_COST_POLICY
+    if 'sampling_cost_policy' in evidence:
+        raise ValidationError('legacy word PHY provider cannot claim a sampling cost policy')
+    return 'legacy-data-only-v1'
+
+
+def _require_word_timing_policy(header, policy):
+    from .sampling_cost import SAMPLING_COST_POLICY
+    if policy not in ('legacy-data-only-v1', SAMPLING_COST_POLICY):
+        raise ValidationError('unsupported word PHY timing measurement policy')
+    if ((policy == SAMPLING_COST_POLICY and header.get('sampling_cost_policy') != policy)
+            or (policy == 'legacy-data-only-v1' and 'sampling_cost_policy' in header)):
+        raise ValidationError('word PHY timing store differs from its declared measurement policy')
 
 
 @contextmanager
@@ -1714,6 +1738,7 @@ def _assemble_multi_fpga_physical_results(
     records = [by_fpga[fpga] for fpga in expected_fpgas]
     requires_virtual_io = manifest.get("virtual_board_binding") is not None
     requires_word_phy = manifest.get('word_phy_plan') is not None
+    word_timing_policy = None
     if requires_word_phy:
         if backend != 'vivado' or requires_virtual_io:
             raise ValidationError('completed word PHY evidence requires the native Vivado adapter')
@@ -1721,8 +1746,10 @@ def _assemble_multi_fpga_physical_results(
             raise ValidationError('completed word PHY source references are invalid')
         hashes = {'word_phy_plan':_sha256(split_root/'word_phy_plan.json'),
                   'word_wiring':_sha256(split_root/'virtual_board_wiring.json')}
-        for record in records:
-            _require_native_word_evidence(record, hashes)
+        policies = {_require_native_word_evidence(record, hashes) for record in records if record.get('active') is not False}
+        if len(policies) > 1:
+            raise ValidationError('completed word PHY workers mix timing measurement policies')
+        word_timing_policy = next(iter(policies)) if policies else None
     if requires_virtual_io:
         if backend not in {"rapidwright", "vivado"}:
             raise ValidationError("completed fixed differential I/O requires a supported Xilinx backend")
@@ -1771,6 +1798,7 @@ def _assemble_multi_fpga_physical_results(
             'status':'pass', 'provider':'vivado-native-lvds-word-physical-v1',
             'fpgas':evidence, 'differential_pairs':sum(e['differential_pairs'] for e in evidence.values()),
             'global_timing_status':'pending-independent-phase7c',
+            'timing_measurement_policy':word_timing_policy,
         }
     if backend == "vivado":
         from .physical_summary_storage import publish_optimization_proofs
@@ -1837,6 +1865,8 @@ def _assemble_multi_fpga_physical_results(
                 output_dir,
                 Path(fpga_id) / timing_path.name,
             )
+            if requires_word_phy and item.get('active') is not False:
+                _require_word_timing_policy(_timing_selector['header'], word_timing_policy)
             with read_boundary_timing_storage(
                 output_dir / timing_reference["path"]
             ) as timing_database:
@@ -1862,6 +1892,8 @@ def _assemble_multi_fpga_physical_results(
                 Path(item["fpga"]) / "logic-segment-timing.json",
             )
             source = selector["source"]
+            if requires_word_phy and item.get('active') is not False:
+                _require_word_timing_policy(selector['header'], word_timing_policy)
             if (
                 source["design"] != physical_summary["design"]
                 or source["platform"] != physical_summary["platform"]
@@ -1906,6 +1938,8 @@ def _assemble_multi_fpga_physical_results(
                     output_dir,
                     Path(item["fpga"]) / path.name,
                 )
+                if requires_word_phy and item.get('active') is not False:
+                    _require_word_timing_policy(_selector['header'], word_timing_policy)
                 with read_local_path_timing_storage(
                     output_dir / reference["path"],
                     expected_design=physical_summary["design"],

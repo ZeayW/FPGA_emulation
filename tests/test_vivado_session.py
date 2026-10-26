@@ -45,7 +45,7 @@ def session_fixture(tmp_path, *, require_constant=True, dependent=False):
     end = "conditional/D" if require_constant else "front/I1"
     query.write_text("endpoint_hex\tkind\tstart_kind\tstart_object_hex\tend_kind\tend_object_hex\tcone_anchor_kind\tcone_anchor_object_hex\n"+
         "\t".join(["path0".encode().hex(), "local", "pin", "kept/Q".encode().hex(), "pin", end.encode().hex(), "", ""])+"\n")
-    session = dict(schema=SCHEMA, source_preflight_stage="synthesized", fpga="fpga0", part="xcvu19p-fsva3824-2-e", output=str(out),
+    session = dict(schema=SCHEMA, source_preflight_stage="synthesized", timing_query_mode="datapath-only", fpga="fpga0", part="xcvu19p-fsva3824-2-e", output=str(out),
         mapped_index=str(mapped), functions=str(functions), mapped_index_sha256=digest,
         synthesized_checkpoint=str(out/"synthesized.dcp"), synthesized_checkpoint_sha256=file_sha256(out/"synthesized.dcp"),
         queries={"local_path_timing": str(query)})
@@ -203,6 +203,58 @@ def test_routed_debug_checkpoint_is_explicit_and_keeps_the_native_control_contra
     assert 'set emuflow_retain_routed_checkpoint "true"'in config.read_text()
     with pytest.raises(ValidationError,match='retention must be Boolean'):
         prepare_manifest(tmp_path,**args,retain_routed_checkpoint=1)
+
+
+def test_native_word_session_selects_sampling_costs_and_rejects_downgrades(tmp_path):
+    from emuflow.vivado_session import load_session
+    table=tmp_path/'native-word-clocks.tsv'
+    table.write_text('clock_hex\tport_hex\tperiod_ns\n')
+    runtime={'fabric_clock':{'period_ns':5},'virtual_dut_clocks':{'clk':{'target_period_ns':100}},
+             'timing_model':{'fabric_clock_port':'fabric_clk','dut_clock_ports':['clk']}}
+    config=prepare_manifest(tmp_path,fpga='fpga0',part='part',mapped_index=tmp_path/'mapped',
+        functions=tmp_path/'functions',mapped_sha256='a'*64,queries={},runtime=runtime,
+        ports={'clk','fabric_clk'},word_phy_directory=tmp_path)
+    manifest=tmp_path/'native-session.json'
+    assert load_session(manifest)['timing_query_mode']=='clock-aware-reference'
+    assert 'set emuflow_timing_query_mode "clock-aware-reference"'in config.read_text()
+    broken=read_json(manifest);broken['timing_query_mode']='datapath-only';write_json(manifest,broken)
+    with pytest.raises(ValidationError,match='invalid Vivado native session'):
+        load_session(manifest)
+
+
+@pytest.mark.skipif(TCL86 is None, reason="native timing bridge requires Tcl 8.6")
+@pytest.mark.parametrize("mode", ["datapath-only", "clock-aware-reference"])
+@pytest.mark.parametrize("fixed_map", ["", "fixed map.tsv"])
+def test_native_timing_bridge_forwards_measurement_policy_for_all_query_classes(tmp_path, mode, fixed_map):
+    kinds = ("boundary_timing", "logic_segment_timing", "local_path_timing")
+    plan = ["kind\tquery_hex\toutput_hex"]
+    for kind in kinds:
+        query, output = tmp_path/f"{kind}.query.tsv", tmp_path/f"{kind}.result.tsv"
+        query.write_text("bounded resolved query")
+        plan.append("\t".join((kind, str(query).encode().hex(), str(output).encode().hex())))
+    (tmp_path/"timing-exports.tsv").write_text("\n".join(plan)+"\n")
+    script = f"source {_tcl_word(ROOT/'scripts/vivado/native_session.tcl')}\n"
+    script += f"set emuflow_session_out {_tcl_word(tmp_path)}\nset emuflow_timing_query_mode {_tcl_word(mode)}\n"
+    script += r'''
+proc emuflow_session_child {stage} {
+ if {$stage ne "prepare-timing"} {error "unexpected stage"}
+}
+proc emuflow_session_source {script arguments} {
+ if {$::emuflow_native_export_stage ne "routed"} {error "wrong native snapshot"}
+ puts [join [linsert $arguments 0 [file tail $script]] "\t"]
+}
+'''
+    script += f"emuflow_session_timings scripts partition {_tcl_word(fixed_map)}\n"
+    result = subprocess.run([TCL86], input=script, text=True, capture_output=True, check=True)
+    assert not result.stderr
+    observed = [row.split("\t") for row in result.stdout.splitlines()]
+    suffix = [fixed_map, mode] if mode == "clock-aware-reference" else ([fixed_map] if fixed_map else [])
+    for kind, row in zip(kinds, observed):
+        exporter = "export_boundary_timing.tcl" if kind == "boundary_timing" else "export_logic_segment_timing.tcl"
+        assert row == [exporter, "@current-design", str(tmp_path/f"{kind}.query.tsv"),
+                       str(tmp_path/f"{kind}.result.tsv"), "partition", *suffix]
+        assert not (tmp_path/f"{kind}.query.tsv").exists()
+    assert len(observed) == len(kinds)
 
 
 @pytest.mark.skipif(TCL86 is None, reason="native stage bridge requires Tcl 8.6")

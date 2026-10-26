@@ -72,9 +72,10 @@ boundaries and original, datapath-only or clock-aware reference timing, includin
 bounded endpoint sampling-cost queries, installed SelectIO IP inspection and
 package-derived bank recipes, checked output generation and optional out-of-context
 IP synthesis used for PHY integration, with a bounded configuration/port audit.
-Indexed logic, original local-path and boundary timing can retain signed sampling costs
-beside data delay in sealed stores, with explicit policies and complete cost
-coverage. The legacy global event binder rejects these policies until it can
+Native word implementations export clock-aware sampling costs for all indexed
+logic, original local-path and boundary timing beside data delay in sealed stores.
+Imports require complete cost coverage and worker assembly rejects mixed policies.
+The legacy global event binder rejects these policies until it can
 consume their clock/check adjustments.
 Native bank wrappers bind training, complete words and receive FIFO clocks;
 an explicit vendor-model loopback tool examines word integrity and latency.

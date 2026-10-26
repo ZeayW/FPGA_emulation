@@ -141,12 +141,36 @@ def test_word_physical_evidence_cannot_mix_sources_or_drop_fixed_clocks():
         'differential_pairs':42,'preparation':{'fpga':'fpga0','part':'part','data_pairs':40,'forwarded_clock_pairs':2}}
     record={'fpga':'fpga0','part':'part','active':True,'stages':{'word_phy_implementation':evidence,
         'vivado_implementation':{'word_phy_implementation':copy.deepcopy(evidence),
+            'provider':'indexed-phase6-vivado-physical-v2',
             'input_identity':{key:{'sha256':value}for key,value in hashes.items()}}}}
     _require_native_word_evidence(record,hashes)
     changed=copy.deepcopy(record);changed['stages']['vivado_implementation']['input_identity']['word_phy_plan']['sha256']='c'*64
     with pytest.raises(ValidationError,match='different Phase6'):_require_native_word_evidence(changed,hashes)
     changed=copy.deepcopy(record);changed['stages']['word_phy_implementation']['infrastructure_timing']['fixed_clock_contract_met']=False
     with pytest.raises(ValidationError,match='evidence.*missing'):_require_native_word_evidence(changed,hashes)
+    from emuflow.sampling_cost import SAMPLING_COST_POLICY
+    updated=copy.deepcopy(record)
+    native=updated['stages']['vivado_implementation']
+    native['provider']='indexed-phase6-vivado-word-physical-v3'
+    native['native_session']={'timing_query_mode':'clock-aware-reference'}
+    native['word_phy_implementation']['sampling_cost_policy']=SAMPLING_COST_POLICY
+    updated['stages']['word_phy_implementation']=copy.deepcopy(native['word_phy_implementation'])
+    native['local_path_timing']={'import':{'sampling_cost_policy':SAMPLING_COST_POLICY}}
+    assert _require_native_word_evidence(updated,hashes)==SAMPLING_COST_POLICY
+    native['local_path_timing']['import'].clear()
+    with pytest.raises(ValidationError,match='different sampling cost policy'):
+        _require_native_word_evidence(updated,hashes)
+
+
+def test_word_store_policy_must_match_worker_evidence():
+    from emuflow.multi_fpga_physical_flow import _require_word_timing_policy
+    from emuflow.sampling_cost import SAMPLING_COST_POLICY
+    _require_word_timing_policy({}, 'legacy-data-only-v1')
+    _require_word_timing_policy({'sampling_cost_policy':SAMPLING_COST_POLICY},SAMPLING_COST_POLICY)
+    for header,policy in [({},SAMPLING_COST_POLICY),
+                          ({'sampling_cost_policy':SAMPLING_COST_POLICY},'legacy-data-only-v1')]:
+        with pytest.raises(ValidationError,match='timing store differs'):
+            _require_word_timing_policy(header,policy)
 
 
 def test_word_format_is_explicit_and_rejects_unsupported_width(tmp_path):

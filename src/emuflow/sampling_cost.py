@@ -13,6 +13,12 @@ from .timing_disposition import is_optimized_away
 SAMPLING_COST_POLICY = "vivado-clock-aware-reference-v1"
 
 
+def require_sampling_cost_policy(actual, expected):
+    """Assert a consumer's expected policy without changing producer selection."""
+    if expected not in (None, SAMPLING_COST_POLICY) or (expected is not None and actual != expected):
+        raise ValidationError("physical sampling cost policy differs from the required measurement policy")
+
+
 def validate_sampling_cost(record, policy):
     if policy not in (None, SAMPLING_COST_POLICY):
         raise ValidationError("unsupported physical sampling cost policy")

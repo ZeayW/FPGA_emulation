@@ -18,7 +18,7 @@ from .indexed_physical_ir import IndexedPhysicalIR
 from .local_path_timing import LOCAL_PATH_IDENTITY_SCHEMA_V2, local_path_timing_header, validate_local_path_timing
 from .local_path_timing_storage import write_local_path_timing_storage
 from .logic_segment_timing import VIVADO_LOGIC_SEGMENT_QUERY_HEADER, VIVADO_LOGIC_SEGMENT_TIMING_HEADER, VIVADO_LOGIC_SAMPLING_COST_HEADER, _vivado_object
-from .sampling_cost import SAMPLING_COST_POLICY, parse_reference_cost_fields
+from .sampling_cost import SAMPLING_COST_POLICY, parse_reference_cost_fields, require_sampling_cost_policy
 
 
 def _hex(text: str) -> str:
@@ -63,7 +63,7 @@ def write_vivado_local_query(
             "query": str(query_path), "identity": str(identity_path)}
 
 
-def import_vivado_local_timing(input_path: Path, identity_path: Path, output_path: Path, *, optimization_proofs=None) -> dict[str, Any]:
+def import_vivado_local_timing(input_path: Path, identity_path: Path, output_path: Path, *, optimization_proofs=None, expected_sampling_cost_policy=None) -> dict[str, Any]:
     """Require every original local path exactly once, without a sampled PathDB."""
     source_bindings = (
         bind_store_source(input_path, "physical-timing-measurements-v1"),
@@ -80,6 +80,7 @@ def import_vivado_local_timing(input_path: Path, identity_path: Path, output_pat
                 if measurement_header not in {VIVADO_LOGIC_SEGMENT_TIMING_HEADER, VIVADO_LOGIC_SAMPLING_COST_HEADER}:
                     raise ValidationError("Vivado local timing header is invalid")
                 sampling_costs = measurement_header == VIVADO_LOGIC_SAMPLING_COST_HEADER
+                require_sampling_cost_policy(SAMPLING_COST_POLICY if sampling_costs else None, expected_sampling_cost_policy)
                 for line in stream:
                     if not line.strip():
                         continue
@@ -130,7 +131,8 @@ def import_vivado_local_timing(input_path: Path, identity_path: Path, output_pat
                 output_path, timing_header, records(), source_bindings=source_bindings
             ) as view:
                 validation = validate_local_path_timing(view)
-            return {**validation, "output": str(output_path)}
+            return {**validation, "output": str(output_path),
+                    **({"sampling_cost_policy": SAMPLING_COST_POLICY} if sampling_costs else {})}
         finally:
             connection.close()
 
@@ -141,6 +143,7 @@ def import_indexed_vivado_boundary(
     provider: str = "vivado-indexed-routed-boundary-v1",
     qualification: str = "routed-vendor-device-boundary",
     optimization_proofs=None,
+    expected_sampling_cost_policy=None,
 ) -> dict[str, Any]:
     measurement_source = bind_store_source(
         input_path, "physical-timing-measurements-v1"
@@ -163,6 +166,7 @@ def import_indexed_vivado_boundary(
                     raise ValidationError("Vivado boundary timing header is invalid")
                 extended = header != base_header
                 sampling_costs = header == cost_header
+                require_sampling_cost_policy(SAMPLING_COST_POLICY if sampling_costs else None, expected_sampling_cost_policy)
                 for line in stream:
                     if not line.strip():
                         continue
@@ -209,7 +213,8 @@ def import_indexed_vivado_boundary(
                 output_path, header, records(), source_bindings=source_bindings
             ) as view:
                 validation = validate_boundary_timing_database(view, identities)
-            return {**validation, "output": str(output_path)}
+            return {**validation, "output": str(output_path),
+                    **({"sampling_cost_policy": SAMPLING_COST_POLICY} if sampling_costs else {})}
         finally:
             close = getattr(identities, "close", None)
             if callable(close):

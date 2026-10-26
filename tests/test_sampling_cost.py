@@ -39,11 +39,20 @@ def measurements(path, rows, costs):
             ]) + "\n")
 
 
+def reject_data_only_downgrade(raw, output, importer):
+    before=output.read_bytes()
+    lines=raw.read_text().splitlines()
+    raw.write_text("\n".join("\t".join(line.split("\t")[:-2]) for line in lines)+"\n")
+    with pytest.raises(ValidationError,match="required measurement policy"):
+        importer(expected_sampling_cost_policy=SAMPLING_COST_POLICY)
+    assert output.read_bytes()==before
+
+
 def test_indexed_import_preserves_signed_cost_once_and_keeps_data_delay(tmp_path):
     source, rows = identity(tmp_path)
     raw, output = tmp_path / "query.tsv", tmp_path / "timing.json"
     measurements(raw, rows, [("1.5", "-0.75"), ("-0.5", "-2.75"), ("0", "-2.25")])
-    result = import_vivado_logic_segment_timing(raw, source, output)
+    result = import_vivado_logic_segment_timing(raw, source, output, expected_sampling_cost_policy=SAMPLING_COST_POLICY)
     assert result["status"] == "pass"
     with storage.read_logic_segment_timing_storage(output) as view:
         assert view["sampling_cost_policy"] == SAMPLING_COST_POLICY
@@ -55,6 +64,7 @@ def test_indexed_import_preserves_signed_cost_once_and_keeps_data_delay(tmp_path
             assert "sampling_cost_ns" in columns
             assert "check_clock_adjustment_ns" not in columns
             assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+    reject_data_only_downgrade(raw,output,lambda **kwargs:import_vivado_logic_segment_timing(raw,source,output,**kwargs))
 
 
 @pytest.mark.parametrize("damaged", [
@@ -106,11 +116,12 @@ def test_original_local_path_import_retains_cost_and_data(tmp_path):
             for row in rows])
     raw, output = tmp_path/"local-costs.tsv", tmp_path/"local-timing.json"
     measurements(raw, rows, [("1.5", "-0.75"), ("-0.5", "-2.75")])
-    assert import_vivado_local_timing(raw, identity_path, output)["implemented_paths"] == 2
+    assert import_vivado_local_timing(raw, identity_path, output, expected_sampling_cost_policy=SAMPLING_COST_POLICY)["implemented_paths"] == 2
     with read_local_path_timing_storage(output) as view:
         assert view["sampling_cost_policy"] == SAMPLING_COST_POLICY
         assert [row["sampling_cost_ns"] for row in view["paths"]] == [1.5, -0.5]
         assert [row["delay_ns"] for row in view["paths"]] == [2.25, 2.25]
+    reject_data_only_downgrade(raw,output,lambda **kwargs:import_vivado_local_timing(raw,identity_path,output,**kwargs))
 
 
 def test_boundary_import_keeps_signed_costs_and_traceability(tmp_path):
@@ -127,12 +138,13 @@ def test_boundary_import_keeps_signed_costs_and_traceability(tmp_path):
                    "\n".join("\t".join([r["id"].encode().hex(), r["kind"], "2.25", "start".encode().hex(),
                                             "end".encode().hex(), "endpoint-exact", cost, adjust])
                              for r, cost, adjust in zip(identities, ["1.5", "-0.5"], ["-0.75", "-2.75"]))+"\n")
-    assert import_indexed_vivado_boundary(raw, identity_path, output)["implemented_endpoints"] == 2
+    assert import_indexed_vivado_boundary(raw, identity_path, output, expected_sampling_cost_policy=SAMPLING_COST_POLICY)["implemented_endpoints"] == 2
     with read_boundary_timing_storage(output) as view:
         assert view["sampling_cost_policy"] == SAMPLING_COST_POLICY
         assert [r["sampling_cost_ns"] for r in view["endpoints"]] == [1.5, -0.5]
         assert [r["delay_ns"] for r in view["endpoints"]] == [2.25, 2.25]
         assert validate_boundary_timing_database(view, {**_header(), "endpoints": identities})["endpoints"] == 2
+    reject_data_only_downgrade(raw,output,lambda **kwargs:import_indexed_vivado_boundary(raw,identity_path,output,**kwargs))
 
 
 @pytest.mark.parametrize("version", [1, 2])

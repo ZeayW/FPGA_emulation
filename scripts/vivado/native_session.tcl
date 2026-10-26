@@ -35,7 +35,10 @@ proc emuflow_session_frontiers {directory} {
   unset ::emuflow_native_export_stage
 }
 proc emuflow_session_timings {directory prefix fixed_io_map} {
-  global emuflow_session_out
+  global emuflow_session_out emuflow_timing_query_mode
+  if {$emuflow_timing_query_mode ni {datapath-only clock-aware-reference}} {
+    error "unsupported native timing query mode"
+  }
   emuflow_session_child prepare-timing
   set ::emuflow_native_export_stage routed
   set stream [open "$emuflow_session_out/timing-exports.tsv" r]
@@ -53,7 +56,8 @@ proc emuflow_session_timings {directory prefix fixed_io_map} {
     set output [encoding convertfrom utf-8 [binary decode hex $output_hex]]
     set script [expr {$kind eq "boundary_timing" ? "export_boundary_timing.tcl" : "export_logic_segment_timing.tcl"}]
     set arguments [list @current-design $query $output $prefix]
-    if {$fixed_io_map ne ""} {lappend arguments $fixed_io_map}
+    if {$fixed_io_map ne "" || $emuflow_timing_query_mode eq "clock-aware-reference"} {lappend arguments $fixed_io_map}
+    if {$emuflow_timing_query_mode eq "clock-aware-reference"} {lappend arguments $emuflow_timing_query_mode}
     emuflow_session_source "$directory/$script" $arguments
     file delete $query
   }

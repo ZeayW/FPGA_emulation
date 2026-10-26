@@ -1786,11 +1786,12 @@ def _indexed_logic_measurement_import(
     allow_missing: bool,
     allow_legacy_timing_format: bool,
     optimization_proofs=None,
+    expected_sampling_cost_policy=None,
 ) -> Dict[str, Any]:
     """Join a routed TSV to a typed identity without graph-sized dictionaries."""
     from .logic_segment_identity_storage import segment_from_row
     from .logic_segment_timing_storage import write_logic_segment_timing_storage
-    from .sampling_cost import SAMPLING_COST_POLICY, parse_reference_cost_fields
+    from .sampling_cost import SAMPLING_COST_POLICY, parse_reference_cost_fields, require_sampling_cost_policy
 
     source_bindings = bind_view_sources(
         (identity, "logic-segment-identity-store-v1")
@@ -1831,6 +1832,7 @@ def _indexed_logic_measurement_import(
                         "Vivado logic segment timing header is invalid"
                     )
                 sampling_costs = header == VIVADO_LOGIC_SAMPLING_COST_HEADER
+                require_sampling_cost_policy(SAMPLING_COST_POLICY if sampling_costs else None, expected_sampling_cost_policy)
                 extended_format = header != _LEGACY_VIVADO_LOGIC_SEGMENT_TIMING_HEADER
                 if not extended_format and not allow_legacy_timing_format:
                     raise ValidationError(
@@ -2063,6 +2065,7 @@ def _indexed_logic_measurement_import(
             return {
                 **validation,
                 **({"missing_segments": missing_count}),
+                **({"sampling_cost_policy": SAMPLING_COST_POLICY} if sampling_costs else {}),
                 "output": str(output_path),
             }
         finally:
@@ -2080,6 +2083,7 @@ def import_vivado_logic_segment_timing(
     allow_legacy_identity: bool = False,
     allow_legacy_timing_format: bool = False,
     optimization_proofs=None,
+    expected_sampling_cost_policy=None,
 ) -> Dict[str, Any]:
     from .logic_segment_identity_storage import (
         LogicSegmentIdentityView,
@@ -2100,9 +2104,12 @@ def import_vivado_logic_segment_timing(
                 allow_missing=allow_missing,
                 allow_legacy_timing_format=allow_legacy_timing_format,
                 optimization_proofs=optimization_proofs,
+                expected_sampling_cost_policy=expected_sampling_cost_policy,
             )
         finally:
             identity.close()
+    if expected_sampling_cost_policy is not None:
+        raise ValidationError("sampling-cost measurements require an indexed logic identity")
     source_bindings = (
         bind_store_source(input_path, "physical-timing-measurements-v1"),
     )
