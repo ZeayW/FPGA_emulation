@@ -236,6 +236,18 @@ exit after a Tcl error cannot publish a partial path population.
 Missing/extra records and schema/format mixtures are rejected. Native PATRON
 retains its direct indexed path projection for both storage versions.
 
+The policy requires compact indexed EmuIR and projects combinational clock
+cones in a temporary SQLite relation, leaving the source store read-only.
+For clock-cone LUT1--LUT6 and LUT6_2 instances, fully defined INIT truth tables
+select distinct timing models with positive, negative or non-unate arcs for
+each input/output pair. Functionally unused inputs have no arc. Data-only LUTs
+keep their scalar model; distinct clock LUT models, rather than a second
+instance map or complete Python graph, supply the Liberty/Verilog adapter.
+Unknown INIT or clock-cone cells without explicit arc polarity fail closed.
+The manifest binds `clock_logic_policy=indexed-init-clock-sense-v1`.
+This prevents an AND clock gate from being interpreted as a possible inverter;
+primitive IS_C_INVERTED alone cannot establish the source design's phases.
+
 For this policy, `fixed_delay_ns` is the engine arrival relative to the source
 launch edge after removing the engine cycle offset. It includes any explicit
 source-clock latency; it is not a routed physical datapath measurement. The
@@ -252,7 +264,8 @@ safe-frequency reporting remain unqualified until their consumers use these
 budgets and physical margins.
 
 The separate indexed producer qualification uses real positive and negative
-`FDRE` models, a pinned architecture timing database and explicit output delay:
+`FDRE` models behind an INIT-defined AND clock gate, a pinned architecture
+timing database and explicit output delay:
 
 ```bash
 PYTHONPATH=src python3 scripts/validation/qualify_opensta_phase2_clock_budget.py \

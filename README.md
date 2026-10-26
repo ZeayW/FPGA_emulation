@@ -48,6 +48,8 @@ its synthetic scope is described in the timing contract above.
 The explicit Phase 2 `engine-edge-v1` API policy checks engine completion and
 retains these facts in indexed TimingPathDB v4; complete global physical
 consumption remains under integration.
+This policy derives clock-cone LUT arc polarity from each instance's INIT,
+so gate abstractions do not invent clock edges.
 The indexed provider exports routed reports and timing in one native session
 with a separate numerical reference for post-route data-delay queries
 and supports checked continuation within an active run, using native module

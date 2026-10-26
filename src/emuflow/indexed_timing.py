@@ -11,15 +11,19 @@ from .emuir_storage import open_emuir_sqlite_read_only
 from .errors import ValidationError
 
 
-def _timing_instances(connection):
+def _timing_instances(connection, clock_logic=False):
     """Do not decode resources, attributes or LUT/RAM INIT data for STA."""
-    for row in connection.execute("""SELECT c.id,c.type,
-        CASE WHEN c.type IN ('FDCE','FDPE','FDRE','FDSE') THEN p.value END AS parameters_json,
+    join = 'LEFT JOIN temp.timing_clock_cells t ON t.seq=c.seq' if clock_logic else ''
+    flag = 't.seq IS NOT NULL' if clock_logic else '0'
+    for row in connection.execute(f"""SELECT c.id,c.type,
+        CASE WHEN c.type IN ('FDCE','FDPE','FDRE','FDSE') OR {flag} THEN p.value END AS parameters_json,
+        {flag} AS timing_clock,
         k.value AS constants_json FROM cell_records c
         LEFT JOIN payloads p ON p.seq=c.parameters_seq
-        LEFT JOIN payloads k ON k.seq=c.constants_seq ORDER BY c.seq"""):
+        LEFT JOIN payloads k ON k.seq=c.constants_seq {join} ORDER BY c.seq"""):
         yield {"id": row["id"], "type": row["type"],
                "parameters": {} if row["parameters_json"] is None else _decode(row["parameters_json"], "parameters"),
+               **({'timing_clock': True} if row['timing_clock'] else {}),
                "constant_connections": _decode(row["constants_json"], "constants")}
 
 
@@ -122,17 +126,24 @@ class _TimingTypes(Mapping):
     def for_instance(instance):
         from .opensta import _integer_parameter
         cell_type = instance["type"]
+        if instance.get('timing_clock') and (cell_type.startswith('LUT')):
+            from .sta_clock_logic import lut_clock_model
+            return lut_clock_model(instance, {})[0]
         if cell_type in {"FDCE", "FDPE", "FDRE", "FDSE"} and _integer_parameter(instance, "IS_C_INVERTED", 0) == 1:
             return cell_type + "__NEG"
         return cell_type
 
     def __getitem__(self, key):
         from .emuir_compact import _decode
-        row = self.view.connection.execute("""SELECT c.type,p.value FROM cell_records c
-            LEFT JOIN payloads p ON p.seq=c.parameters_seq WHERE c.id=?""", (key,)).fetchone()
+        enabled = getattr(self.view, '_clock_logic_enabled', False)
+        flag = 't.seq IS NOT NULL' if enabled else '0'
+        join = 'LEFT JOIN temp.timing_clock_cells t ON t.seq=c.seq' if enabled else ''
+        row = self.view.connection.execute(f"""SELECT c.type,p.value,{flag} FROM cell_records c
+            LEFT JOIN payloads p ON p.seq=c.parameters_seq {join} WHERE c.id=?""", (key,)).fetchone()
         if row is None:
             raise KeyError(key)
-        return self.for_instance({"type": row[0], "parameters": {} if row[1] is None else _decode(row[1], "parameters")})
+        return self.for_instance({"type": row[0], 'timing_clock': bool(row[2]),
+            "parameters": {} if row[1] is None else _decode(row[1], "parameters")})
 
     def __iter__(self):
         return (r[0] for r in self.view.connection.execute("SELECT id FROM cell_records ORDER BY seq"))
@@ -142,6 +153,42 @@ class _TimingTypes(Mapping):
 
 
 class IndexedTimingView:
+    def enable_clock_logic(self, model):
+        if getattr(self, '_clock_logic_enabled', False):
+            raise ValidationError('clock-cone projection already enabled')
+        clocks = [(name, cell['clock']) for name, cell in model['cells'].items()
+                  if cell['kind'] in {'rising_edge_ff', 'falling_edge_ff', 'rising_edge_bank'}]
+        combinational = [name for name, cell in model['cells'].items() if cell['kind'] == 'combinational']
+        if not clocks or not combinational:
+            self.connection.execute('CREATE TEMP TABLE timing_clock_cells(seq INTEGER PRIMARY KEY)')
+        else:
+            # UNION is the visited set: reconvergence/cycles never construct a
+            # Python graph. The source connection remains read-only.
+            self.connection.execute('CREATE TEMP TABLE timing_clock_cells(seq INTEGER PRIMARY KEY)')
+            self.connection.execute('''INSERT INTO temp.timing_clock_cells
+                WITH RECURSIVE roots(type,pin) AS (VALUES ''' + ','.join('(?,?)' for _ in clocks) + '''),
+                comb(type) AS (VALUES ''' + ','.join('(?)' for _ in combinational) + '''),
+                cone(seq) AS (
+                  SELECT DISTINCT d.instance_seq FROM cell_records c JOIN roots r ON r.type=c.type
+                    JOIN endpoint_records e INDEXED BY endpoint_owner ON e.instance_seq=c.seq AND e.role=1
+                    JOIN pin_names p ON p.seq=e.port_seq AND p.name=r.pin
+                    JOIN endpoint_records d ON d.net_seq=e.net_seq AND d.role=0
+                    JOIN cell_records driver ON driver.seq=d.instance_seq JOIN comb b ON b.type=driver.type
+                  UNION
+                  SELECT d.instance_seq FROM cone x
+                    JOIN endpoint_records e INDEXED BY endpoint_owner ON e.instance_seq=x.seq AND e.role=1
+                    JOIN endpoint_records d ON d.net_seq=e.net_seq AND d.role=0
+                    JOIN cell_records driver ON driver.seq=d.instance_seq JOIN comb b ON b.type=driver.type
+                ) SELECT seq FROM cone''', tuple(v for pair in clocks for v in pair) + tuple(combinational))
+        self._clock_logic_enabled = True
+        self.value['instances'] = _Rows(self, 'cell_records', lambda c: _timing_instances(c, True))
+
+    def clock_logic_instances(self):
+        for row in self.connection.execute('''SELECT c.id,c.type,p.value FROM temp.timing_clock_cells t
+            JOIN cell_records c ON c.seq=t.seq LEFT JOIN payloads p ON p.seq=c.parameters_seq ORDER BY c.seq'''):
+            yield {'id': row[0], 'type': row[1], 'timing_clock': True,
+                   'parameters': {} if row[2] is None else _decode(row[2], 'parameters')}
+
     def __init__(self, path: Path):
         self.connection = open_emuir_sqlite_read_only(path)
         try:

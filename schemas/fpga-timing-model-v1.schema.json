@@ -37,7 +37,14 @@
                 "uniqueItems": true
               },
               "output": {"type": "string", "minLength": 1},
-              "delay_ns": {"type": "number", "minimum": 0}
+              "delay_ns": {"type": "number", "minimum": 0},
+              "timing_sense": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": {"enum": ["positive_unate", "negative_unate", "non_unate"]}
+                }
+              }
             },
             "additionalProperties": false
           },

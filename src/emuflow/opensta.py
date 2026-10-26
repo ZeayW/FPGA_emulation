@@ -269,6 +269,12 @@ def load_timing_model(path: Path) -> Dict[str, Any]:
             ):
                 raise ValidationError(f"{context}: invalid pin definition")
             _finite_nonnegative(raw_cell.get("delay_ns"), f"{context}.delay_ns")
+            senses = raw_cell.get('timing_sense')
+            if senses is not None and (not isinstance(senses, dict) or set(senses) != set(outputs) or any(
+                not isinstance(arcs, dict) or not set(arcs) <= set(inputs) or any(
+                    value not in {'positive_unate', 'negative_unate', 'non_unate'} for value in arcs.values())
+                for arcs in senses.values())):
+                raise ValidationError(f'{context}: invalid per-output arc polarity')
         elif kind in {"rising_edge_ff", "falling_edge_ff"}:
             pins = [
                 raw_cell.get("clock"),
@@ -404,11 +410,15 @@ def render_opensta_liberty(model: Mapping[str, Any]) -> str:
                     ]
                 )
                 for pin in cell["inputs"]:
+                    senses = cell.get('timing_sense')
+                    if senses is not None and pin not in senses[output]:
+                        continue
+                    sense = senses[output][pin] if senses is not None else 'non_unate'
                     lines.extend(
                         [
                             "      timing () {",
                             f'        related_pin : "{pin}";',
-                            "        timing_sense : non_unate;",
+                            f"        timing_sense : {sense};",
                             *_scalar_table(
                                 "cell_rise",
                                 float(cell["delay_ns"]),
@@ -1369,6 +1379,11 @@ def _run_opensta_path_database(
         )
     else:
         model = load_timing_model(timing_model_path)
+    clock_logic = None
+    if clock_budget_policy == 'engine-edge-v1':
+        from .sta_clock_logic import specialize_clock_logic
+        clock_logic = specialize_clock_logic(ir, model)
+        instance_cell_types = ir.timing_types()
     coverage = validate_timing_model_coverage(
         ir, model, instance_cell_types
     )
@@ -1486,6 +1501,7 @@ def _run_opensta_path_database(
         }
         if clock_budget_policy=='engine-edge-v1':
             source_value['clock_budget_script_sha256']=file_sha256(OPENSTA_EXPORT_SCRIPT.with_name('clock_budget.tcl'))
+            source_value['clock_logic_policy']=clock_logic['policy']
         if _stream_output:
             imported = import_sta_path_database_tsv_streaming(
                 raw_path,
