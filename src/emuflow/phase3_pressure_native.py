@@ -228,9 +228,11 @@ class NativePressureModel(dict):
         return columns, board
 
     def execute(self, root, output, initial, max_moves, timeout_seconds, environment, executable=None):
+        from .store_publication import StoreSource, require_store_sources_unchanged
         columns, board = self.write_requests(root, initial, max_moves)
         executable = resolve_native_executable("emuflow-native", executable)
-        command = [executable, "phase3", "refine-patron-from-primary",
+        proof_path = root / 'producer.json'
+        command = [executable, "--report", str(proof_path), "phase3", "refine-patron-from-primary",
                    str(self.ir.path), str(self.timing_path), str(self.primary_artifact),
                    str(columns), str(board), str(output)]
         with NativeToolProcess(executable, command, environment=environment, timeout_ms=timeout_seconds * 1000,
@@ -239,10 +241,27 @@ class NativePressureModel(dict):
         if completed.returncode:
             raise ValidationError("native PATRON store model failed: " + completed.stdout)
         summary_path = Path(str(output) + ".summary.json")
+        if proof_path.stat().st_size > 256*1024:
+            raise ValidationError('native PATRON producer result exceeds bound')
+        proof = json.loads(proof_path.read_text())
+        if (proof.get('stage') != 'phase3.refine-patron-from-primary' or proof.get('status') != 'pass'
+                or not isinstance(proof.get('outputs'),list) or len(proof['outputs']) != 3):
+            raise ValidationError('native PATRON producer result disagrees')
+        originals = []
+        fields = ('device','inode','bytes','mtime_seconds','mtime_nanoseconds','ctime_seconds','ctime_nanoseconds')
+        for record,path,schema in zip(proof['outputs'],(output,Path(str(output)+'.order'),summary_path),
+                ('patron-output-v1','patron-cluster-order-v1','patron-model-summary-v1')):
+            generation = record.get('generation',{})
+            if (record.get('path') != str(path.resolve()) or record.get('schema') != schema
+                    or any(type(generation.get(key)) is not int for key in fields)):
+                raise ValidationError('native PATRON original output binding disagrees')
+            originals.append(StoreSource(path.resolve(),schema,tuple(generation[key] for key in fields)))
+        require_store_sources_unchanged(originals)
         if summary_path.stat().st_size > 65536:
             raise ValidationError("native PATRON model summary exceeds bound")
         summary = json.loads(summary_path.read_text())
         if (not isinstance(summary, dict) or summary.get("schema") != "emuflow.patron-native-model/v1" or summary.get("implementation_id") != self.implementation_id
+                or summary.get("ownership_order") != 'canonical-cluster-ordinal-v1'
                 or summary.get("clusters") != len(self.clusters) or summary.get("paths") != self.expected_paths
                 or any(isinstance(summary.get(key), bool) or not isinstance(summary.get(key), int) or summary[key] < 0
                        for key in ("clusters", "nets", "paths", "dimensions", "capacity_domains"))
@@ -264,4 +283,12 @@ class NativePressureModel(dict):
                              "records": 2, "model": self.native_counts, "metrics": metrics,
                              "shared_primary_bytes": self.primary_artifact.stat().st_size if self.primary_artifact is not None else 0}
         order = _NativeClusterOrder(str(output) + ".order", len(self.clusters))
-        return {"parts": [fpga.id for fpga in self.partition_fpgas], "clusters": order, "input": self.native_input}
+        try:
+            require_store_sources_unchanged(originals)
+        except BaseException:
+            order.close()
+            raise
+        return {"parts": [fpga.id for fpga in self.partition_fpgas], "clusters": order, "input": self.native_input,
+                'native_output_source': originals[0], 'native_order_source': originals[1],
+                'native_primary_source': StoreSource(Path(self.primary_artifact).resolve(),'partition-cluster-columns-v2',self.primary_generation),
+                'native_emuir_source': StoreSource(Path(self.ir.path).resolve(),'emuir-compact-v2',self.generations[0])}

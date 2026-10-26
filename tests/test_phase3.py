@@ -517,7 +517,7 @@ class Phase3Test(unittest.TestCase):
                 )
             runtime = read_json(output / "phase3-runtime.json")
             self.assertEqual(
-                runtime["observations"]["static_exact_native"], 0
+                runtime["observations"]["static_exact_native"], 1
             )
             source = assignment["semantic_contract"]["source_identity"]
             self.assertEqual(

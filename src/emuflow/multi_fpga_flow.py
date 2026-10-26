@@ -159,6 +159,8 @@ _STAGE_SUMMARY_FIELDS = {
         "qualification",
         "cut_mode",
         "static_exact_candidate_policy",
+        "semantic_implementation_id",
+        "assignment_descriptor_writer_implementation_id",
         "validation",
     ),
     "system_route": (
@@ -1401,6 +1403,9 @@ def _compile_preflight(ctx: _CompileContext):
         require_native_schema("yosys-emuir-import-request-v1")
         require_native_schema("external-tool-request-v2")
     require_native_schema("partition-initialization-request-v1")
+    require_native_schema("partition-finalization-request-v1")
+    require_native_schema("assignment-publication-request-v3")
+    require_native_schema("assignment-descriptor-request-v1")
     require_native_schema("phase5-stage-request-v1")
     require_native_schema("boarddb-v1")
     ctx.output_dir.mkdir(parents=True, exist_ok=True)

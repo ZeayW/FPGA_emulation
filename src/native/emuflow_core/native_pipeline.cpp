@@ -60,6 +60,7 @@ const char* StageName(Stage stage) {
     case Stage::kBuildCaptures: return "phase3.build-captures";
     case Stage::kValidateCaptures: return "phase3.validate-captures";
     case Stage::kPublishAssignmentIndex: return "phase3.publish-assignment";
+    case Stage::kPublishAssignmentDescriptor: return "phase3.publish-assignment-descriptor";
     case Stage::kValidateAssignmentCuts: return "phase3.validate-cuts";
     case Stage::kPublishClusterCatalog: return "phase3.publish-cluster-catalog";
     case Stage::kReducePartitionLoads: return "phase3.reduce-loads";
@@ -148,10 +149,18 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     case Stage::kBuildCaptures: return {"emuir-compact-v2","exact-indexed-request-v4","exact-topology-v3","exact-parts-v1"};
     case Stage::kValidateCaptures: return {"emuir-compact-v2","exact-indexed-request-v4","exact-topology-v3","exact-parts-v1","exact-captures-v1"};
     case Stage::kValidateAssignmentCuts: return {"assignment-index-v4"};
+    case Stage::kPublishAssignmentDescriptor:
+      return {"emuir-compact-v2","partition-cluster-columns-v2","assignment-index-v4","assignment-descriptor-request-v1"};
     case Stage::kPublishAssignmentIndex: {
       const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
       if(count==3) return {"emuir-compact-v2","partition-cluster-columns-v2","assignment-publication-request-v1"};
       if(count==4) return {"emuir-compact-v2","partition-cluster-columns-v2","assignment-publication-request-v2","exact-nodes-v2"};
+      if(count>=5 && count<=7) {
+        std::vector<std::string> schemas{"emuir-compact-v2","partition-cluster-columns-v2","assignment-publication-request-v3","exact-nodes-v2","partition-cut-counts-v1"};
+        if(count>=6)schemas.push_back(count==6?"patron-initial-columns-v1":"patron-output-v1");
+        if(count==7)schemas.push_back("patron-cluster-order-v1");
+        return schemas;
+      }
       throw core::StageError(core::ErrorCode::kInvalidRequest,"assignment publication input coverage disagrees");
     }
     case Stage::kPublishClusterCatalog: {
@@ -389,6 +398,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kExportRwroute:
         core::ExportRwroute(inputs[0],inputs[1],inputs[2],output,request.auxiliary_output_path); break;
       case Stage::kPublishAssignmentIndex: core::PublishAssignmentIndex(inputs,output); break;
+      case Stage::kPublishAssignmentDescriptor: core::PublishAssignmentDescriptor(inputs,output); break;
       case Stage::kValidateAssignmentCuts: core::ValidateAssignmentCuts(inputs[0],output); break;
       case Stage::kPublishClusterCatalog: core::PublishClusterCatalog(inputs,output); break;
       case Stage::kReducePartitionLoads: core::ReducePartitionLoads(inputs,output); break;
@@ -449,6 +459,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kExportVivado: schema = "vivado-primitive-verilog-v1"; break;
       case Stage::kExportRwroute: schema = "rwroute-input-tsv-v1"; break;
       case Stage::kPublishAssignmentIndex: schema = "assignment-index-v4"; break;
+      case Stage::kPublishAssignmentDescriptor: schema = "assignment-selector-v4"; break;
       case Stage::kValidateAssignmentCuts: schema = "assignment-cut-validation-v1"; break;
       case Stage::kPublishClusterCatalog: schema = "phase3-cluster-catalog-v3"; break;
       case Stage::kReducePartitionLoads: schema = "partition-load-summary-v1"; break;

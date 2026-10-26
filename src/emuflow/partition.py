@@ -2198,6 +2198,14 @@ def build_partition_assignment(
         cut_policy.get("cut_mode") == CUT_MODE_STATIC_EXACT
         and _include_semantic_contract
     )
+    native_semantics = None
+    if build_exact_contract and compact_assignment:
+        from .phase3_semantics_native import finalize_selected_semantics
+        native_semantics = finalize_selected_semantics(
+            ir, platform, cluster_records, cluster_assignment, instance_assignment,
+            max_dependency_depth=cut_policy["max_cross_fpga_dependency_depth"],
+            candidate_selection_policy=cut_policy.get("candidate_selection_policy", STATIC_EXACT_DEFAULT_CANDIDATE_POLICY),
+        )
     if _defer_derived_records:
         # PATRON v14 selects between assignments using the native predictive
         # path objective and scheduler-independent legality.  Cut records and
@@ -2208,6 +2216,9 @@ def build_partition_assignment(
         cut_nets = None
         cut_metrics: Dict[str, Any] = {}
         cut_net_ordinals = None
+    elif native_semantics is not None:
+        cut_nets, cut_metrics, _native_contract = native_semantics
+        cut_net_ordinals = None
     elif build_exact_contract:
         cut_nets, cut_metrics, cut_net_ordinals = (
             _compute_cut_nets_with_ordinals(ir, instance_assignment)
@@ -2215,8 +2226,11 @@ def build_partition_assignment(
     else:
         cut_nets, cut_metrics = compute_cut_nets(ir, instance_assignment)
         cut_net_ordinals = None
-    semantic_contract = None
-    if build_exact_contract:
+    semantic_contract = native_semantics[2] if native_semantics is not None else None
+    if native_semantics is not None:
+        from .phase3_runtime import phase3_runtime_observe
+        phase3_runtime_observe(static_exact_native=1)
+    if build_exact_contract and native_semantics is None:
         from .combinational_cut import (
             build_static_exact_semantic_contract,
             semantic_contract_sha256,
@@ -2396,6 +2410,7 @@ def build_partition_assignment(
     if provider_metadata is not None:
         result["provider_metadata"] = dict(provider_metadata)
     if semantic_contract is not None:
+        from .combinational_cut import semantic_contract_sha256
         result["semantic_contract"] = semantic_contract
         result["semantic_contract_sha256"] = semantic_contract_sha256(
             semantic_contract

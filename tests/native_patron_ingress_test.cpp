@@ -6,6 +6,8 @@
 #include <iostream>
 #include <iomanip>
 #include <type_traits>
+#include <numeric>
+#include <algorithm>
 
 namespace {
 using emuflow::core::patron::Model;
@@ -48,6 +50,14 @@ std::array<unsigned char,32> Signature(const Model& m) {
 }
 int main(int argc,char** argv) {
   try {
+    if(argc==4 && std::string(argv[1])=="--publish-order") {
+      auto model=emuflow::native::ReadTypedPatronModel(argv[2]);
+      model.max_moves=0;model.output_to_model.resize(model.clusters);
+      std::iota(model.output_to_model.begin(),model.output_to_model.end(),0U);
+      std::reverse(model.output_to_model.begin(),model.output_to_model.end());
+      emuflow::native::RefinePatronModel(model,argv[3],true,true,
+          {emuflow::core::ArtifactRef::Bind(argv[2],"patron-input-v1")});return 0;
+    }
     if (argc==2 && std::string(argv[1])=="--order") {
       auto order=emuflow::core::CanonicalPatronClusterOrder(1000013);
       if (order[99999]!=99999 || order[100000]!=100000 || order[100001]!=1000000 ||

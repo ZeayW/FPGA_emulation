@@ -123,8 +123,8 @@ original artifact to PATRON; it does not load net weights, reconstruct hyperedge
 parse owner rows or re-emit the initial ownership. Original source generations
 remain bound across both operations. Algorithm policy and objective ordering are
 unchanged; the implementation identity distinguishes native execution from the
-explicit diagnostic reference. Complete final semantic/assignment publication and
-Phase 3 stage ownership still require migration and real-design qualification.
+explicit diagnostic reference. Complete Phase 3 configuration, selection, report
+publication and stage ownership still require migration and real-design qualification.
 
 `phase3 refine-patron-from-primary EMUIR TIMING PRIMARY INITIAL REQUEST OUTPUT`
 builds the PATRON v14 model and invokes the existing solver in one shared-core
@@ -135,8 +135,15 @@ The Python adapter carries board-sized configuration, fixed constraints and an
 initial ownership reference. It does not create pressure-net/path/name populations,
 derive a second model or stream per-record solver input. The snapshot command,
 cluster-column protocol and v1 board request are retired. Missing primary
-ownership fails without generating a replacement snapshot. Final semantic/index
-publication still has Python work.
+ownership fails without generating a replacement snapshot. Selected ownership
+feeds `phase3 finalize-assignment-semantics`: the native owner projects cut sinks,
+builds analyzer inputs/captures/final nodes and independently checks source
+projection, capture coverage and topology recurrences. Only bounded policy and
+source references enter; no instance assignment, cut list or semantic tree returns
+through Python. The instance-assignment identity is computed from ordered source
+records inside the same operation. Its four published files are nodes, captures,
+endpoint counts and a bounded summary. Their shared directory retires after its
+last mapped borrower; the Phase 3 command explicitly closes them after publication.
 
 The shared model is move-only, and both its typed pressure-model reader and direct
 store producer call the same search implementation. The producer checks primary
@@ -145,9 +152,11 @@ paths/net references, fixed ownership, resource/balance limits and bank symmetry
 Capacity and route policies retain their existing meanings; no schedule-readiness
 or Static Exact feasibility guard is introduced. Input CRCs and retained file
 generations reject truncation, corruption and mixed sources before solving.
-The output keeps the existing typed assignment format. A sealed integer order
-sidecar binds its lexical native coordinates to canonical cluster ordinals,
-including identities longer than six digits; Python maps it without a name pool.
+The output keeps the existing typed assignment format. The search retains its
+lexical model coordinates; publication emits canonical cluster ordinals, including
+identities longer than six digits. A sealed identity-order sidecar binds those
+coordinates. The result parser borrows the read-only column without reordering
+or rebuilding the solver ownership.
 Only counts and implementation identity return in the bounded
 [model summary](../schemas/patron-native-model-v1.schema.json).
 The summary also separates model-build and search operations using the common
@@ -511,7 +520,7 @@ there is no silent implementation or provider fallback.
 | Stage | Existing native/indexed foundation | Remaining delivery obligation |
 | --- | --- | --- |
 | Phase 1–2 | Complete native ordinary RTL frontend under native control, including engine/import/clock/resource/report publication; native OpenSTA input export, indexed path-result import, timing-weight generation and independent validators | Migrate supplied/prepared/other indexed-source adapters and complete timing-stage lifecycle; qualify the whole current-design frontend |
-| Phase 3 | Shared-core candidate eligibility, primary clustering and complete TritonPart initialization; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Complete final cut projection, semantic/assignment publication and native stage lifecycle; qualify complete stage costs |
+| Phase 3 | Shared-core candidate eligibility, primary clustering, complete TritonPart initialization and native v14 search; selected-owner cut/semantic/capture production, direct assignment-index and packed-selector publication | Complete native configuration, candidate selection, final catalog/report transaction and stage lifecycle; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |
@@ -613,18 +622,28 @@ unknown versions, truncation, corruption and mixed generations fail closed.
 
 ## Assignment index publication
 
-`emuflow-native phase3 publish-assignment EMUIR PRIMARY REQUEST [NATIVE_NODES] OUTPUT`
+`emuflow-native phase3 publish-assignment EMUIR PRIMARY REQUEST [NATIVE_NODES [COUNTS [OWNER [ORDER]]]] OUTPUT`
 publishes current assignment v4 through the shared `SqliteArtifactWriter`.
 The C++ owner joins primary ownership with the paired EmuIR cell cursor and writes
 primary copies directly; Python never expands or transfers instance records for
-this operation. With final native semantic nodes, the v2 request carries their
-original file generation, integer cluster ownership, FPGA catalogs, bounded
-metadata and one uint64 endpoint count per cut. The C++ reader consumes ordered
+this operation. Production v3 requests bind original native ownership, coordinate,
+semantic-node and count files. They carry only FPGA catalogs, dimensions, source
+generations and bounded metadata; cluster and endpoint-count columns are not
+re-emitted through Python. The C++ reader consumes ordered
 cut identities, ownership and predecessors directly from that node artifact,
 using the shared bounded semantic-record decoder. It does not receive another
 host-generated cut/predecessor record protocol. The compact cut owner lends its
-existing count column; an already materialized noncanonical-source cut list
-projects only counts. This does not remove that earlier list-construction cost.
+existing count file. Explicit reference producers without native selected-owner
+artifacts retain the v2 packed-column protocol; a missing or changed selected
+native artifact cannot select that reference protocol as recovery.
+
+`phase3 publish-assignment-descriptor EMUIR PRIMARY INDEX REQUEST OUTPUT` writes
+the existing packed JSON selector from the final authoritative assignment index.
+One ordered source/copy merge checks complete source identity and unsplit primary
+clusters. Partition counts and cut/semantic seals must match the bounded header.
+Index-derived part columns stream through zlib/base64 to the common atomic writer;
+Python neither iterates cluster ownership nor holds the compressed payload.
+The selector remains byte-compatible with the reference exporter.
 
 The explicit v1 request remains for current nonsemantic and Python-reference
 semantic producers. Missing or changed native ownership fails; it never selects

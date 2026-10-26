@@ -114,6 +114,53 @@ inline std::string QuoteJsonString(const std::string& text, bool ensure_ascii) {
 }
 inline std::string JsonQuote(const std::string& text) { return QuoteJsonString(text,true); }
 inline std::string JsonQuoteUtf8(const std::string& text) { return QuoteJsonString(text,false); }
+
+// Decode one JSON1-validated string token without SQLite's scalar text
+// conversion: older JSON1 releases truncate escaped NUL in extracted strings.
+inline std::string DecodeJsonString(const std::string& token) {
+  const auto first=token.find_first_not_of(" \t\r\n"),last=token.find_last_not_of(" \t\r\n");
+  if(first==std::string::npos || first==last || token[first]!='"' || token[last]!='"')
+    throw std::runtime_error("invalid JSON string token");
+  std::size_t position=first+1;std::string result;
+  const auto hex=[&]() {
+    if(last-position<4)throw std::runtime_error("truncated JSON Unicode escape");
+    std::uint32_t value=0;
+    for(unsigned i=0;i<4;++i) {
+      const char c=token[position++];unsigned digit;
+      if(c>='0' && c<='9')digit=c-'0';else if(c>='a' && c<='f')digit=c-'a'+10;
+      else if(c>='A' && c<='F')digit=c-'A'+10;else throw std::runtime_error("invalid JSON Unicode escape");
+      value=(value<<4)|digit;
+    }
+    return value;
+  };
+  while(position<last) {
+    const auto c=static_cast<unsigned char>(token[position++]);
+    if(c<32 || c=='"')throw std::runtime_error("invalid JSON string character");
+    if(c!='\\'){result+=static_cast<char>(c);continue;}
+    if(position==last)throw std::runtime_error("truncated JSON escape");
+    switch(token[position++]) {
+      case '"':result+='"';break;case '\\':result+='\\';break;case '/':result+='/';break;
+      case 'b':result+='\b';break;case 'f':result+='\f';break;case 'n':result+='\n';break;
+      case 'r':result+='\r';break;case 't':result+='\t';break;
+      case 'u': {
+        auto value=hex();
+        if(value>=0xd800 && value<=0xdbff) {
+          if(last-position<6 || token[position++]!='\\' || token[position++]!='u')
+            throw std::runtime_error("missing JSON low surrogate");
+          const auto low=hex();if(low<0xdc00 || low>0xdfff)throw std::runtime_error("invalid JSON low surrogate");
+          value=0x10000+((value-0xd800)<<10)+(low-0xdc00);
+        } else if(value>=0xdc00 && value<=0xdfff)throw std::runtime_error("unpaired JSON low surrogate");
+        if(value<0x80)result+=static_cast<char>(value);
+        else if(value<0x800){result+=static_cast<char>(0xc0|(value>>6));result+=static_cast<char>(0x80|(value&63));}
+        else if(value<0x10000){result+=static_cast<char>(0xe0|(value>>12));result+=static_cast<char>(0x80|((value>>6)&63));result+=static_cast<char>(0x80|(value&63));}
+        else {result+=static_cast<char>(0xf0|(value>>18));result+=static_cast<char>(0x80|((value>>12)&63));result+=static_cast<char>(0x80|((value>>6)&63));result+=static_cast<char>(0x80|(value&63));}
+        break;
+      }
+      default:throw std::runtime_error("invalid JSON escape");
+    }
+  }
+  (void)JsonQuoteUtf8(result);return result;
+}
 #if defined(EMUFLOW_HAS_CHARCONV_HEADER)
 template<class T,class=void> struct HasFloatingToChars : std::false_type {};
 template<class T> struct HasFloatingToChars<T,std::void_t<decltype(std::to_chars(

@@ -68,6 +68,46 @@ def run(args,model,initial,max_moves=0):
         _release_model_before_assignment=True,_defer_candidate_derived_records=True)
 
 
+def test_production_result_borrows_readonly_native_ownership_without_host_cluster_parsing(inputs):
+    import gc
+    from emuflow.partition import _PackedClusterAssignment
+    from emuflow.phase3_pressure_native import _NativeClusterOrder
+    args,initial,timing=inputs
+    initial=dict(initial,cluster_assignment=_PackedClusterAssignment(('a','b'),
+        (0 if initial['cluster_assignment'][f'c{i:06d}']=='a' else 1 for i in range(len(args[2]['clusters'])))))
+    model=build_partition_pressure_model(*args,independent_validation=False,
+        timing_database_path=timing,native_store_model=True)
+    with (patch.object(_PackedClusterAssignment,'__init__',side_effect=AssertionError('host part array')),
+            patch.object(_NativeClusterOrder,'__getitem__',side_effect=AssertionError('host cluster identity parsing'))):
+        actual,trace=run(args,model,initial,max_moves=0)
+    owners=actual['cluster_assignment']
+    root=owners.native_output_source.path.parent
+    assert owners.part_indices.readonly
+    assert owners==initial['cluster_assignment']
+    with pytest.raises(TypeError):owners.part_indices[0]=1
+    assert owners.native_output_source.path.is_file()
+    assert owners.native_order_source.path.is_file()
+    assert not (root/'initial.bin').exists()
+    assert not (root/'board.bin').exists()
+    del owners,actual,trace
+    gc.collect()
+    assert not root.exists()
+
+
+def test_result_requires_the_original_producer_generation(inputs):
+    args,initial,timing=inputs
+    model=build_partition_pressure_model(*args,independent_validation=False,
+        timing_database_path=timing,native_store_model=True)
+    execute=NativePressureModel.execute
+    def changed(self,root,output,*args,**kwargs):
+        result=execute(self,root,output,*args,**kwargs)
+        output.write_bytes(output.read_bytes())
+        return result
+    with patch.object(NativePressureModel,'execute',changed):
+        with pytest.raises(Exception,match='generation'):
+            run(args,model,initial,max_moves=0)
+
+
 @pytest.mark.parametrize('max_moves',[0,2])
 def test_primary_owner_direct_model_matches_every_record_and_search(inputs,tmp_path,max_moves):
     args,initial,timing=inputs
@@ -99,6 +139,21 @@ def test_primary_owner_direct_model_matches_every_record_and_search(inputs,tmp_p
     assert trace['final_metrics']==expected_trace['final_metrics']
     assert trace['native_input_transport']=='native-primary-store-model-v2'
     assert trace['change_count']==expected_trace['change_count']
+
+
+def test_actual_patron_writer_applies_nonidentity_publication_coordinates(inputs,tmp_path):
+    args,initial,timing=inputs
+    ir,platform,clusters,constraints,manifest,routes=args
+    reference=build_partition_pressure_model(*args,independent_validation=False,timing_database_path=timing)
+    source=tmp_path/'model.bin';output=tmp_path/'output.bin'
+    _write_patron_native_input(None,platform,clusters,constraints,routes,reference,initial,0,14,
+        _writer=_NativeBinaryPipeWriter(source.open('wb')))
+    result=subprocess.run([str(patron_ingress_oracle()),'--publish-order',str(source),str(output)],capture_output=True,text=True)
+    assert result.returncode==0,result.stderr
+    payload=output.read_bytes();assert zlib.crc32(payload[:-4])==struct.unpack('<I',payload[-4:])[0]
+    ids=sorted(cluster['id'] for cluster in clusters['clusters']);parts=sorted(constraints['active_fpgas'])
+    expected=[parts.index(initial['cluster_assignment'][identity]) for identity in reversed(ids)]
+    assert list(struct.unpack('<'+str(len(ids))+'I',payload[-4-4*len(ids):-4]))==expected
 
 
 @pytest.mark.parametrize('corruption',['checksum','membership','owner','source','version','truncated','totals','source-counts'])
@@ -205,6 +260,7 @@ def test_phase3_production_selects_native_model_and_keeps_independent_validation
     with (patch('emuflow.partition_pressure._compact_partition_pressure_graph',side_effect=AssertionError('Python pressure graph')),
           patch('emuflow.partition_pressure._write_patron_native_input',side_effect=AssertionError('Python model protocol')),
           patch('emuflow.tritonpart.export_tritonpart_inputs',side_effect=AssertionError('Python initializer')),
+          patch('emuflow.phase3.pack_phase3_assignment',side_effect=AssertionError('Python final assignment pack')),
           patch.object(NativePressureModel,'_write_initial_ownership',side_effect=AssertionError('Python initial ownership rewrite'))):
         report=run_phase3(args[0].path,platform,tmp_path/'phase3',provider='patron',
                          min_used_fpgas=2,balance_tolerance=1.0,patron_max_moves=0,
@@ -216,6 +272,9 @@ def test_phase3_production_selects_native_model_and_keeps_independent_validation
     assert report['native_cluster_metrics']['wall_seconds']>0
     assert report['candidate_implementation_id']=='native-candidate-ids-v1'
     assert report['native_candidate_metrics']['wall_seconds']>0
+    assert report['semantic_implementation_id']=='native-selected-partition-semantics-v1'
+    assert report['assignment_descriptor_writer_implementation_id']=='native-indexed-assignment-descriptor-v1'
+    assert report['native_assignment_index_metrics']['host_ownership_records']==0
     assert report['algorithm_validation']['native_input_transport']=='native-primary-store-model-v2'
     assert report['algorithm_validation']['model']['nets']==2
     assert report['algorithm_validation']['native_model_metrics']['model_build']['wall_seconds']>0

@@ -8,7 +8,7 @@ enum class Stage {
   kAnalyzeExact, kFinalizeExact, kHashSemantics,
   kWriteExactSections, kRefinePatron, kRoute,
   kAssignBanks, kGroupSignals, kRefinePositions, kRudy,
-  kCompilePhase5, kRunPhase5, kBuildSchedule, kValidateSchedule, kProjectScheduleTiming, kBindGlobalEvents, kIndexGlobalEvents, kExportGlobalEvents, kImportGlobalMeasurements, kAuditGlobalMeasurements, kPublishGlobalQor, kValidateGlobalQor, kExportBookshelf, kBuildPartitionClusters, kBuildCandidateIds, kRefinePatronFromPrimary, kReducePartitionLoads, kPublishAssignmentIndex, kValidateAssignmentCuts, kPublishClusterCatalog, kBuildCaptures, kValidateCaptures, kExportRwroute, kImportVivadoLineage, kRefinePartitionHops, kExportVivado, kBuildRoutedSegments, kBuildRoutedEndpoints, kStageRoutedOpensta, kExportOpenstaInputs, kImportStaPaths, kValidateStaPaths, kBuildStaWeights, kValidateStaWeights
+  kCompilePhase5, kRunPhase5, kBuildSchedule, kValidateSchedule, kProjectScheduleTiming, kBindGlobalEvents, kIndexGlobalEvents, kExportGlobalEvents, kImportGlobalMeasurements, kAuditGlobalMeasurements, kPublishGlobalQor, kValidateGlobalQor, kExportBookshelf, kBuildPartitionClusters, kBuildCandidateIds, kRefinePatronFromPrimary, kReducePartitionLoads, kPublishAssignmentIndex, kPublishAssignmentDescriptor, kValidateAssignmentCuts, kPublishClusterCatalog, kBuildCaptures, kValidateCaptures, kExportRwroute, kImportVivadoLineage, kRefinePartitionHops, kExportVivado, kBuildRoutedSegments, kBuildRoutedEndpoints, kStageRoutedOpensta, kExportOpenstaInputs, kImportStaPaths, kValidateStaPaths, kBuildStaWeights, kValidateStaWeights
 };
 struct StageRequest {
   Stage stage = Stage::kInvalid;

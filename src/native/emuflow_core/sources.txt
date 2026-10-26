@@ -52,3 +52,4 @@ emuflow_core/sta_weights.cpp
 emuflow_core/yosys_hierarchy.cpp
 emuflow_core/frontend.cpp
 emuflow_core/partition_init.cpp
+emuflow_core/partition_semantics.cpp

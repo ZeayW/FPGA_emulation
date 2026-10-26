@@ -293,6 +293,7 @@ patron::Model BuildPatronModel(const std::vector<ArtifactRef>& inputs, PatronBui
   }
   Check(!have_net && !model.path.empty() && model.path.size()==expected_paths && model.path.size()<=INT32_MAX,"PATRON path coverage disagrees");
   model.paths=model.path.size(); patron::BindMembers(model);
+  model.output_to_model=std::move(native);
   for (const auto& input:inputs) input.RequireUnchanged();
   return model;
 }
@@ -307,9 +308,10 @@ void RefinePatronFromPrimary(const std::vector<ArtifactRef>& inputs, const std::
   });
   if (!search.ok()) throw StageError(search.error,"PATRON search: "+search.message);
   for (const auto& input:inputs) input.RequireUnchanged();
+  std::iota(context.native_to_artifact.begin(),context.native_to_artifact.end(),0);
   SealOrder(staged.path()+".order",context.native_to_artifact);
   auto summary=JsonRecord(std::map<std::string,JsonRecord>{{"schema","emuflow.patron-native-model/v1"},
-      {"implementation_id","native-primary-store-model-v2"},{"clusters",model.clusters},{"nets",model.nets},
+      {"implementation_id","native-primary-store-model-v2"},{"ownership_order","canonical-cluster-ordinal-v1"},{"clusters",model.clusters},{"nets",model.nets},
       {"paths",model.paths},{"dimensions",model.dimensions},{"capacity_domains",model.domains}}).Encode();
   summary.pop_back();
   summary+=",\"model_build\":"+StageResultJson(build)+",\"search\":"+StageResultJson(search)+"}";

@@ -2,6 +2,7 @@
 #include "emuflow_core/assignment_schema.hpp"
 #include "emuflow_core/emuir_view.hpp"
 #include "emuflow_core/primary_cluster_view.hpp"
+#include "emuflow_core/partition_semantics.hpp"
 #include "emuflow_core/json_record.hpp"
 #include "emuflow_core/hash.hpp"
 #include "emuflow_core/ordered_record_table.hpp"
@@ -9,6 +10,8 @@
 #include <algorithm>
 #include <map>
 #include <set>
+#include <array>
+#include <zlib.h>
 
 namespace emuflow::core {
 namespace {
@@ -21,13 +24,13 @@ std::string Identity(CheckedRequestReader& request) {
   JsonQuote(text); // Validate UTF-8 using the common canonical serializer.
   return text;
 }
-std::vector<std::string> Catalog(CheckedRequestReader& request) {
+std::vector<std::string> Catalog(CheckedRequestReader& request,bool ordered=true) {
   const auto count=request.Read<std::uint32_t>();
   Check(count && count<=65536 && count<=request.remaining()/4,"assignment partition catalog is invalid");
   std::vector<std::string> parts; std::size_t bytes=0;
   for (std::uint32_t i=0;i<count;++i) {
     auto part=Identity(request); bytes+=part.size();
-    Check(bytes<=1024*1024 && (parts.empty() || parts.back()<part),"assignment partition order is invalid");
+    Check(bytes<=1024*1024 && (!ordered || parts.empty() || parts.back()<part),"assignment partition order is invalid");
     parts.push_back(std::move(part));
   }
   return parts;
@@ -40,14 +43,55 @@ std::string Hex(const std::array<unsigned char,32>& digest) {
 void Put(SqliteStatement& statement,const std::string& key,const std::string& value) {
   statement.BindText(1,key);statement.BindText(2,value);statement.Execute();statement.Reset();
 }
+class Base64Output {
+ public:
+  explicit Base64Output(std::ostream& out):out_(out) {buffer_.reserve(65540);}
+  void Bytes(const unsigned char* data,std::size_t count) {
+    for(std::size_t i=0;i<count;++i) {
+      pending_[size_++]=data[i];if(size_==3)Emit(false);
+    }
+  }
+  void Finish() {if(size_)Emit(true);Flush();}
+ private:
+  void Emit(bool last) {
+    static const char alphabet[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const unsigned a=pending_[0],b=size_>1?pending_[1]:0,c=size_>2?pending_[2]:0;
+    buffer_+=alphabet[a>>2];buffer_+=alphabet[((a&3)<<4)|(b>>4)];
+    buffer_+=size_>1?alphabet[((b&15)<<2)|(c>>6)]:'=';buffer_+=size_>2?alphabet[c&63]:'=';
+    size_=0;if(last || buffer_.size()>=65536)Flush();
+  }
+  void Flush() {out_<<buffer_;buffer_.clear();}
+  std::ostream& out_;std::array<unsigned char,3> pending_{};unsigned size_=0;std::string buffer_;
+};
+void CompressedParts(std::ostream& out,const std::vector<std::uint32_t>& parts,unsigned width) {
+  z_stream stream{};Check(deflateInit(&stream,1)==Z_OK,"cannot initialize assignment compression");
+  struct Guard {z_stream& stream;~Guard(){deflateEnd(&stream);}} guard{stream};
+  Base64Output encoded(out);std::array<unsigned char,65536> output{};
+  std::vector<unsigned char> raw;raw.reserve(1024*1024);
+  const auto flush=[&](bool final) {
+    stream.next_in=raw.data();stream.avail_in=raw.size();int status;
+    do {
+      stream.next_out=output.data();stream.avail_out=output.size();status=deflate(&stream,final?Z_FINISH:Z_NO_FLUSH);
+      Check(status==Z_OK || (final && status==Z_STREAM_END),"assignment compression failed");
+      encoded.Bytes(output.data(),output.size()-stream.avail_out);
+    } while(stream.avail_in || (final && status!=Z_STREAM_END) || !stream.avail_out);
+    raw.clear();
+  };
+  for(const auto part:parts) {
+    for(unsigned byte=0;byte<width;++byte)raw.push_back((part>>(8*byte))&255);
+    if(raw.size()>=1024*1024)flush(false);
+  }
+  flush(true);encoded.Finish();
+}
 }
 void PublishAssignmentIndex(const std::vector<ArtifactRef>& inputs,const std::string& output) {
-  Check(inputs.size()==3 || inputs.size()==4,"assignment publication source coverage disagrees");
-  const bool native_cuts=inputs.size()==4;
-  CheckedRequestReader request(inputs[2].path(),inputs[2].generation().bytes);
-  Check(request.Read<std::uint64_t>()==0x31514241554d5545ULL && request.Read<std::uint32_t>()==(native_cuts?2U:1U),
+  Check(inputs.size()>=3 && inputs.size()<=7,"assignment publication source coverage disagrees");
+  const bool borrowed=inputs.size()>=5,native_cuts=inputs.size()>=4;
+  CheckedRequestReader request(inputs[2].path(),borrowed?4*1024*1024:inputs[2].generation().bytes);
+  Check(request.Read<std::uint64_t>()==0x31514241554d5545ULL && request.Read<std::uint32_t>()==(borrowed?3U:native_cuts?2U:1U),
         "unsupported assignment publication request");
-  for (unsigned i=0;i<(native_cuts?3U:2U);++i) {
+  const auto bindings=borrowed?inputs.size()-1:native_cuts?3U:2U;
+  for (unsigned i=0;i<bindings;++i) {
     FileGeneration generation;
     generation.device=request.Read<std::uint64_t>();
     generation.inode=request.Read<std::uint64_t>();
@@ -56,24 +100,30 @@ void PublishAssignmentIndex(const std::vector<ArtifactRef>& inputs,const std::st
     generation.modified_nanoseconds=request.Read<std::int64_t>();
     generation.changed_seconds=request.Read<std::int64_t>();
     generation.changed_nanoseconds=request.Read<std::int64_t>();
-    if (!(generation==inputs[i==2?3:i].generation()))
+    if (!(generation==inputs[i>=2?i+1:i].generation()))
       throw StageError(ErrorCode::kMixedGeneration,"assignment publication source generation changed");
   }
-  const auto parts=Catalog(request),ownership_parts=Catalog(request);
+  const auto parts=Catalog(request),raw_ownership_parts=Catalog(request,!borrowed);
+  PrimaryClusterView primary(inputs[1],inputs[0]);
+  EmuirView source(inputs[0]);
+  std::vector<std::uint32_t> ownership;
+  auto ownership_parts=raw_ownership_parts;
+  if(borrowed) {
+    auto selected=ReadSelectedPartitionOwnership(primary,{inputs.begin()+5,inputs.end()},raw_ownership_parts);
+    ownership_parts=std::move(selected.parts);ownership=std::move(selected.cluster_parts);
+  }
   std::vector<std::uint32_t> remap;
   for (const auto& part:ownership_parts) {
     const auto found=std::lower_bound(parts.begin(),parts.end(),part);
     Check(found!=parts.end() && *found==part,"assignment ownership references an unknown FPGA");
     remap.push_back(found-parts.begin());
   }
-  PrimaryClusterView primary(inputs[1],inputs[0]);
-  EmuirView source(inputs[0]);
   const auto clusters=request.Read<std::uint64_t>(),cells=request.Read<std::uint64_t>();
   Check(clusters==primary.clusters() && cells==primary.cells() && cells==source.counts().cells &&
-        clusters<=UINT32_MAX && clusters<=request.remaining()/4,"assignment ownership dimensions disagree");
-  std::vector<std::uint32_t> ownership(clusters);
+        clusters<=UINT32_MAX && (borrowed || clusters<=request.remaining()/4),"assignment ownership dimensions disagree");
+  if(!borrowed)ownership.resize(clusters);
   for (auto& part:ownership) {
-    const auto index=request.Read<std::uint32_t>();
+    const auto index=borrowed?part:request.Read<std::uint32_t>();
     Check(index<remap.size(),"assignment ownership references an unknown FPGA"); part=remap[index];
   }
   SqliteArtifactWriter writer(output,"assignment-index-v4",inputs);
@@ -127,8 +177,15 @@ void PublishAssignmentIndex(const std::vector<ArtifactRef>& inputs,const std::st
     auto sinks=database.Prepare("INSERT INTO cut_sinks VALUES(?,?,?)");
     auto predecessors=database.Prepare("INSERT INTO cut_predecessors VALUES(?,?,?)");
     const auto cut_count=request.Read<std::uint64_t>();
+    std::unique_ptr<CheckedRequestReader> counts;
+    if(borrowed) {
+      Check(inputs[4].schema()=="partition-cut-counts-v1","assignment count schema disagrees");
+      counts=std::make_unique<CheckedRequestReader>(inputs[4].path(),inputs[4].generation().bytes);
+      Check(counts->Read<std::uint64_t>()==0x31544350464d5545ULL && counts->Read<std::uint32_t>()==1 &&
+            counts->Read<std::uint64_t>()==cut_count && counts->remaining()/8==cut_count,"assignment count envelope disagrees");
+    }
     Check(cut_count<=static_cast<std::uint64_t>(INT64_MAX) &&
-          cut_count<=request.remaining()/(native_cuts?8:48),"assignment cut count is invalid");
+          (borrowed || cut_count<=request.remaining()/(native_cuts?8:48)),"assignment cut count is invalid");
     std::unique_ptr<OrderedRecordTable> nodes;
     if(native_cuts) {
       nodes=std::make_unique<OrderedRecordTable>(inputs[3].path(),0x314E4553464D5545ULL,2);
@@ -156,7 +213,7 @@ void PublishAssignmentIndex(const std::vector<ArtifactRef>& inputs,const std::st
         net=identity(node.net);cut_class=identity(node.kind);source_part=part_index(node.source);
         Check(!node.sinks.empty() && node.sinks.size()<parts.size(),"assignment native sink coverage is invalid");
         for(const auto& sink:node.sinks) sink_parts.push_back(part_index(sink));
-        endpoints=request.Read<std::uint64_t>();level=node.level;depth=node.depth;
+        endpoints=borrowed?counts->Read<std::uint64_t>():request.Read<std::uint64_t>();level=node.level;depth=node.depth;
         predecessor_values=std::move(node.predecessors);
       } else {
         net=Identity(request);cut_class=Identity(request);
@@ -210,6 +267,7 @@ void PublishAssignmentIndex(const std::vector<ArtifactRef>& inputs,const std::st
       digest.update(reinterpret_cast<const unsigned char*>(canonical.data()),canonical.size());
     }
     if(nodes) nodes->reader.RequireEnd();
+    if(counts)counts->RequireEnd();
     request.RequireEnd();
     Put(metadata,"cut_records_schema",JsonQuote("emuflow.phase3-cut-records/v1"));
     Put(metadata,"cut_records",std::to_string(cut_count));
@@ -230,5 +288,82 @@ void PublishAssignmentIndex(const std::vector<ArtifactRef>& inputs,const std::st
   }
   for (const auto& input:inputs) input.RequireUnchanged();
   writer.Commit();
+}
+void PublishAssignmentDescriptor(const std::vector<ArtifactRef>& inputs,const std::string& output) {
+  Check(inputs.size()==4,"assignment descriptor source coverage disagrees");
+  CheckedRequestReader request(inputs[3].path(),8*1024*1024);
+  Check(request.Read<std::uint64_t>()==0x31514441554d5545ULL && request.Read<std::uint32_t>()==1,
+        "unsupported assignment descriptor request");
+  for(unsigned i=0;i<3;++i)if(!(ReadFileGeneration(request)==inputs[i].generation()))
+    throw StageError(ErrorCode::kMixedGeneration,"assignment descriptor source generation changed");
+  const auto header=request.ReadString32(false,8*1024*1024);request.RequireEnd();
+  PrimaryClusterView primary(inputs[1],inputs[0]);EmuirView source(inputs[0]);SqliteStore index(inputs[2]);
+  auto& db=index.database();
+  auto valid=db.Prepare("SELECT json_valid(?1),json_type(?1,'$.document'),json_type(?1,'$.partitions'),"
+      "json_type(?1,'$.cut_nets_index'),json_type(?1,'$.semantic_contract_index'),"
+      "json_extract(?1,'$.document.schema'),(SELECT count(*) FROM json_each(?1))");valid.BindText(1,header);
+  Check(valid.Step() && valid.TypedInteger(0)==1 && valid.Text(1)=="object" && valid.Text(2)=="array" &&
+        valid.Text(3)=="object" && valid.Text(4)=="object" && valid.Text(5)=="emuflow.partition-assignment/v1" &&
+        valid.TypedInteger(6)==4,"assignment descriptor header is invalid");
+  auto duplicate=db.Prepare("SELECT 1 FROM json_tree(?1) WHERE parent IS NOT NULL GROUP BY parent,key HAVING count(*)>1 LIMIT 1");
+  duplicate.BindText(1,header);Check(!duplicate.Step(),"assignment descriptor repeats a JSON key");
+  auto fields=db.Prepare("SELECT key FROM json_each(?1,'$.document') WHERE key IN "
+      "('cluster_assignment','instance_assignment','partitions','semantic_contract','cut_nets')");
+  fields.BindText(1,header);Check(!fields.Step(),"assignment descriptor contains a graph payload");
+  for(const auto* key:{"design","platform","provider","seed","constraints","semantic_contract_sha256"}) {
+    auto compare=db.Prepare("SELECT json_extract(?1,?2) IS json_extract(value,'$') FROM metadata WHERE key=?3");
+    compare.BindText(1,header);compare.BindText(2,std::string("$.document.")+key);compare.BindText(3,key);
+    Check(compare.Step() && compare.TypedInteger(0)==1,"assignment descriptor identity disagrees with its index");
+  }
+  auto seals=db.Prepare("SELECT json_extract(?1,'$.cut_nets_index.artifact')='assignment.sqlite' AND "
+      "json_extract(?1,'$.cut_nets_index.schema')='emuflow.phase3-cut-records/v1' AND "
+      "json_extract(?1,'$.cut_nets_index.records')=json_extract((SELECT value FROM metadata WHERE key='cut_records'),'$') AND "
+      "json_extract(?1,'$.cut_nets_index.sha256')=json_extract((SELECT value FROM metadata WHERE key='cut_records_sha256'),'$') AND "
+      "json_extract(?1,'$.semantic_contract_index.artifact')='assignment.sqlite' AND "
+      "json_extract(?1,'$.semantic_contract_index.schema')=json_extract((SELECT value FROM metadata WHERE key='semantic_contract_schema'),'$') AND "
+      "json_extract(?1,'$.semantic_contract_index.sha256')=json_extract((SELECT value FROM metadata WHERE key='semantic_contract_sha256'),'$')");
+  seals.BindText(1,header);Check(seals.Step() && !seals.IsNull(0) && seals.TypedInteger(0)==1,"assignment descriptor seals disagree");
+  std::vector<std::string> parts;auto rows=db.Prepare("SELECT part_index,fpga FROM parts ORDER BY part_index");
+  while(rows.Step()) {
+    const auto name=rows.TypedText(1);
+    Check(parts.size()<65536 && rows.TypedInteger(0)==std::int64_t(parts.size()) && !name.empty() &&
+          (parts.empty() || parts.back()<name),"assignment descriptor part catalog is invalid");parts.push_back(name);
+  }
+  Check(!parts.empty() && primary.cells()==source.counts().cells,"assignment descriptor dimensions disagree");
+  std::vector<std::uint32_t> ownership(primary.clusters(),UINT32_MAX);
+  std::vector<std::uint64_t> cells(parts.size()),clusters(parts.size());
+  auto copies=db.Prepare("SELECT source_instance_seq,part_index,copy_id,is_replica FROM copies ORDER BY source_instance_seq");
+  auto originals=source.store().database().Prepare("SELECT seq,id FROM cell_records ORDER BY seq");std::uint64_t observed=0;
+  while(copies.Step()) {
+    Check(originals.Step() && originals.TypedInteger(0)==std::int64_t(observed) && copies.TypedInteger(0)==std::int64_t(observed) &&
+          copies.TypedText(2)==originals.TypedText(1) && copies.TypedInteger(3)==0,"assignment descriptor source coverage disagrees");
+    const auto part=copies.TypedInteger(1);Check(part>=0 && std::uint64_t(part)<parts.size(),"assignment descriptor target is invalid");
+    const auto cluster=primary.Owner(observed++);Check(cluster<ownership.size(),"assignment descriptor cluster is invalid");
+    Check(ownership[cluster]==UINT32_MAX || ownership[cluster]==part,"assignment descriptor splits a cluster");
+    if(ownership[cluster]==UINT32_MAX){ownership[cluster]=part;++clusters[part];}++cells[part];
+  }
+  Check(!originals.Step() && observed==primary.cells(),"assignment descriptor instance coverage is incomplete");
+  for(auto part:ownership)Check(part!=UINT32_MAX,"assignment descriptor cluster coverage is incomplete");
+  auto partitions=db.Prepare("SELECT json_extract(value,'$.fpga'),json_extract(value,'$.instance_count'),"
+      "json_extract(value,'$.cluster_count'),json_type(value,'$.clusters') FROM json_each(?1,'$.partitions') ORDER BY 1");
+  partitions.BindText(1,header);std::size_t count=0;
+  while(partitions.Step()) {
+    Check(count<parts.size() && partitions.TypedText(0)==parts[count] && partitions.TypedInteger(1)==std::int64_t(cells[count]) &&
+          partitions.TypedInteger(2)==std::int64_t(clusters[count]) && partitions.IsNull(3),"assignment descriptor partition counts disagree");++count;
+  }
+  Check(count==parts.size(),"assignment descriptor partition coverage is incomplete");
+  const auto field=[&](const char* path) {
+    auto row=db.Prepare("SELECT json_extract(?1,?2)");row.BindText(1,header);row.BindText(2,path);
+    Check(row.Step(),"missing assignment descriptor field");return row.TypedText(0);
+  };
+  std::vector<JsonRecord> catalog;for(const auto& part:parts)catalog.emplace_back(part);
+  const auto width=parts.size()<=256?1U:parts.size()<=65536?2U:4U;
+  PublishTextArtifact(output,inputs,[&](std::ostream& out) {
+    out<<"{\"cluster_count\":"<<primary.clusters()<<",\"cluster_ids\":null,\"cluster_parts\":{\"codec\":\"zlib-level-1-base64-unsigned-index\",\"count\":"
+       <<primary.clusters()<<",\"data\":\"";CompressedParts(out,ownership,width);
+    out<<"\",\"width\":"<<width<<"},\"cut_nets_index\":"<<field("$.cut_nets_index")<<",\"document\":"<<field("$.document")
+       <<",\"part_ids\":"<<JsonRecord(catalog).Encode()<<",\"partitions\":"<<field("$.partitions")
+       <<",\"schema\":\"emuflow.phase3-assignment-storage/v4\",\"semantic_contract\":null,\"semantic_contract_index\":"<<field("$.semantic_contract_index")<<"}\n";
+  });
 }
 }

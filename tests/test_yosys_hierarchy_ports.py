@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from emuflow.errors import ImportError
@@ -21,7 +22,7 @@ def expand(value):
         native = str(emuflow_native())
         with patch("emuflow.yosys_hierarchy_native.resolve_native_executable",return_value=native), patch("emuflow.yosys_hierarchy_native.require_native_schema"):
             _,ports,_,_ = stage_hierarchy(Path("<test-stream>"),store,"top",source_stream=io.StringIO(json.dumps(value)))
-        with sqlite3.connect(store) as connection:
+        with closing(sqlite3.connect(store)) as connection:
             cells = {row[0]:json.loads(row[1]) for row in connection.execute("SELECT id,record_json FROM staging_instances")}
             names = {}
             for bit,name,index,width in connection.execute("SELECT yosys_bit,name,bus_index,bus_width FROM staging_names"):

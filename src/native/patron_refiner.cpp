@@ -3741,7 +3741,9 @@ void write_typed_output(const std::string& output_path,
                         const std::vector<NativeMove>& moves,
                         const std::vector<int>& assignment,
                         const std::vector<NativeBatch>& batches,
-                        const std::vector<emuflow::core::ArtifactRef>& inputs) {
+                        const std::vector<emuflow::core::ArtifactRef>& inputs,
+                        const std::vector<std::uint32_t>& output_to_model,
+                        int part_count) {
   require(initial.objective.size() == 8 && final.objective.size() == 8,
           "PATRON typed output objective is incomplete");
   require(initial.ranked.size() == 10 && final.ranked.size() == 10,
@@ -3787,8 +3789,13 @@ void write_typed_output(const std::string& output_path,
   write(changes);
   write(std::uint32_t{0});
   write(static_cast<std::uint64_t>(assignment.size()));
-  for (const int part : assignment) {
-    require(part >= 0, "PATRON typed output assignment is invalid");
+  require(output_to_model.empty() || output_to_model.size()==assignment.size(),
+          "PATRON publication coordinate coverage is invalid");
+  for (std::size_t row=0;row<assignment.size();++row) {
+    const auto coordinate=output_to_model.empty()?row:output_to_model[row];
+    require(coordinate<assignment.size(),"PATRON publication coordinate is invalid");
+    const int part=assignment[coordinate];
+    require(part >= 0 && part < part_count, "PATRON typed output assignment is invalid");
     write(static_cast<std::uint32_t>(part));
   }
   output.Write(checksum);
@@ -3804,12 +3811,14 @@ void write_output(const std::string& output_path,
                   const std::vector<NativeBatch>& batches,
                   bool emit_trace,
                   bool typed_output,
-                  const std::vector<emuflow::core::ArtifactRef>& inputs) {
+                  const std::vector<emuflow::core::ArtifactRef>& inputs,
+                  const std::vector<std::uint32_t>& output_to_model,
+                  int part_count) {
   if (typed_output) {
     require(!emit_trace,
             "PATRON typed output supports summary-only publication");
     write_typed_output(output_path, mode, initial, final, moves, assignment,
-                       batches,inputs);
+                       batches,inputs,output_to_model,part_count);
     return;
   }
   emuflow::core::AtomicBinaryWriter writer(output_path,inputs);
@@ -5158,7 +5167,7 @@ void run_scalable(const Model& model,
                state.assignment,
                batches,
                emit_trace,
-               typed_output,inputs);
+               typed_output,inputs,model.output_to_model,model.parts);
 }
 
 void run(const Model& model,

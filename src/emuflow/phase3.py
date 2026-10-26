@@ -999,6 +999,10 @@ def run_phase3(
     if candidate_implementation is not None:
         report["candidate_implementation_id"] = candidate_implementation
         report["native_candidate_metrics"] = clusters["clusters"].candidate_native_metrics
+    final_nodes=(assignment.get('semantic_contract') or {}).get('cut_nodes')
+    if getattr(final_nodes,'native_finalization_implementation_id',None) is not None:
+        report['semantic_implementation_id']=final_nodes.native_finalization_implementation_id
+        report['native_semantic_metrics']=final_nodes.native_finalization_metrics
     if cut_mode != CUT_MODE_SEQUENTIAL_ONLY:
         report["cut_mode"] = cut_mode
         report["static_exact_candidate_policy"] = (
@@ -1119,30 +1123,37 @@ def run_phase3(
     report["assignment_index_writer_implementation_id"] = assignment_index_summary["writer_implementation"]
     if "native_writer_metrics" in assignment_index_summary:
         report["native_assignment_index_metrics"] = assignment_index_summary["native_writer_metrics"]
-    persisted_assignment = (
-        assignment
-        if retain_diagnostics
-        else phase3_runtime_call(
-            "publish.pack_assignment",
-            pack_phase3_assignment,
-            assignment,
-            clusters,
-            cut_nets_index={
-                "artifact": "assignment.sqlite",
-                "schema": CUT_RECORDS_SCHEMA,
-                "records": assignment_index_summary["cut_records"],
-                "sha256": assignment_index_summary["cut_records_sha256"],
-            },
+    if not retain_diagnostics and getattr(final_nodes, 'native_finalization_implementation_id', None) is not None:
+        from .phase3_assignment_native import publish_native_assignment_descriptor
+        report['native_assignment_descriptor_metrics'] = phase3_runtime_call(
+            'publish.write_assignment', publish_native_assignment_descriptor,
+            output_dir / 'assignment.json', ir, assignment, clusters, assignment_index_summary)
+        report['assignment_descriptor_writer_implementation_id'] = 'native-indexed-assignment-descriptor-v1'
+    else:
+        persisted_assignment = (
+            assignment
+            if retain_diagnostics
+            else phase3_runtime_call(
+                "publish.pack_assignment",
+                pack_phase3_assignment,
+                assignment,
+                clusters,
+                cut_nets_index={
+                    "artifact": "assignment.sqlite",
+                    "schema": CUT_RECORDS_SCHEMA,
+                    "records": assignment_index_summary["cut_records"],
+                    "sha256": assignment_index_summary["cut_records_sha256"],
+                },
+            )
         )
-    )
-    phase3_runtime_call(
-        "publish.write_assignment",
-        write_json,
-        output_dir / "assignment.json",
-        persisted_assignment,
-        compact=True,
-    )
-    del persisted_assignment
+        phase3_runtime_call(
+            "publish.write_assignment",
+            write_json,
+            output_dir / "assignment.json",
+            persisted_assignment,
+            compact=True,
+        )
+        del persisted_assignment
     if (
         provider == "patron"
         and retain_patron_baseline
@@ -1188,6 +1199,9 @@ def run_phase3(
         report,
         compact=True,
     )
+    if getattr(final_nodes,'native_finalization_implementation_id',None) is not None:
+        from .phase3_semantics_native import close_published_semantics
+        close_published_semantics(assignment)
     return report
 
 

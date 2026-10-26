@@ -349,6 +349,16 @@ owners, engine failures and source mutation reject. A configured
 `EMUFLOW_TEST_OPENROAD` additionally exercises real TritonPart through final
 Phase 3 publication and indexed validation; an absent tool skips this gate.
 
+Selected-owner gates compare complete cuts, metrics, semantic identity, all
+logical semantic records, final SQL rows and exact-binary bytes with the separate
+reference across reordered/sparse endpoints, reconvergence, fanout, empty cuts and
+Unicode identities. Poisoned host endpoint projection, semantic iteration,
+ownership/count serialization and packed compression must not affect production.
+Packed selectors compare byte-for-byte. Wrong source copies, partition counts,
+cut seals, depth policy and original artifact generation changes reject while
+preserving previous published files. An actual solver-writer test exercises a
+nonidentity publication permutation without requiring a million-cell fixture.
+
 These are component gates; full Phase 3 and complete NVDLA acceptance still
 require their declared real-design evidence.
 

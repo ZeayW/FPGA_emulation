@@ -51,10 +51,10 @@ def request(tmp_path,value=None,*,engine='',strict=False,timeout=0,output=None,e
     return path,root,program,rtl
 
 
-def run(native,path,*,expected=None):
+def run(native,path,*,expected=None,timeout=20):
     command=[native,'--report',str(path.parent/'operation.json'),'phase1','run',str(path)]
     if expected is not None:command.append(str(expected))
-    return subprocess.run(command,capture_output=True,text=True,timeout=20)
+    return subprocess.run(command,capture_output=True,text=True,timeout=timeout)
 
 
 @pytest.mark.parametrize('gated',[False,True])
@@ -99,8 +99,10 @@ def test_failed_whole_stage_never_publishes_an_emuir_or_report(native,tmp_path,f
 
 
 def test_pipe_backpressure_and_noisy_stderr_are_serviced_together(native,tmp_path):
-    path,root,_,_=request(tmp_path,source(fanout=18000),engine='sys.stderr.write("noise"*1000000);sys.stderr.flush()')
-    result=run(native,path);assert result.returncode==0,result.stderr
+    path,root,_,_=request(tmp_path,source(fanout=18000),engine='sys.stderr.write("noise"*1000000);sys.stderr.flush()',timeout=120000)
+    # NFS publication/import is part of this whole-stage fixture. Keep a real
+    # engine deadline and give the supervisor time to reap before outer timeout.
+    result=run(native,path,timeout=180);assert result.returncode==0,result.stderr
     report=json.loads((root/'phase1_report.json').read_text())
     assert report['clock_topology']['maximum_fabric_clock_fanout']==0
     assert report['clock_topology']['ff_clock_nets']==1

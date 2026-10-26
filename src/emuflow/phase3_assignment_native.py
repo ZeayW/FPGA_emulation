@@ -100,10 +100,19 @@ def reduce_native_partition_loads(clusters, assignment, fpga_ids, *, metrics=Non
 
 
 @dataclass(frozen=True)
+class NativeAssignmentOwnership:
+    sources: tuple
+    parts: tuple
+    column: object
+
+
+@dataclass(frozen=True)
 class NativeAssignmentCutSource:
     paths: tuple
     generations: tuple
     endpoint_counts: object
+    auxiliary_sources: tuple = ()
+    ownership: object = None
 
 
 def native_assignment_cut_source(assignment):
@@ -165,7 +174,26 @@ def native_assignment_cut_source(assignment):
         raise ValidationError("native assignment semantic source dimensions disagree")
     if tuple(native_file_generation(p) for p in paths) != generations:
         raise ValidationError("native assignment semantic generation changed")
-    return NativeAssignmentCutSource(paths, generations, counts)
+    auxiliary_sources = (counts.native_source,) if getattr(counts, 'native_source', None) is not None else ()
+    if auxiliary_sources:
+        from .store_publication import require_store_sources_unchanged
+        require_store_sources_unchanged(auxiliary_sources)
+    ownership = getattr(nodes, 'native_assignment_ownership', None)
+    if ownership is not None:
+        from .store_publication import require_store_sources_unchanged
+        selected = assignment.get('cluster_assignment')
+        instance = assignment.get('instance_assignment')
+        if (getattr(selected, 'part_indices', None) is not ownership.column
+                or getattr(selected, 'part_ids', None) != ownership.parts
+                or ownership.sources[0].path != Path(instance.path).resolve()
+                or ownership.sources[0].generation != instance._native_source_generation
+                or ownership.sources[1].path != Path(instance._native_primary_artifact).resolve()
+                or ownership.sources[1].generation != instance._native_primary_generation
+                or not auxiliary_sources):
+            raise ValidationError('native assignment selected ownership is missing or mixed')
+        require_store_sources_unchanged(ownership.sources)
+        auxiliary_sources += ownership.sources[2:]
+    return NativeAssignmentCutSource(paths, generations, counts, auxiliary_sources, ownership)
 
 
 def publish_native_assignment_index(path, ir, assignment, part_ids, metadata):
@@ -191,7 +219,8 @@ def publish_native_assignment_index(path, ir, assignment, part_ids, metadata):
         raise ValidationError('cut-net assignment is invalid')
     part_index = {part: index for index, part in enumerate(part_ids)}
     cut_source = native_assignment_cut_source(assignment)
-    cut_version = 2 if cut_source is not None else 1
+    borrowed = cut_source is not None and cut_source.ownership is not None
+    cut_version = 3 if borrowed else 2 if cut_source is not None else 1
     with tempfile.TemporaryDirectory(prefix='emuflow-assignment-publish-', dir=path.parent) as temporary:
         request = Path(temporary) / 'request.bin'
         writer = CheckedRequestWriter(request)
@@ -201,16 +230,22 @@ def publish_native_assignment_index(path, ir, assignment, part_ids, metadata):
                 writer.put('3Q4q', *generation)
             if cut_source is not None:
                 writer.put("3Q4q", *cut_source.generations[0])
+            if borrowed:
+                for item in cut_source.auxiliary_sources:
+                    writer.put('3Q4q', *item.generation)
             writer.catalog(part_ids)
-            writer.catalog(instance_assignment.part_ids)
+            writer.catalog(cut_source.ownership.parts if borrowed else instance_assignment.part_ids)
             writer.put('QQ', len(instance_assignment._cluster_parts), len(instance_assignment))
-            writer.bytes(instance_assignment._cluster_parts)
+            if not borrowed:
+                writer.bytes(instance_assignment._cluster_parts)
             writer.put('I', len(metadata))
             for key, value in sorted(metadata.items()):
                 writer.text(key)
                 writer.text(_json(value))
             writer.put('Q', len(raw_cuts))
-            if cut_source is not None:
+            if borrowed:
+                pass
+            elif cut_source is not None:
                 writer.bytes(cut_source.endpoint_counts)
             else:
                 for raw in raw_cuts:
@@ -247,6 +282,8 @@ def publish_native_assignment_index(path, ir, assignment, part_ids, metadata):
         ]
         if cut_source is not None:
             command.append(str(cut_source.paths[0]))
+        if borrowed:
+            command.extend(str(item.path) for item in cut_source.auxiliary_sources)
         command.append(str(path))
         with NativeToolProcess(executable, command, environment=dict(os.environ),
                                timeout_ms=21600000, scratch_parent=Path(temporary)) as process:
@@ -261,10 +298,14 @@ def publish_native_assignment_index(path, ir, assignment, part_ids, metadata):
             != cut_source.generations
         ):
             raise ValidationError("native assignment semantic generation changed")
+        if cut_source is not None and cut_source.auxiliary_sources:
+            from .store_publication import require_store_sources_unchanged
+            require_store_sources_unchanged(cut_source.auxiliary_sources)
         return dict(
             completed.native_metrics,
             native_cut_records=len(raw_cuts) if cut_source is not None else 0,
             host_cut_records=0 if cut_source is not None else len(raw_cuts),
+            host_ownership_records=0 if borrowed else len(instance_assignment._cluster_parts),
             cut_request_bytes=request.stat().st_size,
         )
 
@@ -316,3 +357,58 @@ def validate_native_assignment_cuts(path):
     ):
         raise ValidationError("assignment cut validation summary disagrees")
     return summary
+
+
+def publish_native_assignment_descriptor(path, ir, assignment, clusters, index_summary):
+    """Write the production selector from its final typed owner, never host rows."""
+    from .native_protocol import CheckedRequestWriter
+    from .phase3_assignment_index import _json
+    from .store_publication import (StoreSource, bind_store_source,
+        validate_store_destination, require_store_sources_unchanged)
+
+    instance = assignment['instance_assignment']
+    sources = (
+        StoreSource(Path(instance.path).resolve(), 'emuir-compact-v2', instance._native_source_generation),
+        StoreSource(Path(instance._native_primary_artifact).resolve(), 'partition-cluster-columns-v2', instance._native_primary_generation),
+        bind_store_source(Path(path).with_name('assignment.sqlite'), 'assignment-index-v4'),
+    )
+    sources = validate_store_destination(Path(path), sources)
+    if Path(ir.path).resolve() != sources[0].path:
+        raise ValidationError('native assignment descriptor EmuIR disagrees')
+    require_store_sources_unchanged(sources)
+    contract = assignment.get('semantic_contract')
+    if (not isinstance(contract, dict) or contract.get('schema') != 'emuflow.static-exact-combinational-cut/v3'
+            or len(clusters['clusters']) != len(assignment['cluster_assignment'])):
+        raise ValidationError('native assignment descriptor owner disagrees')
+    header = {
+        'document': {key: value for key, value in assignment.items()
+            if key not in {'cluster_assignment', 'instance_assignment', 'partitions', 'semantic_contract', 'cut_nets'}},
+        'partitions': [{key: value for key, value in part.items() if key != 'clusters'}
+            for part in assignment['partitions']],
+        'semantic_contract_index': {'artifact': 'assignment.sqlite', 'schema': contract['schema'],
+            'sha256': assignment['semantic_contract_sha256']},
+        'cut_nets_index': {'artifact': 'assignment.sqlite', 'schema': 'emuflow.phase3-cut-records/v1',
+            'records': index_summary['cut_records'], 'sha256': index_summary['cut_records_sha256']},
+    }
+    document = _json(header)
+    if len(document.encode('utf-8')) > 8*1024*1024-1024:
+        raise ValidationError('native assignment descriptor header exceeds bound')
+    with tempfile.TemporaryDirectory(prefix='.assignment-descriptor-', dir=Path(path).parent) as temporary:
+        request = Path(temporary)/'request.bin'
+        writer = CheckedRequestWriter(request)
+        try:
+            writer.put('QI', 0x31514441554D5545, 1)
+            for item in sources: writer.put('3Q4q', *item.generation)
+            writer.text(document);writer.finish()
+        finally:
+            writer.close()
+        executable = resolve_native_executable('emuflow-native')
+        command = [executable, 'phase3', 'publish-assignment-descriptor',
+            *(str(item.path) for item in sources), str(request), str(path)]
+        with NativeToolProcess(executable, command, environment=dict(os.environ),
+                timeout_ms=21600000, scratch_parent=Path(temporary)) as process:
+            completed = process.finish()
+        if completed.returncode:
+            raise ValidationError('native assignment descriptor publication failed: '+completed.stdout)
+        require_store_sources_unchanged(sources)
+        return dict(completed.native_metrics, request_bytes=request.stat().st_size)

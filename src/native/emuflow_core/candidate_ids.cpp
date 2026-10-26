@@ -44,7 +44,7 @@ struct NetFacts {
   bool sink=false,reason=false,combinational=false;
 };
 }
-void BuildCandidateIds(const std::vector<ArtifactRef>& inputs,const std::string& output) {
+CandidateEligibility BuildCandidateEligibility(const std::vector<ArtifactRef>& inputs) {
   Check(inputs.size()==2,"candidate source coverage is invalid");
   for (const auto& input:inputs) input.RequireUnchanged();
   EmuirView ir(inputs[0]);
@@ -171,6 +171,17 @@ void BuildCandidateIds(const std::vector<ArtifactRef>& inputs,const std::string&
   }
   std::vector<Arc>().swap(arcs); std::vector<NetFacts>().swap(facts);
   std::vector<unsigned char>().swap(classes); std::vector<unsigned char>().swap(input_policy);
+  for (const auto& input:inputs) input.RequireUnchanged();
+  return {nets,eligible,std::move(bits)};
+}
+
+void BuildCandidateIds(const std::vector<ArtifactRef>& inputs,const std::string& output) {
+  const auto eligibility=BuildCandidateEligibility(inputs);
+  const auto nets=eligibility.nets,eligible=eligibility.eligible;
+  const auto& bits=eligibility.bits;
+  EmuirView ir(inputs[0]);
+  auto& source=ir.store().database();
+  std::uint64_t observed=0;
   // A single lexical scan streams the name pool. Offsets and its byte length
   // follow it, so no full name pool, spool or second name scan is required.
   AtomicBinaryWriter writer(output,inputs); std::uint32_t crc=0;

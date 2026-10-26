@@ -245,6 +245,31 @@ class StaticExactCaptureSequence(StaticExactRecordSequence):
         return self._binary_factory()
 
 
+class _NativeNodeLaunchFlags(Sequence):
+    """Immutable launch projection from independently validated native nodes."""
+    def __init__(self, nodes, metrics, launches):
+        from types import MappingProxyType
+        if (getattr(nodes,'native_validation_source',None) is None
+                or getattr(nodes,'native_semantic_version',None)!=2
+                or type(launches) is not int or not 0<=launches<=len(nodes)
+                or any(type(value) is not int or value<0 for value in metrics.values())
+                or metrics.get('transported_cut_nets')!=len(nodes)
+                or metrics.get('logic_segments')!=launches+metrics.get('dependency_edges',-1)+metrics.get('capture_requirements',-1)):
+            raise ValidationError('native semantic launch proof disagrees')
+        self.nodes,self.metrics,self.launch_count=nodes,MappingProxyType(dict(metrics)),launches
+
+    def __len__(self):
+        return len(self.nodes)
+
+    def __getitem__(self,index):
+        if isinstance(index,slice):return [self[i] for i in range(*index.indices(len(self)))]
+        if type(index) is not int or not 0<=index<len(self):raise IndexError(index)
+        return self.nodes.native_launch_flag(index)
+
+    def __iter__(self):
+        for index in range(len(self)):yield self.nodes.native_launch_flag(index)
+
+
 class StaticExactDirectBinarySource:
     """Compact native topology consumed directly by assignment.exact.bin.
 
@@ -266,7 +291,8 @@ class StaticExactDirectBinarySource:
     ) -> None:
         if (
             len(launch_flags) != len(cut_nodes)
-            or any(flag not in {0, 1, 2} for flag in launch_flags)
+            or (not isinstance(launch_flags,_NativeNodeLaunchFlags)
+                and any(flag not in {0, 1, 2} for flag in launch_flags))
             or not hasattr(integer_topology, "dependency_count")
             or not hasattr(integer_topology, "dependency_indices")
             or isinstance(dependency_count, bool)
@@ -284,11 +310,11 @@ class StaticExactDirectBinarySource:
             raise ValidationError("Static Exact direct binary source is invalid")
         self.cut_nodes = cut_nodes
         self.captures = captures
-        self.launch_flags = bytes(launch_flags)
+        self.launch_flags = launch_flags if isinstance(launch_flags,_NativeNodeLaunchFlags) else bytes(launch_flags)
         self.integer_topology = integer_topology
         self.dependency_edges = dependency_edges
         self.logic_segments = logic_segments
-        self.launch_count = sum(flag != 0 for flag in self.launch_flags)
+        self.launch_count = launch_flags.launch_count if isinstance(launch_flags,_NativeNodeLaunchFlags) else sum(flag != 0 for flag in self.launch_flags)
         self.dependency_count = dependency_count
         paths = (getattr(cut_nodes, "native_semantic_artifact_path", None),
                  getattr(captures, "native_capture_artifact_path", None))
@@ -404,7 +430,7 @@ def build_static_exact_cut_node_stream(
     return _decode_cut_node_stream(encoded, offsets)
 
 
-def read_native_static_exact_cut_node_stream(path: Path) -> StaticExactCutNodeSequence:
+def read_native_static_exact_cut_node_stream(path: Path, *, _validated_source=None) -> StaticExactCutNodeSequence:
     """Map final native-owned node bytes without repacking their records."""
 
     owner = None
@@ -412,6 +438,10 @@ def read_native_static_exact_cut_node_stream(path: Path) -> StaticExactCutNodeSe
     result = None
     try:
         generation = native_file_generation(path)
+        if _validated_source is not None:
+            if (_validated_source.schema!='exact-nodes-v2' or _validated_source.path!=path.resolve()
+                    or _validated_source.generation!=generation):
+                raise ValidationError('native semantic validation generation disagrees')
         with path.open("rb") as stream:
             data = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
         owner = _ColumnOwner(data)
@@ -424,9 +454,9 @@ def read_native_static_exact_cut_node_stream(path: Path) -> StaticExactCutNodeSe
             raise ValidationError("native semantic node envelope is invalid")
         offsets = memoryview(data)[24:start].cast("Q")
         views.append(offsets)
-        if offsets[0] != 0 or offsets[-1] != size or any(
+        if offsets[0] != 0 or offsets[-1] != size or (_validated_source is None and any(
             offsets[index] >= offsets[index + 1] for index in range(count)
-        ):
+        )):
             raise ValidationError("native semantic node offsets are invalid")
         encoded, node_offsets = memoryview(data)[start:], offsets[:-1]
         views.extend((encoded, node_offsets))
@@ -446,6 +476,7 @@ def read_native_static_exact_cut_node_stream(path: Path) -> StaticExactCutNodeSe
                 "native semantic record generation changed while mapping"
             )
         result.native_semantic_generation = generation
+        result.native_validation_source = _validated_source
         result._bind_native_mapping(owner)
         return result
     except (OSError, ValueError, struct.error) as error:
@@ -720,13 +751,17 @@ def build_static_exact_capture_stream(
     )
 
 
-def read_native_static_exact_capture_stream(path: Path) -> StaticExactCaptureSequence:
+def read_native_static_exact_capture_stream(path: Path, *, _validated_source=None) -> StaticExactCaptureSequence:
     """Map native canonical captures with direct indexed access for validation."""
 
     owner = None
     result = None
     try:
         generation = native_file_generation(path)
+        if _validated_source is not None:
+            if (_validated_source.schema!='exact-captures-v1' or _validated_source.path!=path.resolve()
+                    or _validated_source.generation!=generation):
+                raise ValidationError('native capture validation generation disagrees')
         with path.open("rb") as stream:
             data = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
         owner = _ColumnOwner(data)
@@ -738,9 +773,9 @@ def read_native_static_exact_capture_stream(path: Path) -> StaticExactCaptureSeq
             raise ValidationError("native capture envelope is invalid")
         offsets = memoryview(data)[24:start].cast("Q")
         owner.views.append(offsets)
-        if offsets[0] != 0 or offsets[-1] != size or any(
+        if offsets[0] != 0 or offsets[-1] != size or (_validated_source is None and any(
             offsets[index] >= offsets[index + 1] for index in range(count)
-        ):
+        )):
             raise ValidationError("native capture offsets are invalid")
         def binary(index):
             offset, end = start + offsets[index], start + offsets[index + 1]
@@ -818,76 +853,87 @@ def build_static_exact_record_streams(
     the authority for ordering; every traversal checks their exact coverage.
     """
 
-    if not isinstance(launch_flags, (bytes, bytearray)):
-        raise ValidationError("Static Exact launch stream is invalid")
-    # The derived factories and direct typed source must observe one immutable
-    # generation even when a caller supplied a mutable bytearray.
-    launch_flags = bytes(launch_flags)
-    if len(launch_flags) != len(cut_nodes) or any(
-        flag not in {0, 1, 2} for flag in launch_flags
-    ):
-        raise ValidationError("Static Exact launch stream is invalid")
-    dependency_count = 0
-    launch_count = 0
-    capture_segment_count = 0
-    for index, node in enumerate(cut_nodes):
-        if not isinstance(node, Mapping):
-            raise ValidationError("Static Exact cut-node stream is invalid")
-        predecessors = node.get("predecessor_cut_nets")
-        source_segments = node.get("source_segment_ids")
-        capture_segments = node.get("capture_segment_ids")
-        source_fpgas = node.get("source_fpgas")
-        if (
-            not isinstance(predecessors, list)
-            or not all(
-                isinstance(item, str) and item for item in predecessors
-            )
-            or not isinstance(source_segments, list)
-            or not all(
-                isinstance(item, str) and item for item in source_segments
-            )
-            or not isinstance(capture_segments, list)
-            or not all(
-                isinstance(item, str) and item for item in capture_segments
-            )
-            or not isinstance(source_fpgas, list)
-            or len(source_fpgas) != 1
-            or not isinstance(source_fpgas[0], str)
-            or not source_fpgas[0]
-            or len(source_segments)
-            != len(predecessors) + int(launch_flags[index] != 0)
+    if isinstance(launch_flags,_NativeNodeLaunchFlags):
+        if launch_flags.nodes is not cut_nodes or len(launch_flags)!=len(cut_nodes):
+            raise ValidationError('native semantic stream source disagrees')
+        dependency_count=launch_flags.metrics['dependency_edges']
+        launch_count=launch_flags.launch_count
+        capture_segment_count=launch_flags.metrics['capture_requirements']
+        if capture_segment_count!=len(captures):
+            raise ValidationError('native semantic capture coverage disagrees')
+    else:
+        if not isinstance(launch_flags, (bytes, bytearray)):
+            raise ValidationError("Static Exact launch stream is invalid")
+        # The derived factories and direct typed source must observe one immutable
+        # generation even when a caller supplied a mutable bytearray.
+        launch_flags = bytes(launch_flags)
+        if len(launch_flags) != len(cut_nodes) or any(
+            flag not in {0, 1, 2} for flag in launch_flags
         ):
-            raise ValidationError("Static Exact cut-node stream is invalid")
-        dependency_count += len(predecessors)
-        launch_count += int(launch_flags[index] != 0)
-        capture_segment_count += len(capture_segments)
-    if capture_segment_count != len(captures):
-        raise ValidationError("Static Exact capture stream coverage disagrees")
-    capture_segment_start = launch_count + dependency_count
-    capture_index = 0
-    capture_iterator = iter(captures)
-    for node in cut_nodes:
-        segment_ids = node["capture_segment_ids"]
-        expected_ids = sorted(
-            f"segment{capture_segment_start + index:06d}"
-            for index in range(
-                capture_index, capture_index + len(segment_ids)
-            )
-        )
-        if segment_ids != expected_ids:
-            raise ValidationError("Static Exact capture segment order disagrees")
-        for _ in segment_ids:
-            capture = next(capture_iterator, None)
+            raise ValidationError("Static Exact launch stream is invalid")
+        dependency_count = 0
+        launch_count = 0
+        capture_segment_count = 0
+        for index, node in enumerate(cut_nodes):
+            if not isinstance(node, Mapping):
+                raise ValidationError("Static Exact cut-node stream is invalid")
+            predecessors = node.get("predecessor_cut_nets")
+            source_segments = node.get("source_segment_ids")
+            capture_segments = node.get("capture_segment_ids")
+            source_fpgas = node.get("source_fpgas")
             if (
-                not isinstance(capture, Mapping)
-                or capture.get("cut_net") != node.get("net")
-            ):
-                raise ValidationError(
-                    "Static Exact capture stream order disagrees"
+                not isinstance(predecessors, list)
+                or not all(
+                    isinstance(item, str) and item for item in predecessors
                 )
-            capture_index += 1
-    if next(capture_iterator, None) is not None:
-        raise ValidationError("Static Exact capture stream coverage disagrees")
+                or not isinstance(source_segments, list)
+                or not all(
+                    isinstance(item, str) and item for item in source_segments
+                )
+                or not isinstance(capture_segments, list)
+                or not all(
+                    isinstance(item, str) and item for item in capture_segments
+                )
+                or not isinstance(source_fpgas, list)
+                or len(source_fpgas) != 1
+                or not isinstance(source_fpgas[0], str)
+                or not source_fpgas[0]
+                or len(source_segments)
+                != len(predecessors) + int(launch_flags[index] != 0)
+            ):
+                raise ValidationError("Static Exact cut-node stream is invalid")
+            dependency_count += len(predecessors)
+            launch_count += int(launch_flags[index] != 0)
+            capture_segment_count += len(capture_segments)
+        if capture_segment_count != len(captures):
+            raise ValidationError("Static Exact capture stream coverage disagrees")
+        capture_segment_start = launch_count + dependency_count
+        capture_index = 0
+        capture_iterator = iter(captures)
+        for node in cut_nodes:
+            segment_ids = node["capture_segment_ids"]
+            expected_ids = sorted(
+                f"segment{capture_segment_start + index:06d}"
+                for index in range(
+                    capture_index, capture_index + len(segment_ids)
+                )
+            )
+            if segment_ids != expected_ids:
+                raise ValidationError("Static Exact capture segment order disagrees")
+            for _ in segment_ids:
+                capture = next(capture_iterator, None)
+                if (
+                    not isinstance(capture, Mapping)
+                    or capture.get("cut_net") != node.get("net")
+                ):
+                    raise ValidationError(
+                        "Static Exact capture stream order disagrees"
+                    )
+                capture_index += 1
+        if next(capture_iterator, None) is not None:
+            raise ValidationError("Static Exact capture stream coverage disagrees")
+
+    capture_segment_start = launch_count + dependency_count
 
     def dependency_edges() -> Iterator[dict[str, Any]]:
         observed = 0

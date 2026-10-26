@@ -10,6 +10,7 @@
 #include "emuflow_core/yosys_hierarchy.hpp"
 #include "emuflow_core/frontend.hpp"
 #include "emuflow_core/partition_init.hpp"
+#include "emuflow_core/partition_semantics.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/store_publication.hpp"
 
@@ -23,6 +24,7 @@ constexpr const char* kUsage =
     "  compile REQUEST_JSON\n"
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
     "  phase3 initialize-tritonpart EMUIR PRIMARY REQUEST OUTPUT_DIR [WEIGHTS_SELECTOR WEIGHTS_STORE] [SOLUTION]\n"
+    "  phase3 finalize-assignment-semantics EMUIR PRIMARY POLICY REQUEST OUTPUT_DIR [OWNER [ORDER]]\n"
     "  phase1 run REQUEST\n"
     "  phase1 import-yosys REQUEST EMUIR SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
     "  run-tool REQUEST RESULT_JSON\n"
@@ -40,7 +42,8 @@ constexpr const char* kUsage =
     "  phase3 build-candidate-ids EMUIR POLICY OUTPUT\n"
     "  phase3 build-clusters EMUIR REQUEST OUTPUT\n"
     "  phase3 validate-cuts ASSIGNMENT SUMMARY\n"
-    "  phase3 publish-assignment EMUIR PRIMARY REQUEST [NATIVE_NODES] OUTPUT\n"
+    "  phase3 publish-assignment EMUIR PRIMARY REQUEST [NATIVE_NODES [COUNTS [OWNER [ORDER]]]] OUTPUT\n"
+    "  phase3 publish-assignment-descriptor EMUIR PRIMARY INDEX REQUEST OUTPUT\n"
     "  phase3 publish-cluster-catalog EMUIR PRIMARY REQUEST [CANDIDATES] OUTPUT\n"
     "  phase3 reduce-loads EMUIR PRIMARY REQUEST OUTPUT\n"
     "  phase4 route --typed-output INPUT OUTPUT\n"
@@ -160,6 +163,16 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     if(argc==8 || argc==10)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[argc-1],"tritonpart-solution-v1"));
     ToolSignals signals;return Finish(emuflow::core::InitializePartition(inputs,argv[6],&tool_cancelled),report);
   }
+  if(argc>=8 && argc<=10 && std::string(argv[1])=="phase3" && std::string(argv[2])=="finalize-assignment-semantics") {
+    std::vector<emuflow::core::ArtifactRef> inputs{
+      emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),
+      emuflow::core::ArtifactRef::Bind(argv[4],"partition-cluster-columns-v2"),
+      emuflow::core::ArtifactRef::Bind(argv[5],"candidate-policy-request-v1"),
+      emuflow::core::ArtifactRef::Bind(argv[6],"partition-finalization-request-v1")};
+    if(argc>=9)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[8],argc==9?"patron-initial-columns-v1":"patron-output-v1"));
+    if(argc==10)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[9],"patron-cluster-order-v1"));
+    return Finish(emuflow::core::FinalizePartitionSemantics(inputs,argv[7]),report);
+  }
   if((argc==4 || argc==5) && std::string(argv[1])=="phase1" && std::string(argv[2])=="run") {
     ToolSignals signals;
     return Finish(emuflow::core::RunFrontend(emuflow::core::ArtifactRef::Bind(argv[3],"frontend-request-v1"),&tool_cancelled,argc==5?argv[4]:""),report);
@@ -261,9 +274,11 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if (phase == "phase3" && operation == "validate-cuts" && argc == 5)
     return run(Stage::kValidateAssignmentCuts,{argv[3]},argv[4]);
-  if (phase == "phase3" && operation == "publish-assignment" && (argc == 7 || argc == 8)) {
+  if(phase=="phase3" && operation=="publish-assignment-descriptor" && argc==8)
+    return run(Stage::kPublishAssignmentDescriptor,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
+  if (phase == "phase3" && operation == "publish-assignment" && argc>=7 && argc<=11) {
     std::vector<std::string> inputs{argv[3],argv[4],argv[5]};
-    if(argc==8) inputs.emplace_back(argv[6]);
+    for(int i=6;i<argc-1;++i)inputs.emplace_back(argv[i]);
     return run(Stage::kPublishAssignmentIndex,inputs,argv[argc-1]);
   }
   if (phase == "phase3" && operation == "reduce-loads" && argc == 7)

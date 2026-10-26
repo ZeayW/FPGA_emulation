@@ -108,13 +108,14 @@ canonical membership and resource reduction, with read-only columns borrowed by
 Python consumers; their mapping owner also controls temporary-file retirement.
 Structural candidate eligibility and final cluster catalog serialization also run
 in the shared core. The catalog consumes original primary/candidate artifacts;
-assignment packing reads ordinals without expanding member/resource records.
-Remaining semantic/index orchestration still has Python work; this is not
+assignment packing streams from the authoritative index without expanding
+member/resource records through Python. Remaining stage orchestration still has Python work; this is not
 complete Phase 3 native ownership.
 Compact indexed PATRON v14 production builds its pressure model directly in
 the shared core from EmuIR, TimingPathDB and the original native primary store;
 it avoids a second membership/resource snapshot and transposed resource matrix.
-Python carries configuration and packed initial ownership, not a pressure graph.
+Python carries bounded configuration and the original initial-ownership artifact
+reference, not a pressure graph or a rewritten ownership column.
 The old snapshot-based native model command is retired; direct model construction
 requires the shared primary artifact and rejects missing ownership.
 Greedy partitioning is a small test oracle only; it has no production entry.
@@ -217,7 +218,11 @@ can use the normal TritonPart initializer while keeping capacity/balance bounds.
 Production TritonPart initialization now runs in the shared core, from indexed
 weights and primary clusters through supervised OpenROAD execution to an
 independently checked selected ownership column. PATRON borrows that column
-directly. Final Phase 3 semantic/assignment orchestration still requires migration.
+directly. Selected ownership now feeds native cut projection, semantic/capture
+generation and independent topology checks. Assignment publication borrows the
+original ownership/count artifacts, and the final packed selector streams from
+the authoritative index without Python cluster iteration or compression.
+Complete Phase 3 stage control and real-design qualification remain unfinished.
 The Phase 3 topology hop legalizer runs through the shared
 `emuflow-native phase3 refine-hops` operation, preserving its algorithm and
 independent hop audit. Production keeps assignment and counters; explicit

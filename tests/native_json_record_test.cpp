@@ -26,6 +26,13 @@ int main(int argc, char**) {
     if (!failed) return 6;
   }
   if (JsonRecord(std::map<std::string,JsonRecord>{{u8"路径",JsonRecord(std::vector<JsonRecord>{u8"😀",1.25})}}).EncodeUtf8() != u8"{\"路径\":[\"😀\",1.25]}") return 7;
+  const std::string nul=u8"α"+std::string(1,'\0')+u8"β😀\n\\\"";
+  if(emuflow::core::DecodeJsonString(emuflow::core::JsonQuote(nul))!=nul ||
+     emuflow::core::DecodeJsonString(emuflow::core::JsonQuoteUtf8(nul))!=nul) return 8;
+  for(const auto& token:{"\"\\ud800\"","\"\\udc00\"","\"\\u0x00\"","\"\\q\""}) {
+    bool failed=false;try{(void)emuflow::core::DecodeJsonString(token);}catch(const std::runtime_error&){failed=true;}
+    if(!failed)return 9;
+  }
   if (argc == 1) return 0;
   std::uint64_t bits;
   while (std::cin >> std::hex >> bits) {

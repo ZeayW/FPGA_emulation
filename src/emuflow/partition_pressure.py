@@ -24,6 +24,7 @@ import zlib
 from array import array
 from collections.abc import Iterator, Sequence
 from collections import defaultdict
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
@@ -3183,6 +3184,17 @@ def _parse_patron_typed_output(
         or isinstance(parts, (str, bytes))
     ):
         raise ValidationError("native PATRON typed output indexes are invalid")
+    workspace = indexes.get('native_workspace') if packed_assignment else None
+    mapped = workspace is not None and indexes.get('native_output_source') is not None
+    if mapped:
+        from .store_publication import require_store_sources_unchanged
+        require_store_sources_unchanged(tuple(indexes[key] for key in (
+            'native_output_source', 'native_order_source', 'native_primary_source', 'native_emuir_source')))
+        if (tuple(parts) != tuple(sorted(set(parts))) or not parts or len(parts)>65536
+                or indexes['native_output_source'].path != path.resolve()):
+            raise ValidationError('native PATRON mapped ownership binding disagrees')
+    column_owner = None
+    retained = False
     stream = path.open("rb")
     try:
         try:
@@ -3248,52 +3260,56 @@ def _parse_patron_typed_output(
                 raise ValidationError(
                     "native PATRON typed output summary is invalid"
                 )
-            sentinel = 2**32 - 1
-            packed_parts = (
-                array("I", [sentinel]) * cluster_count
-                if packed_assignment
-                else None
-            )
-            assignment: Dict[str, str] = {}
-            for native_cluster in range(cluster_count):
-                part = take("<I")[0]
-                if part >= len(parts):
-                    raise ValidationError(
-                        "native PATRON typed output assignment is invalid"
-                    )
-                cluster_id = clusters[native_cluster]
-                part_id = parts[part]
-                if not isinstance(cluster_id, str) or not isinstance(
-                    part_id, str
-                ):
-                    raise ValidationError(
-                        "native PATRON typed output identity is invalid"
-                    )
-                if packed_parts is None:
-                    if cluster_id in assignment:
+            parts_offset = offset
+            if mapped:
+                offset += 4 * cluster_count
+            else:
+                sentinel = 2**32 - 1
+                packed_parts = (
+                    array("I", [sentinel]) * cluster_count
+                    if packed_assignment
+                    else None
+                )
+                assignment: Dict[str, str] = {}
+                for native_cluster in range(cluster_count):
+                    part = take("<I")[0]
+                    if part >= len(parts):
                         raise ValidationError(
-                            "native PATRON typed output assignment repeats"
+                            "native PATRON typed output assignment is invalid"
                         )
-                    assignment[cluster_id] = part_id
-                else:
-                    if (
-                        not cluster_id.startswith("c")
-                        or not cluster_id[1:].isdigit()
+                    cluster_id = clusters[native_cluster]
+                    part_id = parts[part]
+                    if not isinstance(cluster_id, str) or not isinstance(
+                        part_id, str
                     ):
                         raise ValidationError(
-                            "native PATRON cluster identity is not canonical"
+                            "native PATRON typed output identity is invalid"
                         )
-                    cluster_ordinal = int(cluster_id[1:])
-                    if (
-                        cluster_ordinal >= len(packed_parts)
-                        or _PackedClusterAssignment.identity(cluster_ordinal)
-                        != cluster_id
-                        or packed_parts[cluster_ordinal] != sentinel
-                    ):
-                        raise ValidationError(
-                            "native PATRON typed output assignment repeats"
-                        )
-                    packed_parts[cluster_ordinal] = part
+                    if packed_parts is None:
+                        if cluster_id in assignment:
+                            raise ValidationError(
+                                "native PATRON typed output assignment repeats"
+                            )
+                        assignment[cluster_id] = part_id
+                    else:
+                        if (
+                            not cluster_id.startswith("c")
+                            or not cluster_id[1:].isdigit()
+                        ):
+                            raise ValidationError(
+                                "native PATRON cluster identity is not canonical"
+                            )
+                        cluster_ordinal = int(cluster_id[1:])
+                        if (
+                            cluster_ordinal >= len(packed_parts)
+                            or _PackedClusterAssignment.identity(cluster_ordinal)
+                            != cluster_id
+                            or packed_parts[cluster_ordinal] != sentinel
+                        ):
+                            raise ValidationError(
+                                "native PATRON typed output assignment repeats"
+                            )
+                        packed_parts[cluster_ordinal] = part
             if len(data) - offset != 4:
                 raise ValidationError(
                     "native PATRON typed output has trailing bytes"
@@ -3310,11 +3326,20 @@ def _parse_patron_typed_output(
                     "native PATRON typed output checksum disagrees"
                 )
             offset += 4
-            final_assignment: Mapping[str, str] = (
-                assignment
-                if packed_parts is None
-                else _PackedClusterAssignment(parts, packed_parts)
-            )
+            if mapped:
+                from .native_columns import _ColumnOwner, _MappedColumn
+                column_owner = _ColumnOwner(data)
+                final_assignment = object.__new__(_PackedClusterAssignment)
+                final_assignment.part_ids = tuple(parts)
+                final_assignment.part_indices = _MappedColumn(column_owner, parts_offset, cluster_count, 'I')
+                final_assignment.native_output_column = final_assignment.part_indices
+                final_assignment.native_output_parts = final_assignment.part_ids
+                for key in ('native_output_source','native_order_source','native_primary_source','native_emuir_source'):
+                    setattr(final_assignment,key,indexes[key])
+                require_store_sources_unchanged(tuple(indexes[key] for key in (
+                    'native_output_source','native_order_source','native_primary_source','native_emuir_source')))
+            else:
+                final_assignment = assignment if packed_parts is None else _PackedClusterAssignment(parts, packed_parts)
             initial_metrics = _metrics_from_objective(
                 initial_values,
                 path_transition_objective=True,
@@ -3339,6 +3364,10 @@ def _parse_patron_typed_output(
                     "maximum_path_tdm_ratio_sum": path_max[3],
                 }
             )
+            if mapped:
+                column_owner.scratch = workspace
+                workspace.borrowed = True
+                retained = True
             return (
                 final_assignment,
                 [],
@@ -3357,7 +3386,11 @@ def _parse_patron_typed_output(
                 },
             )
         finally:
-            data.close()
+            if not retained:
+                if column_owner is not None:
+                    column_owner.close()
+                else:
+                    data.close()
     finally:
         stream.close()
 
@@ -3768,6 +3801,22 @@ def _parse_patron_native_output(
     )
 
 
+@contextmanager
+def _patron_output_workspace(native_model):
+    if not native_model:
+        with tempfile.TemporaryDirectory(prefix='emuflow-patron-') as temporary:
+            yield Path(temporary), None
+        return
+    from .native_columns import _ClusterScratch
+    owner = _ClusterScratch(prefix='emuflow-patron-')
+    owner.borrowed = False
+    try:
+        yield Path(owner.name), owner
+    finally:
+        if not owner.borrowed:
+            owner.cleanup()
+
+
 def run_partition_pressure_native(
     ir: EmuIR,
     platform: Platform,
@@ -3860,8 +3909,7 @@ def run_partition_pressure_native(
     native_command = ([] if store_model else resolve_native_stage_command(
         "phase3", "refine-patron", executable
     ))
-    with tempfile.TemporaryDirectory(prefix="emuflow-patron-") as temporary:
-        root = Path(temporary)
+    with _patron_output_workspace(store_model) as (root, output_workspace):
         native_output = root / "patron.out"
         native_input_copy = os.environ.get("EMUFLOW_PATRON_INPUT_COPY")
         environment = dict(os.environ)
@@ -3881,6 +3929,7 @@ def run_partition_pressure_native(
                 raise ValidationError("native store model does not materialize a legacy input copy")
             indexes = phase3_runtime_call("patron.build_and_refine_native_model", model.execute,
                 root, native_output, initial_assignment, limit, timeout_seconds, environment, executable=executable)
+            indexes['native_workspace'] = output_workspace
             completed = subprocess.CompletedProcess([], 0, "", "")
         elif native_input_copy:
             copy_path = Path(native_input_copy)
@@ -4010,6 +4059,9 @@ def run_partition_pressure_native(
             if store_model:
                 indexes["clusters"].close()
         output_summary["input"] = indexes["input"]
+        if store_model:
+            for name in ('initial.bin', 'board.bin'):
+                (root / name).unlink(missing_ok=True)
     provider_metadata = {
         "initial_provider": initial_assignment.get("provider"),
     }

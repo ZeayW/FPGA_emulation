@@ -41,14 +41,14 @@ class Json {
     auto duplicate=db_.Prepare("SELECT 1 FROM json_tree(?1) WHERE key IS NOT NULL AND typeof(key)='text' GROUP BY parent,key HAVING count(*)>1 LIMIT 1");
     duplicate.BindText(1,raw);Check(!duplicate.Step(),"duplicate JSON member");
     auto rows=db_.Prepare("SELECT key,type,CASE type WHEN 'text' THEN json_quote(value) WHEN 'null' THEN 'null' WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' ELSE CAST(value AS TEXT) END FROM json_each(?1) ORDER BY key");
-    rows.BindText(1,raw);Fields fields;while(rows.Step())fields.emplace(rows.Text(0),(rows.Text(1)=="integer" || rows.Text(1)=="real")?JsonMemberToken(db_,raw,rows.Text(0)):rows.Text(2));return fields;
+    rows.BindText(1,raw);Fields fields;while(rows.Step())fields.emplace(rows.Text(0),(rows.Text(1)=="integer" || rows.Text(1)=="real" || rows.Text(1)=="text")?JsonMemberToken(db_,raw,rows.Text(0)):rows.Text(2));return fields;
   }
   void Scalar(const std::string& raw) {
     auto row=db_.Prepare("SELECT json_valid(?1)");row.BindText(1,raw);Check(row.Step() && row.Integer(0),"invalid JSON scalar");
   }
   std::string String(const std::string& raw) {
     auto row=db_.Prepare("SELECT json_type(?1),json_extract(?1,'$')");row.BindText(1,raw);
-    Check(row.Step() && row.Text(0)=="text","expected string");const auto s=row.Text(1);
+    Check(row.Step() && row.Text(0)=="text","expected string");const auto s=DecodeJsonString(raw);
     Check(s.find('\0')==std::string::npos,"NUL in identity");(void)JsonQuoteUtf8(s);return s;
   }
   Bits Array(const std::string& raw) {
@@ -286,7 +286,7 @@ class Stream {
 };
 std::string CanonicalJson(SqliteDatabase& db,const std::string& raw,unsigned depth=0) {
   Check(depth<512,"payload JSON depth exceeds bound");auto type=db.Prepare("SELECT json_type(?1),json_extract(?1,'$')");type.BindText(1,raw);Check(type.Step(),"payload is absent");const auto kind=type.Text(0);
-  if(kind=="text")return JsonQuoteUtf8(type.TypedText(1));
+  if(kind=="text")return JsonQuoteUtf8(DecodeJsonString(raw));
   if(kind=="integer")return raw=="-0"?"0":raw;
   if(kind=="real")return JsonRecord(ParseFiniteDecimal(raw,"Yosys floating payload")).EncodeUtf8();
   if(kind=="null" || kind=="true" || kind=="false")return kind;

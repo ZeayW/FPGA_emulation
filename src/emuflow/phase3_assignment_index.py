@@ -367,6 +367,7 @@ def write_phase3_assignment_index(
 
         cut_source = native_assignment_cut_source(assignment)
         if cut_source is not None:
+            source_bindings += cut_source.auxiliary_sources
             source_bindings += tuple(
                 StoreSource(source_path, schema, generation)
                 for source_path, schema, generation in zip(

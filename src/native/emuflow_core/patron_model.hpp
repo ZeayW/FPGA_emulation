@@ -115,6 +115,9 @@ struct Model {
   int domains = 0;
   int nets = 0;
   int paths = 0;
+  // Publication coordinates only. Search keeps its existing lexical cluster
+  // order; direct-primary consumers borrow a canonical cN ownership column.
+  std::vector<std::uint32_t> output_to_model;
   int max_hops = -1;
   int max_ratio = 0;
   int ratio_quantum = 1;
