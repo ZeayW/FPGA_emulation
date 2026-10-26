@@ -1,5 +1,41 @@
 # EmuFlow validation requirements
 
+## Cross-branch production data-plane contract
+
+- New cell/net/hop/endpoint/path algorithms, transformations, aggregations and
+  validators belong in `libemuflow_core`. Streaming Python and per-object SQL
+  are still data-plane work; neither is an exemption. Python handles config,
+  thin control, artifact references, explicitly bounded summaries/control,
+  test oracles and the required OpenPARF host. Do not exchange graph-sized
+  dictionaries through FFI or JSON. Necessary native graph structures are
+  allowed; identify ownership, duplicate representations and release points.
+- Shared store/schema, identities, publication and tool lifecycle have one
+  shared owner. Contract changes update and test both OpenPARF/RapidWright and
+  Vivado consumers together. Do not fork shared infrastructure per backend.
+- Deliver the producer, independent validator, production-entry switch and
+  retirement of the replaced implementation together. Existing migration debt
+  is scoped, source-attributed debt, not permission for new Python production
+  work or a requirement to rewrite unrelated stages in one change. W0 scoped
+  infrastructure closure does not imply W7 completion; W7 debt is not W0 debt.
+- Run the structural gate in `scripts/check_data_plane_contract.py` and the
+  affected component/contract tests. PR review must assess design-size Python
+  work semantically; do not ban loops/lists/Python by text matching. Exceptions
+  require scope, reason, source revision, shared owner and retirement condition.
+- Changes to cross-stage semantics, physical behavior or performance-critical
+  paths require corresponding real NVDLA qualification. Code integration and
+  Phase 7/7C acceptance are separate records. Fixtures and component tests do
+  not qualify NVDLA or experimental Vivado features. Documentation-only changes
+  do not require a fresh complete NVDLA run.
+- Create new feature branches from current `main`. Explicitly merge shared
+  governance/contracts into existing branches; branches do not inherit updates.
+  Integrate shared core, then stages, then backend adapters. Use isolated
+  integration branches when an active checkout is dirty or in use. Never
+  overwrite another task's source, outputs or history. Merge and retire branches
+  only after checking unique commits and active consumers.
+
+See [architecture](docs/FLOW_PLAN.md#production-data-plane-ownership) and
+[review and branch gates](docs/VALIDATION.md#cross-branch-integration-gates).
+
 These requirements apply to all work in this repository.
 
 ## README synchronization is mandatory
