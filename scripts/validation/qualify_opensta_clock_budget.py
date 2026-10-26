@@ -7,7 +7,7 @@ from pathlib import Path
 
 from emuflow.errors import ValidationError
 from emuflow.io import file_sha256,write_json
-from emuflow.opensta import DEFAULT_TIMING_MODEL,load_timing_model,render_opensta_liberty
+from emuflow.opensta import DEFAULT_TIMING_MODEL,load_timing_model,render_opensta_liberty,require_opensta_engine
 
 
 def prepare(root):
@@ -30,6 +30,7 @@ def main():
     parser.add_argument('--sta',required=True)
     parser.add_argument('--out',required=True,type=Path)
     args=parser.parse_args();root=args.out.resolve();root.mkdir(parents=True,exist_ok=False)
+    engine=require_opensta_engine(args.sta)
     liberty,verilog,cq=prepare(root)
     script=Path(__file__).resolve().parents[1]/'opensta/qualify_clock_budget.tcl'
     command=[args.sta,'-no_init','-exit',str(script)]
@@ -41,8 +42,9 @@ def main():
     if result.returncode or marker not in(root/'tool.log').read_text():
         raise ValidationError('OpenSTA clock-budget qualification failed; see tool.log')
     write_json(root/'qualification.json',{'status':'pass','scope':'synthetic-engine-api-only','cases':6,
-        'command':command,'liberty_sha256':file_sha256(liberty),'verilog_sha256':file_sha256(verilog),
-        'script_sha256':file_sha256(script),'budget_sha256':file_sha256(root/'clock-budgets.tsv')})
+        'engine':engine,'command':command,'liberty_sha256':file_sha256(liberty),'verilog_sha256':file_sha256(verilog),
+        'script_sha256':file_sha256(script),'clock_budget_script_sha256':file_sha256(script.with_name('clock_budget.tcl')),
+        'budget_sha256':file_sha256(root/'clock-budgets.tsv')})
 
 
 if __name__=='__main__':main()
