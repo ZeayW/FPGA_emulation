@@ -1,6 +1,7 @@
 """Communication re-search must discover previously unselected source paths."""
 import json
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -113,6 +114,52 @@ def test_literal_pattern_characters_and_backslashes_resolve_one_exact_source_pin
     call_engine(source, output, communication_delays_path=costs)
     assert capture_row(output)['startpoint']['instance'] == 'launch_b'
     assert capture_row(output)['fixed_delay_ns'] == pytest.approx(.34, abs=2e-6)
+
+
+@real_engine
+def test_later_invalid_wire_leaves_the_live_timing_graph_unchanged(tmp_path):
+    from emuflow.opensta_source_context import emit_opensta_source_context
+    from emuflow.store_publication import bind_store_source
+    source = prepare_source(tmp_path)
+    engine = os.environ['EMUFLOW_OPENSTA_LAUNCH_ENGINE']
+    context = emit_opensta_source_context(bind_store_source(source, 'emuir-compact-v2'),
+        tmp_path / 'context', clocks={'clk': 10.}, timing_io={
+            'input_groups': [{'clock': 'clk', 'delay_ns': 0., 'ports': ['a', 'b']}],
+            'output_groups': [{'clock': 'clk', 'delay_ns': 0., 'ports': ['q']}]}, executable=engine)
+    costs = write_costs(tmp_path / 'costs.tsv', [('launch_b/Q', 'fast/I0', 3.), ('launch_b/Q', 'slow0/I0', 4.)])
+    script = tmp_path / 'reject.tcl'
+    script.write_text('''
+source $env(EMUFLOW_TEST_CONTEXT)
+source $env(EMUFLOW_TEST_DELAYS_SCRIPT)
+if {[catch {
+  emuflow_read_design_context
+  proc selected_start {} {
+    set paths [find_timing_paths -path_delay max -to [sta::find_pin capture/D] -group_path_count 1 -endpoint_path_count 1]
+    if {[llength $paths] != 1} {error "missing capture path"}
+    return [get_property [get_property [lindex $paths 0] startpoint] full_name]
+  }
+  set before [selected_start]
+  if {![catch {emuflow_apply_communication_delays $env(EMUFLOW_TEST_DELAYS)} message]} {
+    error "invalid communication wire accepted"
+  }
+  if {$message ne "communication endpoints have no source timing wire"} {error $message}
+  if {$before ne "launch_a/Q" || [selected_start] ne $before} {error "failed table changed the live timing graph"}
+} message options]} {
+  puts stderr [dict get $options -errorinfo]
+  exit 1
+}
+puts "EMUFLOW_COMMUNICATION_ATOMIC_REJECTION status=pass"
+exit 0
+''')
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run([engine, '-no_init', '-exit', str(script)], capture_output=True, text=True,
+        env={**os.environ, **context.environment, 'EMUFLOW_STA_TOP': 'retime',
+             'EMUFLOW_TEST_CONTEXT': str(root / 'scripts/opensta/design_context.tcl'),
+             'EMUFLOW_TEST_DELAYS_SCRIPT': str(root / 'scripts/opensta/communication_delays.tcl'),
+             'EMUFLOW_TEST_DELAYS': str(costs)})
+    context.require_unchanged()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'EMUFLOW_COMMUNICATION_ATOMIC_REJECTION status=pass' in result.stdout
 
 
 @real_engine
