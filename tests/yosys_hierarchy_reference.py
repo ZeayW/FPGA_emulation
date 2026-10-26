@@ -412,5 +412,3 @@ def _expand_staged_yosys_hierarchy(
         "allocated_signal_bits": next_global_bit - 2,
         "collapsed_signal_bits": len(bit_aliases),
     }, bit_aliases
-
-
