@@ -30,23 +30,17 @@ proc emuflow_communication_require_data_clock {pin} {
   # Annotating a clock cone would alter launch/capture timing instead of a
   # data crossing. Reject any clock-tagged endpoint, including a clock buffer
   # input which is not itself a register's clock pin.
-  foreach vertex [$pin vertices] {
-    if {$vertex eq "NULL"} {continue}
-    foreach transition {rise fall} {
-      set paths [$vertex path_iterator $transition max]
-      set clocked 0
-      while {[$paths has_next]} {
-        set path [$paths next]
-        if {[$path is_clock]} {set clocked 1; break}
-      }
-      $paths finish
-      if {$clocked} {error "communication delay touches a clock cone: [get_property $pin full_name]"}
-    }
+  # The engine owns a clock-network index for the current analysis mode.
+  # Walking every launch-path tag at a data pin repeats unrelated data paths
+  # and can dwarf the wire update on a large reconvergent cone.
+  if {[sta::is_clock $pin]} {
+    error "communication delay touches a clock cone: [get_property $pin full_name]"
   }
 }
 
 proc emuflow_apply_communication_delays {filename} {
   global emuflow_communication_by_pair emuflow_communication_arcs
+  global emuflow_communication_binding_edges
   global emuflow_communication_owner emuflow_design_context_epoch
   if {![info exists emuflow_design_context_epoch]} {
     error "communication delays require a linked source design context"
@@ -96,18 +90,23 @@ proc emuflow_apply_communication_delays {filename} {
   # row must not leave an earlier wire annotated if the caller catches failure.
   sta::find_timing_cmd 1
   set plan [dict create]
+  set inspected_edges 0
   foreach record $records {
       lassign $record from to extra_sta
       emuflow_communication_require_data_clock $from
       emuflow_communication_require_data_clock $to
       set matched 0
-      foreach from_vertex [$from vertices] {
-        if {$from_vertex eq "NULL"} {continue}
-        set edges [$from_vertex out_edge_iterator]
+      # A source may drive thousands of sinks. Looking through its fanout for
+      # each sink repeats that population quadratically. The input's incoming
+      # wire identifies the same graph edge without scanning unrelated loads.
+      foreach to_vertex [$to vertices] {
+        if {$to_vertex eq "NULL"} {continue}
+        set edges [$to_vertex in_edge_iterator]
         try {
           while {[$edges has_next]} {
             set edge [$edges next]
-            if {[$edge to_pin] ne $to || [$edge role] ne "wire"} {continue}
+            incr inspected_edges
+            if {[$edge from_pin] ne $from || [$edge role] ne "wire"} {continue}
             if {[$edge is_disabled_loop] || [$edge is_disabled_constraint] ||
                 [$edge is_disabled_constant] || [$edge is_disabled_cond_default] ||
                 [$edge is_disabled_bidirect_inst_path] || [$edge is_disabled_preset_clear]} {
@@ -163,8 +162,10 @@ proc emuflow_apply_communication_delays {filename} {
   }
   set emuflow_communication_arcs $owned
   set emuflow_communication_by_pair $extra_by_pair
+  set emuflow_communication_binding_edges $inspected_edges
   set count [llength $records]
   puts "EMUFLOW_COMMUNICATION_DELAYS status=pass records=$count"
+  puts "EMUFLOW_COMMUNICATION_BINDINGS status=pass records=$count inspected_edges=$inspected_edges"
   return $count
 }
 

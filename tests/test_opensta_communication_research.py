@@ -1,6 +1,7 @@
 """Communication re-search must discover previously unselected source paths."""
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -14,11 +15,11 @@ from emuflow.sta import iter_sta_path_database_paths, validate_sta_path_database
 from emuflow.yosys import import_yosys_json
 
 
-def prepare_source(root, *, negative_capture=False, fast_name='fast'):
+def prepare_source(root, *, negative_capture=False, fast_name='fast', fanout=0, clock_buffer=False):
     def ff(data, q, negative=False):
         return dict(type='FDRE', parameters={'IS_C_INVERTED': '1' if negative else '0'},
                     port_directions=dict(C='input', D='input', Q='output', CE='input', R='input'),
-                    connections=dict(C=[2], D=[data], Q=[q], CE=['1'], R=['0']))
+                    connections=dict(C=[20 if clock_buffer else 2], D=[data], Q=[q], CE=['1'], R=['0']))
 
     def buffer(data, out):
         return dict(type='LUT1', parameters={'INIT': '10'},
@@ -32,6 +33,13 @@ def prepare_source(root, *, negative_capture=False, fast_name='fast'):
                           connections=dict(I0=[14], I1=[15], O=[16]))}
     if fast_name != 'fast':
         cells[fast_name] = cells.pop('fast')
+    if clock_buffer:
+        cells['clock_buffer'] = buffer(2, 20)
+    assert isinstance(fanout, int) and 0 <= fanout <= 1024
+    for index in range(fanout):
+        data, q = 100 + 2 * index, 101 + 2 * index
+        cells[f'fanout_{index}'] = buffer(11, data)
+        cells[f'capture_{index}'] = ff(data, q)
     ports = {name: dict(direction=direction, bits=[bit]) for name, direction, bit in
              [('clk', 'input', 2), ('a', 'input', 3), ('b', 'input', 4), ('q', 'output', 17)]}
     yosys = root / 'source.json'
@@ -117,10 +125,36 @@ def test_literal_pattern_characters_and_backslashes_resolve_one_exact_source_pin
 
 
 @real_engine
+def test_shared_high_fanout_driver_binds_every_sink_without_quadratic_edge_scans(tmp_path):
+    count = 256
+    source = prepare_source(tmp_path, fanout=count)
+    before, after = tmp_path / 'before.json', tmp_path / 'after.json'
+    call_engine(source, before)
+    costs = write_costs(tmp_path / 'costs.tsv', [('launch_b/Q', f'fanout_{i}/I0', 3.) for i in range(count)])
+    log = tmp_path / 'opensta.log'
+    call_engine(source, after, communication_delays_path=costs, log_path=log)
+    def captures(path):
+        return {row['endpoint']['instance']: row for row in
+                iter_sta_path_database_paths(path, json.loads(path.read_text()))
+                if (row['endpoint']['instance'] or '').startswith('capture_')}
+    baseline, changed = captures(before), captures(after)
+    assert set(baseline) == set(changed) == {f'capture_{i}' for i in range(count)}
+    for name, row in changed.items():
+        assert row['startpoint']['instance'] == 'launch_b'
+        # Source members retain local costs after the graph is re-searched.
+        assert row['fixed_delay_ns'] == pytest.approx(baseline[name]['fixed_delay_ns'], abs=2e-6)
+        assert row['slack_ns'] == pytest.approx(baseline[name]['slack_ns'], abs=2e-6)
+    matches = re.findall(r'^EMUFLOW_COMMUNICATION_BINDINGS status=pass records=(\d+) inspected_edges=(\d+)$',
+                         log.read_text(), re.M)
+    assert len(matches) == 1 and int(matches[0][0]) == count
+    assert int(matches[0][1]) <= 2 * count
+
+
+@real_engine
 def test_later_invalid_wire_leaves_the_live_timing_graph_unchanged(tmp_path):
     from emuflow.opensta_source_context import emit_opensta_source_context
     from emuflow.store_publication import bind_store_source
-    source = prepare_source(tmp_path)
+    source = prepare_source(tmp_path, clock_buffer=True)
     engine = os.environ['EMUFLOW_OPENSTA_LAUNCH_ENGINE']
     context = emit_opensta_source_context(bind_store_source(source, 'emuir-compact-v2'),
         tmp_path / 'context', clocks={'clk': 10.}, timing_io={
@@ -139,6 +173,16 @@ if {[catch {
     return [get_property [get_property [lindex $paths 0] startpoint] full_name]
   }
   set before [selected_start]
+  # The clock-network query must catch a buffer input as well as a register
+  # clock pin, while accepting an ordinary register's data output.
+  set data [sta::find_pin launch_b/Q]
+  set clock [sta::find_pin clock_buffer/I0]
+  if {[sta::is_clock $data] || ![sta::is_clock $clock]} {error "clock-network classification differs"}
+  if {![catch {emuflow_communication_require_data_clock $clock} clock_error] ||
+      ![string match "communication delay touches a clock cone:*" $clock_error]} {
+    error "clock buffer input was not protected: $clock_error"
+  }
+  emuflow_communication_require_data_clock $data
   if {![catch {emuflow_apply_communication_delays $env(EMUFLOW_TEST_DELAYS)} message]} {
     error "invalid communication wire accepted"
   }

@@ -53,7 +53,13 @@ accumulate delay. A header-only table restores the all-local model. Validation
 finishes before mutation, including checks that another delay writer has not
 changed an owned wire. Wire handles and baselines belong to one linked source
 context and analysis scene. Reusing this engine avoids parsing the design
-again for each update. This is a path-discovery primitive; the production
+again for each update. Wire binding visits each target pin's incoming edges;
+it does not rescan a shared driver's entire fanout for every target. The
+binding log records inspected graph edges so high-fanout work can be checked
+independently of elapsed-time noise. Clock-cone rejection uses the engine's
+clock-network index instead of enumerating data-path tags at each pin.
+This is a path-discovery primitive; the
+production
 PATRON move evaluator still needs
 the complete-graph update integration and convergence check. A refreshed
 path population alone is not a certificate for subsequent assignments.
