@@ -17,7 +17,7 @@ from .physical_measurements_native import publish_physical_projection
 from .store_publication import (bind_store_source, bind_view_sources,
                                 require_store_sources_unchanged, validate_store_destination)
 from .tool_runtime import NativeToolProcess
-from .xilinx_timing import _timing_payload_path, validate_xilinx_routed_timing
+from .xilinx_timing import validate_xilinx_routed_timing
 
 
 def build_routed_segments(*, boundary_identity_path, mapped_path, timing_path,
@@ -37,7 +37,8 @@ def build_routed_segments(*, boundary_identity_path, mapped_path, timing_path,
         validate_xilinx_routed_timing(timing_path, mapped_path=mapped_path, _value=timing_value)
     if timing_value.get("schema") != "emuflow.xilinx-routed-timing/v2":
         raise ValidationError("native routed timing requires the current endpoint stream")
-    endpoint_path, _digest, _count = _timing_payload_path(timing_path, timing_value)
+    from .routed_endpoints_native import bind_routed_timing_sources
+    timing_sources = bind_routed_timing_sources(timing_path, timing_value)
     paths = {2: Path(boundary_output_path)}
     if logic_identity_path is not None:
         paths[3] = Path(logic_output_path)
@@ -71,8 +72,7 @@ def build_routed_segments(*, boundary_identity_path, mapped_path, timing_path,
         identity_schemas = {2: "boundary-identity-store-v1", 3: "logic-segment-identity-store-v1", 4: "local-path-timing-store-v1"}
         sources = (*bind_view_sources((mapped_value, "xilinx-mapped-index-v2")),
                    bind_store_source(source_ir_path, "emuir-compact-v2"),
-                   bind_store_source(timing_path, "xilinx-routed-timing-v2"),
-                   bind_store_source(endpoint_path, "xilinx-routed-endpoints-v1"))
+                   *timing_sources)
         if len(sources) != 4:
             raise ValidationError("native routed timing mapped ownership is missing")
         source_bindings = sources

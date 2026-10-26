@@ -678,7 +678,18 @@ and seal the final typed records in the shared core. Their Python measurement
 spools and row reconstruction are retired; the legacy identity importer remains
 only as an independent small fixture oracle in tests; local query identity is shared with
 the existing typed owner rather than stored as private JSON rows. Source query
-construction, routed-endpoint production and other phase adapters remain.
+construction and other phase adapters remain. Routed-endpoint production now
+joins typed mapped pins to physical assignments in the shared core, reading only
+the net/end-point route stream after independent route qualification. Net-local
+relations and a disk-backed seen-bit index replace Python sites, endpoints and
+whole-route ID sets. The existing endpoint JSONL and timing manifest are emitted
+and hashed directly; no second representation or schema is introduced. Their
+source-bound grouped publication restores previous outputs on a late failure.
+Route validation seals generations of the manifest, net and PIP payloads;
+consumers reuse that proof without rescanning PIPs. Physical views likewise keep
+their original generation. Metadata arrays are borrowed sequential views over
+the immutable manifest, and graph/OpenSTA consumers keep the produced generation
+instead of rebinding a changed file. The old Python producer is test-only.
 RapidWright segment measurement now consumes the mapped index and routed endpoint
 stream directly in the shared core. One integer CSR graph serves the boundary,
 logic-segment and local-path owners; the graph has no reverse-edge copy. Queries
@@ -690,7 +701,9 @@ preserved. Output records are sealed directly in the existing typed owners.
 The old Python graph/builders are independent fixture oracles under `tests/`,
 with no production fallback. Graph counters and the undriven-bit count are
 bounded summaries; diagnostic copies of the undriven population are retired.
-This boundary alone does not complete W6/W7 or qualify physical timing.
+Independent route qualification and indexed OpenSTA staging, including its
+endpoint-delay and pin inventories, still have Python data-plane work. These
+boundaries do not complete W6/W7 or qualify physical timing.
 See [global timing semantics](global-opensta-qualification.md).
 
 ## Validation and completion

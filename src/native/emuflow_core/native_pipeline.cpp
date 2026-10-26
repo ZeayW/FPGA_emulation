@@ -15,6 +15,7 @@
 #include "emuflow_core/vivado_lineage.hpp"
 #include "emuflow_core/vivado_export.hpp"
 #include "emuflow_core/routed_segments.hpp"
+#include "emuflow_core/routed_endpoints.hpp"
 #include "emuflow_core/patron_ingress.hpp"
 #include "emuflow_core/partition_clusters.hpp"
 #include "emuflow_core/partition_loads.hpp"
@@ -42,6 +43,7 @@ const char* StageName(Stage stage) {
     case Stage::kSealRoutes: return "phase4.seal-routes";
     case Stage::kExportVivado: return "phase7.export-vivado";
     case Stage::kBuildRoutedSegments: return "physical.build-routed-segments";
+    case Stage::kBuildRoutedEndpoints: return "physical.build-routed-endpoints";
     case Stage::kImportVivadoLineage: return "phase7.import-vivado-lineage";
     case Stage::kExportRwroute: return "phase7.export-rwroute";
     case Stage::kBuildCaptures: return "phase3.build-captures";
@@ -121,6 +123,7 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
       if(flags&2)schemas.push_back("local-path-timing-store-v1");
       schemas.push_back("routed-segment-request-v1");return schemas;
     }
+    case Stage::kBuildRoutedEndpoints: return {"xilinx-mapped-index-v2","xilinx-physical-handoff-v1","xilinx-route-manifest-v2","xilinx-route-nets-v1","routed-endpoint-request-v1"};
     case Stage::kExportVivado: return {"xilinx-mapped-index-v2","vivado-export-request-v1"};
     case Stage::kExportRwroute: return {"xilinx-mapped-index-v2","xilinx-physical-handoff-v1","rwroute-export-request-v2"};
     case Stage::kBuildCaptures: return {"emuir-compact-v2","exact-indexed-request-v4","exact-topology-v3","exact-parts-v1"};
@@ -231,7 +234,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
         if(Equivalent(input,request.output_path) || std::filesystem::weakly_canonical(input)==std::filesystem::weakly_canonical(request.output_path))
           throw core::StageError(core::ErrorCode::kInvalidRequest,"routed segment summary aliases an input");
     }
-    if (request.stage == Stage::kExportVivado || request.stage == Stage::kExportBookshelf || request.stage == Stage::kExportRwroute || request.stage == Stage::kImportVivadoLineage || request.stage == Stage::kImportPhysicalBoundary || request.stage == Stage::kImportPhysicalLogic || request.stage == Stage::kImportPhysicalLocal) {
+    if (request.stage == Stage::kBuildRoutedEndpoints || request.stage == Stage::kExportVivado || request.stage == Stage::kExportBookshelf || request.stage == Stage::kExportRwroute || request.stage == Stage::kImportVivadoLineage || request.stage == Stage::kImportPhysicalBoundary || request.stage == Stage::kImportPhysicalLogic || request.stage == Stage::kImportPhysicalLocal) {
       if (!bound) {
         try { for (auto& path : paths) path = core::SqliteFilePath(path); }
         catch (const std::exception& error) {
@@ -240,7 +243,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       }
       std::vector<std::string> destinations{
           request.output_path,request.auxiliary_output_path};
-      if (request.stage == Stage::kExportBookshelf || request.stage == Stage::kExportVivado) destinations.push_back(request.scratch_path);
+      if (request.stage == Stage::kBuildRoutedEndpoints || request.stage == Stage::kExportBookshelf || request.stage == Stage::kExportVivado) destinations.push_back(request.scratch_path);
       else if (!request.scratch_path.empty())
         throw core::StageError(core::ErrorCode::kInvalidRequest,"unexpected RWRoute scratch destination");
       if (!request.report_path.empty()) destinations.push_back(request.report_path);
@@ -340,6 +343,8 @@ core::StageResult ExecuteStage(const StageRequest& request) {
         core::ImportVivadoLineage(inputs,output,request.auxiliary_output_path); break;
       case Stage::kBuildRoutedSegments:
         core::BuildRoutedSegments(inputs,request.auxiliary_output_path,output);break;
+      case Stage::kBuildRoutedEndpoints:
+        core::BuildRoutedEndpoints(inputs,output,request.auxiliary_output_path,request.scratch_path);break;
       case Stage::kExportVivado:
         core::ExportVivado(inputs,output,request.auxiliary_output_path,request.scratch_path); break;
       case Stage::kExportRwroute:
@@ -393,6 +398,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kValidatePhysicalCells: schema = "physical-cell-check-summary-v1"; break;
       case Stage::kImportVivadoLineage: schema = "vivado-lineage-store-v2"; break;
       case Stage::kBuildRoutedSegments: schema = "routed-segment-summary-v1"; break;
+      case Stage::kBuildRoutedEndpoints: schema = "xilinx-routed-endpoints-v1"; break;
       case Stage::kExportVivado: schema = "vivado-primitive-verilog-v1"; break;
       case Stage::kExportRwroute: schema = "rwroute-input-tsv-v1"; break;
       case Stage::kPublishAssignmentIndex: schema = "assignment-index-v4"; break;
@@ -429,6 +435,10 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       default: throw core::StageError(core::ErrorCode::kInvalidRequest, "unknown native stage");
     }
     std::vector<core::ArtifactRef> refs{core::ArtifactRef::Bind(request.output_path, schema, request.output_path == "-")};
+    if(request.stage==Stage::kBuildRoutedEndpoints) {
+      refs.push_back(core::ArtifactRef::Bind(request.auxiliary_output_path,"xilinx-routed-timing-v2"));
+      refs.push_back(core::ArtifactRef::Bind(request.scratch_path,"routed-endpoint-summary-v1"));
+    }
     if(request.stage==Stage::kBuildRoutedSegments) {
       for(const auto& item:std::vector<std::pair<std::string,std::string>>{{"boundary.sqlite","boundary-timing-store-v1"},{"logic.sqlite","logic-segment-timing-store-v1"},{"local.sqlite","local-path-timing-store-v1"}}) {
         const auto path=(std::filesystem::path(request.auxiliary_output_path)/item.first).string();

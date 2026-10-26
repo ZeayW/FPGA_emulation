@@ -485,6 +485,28 @@ Cascade discovery queries only its requested primitive families. Topology driver
 lookups read the required bits from the mapped pin owner after the complete native
 uniqueness check, rather than rebuilding the complete driver population.
 
+`emuflow-native physical build-routed-endpoints` binds the mapped index and one
+typed physical handoff to the qualified route net stream. It joins typed pins
+and physical assignments in native, net-local indexed relations, without Python
+sites/endpoint maps or a whole-route seen-bit set. The existing v2 timing
+manifest and endpoint JSONL remain the interchange: the native writer computes
+their hashes while emitting them. The host publishes both closed files as one
+source-bound group and restores both previous outputs on publication failure.
+The old Python producer remains an independent test oracle only.
+
+Independent route validation still runs first. Its `source_generations` seals
+the route manifest and net/PIP payload generations while qualifying them;
+endpoint binding guards the manifest/net generations and reuses the completed
+PIP qualification without reading or retaining that payload. Physical handoff views
+also retain their original generation. The timing host returns borrowed,
+sequential metadata-array views instead of rebuilding the clock/I/O populations;
+graph and OpenSTA consumers retain that produced generation. This preserves
+exact/shared-site/intra-site delays, static/internal-clock exclusions and fixed
+I/O/clock-gate bindings. It does not replace independent physical route checking.
+The public `build-xilinx-routed-timing` command now requires `--mapped-index`
+and `--physical-handoff`; its former JSON/packing/placement producer options are
+retired. Validation of explicit historical input remains a separate reader.
+
 Routed boundary, logic-segment and same-FPGA path measurements use
 `emuflow-native physical build-routed-segments`. Its checked request binds the
 current mapped index, source placement IR, routed timing manifest/endpoint stream
@@ -503,5 +525,6 @@ barriers, exact endpoint coverage, fixed-I/O terms, cycle and unreachable-path
 rejection. It does not extend device characterization or replace final global
 OpenSTA qualification. `source_constraints` records a bounded undriven-bit count
 and canonical source reference instead of copying the source population into
-every physical report. Routed-endpoint construction remains a separate adapter
-boundary; this graph migration is not completion of the complete native flow.
+every physical report. Route qualification and indexed OpenSTA delay staging
+retain Python data-plane work; these producers do not complete native migration
+or real-design qualification.

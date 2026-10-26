@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Set, 
 
 from .errors import ValidationError
 from .io import file_sha256, read_json
+from .store_publication import StoreSource, bind_store_source, require_store_sources_unchanged
 from .xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
 from .xilinx_placement import XILINX_PLACEMENT_SCHEMA
 
@@ -527,6 +528,7 @@ def run_rwroute(
             f"RWRoute failed with exit code {completed.returncode}:\n"
             + "\n".join(failure_tail.splitlines()[-80:])
         )
+    route_source = bind_store_source(output_path, "xilinx-route-manifest-v2")
     value = read_json(output_path)
     if not isinstance(value.get("timing"), dict):
         raise ValidationError("RWRoute output lacks its timing qualification")
@@ -541,6 +543,7 @@ def run_rwroute(
         source_sha256=source_sha256,
         virtual_io_contract=virtual_io_contract,
         _value=value,
+        _route_source=route_source,
     )
     if route_value_sink is not None:
         route_value_sink.clear()
@@ -560,11 +563,16 @@ def validate_xilinx_route_db(
     source_sha256: Optional[Mapping[str, str]] = None,
     virtual_io_contract: Optional[Mapping[str, Any]] = None,
     _value: Optional[Dict[str, Any]] = None,
+    _route_source: Optional[StoreSource] = None,
 ) -> Dict[str, Any]:
     # RWRoute already materializes a very large in-memory object.  Accepting
     # that exact object internally avoids immediately parsing the same route
     # database a second time before it is sealed.  External callers retain the
     # ordinary path-only validation API.
+    route_source = _route_source or bind_store_source(path, "xilinx-route-manifest-v2")
+    if route_source.path != path.resolve():
+        raise ValidationError("route validation source belongs to another artifact")
+    require_store_sources_unchanged((route_source,))
     value = read_json(path) if _value is None else _value
     if (
         not isinstance(value, dict)
@@ -574,6 +582,14 @@ def validate_xilinx_route_db(
         raise ValidationError("XilinxRouteDB header is invalid")
     if value.get("status") not in {"candidate", "pass"}:
         raise ValidationError("XilinxRouteDB status is invalid")
+    route_sources = {"route": route_source}
+    if value["schema"] == XILINX_ROUTE_DB_STREAM_SCHEMA:
+        payloads = value.get("payloads", {})
+        if not isinstance(payloads, Mapping) or set(payloads) != {"nets", "pips"}:
+            raise ValidationError("XilinxRouteDB payload manifest is invalid")
+        for name, format_name in (("nets", XILINX_ROUTE_NET_PAYLOAD_FORMAT), ("pips", XILINX_ROUTE_PIP_PAYLOAD_FORMAT)):
+            payload, _digest, _count = _route_payload_path(path, payloads.get(name), field=name, expected_format=format_name)
+            route_sources[name] = bind_store_source(payload, "xilinx-route-nets-v1" if name == "nets" else "physical-input-document-v1")
     if value.get("provider") != "rapidwright-rwroute-2026.1.0":
         raise ValidationError("XilinxRouteDB provider identity is invalid")
     route_cells = value.get("cells")
@@ -1170,6 +1186,8 @@ def validate_xilinx_route_db(
         "extended_lcb_clock_nets": extended_lcb_clock_nets,
     }
     used_pips.close()
+    require_store_sources_unchanged(tuple(route_sources.values()))
+    report["source_generations"] = {key: list(source.generation) for key, source in route_sources.items()}
     if all(path is not None for path in expected_paths.values()):
         # These digests were checked against the supplied source paths above.
         # Returning the seal lets the immediately following timing binder

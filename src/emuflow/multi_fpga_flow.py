@@ -1361,6 +1361,7 @@ def _compile_preflight(ctx: _CompileContext):
         from .native_tools import require_native_schema
         require_native_schema("rwroute-export-request-v2")
         require_native_schema("routed-segment-request-v1")
+        require_native_schema("routed-endpoint-request-v1")
         validate_openparf_runtime(
             install_root=ctx.physical_openparf_install,
             python_executable=ctx.physical_openparf_python,

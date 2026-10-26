@@ -711,6 +711,7 @@ def run_rapidwright_openparf_native_candidate_backend(
     from .native_tools import require_native_schema
     require_native_schema("rwroute-export-request-v2")
     require_native_schema("routed-segment-request-v1")
+    require_native_schema("routed-endpoint-request-v1")
     architecture = ArchitectureDB.load(architecture_path)
     if architecture.part != part:
         raise ValidationError(

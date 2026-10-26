@@ -398,12 +398,8 @@ def _bind_routed_opensta_inputs(mapped_path, timing_path, timing_value=None):
     timing_value = read_json(timing_path) if timing_value is None else timing_value
     sources = (mapped_source, timing_source)
     if timing_value.get("schema") == XILINX_ROUTED_TIMING_STREAM_SCHEMA:
-        from .xilinx_timing import _timing_payload_path
-
-        payload_path, _digest, _records = _timing_payload_path(
-            timing_path, timing_value
-        )
-        sources += (bind_store_source(payload_path, "sta-source-document-v1"),)
+        from .routed_endpoints_native import bind_routed_timing_sources
+        sources = (mapped_source, *bind_routed_timing_sources(timing_path, timing_value))
     require_store_sources_unchanged(sources)
     return sources, timing_value
 

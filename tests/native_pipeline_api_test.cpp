@@ -170,6 +170,39 @@ CREATE TABLE boundary_registers(
       if(emuflow::native::ExecuteStage(alias).error!=ErrorCode::kInvalidRequest)
         throw std::runtime_error("routed graph accepted an output alias");
       for(const auto& input:inputs)input.RequireUnchanged();
+      {
+        const auto physical=(root/"endpoint-physical.sqlite").string(),route=(root/"endpoint-route.json").string();
+        const auto nets=(root/"endpoint-nets.jsonl").string(),config=(root/"endpoint-request.bin").string();
+        {SqliteDatabase db(physical,SqliteDatabase::Mode::kCreateExclusive);db.Execute(R"SQL(
+          PRAGMA application_id=0x454d5550; PRAGMA user_version=1;
+          CREATE TABLE manifest(singleton INTEGER PRIMARY KEY,schema TEXT);
+          INSERT INTO manifest VALUES(1,'emuflow.xilinx-physical-handoff-sqlite/v1');
+          CREATE TABLE assignment(instance TEXT PRIMARY KEY,physical_site TEXT);
+        )SQL");}
+        {std::ofstream out(nets);}
+        const std::string sha(64,'a');
+        const auto sources="{\"mapped_sha256\":\""+sha+"\",\"packed_sha256\":\""+sha+"\",\"placement_sha256\":\""+sha+"\"}";
+        {std::ofstream out(route);out<<"{\"schema\":\"emuflow.xilinx-route-db/v2\",\"status\":\"candidate\",\"provider\":\"rapidwright-rwroute-2026.1.0\",\"part\":\"fixture\",\"source\":"<<sources
+          <<R"JSON(,"payloads":{"nets":{"format":"jsonl-object/v1","records":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}},"timing":{"logic_coefficients_ps":{"ff_clock_to_q":25,"carry_co":10,"lut_a1":70,"lut_a2":65,"lut_a3":60,"lut_a4":55,"lut_a5":50,"lut_a6":45}}})JSON";}
+        std::vector<ArtifactRef> endpoint_inputs{ArtifactRef::Bind(mapped,"xilinx-mapped-index-v2"),ArtifactRef::Bind(physical,"xilinx-physical-handoff-v1"),ArtifactRef::Bind(route,"xilinx-route-manifest-v2"),ArtifactRef::Bind(nets,"xilinx-route-nets-v1")};
+        {std::ofstream out(config,std::ios::binary);std::uint32_t crc=0;
+          const auto put=[&](const auto& value){out.write(reinterpret_cast<const char*>(&value),sizeof(value));emuflow::core::UpdateCrc32(crc,reinterpret_cast<const unsigned char*>(&value),sizeof(value));};
+          const auto text=[&](const std::string& value){put(std::uint32_t(value.size()));out.write(value.data(),value.size());emuflow::core::UpdateCrc32(crc,reinterpret_cast<const unsigned char*>(value.data()),value.size());};
+          put(std::uint64_t{0x31505452464d5545ULL});put(std::uint32_t{1});
+          for(const auto& input:endpoint_inputs){const auto& g=input.generation();put(g.device);put(g.inode);put(g.bytes);put(g.modified_seconds);put(g.modified_nanoseconds);put(g.changed_seconds);put(g.changed_nanoseconds);}
+          text(sources.substr(0,sources.size()-1)+",\"route_sha256\":\""+sha+"\"}");text("endpoint-output.jsonl");out.write(reinterpret_cast<const char*>(&crc),sizeof(crc));
+        }
+        endpoint_inputs.push_back(ArtifactRef::Bind(config,"routed-endpoint-request-v1"));
+        StageRequest binding;binding.stage=Stage::kBuildRoutedEndpoints;binding.input_artifacts=endpoint_inputs;
+        binding.output_path=(root/"endpoint-output.jsonl").string();binding.auxiliary_output_path=(root/"endpoint-output.json").string();binding.scratch_path=(root/"endpoint-summary.json").string();
+        auto bound=emuflow::native::ExecuteStage(binding);
+        if(!bound.ok() || bound.inputs.size()!=5 || bound.outputs.size()!=3 || bound.outputs[1].schema()!="xilinx-routed-timing-v2")
+          throw std::runtime_error("bound native endpoint operation failed: "+bound.message);
+        auto alias=binding;alias.output_path=mapped;
+        if(emuflow::native::ExecuteStage(alias).error!=ErrorCode::kInvalidRequest)
+          throw std::runtime_error("bound endpoint operation accepted a source alias");
+        for(const auto& input:endpoint_inputs)input.RequireUnchanged();
+      }
     }
     const auto emuir_path = (root / "emuir.sqlite").string();
     {

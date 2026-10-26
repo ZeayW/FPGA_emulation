@@ -23,7 +23,7 @@ from emuflow.xilinx_rwroute import (
     export_rwroute_input,
     validate_xilinx_route_db,
 )
-from emuflow.xilinx_timing import (
+from tests.xilinx_timing_reference import (
     build_xilinx_routed_timing,
     iter_xilinx_routed_timing_endpoints,
     validate_xilinx_routed_timing,
@@ -1115,14 +1115,15 @@ class XilinxRWRouteTest(unittest.TestCase):
                 root, route
             )
             output = root / "routed-timing.json"
-            from emuflow import xilinx_rwroute, xilinx_timing
+            from emuflow import xilinx_rwroute
+            from tests import xilinx_timing_reference as xilinx_timing
 
             real_timing_read = xilinx_timing.read_json
             real_rwroute_sha256 = xilinx_rwroute._sha256
             real_timing_sha256 = xilinx_timing._sha256
             with (
                 mock.patch(
-                    "emuflow.xilinx_timing.read_json",
+                    "tests.xilinx_timing_reference.read_json",
                     wraps=real_timing_read,
                 ) as timing_read,
                 mock.patch(
@@ -1136,7 +1137,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                     wraps=real_rwroute_sha256,
                 ) as rwroute_sha256,
                 mock.patch(
-                    "emuflow.xilinx_timing._sha256",
+                    "tests.xilinx_timing_reference._sha256",
                     wraps=real_timing_sha256,
                 ) as timing_sha256,
             ):
@@ -1231,7 +1232,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             )
             output = root / "routed-timing.json"
             with patch(
-                "emuflow.xilinx_timing.validate_xilinx_route_db",
+                "tests.xilinx_timing_reference.validate_xilinx_route_db",
                 side_effect=AssertionError("route validator ran twice"),
             ):
                 report = build_xilinx_routed_timing(

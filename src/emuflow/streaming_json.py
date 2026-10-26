@@ -159,6 +159,20 @@ class StreamingJSONObjectReader:
             yield key
             first = False
 
+    def array_values(self) -> Iterator[Any]:
+        """Read one bounded array member at a time without retaining siblings."""
+        self.expect("[")
+        first = True
+        while True:
+            self.skip_whitespace()
+            if self._peek() == "]":
+                self._take()
+                return
+            if not first:
+                self.expect(",")
+            yield self.read_value()
+            first = False
+
     def finish(self) -> None:
         self.skip_whitespace()
         if self._peek() != "":

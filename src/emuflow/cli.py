@@ -1434,9 +1434,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "build-xilinx-routed-timing",
         help="bind RapidWright site-pin delays to mapped logical endpoints",
     )
-    arch_build_xilinx_timing.add_argument("--mapped-json", type=Path, required=True)
-    arch_build_xilinx_timing.add_argument("--packed", type=Path, required=True)
-    arch_build_xilinx_timing.add_argument("--placement", type=Path, required=True)
+    arch_build_xilinx_timing.add_argument("--mapped-index", type=Path, required=True)
+    arch_build_xilinx_timing.add_argument("--physical-handoff", type=Path, required=True)
     arch_build_xilinx_timing.add_argument("--route", type=Path, required=True)
     arch_build_xilinx_timing.add_argument("--output", "-o", type=Path, required=True)
     arch_validate_xilinx_timing = arch_subparsers.add_parser(
@@ -2597,7 +2596,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             report = validate_xilinx_preplacement_timing_db(args.path)
         elif args.arch_command == "build-xilinx-routed-timing":
             report = build_xilinx_routed_timing(
-                args.mapped_json, args.packed, args.placement,
+                args.mapped_index, args.physical_handoff, args.physical_handoff,
                 args.route, args.output,
             )
         elif args.arch_command == "validate-xilinx-routed-timing":

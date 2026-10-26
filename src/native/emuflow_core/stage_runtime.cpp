@@ -31,6 +31,10 @@ constexpr RegisteredSchema schemas[] = {
     {"physical-timing-measurements-v1", ArtifactEncoding::kText, 0, 1},
     {"xilinx-routed-timing-v2", ArtifactEncoding::kText, 0, 2},
     {"xilinx-routed-endpoints-v1", ArtifactEncoding::kText, 0, 1},
+    {"xilinx-route-manifest-v2", ArtifactEncoding::kText, 0, 2},
+    {"xilinx-route-nets-v1", ArtifactEncoding::kText, 0, 1},
+    {"routed-endpoint-request-v1", ArtifactEncoding::kBinary, 0x31505452464d5545ULL, 1},
+    {"routed-endpoint-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"routed-segment-request-v1", ArtifactEncoding::kBinary, 0x31544752464d5545ULL, 1},
     {"routed-segment-summary-v1", ArtifactEncoding::kText, 0, 1},
 

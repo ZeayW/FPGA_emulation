@@ -19,6 +19,7 @@ from typing import Any, Dict, Iterable, Optional
 from .errors import ValidationError
 from .store_publication import (
     StoreSource,
+    bind_store_source,
     publish_sqlite_store,
     require_store_sources_unchanged,
     validate_store_destination,
@@ -115,16 +116,23 @@ class _ClusterSequence(Sequence[Mapping[str, Any]]):
     def __init__(
         self, path: Path, *, placement: bool, count: int,
         canonical_order: bool = False,
+        source_binding: Optional[StoreSource] = None,
     ) -> None:
         self._path = path
         self._placement = placement
         self._count = count
         self._canonical_order = canonical_order
+        self._source_binding = source_binding or bind_store_source(path, "xilinx-physical-handoff-v1")
+
+    def bound_store_sources(self):
+        require_store_sources_unchanged((self._source_binding,))
+        return (self._source_binding,)
 
     def __len__(self) -> int:
         return self._count
 
     def __iter__(self) -> Iterator[Mapping[str, Any]]:
+        self.bound_store_sources()
         connection = _connect(self._path)
         try:
             if self._canonical_order:
@@ -202,6 +210,7 @@ class _ClusterSequence(Sequence[Mapping[str, Any]]):
             raise ValidationError("Xilinx physical handoff rows are invalid") from error
         finally:
             connection.close()
+            self.bound_store_sources()
 
     def __getitem__(self, index: int | slice) -> Any:
         values = list(self)
@@ -894,6 +903,7 @@ def open_xilinx_physical_handoff(
     ):
         raise ValidationError("Xilinx physical handoff digest is invalid")
 
+    source_binding = bind_store_source(path, "xilinx-physical-handoff-v1")
     connection = _connect(path)
     try:
         manifest = connection.execute("SELECT * FROM manifest WHERE singleton=1").fetchone()
@@ -937,6 +947,7 @@ def open_xilinx_physical_handoff(
     # complete read of the same large database.  Standalone callers retain
     # the self-contained hash calculation.
     identity = validated_sha256 or file_sha256(path)
+    require_store_sources_unchanged((source_binding,))
     packed = dict(documents["packed"])
     placement = dict(documents["placement"])
     packed_source = dict(packed.get("source", {}))
@@ -945,6 +956,7 @@ def open_xilinx_physical_handoff(
     packed["clusters"] = _ClusterSequence(
         path, placement=False, count=manifest["packed_clusters"],
         canonical_order=canonical_order,
+        source_binding=source_binding,
     )
     packed["cascade_chains"] = cascades
     packed["unplaced_constants"] = constants
@@ -955,6 +967,7 @@ def open_xilinx_physical_handoff(
     placement["clusters"] = _ClusterSequence(
         path, placement=True, count=manifest["packed_clusters"],
         canonical_order=canonical_order,
+        source_binding=source_binding,
     )
     return packed, placement
 

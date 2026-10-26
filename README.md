@@ -15,8 +15,9 @@ OpenSTA is the sole production global physical timing engine; the former Python
 engine and historical dual-engine replay are retired. Numerical oracles remain
 bounded test utilities. OpenSTA container evidence identifies the native engine
 and launcher separately.
-RapidWright routed segment measurements use one shared-core C++ graph and direct
-typed timing stores; the former Python graph is a test-only oracle.
+RapidWright endpoint binding consumes the mapped index and single typed physical
+handoff in the shared C++ core. One native graph produces the typed segment
+timing stores; the former Python endpoint and graph builders are test-only oracles.
 The indexed Vivado adapter consumes current Phase 6 SQLite contracts with
 canonical net identities, fixed LVDS I/O, native sequential control pins, and
 the common physical-result contract. Real-device qualification is in progress. Its OOC implementation retains abstract external clock sources and
