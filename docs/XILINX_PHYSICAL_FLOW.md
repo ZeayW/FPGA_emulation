@@ -719,6 +719,10 @@ check and does not qualify placement, routing, or numerical timing.
 records one worst path's native timing properties and report. `original` keeps
 the checkpoint constraints; `datapath-only` applies the same uniform data-path
 requirements used by delay exporters. The mode is recorded with the properties.
+These snapshot queries use a common 1 ns reference requirement to avoid loss
+of floating-point precision from a very large requirement. Negative query
+slack is allowed; this reference is not a DUT/TDM clock or implementation
+closure target. Original implementation reports precede these query overrides.
 This read-only diagnostic helps distinguish clock/skew/check adjustments from
 raw data delay; it is not a timing-result producer or acceptance certificate.
 

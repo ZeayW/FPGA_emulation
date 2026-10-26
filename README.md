@@ -48,6 +48,7 @@ its synthetic scope is described in the timing contract above.
 The explicit Phase 2 `engine-edge-v1` API policy retains these facts in indexed
 TimingPathDB v4; complete global physical consumption remains under integration.
 The indexed provider exports routed reports and timing in one native session
+with a separate numerical reference for post-route data-delay queries
 and supports checked continuation within an active run, using native module
 identities and explicit checkpoint diagnostics.
 Completed Vivado worker batches can be checked and joined within the active
