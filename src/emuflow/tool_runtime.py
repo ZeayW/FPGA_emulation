@@ -36,7 +36,7 @@ def native_tool_runner(executable: str) -> Optional[str]:
 def _request_bytes(
     command: Sequence[str], *, cwd: Optional[Path],
     environment: Optional[Mapping[str, str]], forward_stdout: bool,
-    maximum_bytes: int, timeout_ms: int, termination_grace_ms: int,
+    maximum_bytes: int, forward_stdin: bool = False, timeout_ms: int, termination_grace_ms: int,
     cpu_seconds: int, address_space_bytes: int, file_size_bytes: int,
 ) -> bytes:
     if not command or not Path(command[0]).is_absolute():
@@ -44,7 +44,7 @@ def _request_bytes(
     if not 0 < maximum_bytes <= 2 * 1024 * 1024:
         raise ValueError("native diagnostic tail must be within 1..2097152 bytes")
     payload = bytearray(struct.pack(
-        "<QIIIIQIQQQ", 0x31514552544C4645, 1, int(forward_stdout),
+        "<QIIIIQIQQQ", 0x31514552544C4645, 2 if forward_stdin else 1, int(forward_stdout) | (2 if forward_stdin else 0),
         int(environment is None), maximum_bytes, timeout_ms, termination_grace_ms,
         cpu_seconds, address_space_bytes, file_size_bytes,
     ))
@@ -87,6 +87,7 @@ class NativeToolProcess:
         cwd: Optional[Path] = None,
         environment: Optional[Mapping[str, str]] = None,
         forward_stdout: bool = False,
+        stdin=None,
         maximum_bytes: int = 2 * 1024 * 1024,
         scratch_parent: Optional[Path] = None,
         timeout_ms: int = 0, termination_grace_ms: int = 1000,
@@ -95,7 +96,7 @@ class NativeToolProcess:
     ) -> None:
         payload = _request_bytes(
             command, cwd=cwd, environment=environment,
-            forward_stdout=forward_stdout, maximum_bytes=maximum_bytes,
+            forward_stdout=forward_stdout, forward_stdin=stdin is not None, maximum_bytes=maximum_bytes,
             timeout_ms=timeout_ms, termination_grace_ms=termination_grace_ms,
             cpu_seconds=cpu_seconds, address_space_bytes=address_space_bytes,
             file_size_bytes=file_size_bytes,
@@ -118,6 +119,7 @@ class NativeToolProcess:
                 [runner, "run-tool", str(request), str(self._result_path)],
                 stdout=subprocess.PIPE if forward_stdout else subprocess.DEVNULL,
                 stderr=self._errors,
+                stdin=stdin,
             )
         except OSError as error:
             self._errors.close()
@@ -190,5 +192,10 @@ class NativeToolProcess:
         finally:
             if self.stdout is not None:
                 self.stdout.close()
+            if self.process.stdin is not None and not self.process.stdin.closed:
+                try:
+                    self.process.stdin.close()
+                except BrokenPipeError:
+                    pass
             self._errors.close()
             self._scratch.cleanup()

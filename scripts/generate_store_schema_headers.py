@@ -75,6 +75,12 @@ def generate(directory):
     if not output.exists() or output.read_text(encoding="utf-8") != weights:
         output.write_text(weights, encoding="utf-8")
 
+    ddl = (root / "src/emuflow/data/schema/yosys_hierarchy.sql").read_text(encoding="utf-8")
+    hierarchy = '#pragma once\nnamespace emuflow::core {\ninline constexpr const char* kYosysHierarchyDDL = R"EMUFLOW_SQL(' + ddl + ')EMUFLOW_SQL";\n}\n'
+    output = Path(directory) / "yosys_hierarchy_schema.hpp"
+    if not output.exists() or output.read_text(encoding="utf-8") != hierarchy:
+        output.write_text(hierarchy, encoding="utf-8")
+
     events = "#pragma once\nnamespace emuflow::core {\n"
     for symbol, filename in (
         ("kGlobalEventsDDL", "global_events.sql"),

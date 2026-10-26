@@ -488,7 +488,7 @@ there is no silent implementation or provider fallback.
 
 | Stage | Existing native/indexed foundation | Remaining delivery obligation |
 | --- | --- | --- |
-| Phase 1–2 | Native synthesis/STA engines; native OpenSTA input export, indexed path-result import, timing-weight generation and independent validators | Migrate Yosys import and remaining phase lifecycle under the shared artifact API |
+| Phase 1–2 | Native synthesis/STA engines; native streamed Yosys hierarchy expansion/alias resolution; native OpenSTA input export, indexed path-result import, timing-weight generation and independent validators | Migrate Xilinx normalization, final EmuIR generation and remaining phase lifecycle under the shared artifact API |
 | Phase 3 | Shared-core candidate eligibility and primary clustering; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Migrate remaining policy/assignment publication and reference modes; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
@@ -775,6 +775,37 @@ selected membership relation instead of rebuilding the entire path-net populatio
 This closes the normal path-result and timing-weight data planes. Yosys import,
 remaining timing configuration/engine orchestration and complete real-design
 qualification still keep Phase 1–2 and W7 open.
+
+### Streamed Yosys hierarchy ownership
+
+`phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY` consumes the Yosys document
+on stdin through the shared native core. It stages bounded module records in
+SQLite, expands repeated hierarchy in deterministic name order, preserves
+blackbox/whitebox leaves and open ports, and resolves aliased ports and late child
+constant outputs against the final signal equivalence relation. Only top-port
+records and bounded summary/configuration cross the Python host boundary; there
+are no Python cell callbacks, local-bit dictionaries or complete alias maps.
+
+The current importer continues in this same private staging database after
+same-filesystem adoption. It does not copy the cell/name relations into another
+owner. Source module tables and alias scratch are removed before this handoff.
+The byte pump uses bounded chunks and kernel backpressure; no complete Yosys JSON
+file is introduced. Native writer scratch is inside the host's cancellation-owned
+root, so a failed producer reaps the consumer before retiring partial writes.
+
+The shared external-tool request v2 explicitly forwards stdin for stream
+consumers. Existing v1 requests still supply closed input via `/dev/null`; there
+is no inferred input mode or retry through a different launcher. The result
+protocol and bounded diagnostic tail remain unchanged.
+
+The parser bounds individual captured records to 32 MiB and JSON/hierarchy depth
+to 512; it does not bound the total design population. Invalid/truncated records,
+duplicate defined identities, recursive modules and incompatible port/constant
+bindings reject before a completed staging owner is returned. The former Python
+hierarchy producer is test-only and supplies an independent differential oracle.
+This closes hierarchy expansion, not the complete frontend: Xilinx primitive
+normalization, final EmuIR construction, stage ownership and real-design
+qualification remain open.
 
 ## Validation and completion
 

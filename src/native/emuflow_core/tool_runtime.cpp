@@ -172,7 +172,7 @@ void Execute(const ToolRequest& request, ToolResult& result,
     sigset_t mask; sigemptyset(&mask);
     if (sigprocmask(SIG_SETMASK, &mask, nullptr) != 0) ChildFailure(errors.write, errno);
     if (chdir(request.working_directory.c_str()) != 0) ChildFailure(errors.write, errno);
-    const int input = open("/dev/null", O_RDONLY);
+    const int input = request.forward_stdin ? STDIN_FILENO : open("/dev/null", O_RDONLY);
     if (input < 0 || dup2(input, STDIN_FILENO) < 0 ||
         dup2(diagnostics.write, STDERR_FILENO) < 0 ||
         (!request.forward_stdout && dup2(diagnostics.write, STDOUT_FILENO) < 0))
@@ -259,11 +259,13 @@ void Execute(const ToolRequest& request, ToolResult& result,
 ToolRequest ReadToolRequest(const std::string& path) {
   BinaryReader reader(path);
   if (reader.size() > kMaximumRequestBytes) Invalid("external tool request exceeds bound");
-  ReadAndValidateHeader(reader, {kMagic, 1, "external-tool-request-v1"});
+  if (reader.Read<std::uint64_t>() != kMagic) Invalid("external tool request magic is invalid");
+  const auto version = reader.Read<std::uint32_t>();
+  if (version != 1 && version != 2) Invalid("external tool request version is invalid");
   ToolRequest request;
   const auto mode = reader.Read<std::uint32_t>(), inherit = reader.Read<std::uint32_t>();
-  if (mode > 1 || inherit > 1) Invalid("unknown external tool mode");
-  request.forward_stdout = mode; request.inherit_environment = inherit;
+  if (mode > (version == 1 ? 1U : 3U) || inherit > 1) Invalid("unknown external tool mode");
+  request.forward_stdout = (mode & 1); request.forward_stdin = (mode & 2); request.inherit_environment = inherit;
   request.tail_bytes = reader.Read<std::uint32_t>();
   request.timeout_ms = reader.Read<std::uint64_t>();
   request.termination_grace_ms = reader.Read<std::uint32_t>();
