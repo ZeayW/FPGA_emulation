@@ -588,10 +588,45 @@ def _prepare_constant_frontier_query_once(mapped_path: Path, candidates_path: Pa
         @lru_cache(maxsize=4096)
         def retained(origin):
             return db.execute("SELECT 1 FROM observed.objects INDEXED BY objects_origin WHERE stage=? AND origin=? LIMIT 1",(source_stage,origin)).fetchone()is not None
+        checked_unobservable=set()
+        uses = 0
+        @lru_cache(maxsize=4096)
+        def unobservable_fact(origin):
+            row=db.execute('SELECT reason,constant_value,initialization FROM proofs.eliminated_sources WHERE origin=?',(origin,)).fetchone()
+            return row==('unobservable-source-closure',None,None)
+
+        def checked_unobservable_exit(origin):
+            nonlocal uses
+            if not unobservable_fact(origin):
+                return False
+            # A strict dead-region fact is independent of the selected INIT
+            # choices. Recheck the complete source fanout closure before using
+            # it: no retained primitive or mapped output may be reached.
+            queue,seen=[origin],set()
+            for current in queue:
+                if current in checked_unobservable or current in seen:
+                    continue
+                if retained(current):
+                    raise ValidationError('unobservable source closure reaches a retained object')
+                if not unobservable_fact(current):
+                    raise ValidationError('unobservable source closure contains an unproved source')
+                seen.add(current)
+                if len(seen)+len(checked_unobservable)>4096:
+                    raise ValidationError('unobservable source closure exceeds bounded scope')
+                for (signal,) in db.execute('SELECT net_bit FROM cell_pins WHERE cell_seq=? AND direction=1 AND value_kind=0',(current,)):
+                    if signal in output_nets:
+                        raise ValidationError('unobservable source closure reaches a module output')
+                    for (target,) in db.execute('SELECT cell_seq FROM cell_pins WHERE net_bit=? AND direction=0 AND value_kind=0',(signal,)):
+                        uses+=1
+                        if uses>65536:
+                            raise ValidationError('conditional source component exceeds bounded fanout scope')
+                        if target not in seen and target not in checked_unobservable:
+                            queue.append(target)
+            checked_unobservable.update(seen)
+            return True
         pending = list(int(identity[1:]) for identity in selected_sources)
         discovered = set(pending)
         direct_frontiers, state_successors = {}, {}
-        uses = 0
         for origin in pending:
             candidate = db.execute("SELECT constant_value,initialization FROM proofs.constant_candidates WHERE origin=?", (origin,)).fetchone()
             outputs = db.execute("SELECT port,port_bit,net_bit,value_kind FROM cell_pins WHERE cell_seq=? AND direction=1", (origin,)).fetchall()
@@ -615,6 +650,8 @@ def _prepare_constant_frontier_query_once(mapped_path: Path, candidates_path: Pa
                     uses += 1
                     if uses > 65536:
                         raise ValidationError("conditional source component exceeds bounded fanout scope")
+                    if checked_unobservable_exit(target):
+                        continue
                     native_retained=retained(target)
                     combinational = kind in {*(f"LUT{i}" for i in range(1,7)), "LUT6_2", "MUXF7", "MUXF8", "MUXF9"}
                     if combinational and (not native_retained or kind == "LUT6_2"):
@@ -723,6 +760,7 @@ def _prepare_constant_frontier_query_once(mapped_path: Path, candidates_path: Pa
                 "source_inventory_sha256":inventory_digest.hexdigest(),
                 "requested_sources":list(selected_sources),
                 "sources":sorted(source_rows,key=lambda row:row["source"]),
+                "unobservable_fanout_sources":[f's{i}'for i in sorted(checked_unobservable)],
                 "projected_constant_bits":[[bit,value] for bit,value in sorted(projected.items())],
                 "query_objects":expected_objects}
     except (ValueError, UnicodeError, OverflowError, sqlite3.DatabaseError) as error:

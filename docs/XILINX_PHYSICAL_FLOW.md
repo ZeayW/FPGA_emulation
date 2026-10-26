@@ -862,7 +862,8 @@ uses and frontier references, and a bounded closure traversal.
 `confirm_selected_constant_sources` rebuilds that plan and checks complete
 fanout coverage for the closed component. Every use must stay inside the
 independently inductive selected state set, reach a checked retained LUT, or
-directly drive a checked output-port bit, and
+directly drive a checked output-port bit, or enter an independently checked
+unobservable source closure, and
 every native replica must be observed. Each source record lists all reachable
 external LUT frontiers, including exits through other selected states;
 components without an observed frontier remain unresolved. Direct output
@@ -882,6 +883,14 @@ and literal source inputs respected. Independent dynamic carry inputs retain
 their checked live-source bindings. A removed output
 that remains dynamic is rejected and requires a functional-cone observation.
 No missing observation becomes an unobservable disposition or a zero delay.
+An existing strict `unobservable-source-closure` fact can terminate a dead
+fanout before constant projection, including a removed carry branch. The
+planner rechecks every output and downstream cell in that closure: every cell
+must carry the same strict fact, and no retained primitive or mapped output
+may be reachable. The check has a 4096-cell bound and shares the component's
+65536-use bound. The plan records these cells in
+`unobservable_fanout_sources`; their existing typed elimination records retain
+NULL physical delay. Selected states still require observed functional exits.
 
 Retained CARRY8 exits require equality of CARRY_TYPE and every one of their
 18 input bindings after checked constant propagation. Exact constant/buffer LUT

@@ -19,7 +19,7 @@ HEADER=['source_origin','native_cell_hex','ref','init','pin','driver_kind','driv
         'driver_pin','driver_name_hex','driver_transformations_hex','transformations_hex','carry_type']
 
 
-def constant_cone_model(tmp_path, *, port=False, prefix='', dynamic=False, live_count=1, upstream=False, expose_upstream=False):
+def constant_cone_model(tmp_path, *, port=False, prefix='', dynamic=False, live_count=1, upstream=False, expose_upstream=False, dead_carry=False):
     def ff(d, q, init='0', ce='1'):
         return dict(type='FDRE',parameters={'INIT':init},attributes={},
             port_directions={'C':'input','CE':'input','D':'input','R':'input','Q':'output'},
@@ -33,6 +33,11 @@ def constant_cone_model(tmp_path, *, port=False, prefix='', dynamic=False, live_
     carry_inputs={'CI':['0'],'CI_TOP':['0'],'DI':[8]+['0']*7,'S':[9]+['0']*7}
     free=[('DI',i)for i in range(1,8)]+[('S',i)for i in range(1,8)]
     for n,(bus,bit)in enumerate(free[:live_count]):carry_inputs[bus][bit]=200+n
+    if dead_carry:
+        cells['dead']=dict(type='CARRY8',parameters={'CARRY_TYPE':'SINGLE_CY8'},attributes={},
+            port_directions={'CI':'input','CI_TOP':'input','DI':'input','S':'input','CO':'output','O':'output'},
+            connections={'CI':['0'],'CI_TOP':['0'],'DI':['0']*8,'S':[5]+['0']*7,
+                         'CO':list(range(300,308)),'O':list(range(308,316))})
     if not port:
         cells['front']=dict(type='CARRY8',parameters={'CARRY_TYPE':'SINGLE_CY8'},attributes={},
             port_directions={**{p:'input'for p in carry_inputs},'CO':'output','O':'output'},
@@ -50,7 +55,7 @@ def constant_cone_model(tmp_path, *, port=False, prefix='', dynamic=False, live_
     with inventory.open('w')as stream:
         rows=csv.writer(stream,delimiter='\t',lineterminator='\n');rows.writerow(INVENTORY_HEADER)
         for name in cells:
-            if name not in {'conditional','adapter','other'}:rows.writerow(['p/'+name,cells[name]['type'],f's{origins[name]}','','','','','',''])
+            if name not in {'conditional','adapter','other','dead'}:rows.writerow(['p/'+name,cells[name]['type'],f's{origins[name]}','','','','','',''])
     lineage=tmp_path/'lineage.sqlite';import_cell_lineage(mapped,functions,{'synthesized':inventory},lineage,mapped_sha256=digest,retain_stage='synthesized')
     proof=tmp_path/'proof.sqlite';build_optimization_proofs(mapped,lineage,proof,mapped_sha256=digest,stage='synthesized',fpga='fpga0')
     native=tmp_path/'native.tsv'
@@ -89,6 +94,27 @@ def test_removed_dual_lut_projects_into_every_carry_input_without_name_preservat
     checked=confirm(model)
     assert checked['frontiers'][0]['variables']==live_count
     assert checked['frontiers'][0]['assignments']==1<<live_count
+
+
+def test_proven_dead_carry_fanout_does_not_require_a_fictitious_constant_projection(tmp_path):
+    model=constant_cone_model(tmp_path,dead_carry=True)
+    mapped,_,proof,inventory,_,options,origins=model
+    plan=prepare_constant_frontier_query(mapped,proof,inventory,**options)
+    assert plan['unobservable_fanout_sources']==[f's{origins["dead"]}']
+    assert plan['sources'][0]['frontier_sources']==[f's{origins["front"]}']
+    assert confirm(model)['status']=='pass'
+
+
+@pytest.mark.parametrize('port',[False,True])
+def test_unobservable_label_cannot_hide_a_retained_primitive_or_module_output(tmp_path,port):
+    model=constant_cone_model(tmp_path,port=port)
+    mapped,_,proof,inventory,_,options,origins=model
+    with closing(sqlite3.connect(proof))as db,db:
+        db.execute("INSERT INTO eliminated_sources VALUES(?,'unobservable-source-closure',NULL,NULL)",(origins['adapter'],))
+    options['candidate_proofs_sha256']=file_sha256(proof)
+    message='module output'if port else'unproved source|retained object'
+    with pytest.raises(ValidationError,match=message):
+        prepare_constant_frontier_query(mapped,proof,inventory,**options)
 
 
 @pytest.mark.parametrize('prefix',['','mapped_partition'])
