@@ -1515,23 +1515,11 @@ std::vector<int> diagnose_flow_corridors(
   require(!opposite_side[edge_left] && opposite_side[edge_right],
           "flow corridor topology sides are inconsistent");
   const auto consider_dual_improving
-      = [&](const std::vector<int>& assignment, bool capacity_compatible) {
-          if (!capacity_compatible
-              || !proxy_transport_feasible(model, assignment)) {
-            return;
-          }
-          std::vector<int> counts(model.parts, 0);
-          for (int part : assignment) {
-            require(part >= 0 && part < model.parts,
-                    "flow candidate part is invalid");
-            ++counts[part];
-          }
-          if (std::count_if(counts.begin(), counts.end(),
-                            [](int count) { return count > 0; })
-              < model.min_used_parts) {
-            return;
-          }
-          ProxyState candidate = build_proxy_state(model, &assignment);
+      = [&](const ProxyState& candidate, bool capacity_compatible) {
+          // The caller has already checked transport/minimum-part legality
+          // and built this exact assignment for scoring. Reuse that state:
+          // rebuilding it scans every cluster, net and timing path again.
+          if (!capacity_compatible) return;
           if (!less_ranked(candidate.evaluation.ranked,
                            state.evaluation.ranked)) {
             return;
@@ -1551,6 +1539,84 @@ std::vector<int> diagnose_flow_corridors(
       = model.flow_max_legal_candidates;
   const int maximum_polish_moves
       = model.flow_max_polish_moves;
+  // Immutable corridor discovery is shared by all target parts and
+  // movement-cost passes; each candidate still gets its own flow/assignment.
+  std::set<int> boundary_set;
+  for (int net = 0; net < model.nets; ++net) {
+    if (state.net[net].payload.domain_count(cover_domain) == 0) {
+      continue;
+    }
+    for (int cluster : model.net[net].drivers) {
+      boundary_set.insert(cluster);
+    }
+    for (int cluster : model.net[net].sinks) {
+      boundary_set.insert(cluster);
+    }
+  }
+  std::vector<int> boundary(boundary_set.begin(), boundary_set.end());
+  std::sort(boundary.begin(), boundary.end(), [&](int left, int right) {
+    return std::tie(exposure[right], left)
+           < std::tie(exposure[left], right);
+  });
+
+  std::vector<int> distance(model.clusters, -1);
+  std::queue<int> work;
+  int corridor_count = 0;
+  const auto try_add = [&](int cluster, int candidate_distance) {
+    if (distance[cluster] >= 0
+        || corridor_count >= maximum_corridor_clusters
+        || model.cluster[cluster].fixed >= 0) {
+      return false;
+    }
+    distance[cluster] = candidate_distance;
+    work.push(cluster);
+    ++corridor_count;
+    return true;
+  };
+  for (int cluster : boundary) {
+    if (corridor_count >= maximum_corridor_clusters) {
+      break;
+    }
+    try_add(cluster, 0);
+  }
+  while (!work.empty()) {
+    const int cluster = work.front();
+    work.pop();
+    if (distance[cluster] >= corridor_distance) {
+      continue;
+    }
+    std::set<int> neighbor_set;
+    for (int net : cluster_nets[cluster]) {
+      neighbor_set.insert(model.net[net].drivers.begin(),
+                          model.net[net].drivers.end());
+      neighbor_set.insert(model.net[net].sinks.begin(),
+                          model.net[net].sinks.end());
+    }
+    std::vector<int> neighbors(neighbor_set.begin(), neighbor_set.end());
+    std::sort(neighbors.begin(), neighbors.end(), [&](int left, int right) {
+      return std::tie(exposure[right], left)
+             < std::tie(exposure[left], right);
+    });
+    for (int neighbor : neighbors) {
+      if (opposite_side[state.assignment[neighbor]]
+          == opposite_side[state.assignment[cluster]]) {
+        try_add(neighbor, distance[cluster] + 1);
+      }
+    }
+  }
+
+  std::vector<int> corridor;
+  for (int cluster = 0; cluster < model.clusters; ++cluster) {
+    if (distance[cluster] >= 0) {
+      corridor.push_back(cluster);
+    }
+  }
+  std::set<int> corridor_nets;
+  for (int cluster : corridor) {
+    corridor_nets.insert(cluster_nets[cluster].begin(),
+                         cluster_nets[cluster].end());
+  }
+
   // Keep the already resource-legal assignment as the deterministic
   // secondary objective.  A zero-cost side preference lets an otherwise
   // equivalent net cut move millions of clusters onto one topology side;
@@ -1565,85 +1631,10 @@ std::vector<int> diagnose_flow_corridors(
     if (!opposite_side[pair_target]) {
       continue;
     }
-    std::set<int> boundary_set;
-    for (int net = 0; net < model.nets; ++net) {
-      if (state.net[net].payload.domain_count(cover_domain) == 0) {
-        continue;
-      }
-      for (int cluster : model.net[net].drivers) {
-        boundary_set.insert(cluster);
-      }
-      for (int cluster : model.net[net].sinks) {
-        boundary_set.insert(cluster);
-      }
-    }
-    std::vector<int> boundary(boundary_set.begin(), boundary_set.end());
-    std::sort(boundary.begin(), boundary.end(), [&](int left, int right) {
-      return std::tie(exposure[right], left)
-             < std::tie(exposure[left], right);
-    });
-
-    std::vector<int> distance(model.clusters, -1);
-    std::queue<int> work;
-    int corridor_count = 0;
-    const auto try_add = [&](int cluster, int candidate_distance) {
-      if (distance[cluster] >= 0
-          || corridor_count >= maximum_corridor_clusters
-          || model.cluster[cluster].fixed >= 0) {
-        return false;
-      }
-      distance[cluster] = candidate_distance;
-      work.push(cluster);
-      ++corridor_count;
-      return true;
-    };
-    for (int cluster : boundary) {
-      if (corridor_count >= maximum_corridor_clusters) {
-        break;
-      }
-      try_add(cluster, 0);
-    }
-    while (!work.empty()) {
-      const int cluster = work.front();
-      work.pop();
-      if (distance[cluster] >= corridor_distance) {
-        continue;
-      }
-      std::set<int> neighbor_set;
-      for (int net : cluster_nets[cluster]) {
-        neighbor_set.insert(model.net[net].drivers.begin(),
-                            model.net[net].drivers.end());
-        neighbor_set.insert(model.net[net].sinks.begin(),
-                            model.net[net].sinks.end());
-      }
-      std::vector<int> neighbors(neighbor_set.begin(), neighbor_set.end());
-      std::sort(neighbors.begin(), neighbors.end(), [&](int left, int right) {
-        return std::tie(exposure[right], left)
-               < std::tie(exposure[left], right);
-      });
-      for (int neighbor : neighbors) {
-        if (opposite_side[state.assignment[neighbor]]
-            == opposite_side[state.assignment[cluster]]) {
-          try_add(neighbor, distance[cluster] + 1);
-        }
-      }
-    }
-
-    std::vector<int> corridor;
-    for (int cluster = 0; cluster < model.clusters; ++cluster) {
-      if (distance[cluster] >= 0) {
-        corridor.push_back(cluster);
-      }
-    }
     if (corridor.empty()) {
       std::cerr << "PATRON_FLOW_CORRIDOR pair=" << edge_left << ':'
                 << pair_target << " status=empty\n";
       continue;
-    }
-    std::set<int> corridor_nets;
-    for (int cluster : corridor) {
-      corridor_nets.insert(cluster_nets[cluster].begin(),
-                           cluster_nets[cluster].end());
     }
     const int source_node = 0;
     const int sink_node = 1;
@@ -1784,10 +1775,9 @@ std::vector<int> diagnose_flow_corridors(
       for (long long value : candidate.evaluation.ranked) {
         std::cerr << value << ',';
       }
+      consider_dual_improving(candidate, capacity_compatible);
     }
     std::cerr << '\n';
-    consider_dual_improving(
-        candidate_assignment, capacity_compatible && transport_compatible);
 
     if (!capacity_compatible) {
       struct SpillOption {
@@ -1949,7 +1939,7 @@ std::vector<int> diagnose_flow_corridors(
         for (long long value : legalized.evaluation.ranked) {
           std::cerr << value << ',';
         }
-        consider_dual_improving(candidate_assignment, true);
+        consider_dual_improving(legalized, true);
       }
       std::cerr << '\n';
 
@@ -2150,7 +2140,7 @@ std::vector<int> diagnose_flow_corridors(
                   for (long long value : legalized.evaluation.ranked) {
                     std::cerr << value << ',';
                   }
-                  consider_dual_improving(region_assignment, true);
+                  consider_dual_improving(legalized, true);
                 }
                 std::cerr << '\n';
               };
@@ -2393,7 +2383,7 @@ std::vector<int> diagnose_flow_corridors(
                   for (long long value : legalized.evaluation.ranked) {
                     std::cerr << value << ',';
                   }
-                  consider_dual_improving(region_assignment, true);
+                  consider_dual_improving(legalized, true);
                 }
                 std::cerr << '\n';
               };
@@ -2608,7 +2598,7 @@ std::vector<int> diagnose_flow_corridors(
                   for (long long value : incremental.evaluation.ranked) {
                     std::cerr << value << ',';
                   }
-                  consider_dual_improving(incremental_assignment, true);
+                  consider_dual_improving(incremental, true);
                 }
                 std::cerr << '\n';
               };
