@@ -17,42 +17,6 @@
     },
     {
       "scope": [
-        "src/native/chimew_bank_channel_assigner.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/chimew_position_refiner.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/chimew_rudy.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/chimew_signal_grouper.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
         "src/native/eda2025_topology_optimizer.cpp"
       ],
       "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
@@ -71,156 +35,12 @@
     },
     {
       "scope": [
-        "src/native/hop_partition_refiner.cpp"
+        "src/native/emuflow_native.cpp"
       ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
+      "reason": "Thin shared-core CLI dispatcher; no duplicated stage algorithm.",
+      "source_revision": "5e7f02c5ccfc8e01032b7f1e322e407095750be3",
       "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/mfspart_coarsener.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/mfspart_initializer.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/mfspart_legalizer.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/mfspart_refiner.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/mfspart_refiner_checker.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/patron_refiner.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/placement_aware_pin_planner.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/tdm_partition_feedback.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/tdm_ratio_optimizer.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/tdm_slot_optimizer.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/tdm_timing_dag_optimizer.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/tlr_router.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/tritonpart_balance_legalizer.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/vpr_packed_netlist_importer.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/vpr_route_checker.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
-        "src/native/vtr_architecture_importer.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
+      "retirement": "Retain only while this is the single supported native dispatch executable."
     }
   ],
   "existing_python_debt": [
@@ -231,7 +51,7 @@
         "src/emuflow/phase6.py",
         "src/emuflow/global_sta.py"
       ],
-      "reason": "Existing main stage adapters; migration already has partial native replacements. This is a synchronization backlog, not authorization for new Python algorithms.",
+      "reason": "Existing stage adapters at the main baseline. Native replacements have been integrated in part; audit remaining operations rather than treating whole files as exceptions. Phase5/OpenSTA/global timing synchronization varies by branch.",
       "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
       "owner": "stage owners / shared core",
       "retirement": "Integrate each native producer and independent validator, switch its production entry and remove replaced code."
@@ -250,5 +70,114 @@
       "retirement": "Replace identified design-scale producers and validators in shared C++, switch both backend consumers and retire the Python operation; keep qualification explicit."
     }
   ],
-  "retired_paths": []
+  "retired_paths": [
+    {
+      "path": "src/emuflow/system_timing.py",
+      "replacement": "src/emuflow/global_sta.py",
+      "source_revision": "d8048a248881e4bad9fa6fa5c7866ec2301cfdc8",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    },
+    {
+      "path": "src/emuflow/repart.py",
+      "replacement": "src/emuflow/phase3.py",
+      "source_revision": "59627dd75d363931eae49db9f88d45bc579ed8e6",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    },
+    {
+      "path": "src/emuflow/mfspart.py",
+      "replacement": "src/emuflow/phase3.py",
+      "source_revision": "59627dd75d363931eae49db9f88d45bc579ed8e6",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    },
+    {
+      "path": "src/emuflow/mfspart_initial.py",
+      "replacement": "src/emuflow/phase3.py",
+      "source_revision": "59627dd75d363931eae49db9f88d45bc579ed8e6",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    },
+    {
+      "path": "src/emuflow/mfspart_legalize.py",
+      "replacement": "src/emuflow/phase3.py",
+      "source_revision": "59627dd75d363931eae49db9f88d45bc579ed8e6",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    },
+    {
+      "path": "src/emuflow/mfspart_provider.py",
+      "replacement": "src/emuflow/phase3.py",
+      "source_revision": "59627dd75d363931eae49db9f88d45bc579ed8e6",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    },
+    {
+      "path": "src/emuflow/mfspart_refine.py",
+      "replacement": "src/emuflow/phase3.py",
+      "source_revision": "59627dd75d363931eae49db9f88d45bc579ed8e6",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    },
+    {
+      "path": "src/emuflow/partition_physical_feedback.py",
+      "replacement": "src/emuflow/phase3.py",
+      "source_revision": "43da73e2311468219666395e3ecf3a70fcc74615",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    },
+    {
+      "path": "src/emuflow/tdm_cp_sat.py",
+      "replacement": "src/emuflow/tdm.py",
+      "source_revision": "9e94fb010880a1644e99de9bd2830575fd1c4e39",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    },
+    {
+      "path": "src/emuflow/tdm_ratio.py",
+      "replacement": "src/emuflow/tdm.py",
+      "source_revision": "9e94fb010880a1644e99de9bd2830575fd1c4e39",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    },
+    {
+      "path": "src/emuflow/tdm_slot.py",
+      "replacement": "src/emuflow/tdm.py",
+      "source_revision": "9e94fb010880a1644e99de9bd2830575fd1c4e39",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    },
+    {
+      "path": "src/emuflow/tdm_timing_dag.py",
+      "replacement": "src/emuflow/tdm.py",
+      "source_revision": "9e94fb010880a1644e99de9bd2830575fd1c4e39",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    },
+    {
+      "path": "src/emuflow/tdm_feedback.py",
+      "replacement": "src/emuflow/tdm.py",
+      "source_revision": "9681f15d76ade567c3eeaed872ab4213ab01d57c",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    },
+    {
+      "path": "src/emuflow/physical_route_feedback.py",
+      "replacement": "src/emuflow/phase4.py",
+      "source_revision": "9681f15d76ade567c3eeaed872ab4213ab01d57c",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    },
+    {
+      "path": "src/emuflow/open_physical_flow.py",
+      "replacement": "src/emuflow/xilinx_physical_backend.py",
+      "source_revision": "b453024e38b42f0ad5ea1d8da83e8be197888c8c",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    },
+    {
+      "path": "src/emuflow/vpr.py",
+      "replacement": "src/emuflow/xilinx_physical_backend.py",
+      "source_revision": "b453024e38b42f0ad5ea1d8da83e8be197888c8c",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    },
+    {
+      "path": "src/emuflow/xilinx_openparf_carry8.py",
+      "replacement": "src/emuflow/xilinx_openparf_atomic.py",
+      "source_revision": "666ff8deb07f9b753338f470c5b1b8b63f697c71",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    },
+    {
+      "path": "src/emuflow/xilinx_openparf_carry8_bridge.py",
+      "replacement": "src/emuflow/xilinx_openparf_bridge.py",
+      "source_revision": "666ff8deb07f9b753338f470c5b1b8b63f697c71",
+      "reason": "Replaced by the maintained shared upstream or physical flow; no supported production consumer remains."
+    }
+  ]
 }
