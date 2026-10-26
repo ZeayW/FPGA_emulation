@@ -111,6 +111,34 @@ word at once, bits in that word share its visibility event; changing only
 their serial bit order does not establish different logic-visible arrival
 times.
 
+The shared native `word_events` kernel resolves a complete fanin DAG using
+explicit architectural launch phases and measured sampling costs. It selects
+the first positive occurrence in each fixed periodic table, requires every
+contributing RX shadow capture to precede its next TX edge, and rejects cycles,
+missing dynamic sources, nonfinite costs and unrepresentable event coordinates.
+Its explicit frame bound requires RX capture before `FRAME_SLOTS - 1`, matching
+the emitted RTL's drained region.
+Configuration-stable cones require an explicit classification. Its result owns
+only TX word indices; RX coordinates follow from the declared fixed latency.
+Phase 5 uses the same integer calendar selection primitive. This kernel does
+not yet bind the production canonical clock/fanin owners;
+word-mode global acceptance remains disabled until those bindings and the
+independent OpenSTA checks are integrated.
+
+Sampling costs are effective nominal-edge guards, distinct from raw data
+arrival. Their signed clock/check adjustment shifts the OpenSTA deadline while
+the data arc stays nonnegative. A favorable adjustment does not permit a relay
+to reuse its RX capture edge. Subtracting such a guard from a chosen TX edge
+does not, by itself, measure physical TDM waiting or characterize the fixed PHY
+arc. The kernel therefore exports occurrences, not a claimed physical wait,
+raw end-to-end delay or operating frequency.
+Changing the DUT period can change architectural launch phases and selected
+table rounds. Feasibility need not be monotone: a half-cycle launch at 40 ns
+can use a 45 ns load and arrive at 75 ns within an 80 ns period, while a launch
+at 49.5 ns misses that load, uses 85 ns and arrives at 115 ns beyond a 99 ns
+period. Candidate periods therefore require fresh projection; a binary search
+over assumed monotone feasibility is not a qualified frequency calculation.
+
 The effective post-schedule hop delay is `rx_visible - ready`. The fixed PHY
 component must have explicit endpoints: serializer latency, board propagation,
 deserializer latency, alignment, and buffering must each be included exactly

@@ -77,6 +77,9 @@ logic, original local-path and boundary timing beside data delay in sealed store
 Imports require complete cost coverage and worker assembly rejects mixed policies.
 The legacy global event binder rejects these policies until it can
 consume their clock/check adjustments.
+The shared native periodic-word kernel resolves complete fanin DAGs and strict
+relay capture ordering; production clock/fanin binding into global STA remains
+under integration.
 Native bank wrappers bind training, complete words and receive FIFO clocks;
 an explicit vendor-model loopback tool examines word integrity and latency.
 See the [clock baseline](docs/XILINX_PHYSICAL_FLOW.md#local-implementation-clock-baseline).

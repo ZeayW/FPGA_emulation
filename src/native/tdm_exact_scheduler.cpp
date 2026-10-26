@@ -13,6 +13,7 @@
 
 #include "emuflow_core/native_stages.hpp"
 #include "emuflow_core/schedule_model.hpp"
+#include "emuflow_core/word_events.hpp"
 
 namespace {
 
@@ -174,12 +175,7 @@ emuflow::core::ExactScheduleSolution Compute(const emuflow::core::ExactScheduleM
       if (hop.word_bits > 1 && hop.assigned_lane != kUnassignedLane) {
         const auto words = hop.ratio / hop.word_bits;
         if (hop.phase_word >= words) throw std::runtime_error("word phase exceeds periodic lane table");
-        const std::uint64_t phase = hop.phase_word;
-        const std::uint64_t rounds = hop_ready <= phase ? 0 :
-            (std::uint64_t(hop_ready) - phase + words - 1) / words;
-        const auto selected = phase + rounds * words;
-        if (selected > UINT32_MAX) throw std::runtime_error("word event exceeds native time domain");
-        slot = static_cast<std::uint32_t>(selected);
+        slot = emuflow::core::FirstPeriodicWord(hop.phase_word, words, hop_ready, UINT32_MAX);
         lane = hop.assigned_lane;
       } else if (hop.assigned_lane == kUnassignedLane) {
         slot = available[hop.capacity].First(hop_ready);
