@@ -74,6 +74,19 @@ receives only the sum on its own tree branch. These are planning bounds for
 critical-path discovery, not measured schedule-resolved physical delays or a
 qualified operating frequency. Final global timing still requires the routed
 local models, resolved transfer events and complete capture checks.
+The separate native `phase7 export-source-metric-weights` entry joins that same
+complete source connectivity and checked route trees. Its explicitly tagged
+weights describe physical hops, one maximum branch ratio per crossing net, or
+the sum of serial ratios, always on the actual destination branch. A multicast
+sink does not inherit a larger ratio from another branch. The TSV has an
+`integer_weight` column, distinct from a physical `extra_delay_ns` table. One
+integer unit is applied as one native STA second; these values are not physical time.
+The integer annotation mode bypasses floating-point UI conversion, requires
+zero source-wire baselines, and rejects per-wire weights outside the exact
+range below `2^23`. Full-graph scoring must zero local cell/check delays and
+independently bound the complete path sum and clock/I/O offsets; merely
+exporting these weights does not establish a global maximum. Hop and ratio
+maxima need independent searches because different branches can attain them.
 Prepared physical continuations must carry the uncapped selection provenance;
 historical capped or undeclared selections must be regenerated from the
 existing source boundary before partitioning or physical acceptance.

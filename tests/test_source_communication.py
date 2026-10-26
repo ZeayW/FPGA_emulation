@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.errors import EmuFlowError, ValidationError
-from emuflow.source_communication import export_source_communication
+from emuflow.source_communication import export_source_communication, export_source_metric_weights
 from emuflow.store_publication import bind_store_source
 from tests.native_build import ROOT, emuflow_native
 from tests.test_opensta_communication_research import prepare_source, call_engine, capture_row
@@ -89,8 +89,69 @@ def produce(fixture, **kwargs):
 
 def decoded(path):
     with path.open() as stream:
-        return [(bytes.fromhex(r['from_pin_hex']).decode(), bytes.fromhex(r['to_pin_hex']).decode(), float(r['extra_delay_ns']))
+        return [(bytes.fromhex(r['from_pin_hex']).decode(), bytes.fromhex(r['to_pin_hex']).decode(), float(r.get('extra_delay_ns', r.get('integer_weight'))))
                 for r in csv.DictReader(stream, delimiter='\t')]
+
+
+def produce_metric(fixture, metric):
+    schemas = ('emuir-compact-v2', 'assignment-index-v4', 'tdm-schedule-store-v4')
+    return export_source_metric_weights(*fixture, design='retime', platform='board',
+        semantic_sha256='a' * 64, metric=metric,
+        source_bindings=[bind_store_source(p, s) for p, s in zip(fixture[:3], schemas)],
+        executable=str(emuflow_native()))
+
+
+@pytest.mark.parametrize('metric,values', [('physical-hops', (2, 1)),
+    ('maximum-net-route-ratio', (16, 24)), ('serial-ratio-sum', (24, 24))])
+def test_metric_weights_are_explicit_integer_scores_not_communication_delays(fixture, metric, values):
+    result = produce_metric(fixture, metric)
+    assert result['schema'] == 'emuflow.source-metric-weights/v1'
+    assert result['metric'] == metric and result['weight_scale_ns'] == 1000000000
+    assert result['interpretation'] == 'integer-path-metric-not-physical-time'
+    assert set(decoded(fixture[3])) == {('launch_b/Q', 'fast/I0', values[0]),
+                                      ('fast/O', 'join/I1', values[1])}
+
+
+def test_multicast_metrics_use_only_the_actual_destination_branch(fixture):
+    original, assignment, schedule, output = fixture
+    with closing(sqlite3.connect(original)) as db, db:
+        net = db.execute("SELECT e.net_seq FROM endpoint_records e JOIN cell_records c ON c.seq=e.instance_seq WHERE c.id='launch_b' AND e.role=0").fetchone()[0]
+        ordinal = db.execute('SELECT coalesce(max(ordinal)+1,0) FROM endpoint_records WHERE net_seq=? AND role=1', (net,)).fetchone()[0]
+        db.execute("UPDATE endpoint_records SET net_seq=?,ordinal=? WHERE instance_seq=(SELECT seq FROM cell_records WHERE id='slow0') AND role=1", (net, ordinal))
+    with closing(sqlite3.connect(assignment)) as db, db:
+        net_id = db.execute('SELECT net_id FROM cuts WHERE cut_index=0').fetchone()[0]
+        db.execute('UPDATE cuts SET sink_endpoints=2 WHERE cut_index=0')
+        db.execute('INSERT INTO cut_sinks VALUES(?,0,2)', (net_id,))
+    seal_cuts(assignment)
+    with closing(sqlite3.connect(schedule)) as db, db:
+        db.execute("INSERT INTO schedule_route_sinks VALUES(0,1,'fpga2')")
+        db.execute("INSERT INTO schedule_route_edges VALUES(0,2,'l3','fpga0','fpga2')")
+        db.execute('INSERT INTO schedule_entries VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (3, 'e3', 'd0', net_id, 0, 'l3', 'fpga0', 'fpga2', 'l3', 4, 0, 0, 10, 32))
+    expected = {'physical-hops': (2, 1), 'maximum-net-route-ratio': (16, 32),
+                'serial-ratio-sum': (24, 32)}
+    for metric, values in expected.items():
+        produce_metric(fixture, metric)
+        rows = {(a, b): v for a, b, v in decoded(output)}
+        assert rows['launch_b/Q', 'fast/I0'] == values[0]
+        assert rows['launch_b/Q', 'slow0/I0'] == values[1]
+
+
+@pytest.mark.parametrize('metric', ['physical-hops', 'maximum-net-route-ratio', 'serial-ratio-sum'])
+def test_metric_export_rejects_incomplete_connectivity_without_replacing_its_owner(fixture, metric):
+    produce_metric(fixture, metric)
+    before = fixture[3].read_bytes()
+    with closing(sqlite3.connect(fixture[2])) as db, db:
+        db.execute('DELETE FROM schedule_entries WHERE seq=2')
+    with pytest.raises(EmuFlowError): produce_metric(fixture, metric)
+    assert fixture[3].read_bytes() == before
+
+
+@pytest.mark.parametrize('metric', [None, False, [], 'delay-ns', 'maximum-ratio'])
+def test_metric_kind_must_be_explicit(tmp_path, metric):
+    with pytest.raises(ValidationError, match='unsupported source graph metric'):
+        export_source_metric_weights(*(tmp_path / str(i) for i in range(4)), design='retime',
+            platform='board', semantic_sha256='a' * 64, source_bindings=[], metric=metric)
 
 
 def test_all_actual_crossings_accumulate_only_their_own_route_branch(fixture):

@@ -38,10 +38,13 @@ proc emuflow_communication_require_data_clock {pin} {
   }
 }
 
-proc emuflow_apply_communication_delays {filename} {
+proc emuflow_apply_communication_delays {filename {mode delay-ns}} {
   global emuflow_communication_by_pair emuflow_communication_arcs
   global emuflow_communication_binding_edges
   global emuflow_communication_owner emuflow_design_context_epoch
+  if {$mode ni {delay-ns metric-integer-seconds-v1}} {
+    error "unsupported source wire annotation mode"
+  }
   if {![info exists emuflow_design_context_epoch]} {
     error "communication delays require a linked source design context"
   }
@@ -62,7 +65,8 @@ proc emuflow_apply_communication_delays {filename} {
   # update. Keep only bound pin handles; no PathEnd/PathRef survives a query.
   set stream [open $filename r]
   try {
-    if {[gets $stream header] < 0 || $header ne "from_pin_hex\tto_pin_hex\textra_delay_ns"} {
+    set expected_header [expr {$mode eq "delay-ns" ? "from_pin_hex\tto_pin_hex\textra_delay_ns" : "from_pin_hex\tto_pin_hex\tinteger_weight"}]
+    if {[gets $stream header] < 0 || $header ne $expected_header} {
       error "invalid communication delay header"
     }
     while {[gets $stream line] >= 0} {
@@ -80,9 +84,19 @@ proc emuflow_apply_communication_delays {filename} {
       if {[dict exists $extra_by_pair $key]} {
         error "duplicate communication wire"
       }
-      set extra_sta [sta::time_ui_sta $extra]
+      if {$mode eq "metric-integer-seconds-v1"} {
+        # Distinct typed columns prevent a metric from being read as physical
+        # nanoseconds. Use exact native integer seconds without UI conversion.
+        if {$extra <= 0 || $extra >= 8388608.0} {
+          error "source metric wire exceeds the exact integer scoring range"
+        }
+        set extra_sta [expr {round($extra)}]
+        if {$extra != $extra_sta} {error "source metric wire is not an integer weight"}
+      } else {
+        set extra_sta [sta::time_ui_sta $extra]
+      }
       if {![expr {abs(double($extra_sta)) < Inf}]} {error "communication delay exceeds engine units"}
-      dict set extra_by_pair $key [expr {double($extra)}]
+      dict set extra_by_pair $key [expr {$mode eq "delay-ns" ? double($extra) : double($extra)*1.0e9}]
       lappend records [list $from $to $extra_sta]
     }
   } finally {close $stream}
@@ -118,6 +132,9 @@ proc emuflow_apply_communication_delays {filename} {
               set base [$edge arc_delay $arc $scene max]
               if {[dict exists $emuflow_communication_arcs $key]} {
                 set base [lindex [dict get $emuflow_communication_arcs $key] 0]
+              }
+              if {$mode eq "metric-integer-seconds-v1" && $base != 0.0} {
+                error "integer metric scoring requires zero source wire baselines"
               }
               set delay [expr {$base + $extra_sta}]
               # OpenSTA stores Delay in single precision, even though Tcl

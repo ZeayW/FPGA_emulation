@@ -41,6 +41,8 @@ constexpr RegisteredSchema schemas[] = {
     {"sta-source-document-v1", ArtifactEncoding::kText, 0, 1},
     {"source-communication-tsv-v1", ArtifactEncoding::kText, 0, 1},
     {"source-communication-request-v1", ArtifactEncoding::kBinary, 0x31514353434d5545ULL, 1},
+    {"source-metric-request-v1", ArtifactEncoding::kBinary, 0x31514d53434d5545ULL, 1},
+    {"source-metric-weights-tsv-v1", ArtifactEncoding::kText, 0, 1},
     {"sta-path-selector-v1", ArtifactEncoding::kText, 0, 1},
     {"net-weight-store-v1", ArtifactEncoding::kSqlite, 0, 1, true,
      "SELECT 'net-weight-store-v1' WHERE (SELECT count(*) FROM pragma_table_info('net_weights') "

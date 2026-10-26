@@ -9,6 +9,14 @@ from tests.native_build import emuflow_native, native_pipeline_api_test
 
 class NativeStageRuntimeTest(unittest.TestCase):
 
+    def test_source_metric_formats_are_distinct_from_physical_delay_requests(self):
+        binary = str(emuflow_native())
+        for schema in ['source-metric-request-v1', 'source-metric-weights-tsv-v1']:
+            result = subprocess.run([binary, 'check-runtime', schema], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        result = subprocess.run([binary, 'check-runtime', 'source-metric-request-v2'], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+
     def test_primary_cluster_runtime_rejects_the_retired_unconsumed_v1(self):
         binary = str(emuflow_native())
         current = subprocess.run(
@@ -67,6 +75,7 @@ class NativeStageRuntimeTest(unittest.TestCase):
             output, report = root / "previous-result", root / "status.json"
             cases = [
                 ["phase7", "export-source-communication", missing, missing, missing, missing],
+                ["phase7", "export-source-metric-weights", missing, missing, missing, missing],
                 ["phase3", "analyze", missing],
                 ["phase3", "refine-hops", missing],
                 ["phase3", "reduce-loads", missing, missing, missing],

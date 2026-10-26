@@ -29,6 +29,7 @@ const char* StageName(Stage stage) {
   switch (stage) {
     case Stage::kInvalid: return "native.request";
     case Stage::kExportSourceCommunication: return "phase7.export-source-communication";
+    case Stage::kExportSourceMetricWeights: return "phase7.export-source-metric-weights";
     case Stage::kBuildSourceLaunchClocks: return "phase7.build-launch-clocks";
     case Stage::kRefinePartitionHops: return "phase3.refine-hops";
     case Stage::kValidateAtomicOwnership: return "phase7.validate-atomic-ownership";
@@ -66,6 +67,8 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     case Stage::kInvalid: break;
     case Stage::kExportSourceCommunication:
       return {"emuir-compact-v2","assignment-index-v4","tdm-schedule-store-v4","source-communication-request-v1"};
+    case Stage::kExportSourceMetricWeights:
+      return {"emuir-compact-v2","assignment-index-v4","tdm-schedule-store-v4","source-metric-request-v1"};
     case Stage::kBuildSourceLaunchClocks: {
       const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
       if(count<3)throw core::StageError(core::ErrorCode::kInvalidRequest,"source launch inputs are missing");
@@ -257,6 +260,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
     }
     switch (request.stage) {
       case Stage::kExportSourceCommunication: core::ExportSourceCommunication(inputs,output); break;
+      case Stage::kExportSourceMetricWeights: core::ExportSourceCommunication(inputs,output); break;
       case Stage::kBuildSourceLaunchClocks: core::BuildSourceLaunchClocksFromRequest(inputs,output,request.cancelled); break;
       case Stage::kRefinePartitionHops:
         RefinePartitionHops(inputs,output,!request.summary_output); break;
@@ -300,6 +304,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
     const char* schema = nullptr;
     switch (request.stage) {
       case Stage::kExportSourceCommunication: schema="source-communication-tsv-v1"; break;
+      case Stage::kExportSourceMetricWeights: schema="source-metric-weights-tsv-v1"; break;
       case Stage::kBuildSourceLaunchClocks: schema="source-launch-clock-store-v1"; break;
       case Stage::kRefinePartitionHops: schema = "hop-refiner-output-v1"; break;
       case Stage::kValidateAtomicOwnership: schema = "atomic-ownership-summary-v1"; break;

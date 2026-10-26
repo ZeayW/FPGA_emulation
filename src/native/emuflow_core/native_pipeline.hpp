@@ -9,7 +9,8 @@ enum class Stage {
   kAnalyzeExact, kFinalizeExact, kHashSemantics,
   kWriteExactSections, kRefinePatron, kRoute,
   kAssignBanks, kGroupSignals, kRefinePositions, kRudy,
-  kBuildSchedule, kExportBookshelf, kBuildPartitionClusters, kBuildCandidateIds, kRefinePatronFromPrimary, kReducePartitionLoads, kPublishAssignmentIndex, kValidateAssignmentCuts, kPublishClusterCatalog, kBuildCaptures, kValidateCaptures, kExportRwroute, kImportVivadoLineage, kRefinePartitionHops
+  kBuildSchedule, kExportBookshelf, kBuildPartitionClusters, kBuildCandidateIds, kRefinePatronFromPrimary, kReducePartitionLoads, kPublishAssignmentIndex, kValidateAssignmentCuts, kPublishClusterCatalog, kBuildCaptures, kValidateCaptures, kExportRwroute, kImportVivadoLineage, kRefinePartitionHops,
+  kExportSourceMetricWeights
 };
 struct StageRequest {
   Stage stage = Stage::kInvalid;

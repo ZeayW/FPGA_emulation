@@ -48,17 +48,22 @@ void ExportSourceCommunication(const std::vector<ArtifactRef>& inputs,const std:
   Check(inputs.size()==4,"source communication input coverage differs");
   for(const auto& input:inputs)input.RequireUnchanged();
   CheckedRequestReader request(inputs[3].path(),1024*1024);
-  Check(request.Read<std::uint64_t>()==0x31514353434d5545ULL && request.Read<std::uint32_t>()==1,
+  const bool metric_request=inputs[3].schema()=="source-metric-request-v1";
+  Check(request.Read<std::uint64_t>()==(metric_request?0x31514d53434d5545ULL:0x31514353434d5545ULL) && request.Read<std::uint32_t>()==1,
         "unsupported source communication request");
   for(unsigned i=0;i<3;++i) {
     const FileGeneration generation{request.Read<std::uint64_t>(),request.Read<std::uint64_t>(),request.Read<std::uint64_t>(),
       request.Read<std::int64_t>(),request.Read<std::int64_t>(),request.Read<std::int64_t>(),request.Read<std::int64_t>()};
     if(!(generation==inputs[i].generation()))throw StageError(ErrorCode::kMixedGeneration,"source communication parent generation changed");
   }
-  const auto fixed=request.Read<double>(),ui=request.Read<double>();
+  double fixed=0.,ui=0.;std::uint32_t metric=0;
+  if(metric_request)metric=request.Read<std::uint32_t>();
+  else {fixed=request.Read<double>();ui=request.Read<double>();}
   const auto quantum=request.Read<std::uint32_t>(),maximum=request.Read<std::uint32_t>();
   const auto design=request.ReadString32(),platform=request.ReadString32(),semantic=request.ReadString32();request.RequireEnd();
-  Check(std::isfinite(fixed) && fixed>=0 && std::isfinite(ui) && ui>0 && quantum==8 && maximum>=8 && maximum<=256 && maximum%8==0,
+  Check((metric_request?(metric>=1 && metric<=3):
+        (std::isfinite(fixed) && fixed>=0 && std::isfinite(ui) && ui>0)) &&
+        quantum==8 && maximum>=8 && maximum<=256 && maximum%8==0,
         "source communication requires the declared 8-bit serial planning model");
   Check(semantic.size()==64 && semantic.find_first_not_of("0123456789abcdef")==std::string::npos,
         "source communication semantic identity is invalid");
@@ -158,13 +163,17 @@ void ExportSourceCommunication(const std::vector<ArtifactRef>& inputs,const std:
         const auto& edge=route.edges[index];const auto predecessor=route.delays.find(edge.from);
         const auto previous=incoming.find(edge.from);
         Check(edge.depth==(edge.from==route.source?0:route.edges.at(previous->second).depth+1),"source communication hop depth differs from its tree");
-        const double delay=predecessor->second+fixed+ui*edge.ratio;
+        const double increment=metric==0?fixed+ui*edge.ratio:metric==1?1.:metric==2?0.:double(edge.ratio);
+        const double delay=metric==2?std::max(predecessor->second,double(edge.ratio)):predecessor->second+increment;
         Check(std::isfinite(delay) && delay>=0 && route.delays.emplace(edge.to,delay).second,"source communication delay or tree is invalid");
         ready.push_back(edge.to);++visited;
       }
     }
     Check(visited==route.edges.size(),"source communication route has a cycle or disconnected relay");
     for(const auto sink:route.sinks)Check(route.delays.count(sink),"source communication sink is unreachable");
+    if(metric_request)for(const auto& value:route.delays)
+      Check(value.second>=0 && value.second<8388608. && std::floor(value.second)==value.second,
+            "source metric route exceeds the exact integer scoring range");
     std::sort(route.sinks.begin(),route.sinks.end());
   }
   db.Execute("CREATE TEMP TABLE communication_arcs(seq INTEGER PRIMARY KEY,fcell INTEGER,fpin INTEGER,fbit INTEGER,"
@@ -201,7 +210,8 @@ void ExportSourceCommunication(const std::vector<ArtifactRef>& inputs,const std:
           for(const auto& sink:sink_pins) {
             const auto to=owners.at(sink.cell->sequence());if(to==from)continue;
             insert.BindInteger(1,connections++);insert.BindInteger(2,driver.cell->sequence());insert.BindInteger(3,driver.pin->sequence());insert.BindInteger(4,driver.bit);
-            insert.BindInteger(5,sink.cell->sequence());insert.BindInteger(6,sink.pin->sequence());insert.BindInteger(7,sink.bit);insert.BindReal(8,route.delays.at(to));insert.Execute();insert.Reset();
+            insert.BindInteger(5,sink.cell->sequence());insert.BindInteger(6,sink.pin->sequence());insert.BindInteger(7,sink.bit);
+            insert.BindReal(8,route.delays.at(to));insert.Execute();insert.Reset();
             for(const auto cell:{driver.cell->sequence(),sink.cell->sequence()}){selected_cell.BindInteger(1,cell);selected_cell.Execute();selected_cell.Reset();}
           }
         }
@@ -226,7 +236,8 @@ void ExportSourceCommunication(const std::vector<ArtifactRef>& inputs,const std:
       "LEFT JOIN communication_shapes fs ON fs.cell=a.fcell AND fs.pin=fp.name "
       "LEFT JOIN cell_records t ON t.seq=a.tcell LEFT JOIN pin_names tp ON tp.seq=a.tpin "
       "LEFT JOIN communication_shapes ts ON ts.cell=a.tcell AND ts.pin=tp.name ORDER BY a.seq");
-  AtomicBinaryWriter writer(output,inputs);auto& stream=writer.stream();stream<<"from_pin_hex\tto_pin_hex\textra_delay_ns\n"<<std::setprecision(17);
+  AtomicBinaryWriter writer(output,inputs);auto& stream=writer.stream();
+  stream<<(metric_request?"from_pin_hex\tto_pin_hex\tinteger_weight\n":"from_pin_hex\tto_pin_hex\textra_delay_ns\n")<<std::setprecision(17);
   std::uint64_t emitted=0;
   while(output_rows.Step()) {
     Check(output_rows.TypedInteger(0)==static_cast<std::int64_t>(emitted++),"source communication emitted order differs");
@@ -238,7 +249,12 @@ void ExportSourceCommunication(const std::vector<ArtifactRef>& inputs,const std:
     stream<<Hex(pin(1,2,3,4,5))<<'\t'<<Hex(pin(6,7,8,9,10))<<'\t'<<output_rows.TypedReal(11)<<'\n';
   }
   Check(emitted==connections && stream.good(),"source communication emitted coverage differs");writer.Commit();
-  std::cout<<JsonRecord(std::map<std::string,JsonRecord>{{"schema","emuflow.source-communication-export/v1"},{"status","pass"},
+  if(metric_request) {
+    const char* name=metric==1?"physical-hops":metric==2?"maximum-net-route-ratio":"serial-ratio-sum";
+    std::cout<<JsonRecord(std::map<std::string,JsonRecord>{{"schema","emuflow.source-metric-weights/v1"},{"status","pass"},
+      {"metric",name},{"weight_scale_ns",std::uint64_t(1000000000)},{"interpretation","integer-path-metric-not-physical-time"},
+      {"crossing_nets",crossing_nets},{"sink_partitions",sink_records},{"route_edges",entry_records},{"connections",connections}}).Encode()<<'\n';
+  } else std::cout<<JsonRecord(std::map<std::string,JsonRecord>{{"schema","emuflow.source-communication-export/v1"},{"status","pass"},
     {"cost_policy","per-hop-fixed-plus-serial-ui-times-ratio-planning-bound-v1"},{"crossing_nets",crossing_nets},
     {"sink_partitions",sink_records},{"route_edges",entry_records},{"connections",connections},{"fixed_delay_ns",fixed},{"serial_ui_ns",ui}}).Encode()<<'\n';
 }
