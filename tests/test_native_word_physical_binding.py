@@ -274,20 +274,36 @@ def test_root_ids_are_canonical_across_multiple_source_partitions(physical):
     assert report['roots']==[[0,0,0],[0,0,25],[1,0,50]] and report['events']==[7,15,23]
 
 
+def fixture_engine_checks(report):
+    from emuflow.global_sta import EventCheck
+    checks=[];support=iter(report['checks']);current=next(support,None)
+    for transfer,word in enumerate(report['events']):
+        while current is not None and current[0]==transfer:
+            _transfer,fanin,launch,data,required=current
+            checks.append(EventCheck(f'word-{transfer}','tx',str(fanin),launch,(data,),required))
+            current=next(support,None)
+        # These synthetic observations satisfy the generic engine interface;
+        # they are not original DUT capture checks or a global coverage proof.
+        for role in ['target','runtime']:
+            checks.append(EventCheck(f'word-{transfer}',role,'fixture-observation',word*5.,(30.,),(word+6)*5.))
+    assert current is None
+    return checks
+
+
+def test_exported_support_and_observations_use_contiguous_engine_bundles(physical):
+    from emuflow.global_sta import validate_checks
+    result=run(physical);assert result.returncode==0,result.stderr
+    checks=fixture_engine_checks(json.loads(result.stdout))
+    assert validate_checks(checks)==checks
+
+
 @pytest.mark.skipif(not os.environ.get('EMUFLOW_TEST_OPENSTA'),reason='explicit qualified OpenSTA required')
 def test_bound_model_checks_run_in_independent_opensta_then_validate_first_occurrence(physical):
-    from emuflow.global_sta import EventCheck,run_event_checks
+    from emuflow.global_sta import run_event_checks
     config,path=physical
     def measured(mode):
         result=run(physical);assert result.returncode==0,result.stderr
-        report=json.loads(result.stdout);checks=[]
-        for transfer,fanin,launch,data,required in report['checks']:
-            checks.append(EventCheck(f'word-{transfer}','tx',str(fanin),launch,(data,),required))
-        # These synthetic observations satisfy the generic engine interface;
-        # they are not original DUT capture checks or a global coverage proof.
-        for transfer,word in enumerate(report['events']):
-            for role in ['target','runtime']:
-                checks.append(EventCheck(f'word-{transfer}',role,'fixture-observation',word*5.,(30.,),(word+6)*5.))
+        report=json.loads(result.stdout);checks=fixture_engine_checks(report)
         rows=run_event_checks(checks,path.parent/mode,os.environ['EMUFLOW_TEST_OPENSTA'])
         by_id={(row['path'],row['role'],row['event']):row['slack_ns']for row in rows}
         assert min(by_id.values())>=-1e-5
