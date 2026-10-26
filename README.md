@@ -20,6 +20,7 @@ handoff in the shared C++ core. One native graph produces the typed segment
 timing stores; the former Python endpoint and graph builders are test-only oracles.
 Routed OpenSTA staging writes compact EmuIR and delay-cell Liberty directly
 in the shared core, with source-bound model queries and independent A/Y checks.
+Its run report retains the bounded model-owner coverage reference.
 The indexed Vivado adapter consumes current Phase 6 SQLite contracts with
 canonical net identities, fixed LVDS I/O, native sequential control pins, and
 the common physical-result contract. Real-device qualification is in progress. Its OOC implementation retains abstract external clock sources and

@@ -1593,8 +1593,15 @@ def _run_opensta_path_database(
         "through_net_coverage": through_coverage,
         "path_limit_reached": imported["paths"] >= max_paths,
         "unique_path_nets": imported["unique_path_nets"],
-        "used_cell_type_summary": _sealed_string_set_summary(
-            coverage["used_cell_types"]
+        "used_cell_type_summary": (
+            {
+                "schema": coverage["schema"],
+                "count": coverage["used_cell_type_count"],
+                "base_cell_types": coverage["base_used_cell_types"],
+                "generated_cell_types": coverage["generated_cell_types"],
+            }
+            if coverage.get("schema") == "emuflow.native-routed-model-coverage/v1"
+            else _sealed_string_set_summary(coverage["used_cell_types"])
         ),
         "checker": checked,
         "output": str(output_path),

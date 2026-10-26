@@ -544,7 +544,11 @@ delay values or names into another store. Old compact readers may ignore this
 feature; routed-model queries require their original owner generation. Model
 coverage reports bounded base-type lists, generated-type counts and the typed
 owner reference (`emuflow.native-routed-model-coverage/v1`), instead of expanding
-all generated type names into reports. The host renders only the bounded base
+all generated type names into reports. The final OpenSTA run's
+`used_cell_type_summary` preserves that schema, the total `count`,
+`base_cell_types`, and `generated_cell_types` owner reference; it does not
+reconstruct a complete name set for a summary hash. Ordinary bounded models
+retain their existing count/hash summary. The host renders only the bounded base
 model; OpenSTA reads the native delay-cell Liberty as a second library.
 
 Before publication, an independent shared-core check requires one delay cell per

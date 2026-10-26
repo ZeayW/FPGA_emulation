@@ -4,6 +4,7 @@ from contextlib import closing
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import tracemalloc
 from unittest.mock import patch
 
@@ -74,6 +75,35 @@ def test_empty_endpoint_population_is_an_explicit_zero_delay_model(tmp_path):
         coverage = validate_timing_model_coverage(ir, model)
     assert coverage["generated_cell_types"]["records"] == 0
     assert dict(model["cells"]) == model.base_model["cells"]
+
+
+def test_indexed_runner_keeps_native_coverage_bounded_in_its_final_report(tmp_path):
+    from emuflow.opensta import run_opensta_path_database
+    mapped, timing, output = fixture(tmp_path)
+    model, _ = stage(mapped, timing, output)
+
+    def engine(argv, *, environment):
+        assert environment["EMUFLOW_STA_EXTRA_LIBERTY"] == str(model.library.path)
+        fields = ["path_id_hex", "clock_domain_hex", "clock_period_ns", "slack_ns",
+                  "fixed_delay_ns", "path_nets_hex"]
+        row = ["path".encode().hex(), "clk".encode().hex(), "10", "9.9", "0.1", "n".encode().hex()]
+        Path(environment["EMUFLOW_STA_OUTPUT"]).write_text("\t".join(fields)+"\n"+"\t".join(row)+"\n")
+        return subprocess.CompletedProcess(argv, 0, stdout="test engine")
+
+    with patch("emuflow.opensta.resolve_native_executable", return_value="test-sta"), \
+         patch("emuflow.opensta.require_opensta_engine", return_value={"version": "test"}), \
+         patch("emuflow.opensta.run_with_bounded_output", side_effect=engine), \
+         patch("emuflow.opensta._sealed_string_set_summary", side_effect=AssertionError("expanded model summary")), \
+         patch.object(type(model["cells"]), "items", side_effect=AssertionError("expanded model")):
+        report = run_opensta_path_database(output, tmp_path/"paths.json", clocks={"clk": 10},
+                                          _timing_model=model, _stream_output=True)
+    summary = report["used_cell_type_summary"]
+    assert report["paths"] == 1
+    assert summary["schema"] == "emuflow.native-routed-model-coverage/v1"
+    assert summary["count"] == 3
+    assert summary["generated_cell_types"]["records"] == 1
+    assert summary["generated_cell_types"]["artifact_generation"] == list(model.owner.generation)
+    assert set(summary["base_cell_types"]) == {"FDRE", "LUT1"}
 
 
 @pytest.mark.parametrize("damage", ["duplicate-id", "duplicate-sink", "wrong-bit", "output-pin", "constant-pin", "negative", "nonfinite", "bad-coefficient", "io-duplicate", "io-measurement", "truncated", "crc"])
