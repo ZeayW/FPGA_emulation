@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
+from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.indexed_timing import IndexedTimingView
 from emuflow.opensta import (build_architecture_opensta_timing_model,
     _timing_model_pin_directions, run_opensta_path_database)
@@ -115,11 +115,29 @@ def test_type_pin_catalog_is_bounded_by_pins_not_macro_population(macros,tmp_pat
 def test_real_engine_times_late_wide_ram_high_bit_without_missing_ports(macros,tmp_path):
     _,source,architecture=macros
     output=tmp_path/'paths.json';log=tmp_path/'opensta.log'
+    # This synthetic pin-inventory fixture intentionally unions two different
+    # macro shapes. The legacy query can exercise emitted output spelling,
+    # but is not a complete source-timing model or physical-flow admission.
     result=run_opensta_path_database(source,output,clocks={'clk':10.},
         architecture_timing_db_path=architecture,
         executable=os.environ['EMUFLOW_OPENSTA_LAUNCH_ENGINE'],log_path=log,
-        _stream_output=True,clock_budget_policy='engine-edge-v1')
+        _stream_output=True)
     assert result['status']=='pass' and 'Warning 201:' not in log.read_text()
     paths=list(iter_sta_path_database_paths(output,json.loads(output.read_text())))
     assert any(row['startpoint']['instance']=='z_wide' and row['startpoint']['port']=='DOUT'
         and row['startpoint']['bit']==63 and row['endpoint']['instance']=='capture1' for row in paths)
+
+
+@pytest.mark.skipif(not os.environ.get('EMUFLOW_OPENSTA_LAUNCH_ENGINE'),reason='explicit qualified OpenSTA required')
+def test_union_macro_pin_inventory_cannot_claim_source_timing_coverage(macros,tmp_path):
+    _,source,architecture=macros
+    log=tmp_path/'coverage.log'
+    with pytest.raises(EmuFlowError,match='source timing coverage failed'):
+        run_opensta_path_database(source,tmp_path/'invalid.json',clocks={'clk':10.},
+            timing_io=dict(input_groups=[dict(clock='clk',delay_ns=0.,ports=['addr'])],
+                output_groups=[dict(clock='clk',delay_ns=0.,ports=['q'])]),
+            architecture_timing_db_path=architecture,
+            executable=os.environ['EMUFLOW_OPENSTA_LAUNCH_ENGINE'],log_path=log,
+            _stream_output=True,clock_budget_policy='engine-edge-v1')
+    assert 'unconstrained endpoints' in log.read_text()
+    assert 'EMUFLOW_OPENSTA_DATABASE status=pass' not in log.read_text()

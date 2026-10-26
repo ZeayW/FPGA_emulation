@@ -315,6 +315,9 @@ def _require_physical_source_timing(path: Path) -> None:
     source = value.get('source', {}) if isinstance(value, dict) else {}
     if not isinstance(source, dict) or source.get('model_pin_coverage') != 'checked-source-emission-directions-v1':
         raise ValidationError('physical execution requires checked source-model pin coverage; regenerate unqualified prepared timing')
+    if source.get('source_timing_coverage') != {
+            'policy': 'engine-no-clock-unconstrained-loops-v1', 'status': 'pass'}:
+        raise ValidationError('physical execution requires checked Phase2 source timing coverage; regenerate unqualified prepared timing')
     selection = source.get('path_selection', {})
     if (not isinstance(selection, dict) or selection.get('policy') != 'worst-per-endpoint-per-path-group-v1'
             or 'max_paths_per_group' not in selection or selection['max_paths_per_group'] is not None

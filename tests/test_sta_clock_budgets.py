@@ -107,8 +107,14 @@ def test_zero_exit_after_tcl_error_is_not_clock_budget_completion(tmp_path):
 
 def test_completion_record_binds_clock_count_output_and_emitted_population(tmp_path):
     out=tmp_path/'path output.tsv'
-    line=f'EMUFLOW_OPENSTA_DATABASE status=pass clocks=2 queried_paths=10 emitted_paths=9 output={out}\n'
+    coverage='EMUFLOW_SOURCE_TIMING_COVERAGE status=pass no_clock=0 unconstrained_endpoints=0 loops=0\n'
+    line=coverage+f'EMUFLOW_OPENSTA_DATABASE status=pass clocks=2 queried_paths=10 emitted_paths=9 output={out}\n'
     assert check_opensta_export_completion(line,output_path=out,clock_count=2)==9
     for text in (line+line,line.replace('clocks=2','clocks=1'),line.replace('emitted_paths=9','emitted_paths=11'),
         line.replace(str(out),str(tmp_path/'other.tsv'))):
         with pytest.raises(EmuFlowError):check_opensta_export_completion(text,output_path=out,clock_count=2)
+    for text in (line.replace(coverage,''),coverage+line,
+                 line.replace('no_clock=0','no_clock=1'),
+                 line.replace('status=pass no_clock=0','status=failed no_clock=0')):
+        with pytest.raises(EmuFlowError,match='source timing coverage'):
+            check_opensta_export_completion(text,output_path=out,clock_count=2)

@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from emuflow.errors import ValidationError
+from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.indexed_timing import IndexedTimingView
 from emuflow.opensta import (DEFAULT_TIMING_MODEL, classify_through_net_timing_endpoints,
     load_timing_model, render_opensta_liberty, run_opensta_path_database,
@@ -153,3 +153,11 @@ exit 0
     context.require_unchanged()
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'EMUFLOW_RECOVERY_COVERAGE status=pass' in result.stdout
+    # The production exporter must enforce that native result; a standalone
+    # diagnostic warning is not sufficient to prevent a partial Phase2 owner.
+    with pytest.raises(EmuFlowError, match='source timing coverage failed'):
+        run_opensta_path_database(source, tmp_path/'invalid-paths.json', clocks={'clk': 10.},
+            timing_io=dict(input_groups=[],
+                output_groups=[dict(clock='clk', delay_ns=0., ports=['q'])]),
+            executable=engine, _stream_output=True, clock_budget_policy='engine-edge-v1')
+    assert not (tmp_path/'invalid-paths.json').exists()

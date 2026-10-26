@@ -138,10 +138,10 @@ def check_opensta_engine_version(executable: str) -> str:
         [executable, "-no_init", "-exit", str(OPENSTA_RUNTIME_CHECK_SCRIPT)]
     )
     if (runtime_result.returncode != 0 or
-            "EMUFLOW_OPENSTA_RUNTIME status=pass" not in runtime_result.stdout):
+            not re.search(r'^EMUFLOW_OPENSTA_RUNTIME status=pass tcl=\S+ source_coverage=setup-and-recovery-v1\r?$', runtime_result.stdout, re.M)):
         raise ValidationError(
             "OpenSTA runtime qualification failed; Tcl 8.6+ with try/finally "
-            "is required: " + runtime_result.stdout[-1000:]
+            "and setup/recovery source coverage are required: " + runtime_result.stdout[-1000:]
         )
     return ".".join(str(field) for field in version_tuple)
 
@@ -1366,6 +1366,9 @@ def check_opensta_export_completion(log: str, *, output_path: Path, clock_count:
     clocks,queried,emitted,output=records[0]
     if int(clocks)!=clock_count or not 0<int(emitted)<=int(queried) or output.rstrip('\r')!=str(output_path):
         raise EmuFlowError('OpenSTA terminal completion identity/count differs')
+    coverage = re.findall(r'^EMUFLOW_SOURCE_TIMING_COVERAGE ([^\r\n]*)\r?$', log, re.M)
+    if coverage != ['status=pass no_clock=0 unconstrained_endpoints=0 loops=0']:
+        raise EmuFlowError('OpenSTA export lacks one passing source timing coverage check')
     return int(emitted)
 
 
@@ -1592,6 +1595,9 @@ def _run_opensta_path_database(
             ),
             "timing_io": timing_io_summary,
         }
+        if clock_budget_policy == 'engine-edge-v1':
+            source_value['source_timing_coverage'] = {
+                'policy': 'engine-no-clock-unconstrained-loops-v1', 'status': 'pass'}
         if clock_budget_policy=='engine-edge-v1':
             source_value['clock_budget_script_sha256']=file_sha256(OPENSTA_EXPORT_SCRIPT.with_name('clock_budget.tcl'))
             source_value['clock_logic_policy']=clock_logic['policy']

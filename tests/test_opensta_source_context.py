@@ -134,7 +134,8 @@ def test_real_emitted_context_keeps_original_positive_and_negative_edges(prepare
 def test_real_default_path_export_retains_endpoints_beyond_a_diagnostic_cap(prepared,tmp_path):
     from emuflow.opensta import run_opensta_path_database
     source,_,_=prepared
-    common=dict(clocks={'clk':10.},timing_io=IO,
+    common=dict(clocks={'clk':10.},timing_io={**IO,
+        'output_groups':[{'clock':'clk','delay_ns':0.,'ports':['q']}]},
         executable=os.environ['EMUFLOW_OPENSTA_LAUNCH_ENGINE'],
         _stream_output=True,clock_budget_policy='engine-edge-v1')
     capped=run_opensta_path_database(source,tmp_path/'capped.json',max_paths=1,**common)

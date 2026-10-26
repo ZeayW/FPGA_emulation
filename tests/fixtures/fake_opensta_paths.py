@@ -10,7 +10,7 @@ if sys.argv[1:] == ["-version"]:
     print("3.1.0")
     raise SystemExit(0)
 if "-no_init" in sys.argv:
-    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16")
+    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16 source_coverage=setup-and-recovery-v1")
     raise SystemExit(0)
 
 
@@ -42,6 +42,7 @@ for index, row in enumerate(rows):
 output.write_text("\n".join(records) + "\n")
 if edge_policy:
     clocks = Path(os.environ['EMUFLOW_STA_CLOCKS']).read_text().splitlines()[1:]
+    print('EMUFLOW_SOURCE_TIMING_COVERAGE status=pass no_clock=0 unconstrained_endpoints=0 loops=0')
     print(f'EMUFLOW_OPENSTA_DATABASE status=pass clocks={len(clocks)} queried_paths={len(rows)} emitted_paths={len(rows)} output={output}')
 if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
     requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]

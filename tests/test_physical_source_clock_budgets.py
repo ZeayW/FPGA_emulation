@@ -20,6 +20,7 @@ def selector():
     # and prepared-input binder, not by this bounded controller gate.
     return dict(schema='emuflow.sta-path-database/v4', source=dict(
         model_pin_coverage='checked-source-emission-directions-v1',
+        source_timing_coverage=dict(policy='engine-no-clock-unconstrained-loops-v1', status='pass'),
         clock_budget_policy='engine-edge-v1',
         path_selection=dict(policy='worst-per-endpoint-per-path-group-v1',
                             max_paths_per_group=None, endpoint_path_count=1)),
@@ -28,7 +29,8 @@ def selector():
 
 
 @pytest.mark.parametrize('damage', ['policy', 'schema', 'format', 'coverage',
-                                  'boolean-count', 'missing-count', 'capped', 'missing-selection'])
+                                  'boolean-count', 'missing-count', 'capped', 'missing-selection',
+                                  'missing-source-coverage', 'failed-source-coverage'])
 def test_legacy_or_partial_prepared_clock_metadata_cannot_enter_physical_flow(tmp_path, damage):
     value = selector()
     if damage == 'policy': value['source']['clock_budget_policy'] = 'legacy-absolute-arrival-v1'
@@ -41,6 +43,8 @@ def test_legacy_or_partial_prepared_clock_metadata_cannot_enter_physical_flow(tm
     elif damage == 'missing-count': del value['summary']['clock_budget_paths']
     elif damage == 'capped': value['source']['path_selection']['max_paths_per_group'] = 200000
     elif damage == 'missing-selection': del value['source']['path_selection']
+    elif damage == 'missing-source-coverage': del value['source']['source_timing_coverage']
+    elif damage == 'failed-source-coverage': value['source']['source_timing_coverage']['status']='failed'
     path = tmp_path / 'paths.json'
     path.write_text(json.dumps(value))
     with pytest.raises(ValidationError, match='Phase2|clock budgets'):

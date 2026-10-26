@@ -533,7 +533,7 @@ if sys.argv[1:] == ["-version"]:
     print("3.1.0")
     raise SystemExit(0)
 if "-no_init" in sys.argv:
-    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16")
+    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16 source_coverage=setup-and-recovery-v1")
     raise SystemExit(0)
 
 rows = Path(os.environ["EMUFLOW_STA_NET_MAP"]).read_text().splitlines()[1:]

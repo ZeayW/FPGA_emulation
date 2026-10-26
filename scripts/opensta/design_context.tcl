@@ -18,6 +18,28 @@ proc emuflow_hex_encode {value} {
   return $encoded
 }
 
+proc emuflow_require_source_timing_coverage {} {
+  # Run on the linked, constrained source graph before selecting any paths.
+  # A successful path query says nothing about captures with no clock or no
+  # timed launch, and a loop can silently remove edges from that query.
+  # Unused top-level inputs need no artificial arrival constraint: the
+  # unconstrained-endpoint check follows their actual timed fanout instead.
+  set errors [sta::check_timing_cmd 0 0 0 1 1 1 0]
+  if {[llength $errors]} {
+    set objects 0
+    set examples {}
+    foreach failure $errors {
+      incr objects [expr {[llength $failure] - 1}]
+      puts stderr "EMUFLOW_SOURCE_TIMING_ERROR [lindex $failure 0]"
+      foreach name [lrange $failure 1 end] {
+        if {[llength $examples] < 16} {lappend examples $name}
+      }
+    }
+    error "source timing coverage failed: groups=[llength $errors] objects=$objects examples=$examples"
+  }
+  puts "EMUFLOW_SOURCE_TIMING_COVERAGE status=pass no_clock=0 unconstrained_endpoints=0 loops=0"
+}
+
 proc emuflow_read_design_context {} {
   set liberty_path [file normalize [emuflow_required_env EMUFLOW_STA_LIBERTY]]
   set verilog_path [file normalize [emuflow_required_env EMUFLOW_STA_VERILOG]]

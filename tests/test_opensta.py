@@ -227,7 +227,7 @@ class OpenStaProviderTest(unittest.TestCase):
             executable = Path(temporary) / "sta"
             executable.write_text(
                 '#!/bin/sh\nif [ "$1" = -version ]; then echo 3.1.0; '
-                'else echo "EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16"; fi\n', encoding="utf-8"
+                'else echo "EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16 source_coverage=setup-and-recovery-v1"; fi\n', encoding="utf-8"
             )
             executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
             original_open = Path.open
@@ -243,6 +243,18 @@ class OpenStaProviderTest(unittest.TestCase):
                 self.assertEqual(
                     check_opensta_engine_version(str(executable)), "3.1.0"
                 )
+
+    def test_version_and_tcl_alone_cannot_qualify_missing_recovery_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "sta"
+            executable.write_text(
+                '#!/bin/sh\nif [ "$1" = -version ]; then echo 3.1.0; '
+                'else echo "EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16"; fi\n',
+                encoding="utf-8",
+            )
+            executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
+            with self.assertRaisesRegex(ValidationError, "setup/recovery source coverage"):
+                check_opensta_engine_version(str(executable))
 
     def test_container_engine_identity_tracks_binary_changes_separately(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -371,7 +383,7 @@ if sys.argv[1:] == ["-version"]:
     print("3.1.0")
     raise SystemExit(0)
 if "-no_init" in sys.argv:
-    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16")
+    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16 source_coverage=setup-and-recovery-v1")
     raise SystemExit(0)
 
 through = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()
@@ -463,7 +475,7 @@ if sys.argv[1:] == ["-version"]:
     print("3.1.0")
     raise SystemExit(0)
 if "-no_init" in sys.argv:
-    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16")
+    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16 source_coverage=setup-and-recovery-v1")
     raise SystemExit(0)
 timing_io = Path(os.environ["EMUFLOW_STA_TIMING_IO"]).read_text().splitlines()
 assert os.environ["EMUFLOW_STA_MAX_PATHS"] == "0"
@@ -523,7 +535,7 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
             executable.write_text(
                 "#!/bin/sh\n"
                 "if [ \"$1\" = \"-version\" ]; then echo 3.1.0; exit 0; fi\n"
-                "if [ \"$1\" = \"-no_init\" ]; then echo EMUFLOW_OPENSTA_RUNTIME status=pass; exit 0; fi\n"
+                "if [ \"$1\" = \"-no_init\" ]; then echo EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16 source_coverage=setup-and-recovery-v1; exit 0; fi\n"
                 "exit 99\n",
                 encoding="utf-8",
             )
@@ -683,7 +695,7 @@ if sys.argv[1:] == ["-version"]:
     print("3.1.0")
     raise SystemExit(0)
 if "-no_init" in sys.argv:
-    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16")
+    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16 source_coverage=setup-and-recovery-v1")
     raise SystemExit(0)
 
 requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
@@ -756,7 +768,7 @@ if sys.argv[1:] == ["-version"]:
     print("3.1.0")
     raise SystemExit(0)
 if "-no_init" in sys.argv:
-    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16")
+    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16 source_coverage=setup-and-recovery-v1")
     raise SystemExit(0)
 
 requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]

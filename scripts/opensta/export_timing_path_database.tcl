@@ -39,6 +39,12 @@ if {![string is integer -strict $max_paths] || $max_paths < 0} {
 
 set emuflow_allowed_clocks [emuflow_read_design_context]
 set clock_count [llength $emuflow_allowed_clocks]
+if {$emuflow_budget_policy eq "engine-edge-v1"} {
+  if {[catch {emuflow_require_source_timing_coverage} message options]} {
+    puts stderr [dict get $options -errorinfo]
+    exit 1
+  }
+}
 set emuflow_communication_active 0
 if {[info exists env(EMUFLOW_STA_COMMUNICATION_DELAYS)] &&
     $env(EMUFLOW_STA_COMMUNICATION_DELAYS) ne ""} {
