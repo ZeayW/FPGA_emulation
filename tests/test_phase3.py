@@ -406,7 +406,9 @@ class Phase3Test(unittest.TestCase):
             write_compact_emuir(ir_path, self.ir.to_dict())
             observed_streams = []
 
-            def publish_index(path, ir, assignment):
+            from emuflow.phase3_publication_native import publish as publish_native
+
+            def publish_index(path, ir, clusters, assignment, report):
                 contract = assignment["semantic_contract"]
                 materialized_assignment = dict(
                     assignment["instance_assignment"]
@@ -451,7 +453,7 @@ class Phase3Test(unittest.TestCase):
                         == expected_assignment_digest,
                     )
                 )
-                return write_phase3_assignment_index(path, ir, assignment)
+                return publish_native(path, ir, clusters, assignment, report)
 
             with patch(
                 "emuflow.partition_ir.EmuIR.load",
@@ -459,7 +461,7 @@ class Phase3Test(unittest.TestCase):
                     "Static Exact Phase 3 must stream compact EmuIR"
                 ),
             ), patch(
-                "emuflow.phase3.write_phase3_assignment_index",
+                "emuflow.phase3_publication_native.publish",
                 side_effect=publish_index,
             ):
                 run_phase3_fixture(

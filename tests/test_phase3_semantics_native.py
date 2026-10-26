@@ -45,7 +45,7 @@ def selected(request,tmp_path,monkeypatch):
     constraints=normalize_partition_constraints({'schema':'emuflow.partition-constraints/v1',
         'balance_tolerance':1.0,'min_used_fpgas':1},ir,platform)
     clusters=build_clusters(ir,constraints,cut_mode=CUT_MODE_STATIC_EXACT,
-        max_cross_fpga_dependency_depth=0,_native_compact_clusters=True)
+        max_cross_fpga_dependency_depth=0,_native_compact_clusters=True,_stream_eligible_policy_names=True)
     parts=tuple(fpga.id for fpga in platform.fpgas)
     targets={}
     for index,cluster in enumerate(clusters['clusters']):

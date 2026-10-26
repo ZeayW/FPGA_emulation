@@ -182,95 +182,14 @@ def _validate_direct_capture_segment_ids(
 
 
 def _write_native_phase3_exact_binary(path, exact_contract, part_ids, source, native_paths, semantic_digest, format_version):
-    """C++ fills the final data plane once; Python seals its bounded manifest."""
-
-    from .native_tools import resolve_native_stage_command
-
+    from .phase3_exact_native import publish
     exact_digest = semantic_digest or semantic_contract_sha256(exact_contract)
-    if not isinstance(exact_digest, str) or len(exact_digest) != 64 or any(
-        character not in "0123456789abcdef" for character in exact_digest
-    ):
+    if (not isinstance(exact_digest, str) or len(exact_digest) != 64
+            or any(character not in "0123456789abcdef" for character in exact_digest)):
         raise ValidationError("Static Exact semantic digest is invalid")
-    schema = _SUPPORTED_SCHEMAS[format_version]
     header = {key: value for key, value in exact_contract.items() if key not in {
-        "cut_nodes", "dependency_edges", "logic_segments", "capture_requirements"
-    }}
-    names = ["nets", "node_sources"]
-    for index in range(len(part_ids)):
-        names.extend((f"segments:{index}", f"captures:{index}"))
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with tempfile.TemporaryDirectory(prefix=".native-exact-sections-", dir=path.parent) as directory:
-            request, summary = Path(directory) / "request.bin", Path(directory) / "counts.bin"
-            with request.open("wb") as stream:
-                stream.write(struct.pack("<QIII", 0x31574553464D5545, 1, format_version, len(part_ids)))
-                for value in [*part_ids, str(temporary.resolve())]:
-                    raw = value.encode("utf-8")
-                    if not raw or len(raw) >= 2**32:
-                        raise ValidationError("native exact section identity is invalid")
-                    stream.write(_U32.pack(len(raw)))
-                    stream.write(raw)
-            command = resolve_native_stage_command(
-                "phase3", "write-exact-sections"
-            )
-            if len(command) == 1:
-                command = [*command, "--write-exact-sections"]
-            completed = subprocess.run(
-                [*command, str(native_paths[0]), str(native_paths[1]), str(request), str(summary)],
-                capture_output=True, text=True, check=False,
-            )
-            if completed.returncode:
-                raise ValidationError("native exact section publication failed: " + completed.stderr.strip())
-            data = summary.read_bytes()
-            if len(data) != 16 + 56 * len(names) + 40:
-                raise ValidationError("native exact section summary is invalid")
-            magic, version, sections_count = struct.unpack_from("<QII", data)
-            if magic != 0x314F5753464D5545 or version != 2 or sections_count != len(names):
-                raise ValidationError("native exact section summary is invalid")
-            sections = {}
-            cursor = _PREAMBLE.size
-            for index, name in enumerate(names):
-                offset, size, count, digest = struct.unpack_from("<QQQ32s", data, 16 + 56 * index)
-                if offset != cursor:
-                    raise ValidationError("native exact section extents disagree")
-                sections[name] = {"offset": offset, "bytes": size, "records": count, "sha256": digest.hex()}
-                cursor += size
-            counts = dict(zip(("cut_nodes", "source_segments", "logic_segments", "consumer_segments", "capture_requirements"),
-                              struct.unpack_from("<5Q", data, 16 + 56 * len(names))))
-            if counts != {
-                "cut_nodes": len(source.cut_nodes), "source_segments": source.launch_count + source.dependency_count,
-                "logic_segments": len(exact_contract["logic_segments"]),
-                "consumer_segments": source.dependency_count + len(source.captures),
-                "capture_requirements": len(source.captures),
-            } or len(exact_contract["dependency_edges"]) != source.dependency_count or temporary.stat().st_size != cursor:
-                raise ValidationError("native exact section population disagrees")
-            manifest = {
-                "schema": schema,
-                **({"capture_bit_max_bits": STATIC_EXACT_CAPTURE_BIT_MAX_BITS} if format_version == 2 else {}),
-                "semantic_contract_schema": exact_contract.get("schema"),
-                "semantic_contract_sha256": exact_digest, "contract_header": header,
-                "parts": list(part_ids), "counts": counts, "sections": sections,
-            }
-            manifest_bytes = _json(manifest)
-            with temporary.open("r+b") as output:
-                output.seek(cursor)
-                output.write(manifest_bytes)
-                output.seek(0)
-                output.write(_PREAMBLE.pack(_MAGIC, format_version, cursor, len(manifest_bytes)))
-                output.flush()
-                os.fsync(output.fileno())
-            descriptor = {
-                "artifact": EXACT_BINARY_ARTIFACT, "schema": schema,
-                **({"capture_bit_max_bits": STATIC_EXACT_CAPTURE_BIT_MAX_BITS} if format_version == 2 else {}),
-                "bytes": temporary.stat().st_size, "manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
-                "semantic_contract_schema": exact_contract.get("schema"), "semantic_contract_sha256": exact_digest,
-                "counts": counts,
-            }
-        os.replace(temporary, path)
-        return descriptor
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
+        "cut_nodes", "dependency_edges", "logic_segments", "capture_requirements"}}
+    return publish(path, header, part_ids, source, native_paths, exact_digest, format_version)
 
 
 def _write_direct_static_exact_sections(
@@ -1075,36 +994,6 @@ def iter_phase3_exact_node_sources(
         reader.close()
 
 
-def _validate_node_source_population(
-    path: Path, manifest: Mapping[str, Any]
-) -> None:
-    """Prove the nested source count before count-sized validation buffers."""
-
-    section = _section(manifest, "node_sources")
-    expected = manifest["counts"]["source_segments"]
-    observed = 0
-    reader = _SectionReader(path, section)
-    try:
-        for _ in range(int(section["records"])):
-            count = _U32.unpack(reader.read(_U32.size))[0]
-            if count > reader.remaining // _U32.size:
-                raise ValidationError(
-                    "Static Exact binary source count is invalid"
-                )
-            observed += count
-            if observed > expected:
-                raise ValidationError(
-                    "Static Exact binary source population disagrees"
-                )
-            for _ in range(count):
-                reader.read(_U32.size)
-        reader.finish()
-    finally:
-        reader.close()
-    if observed != expected:
-        raise ValidationError("Static Exact binary source population disagrees")
-
-
 def _part_index(manifest: Mapping[str, Any], fpga: str) -> int:
     try:
         return list(manifest["parts"]).index(fpga)
@@ -1342,135 +1231,7 @@ def phase3_exact_binary_counts(
     return {key: int(value) for key, value in counts.items()}
 
 
-def validate_phase3_exact_binary(
-    path: Path, descriptor: Mapping[str, Any]
-) -> dict[str, Any]:
-    """Independently scan every section with bounded integer state."""
-
-    manifest = _load_manifest(path, descriptor)
-    nets = _read_nets(path, manifest)
-    net_index = {net: index for index, net in enumerate(nets)}
-    # Source population is nested inside one record per cut.  Scan it before
-    # allocating any buffer sized by manifest population counts.
-    _validate_node_source_population(path, manifest)
-    counts = manifest.get("counts", {})
-    segment_count = counts.get("logic_segments")
-    capture_count = counts.get("capture_requirements")
-    if (
-        isinstance(segment_count, bool)
-        or not isinstance(segment_count, int)
-        or isinstance(capture_count, bool)
-        or not isinstance(capture_count, int)
-        or segment_count < 0
-        or capture_count < 0
-        or counts.get("cut_nodes") != len(nets)
-    ):
-        raise ValidationError("Static Exact binary population counts are invalid")
-
-    capture_seen = bytearray(capture_count)
-    capture_parts = bytearray(capture_count)
-    capture_nets = array("I", [_MISSING]) * capture_count
-    observed_captures = 0
-    for part, fpga in enumerate(manifest["parts"]):
-        if part >= 255 or not isinstance(fpga, str) or not fpga:
-            raise ValidationError("Static Exact binary part is invalid")
-        for capture in _iter_captures(path, manifest, part, nets):
-            number = _number(capture["id"], "capture")
-            if number >= capture_count or capture_seen[number]:
-                raise ValidationError("Static Exact binary capture identity repeats")
-            capture_seen[number] = 1
-            capture_parts[number] = part
-            capture_nets[number] = net_index[capture["cut_net"]]
-            observed_captures += 1
-    if observed_captures != capture_count or (capture_count and not all(capture_seen)):
-        raise ValidationError("Static Exact binary capture coverage disagrees")
-
-    segment_seen = bytearray(segment_count)
-    segment_target_nets = array("I", [_MISSING]) * segment_count
-    capture_bound = bytearray(capture_count)
-    dependency_edges = 0
-    consumer_segments = 0
-    observed_segments = 0
-    for part in range(len(manifest["parts"])):
-        for segment in _iter_segments(path, manifest, part, nets):
-            number = _number(segment["id"], "segment")
-            if number >= segment_count or segment_seen[number]:
-                raise ValidationError("Static Exact binary segment identity repeats")
-            segment_seen[number] = 1
-            observed_segments += 1
-            if segment["kind"] == "rx_to_tx":
-                dependency_edges += 1
-                consumer_segments += 1
-                segment_target_nets[number] = net_index[
-                    segment["sink_cut_net"]
-                ]
-            elif segment["kind"] == "rx_to_capture":
-                consumer_segments += 1
-                capture = _number(segment["capture_requirement"], "capture")
-                if (
-                    capture >= capture_count
-                    or capture_bound[capture]
-                    or capture_parts[capture] != part
-                    or nets[capture_nets[capture]] != segment["source_cut_net"]
-                ):
-                    raise ValidationError("Static Exact capture binding disagrees")
-                capture_bound[capture] = 1
-            else:
-                segment_target_nets[number] = net_index[
-                    segment["sink_cut_net"]
-                ]
-    if observed_segments != segment_count or (segment_count and not all(segment_seen)):
-        raise ValidationError("Static Exact binary segment coverage disagrees")
-    if capture_count and not all(capture_bound):
-        raise ValidationError("Static Exact binary capture binding is incomplete")
-    if consumer_segments != counts.get("consumer_segments"):
-        raise ValidationError("Static Exact consumer population disagrees")
-
-    source_seen = bytearray(segment_count)
-    source_count = 0
-    node_count = 0
-    for net, source_numbers in iter_phase3_exact_node_sources(path, descriptor):
-        node_count += 1
-        target_net = net_index[net]
-        for number in source_numbers:
-            if (
-                number >= segment_count
-                or source_seen[number]
-                or segment_target_nets[number] != target_net
-            ):
-                raise ValidationError("Static Exact source segment is invalid")
-            source_seen[number] = 1
-            source_count += 1
-    if node_count != len(nets) or source_count != counts.get("source_segments"):
-        raise ValidationError("Static Exact source population disagrees")
-    if any(
-        target != _MISSING and not source_seen[number]
-        for number, target in enumerate(segment_target_nets)
-    ):
-        raise ValidationError("Static Exact source coverage is incomplete")
-
-    metrics = manifest.get("contract_header", {}).get("metrics", {})
-    if (
-        metrics.get("transported_cut_nets") != len(nets)
-        or metrics.get("logic_segments") != segment_count
-        or metrics.get("capture_requirements") != capture_count
-        or metrics.get("dependency_edges") != dependency_edges
-    ):
-        raise ValidationError("Static Exact binary metrics disagree")
-    return {
-        "status": "pass",
-        "schema": manifest["schema"],
-        **(
-            {
-                "capture_bit_max_bits": STATIC_EXACT_CAPTURE_BIT_MAX_BITS
-            }
-            if manifest["_format_version"] == 2
-            else {}
-        ),
-        "semantic_contract_sha256": manifest["semantic_contract_sha256"],
-        "cut_nodes": len(nets),
-        "source_segments": source_count,
-        "logic_segments": segment_count,
-        "capture_requirements": capture_count,
-        "dependency_edges": dependency_edges,
-    }
+def validate_phase3_exact_binary(path: Path, descriptor: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate every physical section in the shared core, without host graphs."""
+    from .phase3_exact_native import validate
+    return validate(path, descriptor)

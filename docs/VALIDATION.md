@@ -359,6 +359,17 @@ cut seals, depth policy and original artifact generation changes reject while
 preserving previous published files. An actual solver-writer test exercises a
 nonidentity publication permutation without requiring a million-cell fixture.
 
+Final-directory gates poison separate Python index, cluster, descriptor and exact
+publishers while the complete native transaction runs. Published stores must
+reload after private mapped sources close and pass the independent EmuIR relation
+check. Mixed report identity, wrong partition counts, changed original sources
+and existing destinations must reject without a partial new directory. Exact-file
+v1/v2 publication compares complete bytes and descriptors with the independent
+reference; the native physical-section validator compares results with the test
+oracle while host manifest/net/record readers are poisoned. Oversized resealed
+counts must fail before population allocation, and every section digest and
+capture/segment/source binding remains checked.
+
 These are component gates; full Phase 3 and complete NVDLA acceptance still
 require their declared real-design evidence.
 

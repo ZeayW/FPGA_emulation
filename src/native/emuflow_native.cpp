@@ -11,6 +11,8 @@
 #include "emuflow_core/frontend.hpp"
 #include "emuflow_core/partition_init.hpp"
 #include "emuflow_core/partition_semantics.hpp"
+#include "emuflow_core/phase3_exact_binary.hpp"
+#include "emuflow_core/partition_publish.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/store_publication.hpp"
 
@@ -25,6 +27,9 @@ constexpr const char* kUsage =
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
     "  phase3 initialize-tritonpart EMUIR PRIMARY REQUEST OUTPUT_DIR [WEIGHTS_SELECTOR WEIGHTS_STORE] [SOLUTION]\n"
     "  phase3 finalize-assignment-semantics EMUIR PRIMARY POLICY REQUEST OUTPUT_DIR [OWNER [ORDER]]\n"
+    "  phase3 publish-exact-binary NODES CAPTURES REQUEST OUTPUT_DIR\n"
+    "  phase3 validate-exact-binary BINARY REQUEST SUMMARY\n"
+    "  phase3 publish-partition EMUIR PRIMARY NODES CAPTURES COUNTS CATALOG_REQUEST CANDIDATES [OWNER [ORDER]] REQUEST OUTPUT_DIR\n"
     "  phase1 run REQUEST\n"
     "  phase1 import-yosys REQUEST EMUIR SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
     "  run-tool REQUEST RESULT_JSON\n"
@@ -200,6 +205,24 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   const std::string phase = argc > 1 ? argv[1] : "";
   const std::string operation = argc > 2 ? argv[2] : "";
+  if(phase=="phase3" && operation=="publish-partition" && argc>=12 && argc<=14) {
+    using emuflow::core::ArtifactRef;emuflow::core::CheckedRequestReader request(argv[argc-2],8*1024*1024);
+    if(request.Read<std::uint64_t>()!=0x31555050464d5545ULL || request.Read<std::uint32_t>()!=1)
+      throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"partition publication request is invalid");
+    const auto kind=request.Read<std::uint32_t>();
+    if(kind>2 || unsigned(argc)!=12+kind)throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"partition publication owner coverage disagrees");
+    const char* schemas[]={"emuir-compact-v2","partition-cluster-columns-v2","exact-nodes-v2","exact-captures-v1","partition-cut-counts-v1","cluster-catalog-request-v1","candidate-id-columns-v1"};
+    std::vector<ArtifactRef> refs;for(unsigned i=0;i<7;++i)refs.push_back(ArtifactRef::Bind(argv[3+i],schemas[i]));
+    if(kind)refs.push_back(ArtifactRef::Bind(argv[10],kind==1?"patron-initial-columns-v1":"patron-output-v1"));
+    if(kind==2)refs.push_back(ArtifactRef::Bind(argv[11],"patron-cluster-order-v1"));
+    refs.push_back(ArtifactRef::Bind(argv[argc-2],"partition-publication-request-v1"));
+    return Finish(emuflow::core::PublishPartition(refs,argv[argc-1]),report);
+  }
+  if(phase=="phase3" && operation=="publish-exact-binary" && argc==7) {
+    using emuflow::core::ArtifactRef;
+    return Finish(emuflow::core::PublishExactBinary({ArtifactRef::Bind(argv[3],"exact-nodes-v2"),
+      ArtifactRef::Bind(argv[4],"exact-captures-v1"),ArtifactRef::Bind(argv[5],"exact-binary-publication-request-v1")},argv[6]),report);
+  }
   auto run = [&](Stage stage, std::vector<std::string> inputs,
                  const std::string& output, bool typed = false,
                  bool indexed = false, const std::string& sha = "") {
@@ -274,6 +297,8 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if (phase == "phase3" && operation == "validate-cuts" && argc == 5)
     return run(Stage::kValidateAssignmentCuts,{argv[3]},argv[4]);
+  if(phase=="phase3" && operation=="validate-exact-binary" && argc==6)
+    return run(Stage::kValidateExactBinary,{argv[3],argv[4]},argv[5]);
   if(phase=="phase3" && operation=="publish-assignment-descriptor" && argc==8)
     return run(Stage::kPublishAssignmentDescriptor,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
   if (phase == "phase3" && operation == "publish-assignment" && argc>=7 && argc<=11) {

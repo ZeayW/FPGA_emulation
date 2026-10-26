@@ -1080,6 +1080,33 @@ def run_phase3(
             "logical_schema": "unchanged-transparent-expansion",
         }
 
+    if (not retain_diagnostics and not retain_patron_baseline
+            and getattr(final_nodes, 'native_finalization_implementation_id', None) is not None):
+        from .phase3_publication_native import publish
+        from .phase3_semantics_native import close_published_semantics
+        # Search scratch is invocation-owned in ordinary production. Final
+        # artifacts are installed together; a previous complete generation is
+        # never incrementally overwritten by this transaction.
+        if (output_dir / 'phase3_report.json').exists():
+            raise ValidationError('native Phase 3 publication requires a fresh output directory')
+        for name in ('tritonpart', 'patron', 'hop-refinement'):
+            shutil.rmtree(output_dir / name, ignore_errors=True)
+        if output_dir.exists():
+            try:output_dir.rmdir()
+            except OSError as error:
+                raise ValidationError('native Phase 3 output contains unowned files') from error
+        report = phase3_runtime_call('publish.native_transaction', publish,
+            output_dir, ir, clusters, assignment, report)
+        phase3_runtime_observe(
+            clusters_artifact_bytes=(output_dir / 'clusters.json').stat().st_size,
+            clusters_data_bytes=(output_dir / report['artifacts']['clusters_data']).stat().st_size,
+            assignment_artifact_bytes=(output_dir / 'assignment.json').stat().st_size,
+            assignment_index_bytes=(output_dir / 'assignment.sqlite').stat().st_size,
+            static_exact_binary_bytes=(output_dir / EXACT_BINARY_ARTIFACT).stat().st_size,
+        )
+        close_published_semantics(assignment)
+        return report
+
     output_dir.mkdir(parents=True, exist_ok=True)
     if not retain_diagnostics and provider == "tritonpart":
         shutil.rmtree(output_dir / "tritonpart", ignore_errors=True)

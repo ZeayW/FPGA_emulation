@@ -123,8 +123,8 @@ original artifact to PATRON; it does not load net weights, reconstruct hyperedge
 parse owner rows or re-emit the initial ownership. Original source generations
 remain bound across both operations. Algorithm policy and objective ordering are
 unchanged; the implementation identity distinguishes native execution from the
-explicit diagnostic reference. Complete Phase 3 configuration, selection, report
-publication and stage ownership still require migration and real-design qualification.
+explicit diagnostic reference. Complete Phase 3 configuration, selection and
+stage ownership still require migration and real-design qualification.
 
 `phase3 refine-patron-from-primary EMUIR TIMING PRIMARY INITIAL REQUEST OUTPUT`
 builds the PATRON v14 model and invokes the existing solver in one shared-core
@@ -520,7 +520,7 @@ there is no silent implementation or provider fallback.
 | Stage | Existing native/indexed foundation | Remaining delivery obligation |
 | --- | --- | --- |
 | Phase 1–2 | Complete native ordinary RTL frontend under native control, including engine/import/clock/resource/report publication; native OpenSTA input export, indexed path-result import, timing-weight generation and independent validators | Migrate supplied/prepared/other indexed-source adapters and complete timing-stage lifecycle; qualify the whole current-design frontend |
-| Phase 3 | Shared-core candidate eligibility, primary clustering, complete TritonPart initialization and native v14 search; selected-owner cut/semantic/capture production, direct assignment-index and packed-selector publication | Complete native configuration, candidate selection, final catalog/report transaction and stage lifecycle; qualify complete stage costs |
+| Phase 3 | Shared-core candidate eligibility, primary clustering, complete TritonPart initialization and native v14 search; selected-owner semantics and complete native final-directory publication with independent binary/index validation | Complete native configuration, candidate selection/hop auditing and stage lifecycle/controller integration; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |
@@ -621,6 +621,34 @@ explicit compatibility operation. References bind a complete generation;
 unknown versions, truncation, corruption and mixed generations fail closed.
 
 ## Assignment index publication
+
+Ordinary native production uses `phase3 publish-partition`: one source-bound
+transaction owns the exact binary, assignment index and selector, cluster catalog
+and selector, normalized constraints and final report. It composes the existing
+shared-core producers, independently validates physical sections/cut relations
+and source/cluster coverage, closes output connections, then publishes the entire
+new directory with one rename. The request carries bounded headers and original
+artifact references; no graph is reconstructed in Python between these steps.
+Existing final directories and mixed report/source identities are rejected.
+The report records `native-partition-publication-v1`. Runtime measurements retain
+their enclosing phase scope. This closes final publication, not the remaining
+Python configuration, candidate selection/hop auditing or complete Phase 3 owner.
+
+`phase3 publish-exact-binary` owns section generation, bounded manifest/descriptor
+assembly, preamble sealing and independent validation. It appends/seals its
+invocation-owned private file in place, avoiding another section-file copy, and
+publishes the checked file and descriptor together. `validate-exact-binary`
+independently reads the complete file: it checks preamble/manifest/source
+bindings, section extents/digests, ordered net identities, capture/segment/source
+coverage, binding and metrics. Nested populations are proven before allocating
+integer coverage buffers. Identities stream one record at a time; only integer
+state scales with segment/capture counts. The superseded Python graph validator
+and its nested-source scan are test oracles only. Existing explicit v1/v2 read
+semantics and the 8192-bit v2 capture bound are preserved.
+
+The following component operations remain shared library/explicit fixture entry
+points; ordinary production does not orchestrate them through separate Python
+publishers.
 
 `emuflow-native phase3 publish-assignment EMUIR PRIMARY REQUEST [NATIVE_NODES [COUNTS [OWNER [ORDER]]]] OUTPUT`
 publishes current assignment v4 through the shared `SqliteArtifactWriter`.

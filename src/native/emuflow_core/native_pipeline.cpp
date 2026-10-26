@@ -25,6 +25,7 @@
 #include "emuflow_core/partition_clusters.hpp"
 #include "emuflow_core/partition_loads.hpp"
 #include "emuflow_core/assignment_publish.hpp"
+#include "emuflow_core/phase3_exact_binary.hpp"
 #include "emuflow_core/assignment_cuts.hpp"
 #include "emuflow_core/cluster_catalog.hpp"
 #include "emuflow_core/exact_captures.hpp"
@@ -60,6 +61,7 @@ const char* StageName(Stage stage) {
     case Stage::kBuildCaptures: return "phase3.build-captures";
     case Stage::kValidateCaptures: return "phase3.validate-captures";
     case Stage::kPublishAssignmentIndex: return "phase3.publish-assignment";
+    case Stage::kValidateExactBinary: return "phase3.validate-exact-binary";
     case Stage::kPublishAssignmentDescriptor: return "phase3.publish-assignment-descriptor";
     case Stage::kValidateAssignmentCuts: return "phase3.validate-cuts";
     case Stage::kPublishClusterCatalog: return "phase3.publish-cluster-catalog";
@@ -149,6 +151,17 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     case Stage::kBuildCaptures: return {"emuir-compact-v2","exact-indexed-request-v4","exact-topology-v3","exact-parts-v1"};
     case Stage::kValidateCaptures: return {"emuir-compact-v2","exact-indexed-request-v4","exact-topology-v3","exact-parts-v1","exact-captures-v1"};
     case Stage::kValidateAssignmentCuts: return {"assignment-index-v4"};
+    case Stage::kValidateExactBinary: {
+      const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
+      if(count!=2)throw core::StageError(core::ErrorCode::kInvalidRequest,"exact binary validation source coverage disagrees");
+      const auto path=request.input_artifacts.empty()?request.input_paths[1]:request.input_artifacts[1].path();
+      core::CheckedRequestReader input(path,8*1024*1024);
+      if(input.Read<std::uint64_t>()!=0x31565145554d5545ULL || input.Read<std::uint32_t>()!=1)
+        throw core::StageError(core::ErrorCode::kInvalidRequest,"exact binary validation request is invalid");
+      const auto version=input.Read<std::uint32_t>();
+      if(version!=1 && version!=2)throw core::StageError(core::ErrorCode::kInvalidRequest,"exact binary validation format version is invalid");
+      return {"phase3-exact-data-v"+std::to_string(version),"exact-binary-validation-request-v1"};
+    }
     case Stage::kPublishAssignmentDescriptor:
       return {"emuir-compact-v2","partition-cluster-columns-v2","assignment-index-v4","assignment-descriptor-request-v1"};
     case Stage::kPublishAssignmentIndex: {
@@ -398,6 +411,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kExportRwroute:
         core::ExportRwroute(inputs[0],inputs[1],inputs[2],output,request.auxiliary_output_path); break;
       case Stage::kPublishAssignmentIndex: core::PublishAssignmentIndex(inputs,output); break;
+      case Stage::kValidateExactBinary: core::ValidateExactBinary(inputs,output); break;
       case Stage::kPublishAssignmentDescriptor: core::PublishAssignmentDescriptor(inputs,output); break;
       case Stage::kValidateAssignmentCuts: core::ValidateAssignmentCuts(inputs[0],output); break;
       case Stage::kPublishClusterCatalog: core::PublishClusterCatalog(inputs,output); break;
@@ -459,6 +473,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kExportVivado: schema = "vivado-primitive-verilog-v1"; break;
       case Stage::kExportRwroute: schema = "rwroute-input-tsv-v1"; break;
       case Stage::kPublishAssignmentIndex: schema = "assignment-index-v4"; break;
+      case Stage::kValidateExactBinary: schema = "exact-binary-validation-summary-v1"; break;
       case Stage::kPublishAssignmentDescriptor: schema = "assignment-selector-v4"; break;
       case Stage::kValidateAssignmentCuts: schema = "assignment-cut-validation-v1"; break;
       case Stage::kPublishClusterCatalog: schema = "phase3-cluster-catalog-v3"; break;

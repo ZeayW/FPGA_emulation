@@ -6,7 +6,7 @@ namespace emuflow::native {
 enum class Stage {
   kInvalid, kImportPhysicalBoundary, kImportPhysicalLogic, kImportPhysicalLocal, kValidatePhysicalEvidence, kSealRoutes, kValidatePhysicalCells, kValidateAtomicOwnership,
   kAnalyzeExact, kFinalizeExact, kHashSemantics,
-  kWriteExactSections, kRefinePatron, kRoute,
+  kWriteExactSections, kValidateExactBinary, kRefinePatron, kRoute,
   kAssignBanks, kGroupSignals, kRefinePositions, kRudy,
   kCompilePhase5, kRunPhase5, kBuildSchedule, kValidateSchedule, kProjectScheduleTiming, kBindGlobalEvents, kIndexGlobalEvents, kExportGlobalEvents, kImportGlobalMeasurements, kAuditGlobalMeasurements, kPublishGlobalQor, kValidateGlobalQor, kExportBookshelf, kBuildPartitionClusters, kBuildCandidateIds, kRefinePatronFromPrimary, kReducePartitionLoads, kPublishAssignmentIndex, kPublishAssignmentDescriptor, kValidateAssignmentCuts, kPublishClusterCatalog, kBuildCaptures, kValidateCaptures, kExportRwroute, kImportVivadoLineage, kRefinePartitionHops, kExportVivado, kBuildRoutedSegments, kBuildRoutedEndpoints, kStageRoutedOpensta, kExportOpenstaInputs, kImportStaPaths, kValidateStaPaths, kBuildStaWeights, kValidateStaWeights
 };

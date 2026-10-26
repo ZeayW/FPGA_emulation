@@ -1,0 +1,61 @@
+"""Whole final-directory identity, failed-publication and source-binding gates."""
+import copy
+import json
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from emuflow.errors import ValidationError
+from emuflow.io import read_json
+from emuflow.phase3_publication_native import publish
+from emuflow.phase3_assignment_index import validate_phase3_assignment_index_against_emuir
+from emuflow.phase3_semantics_native import close_published_semantics
+from tests.test_phase3_semantics_native import selected, build
+
+
+def report(assignment):
+    return {'schema':'emuflow.phase3-report/v1','status':'pass','phase':3,
+        **{key:assignment[key] for key in ('design','platform','provider','seed')},
+        'artifacts':{'clusters':'clusters.json','assignment':'assignment.json','assignment_index':'assignment.sqlite',
+            'constraints':'constraints.normalized.json','report':'phase3_report.json'},
+        'validation':{'cut_nets':assignment['metrics']['cut_nets']}}
+
+
+def test_complete_directory_uses_native_transaction_and_reloads_without_private_sources(selected,tmp_path):
+    actual=build(selected);output=tmp_path/'published'
+    with (patch('emuflow.phase3_assignment_index.write_phase3_assignment_index',side_effect=AssertionError('host index publisher')),
+          patch('emuflow.phase3_assignment_native.publish_native_assignment_descriptor',side_effect=AssertionError('host descriptor publisher')),
+          patch('emuflow.phase3_storage.write_indexed_phase3_clusters',side_effect=AssertionError('host cluster publisher')),
+          patch('emuflow.phase3_exact_binary.write_phase3_exact_binary',side_effect=AssertionError('host binary publisher'))):
+        final=publish(output,selected[0],selected[2],actual,report(actual))
+    assert final['finalization_implementation_id']=='native-partition-publication-v1'
+    close_published_semantics(actual)
+    loaded=read_json(output/'assignment.json')
+    assert dict(loaded['instance_assignment'])==dict(selected[5]['instance_assignment'])
+    assert list(loaded['cut_nets'])==list(selected[5]['cut_nets'])
+    assert loaded['semantic_contract_sha256']==selected[5]['semantic_contract_sha256']
+    clusters=read_json(output/'clusters.json')
+    assert list(clusters['clusters'])==list(selected[2]['clusters'])
+    proof=validate_phase3_assignment_index_against_emuir(output/'assignment.sqlite',selected[0].path,
+        expected_design=actual['design'],expected_platform=actual['platform'])
+    assert proof['status']=='pass'
+    assert not list(tmp_path.glob('.partition-publish-*'))
+    assert not list(tmp_path.glob('.phase3-publication-*'))
+
+
+@pytest.mark.parametrize('kind',['report','partition-count','source-generation','existing-directory'])
+def test_invalid_transaction_does_not_publish_partial_directory(selected,tmp_path,kind):
+    actual=build(selected);summary=report(actual);output=tmp_path/'rejected'
+    if kind=='report':summary['design']='another-design'
+    elif kind=='partition-count':actual['partitions'][0]['instance_count']+=1
+    elif kind=='source-generation':
+        path=actual['cut_nets']._cuts._sink_endpoints.native_source.path
+        path.chmod(path.stat().st_mode^0o100)
+    else:
+        output.mkdir();(output/'preserved').write_bytes(b'previous-complete-generation')
+    with pytest.raises(ValidationError):publish(output,selected[0],selected[2],actual,summary)
+    if kind=='existing-directory':assert list(output.iterdir())==[output/'preserved'] and (output/'preserved').read_bytes()==b'previous-complete-generation'
+    else:assert not output.exists()
+    assert not list(tmp_path.glob('.partition-publish-*'))
+    assert not list(tmp_path.glob('.phase3-publication-*'))
