@@ -29,6 +29,7 @@ def qualify(sta, root):
         'EMUFLOW_STA_TIMING_IO':str(io),'EMUFLOW_LAUNCH_REQUESTS':str(requests),'EMUFLOW_LAUNCH_OUTPUT':str(output)}
 
     def run(label):
+        environment['EMUFLOW_LAUNCH_OUTPUT']=str(output if label=='export'else root/f'{label}.tsv')
         with(root/f'{label}.log').open('w')as log:
             result=subprocess.run([sta,'-no_init','-exit',str(script)],cwd=root,env=environment,
                 stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT)
