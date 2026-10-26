@@ -284,7 +284,16 @@ set trace {}
 rename source original_source
 proc source {path} {
   if {[file tail $path] eq "source_inventory.tcl"} {
-    proc emuflow_inventory {path prefix {placed 0}} {file copy -force $::template $path;return 2}
+    proc emuflow_inventory {path prefix {placed 0}} {
+      if {!$placed} {file copy -force $::template $path;return 2}
+      set input [open $::template r];set output [open $path w]
+      gets $input header;puts $output $header;set index 0
+      while {[gets $input line]>=0} {
+        puts $output [join [concat [lrange [split $line "\t"] 0 3] [list SLICE_X${index}Y0 AFF $index 0 LEAF]] "\t"]
+        incr index
+      }
+      close $input;close $output;return $index
+    }
   } elseif {[file tail $path] eq "resource_inventory.tcl"} {
     proc emuflow_resource_inventory {} {return {lut 1 ff 1 carry8 0 dsp48 0 uram288 0 ramb18_cells 0 ramb36_cells 0 routed_cells 2 physical_cells 2 infrastructure_cells 0 optimization_cells 0}}
   } else {uplevel 1 [list original_source $path]}
