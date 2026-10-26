@@ -1856,6 +1856,7 @@ def _run_selected_physical(ctx, split_root, schedule_path, output_dir):
         vivado_place_directive=ctx.physical_vivado_place_directive,
         vivado_route_directive=ctx.physical_vivado_route_directive,
         vivado_dut_frequency_mhz=ctx.physical_vivado_dut_frequency_mhz,
+        dut_timing_io=getattr(ctx,'timing_io',None) if ctx.physical_backend=='vivado' else None,
         rapidwright_jar=ctx.physical_rapidwright_jar,
         rapidwright_java=ctx.physical_rapidwright_java,
         rapidwright_classes=ctx.physical_rapidwright_classes,

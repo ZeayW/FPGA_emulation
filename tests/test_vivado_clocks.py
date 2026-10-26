@@ -20,6 +20,32 @@ def runtime():
     }
 
 
+def test_original_dut_io_delays_follow_their_root_and_keep_absolute_ns(tmp_path):
+    from tests.test_vivado_backend import _ir
+    from emuflow.ir import EmuIR
+    from emuflow.vivado_backend import vivado_runtime_xdc
+    value=_ir().to_dict()
+    value['ports'] += [{'id':'din','name':'din','direction':'input','width':8,'clock':False},
+                      {'id':'dout','name':'dout','direction':'output','width':1,'clock':False}]
+    ir=tmp_path/'partition.emuir.sqlite';EmuIR(value).save(ir)
+    target={'fabric_clock':{'period_ns':5.},'virtual_dut_clocks':{'clk':{'target_period_ns':10.,'nominal_period_ns':5120.}},
+            'timing_model':{'fabric_clock_port':'fabric_clk','dut_clock_ports':['clk']}}
+    io={'input_groups':[{'clock':'clk','delay_ns':1.25,'ports':['din','other_partition_input']}],
+        'output_groups':[{'clock':'clk','delay_ns':2.5,'ports':['dout']}]}
+    xdc=vivado_runtime_xdc(ir,target,10.,io)
+    assert 'emuflow_dut_clk_0 -period 100.000000000' in xdc
+    assert 'set_input_delay -max 1.25 -clock [get_clocks {emuflow_dut_clk_0}] [get_ports {din[*]}]' in xdc
+    assert 'set_output_delay -max 2.5 -clock [get_clocks {emuflow_dut_clk_0}] [get_ports {dout}]' in xdc
+    assert 'other_partition_input'not in xdc and '5120'not in xdc
+    assert 'set_input_delay'not in vivado_runtime_xdc(ir,target,10.)
+    changed=copy.deepcopy(io);changed['input_groups'][0]['ports']=['dout']
+    with pytest.raises(ValidationError,match='direction differs'):vivado_runtime_xdc(ir,target,10.,changed)
+    changed=copy.deepcopy(target);changed['virtual_dut_clocks']['missing']={'target_period_ns':10.,'nominal_period_ns':5120.}
+    changed['timing_model']['dut_clock_ports'].append('missing')
+    changed_io=copy.deepcopy(io);changed_io['input_groups'][0]['clock']='missing'
+    with pytest.raises(ValidationError,match='lacks its declared clock root'):vivado_runtime_xdc(ir,changed,10.,changed_io)
+
+
 def test_frame_size_does_not_relax_implementation_targets():
     value = runtime()
     clocks = implementation_clocks(value, {"fabric_clk", "core", "csb"})

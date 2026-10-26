@@ -164,11 +164,13 @@ def run_indexed_vivado_partition(
     continuation_source_report: Path | None = None, dut_frequency_mhz: float | None = None,
     word_phy_plan_path:Path|None=None,word_wiring_path:Path|None=None,
     retain_routed_checkpoint:bool=False,
+    dut_timing_io:Mapping[str,Any]|None=None,
 ) -> dict[str, Any]:
     from .vivado_backend import _resolve_vivado, _read_metrics, _integer, _number, vivado_runtime_xdc, write_vivado_boundary_timing_query
     from .vivado_physical_timing import import_indexed_vivado_boundary, import_vivado_local_timing
     from .logic_segment_timing import import_vivado_logic_segment_timing
     from .vivado_session import prepare_manifest
+    from .benchmark import timing_io_sha256
 
     continuation = (synthesized_checkpoint,synthesized_checkpoint_sha256,continuation_source_report)
     word_mode=word_phy_plan_path is not None or word_wiring_path is not None
@@ -209,7 +211,7 @@ def run_indexed_vivado_partition(
         ports = {port["id"] for port in ir.value["ports"]}
     dut_count = sum(clock in ports for clock in runtime["timing_model"]["dut_clock_ports"])
     xdc = output_dir / "runtime.xdc"
-    xdc.write_text(vivado_runtime_xdc(ir_path, runtime, dut_frequency_mhz), encoding="utf-8")
+    xdc.write_text(vivado_runtime_xdc(ir_path, runtime, dut_frequency_mhz, dut_timing_io), encoding="utf-8")
     prefix, adapter, wrapper, io_xdc, io_query = "", "", "", "", ""
     top_report = None
     word_sources=()
@@ -409,7 +411,8 @@ def run_indexed_vivado_partition(
         "implementation": implementation, "continuation": continuation_validation, "input_identity": input_identity,
         "implementation_timing": implementation_timing,
         "implementation_options": {"place_directive": place_directive, "route_directive": route_directive,
-                                   "dut_frequency_mhz": dut_frequency_mhz,"retain_routed_checkpoint":retain_routed_checkpoint},
+                                   "dut_frequency_mhz": dut_frequency_mhz,"retain_routed_checkpoint":retain_routed_checkpoint,
+                                   **({'dut_timing_io_sha256':timing_io_sha256(dut_timing_io)}if dut_timing_io is not None else {})},
         "native_session": {"mode":"current-design-stage-exports-v1",
             "scripts_sha256": {name:file_sha256(_vivado_script(name)) for name in native_scripts},
             "planner_sha256":file_sha256(Path(__file__).with_name("vivado_session.py"))},

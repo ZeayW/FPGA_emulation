@@ -124,6 +124,25 @@ class PhysicalBatchAssemblyTest(unittest.TestCase):
                             assemble_vivado_physical_batches(split, PLATFORM, schedule, batches, root / "joined")
                         join.assert_not_called()
 
+    def test_io_environment_identity_and_active_checkpoint_retention(self):
+        for mutation in ('none','io-mismatch','invalid-retention'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary);split,schedule,batches=self.prepare(root)
+                for path in batches:
+                    batch=json.loads(path.read_text())
+                    batch['execution']['vivado_implementation']['dut_timing_io_sha256']='a'*64
+                    record_path=path.parent/'partition-record.json';record=json.loads(record_path.read_text())
+                    options=record['stages']['vivado_implementation']['implementation_options']
+                    options['dut_timing_io_sha256']='b'*64 if mutation=='io-mismatch' else 'a'*64
+                    options['retain_routed_checkpoint']='true' if mutation=='invalid-retention' else True
+                    write_json(record_path,record);batch['records'][0]['sha256']=file_sha256(record_path);write_json(path,batch)
+                with patch('emuflow.physical_batch_assembly._assemble_multi_fpga_physical_results')as join:
+                    if mutation=='none':
+                        assemble_vivado_physical_batches(split,PLATFORM,schedule,batches,root/'joined');join.assert_called_once()
+                    else:
+                        with self.assertRaises(ValidationError):assemble_vivado_physical_batches(split,PLATFORM,schedule,batches,root/'joined')
+                        join.assert_not_called()
+
     def test_mixed_sources_options_digest_and_incomplete_coverage_fail_before_publication(self):
         for mutation in ("source", "seed", "directive", "missing-options", "digest", "missing-fpga", "duplicate-fpga", "runtime", "missing-timing", "reported-directive", "runtime-clock", "missing-clock-policy", "mixed-frequency", "missing-frequency"):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:

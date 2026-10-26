@@ -500,6 +500,21 @@ The assembled result is a local physical result; complete-fanin word event
 projection and global timing remain required before global WNS/TNS or frequency
 can be reported. The global word-mode timing guard remains in place.
 
+For original top-level DUT data I/O, the compile flow forwards its explicit
+`timing_io` environment to Vivado. Standalone Python callers may pass the same
+bounded object as `dut_timing_io` to `run_multi_fpga_physical_flow`. The physical
+entry checks its identity against the original TimingPathDB when supplied.
+Each partition applies `set_input_delay -max` and `set_output_delay -max` only
+to its surviving original ports and their declared DUT clock root. Vector
+ports bind all their bits. Delay values remain in nanoseconds when the DUT
+implementation period changes; they are not multiplied by the period scale.
+A retained port with the wrong direction or a missing declared clock root is
+an error. No environment is inferred for omitted `timing_io`; serial PHY pads
+remain governed by their native link contract. These are source setup I/O
+constraints, distinct from future per-cut timing-budget feedback. Physical
+worker/assembler identities include the environment hash; hold I/O analysis
+is outside this setup-only contract.
+
 Native-word synthesized continuations additionally compare the complete
 preparation's file population, native IP configurations, pin/XDC sources,
 logical bindings and startup-service contract. Both saved preparation seals

@@ -40,6 +40,8 @@ TX timing queries bind pad-anchored serializer bits across folded input aliases.
 Word-mode Phase 7B can implement and assemble native-bank partitions from the
 checked Phase 6 plan independently of Phase 7C. Complete global physical event
 projection remains under integration and is rejected until qualified.
+Vivado compilation forwards explicit original DUT setup I/O delays to each
+partition's declared DUT clock and preserves their identity in worker results.
 Its required [timing contract](docs/global-opensta-qualification.md#ratio-estimates-and-schedule-resolved-phy-timing)
 distinguishes pre-schedule ratio estimates from post-schedule per-signal events.
 Safe-frequency fields remain unavailable until edge/phase and physical margins

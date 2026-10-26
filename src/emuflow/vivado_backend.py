@@ -119,6 +119,7 @@ def vivado_runtime_xdc(
     ir_path: Path,
     runtime: Mapping[str, Any],
     dut_frequency_mhz: float | None = None,
+    dut_timing_io: Mapping[str, Any] | None = None,
 ) -> str:
     """Implement against explicit shared DUT targets, independently of frame length."""
     from .emuir_compact import is_compact_emuir
@@ -129,14 +130,35 @@ def vivado_runtime_xdc(
 
     if is_emuir_sqlite(ir_path) and is_compact_emuir(ir_path):
         with IndexedPhysicalIR(ir_path) as ir:
-            ports = {item["id"] for item in ir.value["ports"]}
+            port_records = {item["id"]:item for item in ir.value["ports"]}
     else:
-        ports = {item["id"] for item in EmuIR.load(ir_path).value["ports"]}
+        port_records = {item["id"]:item for item in EmuIR.load(ir_path).value["ports"]}
+    ports = set(port_records)
     lines = [f"# EmuFlow {IMPLEMENTATION_CLOCK_POLICY} physical implementation contract.",
              "# Virtual frame periods and settle windows are runtime analysis inputs,",
              "# not implementation clock periods or blanket timing exceptions."]
-    for clock_name, port, period in implementation_clocks(runtime, ports, dut_frequency_mhz):
+    clocks = implementation_clocks(runtime, ports, dut_frequency_mhz)
+    for clock_name, port, period in clocks:
         lines.append(f"create_clock -name {clock_name} -period {period:.9f} [get_ports {{{port}}}]")
+    if dut_timing_io is not None:
+        from .benchmark import _validate_timing_io
+        roots = runtime['timing_model']['dut_clock_ports']
+        _validate_timing_io(dut_timing_io, list(roots))
+        clock_names = {port:name for name,port,_period in clocks}
+        lines.append('# Explicit original DUT setup I/O environment; delays remain in ns.')
+        for direction in ('input','output'):
+            for group in dut_timing_io[direction+'_groups']:
+                for port in group['ports']:
+                    item = port_records.get(port)
+                    if item is None:
+                        continue  # A partition contains only its original I/O subset.
+                    if item['direction'] != direction:
+                        raise ValidationError('Vivado DUT timing I/O direction differs: '+port)
+                    if group['clock'] not in clock_names:
+                        raise ValidationError('Vivado DUT timing I/O lacks its declared clock root: '+port)
+                    select = port if item['width']==1 else port+'[*]'
+                    lines.append(f"set_{direction}_delay -max {float(group['delay_ns']):.17g} "
+                        f"-clock [get_clocks {{{clock_names[group['clock']]}}}] [get_ports {{{select}}}]")
     lines.append("")
     return "\n".join(lines)
 

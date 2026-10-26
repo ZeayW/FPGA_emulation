@@ -97,7 +97,10 @@ def assemble_vivado_physical_batches(
         seed = execution.get("seed")
         if (not isinstance(seed, int) or isinstance(seed, bool) or seed < 1
                 or not isinstance(options, dict)
-                or set(options) != {"place_directive", "route_directive", "dut_frequency_mhz"}
+                or set(options) not in ({"place_directive", "route_directive", "dut_frequency_mhz"},
+                    {"place_directive", "route_directive", "dut_frequency_mhz", "dut_timing_io_sha256"})
+                or ('dut_timing_io_sha256' in options and (not isinstance(options['dut_timing_io_sha256'],str)
+                    or len(options['dut_timing_io_sha256'])!=64 or any(c not in '0123456789abcdef'for c in options['dut_timing_io_sha256'])))
                 or any(not isinstance(options[name], str) or not options[name]
                        for name in ("place_directive", "route_directive"))):
             raise ValidationError("physical batch implementation options are missing")
@@ -135,7 +138,10 @@ def assemble_vivado_physical_batches(
                 if not isinstance(stages, Mapping):
                     raise ValidationError("physical batch implementation stages are invalid")
                 native = stages.get("vivado_implementation", {})
-                if not isinstance(native, Mapping) or native.get("implementation_options") != options:
+                implemented_options = native.get('implementation_options') if isinstance(native, Mapping) else None
+                if (not isinstance(implemented_options, Mapping) or
+                        ('retain_routed_checkpoint' in implemented_options and not isinstance(implemented_options['retain_routed_checkpoint'],bool)) or
+                        {k:v for k,v in implemented_options.items()if k!='retain_routed_checkpoint'} != options):
                     raise ValidationError("physical batch declared and implemented directives differ")
                 if native.get("implementation_timing") != implementation_timing_contract(runtime, options["dut_frequency_mhz"]):
                     raise ValidationError("physical batch implementation target-clock contract differs")

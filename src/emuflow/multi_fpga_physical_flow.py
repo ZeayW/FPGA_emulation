@@ -665,6 +665,7 @@ def run_multi_fpga_physical_flow(
     workers: int = 1,
     resume: bool = False,
     fpga_ids: Optional[Sequence[str]] = None,
+    dut_timing_io: Optional[Mapping[str,Any]] = None,
 ) -> Dict[str, Any]:
     from .vivado_clocks import validate_dut_frequency_mhz
     validate_dut_frequency_mhz(vivado_dut_frequency_mhz, enabled=backend == "vivado")
@@ -810,6 +811,17 @@ def run_multi_fpga_physical_flow(
             "split manifest lacks the Phase 6 DUT clock-period contract"
         )
     runtime = build_virtual_runtime(schedule, platform, clock_periods)
+    dut_io_digest = None
+    if dut_timing_io is not None:
+        from .benchmark import _validate_timing_io, timing_io_sha256
+        if backend != 'vivado':
+            raise ValidationError('explicit DUT physical timing I/O currently requires Vivado')
+        _validate_timing_io(dut_timing_io, list(clock_periods))
+        dut_io_digest = timing_io_sha256(dut_timing_io)
+        if path_database_path is not None:
+            environment = read_json(path_database_path).get('source',{}).get('timing_io')
+            if not isinstance(environment, Mapping) or environment.get('sha256') != dut_io_digest:
+                raise ValidationError('physical DUT timing I/O differs from the original TimingPathDB environment')
     backend_descriptor = physical_backend_descriptor(backend)
     validate_physical_backend_descriptor(backend_descriptor)
     output_dir = output_dir.resolve()
@@ -1516,6 +1528,7 @@ def run_multi_fpga_physical_flow(
                 virtual_io_contract=virtual_io_contract,
                 local_identity_path=local_identity_path,
                 local_query_path=local_query_path,
+                **({'dut_timing_io':dut_timing_io} if dut_timing_io is not None else {}),
                 **({'word_phy_plan_path':word_sources['plan'],
                     'word_wiring_path':word_sources['wiring'],
                     'retain_routed_checkpoint':True} if word_sources is not None else {}),
@@ -1612,6 +1625,7 @@ def run_multi_fpga_physical_flow(
             "place_directive": vivado_place_directive,
             "route_directive": vivado_route_directive,
             "dut_frequency_mhz": vivado_dut_frequency_mhz,
+            **({'dut_timing_io_sha256':dut_io_digest} if dut_io_digest is not None else {}),
         }} if backend == "vivado" else {}),
         **(
             {"rapidwright_placer": "openparf-native"}
