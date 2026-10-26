@@ -715,6 +715,13 @@ An explicit checkpoint I/O diagnostic is available as
 It opens and writes a temporary checkpoint and checks its part; this is an I/O
 check and does not qualify placement, routing, or numerical timing.
 
+`scripts/vivado/inspect_timing_points.tcl INPUT_DCP OUTPUT_DIRECTORY ?MODE?`
+records one worst path's native timing properties and report. `original` keeps
+the checkpoint constraints; `datapath-only` applies the same uniform data-path
+requirements used by delay exporters. The mode is recorded with the properties.
+This read-only diagnostic helps distinguish clock/skew/check adjustments from
+raw data delay; it is not a timing-result producer or acceptance certificate.
+
 `scripts/vivado/inspect_constant_frontiers.tcl INPUT_DCP QUERY_TSV OUTPUT_TSV`
 exports selected LUT INIT values and every input driver with its source tag.
 The query has `source_origin` and `native_cell_hex` columns. The bounded
