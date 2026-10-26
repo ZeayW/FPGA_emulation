@@ -361,6 +361,8 @@ Tcl 8.6+ (including the OpenSTA runtime), SWIG, Eigen3,
 spdlog, LEMON, OR-Tools, OpenMP, and the appropriate Python/PyTorch packages.
 CUDA is optional and disabled by default. The OpenPARF Python/PyTorch ABI must
 match the interpreter selected when compiling its native operators.
+OpenSTA propagates Zlib include paths from its CMake imported target, including
+versioned dependency prefixes.
 
 ```bash
 cmake --preset release
