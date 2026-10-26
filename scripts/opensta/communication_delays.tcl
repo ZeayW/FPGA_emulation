@@ -46,7 +46,22 @@ proc emuflow_communication_require_data_clock {pin} {
 }
 
 proc emuflow_apply_communication_delays {filename} {
-  global emuflow_communication_by_pair
+  global emuflow_communication_by_pair emuflow_communication_arcs
+  global emuflow_communication_owner emuflow_design_context_epoch
+  if {![info exists emuflow_design_context_epoch]} {
+    error "communication delays require a linked source design context"
+  }
+  set scene [sta::cmd_scene]
+  set owner [list $emuflow_design_context_epoch $scene]
+  if {![info exists emuflow_communication_owner] ||
+      [lindex $emuflow_communication_owner 0] != $emuflow_design_context_epoch} {
+    # link_design replaced the old graph. Do not dereference its old handles.
+    set emuflow_communication_arcs [dict create]
+    set emuflow_communication_by_pair [dict create]
+    set emuflow_communication_owner $owner
+  } elseif {$emuflow_communication_owner ne $owner} {
+    error "communication annotation scene changed within the source context"
+  }
   set extra_by_pair [dict create]
   set records {}
   # Validate names and the transport table before paying for a full timing
@@ -80,8 +95,7 @@ proc emuflow_apply_communication_delays {filename} {
   # Prepare every annotation before changing the graph. A malformed later
   # row must not leave an earlier wire annotated if the caller catches failure.
   sta::find_timing_cmd 1
-  set scene [sta::cmd_scene]
-  set plan {}
+  set plan [dict create]
   foreach record $records {
       lassign $record from to extra_sta
       emuflow_communication_require_data_clock $from
@@ -100,9 +114,19 @@ proc emuflow_apply_communication_delays {filename} {
               error "communication wire is disabled in the source timing graph"
             }
             foreach arc [$edge timing_arcs] {
-              set delay [expr {[$edge arc_delay $arc $scene max] + $extra_sta}]
-              if {![expr {abs(double($delay)) < Inf}]} {error "communication arc delay exceeds engine units"}
-              lappend plan [list $edge $arc $delay]
+              set key [list $edge $arc]
+              if {[dict exists $plan $key]} {error "duplicate communication timing arc"}
+              set base [$edge arc_delay $arc $scene max]
+              if {[dict exists $emuflow_communication_arcs $key]} {
+                set base [lindex [dict get $emuflow_communication_arcs $key] 0]
+              }
+              set delay [expr {$base + $extra_sta}]
+              # OpenSTA stores Delay in single precision, even though Tcl
+              # computes in double precision. Reject overflow before mutation.
+              if {![expr {abs(double($delay)) <= 3.4028234663852886e38}]} {
+                error "communication arc delay exceeds engine units"
+              }
+              dict set plan $key [list $base $delay]
               incr matched
             }
           }
@@ -110,10 +134,34 @@ proc emuflow_apply_communication_delays {filename} {
       }
       if {$matched == 0} {error "communication endpoints have no source timing wire"}
   }
-  foreach annotation $plan {
-    lassign $annotation edge arc delay
-    sta::set_arc_delay $edge $arc $scene max $delay
+  # Check all previously owned arcs before applying any change. Other delay
+  # writers cannot silently become the new baseline for a later assignment.
+  dict for {key previous} $emuflow_communication_arcs {
+    lassign $key edge arc
+    if {[$edge arc_delay $arc $scene max] != [lindex $previous 1]} {
+      error "source wire delay changed outside the communication update"
+    }
   }
+  # A new assignment may make an old crossing local. Restore every omitted arc
+  # before replacing retained crossings; never add to a previous candidate.
+  dict for {key previous} $emuflow_communication_arcs {
+    if {![dict exists $plan $key]} {
+      lassign $key edge arc
+      sta::set_arc_delay $edge $arc $scene max [lindex $previous 0]
+    }
+  }
+  set owned [dict create]
+  dict for {key annotation} $plan {
+    lassign $key edge arc
+    lassign $annotation base delay
+    if {![dict exists $emuflow_communication_arcs $key] ||
+        [lindex [dict get $emuflow_communication_arcs $key] 2] != $delay} {
+      sta::set_arc_delay $edge $arc $scene max $delay
+    }
+    # Keep the value read back from the engine, including its float rounding.
+    dict set owned $key [list $base [$edge arc_delay $arc $scene max] $delay]
+  }
+  set emuflow_communication_arcs $owned
   set emuflow_communication_by_pair $extra_by_pair
   set count [llength $records]
   puts "EMUFLOW_COMMUNICATION_DELAYS status=pass records=$count"

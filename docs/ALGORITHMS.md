@@ -45,8 +45,16 @@ The explicit `communication_delays_path` OpenSTA API can re-search the entire
 source timing graph with additive per-driver/per-sink communication costs.
 It requires uncapped, clock-aware extraction and validates each named data
 wire in the engine. Exported members retain their original local delay and
-slack, so a partition evaluator does not add communication twice. This is a
-path-discovery primitive; the production PATRON move evaluator still needs
+slack, so a partition evaluator does not add communication twice. When the
+same linked source graph is reused, each replacement table
+contains the current assignment's entire crossing set, omitted crossings
+return to their original local wire delays, and repeated tables do not
+accumulate delay. A header-only table restores the all-local model. Validation
+finishes before mutation, including checks that another delay writer has not
+changed an owned wire. Wire handles and baselines belong to one linked source
+context and analysis scene. Reusing this engine avoids parsing the design
+again for each update. This is a path-discovery primitive; the production
+PATRON move evaluator still needs
 the complete-graph update integration and convergence check. A refreshed
 path population alone is not a certificate for subsequent assignments.
 The shared-native `phase7 export-source-communication` producer supplies these

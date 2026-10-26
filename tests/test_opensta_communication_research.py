@@ -163,6 +163,95 @@ exit 0
 
 
 @real_engine
+@pytest.mark.parametrize('negative_capture', [False, True])
+def test_reused_graph_replaces_crossings_discovers_alternatives_and_restores_local_wires(tmp_path, negative_capture):
+    from emuflow.opensta_source_context import emit_opensta_source_context
+    from emuflow.store_publication import bind_store_source
+    source = prepare_source(tmp_path, negative_capture=negative_capture)
+    engine = os.environ['EMUFLOW_OPENSTA_LAUNCH_ENGINE']
+    context = emit_opensta_source_context(bind_store_source(source, 'emuir-compact-v2'),
+        tmp_path / 'context', clocks={'clk': 10.}, timing_io={
+            'input_groups': [{'clock': 'clk', 'delay_ns': 0., 'ports': ['a', 'b']}],
+            'output_groups': [{'clock': 'clk', 'delay_ns': 0., 'ports': ['q']}]}, executable=engine)
+    write_costs(tmp_path / 'b.tsv', [('launch_b/Q', 'fast/I0', 3.), ('fast/O', 'join/I1', 4.)])
+    write_costs(tmp_path / 'a.tsv', [('launch_a/Q', 'slow0/I0', 20.)])
+    write_costs(tmp_path / 'local.tsv', [])
+    write_costs(tmp_path / 'invalid.tsv', [('launch_b/Q', 'fast/I0', 9.), ('launch_b/Q', 'slow0/I0', 4.)])
+    script = tmp_path / 'replace.tcl'
+    script.write_text('''
+source $env(EMUFLOW_TEST_CONTEXT)
+source $env(EMUFLOW_TEST_DELAYS_SCRIPT)
+if {[catch {
+  emuflow_read_design_context
+  proc selected {} {
+    set paths [find_timing_paths -path_delay max -to [sta::find_pin capture/D] -group_path_count 1 -endpoint_path_count 1]
+    if {[llength $paths] != 1} {error "missing capture path"}
+    set path [lindex $paths 0]
+    return [list [get_property [get_property $path startpoint] full_name] \
+      [get_property $path slack] [emuflow_path_communication_delay [get_property $path points]]]
+  }
+  proc update_costs {name} {
+    emuflow_apply_communication_delays [file join $::env(EMUFLOW_TEST_ROOT) $name.tsv]
+  }
+  proc require_start {row start extra} {
+    if {[lindex $row 0] ne "$start/Q" || abs([lindex $row 2]-$extra) > 1e-6} {
+      error "unexpected source path $row; expected $start with communication $extra"
+    }
+  }
+  # Header-only tables are the valid all-local assignment.
+  update_costs local
+  set baseline [selected]
+  require_start $baseline launch_a 0
+  update_costs b
+  set moved [selected]
+  require_start $moved launch_b 7
+  update_costs b
+  if {[selected] ne $moved} {error "identical replacement accumulated communication delay"}
+  if {![catch {update_costs invalid} message] || $message ne "communication endpoints have no source timing wire"} {
+    error "invalid replacement was not rejected atomically: $message"
+  }
+  if {[selected] ne $moved} {error "invalid replacement changed the selected path"}
+  update_costs a
+  set switched [selected]
+  require_start $switched launch_a 20
+  if {abs([lindex $switched 1]-([lindex $baseline 1]-20)) > 1e-5} {
+    error "replacement did not use the original local baseline"
+  }
+  update_costs local
+  if {[selected] ne $baseline} {error "old crossings were not restored to local wire delays"}
+  update_costs b
+  if {[selected] ne $moved} {error "restored wire acquired a different communication baseline"}
+  # Detect foreign arc writers rather than absorbing them into a new candidate.
+  set key [lindex [dict keys $::emuflow_communication_arcs] 0]
+  lassign $key edge arc
+  set scene [sta::cmd_scene]
+  set previous [$edge arc_delay $arc $scene max]
+  sta::set_arc_delay $edge $arc $scene max [expr {$previous+1e-9}]
+  if {![catch {update_costs local} message] || $message ne "source wire delay changed outside the communication update"} {
+    error "foreign wire delay was accepted: $message"
+  }
+  sta::set_arc_delay $edge $arc $scene max $previous
+  update_costs local
+  if {[selected] ne $baseline} {error "failed replacement lost the original baseline"}
+} message options]} {
+  puts stderr [dict get $options -errorinfo]
+  exit 1
+}
+puts "EMUFLOW_COMMUNICATION_REPLACEMENT status=pass"
+exit 0
+''')
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run([engine, '-no_init', '-exit', str(script)], capture_output=True, text=True,
+        env={**os.environ, **context.environment, 'EMUFLOW_STA_TOP': 'retime',
+             'EMUFLOW_TEST_CONTEXT': str(root / 'scripts/opensta/design_context.tcl'),
+             'EMUFLOW_TEST_DELAYS_SCRIPT': str(root / 'scripts/opensta/communication_delays.tcl'),
+             'EMUFLOW_TEST_ROOT': str(tmp_path)})
+    context.require_unchanged()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'EMUFLOW_COMMUNICATION_REPLACEMENT status=pass' in result.stdout
+
+
+@real_engine
 @pytest.mark.parametrize('rows', [
     [('launch_b/Q', 'fast/I0', 'NaN')], [('launch_b/Q', 'fast/I0', 'Inf')],
     [('launch_b/Q', 'fast/I0', '-1')], [('missing/Q', 'fast/I0', '1')],

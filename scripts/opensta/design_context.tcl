@@ -27,6 +27,11 @@ proc emuflow_read_design_context {} {
   read_liberty $liberty_path
   read_verilog $verilog_path
   link_design $top
+  # Graph handles and wire baselines belong to this particular linked design.
+  # An engine reused for another source context must not reuse old annotations.
+  global emuflow_design_context_epoch
+  if {![info exists emuflow_design_context_epoch]} {set emuflow_design_context_epoch 0}
+  incr emuflow_design_context_epoch
 
   set clock_input [open $clock_path r]
   if {[gets $clock_input clock_header] < 0 ||
