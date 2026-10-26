@@ -283,11 +283,13 @@ class OpenStaProviderTest(unittest.TestCase):
         script = (
             ROOT / "scripts/opensta/export_timing_path_database.tcl"
         ).read_text(encoding="utf-8")
+        context = (ROOT / "scripts/opensta/design_context.tcl").read_text(encoding="utf-8")
+        self.assertIn("source [file join [file dirname [info script]] design_context.tcl]", script)
         # Keep hexadecimal transport on the portable H* API.
-        self.assertIn("binary format H* $value", script)
-        self.assertIn("binary scan [encoding convertto utf-8 $value] H*", script)
-        self.assertNotIn("binary decode hex", script)
-        self.assertNotIn("binary encode hex", script)
+        self.assertIn("binary format H* $value", context)
+        self.assertIn("binary scan [encoding convertto utf-8 $value] H*", context)
+        self.assertNotIn("binary decode hex", context)
+        self.assertNotIn("binary encode hex", context)
         self.assertIn("find_timing_paths -path_delay max", script)
         self.assertIn("set endpoints [all_registers -data_pins]", script)
         self.assertIn("foreach endpoint [all_outputs]", script)
@@ -301,8 +303,8 @@ class OpenStaProviderTest(unittest.TestCase):
         self.assertIn("set timing_paths [find_timing_paths", script)
         self.assertIn("EMUFLOW_STA_THROUGH_NETS", script)
         self.assertIn("EMUFLOW_STA_TIMING_IO", script)
-        self.assertIn("set_input_delay -clock $clock -max", script)
-        self.assertIn("set_output_delay -clock $clock -max", script)
+        self.assertIn("set_input_delay -clock $clock -max", context)
+        self.assertIn("set_output_delay -clock $clock -max", context)
         self.assertIn("get_pins -quiet -of_objects $through_net", script)
         self.assertIn("foreach through_pin $through_pins", script)
         self.assertIn("direction] ne \"output\"", script)

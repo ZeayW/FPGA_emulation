@@ -1490,6 +1490,7 @@ def _run_opensta_path_database(
         source_value = {
             'clock_budget_policy':clock_budget_policy,
             'export_script_sha256':file_sha256(OPENSTA_EXPORT_SCRIPT),
+            'design_context_script_sha256':file_sha256(OPENSTA_EXPORT_SCRIPT.with_name('design_context.tcl')),
             "timing_model": model["name"],
             "timing_model_qualification": model["source"]["qualification"],
             "engine": engine,

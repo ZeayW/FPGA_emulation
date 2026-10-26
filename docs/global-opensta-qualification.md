@@ -124,6 +124,15 @@ Phase 5 uses the same integer calendar selection primitive. This kernel does
 not yet bind the production canonical clock/fanin owners;
 word-mode global acceptance remains disabled until those bindings and the
 independent OpenSTA checks are integrated.
+The native `ExactSemanticView` reads the published v4 assignment index and its
+v2 semantic sidecar as one owner pair. It checks the bounded manifest identity,
+part/cut identities, segment coordinates and complete per-cut source-group
+coverage. Required net, segment and source-group sections are checked while
+streaming them once; it retains integer coordinates and flat source ranges,
+without reconstructing logical JSON or a net-name map. Both files must retain
+their bound generations, and a relocated pair must retain its sibling binding.
+This source-fanin view does not consume capture endpoint payloads or certify
+physical timing coverage; those checks belong to their actual consumers.
 The separate native validator consumes the TX support slacks in the same
 canonical fanin order. It checks the selected edge and its immediately preceding
 table occurrence using the change in capture deadline, as well as strict RX
@@ -333,6 +342,15 @@ distinct phases, and rejects unclocked or combinational-through pins. The
 read-only Path accessors use existing engine tags; no timing algorithm changes.
 This is bounded synthetic API qualification, separate from the production
 canonical launch-fact owner and full original-path coverage.
+The streamed `export_launch_clock_edges.tcl` consumer reads ordered source
+coordinates and queries each exact original pin through that API. It shares
+`design_context.tcl` with Phase 2 path extraction, so original primary clocks
+and top-level I/O delays are applied once using the same setup. It updates
+timing once and exports all distinct clock/period/phase tags per requested
+source, with explicit source and fact completion counts. Missing, repeated or
+unordered source coordinates, noncanonical names, combinational through-pins
+and unclocked sources fail. This interchange is not yet the canonical
+source-bound launch-fact store or a whole-design timing certificate.
 The shared `clock_budget` reader preserves this edge window under uniform
 source/capture clock scaling, rejects independent rescaling and unsupported
 latch/absolute-delay checks, and keeps setup and physical margins separate.

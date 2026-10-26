@@ -90,6 +90,14 @@ def patron_ingress_oracle() -> Path:
 
 
 @lru_cache(maxsize=1)
+def exact_semantic_view_test() -> Path:
+    return _build_native_stage_program(
+        ROOT / "tests/native_exact_semantic_view_test.cpp",
+        Path(_BUILD_ROOT.name) / "native-exact-semantic-view-test",
+    )
+
+
+@lru_cache(maxsize=1)
 def native_json_record() -> Path:
     compiler = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
     if compiler is None:
