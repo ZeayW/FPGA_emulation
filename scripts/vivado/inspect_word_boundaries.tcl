@@ -11,9 +11,15 @@ foreach logical [dict keys $mapping] {
   lassign [dict get $mapping $logical] kind name anchor
   if {$kind ni {word-tx word-rx} || [dict get $counts $kind] >= 2} {continue}
   dict incr counts $kind
-  set hierarchical [emuflow_exact_hier_pin $name]
+  if {[catch {emuflow_exact_hier_pin $name} hierarchical]} {
+    puts $stream [join [list $kind $logical hierarchy-absent $hierarchical {}] "\t"]
+    continue
+  }
   set nets [get_nets -quiet -segments -of_objects $hierarchical]
-  puts $stream [join [list $kind $logical hierarchical $name [get_property NAME $nets]] "\t"]
+  set net_names {}
+  if {[llength $nets]} {set net_names [get_property NAME $nets]}
+  puts $stream [join [list $kind $logical hierarchical $name $net_names] "\t"]
+  if {![llength $nets]} {continue}
   if {$kind eq "word-tx"} {
     set pad_nets [get_nets -quiet -segments -of_objects [get_ports -quiet [list $anchor]]]
     set buffers [get_cells -quiet -of_objects [get_pins -quiet -leaf -of_objects $pad_nets] -filter {REF_NAME == OBUFDS}]

@@ -460,9 +460,11 @@ target cannot relax them. DUT-to-TX paths remain physical measurements for
 schedule readiness, rather than being counted as infrastructure closure.
 
 Word timing queries use native sampling boundaries. A TX query resolves its
-serializer through the fixed P pad and differential output buffer, then checks
-the requested parallel-bit data net. Aliased payload nets cannot select a
-different lane's capture pin. RX queries start at the registered alignment
+serializer through the fixed P pad and differential output buffer, then selects
+its parallel D bit using the source-bound eight-bit native recipe. Aliased
+payload nets cannot select a different lane's capture pin. Synthesis may fold
+duplicate native input ports and tie unused hierarchy pins low; those hierarchy
+pin nets are therefore not used to identify TX sampling points. RX queries start at the registered alignment
 output. These bounded physical resolutions are cached only within one export.
 For a read-only connection diagnostic, `scripts/vivado/inspect_word_boundaries.tcl`
 accepts `INPUT_DCP WORD_BOUNDARIES_TSV OUTPUT_TSV`. It inspects two boundaries

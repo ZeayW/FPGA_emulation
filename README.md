@@ -35,8 +35,9 @@ with an explicit native IP and receive-alignment selection.
 The native word-link qualification driver also exposes explicit registered
 receive-alignment candidates, with complete generated-IP interface checks.
 The indexed provider exposes a native-bank physical qualification path with
-buffered reference clocks and checked synthesized continuations. Full-flow
-word-PHY execution and global physical event projection remain unqualified;
+buffered reference clocks and checked synthesized continuations.
+TX timing queries bind pad-anchored serializer bits across folded input aliases.
+Full-flow word-PHY execution and global physical event projection remain unqualified;
 unsupported full-flow physical bindings are rejected.
 Its required [timing contract](docs/global-opensta-qualification.md#ratio-estimates-and-schedule-resolved-phy-timing)
 distinguishes pre-schedule ratio estimates from post-schedule per-signal events.

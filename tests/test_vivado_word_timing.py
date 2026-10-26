@@ -27,7 +27,7 @@ def test_native_word_aliases_resolve_via_their_own_physical_lane(tmp_path):
     script=r'''
 set types {buf0 OBUFDS buf1 OBUFDS bank/native_phy/ser0 TX_BITSLICE bank/native_phy/ser1 TX_BITSLICE bank/rx_reg FDRE}
 set directions {buf0/O OUT buf1/O OUT buf0/I IN buf1/I IN bank/native_phy/ser0/O OUT bank/native_phy/ser1/O OUT bank/native_phy/ser0/D[0] IN bank/native_phy/ser1/D[0] IN bank/rx_reg/Q OUT}
-set nets {pad0 {pad_net0} pad1 {pad_net1} buf0/I {serial0} buf1/I {serial1} bank/native_phy/word0[0] {payload} bank/native_phy/word1[0] {payload} bank/native_phy/ser0/D[0] {payload} bank/native_phy/ser1/D[0] {payload} bank/rx_words[0] {received} bank/rx_reg/Q {received}}
+set nets {pad0 {pad_net0} pad1 {pad_net1} buf0/I {serial0} buf1/I {serial1} bank/native_phy/word0[0] {constant0} bank/native_phy/word1[0] {constant0} bank/native_phy/ser0/D[0] {payload} bank/native_phy/ser1/D[0] {payload} bank/rx_words[0] {received} bank/rx_reg/Q {received}}
 set pins {pad_net0 {buf0/O} pad_net1 {buf1/O} serial0 {bank/native_phy/ser0/O} serial1 {bank/native_phy/ser1/O} payload {bank/native_phy/ser0/D[0] bank/native_phy/ser1/D[0]} received {bank/rx_reg/Q} buf0 {buf0/I buf0/O} buf1 {buf1/I buf1/O} bank/native_phy/ser0 {bank/native_phy/ser0/D[0]} bank/native_phy/ser1 {bank/native_phy/ser1/D[0]}}
 proc get_property {property object} {
  global types directions
@@ -71,8 +71,8 @@ if {[get_property NAME [emuflow_fixed_io_object $mapping tx0]] ne {bank/native_p
 if {[get_property NAME [emuflow_fixed_io_object $mapping tx1]] ne {bank/native_phy/ser1/D[0]}} {error "alias chose another lane"}
 if {[get_property NAME [emuflow_fixed_io_object $mapping rx]] ne {bank/rx_reg/Q}} {error "wrong receive launch"}
 set ::emuflow_fixed_io_cache {}
-dict set nets {bank/native_phy/ser1/D[0]} {unrelated}
-if {![catch {emuflow_fixed_io_object $mapping tx1}]} {error "unrelated serializer data accepted"}
+dict set mapping wrongbank {word-tx other_bank/native_phy/word1[0] pad1}
+if {![catch {emuflow_fixed_io_object $mapping wrongbank}]} {error "another bank's serializer accepted"}
 dict set types bank/rx_reg LUT1
 if {![catch {emuflow_fixed_io_object $mapping rx}]} {error "unregistered receive output accepted"}
 puts pass

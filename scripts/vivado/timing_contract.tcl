@@ -73,12 +73,14 @@ proc emuflow_fixed_io_object {mapping logical} {
   if {$kind eq "port"} {
     set object [get_ports -quiet [list $name]]
   } elseif {$kind in {word-tx word-rx}} {
-    set hierarchical [emuflow_exact_hier_pin $name]
-    set nets [get_nets -quiet -segments -of_objects $hierarchical]
     if {$kind eq "word-tx"} {
       # A shared payload net may feed several serializer lanes. Resolve this
       # lane through its fixed package pad, rather than choosing any sink of
       # that aliased logical net or relying on generated primitive names.
+      # The source-sealed word plan/recipe binds this pad and serial bit to
+      # the parallel word. Native input hierarchy pins are not identities:
+      # synthesis can fold duplicate inputs and tie their unused pins low,
+      # while the actual serializer D bits retain the correct live net.
       if {![regexp {\[([0-7])\]$} $name _ bit]} {error "invalid native TX word bit"}
       set pad [get_ports -quiet [list $anchor]]
       if {[llength $pad] != 1} {error "native TX lane pad is absent: $anchor"}
@@ -95,6 +97,8 @@ proc emuflow_fixed_io_object {mapping logical} {
         if {[get_property REF_PIN_NAME $pin] eq [format {D[%d]} $bit]} {lappend object $pin}
       }
     } else {
+      set hierarchical [emuflow_exact_hier_pin $name]
+      set nets [get_nets -quiet -segments -of_objects $hierarchical]
       set object [get_pins -quiet -leaf -of_objects $nets -filter {DIRECTION == OUT}]
       if {[llength $object] == 1} {
         set cell [get_cells -quiet -of_objects $object]
@@ -104,12 +108,9 @@ proc emuflow_fixed_io_object {mapping logical} {
       }
     }
     if {[llength $object] == 1} {
-      set leaf_nets [get_nets -quiet -segments -of_objects $object]
-      set shared false
-      foreach net $leaf_nets {if {[lsearch -exact $nets $net] >= 0} {set shared true}}
       set bank [lindex [split $name /] 0]
-      if {!$shared || [string first "$bank/" [get_property NAME $object]] != 0} {
-        error "native word boundary leaf has a different bank or data net: $logical"
+      if {[string first "$bank/" [get_property NAME $object]] != 0} {
+        error "native word boundary leaf has a different bank: $logical"
       }
     }
   } else {error "unsupported fixed I/O timing object kind: $kind"}
