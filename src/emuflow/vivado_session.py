@@ -169,9 +169,9 @@ def prepare_frontiers(session):
     write_json(out/"constant-frontier-plan.json", plan, compact=True)
     with (out/"constant-frontier-query.tsv").open("w") as stream:
         rows = csv.writer(stream, delimiter="\t", lineterminator="\n")
-        rows.writerow(["source_origin", "native_cell_hex"])
+        rows.writerow(["source_origin", "native_cell_hex", "object_kind"])
         for item in plan["query_objects"]:
-            rows.writerow([item["source_origin"], item["name"].encode().hex()])
+            rows.writerow([item["source_origin"], item["name"].encode().hex(), item.get("object_kind", "cell")])
     write_json(out/(stage+"-source-preflight.json"), {"status": "inspection-required" if selected else "pass", "source_stage":stage,
         "coverage": coverage, "proof": proof, "queries": resolutions, "requested_constant_sources": len(selected),
         "closed_constant_sources": len(plan["sources"]), "native_frontiers": len(plan["query_objects"])}, compact=True)

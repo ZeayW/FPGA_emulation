@@ -12,7 +12,7 @@ if {$checkpoint eq "@current-design" && [info exists ::emuflow_native_export_sta
 }
 emuflow_open_export_design $checkpoint $stage
 set input [open $query r]
-if {[gets $input header] < 0 || $header ne "source_origin\tnative_cell_hex"} {
+if {[gets $input header] < 0 || $header ne "source_origin\tnative_cell_hex\tobject_kind"} {
   error "invalid constant-frontier query"
 }
 set stream [open $output w]
@@ -21,20 +21,39 @@ set count 0
 while {[gets $input row] >= 0} {
   if {$row eq ""} {continue}
   set fields [split $row "\t"]
-  if {[llength $fields] != 2} {error "malformed constant-frontier query"}
-  lassign $fields origin name_hex
+  if {[llength $fields] != 3} {error "malformed constant-frontier query"}
+  lassign $fields origin name_hex object_kind
   if {![regexp {^s(0|[1-9][0-9]*)$} $origin]} {error "invalid frontier source"}
   set name [emuflow_frontier_decode $name_hex]
-  set cell [get_cells -quiet -hier -filter "NAME == $name"]
-  if {[llength $cell] != 1 || [get_property EMUFLOW_SOURCE $cell] ne $origin} {
-    error "constant-frontier cell source association differs: $name"
+  if {$object_kind eq "output-port"} {
+    set port [get_ports -quiet -filter "NAME == $name"]
+    if {[llength $port] != 1 || [get_property NAME $port] ne $name || [get_property DIRECTION $port] ne "OUT"} {
+      error "constant-frontier output port differs: $name"
+    }
+    set ref OUTPUT_PORT
+    set init ""
+    set modifications ""
+    set input_names {PORT}
+  } elseif {$object_kind eq "cell"} {
+    set cell [get_cells -quiet -hier -filter "NAME == $name"]
+    if {[llength $cell] != 1 || [get_property EMUFLOW_SOURCE $cell] ne $origin} {
+      error "constant-frontier cell source association differs: $name"
+    }
+    set ref [get_property REF_NAME $cell]
+    if {![regexp {^LUT([1-6])$} $ref _ width]} {error "unsupported constant-frontier primitive: $ref"}
+    set init [get_property INIT $cell]
+    set modifications "[get_property -quiet OPT_MODIFIED $cell] [get_property -quiet PHYS_OPT_MODIFIED $cell]"
+    set input_names {}
+    for {set i 0} {$i < $width} {incr i} {lappend input_names I$i}
+  } else {
+    error "unsupported constant-frontier object kind"
   }
-  set ref [get_property REF_NAME $cell]
-  if {![regexp {^LUT([1-6])$} $ref _ width]} {error "unsupported constant-frontier primitive: $ref"}
-  set init [get_property INIT $cell]
-  set modifications "[get_property -quiet OPT_MODIFIED $cell] [get_property -quiet PHYS_OPT_MODIFIED $cell]"
-  for {set i 0} {$i < $width} {incr i} {
-    set pin [get_pins -quiet -of_objects $cell -filter "REF_PIN_NAME == I$i"]
+  foreach input_name $input_names {
+    if {$object_kind eq "output-port"} {
+      set pin $port
+    } else {
+      set pin [get_pins -quiet -of_objects $cell -filter "REF_PIN_NAME == $input_name"]
+    }
     if {[llength $pin] != 1} {error "frontier input pin is not unique"}
     set nets [get_nets -quiet -of_objects $pin]
     if {[llength $nets] != 1} {error "frontier input net is not unique"}
@@ -64,7 +83,7 @@ while {[gets $input row] >= 0} {
     } else {
       set driver_name [get_property NAME $ports]
     }
-    puts $stream [join [list $origin $name_hex $ref $init I$i $kind $driver_source $driver_ref $driver_pin \
+    puts $stream [join [list $origin $name_hex $ref $init $input_name $kind $driver_source $driver_ref $driver_pin \
       [emuflow_frontier_hex $driver_name] [emuflow_frontier_hex $driver_changes] [emuflow_frontier_hex $modifications]] "\t"]
   }
   incr count

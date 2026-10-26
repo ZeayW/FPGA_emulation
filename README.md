@@ -112,7 +112,7 @@ every original path; WNS/TNS use surviving implemented paths. Local paths,
 cross-FPGA logic segments, and shadow interfaces can retain eliminated records
 with null delays and checked source-proof references. Selected vendor constant
 choices require proof that selected state components remain constant, complete
-frontier checks, and checkpoint binding; a bounded inspection planner follows
+frontier checks, including direct output-port constants, and checkpoint binding; a bounded inspection planner follows
 state dependencies and fanouts before native observations are checked. Complete physical
 coverage and global timing remain required qualification gates; the physical evidence
 schemas follow this disposition contract. Explicit checkpoint I/O, unresolved endpoint, and selected constant-state

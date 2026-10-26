@@ -29,6 +29,50 @@ def _tcl86():
 TCL86 = _tcl86()
 
 
+@pytest.mark.skipif(TCL86 is None, reason="Tcl 8.6 required")
+@pytest.mark.parametrize("constant", ["GND", "VCC"])
+def test_native_output_frontier_exports_the_exact_port_bit_and_driver(tmp_path, constant):
+    query, observed = tmp_path/"query.tsv", tmp_path/"observed.tsv"
+    name = "q[1]"
+    query.write_text("source_origin\tnative_cell_hex\tobject_kind\n" +
+        f"s0\t{name.encode().hex()}\toutput-port\n")
+    program = f"set mock_constant {constant}\nset mock_port {_tcl_word(name)}\n" + r'''
+proc current_design {args} {return current}
+proc get_ports {args} {
+  if {[lindex $args end] eq "DIRECTION == IN"} {return {}}
+  return port
+}
+proc get_nets {args} {return net}
+proc get_pins {args} {return driver}
+proc get_cells {args} {return constant}
+proc get_property {args} {
+  global mock_constant mock_port
+  lassign [lrange $args end-1 end] key object
+  switch -- $key {
+    NAME {return [expr {$object eq "port" ? $mock_port : "constant/OUT"}]}
+    DIRECTION {return OUT}
+    REF_NAME {return $mock_constant}
+    REF_PIN_NAME {return [expr {$mock_constant eq "GND" ? "G" : "P"}]}
+    default {return ""}
+  }
+}
+set ::emuflow_native_export_stage optimized
+set argc 3
+'''
+    program += "set argv [list @current-design " + _tcl_word(query) + " " + _tcl_word(observed) + "]\n"
+    program += "if {[catch {source " + _tcl_word(ROOT/"scripts/vivado/inspect_constant_frontiers.tcl") + "} message]} {puts stderr $message;exit 2}\n"
+    result = subprocess.run([TCL86], input=program, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert not result.stderr
+    with observed.open() as stream:
+        rows = list(csv.DictReader(stream, delimiter="\t"))
+    assert len(rows) == 1
+    assert rows[0]["native_cell_hex"] == name.encode().hex()
+    assert rows[0]["ref"] == "OUTPUT_PORT" and rows[0]["pin"] == "PORT"
+    assert rows[0]["driver_kind"] == ("zero" if constant == "GND" else "one")
+    assert rows[0]["driver_ref"] == constant
+
+
 
 def session_fixture(tmp_path, *, require_constant=True, dependent=False):
     mapped, functions, _, inventory, facts, digest, origins = conditional_model(tmp_path, dependent=dependent)

@@ -19,10 +19,10 @@ from typing import Any
 
 from .errors import ValidationError
 
-CONSTANT_CONFIRMATION_SCHEMA = "emuflow.vivado-selected-constant-confirmations/v3"
+CONSTANT_CONFIRMATION_SCHEMA = "emuflow.vivado-selected-constant-confirmations/v4"
 CONSTANT_INITIALIZATION_POLICY = "joint-inductive-source-model-with-explicit-vendor-selected-initialization"
 CONSTANT_MODEL_SCOPE = "selected-states-inductive-without-unconfirmed-state-assumptions"
-CONSTANT_NATIVE_INPUT_POLICY = "same-primitive-and-pin-bindings-at-preplacement-snapshot-v1"
+CONSTANT_NATIVE_INPUT_POLICY = "same-primitive-pin-bindings-and-direct-output-constants-at-preplacement-v2"
 _CHECKED_CONSTANT_TOKEN = object()
 
 
@@ -135,9 +135,11 @@ def compare_selected_constant_frontiers(mapped_path: Path, functions_path: Path,
             or any(not isinstance(item, Mapping) or not isinstance(item.get("source_origin"), str)
                    or not isinstance(item.get("name"), str) for item in expected_objects)):
         raise ValidationError("constant-frontier diagnostic requires at most 4096 selected objects")
-    expected = {(item["source_origin"], item["name"]) for item in expected_objects}
+    expected = {(item["source_origin"], item["name"]): item.get("object_kind", "cell") for item in expected_objects}
     if not expected or len(expected) != len(expected_objects):
         raise ValidationError("constant-frontier expected object set is empty or duplicated")
+    if any(kind not in {"cell", "output-port"} for kind in expected.values()):
+        raise ValidationError("constant-frontier object kind is invalid")
     db = sqlite3.connect(f"file:{mapped_path.resolve()}?mode=ro&immutable=1", uri=True)
     try:
         db.execute("ATTACH DATABASE ? AS functions", (f"file:{functions_path.resolve()}?mode=ro&immutable=1",))
@@ -199,6 +201,33 @@ def compare_selected_constant_frontiers(mapped_path: Path, functions_path: Path,
 
         checked = []
         seen = set()
+        ports = json.loads(db.execute("SELECT value FROM metadata WHERE key='ports_json'").fetchone()[0])
+
+        def compare_output(key, group):
+            if not require_input_identity or selected_constant_values is None or len(group) != 1:
+                raise ValidationError("output port confirmation requires an explicit checked source selection")
+            row = group[0]
+            origin = int(key[0][1:])
+            value = selected_constant_values.get(origin)
+            matches = []
+            for name, port in ports.items():
+                if port["direction"] != "output":
+                    continue
+                for bit, net in enumerate(port["bits"]):
+                    native_name = name if len(port["bits"]) == 1 else f"{name}[{bit}]"
+                    if native_name == key[1]:
+                        matches.append(net)
+            if (value not in (0, 1) or len(matches) != 1 or not isinstance(matches[0], int)
+                    or db.execute("SELECT cell_seq,port,port_bit FROM cell_pins WHERE net_bit=? AND direction=1 AND value_kind=0 LIMIT 2", (matches[0],)).fetchall() != [(origin, "Q", 0)]):
+                raise ValidationError("output port does not directly expose the selected source Q")
+            if (row["ref"] != "OUTPUT_PORT" or row["init"] != "" or row["pin"] != "PORT"
+                    or row["driver_kind"] != ("one" if value else "zero")
+                    or row["driver_ref"] != ("VCC" if value else "GND")
+                    or row["driver_source"] or row["transformations_hex"]):
+                raise ValidationError("native output port does not confirm the selected source constant")
+            return {"source_origin": key[0], "native_cell": key[1], "object_kind": "output-port",
+                    "variables": 0, "assignments": 1}
+
         with open_xilinx_mapped_index(mapped_path) as mapped, observations_path.open(newline="") as stream:
             rows = csv.DictReader(stream, delimiter="\t")
             columns = {"source_origin","native_cell_hex","ref","init","pin","driver_kind","driver_source","driver_ref","driver_pin","driver_name_hex","driver_transformations_hex","transformations_hex"}
@@ -210,6 +239,9 @@ def compare_selected_constant_frontiers(mapped_path: Path, functions_path: Path,
                 if key not in expected or key in seen or not re.fullmatch(r"s(?:0|[1-9][0-9]*)", key[0]):
                     raise ValidationError("constant-frontier observation object coverage differs")
                 seen.add(key)
+                if expected[key] == "output-port":
+                    checked.append(compare_output(key, group))
+                    return
                 source_name = db.execute("SELECT id FROM cells WHERE seq=?", (int(key[0][1:]),)).fetchone()
                 if source_name is None:
                     raise ValidationError("constant-frontier source object is unknown")
@@ -232,7 +264,7 @@ def compare_selected_constant_frontiers(mapped_path: Path, functions_path: Path,
                     if left != right:
                         raise ValidationError("native frontier primitive or pin bindings do not prove the selected source projection")
                 result = require_equal_frontier_functions(source, native)
-                checked.append({"source_origin":key[0], "native_cell":key[1], **result})
+                checked.append({"source_origin":key[0], "native_cell":key[1], "object_kind":"cell", **result})
 
             for row in rows:
                 if set(row) != columns or any(value is None for value in row.values()):
@@ -247,7 +279,9 @@ def compare_selected_constant_frontiers(mapped_path: Path, functions_path: Path,
                     raise ValidationError("constant-frontier primitive exceeds its bounded input scope")
             if current is not None:
                 compare(current, group)
-        if seen != expected:
+        if seen != set(expected):
+            if any(expected[key] == "output-port" for key in set(expected) - seen):
+                raise ValidationError("constant-frontier output port observation coverage is incomplete")
             raise ValidationError("constant-frontier observation object coverage is incomplete")
         return {"status":"pass", "scope":"selected-conditional-source-frontier-function-comparison-only",
                 "mapped_index_sha256":mapped_sha256, "frontiers":checked}
@@ -389,7 +423,8 @@ def _prepare_constant_frontier_query_once(mapped_path: Path, candidates_path: Pa
 
     Follow state-to-state fanouts only through conditional candidates. Every
     selected state must independently remain constant under the joint values,
-    and all observable exits must be retained LUTs. No native observations are
+    and all observable exits must be retained LUTs or directly observed output
+    ports. No native observations are
     inferred here; the returned query is only an inspection plan.
     """
     from .io import file_sha256
@@ -415,7 +450,7 @@ def _prepare_constant_frontier_query_once(mapped_path: Path, candidates_path: Pa
             raise ValidationError("constant confirmation needs the matching preplacement source model")
         source_rows = []
         frontier_origins = set()
-        selected_q = set()
+        selected_q = {}
         pending = list(int(identity[1:]) for identity in selected_sources)
         discovered = set(pending)
         direct_frontiers, state_successors = {}, {}
@@ -428,7 +463,9 @@ def _prepare_constant_frontier_query_once(mapped_path: Path, candidates_path: Pa
                     or len(outputs) != 1 or outputs[0][:2] != ("Q", 0) or outputs[0][3] != 0):
                 raise ValidationError("selected source is not a supported conditional constant state")
             q = outputs[0][2]
-            selected_q.add(q)
+            if q in selected_q:
+                raise ValidationError("conditional states share an output net")
+            selected_q[q] = origin
             direct_frontiers[origin], state_successors[origin] = set(), set()
             for target,kind,pin,bit in db.execute("SELECT s.cell_seq,c.type,s.port,s.port_bit FROM cell_pins s JOIN cells c ON c.seq=s.cell_seq WHERE s.net_bit=? AND s.value_kind=0 AND s.direction=0 ORDER BY s.cell_seq,s.port,s.port_bit", (q,)):
                 uses += 1
@@ -450,6 +487,24 @@ def _prepare_constant_frontier_query_once(mapped_path: Path, candidates_path: Pa
                     raise ValidationError("constant confirmation component exceeds diagnostic scope")
             source_rows.append({"source":f"s{origin}", "constant_value":int(candidate[0]),
                                 "source_initialization":candidate[1]})
+        # A state may have no LUT fanout at all and still be observable at a
+        # module output. Inspect that exact bit in the vendor snapshot; neither
+        # the absent state tag nor its source-model candidate proves the port.
+        ports = json.loads(db.execute("SELECT value FROM metadata WHERE key='ports_json'").fetchone()[0])
+        output_objects = []
+        for name, port in ports.items():
+            if port["direction"] != "output":
+                continue
+            for bit, net in enumerate(port["bits"]):
+                if not isinstance(net, int) or net not in selected_q:
+                    continue
+                origin = selected_q[net]
+                direct_frontiers[origin].add(origin)
+                output_objects.append({"source_origin":f"s{origin}",
+                    "name":name if len(port["bits"]) == 1 else f"{name}[{bit}]",
+                    "object_kind":"output-port"})
+                if len(output_objects) + len(frontier_origins) > 4096:
+                    raise ValidationError("constant confirmation output port coverage exceeds bounded scope")
         # Each row references all reachable external LUT frontiers, including
         # exits through other selected states. Bound both traversal and output.
         visits, references = 0, 0
@@ -470,10 +525,6 @@ def _prepare_constant_frontier_query_once(mapped_path: Path, candidates_path: Pa
             if references > 65536:
                 raise ValidationError("constant confirmation closure exceeds frontier-reference scope")
             row["frontier_sources"] = [f"s{i}" for i in sorted(reachable)]
-        ports = json.loads(db.execute("SELECT value FROM metadata WHERE key='ports_json'").fetchone()[0])
-        if any(bit in selected_q for port in ports.values() if port["direction"] == "output"
-               for bit in port["bits"] if isinstance(bit, int)):
-            raise ValidationError("conditional source directly reaches an unconfirmed output port")
         selected_values = {int(row["source"][1:]):row["constant_value"] for row in source_rows}
         _require_inductive_selected_states(db,mapped_path,selected_values)
         expected_objects = []
@@ -501,7 +552,10 @@ def _prepare_constant_frontier_query_once(mapped_path: Path, candidates_path: Pa
             raise ValidationError("constant confirmation inventory belongs to a different source model")
         if {int(item["source_origin"][1:]) for item in expected_objects} != frontier_origins:
             raise ValidationError("conditional source has an unobserved or optimized frontier")
-        return {"schema":"emuflow.vivado-constant-frontier-query-plan/v1", "status":"inspection-required",
+        expected_objects.extend(output_objects)
+        if len(expected_objects) > 4096:
+            raise ValidationError("constant confirmation replication and output ports exceed bounded scope")
+        return {"schema":"emuflow.vivado-constant-frontier-query-plan/v2", "status":"inspection-required",
                 "fpga":fpga, "mapped_index_sha256":mapped_sha256, "source_stage":source_stage,
                 "synthesized_checkpoint_sha256":checkpoint_sha256,
                 "source_candidate_proofs_sha256":candidate_proofs_sha256,

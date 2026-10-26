@@ -71,7 +71,7 @@ def test_selected_native_observations_use_indexed_source_driver_identity(tmp_pat
     with pytest.raises(ValidationError,match="input coverage"): compare()
 
 
-def conditional_model(tmp_path, *, expose_state=False, duplicate_frontier=False, dependent=False, state_chain=None, dependency_output=False):
+def conditional_model(tmp_path, *, expose_state=False, duplicate_frontier=False, dependent=False, state_chain=None, dependency_output=False, direct_output_only=False, output_copies=1, output_value=0):
     import csv
     import json
     from emuflow.yosys import import_yosys_json
@@ -106,10 +106,13 @@ def conditional_model(tmp_path, *, expose_state=False, duplicate_frontier=False,
             cells["relay"]["connections"]["D"]=[3]
         if state_chain == "output":
             expose_state=True
+    if direct_output_only:
+        del cells["front"]
+        cells["conditional"]["connections"]["D"] = [str(output_value)]
     source=tmp_path/"source.json"
     source.write_text(json.dumps({"modules":{"dut":{"attributes":{"top":"1"},"cells":cells,
         "ports":{"clk":{"direction":"input","bits":[2]},"d":{"direction":"input","bits":[3]},
-                 "q":{"direction":"output","bits":[6,7] if dependency_output else [6,5] if expose_state else [6]}},"netnames":{}}}}))
+                 "q":{"direction":"output","bits":[5]*output_copies if direct_output_only else [6,7] if dependency_output else [6,5] if expose_state else [6]}},"netnames":{}}}}))
     ir=tmp_path/"ir.emuir.sqlite";import_yosys_json(source).save(ir)
     report=emit_vivado_mapped_verilog(ir,tmp_path/"dut.v")
     mapped=Path(report["mapped_index"]["path"]);functions=Path(report["source_functions"]["path"])
@@ -118,7 +121,7 @@ def conditional_model(tmp_path, *, expose_state=False, duplicate_frontier=False,
     with inventory.open("w") as stream:
         writer=csv.writer(stream,delimiter="\t",lineterminator="\n");writer.writerow(INVENTORY_HEADER)
         writer.writerow(["p/kept","FDRE",f"s{origins['kept']}","", "", "", "", "", ""])
-        writer.writerow(["p/front","LUT2",f"s{origins['front']}","", "", "", "", "", ""])
+        if not direct_output_only:writer.writerow(["p/front","LUT2",f"s{origins['front']}","", "", "", "", "", ""])
         if duplicate_frontier:writer.writerow(["p/front_clone","LUT2",f"s{origins['front']}","", "", "", "", "", ""])
     lineage=tmp_path/"lineage.sqlite"
     digest=report["mapped_index"]["sha256"]
@@ -128,8 +131,15 @@ def conditional_model(tmp_path, *, expose_state=False, duplicate_frontier=False,
     with observed.open("w") as stream:
         writer=csv.writer(stream,delimiter="\t",lineterminator="\n")
         writer.writerow(["source_origin","native_cell_hex","ref","init","pin","driver_kind","driver_source","driver_ref","driver_pin","driver_name_hex","driver_transformations_hex","transformations_hex"])
-        for pin,kind,origin,ref,dname in [("I0","zero","","GND","GND/G"),("I1","source",f"s{origins['kept']}","FDRE","p/kept/Q")]:
-            writer.writerow([f"s{origins['front']}","p/front".encode().hex(),"LUT2","4'h6",pin,kind,origin,ref,"Q",dname.encode().hex(),"",""])
+        if direct_output_only:
+            for bit in range(output_copies):
+                name="q" if output_copies == 1 else f"q[{bit}]"
+                writer.writerow([f"s{origins['conditional']}",name.encode().hex(),"OUTPUT_PORT","","PORT",
+                    "one" if output_value else "zero","","VCC" if output_value else "GND",
+                    "P" if output_value else "G","constant".encode().hex(),"",""])
+        else:
+            for pin,kind,origin,ref,dname in [("I0","zero","","GND","GND/G"),("I1","source",f"s{origins['kept']}","FDRE","p/kept/Q")]:
+                writer.writerow([f"s{origins['front']}","p/front".encode().hex(),"LUT2","4'h6",pin,kind,origin,ref,"Q",dname.encode().hex(),"",""])
     return mapped,functions,proof,inventory,observed,digest,origins
 
 
@@ -311,13 +321,17 @@ def test_closed_state_component_is_planned_before_native_observation(tmp_path,ch
 
 @pytest.mark.parametrize("chain,match",[("dynamic","supported conditional constant state"),("output","output port")])
 def test_state_component_cannot_hide_nonconstant_successor_or_output(tmp_path,chain,match):
-    from emuflow.vivado_constant_frontier import prepare_constant_frontier_query
+    from emuflow.vivado_constant_frontier import prepare_constant_frontier_query, confirm_selected_constant_sources
     from emuflow.io import file_sha256
     mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path,state_chain=chain)
     with pytest.raises(ValidationError,match=match):
-        prepare_constant_frontier_query(mapped,proof,inventory,mapped_sha256=digest,
+        options=dict(mapped_sha256=digest,
             candidate_proofs_sha256=file_sha256(proof),checkpoint_sha256="a"*64,
             fpga="fpga0",selected_sources=[f"s{origins['conditional']}"])
+        if chain == "output":
+            confirm_selected_constant_sources(mapped,functions,proof,observed,inventory,**options)
+        else:
+            prepare_constant_frontier_query(mapped,proof,inventory,**options)
 
 
 def test_internal_state_must_be_absent_from_the_native_snapshot(tmp_path):
@@ -340,10 +354,53 @@ def test_internal_state_must_be_absent_from_the_native_snapshot(tmp_path):
 
 
 def test_required_initialization_dependency_cannot_hide_an_unchecked_output(tmp_path):
-    from emuflow.vivado_constant_frontier import prepare_constant_frontier_query
+    from emuflow.vivado_constant_frontier import confirm_selected_constant_sources
     from emuflow.io import file_sha256
     mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path,dependent=True,dependency_output=True)
     with pytest.raises(ValidationError,match="output port"):
-        prepare_constant_frontier_query(mapped,proof,inventory,mapped_sha256=digest,
+        confirm_selected_constant_sources(mapped,functions,proof,observed,inventory,mapped_sha256=digest,
             candidate_proofs_sha256=file_sha256(proof),checkpoint_sha256="a"*64,
             fpga="fpga0",selected_sources=[f"s{origins['conditional']}"])
+
+
+@pytest.mark.parametrize("value,copies", [(0, 1), (1, 1), (0, 2), (1, 2)])
+def test_port_only_constant_state_has_complete_native_bit_observations(tmp_path, value, copies):
+    from emuflow.io import file_sha256
+    from emuflow.vivado_constant_frontier import prepare_constant_frontier_query, confirm_selected_constant_sources
+    mapped, functions, proof, inventory, observed, digest, origins = conditional_model(
+        tmp_path, direct_output_only=True, output_copies=copies, output_value=value)
+    options = dict(mapped_sha256=digest, candidate_proofs_sha256=file_sha256(proof),
+        checkpoint_sha256="a"*64, fpga="fpga0", selected_sources=[f"s{origins['conditional']}"])
+    plan = prepare_constant_frontier_query(mapped, proof, inventory, **options)
+    assert len(plan["query_objects"]) == copies
+    assert all(row["object_kind"] == "output-port" for row in plan["query_objects"])
+    cert = confirm_selected_constant_sources(mapped, functions, proof, observed, inventory, **options)
+    assert cert["sources"][0]["constant_value"] == value
+    assert len(cert["frontiers"]) == copies
+    assert all(row["variables"] == 0 and row["assignments"] == 1 for row in cert["frontiers"])
+
+
+@pytest.mark.parametrize("damage", ["wrong-value", "dynamic-driver", "wrong-port", "missing-bit", "duplicate-bit", "wrong-source", "wrong-object-kind"])
+def test_direct_output_confirmation_cannot_hide_unknown_or_incomplete_native_facts(tmp_path, damage):
+    import csv
+    from emuflow.io import file_sha256
+    from emuflow.vivado_constant_frontier import confirm_selected_constant_sources
+    mapped, functions, proof, inventory, observed, digest, origins = conditional_model(
+        tmp_path, direct_output_only=True, output_copies=2)
+    with observed.open() as stream:
+        reader = csv.DictReader(stream, delimiter="\t")
+        header, rows = reader.fieldnames, list(reader)
+    if damage == "wrong-value": rows[0].update(driver_kind="one", driver_ref="VCC")
+    elif damage == "dynamic-driver": rows[0].update(driver_kind="source", driver_ref="FDRE", driver_source=f"s{origins['kept']}")
+    elif damage == "wrong-port": rows[0]["native_cell_hex"] = "missing".encode().hex()
+    elif damage == "missing-bit": rows.pop()
+    elif damage == "duplicate-bit": rows.append(rows[0])
+    elif damage == "wrong-source": rows[0]["source_origin"] = f"s{origins['kept']}"
+    else: rows[0]["ref"] = "LUT1"
+    with observed.open("w") as stream:
+        writer = csv.DictWriter(stream, fieldnames=header, delimiter="\t", lineterminator="\n")
+        writer.writeheader(); writer.writerows(rows)
+    with pytest.raises(ValidationError):
+        confirm_selected_constant_sources(mapped, functions, proof, observed, inventory,
+            mapped_sha256=digest, candidate_proofs_sha256=file_sha256(proof), checkpoint_sha256="a"*64,
+            fpga="fpga0", selected_sources=[f"s{origins['conditional']}"])

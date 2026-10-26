@@ -117,13 +117,14 @@ def test_identity_cannot_be_reused_from_another_owner_or_after_mutation(proof,tm
     result=execute(proof,'mutate');assert result.returncode!=0 and not result.stdout
 
 
-@pytest.fixture(params=[None,'pipeline','cycle'])
+@pytest.fixture(params=[None,'pipeline','cycle','port'])
 def vendor(tmp_path,native_root,request):
     import csv
     from emuflow.vivado_constant_frontier import check_constant_sources
     from emuflow.vivado_lineage import import_cell_lineage
     from tests.test_vivado_constant_frontier import conditional_model
-    mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path,state_chain=request.param)
+    mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path,
+        direct_output_only=request.param=='port',state_chain=None if request.param=='port' else request.param)
     checked=check_constant_sources(mapped,functions,proof,observed,inventory,mapped_sha256=digest,
         candidate_proofs_sha256=hashlib.sha256(proof.read_bytes()).hexdigest(),checkpoint_sha256='a'*64,
         fpga='fpga0',selected_sources=[f's{origins["conditional"]}'])
@@ -143,7 +144,7 @@ def test_selected_vendor_initialization_keeps_its_checked_source_and_frontier(ve
     assert json.loads(result.stdout)[0][1:]==[1,0,'vendor-confirmed','conditional']
 
 
-@pytest.mark.parametrize('damage',['checkpoint','document-value','document-seal','frontier','source-stage','legacy-policy','unconfirmed-row'])
+@pytest.mark.parametrize('damage',['checkpoint','document-value','document-seal','frontier','object-kind','source-stage','legacy-policy','unconfirmed-row'])
 def test_vendor_claims_require_the_exact_bounded_confirmation(vendor,damage):
     config,_,origins=vendor
     if damage=='checkpoint':config['synthesized_checkpoint_sha256']='b'*64
@@ -153,6 +154,7 @@ def test_vendor_claims_require_the_exact_bounded_confirmation(vendor,damage):
             raw=db.execute('SELECT document FROM vendor_confirmation_document').fetchone()[0];doc=json.loads(raw)
             if damage=='document-value':doc['sources'][0]['constant_value']=1
             elif damage=='frontier':doc['frontiers']=[]
+            elif damage=='object-kind':doc['frontiers'][0]['object_kind']='unchecked'
             elif damage=='source-stage':doc['source_inventory_sha256']='0'*64
             elif damage=='legacy-policy':doc['schema']='emuflow.vivado-selected-constant-confirmations/v1'
             elif damage=='unconfirmed-row':db.execute('UPDATE eliminated_sources SET constant_value=1 WHERE origin=?',(origins['conditional'],))
@@ -161,3 +163,27 @@ def test_vendor_claims_require_the_exact_bounded_confirmation(vendor,damage):
             else:db.execute("UPDATE metadata SET value=? WHERE key='vendor_confirmation_document_sha256'",(json.dumps('0'*64),))
         config['inputs'][0]['generation']=native_file_generation(path)
     result=execute(vendor);assert result.returncode!=0 and not result.stdout
+
+
+def test_legacy_cell_confirmation_stays_readable_without_relabelling_output_ports(vendor):
+    config, _, _ = vendor
+    path = Path(config['inputs'][0]['path'])
+    with closing(sqlite3.connect(path)) as db, db:
+        doc = json.loads(db.execute('SELECT document FROM vendor_confirmation_document').fetchone()[0])
+        has_output = any(item['object_kind'] == 'output-port' for item in doc['frontiers'])
+        doc['schema'] = 'emuflow.vivado-selected-constant-confirmations/v3'
+        doc['native_input_policy'] = 'same-primitive-and-pin-bindings-at-preplacement-snapshot-v1'
+        for item in doc['frontiers']: del item['object_kind']
+        raw = json.dumps(doc, sort_keys=True, separators=(',', ':'))
+        db.execute('UPDATE vendor_confirmation_document SET document=?', (raw,))
+        db.execute("UPDATE metadata SET value=? WHERE key='vendor_confirmation_document_sha256'",
+                   (json.dumps(hashlib.sha256(raw.encode()).hexdigest()),))
+    config['inputs'][0]['generation'] = native_file_generation(path)
+    if has_output:
+        with pytest.raises(ValidationError, match='legacy constant confirmation'):
+            OptimizationProofView(path, expected_fpga='fpga0')
+    else:
+        with OptimizationProofView(path, expected_fpga='fpga0') as view:
+            assert view['vendor_confirmed_constant_state_cells'] > 0
+    result = execute(vendor)
+    assert (result.returncode != 0) == has_output, result.stderr

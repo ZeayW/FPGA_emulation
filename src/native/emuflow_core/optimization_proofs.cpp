@@ -95,12 +95,16 @@ void NativeOptimizationProofView::ReadConfirmation() {
   auto row=db.Prepare("SELECT document FROM vendor_confirmation_document WHERE id=0");Check(row.Step(),"optimization confirmation is missing");
   const auto raw=row.TypedText(0);Check(Hash(raw)==*digest,"optimization confirmation seal differs");
   const std::string init="joint-inductive-source-model-with-explicit-vendor-selected-initialization";
-  Check(JsonText(db,raw,"$.schema")=="emuflow.vivado-selected-constant-confirmations/v3" &&
+  const auto schema=JsonText(db,raw,"$.schema");
+  const bool legacy=schema=="emuflow.vivado-selected-constant-confirmations/v3";
+  const std::string input_policy=legacy ? "same-primitive-and-pin-bindings-at-preplacement-snapshot-v1" :
+      "same-primitive-pin-bindings-and-direct-output-constants-at-preplacement-v2";
+  Check((legacy || schema=="emuflow.vivado-selected-constant-confirmations/v4") &&
         JsonText(db,raw,"$.status")=="pass" && JsonText(db,raw,"$.fpga")==context_.fpga &&
         JsonText(db,raw,"$.mapped_index_sha256")==context_.mapped_sha256 &&
         JsonText(db,raw,"$.initialization_policy")==init && Scalar(db,"vendor_initialization_policy")==init &&
         JsonText(db,raw,"$.source_model_scope")=="selected-states-inductive-without-unconfirmed-state-assumptions" &&
-        JsonText(db,raw,"$.native_input_policy")=="same-primitive-and-pin-bindings-at-preplacement-snapshot-v1" &&
+        JsonText(db,raw,"$.native_input_policy")==input_policy &&
         JsonText(db,raw,"$.synthesized_checkpoint_sha256")==context_.synthesized_checkpoint_sha256 &&
         Scalar(db,"synthesized_checkpoint_sha256")==context_.synthesized_checkpoint_sha256,
         "optimization vendor confirmation belongs to another policy or implementation");
@@ -133,11 +137,14 @@ void NativeOptimizationProofView::ReadConfirmation() {
   }
   auto frontiers=db.Prepare("SELECT json_extract(value,'$.source_origin'),json_extract(value,'$.native_cell'),"
       "json_extract(value,'$.variables'),json_extract(value,'$.assignments'),json_type(value,'$.variables'),"
-      "json_type(value,'$.assignments') FROM json_each(?,'$.frontiers')");frontiers.BindText(1,raw);
+      "json_type(value,'$.assignments'),json_extract(value,'$.object_kind') FROM json_each(?,'$.frontiers')");frontiers.BindText(1,raw);
   std::set<std::pair<std::string,std::string>> objects;std::set<std::string> observed_frontiers;
   while(frontiers.Step()) {
     const auto origin=frontiers.TypedText(0),cell=frontiers.TypedText(1);const auto variables=frontiers.TypedInteger(2);
+    const auto object_kind=legacy ? std::string("cell") : frontiers.TypedText(6);
     Check(required_frontiers.count(origin) && !cell.empty() && cell.find('\0')==std::string::npos &&
+          (!legacy || (frontiers.IsNull(6) && !confirmed_.count(Origin(origin)))) &&
+          (object_kind=="cell" || (object_kind=="output-port" && variables==0)) &&
           variables>=0 && variables<=12 && frontiers.TypedText(4)=="integer" && frontiers.TypedText(5)=="integer" &&
           frontiers.TypedInteger(3)==(1LL<<variables) && objects.emplace(origin,cell).second,
           "optimization confirmation functional frontier is invalid or repeated");observed_frontiers.insert(origin);
