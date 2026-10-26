@@ -49,6 +49,17 @@ slack, so a partition evaluator does not add communication twice. This is a
 path-discovery primitive; the production PATRON move evaluator still needs
 the complete-graph update integration and convergence check. A refreshed
 path population alone is not a certificate for subsequent assignments.
+The shared-native `phase7 export-source-communication` producer supplies these
+costs from compact original connectivity, the current assignment and scheduled
+route trees. It verifies every actual remote data sink, including crossings
+absent from the selected TimingPathDB, and rejects missing routes, missing
+sinks, mixed ownership, replicas without a unique source binding, or malformed
+relay trees. Bus pin spelling includes constant high bits. For the ratio-bound
+diagnostic, each hop contributes the declared `fixed + UI * R`; a remote sink
+receives only the sum on its own tree branch. These are planning bounds for
+critical-path discovery, not measured schedule-resolved physical delays or a
+qualified operating frequency. Final global timing still requires the routed
+local models, resolved transfer events and complete capture checks.
 Prepared physical continuations must carry the uncapped selection provenance;
 historical capped or undeclared selections must be regenerated from the
 existing source boundary before partitioning or physical acceptance.

@@ -66,6 +66,7 @@ class NativeStageRuntimeTest(unittest.TestCase):
             missing = str(root / 'missing"input\n.bin')
             output, report = root / "previous-result", root / "status.json"
             cases = [
+                ["phase7", "export-source-communication", missing, missing, missing, missing],
                 ["phase3", "analyze", missing],
                 ["phase3", "refine-hops", missing],
                 ["phase3", "reduce-loads", missing, missing, missing],

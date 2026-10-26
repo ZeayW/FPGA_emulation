@@ -45,6 +45,7 @@ constexpr const char* kUsage =
     "  phase7 validate-atomic-ownership MAPPED SOURCE CERTIFICATE REQUEST SUMMARY\n"
     "  phase7 validate-physical-cells MAPPED PHYSICAL REQUEST SUMMARY\n"
     "  phase7 build-launch-clocks ORIGINAL_IR REQUEST TOOL_REQUEST LOGIC... LOCAL... TIMING_INPUT... OUTPUT\n"
+    "  phase7 export-source-communication ORIGINAL_IR ASSIGNMENT SCHEDULE REQUEST OUTPUT\n"
     "  phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL\n"
     "  phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY\n"
     "  phase7 import-vivado-lineage MAPPED FUNCTIONS REQUEST STORE SUMMARY INVENTORY...\n";
@@ -142,6 +143,8 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   };
   if (phase == "phase7" && operation == "validate-atomic-ownership" && argc == 8)
     return run(Stage::kValidateAtomicOwnership,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
+  if (phase == "phase7" && operation == "export-source-communication" && argc == 8)
+    return run(Stage::kExportSourceCommunication,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
   if (phase == "phase7" && operation == "validate-physical-cells" && argc == 7)
     return run(Stage::kValidatePhysicalCells,{argv[3],argv[4],argv[5]},argv[6]);
   if (phase == "phase7" && operation == "import-vivado-lineage" && argc >= 9) {
