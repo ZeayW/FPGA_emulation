@@ -291,7 +291,7 @@ def test_real_chimew_kernels_survive_split_physical_signoff_control_boundaries(
     assert (root / "phase6-comparison/comparison-report.json").is_file()
 
 
-@pytest.mark.parametrize("tamper", [None, "tdm", "finalize"])
+@pytest.mark.parametrize("tamper", [None, "split", "finalize"])
 def test_native_cpp_controller_carries_real_device_state_across_processes(
     case, tmp_path, tamper
 ):
@@ -320,10 +320,12 @@ import importlib.util
 spec=importlib.util.spec_from_file_location('emuflow.real_compile_codec',REAL_CODEC)
 codec=importlib.util.module_from_spec(spec);spec.loader.exec_module(codec)
 from emuflow.multi_fpga_flow import _CompileContext
+from emuflow import multi_fpga_flow as flow
 from emuflow.xilinx_chimew_geometry import XilinxPackageGeometry
 from types import SimpleNamespace
 if a.stage=='preflight':
- state={'output_dir':out,'phase6_provider':'chimew','chimew_package_geometry':XilinxPackageGeometry.open(pathlib.Path(ARCHITECTURE),PART)}
+ state=codec._unpack(value['state'])
+ state.update(output_dir=out,phase6_provider='chimew',chimew_package_geometry=XilinxPackageGeometry.open(pathlib.Path(ARCHITECTURE),PART))
 else:
  old=json.loads(pathlib.Path(a.previous).read_text())
  state=codec._restore_control_state(codec._unpack(old['state']))
@@ -338,7 +340,7 @@ if a.stage in ('physical','signoff','finalize'):
  assert state['baseline_runtime_report'] is state['phase6_comparison']['baseline']['runtime']
 if a.stage==TAMPER:
  target=pathlib.Path(ARCHITECTURE);target.write_text(target.read_text()+'\\n')
-value['state']=codec._pack(codec._control_snapshot(_CompileContext(state,native_mode=True),a.stage,SimpleNamespace()))
+value['state']=codec._pack(codec._control_snapshot(_CompileContext(state,native_mode=True),a.stage,flow))
 """.replace(
             "REAL_CODEC", repr(str(real_source / "native_compile_adapter.py"))
         )
@@ -356,12 +358,12 @@ value['state']=codec._pack(codec._control_snapshot(_CompileContext(state,native_
     calls = (root / "out/calls").read_text().splitlines()
     if tamper:
         assert result.returncode != 0
-        assert calls == list(STAGES[: STAGES.index(tamper) + 1])
+        assert calls == [stage for stage in STAGES[: STAGES.index(tamper) + 1] if stage != "tdm"]
         assert "geometry generation changed" in result.stderr
         assert not (root / "out/multi-fpga-flow-report.json").exists()
     else:
         assert result.returncode == 0, result.stderr
-        assert calls == list(STAGES)
+        assert calls == [stage for stage in STAGES if stage != "tdm"]
         report = json.loads((root / "out/native-compile-result.json").read_text())
         assert report["effective_configuration"]["phase6_provider"] == "chimew"
         assert report["native_data_plane_complete"] is False

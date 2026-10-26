@@ -2,6 +2,7 @@
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/json_record.hpp"
 #include "emuflow_core/sqlite.hpp"
+#include "emuflow_core/phase5.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -76,6 +77,23 @@ class ControlJson {
     Require(value.Step() && value.Text(0) == "object","native compiler requires object field " + path);
     return value.Text(1);
   }
+  std::string StatePath(const std::string& name) {
+    const auto path="$.state[1]."+name;
+    Require(String(path+"[0]")=="path","native compiler requires a path binding for "+name);
+    const auto value=String(path+"[1]");Require(fs::path(value).is_absolute(),"native compiler state path is relative");return value;
+  }
+  bool OutputGeneration(const ArtifactRef& output) {
+    if(String("$.outputs[0].schema")!=output.schema() || String("$.outputs[0].path")!=output.path())return false;
+    const auto& g=output.generation();
+    const std::pair<const char*,std::int64_t> values[]={{"device",std::int64_t(g.device)},{"inode",std::int64_t(g.inode)},{"bytes",std::int64_t(g.bytes)},{"mtime_seconds",g.modified_seconds},{"mtime_nanoseconds",g.modified_nanoseconds},{"ctime_seconds",g.changed_seconds},{"ctime_nanoseconds",g.changed_nanoseconds}};
+    for(const auto& item:values) {
+      auto row=db_.Prepare("SELECT json_type(?1,?2),json_extract(?1,?2)");row.BindText(1,data_);row.BindText(2,std::string("$.outputs[0].generation.")+item.first);
+      if(!row.Step() || row.Text(0)!="integer" || row.TypedInteger(1)!=item.second)return false;
+    }return true;
+  }
+  std::string Phase5State(const std::string& reference) {
+    auto row=db_.Prepare("SELECT json_set(?1,'$.stage','tdm','$.state[1].phase5_report',json(?2))");row.BindText(1,data_);row.BindText(2,reference);Require(row.Step(),"cannot construct native Phase 5 compiler state");return row.TypedText(0);
+  }
   void RequirePublishedPaths(const fs::path& temporary) {
     const auto root = fs::weakly_canonical(temporary);
     const auto check = [&](const fs::path& path) {
@@ -129,10 +147,11 @@ void RequireOwner(const CompileResult& result) {
 }
 }  // namespace
 
-CompileResult Compile(const ArtifactRef& configuration, const volatile std::sig_atomic_t* cancelled) {
+CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native_executable, const volatile std::sig_atomic_t* cancelled) {
   CompileResult result;
   std::string python, python_source, adapter, working_directory;
   result.operation = RunStage("compile", [&] {
+    Require(native_executable.schema()=="external-tool-executable-v1","invalid native compiler executable schema");
     Require(configuration.schema() == "native-compile-request-v1","invalid native compiler artifact schema");
     configuration.RequireUnchanged();
     ControlJson request(configuration.path(),1024 * 1024); request.Envelope();
@@ -150,7 +169,8 @@ CompileResult Compile(const ArtifactRef& configuration, const volatile std::sig_
     Require(!fs::exists(output) || (fs::is_directory(output) && fs::is_empty(output)),
             "native compiler output must be an empty directory");
     return std::vector<ArtifactRef>{configuration,ArtifactRef::Bind(adapter,"native-compile-adapter-v1"),
-                                   ArtifactRef::Bind(python,"external-tool-executable-v1")};
+                                   ArtifactRef::Bind(python,"external-tool-executable-v1"),
+                                   native_executable};
   }, [&](const auto& inputs) {
     const auto output = fs::path(result.output_directory);
     fs::create_directories(output.parent_path());
@@ -167,12 +187,26 @@ CompileResult Compile(const ArtifactRef& configuration, const volatile std::sig_
       const auto temporary = scratch.root / "tmp" / stage;
       fs::create_directory(temporary);
       ToolRequest tool;
-      tool.argv = {python,"-m","emuflow.native_compile_adapter","--stage",stage,
-                   "--request",configuration.path(),"--output",next.string(),"--run-id",run_id};
-      if (!previous.empty()) { tool.argv.push_back("--previous"); tool.argv.push_back(previous.string()); }
+      const bool native_phase5=std::string(stage)=="tdm";
+      std::string phase5_report;
+      if(native_phase5) {
+        ControlJson prior(previous.string());
+        Require(prior.String("$.stage")=="route" && prior.String("$.state[1].effective_tdm_provider")=="deterministic-dependency-earliest-slot-v1","invalid native Phase 5 compiler predecessor/provider");
+        const auto phase5_root=fs::path(prior.StatePath("phase5_root"));
+        Require(fs::weakly_canonical(phase5_root)==output/"tdm","native Phase 5 output escapes compiler ownership");
+        phase5_report=(phase5_root/"phase5_report.json").string();
+        tool.argv={inputs[3].path(),"--report",(temporary/"native-result.json").string(),"phase5","compile",
+            (fs::path(prior.StatePath("phase4_root"))/"routes.json").string(),
+            (fs::path(prior.StatePath("phase3_root"))/"assignment.sqlite").string(),
+            (fs::path(prior.StatePath("phase1_root"))/"platform.normalized.json").string(),phase5_report};
+      } else {
+        tool.argv = {python,"-m","emuflow.native_compile_adapter","--stage",stage,
+                     "--request",configuration.path(),"--output",next.string(),"--run-id",run_id};
+        if (!previous.empty()) { tool.argv.push_back("--previous"); tool.argv.push_back(previous.string()); }
+      }
       tool.working_directory = working_directory;
       tool.environment = {{"PYTHONPATH",python_source},{"TMPDIR",temporary.string()},
-          {"TMP",temporary.string()},{"TEMP",temporary.string()},
+          {"TMP",temporary.string()},{"TEMP",temporary.string()},{"SQLITE_TMPDIR",temporary.string()},
           {"XDG_CACHE_HOME",(temporary / "cache").string()}};
       tool.tail_bytes = 32768;
       // Adapters unwind nested stream/tool owners before leaving their group.
@@ -180,11 +214,22 @@ CompileResult Compile(const ArtifactRef& configuration, const volatile std::sig_
       auto step_inputs = inputs;
       if (!previous.empty()) step_inputs.push_back(ArtifactRef::Bind(previous.string(),"native-compile-state-v1"));
       const auto step = RunExternalTool(tool,cancelled,step_inputs);
-      result.steps.push_back({stage,step.operation.ok(),step.wall_seconds,step.user_cpu_seconds,
+      result.steps.push_back({stage,step.operation.ok(),native_phase5?"native-exact-phase5-v1":"isolated-python-adapter-v1",step.wall_seconds,step.user_cpu_seconds,
                              step.system_cpu_seconds,step.maximum_process_rss_kib});
       if (!step.operation.ok())
         throw StageError(ErrorCode::kExecutionFailed,"native compile " + std::string(stage) + ": " +
                          step.operation.message + "\n" + step.diagnostic_tail);
+      if(native_phase5) {
+        ControlJson producer((temporary/"native-result.json").string());
+        auto published=ArtifactRef::Bind(phase5_report,"phase5-report-v1");
+        Require(producer.String("$.schema")=="emuflow.native-stage-result/v1" && producer.String("$.stage")=="phase5.compile" && producer.String("$.status")=="pass" && producer.OutputGeneration(published),"native Phase 5 producer result binding disagrees");
+        ControlJson prior(previous.string());const auto state=prior.Phase5State(Phase5ReportControlReference(published));
+        auto bindings=step_inputs;bindings.push_back(published);
+        PublishTextArtifact(next.string(),bindings,[&](std::ostream& stream){stream<<state<<'\n';});
+        const auto metrics=(output/"stage-metrics"/"phase5.json");fs::create_directories(metrics.parent_path());
+        const auto text=JsonRecord(std::map<std::string,JsonRecord>{{"stage","phase5"},{"status","pass"},{"wall_seconds",step.wall_seconds},{"peak_process_tree_rss_kib",step.maximum_process_rss_kib},{"rss_measurement","wait4-single-native-process-high-water"}}).Encode();
+        PublishTextArtifact(metrics.string(),bindings,[&](std::ostream& stream){stream<<text<<'\n';});
+      }
       try {
         auto state_ref = ArtifactRef::Bind(next.string(),"native-compile-state-v1");
         ControlJson state(state_ref.path());
@@ -224,8 +269,8 @@ CompileResult Compile(const ArtifactRef& configuration, const volatile std::sig_
 }
 std::string CompileResultJson(const CompileResult& result) {
   std::ostringstream out; out << std::setprecision(17);
-  out << "{\"schema\":\"emuflow.native-compile-result/v1\",\"implementation_id\":\"native-orchestration-v1\","
-      << "\"phase_implementation\":\"isolated-shared-python-adapters-v1\",\"native_data_plane_complete\":false,"
+  out << "{\"schema\":\"emuflow.native-compile-result/v2\",\"implementation_id\":\"native-orchestration-v1\","
+      << "\"phase_implementation\":\"native-phase5-and-isolated-python-adapters-v1\",\"native_data_plane_complete\":false,"
       << "\"operation\":" << StageResultJson(result.operation) << ",\"output_directory\":" << JsonQuote(result.output_directory)
       << ",\"request_configuration\":" << (result.request_configuration.empty() ? "null" : result.request_configuration)
       << ",\"effective_configuration\":" << (result.effective_configuration.empty() ? "null" : result.effective_configuration)
@@ -234,7 +279,7 @@ std::string CompileResultJson(const CompileResult& result) {
   for (const auto& stage : result.steps) {
     if (!first) out << ',';
     first = false;
-    out << "{\"stage\":" << JsonQuote(stage.stage) << ",\"status\":\"" << (stage.passed ? "pass" : "fail")
+    out << "{\"stage\":" << JsonQuote(stage.stage) << ",\"implementation_id\":" << JsonQuote(stage.implementation_id) << ",\"status\":\"" << (stage.passed ? "pass" : "fail")
         << "\",\"wall_seconds\":" << stage.wall_seconds << ",\"user_cpu_seconds\":" << stage.user_cpu_seconds
         << ",\"system_cpu_seconds\":" << stage.system_cpu_seconds << ",\"maximum_process_rss_kib\":" << stage.maximum_process_rss_kib
         << ",\"cpu_scope\":\"wait4-child-and-reaped-descendants\",\"rss_scope\":\"wait4-maximum-process-high-water\"}";

@@ -26,8 +26,9 @@ def _case(tmp_path, affine, repeated):
         link=case.platform.links[0]
         case.platform=replace(case.platform,links=(replace(link,data_lanes_per_direction=2,
             tdm_delay_model=RatioDelayModel("linear-ratio-v1",3.2,0.1,64 if affine=="wide-ratio" else 8,256,8),
-            **({"bank_count":2,"wires_per_bank":1} if affine=="banks" else {})),))
+            **({"bank_count":2,"wires_per_bank":1,"capacity_sharing":"shared_bidirectional"} if affine=="banks" else {})),))
     _,assignment=case._exact_artifacts(dependent_return=True)
+    case._phase5_assignment = assignment
     routes=case._exact_routes(assignment,frame_slots=256 if repeated else 16)
     routes["semantic_contract"]={**routes["semantic_contract"],"indexed":True}
     if affine == "tree":

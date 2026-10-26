@@ -50,6 +50,7 @@ constexpr RegisteredSchema schemas[] = {
     {"openparf-placement-selector-v2", ArtifactEncoding::kText, 0, 2},
     {"openparf-name-map-store-v1", ArtifactEncoding::kSqlite, 0x454d554e, 1, true,
      "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'", "emuflow.openparf-atomic-name-map/v2"},
+    {"boarddb-v1", ArtifactEncoding::kText, 0, 1},
     {"system-route-selector-v1", ArtifactEncoding::kText, 0, 1},
     {"yosys-source-document-v1", ArtifactEncoding::kText, 0, 1},
     {"sta-source-document-v1", ArtifactEncoding::kText, 0, 1},

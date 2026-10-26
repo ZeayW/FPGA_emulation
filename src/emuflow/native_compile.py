@@ -79,9 +79,12 @@ def _request(args, kwargs):
 def run_native_multi_fpga_flow(*args, **kwargs):
     """Select native orchestration explicitly; never retry the Python compiler.
 
-    The C++ controller invokes individual shared phase adapters. This entry does
+    The C++ controller runs TDM natively and other shared phase adapters. This entry does
     not assert that their remaining Python data planes have been migrated.
     """
+    from .native_tools import require_native_schema
+
+    require_native_schema("boarddb-v1")
     value, encoded = _request(args, kwargs)
     executable = resolve_native_executable("emuflow-native")
     output = Path(value["options"]["output_dir"])
@@ -116,7 +119,7 @@ def run_native_multi_fpga_flow(*args, **kwargs):
         if not result_path.is_file() or result_path.stat().st_size > 4 * 1024 * 1024:
             raise EmuFlowError("native compiler result is missing or exceeds bound")
         result = json.loads(result_path.read_text(encoding="utf-8"))
-        if (result.get("schema") != "emuflow.native-compile-result/v1" or
+        if (result.get("schema") != "emuflow.native-compile-result/v2" or
                 result.get("operation", {}).get("status") != "pass"):
             raise EmuFlowError("native compiler result disagrees with its exit")
         # The usual flow report remains the API result. Controller configuration

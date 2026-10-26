@@ -10,10 +10,11 @@ A native command that only invokes the Python compiler is not this target.
 
 The current native executable links real Phase 3, 4, 5 and 6 kernels through a
 shared typed operation API, including PATRON search. An opt-in native controller
-now owns the ordinary one-shot phase sequence through isolated shared Python
-adapters. Advanced orchestration and remaining native data-plane ownership are
-unfinished. W0 shared-core
-consolidation and W7 native compilation are the priority architectural delivery;
+now owns the ordinary one-shot phase sequence with native TDM execution and
+isolated shared Python adapters for remaining phases. Advanced orchestration and
+remaining native data-plane ownership are unfinished. W0 supplies the shared
+infrastructure contract; complete-stage ownership and native compilation are W7
+delivery obligations. Existing and new
 stage adapters must converge on those interfaces rather than add independent
 parsers, identity maps, error formats and publication implementations.
 Completion also requires retiring superseded execution chains, unused schemas,
@@ -218,7 +219,7 @@ order without a per-net fanout vector. Counts and primitive pin signatures are
 the only summary returned to Python. Existing mapped v2 and private lexical
 atom relations retain their zero application/user PRAGMAs; their stage-owned
 metadata and ordered-record checks remain required. This integration does not
-complete the other physical exporters or full W0/W7 qualification.
+complete the other physical exporters or full W7 qualification.
 
 The OpenPARF bridge has one required typed output and consumes typed placement
 certificates. Its validator requires a record sink, instead of optionally returning
@@ -406,8 +407,9 @@ the complete Phase 3 assignment has been published.
 preflight → frontend → timing → partition → route-policy → route → TDM → split →
 physical → signoff → finalize sequence. The opt-in CLI bridge is
 `multi-fpga compile --compile-implementation native-control-v1`. The native owner
-does not call the Python compiler. Each transitional Python adapter invokes one
-shared phase body and exits, releasing its working population before the next
+does not call the Python compiler. TDM consumes the current route selector, assignment index and normalized BoardDB
+directly in C++; it has no Python phase adapter. Each remaining transitional
+Python adapter invokes one shared phase body and exits, releasing its working population before the next
 phase starts. The existing Python controller uses the same phase bodies and
 retains advanced modes. Current defaults resolve from the shared phase API
 signature: PATRON v14 and generalized Static Exact. Cut mode does not infer an
@@ -489,7 +491,7 @@ there is no silent implementation or provider fallback.
 | Phase 1–2 | Native synthesis/STA engines; compact indexed inputs | Consolidate import, identities and timing adapters under the shared artifact API |
 | Phase 3 | Shared-core candidate eligibility and primary clustering; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Migrate remaining policy/assignment publication and reference modes; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
-| Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Replace remaining bounded Python configuration preparation in the native compiler; complete real-design qualification |
+| Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |
 | Phase 7 | Indexed lowering; typed physical handoff and native Bookshelf pin export | Complete remaining backend/export/validation ownership and full physical qualification |
 | Global STA | Native typed physical-to-event binding, event validation/model export, measurement import, full-original-path reduction and typed QoR publication | Migrate remaining physical producers and orchestration; qualify complete real-design physical/global timing |
@@ -739,7 +741,9 @@ contract: exact provenance, per-phase/total runtime and resource evidence,
 complete physical accounting, zero unrouted nets and DRC violations, final
 resource budgets, original-path coverage and global OpenSTA WNS/TNS. Prepared
 input continuations and component tests are intermediate evidence; they do not
-establish complete Phase 1–7 qualification or completion of W0/W7.
+establish complete Phase 1–7 qualification or completion of W7. W0 infrastructure
+acceptance has its own scoped equivalence and integration-overhead gates; it does
+not require all remaining phase data planes to have native implementations.
 
 ### Chimew lookahead ownership
 

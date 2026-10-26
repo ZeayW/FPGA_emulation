@@ -40,6 +40,13 @@ Its `phase5 run` entry accepts the original RouteStore and bounded board,
 generation and source-binding requests. The Python API prepares only those
 requests and checks the bounded returned report; it does not call the individual
 producer, validator or timing subprocesses or assemble a second generation.
+`phase5 compile` reads the current route selector, assignment v4 index and
+normalized BoardDB directly. It verifies the route file/metadata seals and source
+semantic binding, preserves typed relation/sequence checks, and constructs board
+and generation requests inside C++. Fixed/affine delays, integer direction-bank
+allocation, capacity identities and deterministic ordering retain the same policy.
+The native compiler uses this entry without a Python TDM adapter; its following
+phase receives a versioned reference to the generation-bound phase report.
 The validator reconstructs readiness,
 wire/ratio, arrival and commit evidence directly from typed owners; it does not
 call the solver or replay route/hop records in Python. Full compilation rejects retired TDM
@@ -95,9 +102,10 @@ the old VTR/virtual-package lookahead and implicit `auto` dispatch are retired.
 One owner supplies each large population; reports summarize it rather than
 embedding duplicate netlists, maps, or timing-path trees.
 
-The optional native one-shot controller executes this dependency sequence with
-isolated shared phase adapters. It exchanges bounded configuration, artifact paths
-and report projections; each phase releases its working state before the next
+The optional native one-shot controller runs TDM directly through an isolated
+native process, including BoardDB/route configuration preparation. Other phases
+retain isolated shared adapters. It exchanges bounded configuration, artifact paths
+and source-bound report references/projections; each phase releases its working state before the next
 process starts. The transitional Python data planes remain explicit. See
 [native compile control](USER_GUIDE.md#native-compile-control) for implementation
 selection and unsupported modes, and the [migration contract](PHASE3_NATIVE_MIGRATION.md)

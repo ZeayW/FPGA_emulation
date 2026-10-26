@@ -80,6 +80,8 @@ void RequireEquivalentJson(SqliteDatabase& db,const std::string& left,
                            const std::string& right,const std::string& message);
 
 // Exact integer member of an already JSON1-validated record, including >64-bit values.
+// Raw scalar/object token from an already JSON1-validated bounded object.
+std::string JsonMemberToken(SqliteDatabase& db,const std::string& object,const std::string& name);
 std::string JsonIntegerMemberToken(SqliteDatabase& db,const std::string& object,
                                    const std::string& name);
 

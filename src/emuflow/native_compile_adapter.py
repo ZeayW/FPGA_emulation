@@ -62,6 +62,28 @@ def _unpack(value, depth=0):
         if len(value) != 2:
             raise EmuFlowError("invalid native compiler control envelope")
         kind, body = value
+        if kind == "phase-report":
+            if (type(body) is not dict or set(body) != {"schema", "path", "report_schema", "generation"}
+                    or body.get("schema") != "emuflow.phase-report-reference/v1"
+                    or body.get("report_schema") != "emuflow.phase5-report/v1"
+                    or type(body.get("path")) is not str
+                    or not Path(body["path"]).is_absolute()
+                    or type(body.get("generation")) is not list
+                    or len(body["generation"]) != 7
+                    or any(type(item) is not int for item in body["generation"])):
+                raise EmuFlowError("invalid native phase report reference")
+            path = Path(body["path"])
+            expected = tuple(body["generation"])
+            if (path.is_symlink() or native_file_generation(path) != expected
+                    or path.stat().st_size > 256 * 1024):
+                raise EmuFlowError("native phase report generation changed")
+            from .phase5 import validate_phase5_generation
+            from .multi_fpga_flow import _stage_summary
+
+            report = validate_phase5_generation(path, managed_root_sealed=True)["report"]
+            if native_file_generation(path) != expected:
+                raise EmuFlowError("native phase report generation changed")
+            return _stage_summary("tdm", report)
         if kind == "path" and isinstance(body, str):
             return Path(body)
         if kind == "map" and type(body) is dict and len(body) <= 16384:
@@ -183,6 +205,8 @@ def _restore_control_state(state):
 
 
 def execute(stage, request_path, previous_path, output_path, run_id):
+    if stage == "tdm":
+        raise EmuFlowError("native compiler TDM is owned by the C++ Phase 5 stage")
     from . import multi_fpga_flow as flow
 
     index = STAGES.index(stage)
@@ -217,7 +241,7 @@ def execute(stage, request_path, previous_path, output_path, run_id):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stage", choices=STAGES, required=True)
+    parser.add_argument("--stage", choices=[stage for stage in STAGES if stage != "tdm"], required=True)
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--previous", type=Path)
     parser.add_argument("--output", type=Path, required=True)

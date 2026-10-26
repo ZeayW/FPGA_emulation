@@ -339,6 +339,16 @@ not conventional unique-register-endpoint TNS. See
 
 ## Independent native schedule validation
 
+Native compiler gates must prove that TDM never invokes a Python adapter. Compare
+`phase5 compile` with the independent Python configuration bridge on the same
+current typed owners, including empty/asymmetric bank loads, ratio/fixed delays,
+multicast, ordering and exact record/certificate seals. Retain route table/column,
+sequence, orphan, optimization relation and selector seal rejection. Wrong board,
+assignment semantic identity or corrupted sources must preserve prior generations.
+Exercise the versioned phase-report reference codec with foreign schemas, changed
+generations and marker-like ordinary user lists. Chimew device/catalog scopes must
+survive a native TDM step and still reject mutation at the next consumer.
+
 Whole-stage gates invoke `phase5 run` and compare every logical schedule record
 with the independent reference for fixed/affine latency, shared direction banks,
 multicast and repeated demands. Poison Python producer, validator and projection

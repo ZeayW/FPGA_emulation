@@ -1396,6 +1396,7 @@ def _compile_preflight(ctx: _CompileContext):
     from .native_tools import require_native_schema
 
     require_native_schema("phase5-stage-request-v1")
+    require_native_schema("boarddb-v1")
     ctx.output_dir.mkdir(parents=True, exist_ok=True)
 
 def _compile_frontend(ctx: _CompileContext):

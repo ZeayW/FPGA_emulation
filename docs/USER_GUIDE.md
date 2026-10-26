@@ -55,8 +55,9 @@ Add `--compile-implementation native-control-v1` to the normal
 `emuflow multi-fpga compile` invocation to select the C++ one-shot controller.
 The CLI still resolves benchmark/BoardDB inputs, then sends bounded configuration
 to `emuflow-native compile REQUEST_JSON`. The controller chooses the phase order;
-it never calls the Python compile function. Individual shared phase bodies run
-in isolated Python adapters while their remaining data planes are migrated.
+it never calls the Python compile function. TDM configuration and execution run
+in a native phase process; other shared phase bodies retain isolated Python
+adapters while their remaining data planes are migrated.
 The default remains `python-control-v1`, with the same provider, algorithm,
 seed and physical-policy defaults in both modes.
 
@@ -88,7 +89,8 @@ Cancellation unwinds adapters and reaps nested native tool owners before removin
 control scratch. Control state carries configuration, artifact paths and projected
 stage summaries; canonical phase stores and reports remain their owners. The
 ephemeral state is neither a checkpoint nor a restart interface.
-Each adapter receives its own `TMPDIR`, `TMP`, `TEMP` and `XDG_CACHE_HOME` below
+Each phase process receives its own `TMPDIR`, `TMP`, `TEMP`, `SQLITE_TMPDIR`
+and `XDG_CACHE_HOME` below
 the controller's scratch directory. After adapter execution, group cleanup and
 state validation, the controller removes that phase's temporary workspace before
 starting the next phase. Absolute paths in control state that resolve into the
@@ -97,11 +99,17 @@ Publish required downstream artifacts in the flow directory; a temporary engine
 cache is not a phase publication.
 
 `multi-fpga-flow-report.json` remains the usual flow result. The separate
-[native-compile-result.json](../schemas/native-compile-result-v1.schema.json)
+[native-compile-result.json](../schemas/native-compile-result-v2.schema.json)
+uses result v2 and records each stage implementation explicitly. TDM uses
+`native-exact-phase5-v1`; remaining adapters use `isolated-python-adapter-v1`.
+Its native TDM RSS is the single native process high-water value from `wait4`,
+not the older sampled Python/child tree scope. The retired result v1 is read
+with its matching historical Git revision. This result
 retains requested and resolved configuration, common operation status and stage
 wall/CPU/RSS metrics. Its `native_data_plane_complete` is explicitly false.
-`wait4` maximum-process high-water RSS is distinct from sampled process-tree RSS
-in `stage-metrics/`; neither should be relabelled as the other. Retain the compact
+Other adapters may report sampled process-tree RSS in `stage-metrics/`; native
+TDM uses the explicit `wait4-single-native-process-high-water` measurement label.
+Preserve each measurement's scope. Retain the compact
 controller result alongside normal terminal validation evidence, and apply the
 same experiment cleanup and full Phase 7/7C acceptance requirements.
 

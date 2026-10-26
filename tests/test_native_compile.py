@@ -21,6 +21,8 @@ def test_control_state_preserves_paths_tuples_and_marker_like_user_values():
     value = {"path": Path("/path with spaces"), "tuple": (None, True, 1, 0.25),
              "user": ["path", "/a user list"], "nested": {"map": ["map", {}]}}
     assert _unpack(_pack(value)) == value
+    reference_like_user_value = ["phase-report", {"schema": "user-data", "path": "relative"}]
+    assert _unpack(_pack(reference_like_user_value)) == reference_like_user_value
 
 
 def test_control_state_rejects_graph_views_without_traversal():
@@ -123,6 +125,17 @@ def test_cli_selects_native_control_without_calling_python_compiler():
 
 def fixture_request(tmp_path, *, fail=None, corrupt=None, waiting=False, temporary_reference=None):
     """A process test double, with no RTL/physical or qualification claims."""
+    from tests.test_phase5_from_stores import native_inputs
+    native_root = tmp_path / "native-inputs"
+    native_root.mkdir()
+    native_inputs(native_root)
+    state_fields = {
+        "phase4_root": ["path", str(native_root / "current")],
+        "phase3_root": ["path", str(native_root)],
+        "phase1_root": ["path", str(native_root)],
+        "phase5_root": ["path", str(tmp_path / "out/tdm")],
+        "effective_tdm_provider": "deterministic-dependency-earliest-slot-v1",
+    }
     source = tmp_path / "source/emuflow"
     source.mkdir(parents=True)
     (source / "__init__.py").write_text("")
@@ -143,7 +156,12 @@ if WAITING and a.stage=='frontend':
  (out/'pid').write_text(str(os.getpid()))
  time.sleep(60)
 st=request.stat();generation=[str(x) for x in (st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000))]
-value={'schema':'emuflow.native-compile-state/v1','run_id':a.run_id,'stage':a.stage,'status':'pass','request_generation':generation,'state':['map',{}],'effective_options':v['options']}
+if a.stage=='tdm':raise AssertionError('Python TDM adapter started')
+state=STATE_FIELDS if not a.previous else json.loads(pathlib.Path(a.previous).read_text())['state'][1]
+if a.stage=='split':
+ assert state['phase5_report'][0]=='phase-report'
+ (out/'native-tdm-reference.json').write_text(json.dumps(state['phase5_report']))
+value={'schema':'emuflow.native-compile-state/v1','run_id':a.run_id,'stage':a.stage,'status':'pass','request_generation':generation,'state':['map',state],'effective_options':v['options']}
 if TEMPORARY_REFERENCE and a.stage=='frontend':
  path=temporary/'unreleased-engine-cache'/'payload'
  if TEMPORARY_REFERENCE=='alias':
@@ -153,7 +171,7 @@ if a.stage=='preflight' and CORRUPT:value[CORRUPT]='invalid'
 pathlib.Path(a.output).write_text(json.dumps(value))
 if a.stage=='finalize':(out/'multi-fpga-flow-report.json').write_text(json.dumps({'schema':'emuflow.multi-fpga-flow/v2','status':'pass'}))
 '''.replace("FAIL", repr(fail)).replace("CORRUPT", repr(corrupt)).replace("WAITING", repr(waiting))
-       .replace("TEMPORARY_REFERENCE", repr(temporary_reference)))
+       .replace("TEMPORARY_REFERENCE", repr(temporary_reference)).replace("STATE_FIELDS", repr(state_fields)))
     request = tmp_path / "request.json"
     request.write_text(json.dumps({"schema": "emuflow.native-compile/v1", "python_executable": sys.executable,
         "python_source": str(source.parent), "working_directory": str(tmp_path),
@@ -165,15 +183,44 @@ def test_native_controller_executes_fixed_order_and_publishes_metrics(tmp_path):
     request = fixture_request(tmp_path)
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "out/calls").read_text().splitlines() == list(STAGES)
+    assert (tmp_path / "out/calls").read_text().splitlines() == [stage for stage in STAGES if stage != "tdm"]
     report = json.loads((tmp_path / "out/native-compile-result.json").read_text())
     assert report["operation"]["status"] == "pass"
     assert report["native_data_plane_complete"] is False
+    native_step = next(step for step in report["stages"] if step["stage"] == "tdm")
+    assert native_step["implementation_id"] == "native-exact-phase5-v1"
+    reference = json.loads((tmp_path / "out/native-tdm-reference.json").read_text())
+    summary = _unpack(reference)
+    assert summary["provider"] == "deterministic-dependency-earliest-slot-v1"
+    assert summary["validation"]["status"] == "pass"
+    metrics = json.loads((tmp_path / "out/stage-metrics/phase5.json").read_text())
+    assert metrics["rss_measurement"] == "wait4-single-native-process-high-water"
     assert report["effective_configuration"] == {"output_dir": str(tmp_path / "out")}
     assert report["request_configuration"] == json.loads(request.read_text())
     assert [step["stage"] for step in report["stages"]] == list(STAGES)
     assert all(step["maximum_process_rss_kib"] > 0 for step in report["stages"])
     assert not list(tmp_path.glob(".emuflow-compile-*"))
+
+
+def test_native_phase_report_reference_rejects_changed_generation_and_unknown_schema(tmp_path):
+    request = fixture_request(tmp_path)
+    completed = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr
+    reference = json.loads((tmp_path / "out/native-tdm-reference.json").read_text())
+    for field, value in (("schema", "unknown"), ("report_schema", "emuflow.phase5-report/v99"), ("path", "relative"), ("generation", [True] * 7)):
+        forged = json.loads(json.dumps(reference)); forged[1][field] = value
+        with pytest.raises(EmuFlowError, match="phase report reference"):
+            _unpack(forged)
+    report = Path(reference[1]["path"])
+    report.write_text(report.read_text() + "\n")
+    with pytest.raises(EmuFlowError, match="phase report generation changed"):
+        _unpack(reference)
+
+
+def test_python_tdm_adapter_entry_is_retired_before_execution(tmp_path):
+    with patch("emuflow.multi_fpga_flow._compile_schedule", side_effect=AssertionError("Python schedule started")):
+        with pytest.raises(EmuFlowError, match=r"owned by the C\+\+ Phase 5 stage"):
+            execute("tdm", tmp_path / "missing", None, tmp_path / "unused", "run")
 
 
 def test_native_controller_retires_each_phase_temporary_directory_before_next_phase(tmp_path):
@@ -189,7 +236,7 @@ temporary=pathlib.Path(os.environ['TMPDIR'])""")
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     roots = (tmp_path / "out/temporary-paths").read_text().splitlines()
-    assert len(set(roots)) == len(STAGES)
+    assert len(set(roots)) == len(STAGES)-1
     assert all(not Path(root).exists() for root in roots)
 
 
@@ -215,7 +262,7 @@ def test_native_controller_result_matches_registered_schema(tmp_path):
     for name in ("native-stage-result-v1", "native-compile-request-v1"):
         path = schemas / f"{name}.schema.json"
         registry = registry.with_resource(path.as_uri(), Resource.from_contents(json.loads(path.read_text())))
-    path = schemas / "native-compile-result-v1.schema.json"
+    path = schemas / "native-compile-result-v2.schema.json"
     schema = {**json.loads(path.read_text()), "$id": path.as_uri()}
     jsonschema.Draft202012Validator(schema, registry=registry).validate(
         json.loads((tmp_path / "out/native-compile-result.json").read_text()))

@@ -19,9 +19,27 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+
 extern char** environ;
 
 namespace emuflow::core {
+std::string CurrentExecutablePath() {
+#if defined(__linux__)
+  return std::filesystem::canonical("/proc/self/exe").string();
+#elif defined(__APPLE__)
+  char probe[1];std::uint32_t size=sizeof(probe);
+  if(_NSGetExecutablePath(probe,&size)==0)return std::filesystem::canonical(probe).string();
+  std::string buffer(size,'\0');
+  if(_NSGetExecutablePath(buffer.data(),&size)!=0)throw StageError(ErrorCode::kExecutionFailed,"cannot locate native compiler executable");
+  return std::filesystem::canonical(buffer.c_str()).string();
+#else
+  throw StageError(ErrorCode::kExecutionFailed,"unsupported native compiler executable lookup");
+#endif
+}
+
 namespace {
 constexpr std::uint64_t kMagic = 0x31514552544c4645ULL;
 constexpr std::size_t kMaximumRequestBytes = 4 * 1024 * 1024;

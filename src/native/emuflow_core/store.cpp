@@ -90,13 +90,14 @@ std::string CheckedTarget(const std::string& target,const std::string& name,
 // JSON1 is the parser/type authority. Locate only the already validated raw
 // member span when an integer is too large for SQLite's signed scalar API;
 // converting its coerced REAL back to text would lose parameter bits.
-std::string JsonIntegerMemberToken(SqliteDatabase& db, const std::string& object, const std::string& name) {
+std::string JsonMemberToken(SqliteDatabase& db, const std::string& object, const std::string& name) {
   const auto Check=[](bool valid,const std::string& message){if(!valid)throw StageError(ErrorCode::kInvalidArtifact,message);};
-  std::size_t position=1;
+  std::size_t position=0;
   const auto whitespace=[&]() {
     while (position<object.size() && (object[position]==' ' || object[position]=='\n' ||
            object[position]=='\r' || object[position]=='\t')) ++position;
   };
+  whitespace();Check(position<object.size() && object[position++]=='{',"invalid JSON object token");
   const auto string_end=[&]() {
     Check(position<object.size() && object[position]=='"',"invalid parameter member token");
     ++position;
@@ -108,7 +109,7 @@ std::string JsonIntegerMemberToken(SqliteDatabase& db, const std::string& object
     Check(false,"truncated parameter member token");
   };
   while (position<object.size()) {
-    whitespace(); if (object[position]=='}') break;
+    whitespace();Check(position<object.size(),"truncated JSON member object"); if (object[position]=='}') break;
     const auto begin=position; string_end();
     auto decoded=db.Prepare("SELECT json_extract(?1,'$')"); decoded.BindText(1,object.substr(begin,position-begin));
     if(!decoded.Step())throw StageError(ErrorCode::kInvalidArtifact,"invalid JSON member name");
@@ -128,14 +129,19 @@ std::string JsonIntegerMemberToken(SqliteDatabase& db, const std::string& object
       auto token=object.substr(start,position-start);
       while (!token.empty() && (token.back()==' ' || token.back()=='\r' || token.back()=='\n' || token.back()=='\t'))
         token.pop_back();
-      Check(!token.empty() && token.find_first_not_of("-0123456789")==std::string::npos,
-            "invalid primitive integer parameter token");
-      return token=="-0" ? "0" : token;
+      Check(!token.empty(),"empty JSON member token");
+      return token;
     }
     if (position<object.size() && object[position]==',') ++position;
     else break;
   }
   throw StageError(ErrorCode::kInvalidArtifact,"primitive integer parameter token is missing");
+}
+std::string JsonIntegerMemberToken(SqliteDatabase& db,const std::string& object,const std::string& name) {
+  const auto token=JsonMemberToken(db,object,name);
+  if(token.empty() || token.find_first_not_of("-0123456789")!=std::string::npos)
+    throw StageError(ErrorCode::kInvalidArtifact,"invalid primitive integer parameter token");
+  return token=="-0" ? "0":token;
 }
 ArtifactScope::ArtifactScope(const ArtifactRef& artifact)
     :artifact_(std::make_shared<const ArtifactRef>(artifact)) { artifact_->RequireUnchanged(); }

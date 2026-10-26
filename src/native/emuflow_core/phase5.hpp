@@ -8,4 +8,8 @@ namespace emuflow::core {
 using Phase5Progress = std::function<void(const std::string&)>;
 void RunPhase5(const std::vector<ArtifactRef>& inputs, const std::string& report,
                const Phase5Progress& progress = {});
+// No Python configuration bridge. Inputs are a current RouteStore selector,
+// assignment index and normalized BoardDB, all bound before configuration reads.
+void RunPhase5FromStores(const std::vector<ArtifactRef>& inputs,const std::string& report);
+std::string Phase5ReportControlReference(const ArtifactRef& report);
 }

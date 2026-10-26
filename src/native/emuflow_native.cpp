@@ -39,6 +39,7 @@ constexpr const char* kUsage =
     "  phase4 seal-routes STORE REQUEST SUMMARY\n"
     "  phase5 timing-contract ROUTE_STORE [SCHEDULE_STORE [BOARD_REQUEST]] REQUEST SUMMARY\n"
     "  phase5 validate-schedule ROUTE_STORE BOARD_REQUEST SCHEDULE_STORE REQUEST SUMMARY\n"
+    "  phase5 compile ROUTE_SELECTOR ASSIGNMENT_STORE NORMALIZED_BOARD REPORT\n"
     "  phase5 run ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST STAGE_REQUEST REPORT\n"
     "  phase5 build-schedule ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST OUTPUT\n"
     "  global-sta import-measurements PRIMARY INDEX TSV REQUEST STORE\n"
@@ -143,7 +144,8 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if (argc == 3 && std::string(argv[1]) == "compile" && report.empty()) {
     ToolSignals signals;
     const auto configuration = emuflow::core::ArtifactRef::Bind(argv[2],"native-compile-request-v1");
-    const auto result = emuflow::core::Compile(configuration,&tool_cancelled);
+    const auto native_executable=emuflow::core::ArtifactRef::Bind(emuflow::core::CurrentExecutablePath(),"external-tool-executable-v1");
+    const auto result = emuflow::core::Compile(configuration,native_executable,&tool_cancelled);
     emuflow::core::PublishCompileResult(result);
     return Finish(result.operation,"");
   }
@@ -298,6 +300,8 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if (phase == "phase5" && operation == "validate-schedule" && argc == 8)
     return run(Stage::kValidateSchedule,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
+  if (phase == "phase5" && operation == "compile" && argc == 7)
+    return run(Stage::kCompilePhase5, {argv[3],argv[4],argv[5]}, argv[6]);
   if (phase == "phase5" && operation == "run" && argc == 8)
     return run(Stage::kRunPhase5, {argv[3],argv[4],argv[5],argv[6]}, argv[7]);
   if (phase == "phase5" && operation == "build-schedule" && argc == 7)

@@ -255,8 +255,9 @@ resource limits, literal arguments and environment values (including empty
 values), and bounded diagnostics. Installed Yosys streaming and OpenSTA
 extraction use that lifecycle through small requests.
 An opt-in `multi-fpga compile --compile-implementation native-control-v1` uses
-the C++ one-shot `emuflow-native compile` controller with isolated shared Python
-phase adapters. Baseline and retained Chimew comparison are supported with
+the C++ one-shot `emuflow-native compile` controller. Its TDM stage prepares
+configuration and executes directly in an isolated native process; other stages
+retain shared Python adapters. Baseline and retained Chimew comparison are supported with
 either Xilinx physical backend; fixed wiring and full physical/global timing
 checks remain required. The default remains `python-control-v1`; provider and
 algorithm defaults are unchanged. This is transitional orchestration, not

@@ -6,6 +6,8 @@
 #include <utility>
 
 namespace emuflow::core {
+// Canonical current binary identity for isolated native phase processes.
+std::string CurrentExecutablePath();
 // Bounded control-plane request. The engine owns its data-plane artifacts;
 // forwarding stdout preserves the existing Yosys -> indexed importer pipe.
 struct ToolRequest {
