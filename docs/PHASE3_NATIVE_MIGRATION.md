@@ -701,16 +701,20 @@ preserved. Output records are sealed directly in the existing typed owners.
 The old Python graph/builders are independent fixture oracles under `tests/`,
 with no production fallback. Graph counters and the undriven-bit count are
 bounded summaries; diagnostic copies of the undriven population are retired.
-Independent route qualification and indexed OpenSTA staging, including its
-endpoint-delay and pin inventories, still have Python data-plane work. These
-boundaries do not complete W6/W7 or qualify physical timing.
-Indexed OpenSTA transformation must retain inserted delay arcs in the final
-connectivity: the immutable source pin table cannot replace transformed records.
-The compact writer checks delay-cell coverage and A/Y connectivity after building
-its required owner index and before publication. Delay-type model construction
-uses one traversal rather than a repeated reverse search. The endpoint and
-delay-type maps still require migration into the shared core; this correctness
-contract must survive that migration.
+Routed OpenSTA staging now writes the final compact EmuIR and large Liberty
+payload in the shared core, directly from mapped pins and the endpoint stream.
+It keeps endpoint matching/type numbering in temporary indexed relations and
+retains one small type-to-interned-payload index in the final graph owner. Python
+receives a bounded base model and artifact references; it does not rebuild an
+endpoint or generated-type population. Coverage and model queries retain that
+owner's generation. The common compact SQL schema is installed once and embedded
+by the native header generator. Independent final-record validation preserves
+endpoint coverage and A/Y/type binding before the grouped graph/library commit.
+
+The old full graph builder is test-only. Independent route qualification, mapped
+Verilog/net-map export and path-result import still have Python data-plane work.
+These remaining boundaries, the complete native entry/lifecycle and current-source
+whole-design qualification keep W6/W7 incomplete.
 See [global timing semantics](global-opensta-qualification.md).
 
 ## Validation and completion

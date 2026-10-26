@@ -938,7 +938,6 @@ def import_yosys_json_indexed(
     _expand_hierarchy: bool = False,
     source_bindings=(),
     _finalize_emuir: Optional[Callable[[sqlite3.Connection], None]] = None,
-    _validate_emuir: Optional[Callable[[sqlite3.Connection], None]] = None,
     staging_transform: Optional[
         Callable[
             [sqlite3.Connection, Mapping[str, Any], Path, str],
@@ -1710,7 +1709,6 @@ def import_yosys_json_indexed(
         }
         write_emuir_sqlite(
             output, value, source_bindings=source_bindings, _finalize=_finalize_emuir,
-            _validate=_validate_emuir,
         )
     finally:
         if connection is not None:

@@ -525,19 +525,41 @@ barriers, exact endpoint coverage, fixed-I/O terms, cycle and unreachable-path
 rejection. It does not extend device characterization or replace final global
 OpenSTA qualification. `source_constraints` records a bounded undriven-bit count
 and canonical source reference instead of copying the source population into
-every physical report. Route qualification and indexed OpenSTA delay staging
-retain Python data-plane work; these producers do not complete native migration
-or real-design qualification.
+every physical report. Independent route qualification, mapped Verilog export
+and path-result import still retain Python data-plane work; these producers do
+not complete native migration or real-design qualification.
 
-Indexed routed OpenSTA staging derives connectivity from the transformed cell
-records, including every inserted route-delay cell, rather than rereading the
-unchanged mapped pin source. SQLite expands those records with deterministic
-cell/port/bit/role ordering, including inout pins; transformed constants are
-likewise authoritative. Before publication, an independent indexed check requires
-one delay cell per sealed logical endpoint and exactly one A input and Y output
-on distinct nets for each delay cell. It runs after the private writer builds its
-normal reverse-adjacency index, without building a second index or publishing a
-partially checked graph. Delay models are emitted in one traversal of the type
-table; their pin declarations do not duplicate the endpoint-sized inventory.
-This preserves the existing setup-only provider limits and does not establish
-hold, clock-skew, physical or whole-design timing qualification.
+`emuflow-native physical stage-routed-opensta` consumes the current mapped-index
+v2 and routed-timing v2 endpoint stream and writes the final compact EmuIR directly.
+It joins typed pins to routed sinks, assigns deterministic delay cell/type/net
+identities and streams delay-cell Liberty. Temporary indexed work relations stay
+inside the native writer; no complete mapped-cell snapshot, Python endpoint map,
+or Python unique-delay model is created. The SQL DDL for compact EmuIR has one
+installed source shared by Python and the native header generator.
+
+The compact owner includes `routed_opensta_feature_schema` equal to
+`emuflow.routed-opensta-types/v1` and a `routed_delay_types(seq,attributes_seq)`
+index. It references the existing interned attribute payload rather than copying
+delay values or names into another store. Old compact readers may ignore this
+feature; routed-model queries require their original owner generation. Model
+coverage reports bounded base-type lists, generated-type counts and the typed
+owner reference (`emuflow.native-routed-model-coverage/v1`), instead of expanding
+all generated type names into reports. The host renders only the bounded base
+model; OpenSTA reads the native delay-cell Liberty as a second library.
+
+Before publication, an independent shared-core check requires one delay cell per
+sealed endpoint, a valid type/payload binding and exactly one A input and Y output
+on distinct nets for each delay cell. It uses the normal reverse-adjacency index.
+The host adopts both closed output files as a source-bound group and restores the
+previous graph and library on failure. Interrupted native files remain in their
+invocation's private scope. Borrowed model reads and the OpenSTA consumer reject
+changed generations or a model paired with another graph. Missing capability
+fails before synthesis; native failures cannot select a Python staging route.
+
+The `arch run-xilinx-opensta` producer requires `--mapped-index` and current
+`--routed-timing`; the former `--mapped-json` producer input is retired. Historical
+result validation remains a separate reader. The old graph builder is a bounded
+test oracle only, with no production import or fallback. Primitive setup-only
+limits, negedge FF semantics, conservative LUT/CARRY coefficients and unqualified
+hard-block surrogates remain unchanged. This does not establish hold, clock-skew,
+physical or whole-design timing qualification.

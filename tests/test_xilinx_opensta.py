@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from unittest.mock import patch
 import tempfile
 from pathlib import Path
 
@@ -13,10 +14,10 @@ from emuflow.errors import ValidationError
 from emuflow.opensta import render_opensta_liberty
 from emuflow.xilinx_opensta import (
     build_xilinx_routed_opensta_indexed_inputs,
-    build_xilinx_routed_opensta_inputs,
     run_xilinx_routed_opensta,
     validate_xilinx_routed_opensta_summary,
 )
+from tests.xilinx_opensta_reference import build_xilinx_routed_opensta_inputs
 from emuflow.ir import EmuIR
 from emuflow.xilinx_netlist import emit_xilinx_mapped_index
 from emuflow.yosys import import_yosys_json
@@ -116,8 +117,9 @@ def test_routed_opensta_staging_inserts_one_exact_delay_per_sink(monkeypatch):
             },
         }
         timing_path.write_text(json.dumps(timing), encoding="utf-8")
-        original_opensta_read = xilinx_opensta.read_json
-        original_opensta_sha256 = xilinx_opensta._sha256
+        from tests import xilinx_opensta_reference as reference
+        original_opensta_read = reference.read_json
+        original_opensta_sha256 = reference._sha256
         opensta_reads = []
         opensta_hashes = []
 
@@ -129,8 +131,8 @@ def test_routed_opensta_staging_inserts_one_exact_delay_per_sink(monkeypatch):
             opensta_hashes.append(Path(path))
             return original_opensta_sha256(path)
 
-        monkeypatch.setattr(xilinx_opensta, "read_json", tracked_read)
-        monkeypatch.setattr(xilinx_opensta, "_sha256", tracked_sha256)
+        monkeypatch.setattr(reference, "read_json", tracked_read)
+        monkeypatch.setattr(reference, "_sha256", tracked_sha256)
         monkeypatch.setattr(
             xilinx_timing,
             "read_json",
@@ -254,8 +256,15 @@ def test_indexed_routed_opensta_staging_matches_graph_semantics(tmp_path):
         build_xilinx_routed_opensta_inputs(mapped_path, timing_path)
     )
     routed_path = tmp_path / "routed.emuir.sqlite"
+    mapped_index = tmp_path / "current-mapped.sqlite"
+    source_ir = tmp_path / "current-source.emuir.sqlite"
+    import_yosys_json(mapped_path, clocks=["clk"]).save(source_ir)
+    emit_xilinx_mapped_index(source_ir, mapped_index)
+    timing["source"]["mapped_sha256"] = _sha(mapped_index)
+    timing_path.write_text(json.dumps(timing))
+    _stream_timing(timing_path)
     actual_model, actual_metadata = build_xilinx_routed_opensta_indexed_inputs(
-        mapped_path, timing_path, routed_path, clocks={"clk": 10.0}
+        mapped_index, timing_path, routed_path, clocks={"clk": 10.0}
     )
     actual_ir = EmuIR.load(routed_path)
     actual_value = actual_ir.to_dict()
@@ -269,11 +278,26 @@ def test_indexed_routed_opensta_staging_matches_graph_semantics(tmp_path):
     for value in (actual_value, expected_value):
         for net in value["nets"]:
             net.pop("cut_class", None)
+    assert actual_value["design"]["top"] == expected_value["design"]["top"]
+    expected_value["design"] = actual_value["design"]
     assert actual_value == expected_value
     assert actual_model == expected_model
+    actual_metadata = {key: value for key, value in actual_metadata.items() if key not in {"implementation_id", "native_metrics"}}
     assert actual_metadata == {
         **expected_metadata, "representation": "compact-emuir-sqlite"
     }
+
+
+def _stream_timing(path):
+    value = json.loads(path.read_text())
+    if value["schema"] == "emuflow.xilinx-routed-timing/v2":
+        return
+    records = value.pop("endpoints")
+    payload = path.with_name(path.name + ".endpoints.jsonl")
+    payload.write_bytes(b"".join(json.dumps(row).encode()+b"\n" for row in records))
+    value["schema"] = "emuflow.xilinx-routed-timing/v2"
+    value["payloads"] = {"endpoints": {"format": "jsonl-object/v1", "path": payload.name, "records": len(records), "sha256": _sha(payload)}}
+    path.write_text(json.dumps(value))
 
 
 def _indexed_routed_fixture(tmp_path, *, registered_launch=False):
@@ -359,6 +383,7 @@ def _indexed_routed_fixture(tmp_path, *, registered_launch=False):
             "intra_site_endpoints": 0, "maximum_route_delay_ns": 0.123,
         },
     }), encoding="utf-8")
+    _stream_timing(timing_path)
     return mapped_index, timing_path
 
 
@@ -409,40 +434,18 @@ def test_typed_routed_connectivity_matches_independent_graph_oracle(tmp_path):
     assert model == expected_model
 
 
-@pytest.mark.parametrize("damage", ["input", "output", "short", "cell"])
-def test_routed_finalizer_rejects_disconnected_or_shorted_delay_cell(tmp_path, monkeypatch, damage):
-    mapped, timing = _indexed_routed_fixture(tmp_path)
-    output = tmp_path / "routed.emuir.sqlite"
-    build_xilinx_routed_opensta_indexed_inputs(mapped, timing, output, clocks={"clk": 10.0})
-    previous = output.read_bytes()
-    importer = xilinx_opensta.import_yosys_json_indexed
-    def corrupt_before_validation(*args, **kwargs):
-        validate = kwargs["_validate_emuir"]
-        def inspect(connection):
-            delay = connection.execute("SELECT seq FROM cell_records WHERE type LIKE 'EMUFLOW_RW_ROUTE_DELAY_%'").fetchone()[0]
-            if damage == "short":
-                row = connection.execute("SELECT net_seq FROM endpoint_records WHERE instance_seq=? AND role=1", (delay,)).fetchone()
-                ordinal = connection.execute("SELECT coalesce(max(ordinal),-1)+1 FROM endpoint_records WHERE net_seq=? AND role=0", (row[0],)).fetchone()[0]
-                connection.execute("UPDATE endpoint_records SET net_seq=?,ordinal=? WHERE instance_seq=? AND role=0", (row[0], ordinal, delay))
-            elif damage == "cell":
-                connection.execute("DELETE FROM endpoint_records WHERE instance_seq=?", (delay,))
-                connection.execute("DELETE FROM cell_records WHERE seq=?", (delay,))
-            else:
-                connection.execute("DELETE FROM endpoint_records WHERE instance_seq=? AND role=?", (delay, 1 if damage == "input" else 0))
-            validate(connection)
-        kwargs["_validate_emuir"] = inspect
-        return importer(*args, **kwargs)
-    monkeypatch.setattr(xilinx_opensta, "import_yosys_json_indexed", corrupt_before_validation)
-    with pytest.raises(ValidationError, match="not connected on A/Y|coverage disagrees"):
-        build_xilinx_routed_opensta_indexed_inputs(mapped, timing, output, clocks={"clk": 10.0})
-    assert output.read_bytes() == previous
 
 
 @pytest.mark.skipif(not os.environ.get("EMUFLOW_TEST_OPENSTA"), reason="real OpenSTA not configured")
-def test_real_opensta_accounts_for_each_inserted_route_delay(tmp_path):
+@pytest.mark.parametrize("inverted", [False, True])
+def test_real_opensta_accounts_for_each_inserted_route_delay(tmp_path, inverted):
     mapped, timing = _indexed_routed_fixture(tmp_path, registered_launch=True)
     original = json.loads(timing.read_text())
-    records = original.pop("endpoints")
+    if inverted:
+        with sqlite3.connect(mapped) as connection:
+            connection.execute("UPDATE cells SET record_json=json_set(record_json,'$.parameters.IS_C_INVERTED','1') WHERE id='ff'")
+        original["source"]["mapped_sha256"] = _sha(mapped)
+    records = [json.loads(line) for line in (timing.parent / original["payloads"]["endpoints"]["path"]).read_text().splitlines()]
     payload = tmp_path / "routed-endpoints.jsonl"
     original["schema"] = "emuflow.xilinx-routed-timing/v2"
     original["payloads"] = {"endpoints": {"format": "jsonl-object/v1", "path": payload.name, "records": len(records)}}
@@ -454,8 +457,9 @@ def test_real_opensta_accounts_for_each_inserted_route_delay(tmp_path):
         original["summary"]["maximum_route_delay_ns"] = delay
         timing.write_text(json.dumps(original))
         summary = tmp_path / f"summary-{index}.json"
-        run_xilinx_routed_opensta(mapped, timing, tmp_path / f"paths-{index}.json", summary,
-                                 clocks={"clk": 0.1}, executable=os.environ["EMUFLOW_TEST_OPENSTA"])
+        with patch("emuflow.routed_opensta_native._TimingCells.items", side_effect=AssertionError("Python delay model expansion")):
+            run_xilinx_routed_opensta(mapped, timing, tmp_path / f"paths-{index}.json", summary,
+                                     clocks={"clk": 0.1}, executable=os.environ["EMUFLOW_TEST_OPENSTA"])
         results.append(json.loads(summary.read_text())["qor"])
     assert results[1]["wns_ns"] == pytest.approx(results[0]["wns_ns"] - 0.123, abs=1e-3)
 

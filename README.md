@@ -18,8 +18,8 @@ and launcher separately.
 RapidWright endpoint binding consumes the mapped index and single typed physical
 handoff in the shared C++ core. One native graph produces the typed segment
 timing stores; the former Python endpoint and graph builders are test-only oracles.
-Indexed OpenSTA staging analyzes the transformed delay-cell connectivity and
-checks its complete A/Y binding before publication.
+Routed OpenSTA staging writes compact EmuIR and delay-cell Liberty directly
+in the shared core, with source-bound model queries and independent A/Y checks.
 The indexed Vivado adapter consumes current Phase 6 SQLite contracts with
 canonical net identities, fixed LVDS I/O, native sequential control pins, and
 the common physical-result contract. Real-device qualification is in progress. Its OOC implementation retains abstract external clock sources and

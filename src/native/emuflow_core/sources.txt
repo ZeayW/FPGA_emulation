@@ -44,3 +44,4 @@ hop_partition_refiner.cpp
 emuflow_core/vivado_export.cpp
 emuflow_core/routed_segments.cpp
 emuflow_core/routed_endpoints.cpp
+emuflow_core/routed_opensta.cpp

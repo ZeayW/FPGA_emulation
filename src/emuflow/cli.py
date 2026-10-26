@@ -1452,7 +1452,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "run-xilinx-opensta",
         help="run OpenSTA over RapidWright-routed logical endpoints",
     )
-    arch_run_xilinx_opensta.add_argument("--mapped-json", type=Path, required=True)
+    arch_run_xilinx_opensta.add_argument("--mapped-index", type=Path, required=True)
     arch_run_xilinx_opensta.add_argument("--routed-timing", type=Path, required=True)
     arch_run_xilinx_opensta.add_argument("--output", "-o", type=Path, required=True)
     arch_run_xilinx_opensta.add_argument("--summary", type=Path, required=True)
@@ -2609,7 +2609,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif args.arch_command == "run-xilinx-opensta":
             report = run_xilinx_routed_opensta(
-                args.mapped_json,
+                args.mapped_index,
                 args.routed_timing,
                 args.output,
                 args.summary,

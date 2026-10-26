@@ -3,6 +3,8 @@
 #include "emuflow_core/emuir_view.hpp"
 #include "emuflow_core/tool_runtime.hpp"
 #include "emuflow_core/hash.hpp"
+#include "emuflow_core/routed_opensta.hpp"
+#include "emuflow_core/json_record.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -19,6 +21,50 @@ int main() {
   const auto root = fs::temp_directory_path() / ("emuflow-pipeline-api-" + std::to_string(unique));
   if (!fs::create_directory(root)) throw std::runtime_error("test directory already exists");
   try {
+    // Validate final routed records independently from their producer decisions.
+    for(unsigned damage=0;damage<11;++damage) {
+      using emuflow::core::SqliteDatabase;
+      SqliteDatabase db(":memory:",SqliteDatabase::Mode::kCreateExclusive);
+      db.Execute("CREATE TABLE cell_records(seq INTEGER PRIMARY KEY,id TEXT,type TEXT,attributes_seq INTEGER); CREATE TABLE pin_names(seq INTEGER PRIMARY KEY,name TEXT); CREATE TABLE endpoint_records(net_seq INTEGER,role INTEGER,ordinal INTEGER,instance_seq INTEGER,port_seq INTEGER,bit INTEGER); CREATE INDEX endpoint_owner ON endpoint_records(instance_seq,port_seq,bit); CREATE TABLE routed_delay_types(seq INTEGER PRIMARY KEY,attributes_seq INTEGER); CREATE TABLE payloads(seq INTEGER PRIMARY KEY,value TEXT); INSERT INTO payloads VALUES(1,'{\"emuflow_route_delay_ns\":0.123}'); INSERT INTO cell_records VALUES(0,'delay','EMUFLOW_RW_ROUTE_DELAY_000000',1); INSERT INTO pin_names VALUES(0,'A'),(1,'Y'); INSERT INTO endpoint_records VALUES(0,1,0,0,0,0),(1,0,0,0,1,0); INSERT INTO routed_delay_types VALUES(0,1)");
+      if(damage==1)db.Execute("DELETE FROM endpoint_records WHERE role=1");
+      if(damage==2)db.Execute("DELETE FROM endpoint_records WHERE role=0");
+      if(damage==3)db.Execute("UPDATE endpoint_records SET net_seq=0");
+      if(damage==4)db.Execute("DELETE FROM cell_records");
+      if(damage==5)db.Execute("DELETE FROM routed_delay_types");
+      if(damage==6)db.Execute("UPDATE cell_records SET attributes_seq=2");
+      if(damage==7)db.Execute("UPDATE cell_records SET type='EMUFLOW_RW_ROUTE_DELAY_000001'");
+      if(damage==8)db.Execute("DELETE FROM payloads");
+      if(damage==9)db.Execute("UPDATE payloads SET value='{}'");
+      if(damage==10)db.Execute("UPDATE payloads SET value='{\"emuflow_route_delay_ns\":-1}'");
+      bool rejected=false;
+      try {emuflow::core::ValidateRoutedOpenstaGraph(db,1,1);}
+      catch(const emuflow::core::StageError& e){if(e.code()!=ErrorCode::kInvalidArtifact)throw;rejected=true;}
+      if(rejected!=(damage!=0))throw std::runtime_error("native routed final-record validator accepted corruption/rejected valid graph");
+    }
+    {
+      using emuflow::core::SqliteDatabase;
+      const auto mapped=(root/"opensta-mapped.sqlite").string(),timing=(root/"opensta-timing.json").string(),endpoints=(root/"opensta-endpoints.jsonl").string(),configuration=(root/"opensta-request.bin").string();
+      {SqliteDatabase db(mapped,SqliteDatabase::Mode::kCreateExclusive);
+        db.Execute(R"SQL(CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT); INSERT INTO metadata VALUES('schema','emuflow.xilinx-mapped-index/v2'),('top_json','"empty"'),('creator_json','"fixture"'),('ports_json','{}'); CREATE TABLE cells(seq INTEGER PRIMARY KEY,id TEXT UNIQUE,type TEXT,record_json TEXT); CREATE TABLE netnames(seq INTEGER PRIMARY KEY,id TEXT UNIQUE); CREATE TABLE cell_pins(cell_seq INTEGER,cell_id TEXT,port TEXT,port_bit INTEGER,port_width INTEGER,direction INTEGER,value_kind INTEGER,net_bit INTEGER,constant TEXT))SQL");}
+      const auto digest=[](const std::string& path){std::ifstream in(path,std::ios::binary);std::string value((std::istreambuf_iterator<char>(in)),{});emuflow::core::Sha256 hash;hash.update(reinterpret_cast<const unsigned char*>(value.data()),value.size());std::ostringstream out;out<<std::hex<<std::setfill('0');for(auto b:hash.finish())out<<std::setw(2)<<unsigned(b);return out.str();};
+      {std::ofstream out(endpoints);}
+      const auto mapped_sha=digest(mapped);
+      {std::ofstream out(timing);out<<"{\"schema\":\"emuflow.xilinx-routed-timing/v2\",\"status\":\"pass\",\"top\":\"empty\",\"source\":{\"mapped_sha256\":\""<<mapped_sha<<"\",\"packed_sha256\":\""<<mapped_sha<<"\",\"placement_sha256\":\""<<mapped_sha<<"\",\"route_sha256\":\""<<mapped_sha<<R"JSON("},"qualification":{"logic_coefficients_ps":{"ff_clock_to_q":25,"carry_co":10,"lut_a1":70,"lut_a2":65,"lut_a3":60,"lut_a4":55,"lut_a5":50,"lut_a6":45}},"summary":{"logical_endpoints":0,"maximum_route_delay_ns":0},"payloads":{"endpoints":{"format":"jsonl-object/v1","records":0,"sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}}})JSON";}
+      std::vector<ArtifactRef> inputs{ArtifactRef::Bind(mapped,"xilinx-mapped-index-v2"),ArtifactRef::Bind(timing,"xilinx-routed-timing-v2"),ArtifactRef::Bind(endpoints,"xilinx-routed-endpoints-v1")};
+      {std::ofstream out(configuration,std::ios::binary);std::uint32_t crc=0;
+        const auto put=[&](const auto& value){out.write(reinterpret_cast<const char*>(&value),sizeof(value));emuflow::core::UpdateCrc32(crc,reinterpret_cast<const unsigned char*>(&value),sizeof(value));};
+        put(std::uint64_t{0x314f5352464d5545ULL});put(std::uint32_t{1});
+        for(const auto& input:inputs){const auto& g=input.generation();put(g.device);put(g.inode);put(g.bytes);put(g.modified_seconds);put(g.modified_nanoseconds);put(g.changed_seconds);put(g.changed_nanoseconds);}
+        const auto value="{\"base_types\":[\"LUT1\"],\"clock_count\":0,\"clocks\":{},\"source_path\":"+emuflow::core::JsonQuote(mapped)+",\"mapped_sha256\":\""+mapped_sha+"\",\"timing_sha256\":\""+digest(timing)+"\"}";
+        put(std::uint32_t(value.size()));out.write(value.data(),value.size());emuflow::core::UpdateCrc32(crc,reinterpret_cast<const unsigned char*>(value.data()),value.size());out.write(reinterpret_cast<const char*>(&crc),sizeof(crc));}
+      inputs.push_back(ArtifactRef::Bind(configuration,"routed-opensta-request-v1"));
+      StageRequest stage;stage.stage=Stage::kStageRoutedOpensta;stage.input_artifacts=inputs;stage.output_path=(root/"opensta-output.sqlite").string();stage.auxiliary_output_path=(root/"opensta-delays.lib").string();stage.scratch_path=(root/"opensta-summary.json").string();
+      const auto result=emuflow::native::ExecuteStage(stage);
+      if(!result.ok() || result.inputs.size()!=4 || result.outputs.size()!=3 || result.outputs[0].schema()!="emuir-compact-v2" || result.outputs[1].schema()!="routed-opensta-liberty-v1")throw std::runtime_error("bound routed OpenSTA stage failed: "+result.message);
+      auto alias=stage;alias.auxiliary_output_path=endpoints;
+      if(emuflow::native::ExecuteStage(alias).error!=ErrorCode::kInvalidRequest)throw std::runtime_error("routed OpenSTA library overwrote an input");
+      for(const auto& input:inputs)input.RequireUnchanged();for(const auto& output:result.outputs)output.RequireUnchanged();
+    }
     emuflow::core::ToolRequest tool;
     tool.argv = {"/bin/echo", "native tool API"};
     tool.working_directory = root.string();

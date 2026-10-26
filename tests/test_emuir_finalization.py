@@ -85,70 +85,31 @@ def test_fanout_finishes_before_the_only_publication(tmp_path, failure):
         assert len(ir.value["instances"]) == 18 + reports[0]["summary"]["buffer_cells"]
 
 
-@pytest.mark.parametrize("failure", ["finalizer", "mapped", "timing", "payload"])
-def test_routed_normalization_rejects_changes_without_mutating_previous_owner(
-    tmp_path, failure
-):
+@pytest.mark.parametrize("failure", ["native", "mapped", "timing", "payload"])
+def test_routed_normalization_rejects_changes_without_mutating_previous_owner(tmp_path, failure):
+    from emuflow.routed_opensta_native import NativeToolProcess
     mapped, timing = _indexed_routed_fixture(tmp_path)
-    if failure == "payload":
-        value = json.loads(timing.read_text())
-        records = value.pop("endpoints")
-        payload = tmp_path / "endpoints.jsonl"
-        payload.write_text("".join(json.dumps(record) + "\n" for record in records))
-        value["schema"] = "emuflow.xilinx-routed-timing/v2"
-        value["payloads"] = {
-            "endpoints": {
-                "format": XILINX_ROUTED_TIMING_PAYLOAD_FORMAT,
-                "path": payload.name,
-                "sha256": hashlib.sha256(payload.read_bytes()).hexdigest(),
-                "records": len(records),
-            }
-        }
-        timing.write_text(json.dumps(value))
     output = tmp_path / "routed.emuir.sqlite"
-    xilinx_opensta.build_xilinx_routed_opensta_indexed_inputs(
-        mapped, timing, output, clocks={"clk": 10.0}
-    )
-    before = output.read_bytes()
-    importer = xilinx_opensta.import_yosys_json_indexed
-
-    def import_with_rejection(*args, **kwargs):
-        normalize = kwargs["_finalize_emuir"]
-
-        def finalize(connection):
-            assert output.read_bytes() == before
-            normalize(connection)
-            warning = json.loads(
-                connection.execute(
-                    "SELECT value FROM metadata WHERE key='warnings_json'"
-                ).fetchone()[0]
-            )
-            assert xilinx_opensta._ROUTED_OPENSTA_WARNING in warning
-            assert not connection.execute(
-                "SELECT 1 FROM alias_records a JOIN net_records n ON n.seq=a.net_seq WHERE n.id LIKE '__emuflow_rw_delay_net__%'"
-            ).fetchone()
-            if failure == "finalizer":
-                raise ValidationError("normalization rejected")
-            changed = {
-                "mapped": mapped,
-                "timing": timing,
-                "payload": tmp_path / "endpoints.jsonl",
-            }[failure]
+    xilinx_opensta.build_xilinx_routed_opensta_indexed_inputs(mapped, timing, output, clocks={"clk": 10.0})
+    library = output.with_name(output.name + ".route-delays.lib")
+    before = {path: path.read_bytes() for path in (output, library)}
+    finish = NativeToolProcess.finish
+    def fail_after_native(process):
+        result = finish(process)
+        for path, content in before.items():
+            assert path.read_bytes() == content
+        if failure == "native":
+            result.returncode = 17
+        else:
+            payload = timing.parent / json.loads(timing.read_text())["payloads"]["endpoints"]["path"]
+            changed = {"mapped": mapped, "timing": timing, "payload": payload}[failure]
             changed.chmod(changed.stat().st_mode ^ 0o100)
-
-        kwargs["_finalize_emuir"] = finalize
-        return importer(*args, **kwargs)
-
-    with patch.object(
-        xilinx_opensta, "import_yosys_json_indexed", import_with_rejection
-    ):
-        with pytest.raises(
-            ValidationError, match="normalization rejected|generation changed"
-        ):
-            xilinx_opensta.build_xilinx_routed_opensta_indexed_inputs(
-                mapped, timing, output, clocks={"clk": 10.0}
-            )
-    assert output.read_bytes() == before
+        return result
+    with patch.object(NativeToolProcess, "finish", fail_after_native):
+        with pytest.raises(ValidationError, match="staging failed|generation changed"):
+            xilinx_opensta.build_xilinx_routed_opensta_indexed_inputs(mapped, timing, output, clocks={"clk": 10.0})
+    for path, content in before.items():
+        assert path.read_bytes() == content
     assert not list(tmp_path.glob("*.tmp"))
 
 

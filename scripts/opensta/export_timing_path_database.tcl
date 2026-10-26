@@ -44,6 +44,9 @@ if {![string is integer -strict $max_paths] || $max_paths <= 0} {
 }
 
 read_liberty $liberty_path
+if {[info exists env(EMUFLOW_STA_EXTRA_LIBERTY)] && $env(EMUFLOW_STA_EXTRA_LIBERTY) ne ""} {
+  read_liberty [file normalize $env(EMUFLOW_STA_EXTRA_LIBERTY)]
+}
 read_verilog $verilog_path
 link_design $top
 

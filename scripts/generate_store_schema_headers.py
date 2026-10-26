@@ -51,6 +51,14 @@ def generate(directory):
     if not output.exists() or output.read_text(encoding="utf-8") != catalog:
         output.write_text(catalog, encoding="utf-8")
 
+    ddl = (root / "src/emuflow/data/schema/emuir_compact.sql").read_text(encoding="utf-8")
+    if ')EMUFLOW_SQL"' in ddl:
+        raise ValueError("SQL schema contains the native raw-string delimiter")
+    compact = '#pragma once\nnamespace emuflow::core {\ninline constexpr const char* kEmuirCompactDDL = R"EMUFLOW_SQL(' + ddl + ')EMUFLOW_SQL";\n}\n'
+    output = Path(directory) / "emuir_compact_schema.hpp"
+    if not output.exists() or output.read_text(encoding="utf-8") != compact:
+        output.write_text(compact, encoding="utf-8")
+
     events = "#pragma once\nnamespace emuflow::core {\n"
     for symbol, filename in (
         ("kGlobalEventsDDL", "global_events.sql"),

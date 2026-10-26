@@ -838,6 +838,9 @@ def validate_timing_model_coverage(
     model: Mapping[str, Any],
     instance_cell_types: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, Any]:
+    native = getattr(model, "validate_coverage", None)
+    if callable(native):
+        return native(ir, instance_cell_types)
     used = ir.used_timing_types(instance_cell_types) if hasattr(ir, "used_timing_types") else sorted({
         (
             instance_cell_types.get(instance["id"], instance["type"])
@@ -1317,6 +1320,7 @@ def _run_opensta_path_database(
     _return_database: bool = False,
     _stream_output: bool = False,
     _ir=None,
+    _timing_model=None,
 ) -> Dict[str, Any]:
     if max_paths <= 0:
         raise ValidationError("OpenSTA max_paths must be positive")
@@ -1346,7 +1350,12 @@ def _run_opensta_path_database(
             f"OpenSTA through_nets are absent from EmuIR: {unknown_through_nets}"
         )
     instance_cell_types: Optional[Dict[str, str]] = None
-    if architecture_timing_db_path is not None:
+    if _timing_model is not None:
+        if architecture_timing_db_path is not None:
+            raise ValidationError("a bound timing model cannot use a separate architecture model")
+        model = _timing_model
+        model.require_unchanged()
+    elif architecture_timing_db_path is not None:
         model, instance_cell_types = build_architecture_opensta_timing_model(
             ir, architecture_timing_db_path
         )
@@ -1387,7 +1396,7 @@ def _run_opensta_path_database(
             timing_cell_types=instance_cell_types,
         )
         liberty_path.write_text(
-            render_opensta_liberty(model), encoding="utf-8"
+            render_opensta_liberty(getattr(model, "base_model", model)), encoding="utf-8"
         )
         write_emuir_net_map(ir_path, net_map_path, _ir=ir)
         if through_net_ids:
@@ -1417,6 +1426,7 @@ def _run_opensta_path_database(
         environment.update(
             {
                 "EMUFLOW_STA_LIBERTY": str(liberty_path),
+                "EMUFLOW_STA_EXTRA_LIBERTY": str(model.library.path) if _timing_model is not None and model.delay_count else "",
                 "EMUFLOW_STA_VERILOG": str(verilog_path),
                 "EMUFLOW_STA_TOP": ir.value["design"]["top"],
                 "EMUFLOW_STA_NET_MAP": str(net_map_path),
@@ -1439,6 +1449,8 @@ def _run_opensta_path_database(
             [opensta, "-exit", str(OPENSTA_EXPORT_SCRIPT)],
             environment=environment,
         )
+        if _timing_model is not None:
+            model.require_unchanged()
         if log_path is not None:
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log_path.write_text(completed.stdout, encoding="utf-8")
@@ -1605,6 +1617,7 @@ def run_opensta_path_database(
     log_path: Optional[Path] = None, through_nets: Optional[Sequence[str]] = None,
     through_coverage_path: Optional[Path] = None, validate_output: bool = True,
     _return_database: bool = False, _stream_output: bool = False,
+    _timing_model=None,
 ) -> Dict[str, Any]:
     """Use compact streaming input for production Xilinx timing extraction."""
     from .emuir_storage import is_emuir_sqlite
@@ -1614,6 +1627,8 @@ def run_opensta_path_database(
                  and is_compact_emuir(ir_path)
                  and (architecture_timing_db_path is None or
                       read_json(architecture_timing_db_path).get("schema") == XILINX_PREPLACEMENT_TIMING_SCHEMA))
+    if _timing_model is not None and not use_index:
+        raise ValidationError("a bound routed model requires indexed streaming OpenSTA input")
     view = IndexedTimingView(ir_path) if use_index else None
     try:
         return _run_opensta_path_database(
@@ -1622,6 +1637,7 @@ def run_opensta_path_database(
             executable=executable, max_paths=max_paths, log_path=log_path, through_nets=through_nets,
             through_coverage_path=through_coverage_path, validate_output=validate_output,
             _return_database=_return_database, _stream_output=_stream_output, _ir=view,
+            _timing_model=_timing_model,
         )
     finally:
         if view is not None:
