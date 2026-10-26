@@ -13,7 +13,7 @@ from emuflow.sta import iter_sta_path_database_paths, validate_sta_path_database
 from emuflow.yosys import import_yosys_json
 
 
-def prepare_source(root, *, negative_capture=False):
+def prepare_source(root, *, negative_capture=False, fast_name='fast'):
     def ff(data, q, negative=False):
         return dict(type='FDRE', parameters={'IS_C_INVERTED': '1' if negative else '0'},
                     port_directions=dict(C='input', D='input', Q='output', CE='input', R='input'),
@@ -29,6 +29,8 @@ def prepare_source(root, *, negative_capture=False):
              'join': dict(type='LUT2', parameters={'INIT': '1110'},
                           port_directions=dict(I0='input', I1='input', O='output'),
                           connections=dict(I0=[14], I1=[15], O=[16]))}
+    if fast_name != 'fast':
+        cells[fast_name] = cells.pop('fast')
     ports = {name: dict(direction=direction, bits=[bit]) for name, direction, bit in
              [('clk', 'input', 2), ('a', 'input', 3), ('b', 'input', 4), ('q', 'output', 17)]}
     yosys = root / 'source.json'
@@ -99,6 +101,18 @@ def test_whole_graph_research_replaces_the_old_worst_branch_and_preserves_source
     assert validate_sta_path_database(retimed, source)['paths'] > 0
     call_engine(source, repeated, communication_delays_path=costs)
     assert capture_row(repeated) == after
+
+
+@real_engine
+@pytest.mark.parametrize('name', ['fast[0:0]', 'fast*literal?', 'fast\\雪/hier[0:0]'])
+def test_literal_pattern_characters_and_backslashes_resolve_one_exact_source_pin(tmp_path, name):
+    source = prepare_source(tmp_path, fast_name=name)
+    sdc = name.replace('\\', '\\\\')
+    costs = write_costs(tmp_path / 'costs.tsv', [('launch_b/Q', sdc + '/I0', 3.), (sdc + '/O', 'join/I1', 4.)])
+    output = tmp_path / 'retimed.json'
+    call_engine(source, output, communication_delays_path=costs)
+    assert capture_row(output)['startpoint']['instance'] == 'launch_b'
+    assert capture_row(output)['fixed_delay_ns'] == pytest.approx(.34, abs=2e-6)
 
 
 @real_engine

@@ -13,11 +13,13 @@ proc emuflow_communication_pin {encoded direction} {
   if {[string first \x00 $name] >= 0 || [emuflow_hex_encode $name] ne $encoded} {
     error "invalid communication pin identity"
   }
-  set pins [get_pins -quiet [list $name]]
-  if {[llength $pins] != 1 || [get_property [lindex $pins 0] full_name] ne $name} {
+  # A mapped instance can literally contain [0:0], *, or ?. get_pins treats
+  # its argument as a pattern even when it is supplied as a one-element list.
+  # Use the engine's exact network lookup and check its canonical spelling.
+  set pin [sta::find_pin $name]
+  if {$pin eq "NULL" || [get_property $pin full_name] ne $name} {
     error "communication pin is absent or ambiguous: $name"
   }
-  set pin [lindex $pins 0]
   if {[get_property $pin direction] ne $direction || [get_property $pin is_register_clock]} {
     error "communication endpoint is not a data-wire pin: $name"
   }
