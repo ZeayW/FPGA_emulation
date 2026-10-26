@@ -71,6 +71,13 @@ local models, resolved transfer events and complete capture checks.
 Prepared physical continuations must carry the uncapped selection provenance;
 historical capped or undeclared selections must be regenerated from the
 existing source boundary before partitioning or physical acceptance.
+Fresh physical compilation explicitly requests `engine-edge-v1`, including
+launch/capture phases and the setup edge window in the indexed v4 TimingPathDB.
+Prepared physical inputs and resumed physical finalization require the same
+clock-budget policy and a budget row for every selected source path. An older
+absolute-arrival selector cannot establish half-cycle or phase-related timing
+by merely being relabeled uncapped. This admission check does not replace the
+full-graph timing updates needed after partitioning.
 
 Design-specialized macro timing cells union the emitted scalar pin names
 from every occurrence, including constant inputs and differing widths. A

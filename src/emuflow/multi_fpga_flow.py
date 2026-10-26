@@ -301,6 +301,37 @@ def _runtime_timing_artifacts(runtime_root: Path, flow_root: Path, runtime_repor
     return {"system_timing_paths": {"path": payload.relative_to(flow_root).as_posix(), "sha256": reference["sha256"]}}
 
 
+def _require_physical_source_timing(path: Path) -> None:
+    """Check bounded Phase2 admission metadata; not graph/path closure proof.
+
+    The source importer and prepared-input binder validate the indexed rows.
+    This gate prevents an old selector from bypassing the required clock-edge
+    export through either fresh compilation or a physical continuation.
+    """
+    from .sta_clock_budgets import SCHEMA, FORMAT
+    if path.stat().st_size > 1024 * 1024:
+        raise ValidationError("physical execution requires a compact all-endpoint Phase2 selector")
+    value = read_json(path)
+    source = value.get('source', {}) if isinstance(value, dict) else {}
+    if not isinstance(source, dict) or source.get('model_pin_coverage') != 'checked-source-emission-directions-v1':
+        raise ValidationError('physical execution requires checked source-model pin coverage; regenerate unqualified prepared timing')
+    selection = source.get('path_selection', {})
+    if (not isinstance(selection, dict) or selection.get('policy') != 'worst-per-endpoint-per-path-group-v1'
+            or 'max_paths_per_group' not in selection or selection['max_paths_per_group'] is not None
+            or selection.get('endpoint_path_count') != 1):
+        raise ValidationError("physical execution requires all-endpoint Phase2 timing; regenerate capped or unqualified prepared timing")
+    payloads = value.get('payloads', {})
+    paths = payloads.get('paths', {}) if isinstance(payloads, dict) else {}
+    summary = value.get('summary', {})
+    if (source.get('clock_budget_policy') != 'engine-edge-v1' or value.get('schema') != SCHEMA
+            or not isinstance(paths, dict) or paths.get('format') != FORMAT
+            or not isinstance(paths.get('records'), int) or isinstance(paths['records'], bool)
+            or paths['records'] < 1 or not isinstance(summary, dict)
+            or type(summary.get('clock_budget_paths')) is not int
+            or summary.get('clock_budget_paths') != paths['records']):
+        raise ValidationError('physical execution requires indexed engine-edge clock budgets for every Phase2 path; regenerate legacy prepared timing')
+
+
 def finalize_multi_fpga_physical_checkpoint(
     flow_root: Path,
     physical_root: Path,
@@ -325,6 +356,8 @@ def finalize_multi_fpga_physical_checkpoint(
         or runtime_directory in {".", ".."}
     ):
         raise ValidationError("multi-FPGA checkpoint runtime directory is unsafe")
+    _require_physical_source_timing(_checked_flow_member(
+        root, Path('timing/path-database.json'), 'source timing database'))
     physical_root = (
         physical_root if physical_root.is_absolute() else root / physical_root
     )
@@ -1124,6 +1157,8 @@ def validate_multi_fpga_flow_bundle(
             Path("physical/physical-summary.json"),
             "physical summary",
         )
+        _require_physical_source_timing(_checked_flow_member(
+            flow_root, Path('timing/path-database.json'), 'source timing database'))
         with read_physical_summary(physical_summary_path) as summary_view:
             validate_multi_fpga_physical_report(live_physical, summary_view)
         candidate_link_timing = flow_root / "timing/board-link-timing.json"
@@ -1586,6 +1621,7 @@ def _compile_timing(ctx: _CompileContext):
             max_paths=ctx.sta_max_paths,
             log_path=ctx.timing_root / "opensta.log",
             _stream_output=True,
+            clock_budget_policy=('engine-edge-v1' if ctx.physical else 'legacy-absolute-arrival-v1'),
         )
         timing_mode = "opensta-preplacement"
         weights_report = None
@@ -1612,19 +1648,7 @@ def _compile_timing(ctx: _CompileContext):
         }
 
     if ctx.physical:
-        # This is the compact selector already owned by Phase2/admission, not
-        # the graph-sized path payload. Reject historical capped selections
-        # as well as an explicit cap on a fresh physical compilation.
-        if ctx.path_database_path.stat().st_size > 1024*1024:
-            raise ValidationError("physical execution requires a compact all-endpoint Phase2 selector")
-        source=read_json(ctx.path_database_path).get('source',{})
-        selection=source.get('path_selection',{})
-        if source.get('model_pin_coverage')!='checked-source-emission-directions-v1':
-            raise ValidationError('physical execution requires checked source-model pin coverage; regenerate unqualified prepared timing')
-        if (not isinstance(selection,dict) or selection.get('policy')!='worst-per-endpoint-per-path-group-v1' or
-                'max_paths_per_group' not in selection or selection['max_paths_per_group'] is not None or
-                selection.get('endpoint_path_count')!=1):
-            raise ValidationError("physical execution requires all-endpoint Phase2 timing; regenerate capped or unqualified prepared timing")
+        _require_physical_source_timing(ctx.path_database_path)
 
     ctx.path_database_payload = (
         sta_path_database_payload_path(ctx.path_database_path)

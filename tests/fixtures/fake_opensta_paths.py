@@ -22,13 +22,27 @@ header = (
 )
 records = [header]
 clock = "clk".encode().hex()
+edge_policy = os.environ.get('EMUFLOW_STA_CLOCK_BUDGET_POLICY') == 'engine-edge-v1'
+budget_fields = ('source_clock_hex', 'source_period_ns', 'launch_edge_ns', 'capture_edge_ns',
+                 'source_offset_ns', 'target_cycle_time_ns', 'multicycle_adjustment_ns',
+                 'check_margin_ns', 'source_latency_ns', 'target_clock_delay_ns',
+                 'clock_skew_ns', 'output_delay', 'path_delay', 'latch_check')
+if edge_policy:
+    records[0] += '\t' + '\t'.join(budget_fields)
 for index, row in enumerate(rows):
     _, emuir_hex = row.split("\t")
     path_id = f"path-{index}".encode().hex()
     records.append(
         f"{path_id}\t{clock}\t10\t9.5\t0.5\t{emuir_hex}"
     )
+    if edge_policy:
+        # Explicit full-cycle facts for this protocol fixture only.
+        records[-1] += '\t' + '\t'.join([clock, '10', '0', '0', '0', '10', '0',
+                                         '0', '0', '0', '0', '0', '0', '0'])
 output.write_text("\n".join(records) + "\n")
+if edge_policy:
+    clocks = Path(os.environ['EMUFLOW_STA_CLOCKS']).read_text().splitlines()[1:]
+    print(f'EMUFLOW_OPENSTA_DATABASE status=pass clocks={len(clocks)} queried_paths={len(rows)} emitted_paths={len(rows)} output={output}')
 if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
     requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
     coverage = ["emuir_net_hex\tdriver_count\tqueried_paths\temitted_paths"]

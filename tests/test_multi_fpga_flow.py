@@ -841,22 +841,29 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
     def test_finalizes_checked_independent_physical_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory) / "multi"
-            report = run_multi_fpga_flow_fixture(
-                platform_path=PLATFORM,
-                output_dir=root,
-                yosys_json=ROOT / "examples/yosys/counter.json",
-                top="counter",
-                clocks=["clk"],
-                partition_provider="tritonpart",
-                cut_mode="static-exact-combinational",
-                timing_driven=False,
-                clock_periods={"clk": 10.0},
-                opensta=str(FAKE_OPENSTA),
-                router=str(tlr_router()),
-                frame_slots=32,
-                equivalence_cycles=2,
-                mapping_profile="xilinx-ultrascaleplus-open-v1",
-            )
+            from emuflow.opensta import run_opensta_path_database
+            def clocked_export(*args, **kwargs):
+                kwargs['clock_budget_policy'] = 'engine-edge-v1'
+                return run_opensta_path_database(*args, **kwargs)
+            # Use the physical clock contract from Phase2 onward, before any
+            # downstream artifact binds its timing generation.
+            with patch('emuflow.multi_fpga_flow.run_opensta_path_database', side_effect=clocked_export):
+                report = run_multi_fpga_flow_fixture(
+                    platform_path=PLATFORM,
+                    output_dir=root,
+                    yosys_json=ROOT / "examples/yosys/counter.json",
+                    top="counter",
+                    clocks=["clk"],
+                    partition_provider="tritonpart",
+                    cut_mode="static-exact-combinational",
+                    timing_driven=False,
+                    clock_periods={"clk": 10.0},
+                    opensta=str(FAKE_OPENSTA),
+                    router=str(tlr_router()),
+                    frame_slots=32,
+                    equivalence_cycles=2,
+                    mapping_profile="xilinx-ultrascaleplus-open-v1",
+                )
             physical_root = root / "physical-resumed"
             physical_root.mkdir()
             physical_report = {
