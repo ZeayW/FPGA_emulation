@@ -1,4 +1,4 @@
-"""Bounded handoff of closed SQLite staging to the shared native publisher."""
+"""Bounded source-bound publication of closed derived artifacts."""
 
 from __future__ import annotations
 
@@ -159,6 +159,84 @@ def publish_sqlite_store(
         ):
             raise ValidationError("native SQLite publication result disagrees")
         return result
+
+
+def publish_derived_outputs(artifacts, *, sources=()):
+    """Publish a bounded group of closed derived files with failure rollback.
+
+    Entries are (staging, destination, SQLite schema or None). Native producers
+    have already synchronized plain-file staging. Hard-link recovery names do
+    not copy large payloads. This is an invocation boundary, not a persistent
+    checkpoint or a multi-file snapshot for concurrent readers; consumers bind
+    the final source-sealed report only after the producer succeeds.
+    """
+    artifacts, sources = tuple(artifacts), tuple(sources)
+    if not 1 <= len(artifacts) <= 16:
+        raise ValidationError("derived publication output count exceeds bound")
+    paths = []
+    for temporary, destination, _schema in artifacts:
+        temporary, destination = Path(temporary), Path(destination)
+        validate_store_destination(temporary, sources)
+        validate_store_destination(destination, sources)
+        if (temporary.is_symlink() or not temporary.is_file()
+                or destination.is_symlink() or destination.is_dir()
+                or temporary.parent.resolve() != destination.parent.resolve()):
+            raise ValidationError("derived publication requires closed sibling staging")
+        paths.extend((temporary, destination))
+    for i, path in enumerate(paths):
+        for other in paths[:i]:
+            if path.resolve() == other.resolve() or (
+                path.exists() and other.exists() and os.path.samefile(path, other)
+            ):
+                raise ValidationError("derived publication paths alias")
+    backups, changed = {}, []
+    retain_recovery = False
+    parents = {Path(destination).parent for _, destination, _ in artifacts}
+
+    def sync():
+        for parent in parents:
+            descriptor = os.open(parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+
+    try:
+        for _, destination, _ in artifacts:
+            destination = Path(destination)
+            if destination.exists():
+                descriptor, name = tempfile.mkstemp(prefix=".derived-recovery.", dir=destination.parent)
+                os.close(descriptor)
+                backup = Path(name)
+                backups[destination] = backup
+                backup.unlink()
+                os.link(destination, backup, follow_symlinks=False)
+        require_store_sources_unchanged(sources)
+        for temporary, destination, schema in artifacts:
+            temporary, destination = Path(temporary), Path(destination)
+            changed.append(destination)
+            if schema is None:
+                os.replace(temporary, destination)
+            else:
+                publish_sqlite_store(temporary, destination, schema, sources=sources)
+        require_store_sources_unchanged(sources)
+        sync()
+    except BaseException:
+        try:
+            for destination in reversed(changed):
+                if destination in backups:
+                    os.replace(backups[destination], destination)
+                else:
+                    destination.unlink(missing_ok=True)
+            sync()
+        except BaseException:
+            retain_recovery = True
+            raise
+        raise
+    finally:
+        if not retain_recovery:
+            for backup in backups.values():
+                backup.unlink(missing_ok=True)
 
 
 def commit_store_selector(

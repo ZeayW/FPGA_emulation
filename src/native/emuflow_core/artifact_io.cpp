@@ -24,6 +24,15 @@
 #endif
 
 namespace emuflow::core {
+FileGeneration ReadFileGeneration(CheckedRequestReader& reader) {
+  FileGeneration value;
+  value.device=reader.Read<std::uint64_t>(); value.inode=reader.Read<std::uint64_t>();
+  value.bytes=reader.Read<std::uint64_t>();
+  value.modified_seconds=reader.Read<std::int64_t>(); value.modified_nanoseconds=reader.Read<std::int64_t>();
+  value.changed_seconds=reader.Read<std::int64_t>(); value.changed_nanoseconds=reader.Read<std::int64_t>();
+  return value;
+}
+
 double ParseFiniteDecimal(const std::string& text,const std::string& context) {
   const auto fail=[&](){throw StageError(ErrorCode::kInvalidArtifact,"invalid/nonfinite "+context);};
   if(text.empty())fail();

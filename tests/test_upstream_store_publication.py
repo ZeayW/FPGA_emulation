@@ -157,7 +157,8 @@ def test_native_rejection_keeps_prior_primary_or_no_incomplete_new_owner(
     previous = produce() if kind != "proofs" else None
     old = (output.read_bytes(), previous.read_bytes()) if previous is not None else None
     with patch.object(
-        module, "publish_sqlite_store", side_effect=ValidationError("native rejected")
+        module, "publish_derived_outputs" if kind == "functions" else "publish_sqlite_store",
+        side_effect=ValidationError("native rejected")
     ) as native:
         with pytest.raises(ValidationError, match="native rejected"):
             produce(1)
@@ -176,6 +177,21 @@ def test_changed_source_after_row_build_rejects_publication(tmp_path, kind):
     module, output, produce = setup_case(kind, tmp_path)
     previous = produce()
     old = (output.read_bytes(), previous.read_bytes())
+    if kind == "functions":
+        publish = module.publish_derived_outputs
+
+        def mutate_then_group(artifacts, *, sources):
+            assert sources
+            source = sources[0]
+            source.path.chmod(source.path.stat().st_mode ^ 0o100)
+            return publish(artifacts, sources=sources)
+
+        with patch.object(module, "publish_derived_outputs", mutate_then_group):
+            with pytest.raises(ValidationError, match="generation changed"):
+                produce(1)
+        assert output.read_bytes() == old[0] and previous.read_bytes() == old[1]
+        assert not list(tmp_path.glob("*.tmp"))
+        return
     publish = module.publish_sqlite_store
 
     def mutate_then_adopt(temporary, destination, schema, *, sources):

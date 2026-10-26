@@ -25,7 +25,8 @@ Vivado tool censuses are imported by the shared native core into one sealed
 lineage/placement store. Python passes file references; imported raw snapshots
 are retired. Source lineage still does not prove functional equivalence.
 Indexed mapped primitives carry provenance tags without global KEEP/DONT_TOUCH
-constraints; source-bound coverage is checked after optimization. The timing
+constraints. The shared core emits their RTL and source-function index directly
+from ordered mapped cell/pin cursors; source-bound coverage is checked after optimization. The timing
 contract requires an explicit measured or proven optimized-away disposition for
 every original path. Elimination-proof consumption by terminal global timing
 is still incomplete; unresolved original members fail coverage. See the

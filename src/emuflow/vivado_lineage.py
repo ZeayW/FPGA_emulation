@@ -24,20 +24,6 @@ INVENTORY_HEADER = ["name", "ref_name", "source_origin", "transformations_hex",
                     "site", "bel", "tile_column", "tile_row", "primitive_level"]
 
 
-def primitive_function_signature(cell: Mapping[str, Any]) -> str:
-    """Only identical primitives, parameters and input bits can alias here.
-
-    Outputs have independent net names, but must have identical pin interfaces.
-    This is deliberately not a heuristic equivalence or a retiming proof.
-    """
-    value = {"type": cell["type"], "parameters": cell.get("parameters", {}),
-             "pins": {port: {"direction": direction,
-                              "bits": cell["connections"][port] if direction != "output"
-                              else len(cell["connections"][port])}
-                      for port, direction in cell["port_directions"].items()}}
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
 def import_cell_lineage(mapped: Path, functions: Path, inventories: Mapping[str, Path],
                         output: Path, *, mapped_sha256: str,
                         retain_stage: str = "routed") -> dict[str, Any]:

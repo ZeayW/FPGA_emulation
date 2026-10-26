@@ -82,6 +82,8 @@ class CheckedRequestReader {
   std::uint32_t crc_ = 0;
 };
 
+FileGeneration ReadFileGeneration(CheckedRequestReader& reader);
+
 // Publish an already closed same-directory file (including a SQLite store)
 // through the same synchronization/rename boundary as binary artifacts.
 void PublishTemporaryFile(const std::string& temporary, const std::string& target,

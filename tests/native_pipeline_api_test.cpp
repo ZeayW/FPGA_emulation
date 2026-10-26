@@ -2,6 +2,7 @@
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/emuir_view.hpp"
 #include "emuflow_core/tool_runtime.hpp"
+#include "emuflow_core/hash.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -29,6 +30,50 @@ int main() {
     const auto stopped = emuflow::core::RunExternalTool(tool, &cancelled);
     if (stopped.operation.ok() || stopped.started || stopped.cancelled_signal != SIGTERM)
       throw std::runtime_error("native compiler cancellation launched a tool");
+    {
+      using emuflow::core::SqliteDatabase;
+      const auto mapped=(root/"vivado mapped ?#%.sqlite").string();
+      const auto configuration=(root/"vivado-export-request.bin").string();
+      {
+        SqliteDatabase db(mapped,SqliteDatabase::Mode::kCreateExclusive);
+        db.Execute(R"SQL(
+          CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+          INSERT INTO metadata VALUES('schema','emuflow.xilinx-mapped-index/v2'),
+            ('top_json','"empty"'),('ports_json','{}');
+          CREATE TABLE cells(seq INTEGER PRIMARY KEY,id TEXT,type TEXT,record_json TEXT);
+          CREATE TABLE netnames(seq INTEGER PRIMARY KEY);
+          CREATE TABLE cell_pins(cell_seq INTEGER,cell_id TEXT,port TEXT,port_bit INTEGER,
+            port_width INTEGER,direction INTEGER,value_kind INTEGER,net_bit INTEGER,constant TEXT);
+        )SQL");
+      }
+      const auto ref=ArtifactRef::Bind(mapped,"xilinx-mapped-index-v2");
+      {
+        std::ofstream out(configuration,std::ios::binary);std::uint32_t crc=0;
+        const auto put=[&](const auto& value){out.write(reinterpret_cast<const char*>(&value),sizeof(value));
+          emuflow::core::UpdateCrc32(crc,reinterpret_cast<const unsigned char*>(&value),sizeof(value));};
+        put(std::uint64_t{0x31585656464d5545ULL});put(std::uint32_t{1});
+        const auto& g=ref.generation();put(g.device);put(g.inode);put(g.bytes);
+        put(g.modified_seconds);put(g.modified_nanoseconds);put(g.changed_seconds);put(g.changed_nanoseconds);
+        put(std::uint32_t{64});const std::string sha(64,'a');out.write(sha.data(),sha.size());
+        emuflow::core::UpdateCrc32(crc,reinterpret_cast<const unsigned char*>(sha.data()),sha.size());
+        put(std::uint64_t{0});out.write(reinterpret_cast<const char*>(&crc),sizeof(crc));
+      }
+      StageRequest export_request;export_request.stage=Stage::kExportVivado;
+      export_request.input_artifacts={ref,ArtifactRef::Bind(configuration,"vivado-export-request-v1")};
+      export_request.output_path=(root/"empty.v").string();
+      export_request.auxiliary_output_path=(root/"empty.functions.sqlite").string();
+      export_request.scratch_path=(root/"empty-summary.json").string();
+      const auto exported=emuflow::native::ExecuteStage(export_request);
+      if(!exported.ok() || exported.outputs.size()!=3 ||
+          exported.outputs[0].schema()!="vivado-primitive-verilog-v1" ||
+          exported.outputs[1].schema()!="vivado-source-functions-v1" ||
+          exported.outputs[2].schema()!="vivado-export-summary-v1")
+        throw std::runtime_error("bound native Vivado export operation failed");
+      auto alias=export_request;alias.auxiliary_output_path=mapped;
+      if(emuflow::native::ExecuteStage(alias).error!=ErrorCode::kInvalidRequest)
+        throw std::runtime_error("bound Vivado output alias was accepted");
+      ref.RequireUnchanged();
+    }
     const auto emuir_path = (root / "emuir.sqlite").string();
     {
       emuflow::core::SqliteDatabase db(emuir_path, emuflow::core::SqliteDatabase::Mode::kCreateExclusive);

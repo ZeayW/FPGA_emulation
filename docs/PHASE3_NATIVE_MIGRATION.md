@@ -57,7 +57,17 @@ selected stage is retained. `check-runtime SCHEMA` verifies an explicitly
 registered version; Vivado compile/standalone preflight requires the lineage
 schema before synthesis or vendor implementation. Write-store connections explicitly enable URI
 handling before attaching immutable source stores. This operation does not
-complete the remaining Vivado RTL exporter or W7 data-plane migration.
+complete all remaining physical adapters or W7 data-plane migration.
+
+`phase7 export-vivado MAPPED REQUEST RTL FUNCTIONS SUMMARY` now owns the
+primitive RTL and source-function signature producers in the same shared core.
+An ordered mapped cell/pin merge preserves source ordinals, bit order and
+parameter identity, without per-cell Python reconstruction or FFI. The bounded
+host publishes closed derived outputs with rollback and retains the normal
+source/resource audits. The prior Python writer/signature oracle is test-only.
+This closes that data-plane boundary; source query builders, the RapidWright
+routed timing graph and other adapters still require native ownership, and
+complete real-design qualification remains required for W7.
 
 Python SQLite adapter scopes close their connection explicitly as well as
 commit or roll back their transaction. The SQLite connection context manager

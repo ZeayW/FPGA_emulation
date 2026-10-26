@@ -288,6 +288,22 @@ contract pass their independent validators.
 
 ## Vivado indexed provider
 
+`phase7 export-vivado MAPPED REQUEST RTL FUNCTIONS SUMMARY` produces primitive
+RTL and the existing source-function index through the shared native operation
+API. Source generations, cell ordinals and complete pin coverage are checked;
+the producer holds only the current primitive and its pins. Net and port bit
+identities, scalar parameter values, source provenance attributes and function
+signatures preserve their existing contracts. Integers wider than 64 bits are
+not narrowed, and unspecified x/z INIT values retain the existing omission
+policy in RTL while remaining part of the source-function identity. RTL is
+hashed as it is emitted. A bounded summary returns to Python, which publishes
+the derived output group with source checks and failure rollback before the
+final report. Recovery links do not copy payloads or form retained checkpoints.
+The old Python cell writer/signature producer lives only in small independent
+tests. Missing native export capability fails before full-flow synthesis;
+failure never selects a Python exporter. Source query construction and other
+physical adapters still have separate native-migration obligations.
+
 Boundary, logic-segment and local-path routed measurements are imported through
 the shared native core into the current typed timing owners. Import validates
 source/object identity, measurement classification, order and full coverage

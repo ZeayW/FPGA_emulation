@@ -34,14 +34,6 @@ void Digest(const std::string& value) {
   Check(value.size()==64 && value.find_first_not_of("0123456789abcdef")==std::string::npos,
         "RWRoute source digest is invalid");
 }
-FileGeneration ReadGeneration(CheckedRequestReader& reader) {
-  FileGeneration value;
-  value.device=reader.Read<std::uint64_t>(); value.inode=reader.Read<std::uint64_t>();
-  value.bytes=reader.Read<std::uint64_t>();
-  value.modified_seconds=reader.Read<std::int64_t>(); value.modified_nanoseconds=reader.Read<std::int64_t>();
-  value.changed_seconds=reader.Read<std::int64_t>(); value.changed_nanoseconds=reader.Read<std::int64_t>();
-  return value;
-}
 std::string Metadata(SqliteDatabase& db, const std::string& key) {
   auto row=db.Prepare("SELECT value FROM metadata WHERE key=?"); row.BindText(1,key);
   Check(row.Step(),"mapped index metadata is missing: "+key);
@@ -69,53 +61,6 @@ std::string BinaryDecimal(const std::string& bits) {
   }
   return digits;
 }
-// JSON1 is the parser/type authority. Locate only the already validated raw
-// member span when an integer is too large for SQLite's signed scalar API;
-// converting its coerced REAL back to text would lose parameter bits.
-std::string IntegerToken(SqliteDatabase& db, const std::string& object, const std::string& name) {
-  std::size_t position=1;
-  const auto whitespace=[&]() {
-    while (position<object.size() && (object[position]==' ' || object[position]=='\n' ||
-           object[position]=='\r' || object[position]=='\t')) ++position;
-  };
-  const auto string_end=[&]() {
-    Check(position<object.size() && object[position]=='"',"invalid parameter member token");
-    ++position;
-    while (position<object.size()) {
-      const auto ch=object[position++];
-      if (ch=='\\') { Check(position<object.size(),"truncated parameter string"); ++position; }
-      else if (ch=='"') return;
-    }
-    Check(false,"truncated parameter member token");
-  };
-  while (position<object.size()) {
-    whitespace(); if (object[position]=='}') break;
-    const auto begin=position; string_end();
-    const auto key=JsonString(db,object.substr(begin,position-begin),"$");
-    whitespace(); Check(position<object.size() && object[position++]==':',"invalid parameter member");
-    whitespace(); const auto start=position;
-    unsigned depth=0;
-    while (position<object.size()) {
-      const auto ch=object[position];
-      if (ch=='"') { string_end(); continue; }
-      if (ch=='[' || ch=='{') ++depth;
-      else if (ch==']' || ch=='}') { if (!depth) break; --depth; }
-      else if (ch==',' && !depth) break;
-      ++position;
-    }
-    if (key==name) {
-      auto token=object.substr(start,position-start);
-      while (!token.empty() && (token.back()==' ' || token.back()=='\r' || token.back()=='\n' || token.back()=='\t'))
-        token.pop_back();
-      Check(!token.empty() && token.find_first_not_of("-0123456789")==std::string::npos,
-            "invalid primitive integer parameter token");
-      return token=="-0" ? "0" : token;
-    }
-    if (position<object.size() && object[position]==',') ++position;
-    else break;
-  }
-  throw StageError(ErrorCode::kInvalidArtifact,"primitive integer parameter token is missing");
-}
 std::optional<std::string> Parameter(SqliteDatabase& db, SqliteStatement& query, const std::string& record,
                                      const std::string& name) {
   query.Reset(); query.BindText(1,record); query.BindText(2,"$.parameters."+name);
@@ -128,7 +73,7 @@ std::optional<std::string> Parameter(SqliteDatabase& db, SqliteStatement& query,
   if (kind=="true") value="1";
   else if (kind=="false") value="0";
   else if (kind=="integer") {
-    value=query.Text(3)=="integer" ? query.Text(2) : IntegerToken(db,query.TypedText(4),name);
+    value=query.Text(3)=="integer" ? query.Text(2) : JsonIntegerMemberToken(db,query.TypedText(4),name);
   } else {
     Check(kind=="text","primitive parameter '"+name+"' has invalid type");
     value=query.TypedText(2);
@@ -391,8 +336,8 @@ void ExportRwroute(const ArtifactRef& mapped_ref, const ArtifactRef& physical_re
   CheckedRequestReader request(request_ref.path(),16*1024*1024);
   Check(request.Read<std::uint64_t>()==0x31515752554d5545ULL && request.Read<std::uint32_t>()==2,
         "unsupported RWRoute export request");
-  if (!(ReadGeneration(request)==mapped_ref.generation()) ||
-      !(ReadGeneration(request)==physical_ref.generation()))
+  if (!(ReadFileGeneration(request)==mapped_ref.generation()) ||
+      !(ReadFileGeneration(request)==physical_ref.generation()))
     throw StageError(ErrorCode::kMixedGeneration,"RWRoute source generation changed");
   std::array<std::string,3> digests;
   for (auto& digest:digests) { digest=request.ReadString32(); Digest(digest); }

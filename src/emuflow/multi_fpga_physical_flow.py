@@ -795,6 +795,9 @@ def run_multi_fpga_physical_flow(
             install_root=openparf_install,
             python_executable=openparf_python,
         )
+    else:
+        from .native_tools import require_native_schema
+        require_native_schema("vivado-export-request-v1")
     expected_fpgas = [fpga.id for fpga in platform.fpgas]
     logic_context = (
         original_ir_path,

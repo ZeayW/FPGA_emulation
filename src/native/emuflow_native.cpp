@@ -59,6 +59,7 @@ constexpr const char* kUsage =
     "  phase7 validate-physical-cells MAPPED PHYSICAL REQUEST SUMMARY\n"
     "  phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL\n"
     "  phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY\n"
+    "  phase7 export-vivado MAPPED REQUEST RTL FUNCTIONS SUMMARY\n"
     "  phase7 import-vivado-lineage MAPPED FUNCTIONS REQUEST STORE SUMMARY INVENTORY...\n";
 
 int Finish(emuflow::core::StageResult result, const std::string& report) {
@@ -156,6 +157,11 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     return run(Stage::kValidateAtomicOwnership,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
   if (phase == "phase7" && operation == "validate-physical-cells" && argc == 7)
     return run(Stage::kValidatePhysicalCells,{argv[3],argv[4],argv[5]},argv[6]);
+  if (phase == "phase7" && operation == "export-vivado" && argc == 8) {
+    StageRequest request{Stage::kExportVivado,{argv[3],argv[4]},argv[5]};
+    request.auxiliary_output_path=argv[6];request.scratch_path=argv[7];
+    return Execute(std::move(request),report);
+  }
   if (phase == "phase7" && operation == "import-vivado-lineage" && argc >= 9) {
     StageRequest request{Stage::kImportVivadoLineage,{argv[3],argv[4],argv[5]},argv[6]};
     request.auxiliary_output_path=argv[7];

@@ -87,6 +87,56 @@ std::string CheckedTarget(const std::string& target,const std::string& name,
   return normalized.string();
 }
 }  // namespace
+// JSON1 is the parser/type authority. Locate only the already validated raw
+// member span when an integer is too large for SQLite's signed scalar API;
+// converting its coerced REAL back to text would lose parameter bits.
+std::string JsonIntegerMemberToken(SqliteDatabase& db, const std::string& object, const std::string& name) {
+  const auto Check=[](bool valid,const std::string& message){if(!valid)throw StageError(ErrorCode::kInvalidArtifact,message);};
+  std::size_t position=1;
+  const auto whitespace=[&]() {
+    while (position<object.size() && (object[position]==' ' || object[position]=='\n' ||
+           object[position]=='\r' || object[position]=='\t')) ++position;
+  };
+  const auto string_end=[&]() {
+    Check(position<object.size() && object[position]=='"',"invalid parameter member token");
+    ++position;
+    while (position<object.size()) {
+      const auto ch=object[position++];
+      if (ch=='\\') { Check(position<object.size(),"truncated parameter string"); ++position; }
+      else if (ch=='"') return;
+    }
+    Check(false,"truncated parameter member token");
+  };
+  while (position<object.size()) {
+    whitespace(); if (object[position]=='}') break;
+    const auto begin=position; string_end();
+    auto decoded=db.Prepare("SELECT json_extract(?1,'$')"); decoded.BindText(1,object.substr(begin,position-begin));
+    if(!decoded.Step())throw StageError(ErrorCode::kInvalidArtifact,"invalid JSON member name");
+    const auto key=decoded.TypedText(0);
+    whitespace(); Check(position<object.size() && object[position++]==':',"invalid parameter member");
+    whitespace(); const auto start=position;
+    unsigned depth=0;
+    while (position<object.size()) {
+      const auto ch=object[position];
+      if (ch=='"') { string_end(); continue; }
+      if (ch=='[' || ch=='{') ++depth;
+      else if (ch==']' || ch=='}') { if (!depth) break; --depth; }
+      else if (ch==',' && !depth) break;
+      ++position;
+    }
+    if (key==name) {
+      auto token=object.substr(start,position-start);
+      while (!token.empty() && (token.back()==' ' || token.back()=='\r' || token.back()=='\n' || token.back()=='\t'))
+        token.pop_back();
+      Check(!token.empty() && token.find_first_not_of("-0123456789")==std::string::npos,
+            "invalid primitive integer parameter token");
+      return token=="-0" ? "0" : token;
+    }
+    if (position<object.size() && object[position]==',') ++position;
+    else break;
+  }
+  throw StageError(ErrorCode::kInvalidArtifact,"primitive integer parameter token is missing");
+}
 ArtifactScope::ArtifactScope(const ArtifactRef& artifact)
     :artifact_(std::make_shared<const ArtifactRef>(artifact)) { artifact_->RequireUnchanged(); }
 SqliteStore::SqliteStore(const ArtifactRef& artifact) try

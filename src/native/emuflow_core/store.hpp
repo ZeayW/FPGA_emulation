@@ -79,6 +79,10 @@ void RequireSqliteDDL(SqliteDatabase& database,const char* ddl);
 void RequireEquivalentJson(SqliteDatabase& db,const std::string& left,
                            const std::string& right,const std::string& message);
 
+// Exact integer member of an already JSON1-validated record, including >64-bit values.
+std::string JsonIntegerMemberToken(SqliteDatabase& db,const std::string& object,
+                                   const std::string& name);
+
 // Source checks and closed statement/transaction ownership precede publication.
 // A rejected writer leaves the prior destination intact and retires only its
 // exclusive invocation-owned staging and SQLite sidecars.

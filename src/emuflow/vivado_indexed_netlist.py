@@ -1,147 +1,114 @@
-"""Stream current Phase-7 compact EmuIR into native Vivado primitive RTL.
-
-The mapped SQLite index owns cell/pin identities.  Only one primitive and its
-pins are reconstructed at a time; no complete Python circuit or JSON export is
-created.  Net ordinals deliberately agree with the physical timing queries.
-"""
+"""Bounded host for shared-core Vivado RTL/source-function export."""
 from __future__ import annotations
 
 import os
-import sqlite3
-import uuid
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
 from .errors import ValidationError
 from .store_publication import (
-    bind_store_source,
-    publish_sqlite_store,
+    bind_store_source, publish_derived_outputs, require_store_sources_unchanged,
     validate_store_destination,
 )
-from .io import file_sha256, write_json
-from .verilog import _emittable_parameters, _identifier, _parameter
-from .vivado_lineage import LINEAGE_POLICY, primitive_function_signature
+from .io import file_sha256, read_json, write_json
+from .native_protocol import CheckedRequestWriter
+from .native_tools import require_native_schema, resolve_native_executable
+from .tool_runtime import NativeToolProcess
+from .vivado_lineage import LINEAGE_POLICY
 
 
 def emit_indexed_vivado_verilog(
     ir_path: Path, output_path: Path, report_path: Path | None = None,
 ) -> Mapping[str, Any]:
-    # Lazy import avoids the legacy lowerer's import cycle.
-    from .xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
+    from .xilinx_netlist import emit_xilinx_mapped_index
     from .vivado_source import validate_vivado_source
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    source_validation = validate_vivado_source(ir_path, output_path.with_suffix(".source-check.json"))
+    ir_source = bind_store_source(ir_path, "emuir-compact-v2")
     index_path = output_path.with_suffix(".mapped.sqlite")
-    mapped_report = emit_xilinx_mapped_index(ir_path, index_path)
-    temporary = output_path.with_name(f".{output_path.name}.{uuid.uuid4().hex}.tmp")
     functions_path = output_path.with_suffix(".functions.sqlite")
-    functions_temporary = temporary.with_suffix(".sqlite")
-    source_bindings = validate_store_destination(
-        functions_path, (bind_store_source(index_path, "xilinx-mapped-index-v2"),)
-    )
-    functions = sqlite3.connect(functions_temporary)
-    functions.executescript("PRAGMA application_id=0x454D5646; PRAGMA user_version=1;")
-    functions.execute("CREATE TABLE signatures(seq INTEGER PRIMARY KEY,signature TEXT NOT NULL)")
-    functions.execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
-    functions.execute("INSERT INTO metadata VALUES ('schema','emuflow.vivado-source-functions/v1')")
-    functions.execute("INSERT INTO metadata VALUES ('mapped_index_sha256',?)", (mapped_report["index_sha256"],))
-
-    def bit(value: Any) -> str:
-        if isinstance(value, int) and not isinstance(value, bool) and value >= 2:
-            return f"__emuflow_net_{value - 2}"
-        if isinstance(value, str) and value.lower() in {"0", "1", "x", "z"}:
-            return f"1'b{value.lower()}"
-        raise ValidationError("Vivado mapped pin has an invalid bit value")
-
+    source_report = output_path.with_suffix(".source-check.json")
+    destinations = [output_path, index_path, functions_path, source_report]
+    if report_path is not None:
+        destinations.append(report_path)
+    for number, path in enumerate(destinations):
+        validate_store_destination(path, (ir_source,))
+        for other in destinations[:number]:
+            if path.resolve() == other.resolve() or (
+                path.exists() and other.exists() and os.path.samefile(path, other)
+            ):
+                raise ValidationError("Vivado export destinations alias each other")
+    require_native_schema("vivado-export-request-v1")
+    executable = resolve_native_executable("emuflow-native")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    source_validation = validate_vivado_source(ir_path, source_report)
+    mapped_report = emit_xilinx_mapped_index(ir_path, index_path)
+    sources = (ir_source, bind_store_source(index_path, "xilinx-mapped-index-v2"))
+    staged = []
     try:
-        with open_xilinx_mapped_index(index_path) as mapped, temporary.open(
-            "w", encoding="utf-8"
-        ) as stream:
-            def line(value: str) -> None:
-                stream.write(value + "\n")
-
-            line("`default_nettype none")
-            line(f"module {_identifier(mapped.top)}(")
-            line(",\n".join("  " + _identifier(name) for name in mapped.ports))
-            line(");")
-            for name, port in mapped.ports.items():
-                width = len(port["bits"])
-                dimension = f"[{width - 1}:0] " if width != 1 else ""
-                if port["direction"] not in {"input", "output", "inout"}:
-                    raise ValidationError("Vivado top port direction is invalid")
-                line(f"  {port['direction']} wire {dimension}{_identifier(name)};")
-            # Preserve actual source ordinals, including one-based/sparse SQL
-            # keys. Extra IDs belong to disconnected input ports.
-            largest_net_bit = 1
-            for row in mapped.connection.execute("SELECT seq FROM netnames ORDER BY seq"):
-                largest_net_bit = int(row[0]) + 2
-                line(f"  wire __emuflow_net_{int(row[0])};")
-            for name, port in mapped.ports.items():
-                for index, value in enumerate(port["bits"]):
-                    if isinstance(value, int) and value > largest_net_bit:
-                        line(f"  wire {bit(value)};")
-                    target = _identifier(name)
-                    if len(port["bits"]) != 1:
-                        target += f"[{index}]"
-                    if port["direction"] == "input":
-                        if isinstance(value, int):
-                            line(f"  assign {bit(value)} = {target};")
-                    elif port["direction"] == "output":
-                        line(f"  assign {target} = {bit(value)};")
-                    else:
-                        raise ValidationError("Vivado indexed top-level inout is unsupported")
-            source_ordinals = iter(mapped.connection.execute("SELECT id,seq FROM cells ORDER BY seq"))
-            for name, cell in mapped.cells.items():
-                source_name, source_seq = next(source_ordinals)
-                if source_name != name:
-                    raise ValidationError("Vivado source ordinal stream disagrees")
-                functions.execute("INSERT INTO signatures VALUES (?,?)", (source_seq, primitive_function_signature(cell)))
-                parameters = _emittable_parameters(cell)
-                parameter_text = ""
-                if parameters:
-                    parameter_text = " #(\n" + ",\n".join(
-                        f"    .{_identifier(key)}({_parameter(value)})"
-                        for key, value in sorted(parameters.items())
-                    ) + "\n  )"
-                # Metadata tracks surviving/replicated objects; it must never
-                # constrain synthesis or physical optimization.
-                line(f'  (* EMUFLOW_MAPPED = "yes", EMUFLOW_SOURCE = "s{source_seq}" *)')
-                line(f"  {_identifier(cell['type'])}{parameter_text} {_identifier(name)}(")
-                connections = []
-                for port, values in sorted(cell["connections"].items()):
-                    expression = bit(values[0]) if len(values) == 1 else (
-                        "{" + ", ".join(bit(value) for value in reversed(values)) + "}"
-                    )
-                    connections.append(f"    .{_identifier(port)}({expression})")
-                line(",\n".join(connections))
-                line("  );")
-            line("endmodule")
-            line("`default_nettype wire")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, output_path)
-        functions.execute("CREATE INDEX signatures_function ON signatures(signature,seq)")
-        functions.commit()
-        functions.close()
-        publish_sqlite_store(
-            functions_temporary,
-            functions_path,
-            "vivado-source-functions-v1",
-            sources=source_bindings,
-        )
+        with tempfile.TemporaryDirectory(prefix=".vivado-export.", dir=output_path.parent) as temporary:
+            root = Path(temporary)
+            for suffix in (".v", ".sqlite"):
+                descriptor, name = tempfile.mkstemp(prefix=".vivado-export.", suffix=suffix, dir=output_path.parent)
+                os.close(descriptor)
+                staged.append(Path(name))
+            rtl, functions = staged
+            request, summary = root / "request.bin", root / "summary.json"
+            writer = CheckedRequestWriter(request)
+            try:
+                writer.put("QI", 0x31585656464d5545, 1)
+                writer.put("3Q4q", *sources[1].generation)
+                writer.text(mapped_report["index_sha256"])
+                writer.put("Q", mapped_report["cells"])
+                writer.finish()
+            finally:
+                writer.close()
+            require_store_sources_unchanged(sources)
+            with NativeToolProcess(
+                executable, [executable, "phase7", "export-vivado", str(index_path.resolve()),
+                             str(request), str(rtl), str(functions), str(summary)],
+                environment=dict(os.environ), scratch_parent=root,
+            ) as process:
+                completed = process.finish()
+            if completed.returncode:
+                raise ValidationError("native Vivado export failed: " + completed.stdout)
+            require_store_sources_unchanged(sources)
+            if summary.stat().st_size > 65536:
+                raise ValidationError("native Vivado export summary exceeds bound")
+            result = read_json(summary)
+            if (
+                not isinstance(result, dict)
+                or set(result) != {"schema", "status", "implementation_id", "top", "cells", "mapped_index_sha256", "rtl_sha256"}
+                or result["schema"] != "emuflow.vivado-export-summary/v1"
+                or result["status"] != "pass"
+                or result["implementation_id"] != "native-vivado-export-v1"
+                or result["top"] != mapped_report["top"]
+                or type(result["cells"]) is not int
+                or result["cells"] != mapped_report["cells"]
+                or result["mapped_index_sha256"] != mapped_report["index_sha256"]
+                or not isinstance(result["rtl_sha256"], str)
+                or len(result["rtl_sha256"]) != 64
+                or any(c not in "0123456789abcdef" for c in result["rtl_sha256"])
+            ):
+                raise ValidationError("native Vivado export summary disagrees")
+            # Native production and validation completed before either public
+            # output changes. The bounded report is published last by the host.
+            publish_derived_outputs(
+                ((rtl, output_path, None), (functions, functions_path, "vivado-source-functions-v1")),
+                sources=sources,
+            )
     finally:
-        functions.close()
-        temporary.unlink(missing_ok=True)
-        functions_temporary.unlink(missing_ok=True)
+        for path in staged:
+            path.unlink(missing_ok=True)
     report = {
         "schema": "emuflow.vivado-netlist-report/v1", "status": "pass",
         "provider": "compact-emuir-to-vivado-indexed-primitives-v1",
+        "implementation_id": "native-vivado-export-v1",
         "top": mapped_report["top"],
         "source_instances": mapped_report["cells"],
-        "emitted_instances": mapped_report["cells"],
+        "emitted_instances": result["cells"],
         "emitted_inventory": mapped_report["audit"]["cell_types"],
-        "output": str(output_path), "output_sha256": file_sha256(output_path),
+        "output": str(output_path), "output_sha256": result["rtl_sha256"],
         "mapped_index": {"path": str(index_path), "sha256": mapped_report["index_sha256"]},
         "source_functions": {"path": str(functions_path), "sha256": file_sha256(functions_path)},
         "optimization_policy": LINEAGE_POLICY,
