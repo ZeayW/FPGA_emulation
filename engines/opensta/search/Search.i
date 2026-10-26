@@ -1227,6 +1227,11 @@ const TimingRole *check_role() { return self->checkRole(Sta::sta()); }
 MinMax *min_max() { return const_cast<MinMax*>(self->minMax(Sta::sta())); }
 const Clock *target_clk() { return self->targetClk(Sta::sta()); }
 const ClockEdge *target_clk_edge() { return self->targetClkEdge(Sta::sta()); }
+// EmuFlow: expose existing cycle-accounting facts without changing timing.
+const ClockEdge *source_clk_edge() { return self->sourceClkEdge(Sta::sta()); }
+float source_clk_offset() { return self->sourceClkOffset(Sta::sta()); }
+float target_clk_time() { return self->targetClkTime(Sta::sta()); }
+float target_clk_mcp_adjustment() { return self->targetClkMcpAdjustment(Sta::sta()); }
 Path *target_clk_path() { return self->targetClkPath(); }
 }
 

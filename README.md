@@ -43,6 +43,8 @@ Its required [timing contract](docs/global-opensta-qualification.md#ratio-estima
 distinguishes pre-schedule ratio estimates from post-schedule per-signal events.
 Safe-frequency fields remain unavailable until edge/phase and physical margins
 are bound; raw maximum delay alone does not determine an operating frequency.
+An explicit standalone OpenSTA clock-budget qualifier checks engine cycle facts;
+its synthetic scope is described in the timing contract above.
 The indexed provider exports routed reports and timing in one native session
 and supports checked continuation within an active run, using native module
 identities and explicit checkpoint diagnostics.

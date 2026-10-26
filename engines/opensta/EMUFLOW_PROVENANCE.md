@@ -20,3 +20,7 @@ The Tcl finder rejects headers older than 8.6 because the imported engine's own
 procedures use `try/finally`; the executable is also probed at runtime.
 The Zlib link uses its imported CMake target so non-system header paths propagate
 to the analyzer and its public consumers.
+The standalone SWIG interface additionally exposes the existing PathEnd source
+clock edge/offset and target cycle time/multicycle adjustment. These read-only
+accessors preserve engine cycle accounting for clock-budget qualification;
+they do not change the timing algorithm or add an inferred frequency model.
