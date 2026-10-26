@@ -7,6 +7,8 @@
 #include "emuflow_core/native_pipeline.hpp"
 #include "emuflow_core/tool_runtime.hpp"
 #include "emuflow_core/compile.hpp"
+#include "emuflow_core/yosys_hierarchy.hpp"
+#include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/store_publication.hpp"
 
 namespace {
@@ -17,6 +19,7 @@ constexpr const char* kUsage =
     "  check-runtime [SCHEMA]\n"
     "  publish-store REQUEST OUTPUT\n"
     "  compile REQUEST_JSON\n"
+    "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY < YOSYS_STREAM\n"
     "  run-tool REQUEST RESULT_JSON\n"
     "  phase3 analyze INPUT OUTPUT\n"
     "  phase3 refine-hops [--trace-output] INPUT OUTPUT\n"
@@ -112,7 +115,10 @@ bool SamePath(const std::string& a, const std::string& b) {
 }
 int RunTool(const std::string& input, const std::string& output) {
   // Reject aliases before launching an engine, not after it has had side effects.
-  auto ref = emuflow::core::ArtifactRef::Bind(input,"external-tool-request-v1");
+  emuflow::core::BinaryReader header(input);
+  (void)header.Read<std::uint64_t>();
+  const auto version=header.Read<std::uint32_t>();
+  auto ref = emuflow::core::ArtifactRef::Bind(input,version==2?"external-tool-request-v2":"external-tool-request-v1");
   auto request = emuflow::core::ReadToolRequest(ref.path());
   if (output.empty() || output == "-" || SamePath(input,output) || SamePath(request.argv[0],output))
     throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,
@@ -142,6 +148,10 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if (argc == 4 && std::string(argv[1]) == "publish-store") {
     const auto request = emuflow::core::ArtifactRef::Bind(argv[2],"sqlite-publication-request-v1");
     return Finish(emuflow::core::PublishSqliteStore(request,argv[3],report),report);
+  }
+  if (argc == 6 && std::string(argv[1]) == "phase1" && std::string(argv[2]) == "stage-yosys-hierarchy") {
+    std::ios::sync_with_stdio(false);std::cin.tie(nullptr);
+    return Finish(emuflow::core::StageYosysHierarchy(emuflow::core::ArtifactRef::Bind(argv[3],"yosys-hierarchy-request-v1"),std::cin,argv[4],argv[5]),report);
   }
   if (argc == 4 && std::string(argv[1]) == "run-tool" && report.empty())
     return RunTool(argv[2],argv[3]);

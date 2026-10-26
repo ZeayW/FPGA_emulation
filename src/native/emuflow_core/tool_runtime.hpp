@@ -16,6 +16,7 @@ struct ToolRequest {
   bool inherit_environment = true;
   std::vector<std::pair<std::string, std::string>> environment;
   bool forward_stdout = false;
+  bool forward_stdin = false;
   std::uint32_t tail_bytes = 2 * 1024 * 1024;
   std::uint64_t timeout_ms = 0;
   std::uint32_t termination_grace_ms = 1000;

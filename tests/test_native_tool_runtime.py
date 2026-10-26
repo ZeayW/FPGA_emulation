@@ -260,3 +260,19 @@ def test_exec_failure_does_not_look_like_engine_exit_127(runner, tmp_path):
             process.finish()
     with NativeToolProcess(runner, [sys.executable, "-c", "raise SystemExit(127)"]) as process:
         assert process.finish().returncode == 127
+
+
+def test_native_stdin_forwarding_is_explicit_and_streamed(runner, tmp_path):
+    payload = b"producer data\x00\xff" * 10000
+    with (tmp_path/"source.bin").open("w+b") as source:
+        source.write(payload)
+        source.seek(0)
+        with NativeToolProcess(runner, [sys.executable, "-c", "import sys,hashlib; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())"], stdin=source) as process:
+            result = process.finish()
+            import hashlib
+            assert result.returncode == 0
+            assert result.stdout.strip() == hashlib.sha256(payload).hexdigest()
+            evidence = json.loads(process._result_path.read_text())
+            assert evidence["operation"]["inputs"][0]["schema"] == "external-tool-request-v2"
+    with NativeToolProcess(runner, [sys.executable, "-c", "import sys; print(len(sys.stdin.buffer.read()))"]) as process:
+        assert process.finish().stdout.strip() == "0"

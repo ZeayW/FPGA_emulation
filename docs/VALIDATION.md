@@ -507,3 +507,18 @@ source generation. Changed/missing sources, malformed geometry, boolean or
 negative coordinates, oversized pin counts and duplicate baseline report owners
 must reject. The C++ multi-process controller must stop on such a rejection and
 must keep `native_data_plane_complete=false` while Python phase adapters remain.
+
+
+### Native Yosys hierarchy validation
+
+The hierarchy producer is checked against the independent former Python
+implementation under `tests/yosys_hierarchy_reference.py`. Compare complete
+flattened cells and connections, canonical signal names, top ports and hierarchy
+counts, including repeated/nested modules, late attributes, blackbox/whitebox
+leaves, open ports, aliased outputs and late constant output propagation.
+Malformed/truncated JSON, duplicate identities, recursion, width mismatch and
+conflicting constants must reject. Stream cancellation must reap the native
+consumer and retire its private writer files. A large distinct-cell source checks
+that the Python byte host has bounded memory and that the importer adopts one
+staging database without copying cell/name populations. These component gates do
+not establish NVDLA equivalence, speedup or complete Phase 1–7 qualification.

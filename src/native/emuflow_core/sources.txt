@@ -49,3 +49,4 @@ emuflow_core/opensta_export.cpp
 emuflow_core/phase5.cpp
 emuflow_core/sta_paths.cpp
 emuflow_core/sta_weights.cpp
+emuflow_core/yosys_hierarchy.cpp

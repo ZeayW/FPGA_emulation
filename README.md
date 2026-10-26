@@ -54,8 +54,10 @@ synthesis or pre-partition STA. The continuation validates the saved design,
 mapping, clock, timing-path, and SQLite contracts, then uses the currently
 selected BoardDB for Phases 3–7. See the
 [user guide](docs/USER_GUIDE.md) for input requirements and failure behavior.
-The indexed frontend preserves constant child-module outputs across hierarchy
-boundaries, including consumers visited before their drivers.
+The indexed frontend streams Yosys hierarchy into the shared C++ core for
+module expansion and signal/constant alias resolution, preserving constant child
+outputs even when consumers were visited first. Xilinx normalization and final
+EmuIR construction still require migration; this does not complete Phase 1 or W7.
 The saved BoardDB supplies only the mapping device identity; older link-model
 fields do not need migration to continue with the current BoardDB.
 Terminal validation also verifies the declared read-only EmuIR binding and

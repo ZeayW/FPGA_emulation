@@ -8,29 +8,25 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ImportError
-from emuflow.yosys import (
-    _expand_staged_yosys_hierarchy,
-    _stream_yosys_hierarchy_to_staging,
-)
+from emuflow.yosys_hierarchy_native import stage_hierarchy
+from unittest.mock import patch
+from tests.native_build import emuflow_native
 
 
 def expand(value):
-    connection = sqlite3.connect(":memory:")
-    connection.row_factory = sqlite3.Row
-    cells, names = {}, {}
-    try:
-        _stream_yosys_hierarchy_to_staging(
-            Path("<test-stream>"), "top", connection,
-            source_stream=io.StringIO(json.dumps(value)),
-        )
-        ports, _, aliases = _expand_staged_yosys_hierarchy(
-            connection, "top",
-            stage_cell=lambda name, value: cells.update({name: value}),
-            stage_netname=lambda name, value: names.update({name: value}),
-        )
-        return ports, cells, names, aliases
-    finally:
-        connection.close()
+    # Exercise the production native producer. The former implementation lives
+    # separately in the differential oracle, not behind a production import.
+    with tempfile.TemporaryDirectory() as directory:
+        store = Path(directory)/"hierarchy.sqlite"
+        native = str(emuflow_native())
+        with patch("emuflow.yosys_hierarchy_native.resolve_native_executable",return_value=native), patch("emuflow.yosys_hierarchy_native.require_native_schema"):
+            _,ports,_ = stage_hierarchy(Path("<test-stream>"),store,"top",source_stream=io.StringIO(json.dumps(value)))
+        with sqlite3.connect(store) as connection:
+            cells = {row[0]:json.loads(row[1]) for row in connection.execute("SELECT id,record_json FROM staging_instances")}
+            names = {}
+            for bit,name,index,width in connection.execute("SELECT yosys_bit,name,bus_index,bus_width FROM staging_names"):
+                names.setdefault(name,{"bits":[None]*width})["bits"][index] = bit
+        return ports,cells,names,{}
 
 
 def fixture(direction, binding):
@@ -126,7 +122,7 @@ class HierarchyPortTest(unittest.TestCase):
             self.assertNotEqual(floating, ports["a"]["bits"][0])
 
     def test_nonempty_width_mismatch_is_rejected(self):
-        with self.assertRaisesRegex(ImportError, "expected 36 connection bits, got 1"):
+        with self.assertRaisesRegex(ImportError, "connection width disagrees"):
             expand(fixture("output", [4]))
 
     @unittest.skipUnless(os.environ.get("EMUFLOW_TEST_YOSYS"), "native Yosys opt-in")
