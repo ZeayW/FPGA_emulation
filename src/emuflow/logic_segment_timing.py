@@ -533,7 +533,7 @@ def _index_exact_logic_segments(
 def _stream_indexed_exact_partition(
     path: Path, fpga: str, *, allow_legacy: bool
 ) -> tuple[Mapping[str, Any], Any, Any]:
-    """Open the v3 typed semantic partition without list materialization."""
+    """Open a supported typed semantic partition without list materialization."""
     connection = open_phase3_assignment_index(path)
     try:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
@@ -541,7 +541,7 @@ def _stream_indexed_exact_partition(
             str(row[0]): json.loads(str(row[1]))
             for row in connection.execute("SELECT key,value FROM metadata")
         }
-        if version == 3:
+        if version in {3, 4}:
             descriptor = metadata.get("semantic_contract_binary")
             if not isinstance(descriptor, Mapping):
                 raise ValidationError(
