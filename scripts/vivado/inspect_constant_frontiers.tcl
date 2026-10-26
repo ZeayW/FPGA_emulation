@@ -16,7 +16,7 @@ if {[gets $input header] < 0 || $header ne "source_origin\tnative_cell_hex\tobje
   error "invalid constant-frontier query"
 }
 set stream [open $output w]
-puts $stream "source_origin\tnative_cell_hex\tref\tinit\tpin\tdriver_kind\tdriver_source\tdriver_ref\tdriver_pin\tdriver_name_hex\tdriver_transformations_hex\ttransformations_hex"
+puts $stream "source_origin\tnative_cell_hex\tref\tinit\tpin\tdriver_kind\tdriver_source\tdriver_ref\tdriver_pin\tdriver_name_hex\tdriver_transformations_hex\ttransformations_hex\tcarry_type"
 set count 0
 while {[gets $input row] >= 0} {
   if {$row eq ""} {continue}
@@ -25,12 +25,18 @@ while {[gets $input row] >= 0} {
   lassign $fields origin name_hex object_kind
   if {![regexp {^s(0|[1-9][0-9]*)$} $origin]} {error "invalid frontier source"}
   set name [emuflow_frontier_decode $name_hex]
-  if {$object_kind eq "output-port"} {
-    set port [get_ports -quiet -filter "NAME == $name"]
+  set carry_type ""
+  if {$object_kind in {output-port module-output}} {
+    if {$object_kind eq "module-output"} {
+      set port [get_pins -quiet -hier -filter "NAME == $name"]
+      set ref MODULE_OUTPUT
+    } else {
+      set port [get_ports -quiet -filter "NAME == $name"]
+      set ref OUTPUT_PORT
+    }
     if {[llength $port] != 1 || [get_property NAME $port] ne $name || [get_property DIRECTION $port] ne "OUT"} {
       error "constant-frontier output port differs: $name"
     }
-    set ref OUTPUT_PORT
     set init ""
     set modifications ""
     set input_names {PORT}
@@ -40,25 +46,34 @@ while {[gets $input row] >= 0} {
       error "constant-frontier cell source association differs: $name"
     }
     set ref [get_property REF_NAME $cell]
-    if {![regexp {^LUT([1-6])$} $ref _ width]} {error "unsupported constant-frontier primitive: $ref"}
-    set init [get_property INIT $cell]
+    if {$ref eq "CARRY8"} {
+      set init ""
+      set carry_type [get_property CARRY_TYPE $cell]
+      set input_names {CI CI_TOP}
+      foreach bus {DI S} {
+        for {set i 0} {$i < 8} {incr i} {lappend input_names [format {%s[%d]} $bus $i]}
+      }
+    } else {
+      if {![regexp {^LUT([1-6])$} $ref _ width]} {error "unsupported constant-frontier primitive: $ref"}
+      set init [get_property INIT $cell]
+      set input_names {}
+      for {set i 0} {$i < $width} {incr i} {lappend input_names I$i}
+    }
     set modifications "[get_property -quiet OPT_MODIFIED $cell] [get_property -quiet PHYS_OPT_MODIFIED $cell]"
-    set input_names {}
-    for {set i 0} {$i < $width} {incr i} {lappend input_names I$i}
   } else {
     error "unsupported constant-frontier object kind"
   }
   foreach input_name $input_names {
-    if {$object_kind eq "output-port"} {
+    if {$object_kind in {output-port module-output}} {
       set pin $port
     } else {
       set pin [get_pins -quiet -of_objects $cell -filter "REF_PIN_NAME == $input_name"]
     }
     if {[llength $pin] != 1} {error "frontier input pin is not unique"}
-    set nets [get_nets -quiet -of_objects $pin]
-    if {[llength $nets] != 1} {error "frontier input net is not unique"}
-    set drivers [get_pins -quiet -leaf -of_objects $nets -filter {DIRECTION == OUT}]
-    set ports [get_ports -quiet -of_objects $nets -filter {DIRECTION == IN}]
+    set nets [get_nets -quiet -segments -of_objects $pin]
+    if {[llength $nets] == 0} {error "frontier input net is missing"}
+    set drivers [lsort -unique [get_pins -quiet -leaf -of_objects $nets -filter {DIRECTION == OUT}]]
+    set ports [lsort -unique [get_ports -quiet -of_objects $nets -filter {DIRECTION == IN}]]
     if {[expr {[llength $drivers]+[llength $ports]}] != 1} {error "frontier driver is not unique"}
     set kind opaque
     set driver_source ""
@@ -84,7 +99,7 @@ while {[gets $input row] >= 0} {
       set driver_name [get_property NAME $ports]
     }
     puts $stream [join [list $origin $name_hex $ref $init $input_name $kind $driver_source $driver_ref $driver_pin \
-      [emuflow_frontier_hex $driver_name] [emuflow_frontier_hex $driver_changes] [emuflow_frontier_hex $modifications]] "\t"]
+      [emuflow_frontier_hex $driver_name] [emuflow_frontier_hex $driver_changes] [emuflow_frontier_hex $modifications] $carry_type] "\t"]
   }
   incr count
 }

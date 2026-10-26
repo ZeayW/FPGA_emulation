@@ -280,7 +280,8 @@ def run_indexed_vivado_partition(
         mapped_sha256=mapped_report["mapped_index"]["sha256"],queries=queries,runtime=runtime,ports=ports,
         synthesized_checkpoint=synthesized_checkpoint,synthesized_checkpoint_sha256=synthesized_checkpoint_sha256,
         dut_frequency_mhz=dut_frequency_mhz,word_phy_directory=output_dir if word_mode else None,
-        retain_routed_checkpoint=retain_routed_checkpoint,route_after_proof_failure=route_after_proof_failure)
+        retain_routed_checkpoint=retain_routed_checkpoint,route_after_proof_failure=route_after_proof_failure,
+        source_hierarchy_prefix=prefix)
     threads = int(os.environ.get("EMUFLOW_VIVADO_THREADS", "2"))
     if threads < 1:
         raise ValidationError("Vivado thread count must be positive")

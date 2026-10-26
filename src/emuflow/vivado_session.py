@@ -22,7 +22,7 @@ from .vivado_lineage import import_cell_lineage, resolve_timing_query
 from .vivado_optimization import build_optimization_proofs
 from .vivado_clocks import implementation_clocks, implementation_timing_contract
 
-SCHEMA = "emuflow.vivado-native-session/v3"
+SCHEMA = "emuflow.vivado-native-session/v4"
 
 
 def _tcl_word(value):
@@ -32,12 +32,16 @@ def _tcl_word(value):
 def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mapped_sha256,
                      queries, runtime, ports, synthesized_checkpoint=None, synthesized_checkpoint_sha256=None,
                      dut_frequency_mhz=None,word_phy_directory=None,retain_routed_checkpoint=False,
-                     route_after_proof_failure=False):
+                     route_after_proof_failure=False,source_hierarchy_prefix=""):
     """Prepare small native/child contracts after all source views have closed."""
     output = output.resolve()
     if not isinstance(retain_routed_checkpoint,bool):raise ValidationError('routed checkpoint retention must be Boolean')
     if not isinstance(route_after_proof_failure,bool) or (route_after_proof_failure and not retain_routed_checkpoint):
         raise ValidationError('routing after a proof failure requires explicit Boolean checkpoint retention')
+    if not isinstance(source_hierarchy_prefix,str) or len(source_hierarchy_prefix)>4096 or any(c in source_hierarchy_prefix for c in '\x00\r\n'):
+        raise ValidationError('native source hierarchy is invalid')
+    if word_phy_directory is not None and not source_hierarchy_prefix:
+        raise ValidationError('native word session requires its explicit mapped source hierarchy')
     checkpoint = Path(synthesized_checkpoint).resolve() if synthesized_checkpoint is not None else output/"synthesized.dcp"
     reserved = {str((output/(kind+suffix)).resolve()) for kind in queries for suffix in ("-synthesis.tsv","-resolved.tsv",".tsv")}
     if any(str(value.resolve()) in reserved for value in queries.values()):
@@ -62,6 +66,7 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
         "synthesized_checkpoint": str(checkpoint), "synthesized_checkpoint_sha256": synthesized_checkpoint_sha256,
         "word_phy_directory":str(Path(word_phy_directory).resolve())if word_phy_directory is not None else None,
         "retain_routed_checkpoint":retain_routed_checkpoint,
+        "source_hierarchy_prefix":source_hierarchy_prefix,
         "route_after_proof_failure":route_after_proof_failure}
     write_json(output/"native-session.json",manifest,compact=True)
     with (output/"clock-contract.tsv").open("w") as stream:
@@ -98,7 +103,8 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
 
 def load_session(path: Path):
     value = read_json(path)
-    if (value.get("schema") != SCHEMA or not isinstance(value.get("fpga"), str)
+    legacy=value.get('schema')=='emuflow.vivado-native-session/v3'
+    if (value.get("schema") not in {SCHEMA,'emuflow.vivado-native-session/v3'} or not isinstance(value.get("fpga"), str)
             or value.get("source_preflight_stage") not in {"synthesized", "optimized"}
             or value.get("timing_query_mode") != ("clock-aware-reference" if value.get("word_phy_directory") is not None else "datapath-only")
             or not isinstance(value.get("queries"), dict)
@@ -111,6 +117,11 @@ def load_session(path: Path):
     if not isinstance(value.get('route_after_proof_failure',False),bool) or (
         value.get('route_after_proof_failure',False) and value.get('retain_routed_checkpoint')is not True):
         raise ValidationError('native proof-failure routing requires retained snapshots')
+    prefix=value.get('source_hierarchy_prefix','')
+    if not isinstance(prefix,str) or len(prefix)>4096 or any(c in prefix for c in '\x00\r\n'):
+        raise ValidationError('native source hierarchy is invalid')
+    if (not legacy and 'source_hierarchy_prefix'not in value) or (value.get('word_phy_directory')is not None and (legacy or not prefix)):
+        raise ValidationError('native word/source hierarchy requires a current explicit session manifest')
     return value
 
 
@@ -169,6 +180,7 @@ def prepare_frontiers(session):
     model_sha = file_sha256(model)
     if selected:
         plan = prepare_constant_frontier_query(mapped, model, inventory,
+            lineage_path=lineage,source_hierarchy_prefix=session.get('source_hierarchy_prefix',''),
             mapped_sha256=session["mapped_index_sha256"], candidate_proofs_sha256=model_sha,
             checkpoint_sha256=checkpoint_sha, fpga=session["fpga"], selected_sources=sorted(selected), source_stage=stage)
     else:
@@ -183,9 +195,8 @@ def prepare_frontiers(session):
     write_json(out/(stage+"-source-preflight.json"), {"status": "inspection-required" if selected else "pass", "source_stage":stage,
         "coverage": coverage, "proof": proof, "queries": resolutions, "requested_constant_sources": len(selected),
         "closed_constant_sources": len(plan["sources"]), "native_frontiers": len(plan["query_objects"])}, compact=True)
-    # All children using this preplacement association have returned and closed
-    # their connections. Only the compact source model and plan are needed next.
-    lineage.unlink()
+    # The preplacement index owns retained-frontier membership for repeatable
+    # confirmation. Keep it until the routed preparation consumes this stage.
     return {"status": "pass", "constant_sources": len(plan["sources"]), "native_frontiers": len(plan["query_objects"])}
 
 
@@ -202,6 +213,7 @@ def _check_constants(session):
         return None, checkpoint_sha
     checked = check_constant_sources(mapped, functions, out/"source-constant-model.sqlite",
         out/"constant-frontiers.tsv", inventory, mapped_sha256=session["mapped_index_sha256"],
+        lineage_path=out/(stage+'-lineage.sqlite'),source_hierarchy_prefix=session.get('source_hierarchy_prefix',''),
         candidate_proofs_sha256=plan["source_candidate_proofs_sha256"], checkpoint_sha256=checkpoint_sha,
         fpga=session["fpga"], selected_sources=plan["requested_sources"], source_stage=stage)
     return checked, checkpoint_sha
@@ -245,6 +257,7 @@ def prepare_timing(session):
     # Retire only consumed tool snapshots, never that canonical indexed owner.
     for inventory in ("mapped_cells.tsv", "optimized_mapped_cells.tsv", "routed_mapped_cells.tsv"):
         (out / inventory).unlink(missing_ok=True)
+    (out/(stage+'-lineage.sqlite')).unlink(missing_ok=True)
     return {"status": "pass", "query_classes": len(resolutions)}
 
 

@@ -117,17 +117,22 @@ def test_identity_cannot_be_reused_from_another_owner_or_after_mutation(proof,tm
     result=execute(proof,'mutate');assert result.returncode!=0 and not result.stdout
 
 
-@pytest.fixture(params=[None,'pipeline','cycle','port'])
+@pytest.fixture(params=[None,'pipeline','cycle','port','carry'])
 def vendor(tmp_path,native_root,request):
     import csv
     from emuflow.vivado_constant_frontier import check_constant_sources
     from emuflow.vivado_lineage import import_cell_lineage
     from tests.test_vivado_constant_frontier import conditional_model
-    mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path,
-        direct_output_only=request.param=='port',state_chain=None if request.param=='port' else request.param)
+    if request.param=='carry':
+        from tests.test_vivado_constant_cones import constant_cone_model
+        mapped,functions,proof,inventory,observed,options,origins=constant_cone_model(tmp_path,live_count=14)
+        digest=options['mapped_sha256']
+    else:
+        mapped,functions,proof,inventory,observed,digest,origins=conditional_model(tmp_path,
+            direct_output_only=request.param=='port',state_chain=None if request.param=='port' else request.param)
     checked=check_constant_sources(mapped,functions,proof,observed,inventory,mapped_sha256=digest,
         candidate_proofs_sha256=hashlib.sha256(proof.read_bytes()).hexdigest(),checkpoint_sha256='a'*64,
-        fpga='fpga0',selected_sources=[f's{origins["conditional"]}'])
+        fpga='fpga0',selected_sources=[f's{origins["conditional"]}'], lineage_path=inventory.with_name("lineage.sqlite"))
     routed=tmp_path/'routed.tsv'
     with inventory.open()as source,routed.open('w')as target:
         reader=csv.reader(source,delimiter='\t');writer=csv.writer(target,delimiter='\t',lineterminator='\n');writer.writerow(next(reader))
@@ -171,6 +176,7 @@ def test_legacy_cell_confirmation_stays_readable_without_relabelling_output_port
     with closing(sqlite3.connect(path)) as db, db:
         doc = json.loads(db.execute('SELECT document FROM vendor_confirmation_document').fetchone()[0])
         has_output = any(item['object_kind'] == 'output-port' for item in doc['frontiers'])
+        extended_variables = any(item['variables'] > 12 for item in doc['frontiers'])
         doc['schema'] = 'emuflow.vivado-selected-constant-confirmations/v3'
         doc['native_input_policy'] = 'same-primitive-and-pin-bindings-at-preplacement-snapshot-v1'
         for item in doc['frontiers']: del item['object_kind']
@@ -179,11 +185,11 @@ def test_legacy_cell_confirmation_stays_readable_without_relabelling_output_port
         db.execute("UPDATE metadata SET value=? WHERE key='vendor_confirmation_document_sha256'",
                    (json.dumps(hashlib.sha256(raw.encode()).hexdigest()),))
     config['inputs'][0]['generation'] = native_file_generation(path)
-    if has_output:
-        with pytest.raises(ValidationError, match='legacy constant confirmation'):
+    if has_output or extended_variables:
+        with pytest.raises(ValidationError):
             OptimizationProofView(path, expected_fpga='fpga0')
     else:
         with OptimizationProofView(path, expected_fpga='fpga0') as view:
             assert view['vendor_confirmed_constant_state_cells'] > 0
     result = execute(vendor)
-    assert (result.returncode != 0) == has_output, result.stderr
+    assert (result.returncode != 0) == (has_output or extended_variables), result.stderr

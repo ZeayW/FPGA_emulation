@@ -14,7 +14,7 @@ from emuflow.vivado_session import (
 )
 from emuflow.vivado_optimization import OptimizationProofView
 from emuflow.vivado_physical import validate_synthesized_continuation
-from tests.test_vivado_constant_frontier import conditional_model
+from tests.test_vivado_constant_frontier import conditional_model, set_native_constant
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -31,19 +31,23 @@ TCL86 = _tcl86()
 
 @pytest.mark.skipif(TCL86 is None, reason="Tcl 8.6 required")
 @pytest.mark.parametrize("constant", ["GND", "VCC"])
-def test_native_output_frontier_exports_the_exact_port_bit_and_driver(tmp_path, constant):
+@pytest.mark.parametrize('kind',['output-port','module-output'])
+def test_native_output_frontier_exports_the_exact_port_bit_and_driver(tmp_path, constant, kind):
     query, observed = tmp_path/"query.tsv", tmp_path/"observed.tsv"
-    name = "q[1]"
+    name = "mapped_partition/q[1]" if kind=='module-output' else "q[1]"
     query.write_text("source_origin\tnative_cell_hex\tobject_kind\n" +
-        f"s0\t{name.encode().hex()}\toutput-port\n")
+        f"s0\t{name.encode().hex()}\t{kind}\n")
     program = f"set mock_constant {constant}\nset mock_port {_tcl_word(name)}\n" + r'''
 proc current_design {args} {return current}
 proc get_ports {args} {
   if {[lindex $args end] eq "DIRECTION == IN"} {return {}}
   return port
 }
-proc get_nets {args} {return net}
-proc get_pins {args} {return driver}
+proc get_nets {args} {return {net alias_net}}
+proc get_pins {args} {
+  if {[lsearch -exact $args -hier]>=0} {return port}
+  return {driver driver}
+}
 proc get_cells {args} {return constant}
 proc get_property {args} {
   global mock_constant mock_port
@@ -68,9 +72,49 @@ set argc 3
         rows = list(csv.DictReader(stream, delimiter="\t"))
     assert len(rows) == 1
     assert rows[0]["native_cell_hex"] == name.encode().hex()
-    assert rows[0]["ref"] == "OUTPUT_PORT" and rows[0]["pin"] == "PORT"
+    assert rows[0]["ref"] == ('MODULE_OUTPUT'if kind=='module-output'else'OUTPUT_PORT') and rows[0]["pin"] == "PORT"
     assert rows[0]["driver_kind"] == ("zero" if constant == "GND" else "one")
     assert rows[0]["driver_ref"] == constant
+
+
+@pytest.mark.skipif(TCL86 is None, reason='Tcl 8.6 required')
+def test_native_carry_frontier_exports_its_complete_input_vector_and_mode(tmp_path):
+    query,observed=tmp_path/'query.tsv',tmp_path/'observed.tsv'
+    query.write_text('source_origin\tnative_cell_hex\tobject_kind\ns0\t'+b'p/front'.hex()+'\tcell\n')
+    program=r'''
+proc current_design {args} {return current}
+proc get_ports {args} {return {}}
+proc get_nets {args} {return net}
+proc get_pins {args} {
+  if {[lsearch -exact $args -leaf]>=0} {return driver}
+  return pin
+}
+proc get_cells {args} {
+  if {[lsearch -exact $args -hier]>=0} {return front}
+  return constant
+}
+proc get_property {args} {
+  lassign [lrange $args end-1 end] key object
+  switch -- $key {
+    EMUFLOW_SOURCE {return s0}
+    REF_NAME {return [expr {$object eq "front" ? "CARRY8" : "GND"}]}
+    CARRY_TYPE {return SINGLE_CY8}
+    REF_PIN_NAME {return G}
+    NAME {return constant/G}
+    default {return ""}
+  }
+}
+set ::emuflow_native_export_stage optimized
+set argc 3
+'''
+    program+='set argv [list @current-design '+_tcl_word(query)+' '+_tcl_word(observed)+']\n'
+    program+='if {[catch {source '+_tcl_word(ROOT/'scripts/vivado/inspect_constant_frontiers.tcl')+'} message]} {puts stderr $message;exit 2}\n'
+    result=subprocess.run([TCL86],input=program,text=True,capture_output=True)
+    assert result.returncode==0,result.stderr
+    with observed.open()as stream:rows=list(csv.DictReader(stream,delimiter='\t'))
+    assert len(rows)==18
+    assert {row['pin']for row in rows}=={'CI','CI_TOP',*(f'{bus}[{bit}]'for bus in ('DI','S')for bit in range(8))}
+    assert all(row['ref']=='CARRY8'and row['carry_type']=='SINGLE_CY8'and row['driver_kind']=='zero'for row in rows)
 
 
 
@@ -103,7 +147,7 @@ def test_source_candidates_native_facts_and_routed_proof_are_one_checked_pipelin
     result = prepare_frontiers(session)
     assert result["constant_sources"] == (2 if dependent else 1)
     assert result["native_frontiers"] == 1
-    assert not (out/"synthesized-lineage.sqlite").exists()
+    assert (out/"synthesized-lineage.sqlite").is_file()
     shutil.copyfile(facts, out/"constant-frontiers.tsv")
     assert confirm_frontiers(session)["confirmed_sources"] == result["constant_sources"]
     assert prepare_timing(session)["query_classes"] == 1
@@ -114,6 +158,7 @@ def test_source_candidates_native_facts_and_routed_proof_are_one_checked_pipelin
         assert placement.execute("SELECT COUNT(*) FROM objects o JOIN sites s ON s.seq=o.site_seq WHERE o.stage='routed'").fetchone()[0] > 0
     assert not (out/"mapped_cells.tsv").exists()
     assert not (out/"routed_mapped_cells.tsv").exists()
+    assert not (out/"synthesized-lineage.sqlite").exists()
     with OptimizationProofView(out/"optimization-proofs.sqlite", expected_fpga="fpga0") as proof:
         assert proof.require_eliminated_source(f"s{origins['conditional']}")["initialization"] == "vendor-confirmed"
     assert f"optimized-away:s{origins['conditional']}" in (out/"local_path_timing-resolved.tsv").read_text()
@@ -152,7 +197,8 @@ def test_changed_checkpoint_or_native_driver_cannot_promote_constants(tmp_path):
     with pytest.raises(ValidationError, match="different synthesized checkpoint"):
         confirm_frontiers(session)
     checkpoint.write_bytes(b"checked synthetic native snapshot")
-    (out/"constant-frontiers.tsv").write_text(facts.read_text().replace("\tI0\tzero\t", "\tI0\tone\t"))
+    shutil.copyfile(facts,out/'constant-frontiers.tsv')
+    set_native_constant(out/'constant-frontiers.tsv','I0',1)
     with pytest.raises(ValidationError, match="pin bindings"):
         prepare_timing(session)
     assert not (out/"optimization-proofs.sqlite").exists()
@@ -267,7 +313,7 @@ def test_native_word_session_selects_sampling_costs_and_rejects_downgrades(tmp_p
              'timing_model':{'fabric_clock_port':'fabric_clk','dut_clock_ports':['clk']}}
     config=prepare_manifest(tmp_path,fpga='fpga0',part='part',mapped_index=tmp_path/'mapped',
         functions=tmp_path/'functions',mapped_sha256='a'*64,queries={},runtime=runtime,
-        ports={'clk','fabric_clk'},word_phy_directory=tmp_path)
+        ports={'clk','fabric_clk'},word_phy_directory=tmp_path,source_hierarchy_prefix='mapped_partition')
     manifest=tmp_path/'native-session.json'
     assert load_session(manifest)['timing_query_mode']=='clock-aware-reference'
     assert 'set emuflow_timing_query_mode "clock-aware-reference"'in config.read_text()

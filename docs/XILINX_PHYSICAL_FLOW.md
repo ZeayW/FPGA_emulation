@@ -711,14 +711,15 @@ local-path timing stores before implementation; full compilation checks this
 capability before the frontend. Between stages, short Python children use SQLite indexes to classify
 all required endpoints, plan complete conditional-state frontiers, confirm the
 native facts, and resolve the final routed queries. Source indexes close before
-the next native algorithm or timing export proceeds. The version 3 session
-manifest explicitly selects the `optimized` preplacement snapshot and timing
+the next native algorithm or timing export proceeds. The version 4 session
+manifest explicitly selects the `optimized` preplacement snapshot, the mapped
+source hierarchy prefix, and timing
 query mode. Native word sessions require `clock-aware-reference`; other sessions
 select `datapath-only`. A missing or inconsistent mode fails validation. After
 `opt_design`, a fresh census identifies all required endpoints that optimization
 removed. Unknown sources without supported associations or checked constant
 candidates fail before `place_design`. Complete constant frontiers are observed
-and confirmed in that same optimized design; the version 3 confirmation names
+and confirmed in that same optimized design; the version 5 confirmation names
 its observation stage and binds its inventory as well as the input synthesized
 checkpoint. Synthesis-only diagnostic snapshots remain explicitly labelled and
 cannot be substituted for an optimized observation.
@@ -825,9 +826,13 @@ separate quantities.
 
 `scripts/vivado/inspect_constant_frontiers.tcl INPUT_DCP QUERY_TSV OUTPUT_TSV`
 exports selected LUT INIT values and every input driver with its source tag,
-or the exact native driver of a directly exposed source-state output port.
+or the exact native driver of a constant source-state/cone output bit. A mapped
+module output uses its exact hierarchical pin, including an internal word bus;
+it must not be queried as an unrelated top-level port.
 The query has `source_origin`, `native_cell_hex`, and `object_kind` columns;
-the latter explicitly distinguishes `cell` from `output-port`. The bounded
+the latter explicitly distinguishes `cell`, `output-port`, and `module-output`.
+The observation adds `carry_type` for CARRY8; LUT observations retain INIT.
+The bounded
 `require_equal_frontier_functions` checker exhausts the union of input variables
 for one source/native LUT pair, allowing pin permutations and reduced LUTs only
 when their complete functions agree. Matching a pin name or observing a GND pin
@@ -851,7 +856,7 @@ query, together with every directly exposed selected-state output bit. It closes
 the plan has `status: inspection-required` and is not an elimination proof.
 `requested_sources` identifies the input roots; `sources` explicitly lists
 every state in the expanded component.
-The component is limited to 4096 states, 4096 retained LUT/output-port objects, 65536 fanout
+The component is limited to 4096 states, 4096 retained primitive/output objects, 65536 fanout
 uses and frontier references, and a bounded closure traversal.
 
 `confirm_selected_constant_sources` rebuilds that plan and checks complete
@@ -865,9 +870,33 @@ ports require an exact source Q-to-port-bit connection and an observed native
 GND/VCC driver agreeing with the selected value. Every exposed bit must be
 observed; missing bits, dynamic drivers, and different values fail. A port-only
 constant source therefore has a checked observable exit even without a LUT
-fanout. Unsupported fanouts remain unresolved. The version 4 confirmation
-document explicitly types each frontier; version 3 cell-only documents remain
-readable under their original policy. The certificate binds the FPGA, mapped source,
+fanout. The version 3 inspection plan also follows removed LUT1--6, LUT6_2 and
+MUXF7--9 outputs to their actual retained exits. Every traversed intermediate
+output must be proven constant from the explicitly selected joint states and
+strict specified-initialization facts. Other candidate values are not borrowed;
+required state dependencies, including those needed by retained-primitive inputs,
+expand the checked component with all of their observable fanouts. An output is
+omitted from this propagation only when its primitive truth table proves that
+the incoming signal has no influence, with all aliased inputs changing together
+and literal source inputs respected. Independent dynamic carry inputs retain
+their checked live-source bindings. A removed output
+that remains dynamic is rejected and requires a functional-cone observation.
+No missing observation becomes an unobservable disposition or a zero delay.
+
+Retained CARRY8 exits require equality of CARRY_TYPE and every one of their
+18 input bindings after checked constant propagation. Exact constant/buffer LUT
+truth tables can resolve normalized carry adapters to their source inputs.
+This structural equality proves the complete carry function for all assignments
+of up to 18 input variables without enumerating them. LUT function diagnostics
+remain bounded to 12 variables. The preplacement lineage index is an explicit
+input to the planner, binds retained-exit membership to the same native stage
+and inventory, and is retired after routed preparation consumes it. It is never
+replaced by a cell-name heuristic. Version 4 native word sessions require the
+explicit mapped-source hierarchy; older word manifests must be regenerated,
+while version 3 top-level sessions remain readable. The version 5 confirmation
+document types each frontier; version 3 cell-only and version 4 direct-output
+documents remain readable under their original policies and limits.
+Unsupported fanouts remain unresolved. The certificate binds the FPGA, mapped source,
 conditional source-model artifact, synthesized checkpoint, source inventory,
 and native observations. Its explicit policy chooses a legal joint
 initialization for unspecified states and confirms the selected substitutions

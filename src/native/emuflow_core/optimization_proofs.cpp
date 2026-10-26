@@ -97,9 +97,11 @@ void NativeOptimizationProofView::ReadConfirmation() {
   const std::string init="joint-inductive-source-model-with-explicit-vendor-selected-initialization";
   const auto schema=JsonText(db,raw,"$.schema");
   const bool legacy=schema=="emuflow.vivado-selected-constant-confirmations/v3";
+  const bool v4=schema=="emuflow.vivado-selected-constant-confirmations/v4";
   const std::string input_policy=legacy ? "same-primitive-and-pin-bindings-at-preplacement-snapshot-v1" :
-      "same-primitive-pin-bindings-and-direct-output-constants-at-preplacement-v2";
-  Check((legacy || schema=="emuflow.vivado-selected-constant-confirmations/v4") &&
+      v4 ? "same-primitive-pin-bindings-and-direct-output-constants-at-preplacement-v2" :
+      "inductive-constant-cones-and-retained-primitive-bindings-at-preplacement-v3";
+  Check((legacy || v4 || schema=="emuflow.vivado-selected-constant-confirmations/v5") &&
         JsonText(db,raw,"$.status")=="pass" && JsonText(db,raw,"$.fpga")==context_.fpga &&
         JsonText(db,raw,"$.mapped_index_sha256")==context_.mapped_sha256 &&
         JsonText(db,raw,"$.initialization_policy")==init && Scalar(db,"vendor_initialization_policy")==init &&
@@ -144,10 +146,18 @@ void NativeOptimizationProofView::ReadConfirmation() {
     const auto object_kind=legacy ? std::string("cell") : frontiers.TypedText(6);
     Check(required_frontiers.count(origin) && !cell.empty() && cell.find('\0')==std::string::npos &&
           (!legacy || (frontiers.IsNull(6) && !confirmed_.count(Origin(origin)))) &&
-          (object_kind=="cell" || (object_kind=="output-port" && variables==0)) &&
-          variables>=0 && variables<=12 && frontiers.TypedText(4)=="integer" && frontiers.TypedText(5)=="integer" &&
+          (object_kind=="cell" || (object_kind=="output-port" && variables==0) ||
+            (!legacy && !v4 && object_kind=="module-output" && variables==0)) &&
+          variables>=0 && variables<=((legacy || v4)?12:18) && frontiers.TypedText(4)=="integer" && frontiers.TypedText(5)=="integer" &&
           frontiers.TypedInteger(3)==(1LL<<variables) && objects.emplace(origin,cell).second,
           "optimization confirmation functional frontier is invalid or repeated");observed_frontiers.insert(origin);
+    if((legacy || v4) && object_kind=="cell") {
+      auto type=mapped_.database().Prepare("SELECT type FROM cells WHERE seq=?");type.BindInteger(1,Origin(origin));
+      Check(type.Step() && type.TypedText(0).size()==4 && type.TypedText(0).rfind("LUT",0)==0 &&
+            type.TypedText(0)[3]>='1' && type.TypedText(0)[3]<='6',"legacy confirmation requires a source single-output LUT");
+    }
+    if(v4 && object_kind=="output-port")
+      Check(confirmed_.count(Origin(origin)),"legacy output confirmation requires a selected source state");
   }
   Check(observed_frontiers==required_frontiers,"optimization confirmation frontier coverage differs");
 }

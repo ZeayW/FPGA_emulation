@@ -328,9 +328,11 @@ class OptimizationProofView(Mapping[str, Any]):
                         "synthesized_checkpoint_sha256","source_candidate_proofs_sha256","source_inventory_sha256",
                         "observations_sha256","sources","frontiers","source_model_scope","native_input_policy"}
                 legacy_confirmation = document.get("schema") == "emuflow.vivado-selected-constant-confirmations/v3" if isinstance(document,dict) else False
-                input_policy = "same-primitive-and-pin-bindings-at-preplacement-snapshot-v1" if legacy_confirmation else CONSTANT_NATIVE_INPUT_POLICY
+                v4_confirmation = document.get("schema") == "emuflow.vivado-selected-constant-confirmations/v4" if isinstance(document,dict) else False
+                input_policy = ("same-primitive-and-pin-bindings-at-preplacement-snapshot-v1" if legacy_confirmation else
+                    "same-primitive-pin-bindings-and-direct-output-constants-at-preplacement-v2" if v4_confirmation else CONSTANT_NATIVE_INPUT_POLICY)
                 if (not isinstance(document,dict) or set(document) != keys
-                        or document["schema"] not in {CONSTANT_CONFIRMATION_SCHEMA,"emuflow.vivado-selected-constant-confirmations/v3"} or document["status"] != "pass"
+                        or document["schema"] not in {CONSTANT_CONFIRMATION_SCHEMA,"emuflow.vivado-selected-constant-confirmations/v3","emuflow.vivado-selected-constant-confirmations/v4"} or document["status"] != "pass"
                         or document["fpga"] != expected_fpga or document["source_stage"] not in {"synthesized", "optimized"}
                         or (stage != "routed" and document["source_stage"] != stage)
                         or (stage != "routed" and document["source_inventory_sha256"] != self.header["stage_inventory_sha256"])
@@ -368,16 +370,20 @@ class OptimizationProofView(Mapping[str, Any]):
                 if not legacy_confirmation:
                     frontier_keys.add("object_kind")
                 for item in document["frontiers"]:
+                    kinds={"cell","output-port"} if legacy_confirmation or v4_confirmation else {"cell","output-port","module-output"}
+                    variables_max=12 if legacy_confirmation or v4_confirmation else 18
                     if (not isinstance(item,dict) or set(item) != frontier_keys
                             or item["source_origin"] not in required_frontiers or not isinstance(item["native_cell"],str) or not item["native_cell"]
-                            or item.get("object_kind", "cell") not in {"cell", "output-port"}
-                            or isinstance(item["variables"],bool) or not isinstance(item["variables"],int) or not 0 <= item["variables"] <= 12
+                            or item.get("object_kind", "cell") not in kinds
+                            or isinstance(item["variables"],bool) or not isinstance(item["variables"],int) or not 0 <= item["variables"] <= variables_max
                             or isinstance(item["assignments"],bool) or not isinstance(item["assignments"],int)
                             or item["assignments"] != 1 << item["variables"]):
                         raise ValidationError("Vivado vendor functional frontier record is invalid")
                     if legacy_confirmation and int(item["source_origin"][1:]) in confirmed:
                         raise ValidationError("legacy constant confirmation cannot contain output port frontiers")
-                    if item.get("object_kind") == "output-port" and (item["variables"] != 0 or item["assignments"] != 1):
+                    if v4_confirmation and item.get('object_kind')=='output-port' and int(item['source_origin'][1:])not in confirmed:
+                        raise ValidationError('legacy constant confirmation cannot contain combinational output cones')
+                    if item.get("object_kind") in {"output-port","module-output"} and (item["variables"] != 0 or item["assignments"] != 1):
                         raise ValidationError("Vivado vendor output port is not a constant observation")
                     key = (item["source_origin"],item["native_cell"])
                     if key in observed_objects:
