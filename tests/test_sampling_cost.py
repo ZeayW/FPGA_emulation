@@ -1,4 +1,5 @@
 import hashlib
+import json
 import sqlite3
 
 import pytest
@@ -84,6 +85,32 @@ def test_policy_and_optimized_away_cost_coverage_are_explicit():
     ]:
         with pytest.raises(ValidationError):
             validate_sampling_cost(row, policy)
+
+
+def test_original_local_path_import_retains_cost_and_data(tmp_path):
+    from tests.test_local_path_timing_storage import _header, _record
+    from emuflow.vivado_physical_timing import import_vivado_local_timing
+    from emuflow.local_path_timing_storage import read_local_path_timing_storage
+    header = {key: value for key, value in _header().items()
+              if key in {"status", "design", "fpga", "source", "coverage"}}
+    header["schema"] = "emuflow.local-path-identity/v2"
+    rows = [{**_record(name, 0.), "measurement": "endpoint-longest-path-fallback", "path_pins": []}
+            for name in ["a", "b"]]
+    identity_path = tmp_path/"local-identity.sqlite"
+    with sqlite3.connect(identity_path) as db:
+        db.execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT)")
+        db.execute("CREATE TABLE paths(id TEXT PRIMARY KEY,record_json TEXT)")
+        db.execute("INSERT INTO metadata VALUES ('header',?)", (json.dumps(header),))
+        db.executemany("INSERT INTO paths VALUES (?,?)", [
+            (row["id"], json.dumps({key: value for key, value in row.items() if key != "delay_ns"}))
+            for row in rows])
+    raw, output = tmp_path/"local-costs.tsv", tmp_path/"local-timing.json"
+    measurements(raw, rows, [("1.5", "-0.75"), ("-0.5", "-2.75")])
+    assert import_vivado_local_timing(raw, identity_path, output)["implemented_paths"] == 2
+    with read_local_path_timing_storage(output) as view:
+        assert view["sampling_cost_policy"] == SAMPLING_COST_POLICY
+        assert [row["sampling_cost_ns"] for row in view["paths"]] == [1.5, -0.5]
+        assert [row["delay_ns"] for row in view["paths"]] == [2.25, 2.25]
 
 
 @pytest.mark.parametrize("version", [1, 2])

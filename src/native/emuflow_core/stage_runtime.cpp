@@ -142,6 +142,8 @@ constexpr RegisteredSchema schemas[] = {
      "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.local-path-timing/v1"},
     {"local-path-timing-store-v2", ArtifactEncoding::kSqlite, 0x454d554c, 2, true,
      "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.local-path-timing/v1"},
+    {"local-path-timing-store-v3", ArtifactEncoding::kSqlite, 0x454d554c, 3, true,
+     "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.local-path-timing/v1"},
     // Existing physical index relations have zero application/user PRAGMAs.
     // Their stage-owned metadata and complete ordered records remain mandatory.
     {"xilinx-mapped-index-v2", ArtifactEncoding::kSqlite, 0, 0, true,

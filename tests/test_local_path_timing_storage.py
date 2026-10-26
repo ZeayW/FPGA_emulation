@@ -163,21 +163,23 @@ def test_eliminated_local_member_rejects_fake_measurements(tmp_path: Path, mutat
         write_local_path_timing_storage(tmp_path / "timing.json", _header(), [_record("a", 1.0), eliminated])
 
 
-def test_reads_historical_v1_typed_generation(tmp_path: Path) -> None:
+@pytest.mark.parametrize("version", [1, 2])
+def test_reads_historical_data_only_typed_generation(tmp_path: Path, version) -> None:
     import sqlite3
     from emuflow.io import file_sha256
-    from emuflow.local_path_timing_storage import _DDL_V1, _store_name, LOCAL_PATH_TIMING_APPLICATION_ID
+    from emuflow.local_path_timing_storage import _DDL_V1, _DDL_V2, _store_name, LOCAL_PATH_TIMING_APPLICATION_ID
     selector = tmp_path / "current.json"
     with write_local_path_timing_storage(selector, _header(), [_record("a", 1.0), _record("b", 2.0)]) as view:
         current = view.store_path
         raw = dict(view.selector)
     temporary = tmp_path / "historical.sqlite"
     db = sqlite3.connect(temporary, uri=True)
-    db.executescript(_DDL_V1)
+    db.executescript(_DDL_V1 if version == 1 else _DDL_V2)
     db.execute(f"PRAGMA application_id={LOCAL_PATH_TIMING_APPLICATION_ID}")
-    db.execute("PRAGMA user_version=1")
+    db.execute(f"PRAGMA user_version={version}")
     db.execute("ATTACH DATABASE ? AS newer", (f"file:{current}?mode=ro&immutable=1",))
-    db.execute("INSERT INTO timings SELECT seq,id,kind,fpga,clock_domain,clock_period_ns,required_time_ns,start_pin,end_pin,measurement,delay_ns FROM newer.timings")
+    columns = ",".join(row[1] for row in db.execute("PRAGMA table_info(timings)"))
+    db.execute(f"INSERT INTO timings SELECT {columns} FROM newer.timings")
     for table in ("metadata", "path_pins"):
         db.execute(f"INSERT INTO {table} SELECT * FROM newer.{table}")
     db.commit()
@@ -186,12 +188,38 @@ def test_reads_historical_v1_typed_generation(tmp_path: Path) -> None:
     historical = tmp_path / "historical.json"
     target = historical.with_name(_store_name(historical, digest))
     temporary.rename(target)
-    raw.update(schema="emuflow.local-path-timing-storage/v1", user_version=1,
+    raw.update(schema=f"emuflow.local-path-timing-storage/v{version}", user_version=version,
                artifact=target.name, store_sha256=digest, store_bytes=target.stat().st_size)
     historical.write_text(json.dumps(raw))
     with read_local_path_timing_storage(historical) as view:
         assert list(view["paths"]) == [_record("a", 1.0), _record("b", 2.0)]
         assert view.validate_timing()["optimized_away_paths"] == 0
+
+
+def test_signed_sampling_costs_survive_storage_and_raw_validation(tmp_path):
+    from emuflow.sampling_cost import SAMPLING_COST_POLICY
+    selector = tmp_path/"costs.json"
+    records = [{**_record("a", 2.25), "sampling_cost_ns": -0.5},
+               {**_record("b", 3.), "sampling_cost_ns": 4.25}]
+    with write_local_path_timing_storage(
+        selector, {**_header(), "sampling_cost_policy": SAMPLING_COST_POLICY}, records
+    ) as view:
+        assert list(view["paths"]) == records
+        raw = {**dict(view), "paths": list(view["paths"])}
+        assert validate_local_path_timing(raw) == validate_local_path_timing(view)
+        assert view.selector["user_version"] == 3
+    with read_local_path_timing_storage(selector) as view:
+        assert [r["sampling_cost_ns"] for r in view["paths"]] == [-0.5, 4.25]
+
+
+@pytest.mark.parametrize("damage", [{}, {"sampling_cost_ns": True},
+                                    {"sampling_cost_ns": float("nan")}])
+def test_sampling_cost_requires_complete_finite_coverage(tmp_path, damage):
+    from emuflow.sampling_cost import SAMPLING_COST_POLICY
+    with pytest.raises(ValidationError):
+        write_local_path_timing_storage(
+            tmp_path/"bad.json", {**_header(), "sampling_cost_policy": SAMPLING_COST_POLICY},
+            [{**_record("a", 1.), **damage}, {**_record("b", 1.), "sampling_cost_ns": 1.}])
 
 
 def test_local_path_typed_rejects_incomplete_coverage(tmp_path: Path) -> None:

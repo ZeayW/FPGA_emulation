@@ -4,6 +4,7 @@ import subprocess
 from array import array
 from collections.abc import Sequence
 from unittest import mock
+from types import SimpleNamespace
 
 import pytest
 from tests.system_timing_oracle import compare_system_timing
@@ -28,6 +29,15 @@ def example():
             EventCheck("p", "target", "capture", 16, (8, .5, 7), 18),
             EventCheck("p", "runtime", "capture", 16, (8, .5, 7), 100),
             EventCheck("p", "commit", "capture", 16, (8, .5, 7), 96)]
+
+
+@pytest.mark.parametrize("field", ["logic_segment_timing", "local_path_timing", "boundary_timing"])
+def test_legacy_binder_cannot_silently_ignore_sampling_costs(field):
+    from emuflow.sampling_cost import SAMPLING_COST_POLICY
+    with pytest.raises(ValidationError, match="requires clock-aware event binding"):
+        bind_physical_checks({}, {}, {"transport_semantics": "sampled-virtual-wire"},
+                             {field: {"fpga0": {"sampling_cost_policy": SAMPLING_COST_POLICY}}},
+                             SimpleNamespace(links=[]))
 
 
 def test_exports_raw_arc_chain_and_absolute_events(tmp_path):

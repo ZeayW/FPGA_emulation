@@ -1972,6 +1972,13 @@ the Python event propagator or consume its per-path numerical results.
         raise ValidationError("global OpenSTA requires fixed-slot transport")
     if any(link.word_timing is not None for link in platform.links):
         raise ValidationError("periodic LVDS word physical event projection is not yet qualified; ratio estimates cannot substitute for execution events")
+    for field in ("logic_segment_timing", "local_path_timing", "boundary_timing"):
+        databases = physical.get(field)
+        if isinstance(databases, Mapping) and any(
+            isinstance(database, Mapping) and "sampling_cost_policy" in database
+            for database in databases.values()
+        ):
+            raise ValidationError("sampling-cost physical evidence requires clock-aware event binding; the legacy binder cannot discard clock/check adjustments")
     endpoints = _endpoint_delay_database(physical)
     segments = _logic_segment_database(physical)
     links = _board_link_delay_database(physical, platform)

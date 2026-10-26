@@ -772,8 +772,12 @@ Every implemented segment in that owner must have a finite cost; optimized-away
 segments have none. The signed adjustment remains derivable and is not copied
 into a second stored column. Eight-column data-only measurements remain
 explicitly without a sampling-cost policy, and existing version 1/2 stores
-remain readable. The local-path and boundary importers have separate formats;
-this extension does not silently change those contracts or enable word-global
+remain readable. The original local-path importer accepts the same vendor
+columns and retains each cost in its version 3 local-path owner, with the same
+policy and absent-value rules. Identity projection hides both numerical
+measurements. Boundary timing retains its separate format. The legacy global
+event binder rejects sampling-cost policies instead of silently dropping
+clock/check adjustments; these storage extensions do not enable word-global
 timing. The maximum effective sampling cost and its associated raw delay are
 separate quantities.
 

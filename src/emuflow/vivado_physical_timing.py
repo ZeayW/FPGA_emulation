@@ -17,7 +17,8 @@ from .store_publication import bind_view_sources, bind_store_source
 from .indexed_physical_ir import IndexedPhysicalIR
 from .local_path_timing import LOCAL_PATH_IDENTITY_SCHEMA_V2, local_path_timing_header, validate_local_path_timing
 from .local_path_timing_storage import write_local_path_timing_storage
-from .logic_segment_timing import VIVADO_LOGIC_SEGMENT_QUERY_HEADER, VIVADO_LOGIC_SEGMENT_TIMING_HEADER, _vivado_object
+from .logic_segment_timing import VIVADO_LOGIC_SEGMENT_QUERY_HEADER, VIVADO_LOGIC_SEGMENT_TIMING_HEADER, VIVADO_LOGIC_SAMPLING_COST_HEADER, _vivado_object
+from .sampling_cost import SAMPLING_COST_POLICY, parse_reference_cost_fields
 
 
 def _hex(text: str) -> str:
@@ -73,10 +74,12 @@ def import_vivado_local_timing(input_path: Path, identity_path: Path, output_pat
         try:
             connection.execute("ATTACH DATABASE ? AS identity", (f"file:{identity_path.resolve()}?mode=ro",))
             header = json.loads(connection.execute("SELECT value FROM identity.metadata WHERE key='header'").fetchone()[0])
-            connection.execute("CREATE TABLE measurements(id TEXT PRIMARY KEY,delay REAL,optimization_source TEXT)")
+            connection.execute("CREATE TABLE measurements(id TEXT PRIMARY KEY,delay REAL,optimization_source TEXT,sampling_cost_ns REAL)")
             with input_path.open(encoding="utf-8") as stream:
-                if next(stream, "").rstrip("\n") != VIVADO_LOGIC_SEGMENT_TIMING_HEADER:
+                measurement_header = next(stream, "").rstrip("\n")
+                if measurement_header not in {VIVADO_LOGIC_SEGMENT_TIMING_HEADER, VIVADO_LOGIC_SAMPLING_COST_HEADER}:
                     raise ValidationError("Vivado local timing header is invalid")
+                sampling_costs = measurement_header == VIVADO_LOGIC_SAMPLING_COST_HEADER
                 for line in stream:
                     if not line.strip():
                         continue
@@ -86,9 +89,10 @@ def import_vivado_local_timing(input_path: Path, identity_path: Path, output_pat
                         eliminated = fields[5].startswith(OPTIMIZED_AWAY+":")
                         proof_source = fields[5].split(":",1)[1] if eliminated else None
                         delay = None if eliminated else float(fields[2])
+                        cost = parse_reference_cost_fields(fields[8:], delay, eliminated=eliminated) if sampling_costs else None
                         row = connection.execute("SELECT record_json FROM identity.paths WHERE id=?", (identity,)).fetchone()
                         record = json.loads(row[0]) if row else None
-                        valid = (len(fields) == 8 and fields[1] == "local" and record is not None
+                        valid = (len(fields) == (10 if sampling_costs else 8) and fields[1] == "local" and record is not None
                                  and bytes.fromhex(fields[3]).decode("utf-8") == record["start_pin"]
                                  and bytes.fromhex(fields[4]).decode("utf-8") == record["end_pin"]
                                  and ((eliminated and not fields[2] and not fields[6] and not fields[7]) or
@@ -103,20 +107,25 @@ def import_vivado_local_timing(input_path: Path, identity_path: Path, output_pat
                         validate_optimization_record(disposition)
                         require_optimization_proof({"optimization_proofs":{header["fpga"]:optimization_proofs}},header["fpga"],proof_source,record)
                     try:
-                        connection.execute("INSERT INTO measurements VALUES (?,?,?)", (identity, delay, proof_source))
+                        connection.execute("INSERT INTO measurements VALUES (?,?,?,?)", (identity, delay, proof_source, cost))
                     except sqlite3.IntegrityError as error:
                         raise ValidationError("Vivado local timing contains a duplicate path") from error
             count = connection.execute("SELECT count(*) FROM measurements").fetchone()[0]
             if count != header["coverage"]["local_paths"]:
                 raise ValidationError("Vivado local timing coverage is incomplete")
             def records():
-                for row in connection.execute("SELECT p.record_json,m.delay,m.optimization_source FROM identity.paths p JOIN measurements m ON m.id=p.id ORDER BY p.id"):
+                for row in connection.execute("SELECT p.record_json,m.delay,m.optimization_source,m.sampling_cost_ns FROM identity.paths p JOIN measurements m ON m.id=p.id ORDER BY p.id"):
                     record = {**json.loads(row[0]), "delay_ns": None if row[1] is None else float(row[1])}
                     if row[2] is not None:
                         record.update(measurement=OPTIMIZED_AWAY,optimization_source=str(row[2]),path_pins=[])
+                    if row[3] is not None:
+                        record["sampling_cost_ns"] = float(row[3])
                     yield record
             timing_header = local_path_timing_header(header, provider="vivado-source-bound-local-endpoint-delay-v1",
                                                      qualification="routed-vendor-device-local-endpoint-longest-path")
+            if sampling_costs:
+                timing_header.update(sampling_cost_policy=SAMPLING_COST_POLICY,
+                                     provider="vivado-source-bound-local-sampling-cost-v1")
             with write_local_path_timing_storage(
                 output_path, timing_header, records(), source_bindings=source_bindings
             ) as view:

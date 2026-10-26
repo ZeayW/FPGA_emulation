@@ -83,17 +83,17 @@ class _WithoutDelayPath(Mapping[str, Any]):
         self.source = source
 
     def __getitem__(self, key: str) -> Any:
-        if key in {"delay_ns", "optimization_source"}:
+        if key in {"delay_ns", "optimization_source", "sampling_cost_ns"}:
             raise KeyError(key)
         if key == "measurement" and is_optimized_away(self.source):
             return "endpoint-longest-path-fallback"
         return self.source[key]
 
     def __iter__(self) -> Iterator[str]:
-        return (key for key in self.source if key not in {"delay_ns", "optimization_source"})
+        return (key for key in self.source if key not in {"delay_ns", "optimization_source", "sampling_cost_ns"})
 
     def __len__(self) -> int:
-        return len(self.source) - sum(key in self.source for key in ("delay_ns", "optimization_source"))
+        return len(self.source) - sum(key in self.source for key in ("delay_ns", "optimization_source", "sampling_cost_ns"))
 
 
 class _WithoutDelayPaths(Sequence[Mapping[str, Any]]):
@@ -1187,6 +1187,9 @@ def validate_local_path_timing(database: Mapping[str, Any]) -> Dict[str, Any]:
         return indexed_validator()
     if database.get("schema") != LOCAL_PATH_TIMING_SCHEMA:
         raise ValidationError("local path timing schema is invalid")
+    from .sampling_cost import SAMPLING_COST_POLICY, validate_sampling_cost
+    if "sampling_cost_policy" in database and database["sampling_cost_policy"] != SAMPLING_COST_POLICY:
+        raise ValidationError("local path timing sampling cost policy is invalid")
     paths = database.get("paths")
     if not isinstance(paths, Sequence) or isinstance(
         paths, (str, bytes, bytearray)
@@ -1217,6 +1220,7 @@ def validate_local_path_timing(database: Mapping[str, Any]) -> Dict[str, Any]:
     for item in paths:
         if not isinstance(item, Mapping):
             raise ValidationError("local path timing record is invalid")
+        validate_sampling_cost(item, database.get("sampling_cost_policy"))
         if validate_optimization_record(item):
             measurement_counts[OPTIMIZED_AWAY] += 1
             continue
