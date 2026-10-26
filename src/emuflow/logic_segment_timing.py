@@ -31,6 +31,7 @@ from .indexed_timing import IndexedTimingView
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
 from .phase3_assignment_index import read_phase3_exact_semantic_partition
 from .phase3_assignment_index import open_phase3_assignment_index
+from .phase3_assignment_index import SUPPORTED_ASSIGNMENT_INDEX_USER_VERSIONS
 from .phase3_exact_binary import (
     iter_phase3_exact_captures,
     iter_phase3_exact_segments,
@@ -541,7 +542,7 @@ def _index_exact_logic_segments(
 def _stream_indexed_exact_partition(
     path: Path, fpga: str, *, allow_legacy: bool
 ) -> tuple[Mapping[str, Any], Any, Any]:
-    """Open the v3 typed semantic partition without list materialization."""
+    """Open a supported typed semantic partition without list materialization."""
     connection = open_phase3_assignment_index(path)
     try:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
@@ -549,7 +550,7 @@ def _stream_indexed_exact_partition(
             str(row[0]): json.loads(str(row[1]))
             for row in connection.execute("SELECT key,value FROM metadata")
         }
-        if version == 3:
+        if version in SUPPORTED_ASSIGNMENT_INDEX_USER_VERSIONS:
             descriptor = metadata.get("semantic_contract_binary")
             if not isinstance(descriptor, Mapping):
                 raise ValidationError(

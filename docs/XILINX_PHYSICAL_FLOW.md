@@ -674,8 +674,11 @@ implementation components. LUT capacity is counted by occupied site/LUT letter
 (O5/O6 share one LUT); DSP and URAM components are counted by unique sites.
 
 Same-FPGA timing queries cover the complete declared original-path population;
-cross-FPGA logic and interface queries retain the Phase 6 identities. Fixed
-logical transport ports resolve to the declared physical P pad. Query extents
+cross-FPGA logic and interface queries retain the Phase 6 identities.
+Static Exact fanin queries stream the canonical semantic binary referenced by
+either supported v3 or v4 assignment index; current v4 input does not select a
+materialized legacy partition reader.
+Fixed logical transport ports resolve to the declared physical P pad. Query extents
 are checked against actual timing endpoints; a sequential Q launch may start
 at the same primitive's clock to include clock-to-Q, while an unrelated prefix
 or any suffix beyond the requested endpoint is rejected. After implementation

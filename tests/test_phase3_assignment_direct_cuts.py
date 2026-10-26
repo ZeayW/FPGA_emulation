@@ -61,6 +61,24 @@ def _assignment(source, mode="normal"):
         primary_owner.close()
 
 
+@pytest.mark.parametrize("allow_legacy", [False, True])
+def test_physical_query_consumer_streams_current_native_exact_index(source, tmp_path, allow_legacy):
+    import emuflow.logic_segment_timing as consumer
+    from emuflow.phase3_assignment_index import read_phase3_exact_semantic_partition
+    with _assignment(source) as (ir, assignment, _typed):
+        path=tmp_path/'assignment.sqlite'
+        write_phase3_assignment_index(path,ir,assignment)
+        with closing(sqlite3.connect(path)) as db:
+            assert db.execute('PRAGMA user_version').fetchone()[0]==4
+        expected=read_phase3_exact_semantic_partition(path,'a')
+        with patch.object(consumer,'read_phase3_exact_semantic_partition',side_effect=AssertionError('materialized legacy semantic partition')):
+            header,segments,captures=consumer._stream_indexed_exact_partition(path,'a',allow_legacy=allow_legacy)
+            assert header=={key:expected[key] for key in ('schema','sha256','fpga')}
+            assert isinstance(header['sha256'],str) and len(header['sha256'])==64
+            assert list(segments)==expected['logic_segments']
+            assert list(captures)==expected['capture_requirements']
+
+
 @pytest.mark.parametrize("mode", ["normal", "unicode", "sparse", "no-cuts"])
 def test_native_cut_publication_matches_reference_without_host_records(
     source, tmp_path, mode

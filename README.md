@@ -65,6 +65,7 @@ and the indexed global result owner. Python passes file references; imported raw
 are retired. Missing register origins can also use bounded association through
 identical LUT1 control drivers; clock and data identities remain exact. Source
 lineage still does not prove functional equivalence.
+Physical query preparation streams supported v3/v4 assignment indexes.
 Vivado uses explicit DUT implementation targets independently of runtime frames;
 a frequency override scales all DUT roots together while keeping the TDM clock
 fixed. The same documentation describes bounded checkpoint diagnostics for word
