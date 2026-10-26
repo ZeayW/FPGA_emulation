@@ -914,9 +914,12 @@ def import_sta_path_database_tsv(
     source: Optional[Mapping[str, Any]] = None,
     _ir: Optional[EmuIR] = None,
     _return_value: bool = False,
+    expected_records: Optional[int] = None,
 ) -> Dict[str, Any]:
     if provider not in STA_PATH_DATABASE_PROVIDERS:
         raise ValidationError("STA path database provider is invalid")
+    if expected_records is not None and (isinstance(expected_records,bool)or not isinstance(expected_records,int)or expected_records<=0):
+        raise ValidationError('STA expected producer record count is invalid')
     with input_path.open()as stream:
         budget_format=stream.readline().rstrip('\r\n')==STA_PATH_DATABASE_CLOCK_TSV_HEADER
     if source is not None and 'clock_budget_policy'in source and source['clock_budget_policy']!=(
@@ -924,7 +927,7 @@ def import_sta_path_database_tsv(
         raise ValidationError('STA clock budget policy/header mismatch')
     if budget_format:
         report=import_sta_path_database_tsv_streaming(input_path,ir_path,output_path,
-            provider=provider,source=source,_ir=_ir)
+            provider=provider,source=source,_ir=_ir,expected_records=expected_records)
         if _return_value:report['_value']=load_sta_path_database(output_path,verify_payload=False)
         return report
     # Large physical timing graphs can exceed hundreds of MiB.  The OpenSTA
@@ -961,6 +964,8 @@ def import_sta_path_database_tsv(
         raise ValidationError(
             "STA path database TSV contains no mapped timing paths"
         )
+    if expected_records is not None and len(paths)!=expected_records:
+        raise ValidationError('STA producer terminal record count differs')
     normalization = _database_normalization(paths)
     for path in paths:
         path["normalized_slack"] = _normalized_slack(
@@ -1042,6 +1047,7 @@ def import_sta_path_database_tsv_streaming(
     provider: str,
     source: Optional[Mapping[str, Any]] = None,
     _ir: Optional[EmuIR] = None,
+    expected_records: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Convert an STA TSV to a small manifest plus an indexed SQLite payload.
 
@@ -1052,6 +1058,8 @@ def import_sta_path_database_tsv_streaming(
 
     if provider not in STA_PATH_DATABASE_PROVIDERS:
         raise ValidationError("STA path database provider is invalid")
+    if expected_records is not None and (isinstance(expected_records,bool)or not isinstance(expected_records,int)or expected_records<=0):
+        raise ValidationError('STA expected producer record count is invalid')
     if output_path.is_symlink():
         raise ValidationError("STA selector is a symbolic link")
     source_bindings = validate_store_destination(
@@ -1210,6 +1218,8 @@ def import_sta_path_database_tsv_streaming(
             raise ValidationError(
                 "STA path database TSV contains no mapped timing paths"
             )
+        if expected_records is not None and count!=expected_records:
+            raise ValidationError('STA producer terminal record count differs')
         connection.commit()
         connection.close()
         connection = None

@@ -45,8 +45,9 @@ Safe-frequency fields remain unavailable until edge/phase and physical margins
 are bound; raw maximum delay alone does not determine an operating frequency.
 An explicit standalone OpenSTA clock-budget qualifier checks engine cycle facts;
 its synthetic scope is described in the timing contract above.
-The explicit Phase 2 `engine-edge-v1` API policy retains these facts in indexed
-TimingPathDB v4; complete global physical consumption remains under integration.
+The explicit Phase 2 `engine-edge-v1` API policy checks engine completion and
+retains these facts in indexed TimingPathDB v4; complete global physical
+consumption remains under integration.
 The indexed provider exports routed reports and timing in one native session
 with a separate numerical reference for post-route data-delay queries
 and supports checked continuation within an active run, using native module

@@ -1,11 +1,14 @@
 import json
 import shutil
 import sqlite3
+from types import SimpleNamespace
+from unittest.mock import patch
 from pathlib import Path
 
 import pytest
 
-from emuflow.errors import ValidationError
+from emuflow.errors import ValidationError,EmuFlowError
+from emuflow.opensta import check_opensta_export_completion,run_opensta_path_database
 from emuflow.sta import (STA_PATH_DATABASE_CLOCK_TSV_HEADER,import_sta_path_database_tsv_streaming,
     iter_sta_path_database_paths,iter_selected_sta_path_database_paths,validate_sta_path_database,
     sta_path_database_payload_path,_sta_path_record_row)
@@ -78,3 +81,34 @@ def test_clock_policy_and_tsv_format_cannot_be_mixed(tmp_path):
         import_sta_path_database_tsv_streaming(tmp_path/'paths.tsv',source,out,
             provider='opensta-fpga-path-database-v1',source={'clock_budget_policy':'legacy-absolute-arrival-v1'})
     assert out.read_bytes()==before
+
+
+def test_terminal_count_mismatch_cannot_publish_a_partial_path_owner(tmp_path):
+    source,out,_value=prepare(tmp_path)
+    before=out.read_bytes()
+    with pytest.raises(ValidationError,match='terminal record count'):
+        import_sta_path_database_tsv_streaming(tmp_path/'paths.tsv',source,out,
+            provider='opensta-fpga-path-database-v1',expected_records=4)
+    assert out.read_bytes()==before
+
+
+def test_zero_exit_after_tcl_error_is_not_clock_budget_completion(tmp_path):
+    source,out,_value=prepare(tmp_path);before=out.read_bytes()
+    def partial_export(command,*,environment):
+        Path(environment['EMUFLOW_STA_OUTPUT']).write_text('partial output\n')
+        return SimpleNamespace(returncode=0,stdout='Error: unsupported clock budget after some emitted paths\n')
+    with patch('emuflow.opensta.require_opensta_engine',return_value={'version':'3.1.0'}),\
+         patch('emuflow.opensta.run_with_bounded_output',side_effect=partial_export):
+        with pytest.raises(EmuFlowError,match='terminal completion'):
+            run_opensta_path_database(source,out,clocks={'clk':10.},executable='fake-sta',
+                _stream_output=True,clock_budget_policy='engine-edge-v1')
+    assert out.read_bytes()==before
+
+
+def test_completion_record_binds_clock_count_output_and_emitted_population(tmp_path):
+    out=tmp_path/'path output.tsv'
+    line=f'EMUFLOW_OPENSTA_DATABASE status=pass clocks=2 queried_paths=10 emitted_paths=9 output={out}\n'
+    assert check_opensta_export_completion(line,output_path=out,clock_count=2)==9
+    for text in (line+line,line.replace('clocks=2','clocks=1'),line.replace('emitted_paths=9','emitted_paths=11'),
+        line.replace(str(out),str(tmp_path/'other.tsv'))):
+        with pytest.raises(EmuFlowError):check_opensta_export_completion(text,output_path=out,clock_count=2)

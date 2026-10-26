@@ -1301,6 +1301,17 @@ def parse_clock_definitions(values: Iterable[str]) -> Dict[str, float]:
     return clocks
 
 
+def check_opensta_export_completion(log: str, *, output_path: Path, clock_count: int) -> int:
+    """Require the closed producer's exact completion record, not just exit 0."""
+    records=re.findall(r'^EMUFLOW_OPENSTA_DATABASE status=pass clocks=(\d+) queried_paths=(\d+) emitted_paths=(\d+) output=(.+)\r?$',log,re.M)
+    if len(records)!=1:
+        raise EmuFlowError('OpenSTA export lacks one terminal completion record')
+    clocks,queried,emitted,output=records[0]
+    if int(clocks)!=clock_count or not 0<int(emitted)<=int(queried) or output.rstrip('\r')!=str(output_path):
+        raise EmuFlowError('OpenSTA terminal completion identity/count differs')
+    return int(emitted)
+
+
 def _run_opensta_path_database(
     ir_path: Path,
     output_path: Path,
@@ -1459,6 +1470,8 @@ def _run_opensta_path_database(
             raise EmuFlowError(
                 "OpenSTA reported success but did not create its path TSV"
             )
+        expected_records=(check_opensta_export_completion(completed.stdout,output_path=raw_path,clock_count=len(clock_map))
+            if clock_budget_policy=='engine-edge-v1'else None)
         source_value = {
             'clock_budget_policy':clock_budget_policy,
             'export_script_sha256':file_sha256(OPENSTA_EXPORT_SCRIPT),
@@ -1481,6 +1494,7 @@ def _run_opensta_path_database(
                 provider=OPENSTA_PROVIDER,
                 source=source_value,
                 _ir=ir,
+                expected_records=expected_records,
             )
             database = read_json(output_path)
         else:
@@ -1492,6 +1506,7 @@ def _run_opensta_path_database(
                 source=source_value,
                 _ir=ir,
                 _return_value=True,
+                expected_records=expected_records,
             )
             database = imported.pop("_value")
 

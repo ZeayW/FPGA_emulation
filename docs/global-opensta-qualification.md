@@ -230,6 +230,9 @@ target cycle time, multicycle adjustment, check margin, clock latency/skew and
 check classification. Target clock/period remain owned by the path row.
 Import checks these facts while streaming the producer output; readers stream
 budgets once per path, including indexed selections, rather than per net.
+This policy requires the engine's terminal completion record and matches its
+clock count, output identity and emitted-row count before publication; a zero
+exit after a Tcl error cannot publish a partial path population.
 Missing/extra records and schema/format mixtures are rejected. Native PATRON
 retains its direct indexed path projection for both storage versions.
 
