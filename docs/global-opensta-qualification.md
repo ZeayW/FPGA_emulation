@@ -112,10 +112,26 @@ seal. Unknown/mixed typed representations fail; native failure never invokes the
 inline reference binder. Inline small correctness fixtures remain reference
 inputs; mixed storage-oracle tests invoke their reference producer explicitly.
 
-This closes the current typed physical-to-event producer, event storage,
-numerical import/reduction and model/QoR export boundary. Python still validates
-physical-store views before binding, and remaining phase adapters require
-migration. This does not establish W6/W7 completion or full physical qualification.
+The same core validates current boundary identity/timing, logic-segment timing
+and local-path timing stores through `physical validate-evidence`. It checks the
+installed exact schema and effective columns/indexes, complete metadata, ordered
+records, row counts, register/pin ownership and chain order, object/measurement
+qualifications, source seals and canonical UTF-8 logical hashes. Validation does
+not execute SQLite integrity/quick checks. One active record owns its register
+or pin members; there is no Python full-record reconstruction. Logical/count
+summaries return through a bounded source-generation request and atomic result.
+A failed selected native validator stops the reader without a Python fallback.
+The retired Python full-store validator and schema copies are removed.
+
+Maximum local/segment delays and measurement coverage reuse the validated
+summary. A summary query does not rescan a complete path/segment table; live
+source generations remain checked. Writers retain their existing logical schema
+and seals, and already validated publications do not run the new reader again.
+
+This closes the current typed physical evidence reader/validator, physical-to-event
+producer, event storage, numerical import/reduction and model/QoR export boundary.
+Other physical producers and phase adapters still require migration. This does
+not establish W6/W7 completion or full physical qualification.
 
 Timing reconstruction must supply each scheduled hop's concrete
 `fixed_slot_tx_time_ns` and its bound TDM ratio where the link model requires

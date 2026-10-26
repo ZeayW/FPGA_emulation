@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <tuple>
+#include <sstream>
 
 namespace emuflow::core {
 namespace {
@@ -30,6 +31,38 @@ void ValidateSqliteSchema(SqliteDatabase& db,const RegisteredSchema& schema) {
   if (!row.Step() || row.TypedText(0)!=schema.sqlite_schema_value || row.Step())
     throw StageError(ErrorCode::kInvalidArtifact,"SQLite logical schema disagrees with registered artifact");
 }
+void RequireSqliteDDL(SqliteDatabase& db,const char* ddl) {
+  SqliteDatabase expected(":memory:",SqliteDatabase::Mode::kCreateExclusive);expected.Execute(ddl);
+  const char* sql="SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name";
+  auto observed=db.Prepare(sql),reference=expected.Prepare(sql);
+  const auto normalize=[](const std::string& source) {
+    std::istringstream input(source);std::string result,token;
+    while(input>>token){if(!result.empty())result+=' ';result+=token;}return result;
+  };
+  while(reference.Step()) {
+    if(!observed.Step())throw StageError(ErrorCode::kInvalidArtifact,"SQLite store has missing schema objects");
+    for(int i=0;i<4;++i)if(normalize(observed.TypedText(i))!=normalize(reference.TypedText(i)))
+      throw StageError(ErrorCode::kInvalidArtifact,"SQLite store schema objects disagree");
+  }
+  if(observed.Step())throw StageError(ErrorCode::kInvalidArtifact,"SQLite store has unexpected schema objects");
+  // Cross-check SQLite's effective catalog as well as its declared DDL. This
+  // retains column/constraint/index checks for every physical evidence owner.
+  auto objects=expected.Prepare("SELECT type,name FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name");
+  while(objects.Step()) {
+    const auto type=objects.TypedText(0),name=objects.TypedText(1);
+    std::string quoted="\"";for(char c:name){quoted+=c;if(c=='\"')quoted+=c;}quoted+='\"';
+    const auto pragma=std::string("PRAGMA ")+(type=="table"?"table_xinfo(":"index_xinfo(")+quoted+")";
+    auto actual=db.Prepare(pragma),wanted=expected.Prepare(pragma);
+    const auto columns=type=="table"?7:6;
+    while(wanted.Step()) {
+      if(!actual.Step())throw StageError(ErrorCode::kInvalidArtifact,"SQLite store catalog has missing columns/indexes");
+      for(int i=0;i<columns;++i)if(actual.IsNull(i)!=wanted.IsNull(i) || (!actual.IsNull(i) && actual.Text(i)!=wanted.Text(i)))
+        throw StageError(ErrorCode::kInvalidArtifact,"SQLite store effective columns/indexes disagree");
+    }
+    if(actual.Step())throw StageError(ErrorCode::kInvalidArtifact,"SQLite store catalog has extra columns/indexes");
+  }
+}
+
 namespace {
 std::string CheckedTarget(const std::string& target,const std::string& name,
                           const std::vector<ArtifactRef>& inputs) {

@@ -11,7 +11,6 @@ from __future__ import annotations
 from contextlib import closing
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 import fcntl
-from functools import lru_cache
 import hashlib
 import json
 import os
@@ -72,44 +71,10 @@ def _valid_digest(value: Any) -> bool:
     )
 
 
-def _normalized_sql(value: Any) -> str:
-    return " ".join(str(value).split())
 
 
-@lru_cache(maxsize=1)
-def _expected_sqlite_objects() -> tuple[tuple[str, str, str, str], ...]:
-    connection = sqlite3.connect(":memory:")
-    try:
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.executescript(_DDL)
-        return tuple(
-            (str(row[0]), str(row[1]), str(row[2]), _normalized_sql(row[3]))
-            for row in connection.execute(
-                "SELECT type,name,tbl_name,sql FROM sqlite_master "
-                "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
-            )
-        )
-    finally:
-        connection.close()
 
 
-def _exact_sqlite_envelope(connection: sqlite3.Connection) -> None:
-    if (
-        connection.execute("PRAGMA application_id").fetchone()[0]
-        != BOUNDARY_IDENTITY_APPLICATION_ID
-        or connection.execute("PRAGMA user_version").fetchone()[0]
-        != BOUNDARY_IDENTITY_USER_VERSION
-    ):
-        raise ValidationError("unsupported boundary identity store")
-    objects = tuple(
-        (str(row[0]), str(row[1]), str(row[2]), _normalized_sql(row[3]))
-        for row in connection.execute(
-            "SELECT type,name,tbl_name,sql FROM sqlite_master "
-            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
-        )
-    )
-    if objects != _expected_sqlite_objects():
-        raise ValidationError("boundary identity store objects are invalid")
 
 
 def _validate_header(raw: Any, counts: Optional[Mapping[str, int]] = None) -> dict[str, Any]:
@@ -467,45 +432,11 @@ class BoundaryIdentityView(Mapping[str, Any]):
         self.close()
 
     def _validate_store(self) -> None:
-        digest = hashlib.sha256()
-        try:
-            with closing(_connect(self.store_path)) as connection, connection:
-                _exact_sqlite_envelope(connection)
-                metadata_rows = list(connection.execute(
-                    "SELECT key,value FROM metadata ORDER BY key"
-                ))
-                metadata = {
-                    str(row[0]): json.loads(str(row[1])) for row in metadata_rows
-                }
-                if len(metadata) != len(metadata_rows) or metadata != {
-                    "counts": self.selector["counts"],
-                    "header": self.selector["header"],
-                    "logical_sha256": self.selector["logical_sha256"],
-                }:
-                    raise ValidationError("boundary identity metadata disagrees")
-                counts = {"endpoints": 0, "tx": 0, "rx": 0, "external_port_nets": 0}
-                previous = None
-                for record in _iter_records(connection):
-                    record = _normalize_record(record)
-                    if previous is not None and record["id"] <= previous:
-                        raise ValidationError("boundary identity order is invalid")
-                    previous = record["id"]
-                    counts["endpoints"] += 1
-                    counts[record["kind"]] += 1
-                    counts["external_port_nets"] += 1
-                    digest.update(_canonical(record).encode("utf-8"))
-                    digest.update(b"\n")
-        except (sqlite3.DatabaseError, ValueError, TypeError) as error:
-            raise ValidationError("boundary identity store is corrupt") from error
-        if counts != self.selector["counts"]:
-            raise ValidationError("boundary identity store counts disagree")
-        logical = hashlib.sha256(_canonical({
-            "header": self.selector["header"],
-            "counts": counts,
-            "endpoint_sha256": digest.hexdigest(),
-        }).encode("utf-8")).hexdigest()
-        if logical != self.selector["logical_sha256"]:
-            raise ValidationError("boundary identity logical seal disagrees")
+        from .physical_evidence_native import validate_physical_evidence
+        result = validate_physical_evidence(
+            self.store_path, self.selector, self._source_bindings,
+            "boundary-identity-store-v1",
+        )
 
     def __getitem__(self, key: str) -> Any:
         self._ensure_open()

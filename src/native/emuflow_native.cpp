@@ -45,6 +45,7 @@ constexpr const char* kUsage =
     "  global-sta publish-qor PRIMARY INDEX STORE REQUEST QOR\n"
     "  global-sta validate-qor STORE REQUEST SUMMARY\n"
     "  global-sta bind-events ROUTES SCHEDULE BOARD [PHYSICAL_STORES...] REQUEST PRIMARY\n"
+    "  physical validate-evidence STORE REQUEST SUMMARY\n"
     "  global-sta index-events PRIMARY INDEX\n"
     "  global-sta export-events PRIMARY INDEX REQUEST SUMMARY\n"
     "  phase6 assign-banks --typed-input INPUT OUTPUT\n"
@@ -234,6 +235,8 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if (phase == "phase4" && operation == "route" && argc == 6 && std::string(argv[3]) == "--typed-output")
     return run(Stage::kRoute, {argv[4]}, argv[5]);
+  if (phase == "physical" && operation == "validate-evidence" && argc==6)
+    return run(Stage::kValidatePhysicalEvidence,{argv[3],argv[4]},argv[5]);
   if (phase == "global-sta" && operation == "import-measurements" && argc == 8)
     return Execute({Stage::kImportGlobalMeasurements,{argv[3],argv[4],argv[5],argv[6]},argv[7]},report);
   if (phase == "global-sta" && operation == "audit-measurements" && argc == 8)

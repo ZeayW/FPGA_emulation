@@ -122,6 +122,8 @@ constexpr RegisteredSchema schemas[] = {
      "SELECT json_extract(value,'$') FROM metadata WHERE key='schema'","emuflow.phase3-assignment-sqlite/v4"},
     {"split-netlists-v2", ArtifactEncoding::kSqlite, 0x454d5553, 2, true,
      "SELECT json_extract(value,'$') FROM metadata WHERE key='schema'","emuflow.split-netlists-sqlite/v2"},
+    {"physical-evidence-validation-request-v1", ArtifactEncoding::kBinary, 0x31564550464d5545ULL, 1},
+    {"physical-evidence-validation-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"boundary-identity-store-v1", ArtifactEncoding::kSqlite, 0x454d5542, 1, true,
      "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.boundary-identity/v1"},
     {"boundary-timing-store-v1", ArtifactEncoding::kSqlite, 0x454d5554, 1, true,

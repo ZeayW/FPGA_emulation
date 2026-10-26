@@ -482,7 +482,7 @@ there is no silent implementation or provider fallback.
 | Phase 5 | Native model/solver/certificate/store producer, independent staged-store validation, and timing/cross-layer projection | Complete native stage lifecycle/report ownership and real-design qualification |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |
 | Phase 7 | Indexed lowering; typed physical handoff and native Bookshelf pin export | Complete remaining backend/export/validation ownership and full physical qualification |
-| Global STA | Native typed physical-to-event binding, event validation/model export, measurement import, full-original-path reduction and typed QoR publication | Migrate Python physical-view validation and remaining orchestration; qualify complete real-design physical/global timing |
+| Global STA | Native typed physical-to-event binding, event validation/model export, measurement import, full-original-path reduction and typed QoR publication | Migrate remaining physical producers and orchestration; qualify complete real-design physical/global timing |
 
 Native computation does not eliminate algorithmic search cost. Compare search,
 imported-solution and frozen-output replay as separate execution modes. Porting
@@ -659,9 +659,13 @@ Python scalar/path arrays. Current typed physical facts now enter
 binder reuses the Phase 5 scheduled-path visitor, merges physical segment cursors
 and queries FPGA-owned endpoint delays without rebuilding Python path/hop or
 endpoint populations. Its final event primary is still independently indexed
-and validated. Mixed typed/inline owners fail rather than fall back. Python
-physical-view validation and other phase adapters remain; this boundary alone
-does not complete W6/W7.
+and validated. Mixed typed/inline owners fail rather than fall back. Current boundary
+identity/timing, logic-segment timing and local-path timing readers now delegate
+complete record/schema/metadata/logical-seal validation to the shared core.
+Their Python full-store validators are retired. Maximum-delay summaries reuse
+validated facts instead of triggering another whole-table query. Physical
+producers and other phase adapters remain; this boundary alone does not complete
+W6/W7.
 See [global timing semantics](global-opensta-qualification.md).
 
 ## Validation and completion

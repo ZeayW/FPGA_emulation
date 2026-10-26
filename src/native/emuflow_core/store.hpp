@@ -73,6 +73,8 @@ class SqliteStore : public ArtifactScope {
 };
 // Shared by binding and publication. It never reads circuit-sized relations.
 void ValidateSqliteSchema(SqliteDatabase& database,const RegisteredSchema& schema);
+// Compare the complete installed schema, without integrity/quick checks or row scans.
+void RequireSqliteDDL(SqliteDatabase& database,const char* ddl);
 
 // Source checks and closed statement/transaction ownership precede publication.
 // A rejected writer leaves the prior destination intact and retires only its

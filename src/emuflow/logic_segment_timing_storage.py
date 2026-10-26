@@ -12,7 +12,6 @@ from __future__ import annotations
 from contextlib import closing
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 import fcntl
-from functools import lru_cache
 import hashlib
 import heapq
 import json
@@ -78,64 +77,6 @@ _UNSUPPORTED_KEYS = {"path", "reason"}
 
 _DDL = (Path(__file__).parent / "data/schema/logic_segment_timing.sql").read_text()
 
-_EXPECTED_COLUMNS = {
-    "metadata": (
-        (0, "key", "TEXT", 1, None, 1, 0),
-        (1, "value", "TEXT", 1, None, 0, 0),
-    ),
-    "segments": (
-        (0, "seq", "INTEGER", 1, None, 1, 0),
-        (1, "segment_id", "TEXT", 1, None, 0, 0),
-        (2, "kind", "TEXT", 1, None, 0, 0),
-        (3, "system_path", "TEXT", 1, None, 0, 0),
-        (4, "member_path", "TEXT", 1, None, 0, 0),
-        (5, "cut_index", "INTEGER", 1, None, 0, 0),
-        (6, "fpga", "TEXT", 1, None, 0, 0),
-        (7, "replace_tx_endpoint", "TEXT", 0, None, 0, 0),
-        (8, "start_pin", "TEXT", 1, None, 0, 0),
-        (9, "end_pin", "TEXT", 1, None, 0, 0),
-        (10, "delay_ns", "REAL", 1, None, 0, 0),
-        (11, "static_exact_segment_id", "TEXT", 0, None, 0, 0),
-        (12, "start_object_kind", "TEXT", 0, None, 0, 0),
-        (13, "end_object_kind", "TEXT", 0, None, 0, 0),
-        (14, "cone_anchor_object_kind", "TEXT", 0, None, 0, 0),
-        (15, "cone_anchor_pin", "TEXT", 0, None, 0, 0),
-        (16, "measurement", "TEXT", 1, None, 0, 0),
-        (17, "actual_start_object", "TEXT", 0, None, 0, 0),
-        (18, "actual_end_object", "TEXT", 0, None, 0, 0),
-    ),
-    "unsupported_members": (
-        (0, "seq", "INTEGER", 1, None, 1, 0),
-        (1, "path", "TEXT", 1, None, 0, 0),
-        (2, "reason", "TEXT", 1, None, 0, 0),
-    ),
-    "unmeasured_segments": (
-        (0, "seq", "INTEGER", 1, None, 1, 0),
-        (1, "segment_id", "TEXT", 1, None, 0, 0),
-        (2, "kind", "TEXT", 1, None, 0, 0),
-        (3, "system_path", "TEXT", 1, None, 0, 0),
-        (4, "member_path", "TEXT", 1, None, 0, 0),
-        (5, "reason", "TEXT", 1, None, 0, 0),
-    ),
-}
-_EXPECTED_INDEXES = {
-    "metadata": (),
-    "segments": (
-        ("segments_id_unique", 1, ("segment_id",)),
-        ("segments_ordered_cursor", 0, (
-            "system_path", "member_path", "cut_index", "segment_id"
-        )),
-        ("segments_ordered_key_unique", 1, (
-            "system_path", "member_path", "cut_index"
-        )),
-    ),
-    "unsupported_members": (
-        ("unsupported_members_path_unique", 1, ("path",)),
-    ),
-    "unmeasured_segments": (
-        ("unmeasured_segments_id_unique", 1, ("segment_id",)),
-    ),
-}
 
 
 def _canonical(value: Any) -> str:
@@ -220,24 +161,8 @@ def _connect(path: Path) -> sqlite3.Connection:
     return connection
 
 
-def _normalized_sql(value: Any) -> str:
-    return " ".join(str(value).split())
 
 
-@lru_cache(maxsize=1)
-def _expected_sqlite_objects() -> tuple[tuple[str, str, str, str], ...]:
-    connection = sqlite3.connect(":memory:")
-    try:
-        connection.executescript(_DDL)
-        return tuple(
-            (str(row[0]), str(row[1]), str(row[2]), _normalized_sql(row[3]))
-            for row in connection.execute(
-                "SELECT type,name,tbl_name,sql FROM sqlite_master "
-                "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
-            )
-        )
-    finally:
-        connection.close()
 
 
 def _validate_header(value: Any) -> dict[str, Any]:
@@ -348,42 +273,6 @@ def _resolve_store(
     return resolved, store_source
 
 
-def _exact_sqlite_envelope(connection: sqlite3.Connection) -> None:
-    application_id = connection.execute("PRAGMA application_id").fetchone()[0]
-    user_version = connection.execute("PRAGMA user_version").fetchone()[0]
-    if (
-        application_id != LOGIC_SEGMENT_TIMING_APPLICATION_ID
-        or user_version != LOGIC_SEGMENT_TIMING_USER_VERSION
-    ):
-        raise ValidationError("unsupported logic segment timing store")
-    objects = tuple(
-        (str(row[0]), str(row[1]), str(row[2]), _normalized_sql(row[3]))
-        for row in connection.execute(
-            "SELECT type,name,tbl_name,sql FROM sqlite_master "
-            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
-        )
-    )
-    if objects != _expected_sqlite_objects():
-        raise ValidationError("logic segment timing store objects are invalid")
-    for table, expected in _EXPECTED_COLUMNS.items():
-        actual = tuple(tuple(row) for row in connection.execute(
-            f"PRAGMA table_xinfo({table})"
-        ))
-        if actual != expected:
-            raise ValidationError("logic segment timing store columns are invalid")
-        indexes = []
-        for row in connection.execute(f"PRAGMA index_list({table})"):
-            name = str(row[1])
-            if name.startswith("sqlite_"):
-                continue
-            columns = tuple(
-                str(item[2]) for item in connection.execute(
-                    f"PRAGMA index_xinfo({json.dumps(name)})"
-                ) if int(item[5]) == 1
-            )
-            indexes.append((name, int(row[2]), columns))
-        if tuple(sorted(indexes)) != tuple(sorted(_EXPECTED_INDEXES[table])):
-            raise ValidationError("logic segment timing store indexes are invalid")
 
 
 def _validate_segment(raw: Mapping[str, Any], header: Mapping[str, Any]) -> dict[str, Any]:
@@ -675,128 +564,18 @@ class LogicSegmentTimingView(Mapping[str, Any]):
         self.close()
 
     def _validate_store(self) -> None:
-        selector = self.selector
-        segment_digest = hashlib.sha256()
-        unsupported_digest = hashlib.sha256()
-        unmeasured_digest = hashlib.sha256()
-        try:
-            with closing(_connect(self.store_path)) as connection, connection:
-                _exact_sqlite_envelope(connection)
-                metadata_rows = list(connection.execute(
-                    "SELECT key,value FROM metadata ORDER BY key"
-                ))
-                metadata = {
-                    str(row[0]): json.loads(str(row[1])) for row in metadata_rows
-                }
-                if len(metadata) != len(metadata_rows) or metadata != {
-                    key: selector[key]
-                    for key in ("header", "counts", "source", "logical_sha256")
-                }:
-                    raise ValidationError("logic segment timing metadata disagrees")
-                segment_count = 0
-                previous_key = None
-                for row in connection.execute(
-                    "SELECT * FROM segments ORDER BY system_path,member_path,cut_index,segment_id"
-                ):
-                    key = (
-                        str(row["system_path"]), str(row["member_path"]),
-                        int(row["cut_index"]), str(row["segment_id"]),
-                    )
-                    if previous_key is not None and key <= previous_key:
-                        raise ValidationError("logic segment timing order is invalid")
-                    previous_key = key
-                    record = _validate_segment(
-                        _segment_from_row(row), selector["header"]
-                    )
-                    segment_digest.update(_canonical(record).encode())
-                    segment_digest.update(b"\n")
-                    segment_count += 1
-                unsupported_count = 0
-                for row in connection.execute(
-                    "SELECT seq,path,reason FROM unsupported_members ORDER BY seq"
-                ):
-                    if int(row["seq"]) != unsupported_count:
-                        raise ValidationError("unsupported member sequence is invalid")
-                    record = {"path": str(row["path"]), "reason": str(row["reason"])}
-                    unsupported_digest.update(_canonical(record).encode())
-                    unsupported_digest.update(b"\n")
-                    unsupported_count += 1
-                unmeasured_count = 0
-                for row in connection.execute(
-                    "SELECT * FROM unmeasured_segments ORDER BY seq"
-                ):
-                    if int(row["seq"]) != unmeasured_count:
-                        raise ValidationError("unmeasured segment sequence is invalid")
-                    record = {
-                        "id": str(row["segment_id"]), "kind": str(row["kind"]),
-                        "system_path": str(row["system_path"]),
-                        "member_path": str(row["member_path"]),
-                        "reason": str(row["reason"]),
-                    }
-                    unmeasured_digest.update(_canonical(record).encode())
-                    unmeasured_digest.update(b"\n")
-                    unmeasured_count += 1
-                overlap = connection.execute(
-                    "SELECT s.segment_id FROM segments s "
-                    "JOIN unmeasured_segments u USING(segment_id) LIMIT 1"
-                ).fetchone()
-                if overlap is not None:
-                    raise ValidationError(
-                        "logic timing segment is both measured and unmeasured"
-                    )
-                aggregate = connection.execute(
-                    "SELECT COUNT(DISTINCT system_path),COUNT(DISTINCT member_path),"
-                    "SUM(measurement='endpoint-exact'),"
-                    "SUM(measurement='cut-net-cone-upper-bound'),"
-                    "MIN(seq),MAX(seq),COUNT(DISTINCT seq),"
-                    "SUM(measurement='optimized-endpoint-collection-upper-bound') FROM segments"
-                ).fetchone()
-        except (sqlite3.DatabaseError, ValueError, TypeError) as error:
-            raise ValidationError("logic segment timing store is corrupt") from error
-        actual_counts = {
-            "segments": segment_count,
-            "system_paths": int(aggregate[0]),
-            "member_paths": int(aggregate[1]),
-            "unsupported_member_paths": unsupported_count,
-            "unmeasured_segments": unmeasured_count,
-            "endpoint_exact_segments": int(aggregate[2] or 0),
-            "cone_bound_segments": int(aggregate[3] or 0),
-        }
-        if (
-            segment_count
-            and (
-                aggregate[4] != 0
-                or aggregate[5] != segment_count - 1
-                or aggregate[6] != segment_count
-            )
-        ) or (
-            not segment_count
-            and any(aggregate[index] is not None for index in (4, 5))
-        ):
-            raise ValidationError(
-                "logic segment timing segment sequence is incomplete"
-            )
-        if "endpoint_collection_bound_segments" in selector["counts"] or aggregate[7]:
-            actual_counts["endpoint_collection_bound_segments"] = int(aggregate[7] or 0)
-        if actual_counts != selector["counts"]:
-            raise ValidationError("logic segment timing row counts disagree")
-        logical = hashlib.sha256(_canonical({
-            "header": selector["header"], "counts": actual_counts,
-            "source": selector["source"],
-            "segment_sha256": segment_digest.hexdigest(),
-            "unsupported_sha256": unsupported_digest.hexdigest(),
-            "unmeasured_sha256": unmeasured_digest.hexdigest(),
-        }).encode()).hexdigest()
-        if logical != selector["logical_sha256"]:
-            raise ValidationError("logic segment timing logical seal disagrees")
+        from .physical_evidence_native import validate_physical_evidence
+        result = validate_physical_evidence(
+            self.store_path, self.selector, self._source_bindings,
+            "logic-segment-timing-store-v1",
+        )
+        self._maximum_delay_ns = result["maximum_delay_ns"]
 
     def validate_timing(self) -> dict[str, Any]:
         self._ensure_open()
         counts = self.selector["counts"]
-        with closing(_connect(self.store_path)) as connection, connection:
-            maximum = connection.execute(
-                "SELECT COALESCE(MAX(delay_ns),0.0) FROM segments"
-            ).fetchone()[0]
+        require_store_sources_unchanged(self._source_bindings)
+        maximum = self._maximum_delay_ns
         return {
             "status": "pass", "fpga": self.selector["source"]["fpga"],
             "segments": counts["segments"],
@@ -1022,6 +801,7 @@ def write_logic_segment_timing_storage(
             coverage[key] = counts[key]
         normalized_header = {**normalized_header, "coverage": coverage}
         segment_digest = hashlib.sha256()
+        maximum_delay = 0.0
         for row in connection.execute(
             "SELECT * FROM segments "
             "ORDER BY system_path,member_path,cut_index,segment_id"
@@ -1029,6 +809,7 @@ def write_logic_segment_timing_storage(
             record = _validate_segment(
                 _segment_from_row(row), normalized_header
             )
+            maximum_delay = max(maximum_delay, record["delay_ns"])
             segment_digest.update(_canonical(record).encode())
             segment_digest.update(b"\n")
         source = _source(normalized_header)
@@ -1096,6 +877,7 @@ def write_logic_segment_timing_storage(
         view = LogicSegmentTimingView._from_publication(
             path, selector, published_store, lease
         )
+        view._maximum_delay_ns = maximum_delay
         lease = None
         return view
     except BaseException as error:

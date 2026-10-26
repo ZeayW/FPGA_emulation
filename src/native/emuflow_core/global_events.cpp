@@ -60,20 +60,7 @@ Array Generation(const FileGeneration& g) {
 void PutMetadata(SqliteDatabase& db,const char* key,const JsonRecord& value) {
   auto row=db.Prepare("INSERT INTO metadata VALUES(?,?)");row.BindText(1,key);row.BindText(2,value.Encode());row.Execute();
 }
-void ExactDDL(SqliteDatabase& db,const char* ddl) {
-  SqliteDatabase expected(":memory:",SqliteDatabase::Mode::kCreateExclusive);expected.Execute(ddl);
-  const char* sql="SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name";
-  auto observed=db.Prepare(sql),reference=expected.Prepare(sql);
-  const auto normalize=[](const std::string& source) {
-    std::istringstream input(source);std::string result,token;
-    while(input>>token){if(!result.empty())result+=' ';result+=token;}return result;
-  };
-  while(reference.Step()) {
-    Check(observed.Step(),"store has missing schema objects");
-    for(int i=0;i<4;++i)Check(normalize(observed.TypedText(i))==normalize(reference.TypedText(i)),"store schema objects disagree");
-  }
-  Check(!observed.Step(),"store has unexpected schema objects");
-}
+
 struct Numbers {
   std::string bytes;
   double At(std::size_t index) const {double value;std::memcpy(&value,bytes.data()+index*8,8);return value;}
@@ -115,7 +102,7 @@ bool BundlesEqual(SqliteDatabase& primary,Integer left,Integer right,Integer cou
 }  // namespace
 
 void IndexGlobalEvents(const ArtifactRef& input,const std::string& output) {
-  SqliteStore primary(input);auto& source=primary.database();ExactDDL(source,kGlobalEventsDDL);
+  SqliteStore primary(input);auto& source=primary.database();RequireSqliteDDL(source,kGlobalEventsDDL);
   const auto header_text=Metadata(source,"header");
   Check(header_text.size()<8192,"primary header exceeds bound");
   auto fields=source.Prepare("SELECT count(*),count(DISTINCT key),sum(key IN ('schema','mode','paths','checks','events')) FROM json_each(?)");fields.BindText(1,header_text);
@@ -220,7 +207,7 @@ Integer JsonNumber(SqliteDatabase& db,const std::string& object,const char* path
   Check(row.Step() && row.Text(0)=="integer","index count metadata is invalid");return Number(row,1);
 }
 void RequireIndexSource(const ArtifactRef& primary,SqliteDatabase& index) {
-  ExactDDL(index,kGlobalEventIndexDDL);const auto header=Metadata(index,"header");
+  RequireSqliteDDL(index,kGlobalEventIndexDDL);const auto header=Metadata(index,"header");
   Check(header.size()<8192 && JsonText(index,header,"$.source_path")==primary.path(),"index belongs to another event owner");
   auto generation=index.Prepare("SELECT json_extract(?1,'$.source_generation')");generation.BindText(1,header);
   Check(generation.Step() && generation.TypedText(0)==JsonRecord(Generation(primary.generation())).Encode(),"event owner generation changed");
@@ -476,7 +463,7 @@ Reduction ReduceMeasurements(SqliteDatabase& db,SqliteDatabase& index,const std:
   Check(result.checks==expected_checks && result.paths==expected_paths,"original measurement coverage disagrees");return result;
 }
 std::string CheckMeasurementOwner(SqliteDatabase& db,SqliteDatabase& index,const std::string& header) {
-  ExactDDL(db,kGlobalMeasurementsDDL);const auto meta=Metadata(db,"header");Check(meta.size()<65536,"measurement header exceeds bound");
+  RequireSqliteDDL(db,kGlobalMeasurementsDDL);const auto meta=Metadata(db,"header");Check(meta.size()<65536,"measurement header exceeds bound");
   Check(JsonText(db,meta,"$.source_logical_sha256")==JsonText(index,header,"$.logical_sha256") &&
         JsonNumber(db,meta,"$.checks")==JsonNumber(index,header,"$.checks") &&
         JsonNumber(db,meta,"$.representative_checks")==JsonNumber(index,header,"$.representative_checks"),"measurement identity namespace disagrees");
@@ -597,7 +584,7 @@ void PublishGlobalQor(const std::vector<ArtifactRef>& inputs,const std::string& 
   append=SqliteStatement{};transaction.Commit();writer.Commit();
 }
 void ValidateGlobalQor(const std::vector<ArtifactRef>& inputs,const std::string& output) {
-  SqliteStore store(inputs[0]);auto& db=store.database();ExactDDL(db,kGlobalQorDDL);
+  SqliteStore store(inputs[0]);auto& db=store.database();RequireSqliteDDL(db,kGlobalQorDDL);
   CheckedRequestReader request(inputs[1].path(),8*1024*1024+4096);Check(request.Read<std::uint64_t>()==0x31565147464d5545ULL && request.Read<std::uint32_t>()==1,"QoR validation request version is invalid");ExpectedGeneration(request,inputs[0]);const auto header=BoundedHeader(request,db);const auto expected=request.ReadString32();request.RequireEnd();
   auto metadata_count=db.Prepare("SELECT count(*) FROM metadata");Check(metadata_count.Step() && metadata_count.Integer(0)==3,"QoR metadata population disagrees");
   Check(header==Metadata(db,"header"),"QoR header/selector disagree");auto count=db.Prepare("SELECT json_extract(value,'$.timing_paths') FROM metadata WHERE key='counts'");Check(count.Step(),"QoR count is missing");const auto total=Number(count,0);HeaderCoverage(db,header,total);
@@ -687,7 +674,7 @@ void BindingHeader(SqliteDatabase& db,const std::string& header,const std::strin
   (void)JsonText(db,header,"$.provider");
 }
 void ValidateBindingEndpoints(BindingPhysical& p,SqliteDatabase& schedule,const std::string& design,const std::string& platform) {
-  auto& t=p.timing->database();auto& i=p.identity->database();ExactDDL(t,kBoundaryTimingDDL);ExactDDL(i,kBoundaryIdentityDDL);
+  auto& t=p.timing->database();auto& i=p.identity->database();RequireSqliteDDL(t,kBoundaryTimingDDL);RequireSqliteDDL(i,kBoundaryIdentityDDL);
   const auto th=Metadata(t,"header"),ih=Metadata(i,"header");
   BindingHeader(t,th,p.fpga,design,platform);BindingHeader(i,ih,p.fpga,design,platform);
   (void)JsonText(t,th,"$.qualification");const auto scope=JsonOptional(t,th,"$.measurement_scope");
@@ -761,7 +748,7 @@ void BindGlobalEvents(const std::vector<ArtifactRef>& inputs,const std::string& 
     Check(by_fpga.emplace(p->fpga,p.get()).second,"boundary FPGA repeats");
     p->timing=std::make_unique<SqliteStore>(inputs[3+3*i]);p->identity=std::make_unique<SqliteStore>(inputs[4+3*i]);p->logic=std::make_unique<SqliteStore>(inputs[5+3*i]);
     ValidateBindingEndpoints(*p,s,design,platform);
-    auto& l=p->logic->database();ExactDDL(l,kLogicSegmentTimingDDL);const auto lh=Metadata(l,"header");BindingHeader(l,lh,p->fpga,design,platform);
+    auto& l=p->logic->database();RequireSqliteDDL(l,kLogicSegmentTimingDDL);const auto lh=Metadata(l,"header");BindingHeader(l,lh,p->fpga,design,platform);
     Check(JsonText(l,lh,"$.system_routes_sha256")==route_pretty && JsonText(l,lh,"$.tdm_schedule_sha256")==schedule_pretty && JsonOptional(l,lh,"$.semantic_contract_sha256")==semantic,"physical logic source seals disagree");
     auto missing=l.Prepare("SELECT 1 FROM unsupported_members UNION ALL SELECT 1 FROM unmeasured_segments LIMIT 1");Check(!missing.Step(),"physical logic segments are incomplete");
     p->segments=l.Prepare("SELECT system_path,member_path,segment_id,kind,cut_index,replace_tx_endpoint,delay_ns,fpga,measurement FROM segments ORDER BY system_path,member_path,cut_index,segment_id");p->Next();physical.push_back(std::move(p));
@@ -824,7 +811,7 @@ void BindGlobalEvents(const std::vector<ArtifactRef>& inputs,const std::string& 
   JsonRecord source;std::string source_identity;auto locals=r.Prepare("SELECT value FROM json_each(?,'$.local_fpgas') ORDER BY key");locals.BindText(1,config);
   for(unsigned i=0;i<local_count;++i) {
     Check(locals.Step(),"local FPGA catalog is incomplete");const auto fpga=Text(locals,0);
-    SqliteStore local(inputs[3+3*boundary_count+i]);auto& l=local.database();ExactDDL(l,kLocalPathTimingDDL);
+    SqliteStore local(inputs[3+3*boundary_count+i]);auto& l=local.database();RequireSqliteDDL(l,kLocalPathTimingDDL);
     const auto lh=Metadata(l,"header");BindingHeader(l,lh,fpga,design,platform,true);(void)JsonText(l,lh,"$.qualification");
     Object binding;for(const char* key:{"path_database_sha256","original_ir_sha256","assignment_sha256","routes_sha256","original_path_ids_sha256"}) {
       const auto value=JsonText(l,lh,(std::string("$.source.")+key).c_str());Check(value.size()==64 && value.find_first_not_of("0123456789abcdef")==std::string::npos,"local source digest is invalid");binding.emplace(key,value);

@@ -5,7 +5,6 @@ from __future__ import annotations
 from contextlib import closing
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 import fcntl
-from functools import lru_cache
 import hashlib
 import json
 import math
@@ -72,44 +71,10 @@ def _valid_digest(value: Any) -> bool:
     )
 
 
-def _normalized_sql(value: Any) -> str:
-    return " ".join(str(value).split())
 
 
-@lru_cache(maxsize=1)
-def _expected_sqlite_objects() -> tuple[tuple[str, str, str, str], ...]:
-    connection = sqlite3.connect(":memory:")
-    try:
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.executescript(_DDL)
-        return tuple(
-            (str(row[0]), str(row[1]), str(row[2]), _normalized_sql(row[3]))
-            for row in connection.execute(
-                "SELECT type,name,tbl_name,sql FROM sqlite_master "
-                "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
-            )
-        )
-    finally:
-        connection.close()
 
 
-def _exact_sqlite_envelope(connection: sqlite3.Connection) -> None:
-    if (
-        connection.execute("PRAGMA application_id").fetchone()[0]
-        != LOCAL_PATH_TIMING_APPLICATION_ID
-        or connection.execute("PRAGMA user_version").fetchone()[0]
-        != LOCAL_PATH_TIMING_USER_VERSION
-    ):
-        raise ValidationError("unsupported local path timing store")
-    objects = tuple(
-        (str(row[0]), str(row[1]), str(row[2]), _normalized_sql(row[3]))
-        for row in connection.execute(
-            "SELECT type,name,tbl_name,sql FROM sqlite_master "
-            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
-        )
-    )
-    if objects != _expected_sqlite_objects():
-        raise ValidationError("local path timing store objects are invalid")
 
 
 def _validate_header(
@@ -482,70 +447,17 @@ class LocalPathTimingView(Mapping[str, Any]):
         self.close()
 
     def _validate_store(self) -> None:
-        digest = hashlib.sha256()
-        try:
-            with closing(_connect(self.store_path)) as connection, connection:
-                _exact_sqlite_envelope(connection)
-                metadata_rows = list(connection.execute(
-                    "SELECT key,value FROM metadata ORDER BY key"
-                ))
-                metadata = {
-                    str(row[0]): json.loads(str(row[1])) for row in metadata_rows
-                }
-                if len(metadata) != len(metadata_rows) or metadata != {
-                    "counts": self.selector["counts"],
-                    "header": self.selector["header"],
-                    "logical_sha256": self.selector["logical_sha256"],
-                }:
-                    raise ValidationError("local path timing metadata disagrees")
-                count = 0
-                previous = None
-                maximum = 0.0
-                measurement_counts = {
-                    "explicit-routed-path-chain": 0,
-                    "endpoint-longest-path-fallback": 0,
-                }
-                for record in _iter_records(connection):
-                    record = _normalize_record(record, self.selector["header"])
-                    if previous is not None and record["id"] <= previous:
-                        raise ValidationError("local path timing order is invalid")
-                    previous = record["id"]
-                    count += 1
-                    maximum = max(maximum, record["delay_ns"])
-                    if record.get("measurement") in measurement_counts:
-                        measurement_counts[record["measurement"]] += 1
-                    digest.update(_canonical(record).encode("utf-8"))
-                    digest.update(b"\n")
-                sequence = tuple(connection.execute(
-                    "SELECT MIN(seq),MAX(seq),COUNT(DISTINCT seq) FROM timings"
-                ).fetchone())
-        except (sqlite3.DatabaseError, ValueError, TypeError) as error:
-            raise ValidationError("local path timing store is corrupt") from error
-        counts = {"local_paths": count}
-        if (
-            (count and sequence != (0, count - 1, count))
-            or (not count and any(item is not None for item in sequence[:2]))
-        ):
-            raise ValidationError("local path timing sequence is incomplete")
-        if counts != self.selector["counts"]:
-            raise ValidationError("local path timing store counts disagree")
-        logical = hashlib.sha256(_canonical({
-            "header": self.selector["header"],
-            "counts": counts,
-            "path_sha256": digest.hexdigest(),
-        }).encode("utf-8")).hexdigest()
-        if logical != self.selector["logical_sha256"]:
-            raise ValidationError("local path timing logical seal disagrees")
-        self._maximum_delay_ns = maximum
-        self._measurement_counts = (
-            measurement_counts
-            if self.selector["header"]["identity_schema"]
-            == "emuflow.local-path-identity/v2"
-            else {}
+        from .physical_evidence_native import validate_physical_evidence
+        result = validate_physical_evidence(
+            self.store_path, self.selector, self._source_bindings,
+            "local-path-timing-store-v1",
         )
+        self._maximum_delay_ns = result["maximum_delay_ns"]
+        self._measurement_counts = result["measurement_counts"]
 
     def validate_timing(self) -> dict[str, Any]:
         self._ensure_open()
+        require_store_sources_unchanged(self._source_bindings)
         return {
             "status": "pass", "fpga": self.selector["header"]["fpga"],
             "local_paths": self.selector["counts"]["local_paths"],
@@ -661,7 +573,12 @@ def write_local_path_timing_storage(
         counts = {"local_paths": count}
         normalized_header = _validate_header(base_header, counts)
         path_digest = hashlib.sha256()
+        maximum_delay = 0.0
+        measurement_counts = {"explicit-routed-path-chain": 0, "endpoint-longest-path-fallback": 0}
         for record in _iter_records(connection):
+            maximum_delay = max(maximum_delay, record["delay_ns"])
+            if record.get("measurement") in measurement_counts:
+                measurement_counts[record["measurement"]] += 1
             path_digest.update(_canonical(record).encode("utf-8"))
             path_digest.update(b"\n")
         logical_sha = hashlib.sha256(_canonical({
@@ -723,7 +640,10 @@ def write_local_path_timing_storage(
         view = LocalPathTimingView._from_publication(
             path, selector, published_store, lease
         )
-        view._validate_store()
+        view._maximum_delay_ns = maximum_delay
+        view._measurement_counts = (
+            measurement_counts if normalized_header["identity_schema"] == "emuflow.local-path-identity/v2" else {}
+        )
         lease = None
         return view
     except BaseException:

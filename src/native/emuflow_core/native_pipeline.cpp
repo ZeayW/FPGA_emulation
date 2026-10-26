@@ -1,6 +1,7 @@
 #include "emuflow_core/native_pipeline.hpp"
 #include "emuflow_core/route_seal.hpp"
 #include "emuflow_core/physical_cells.hpp"
+#include "emuflow_core/physical_evidence.hpp"
 #include "emuflow_core/atomic_ownership.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/native_stages.hpp"
@@ -29,6 +30,7 @@ namespace emuflow::native {
 const char* StageName(Stage stage) {
   switch (stage) {
     case Stage::kInvalid: return "native.request";
+    case Stage::kValidatePhysicalEvidence: return "physical.validate-evidence";
     case Stage::kRefinePartitionHops: return "phase3.refine-hops";
     case Stage::kValidateAtomicOwnership: return "phase7.validate-atomic-ownership";
     case Stage::kValidatePhysicalCells: return "phase7.validate-physical-cells";
@@ -74,6 +76,18 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     case Stage::kInvalid: break;
     case Stage::kRefinePartitionHops: return {"hop-refiner-input-v1"};
     case Stage::kValidateAtomicOwnership: return {"xilinx-mapped-index-v2","openparf-atomic-source-store-v1","openparf-placement-certificate-v3","atomic-ownership-request-v1"};
+    case Stage::kValidatePhysicalEvidence: {
+      const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
+      if(count!=2)throw core::StageError(core::ErrorCode::kInvalidRequest,"physical evidence source coverage disagrees");
+      const auto path=request.input_artifacts.empty()?request.input_paths.back():request.input_artifacts.back().path();
+      core::CheckedRequestReader reader(path,8*1024*1024);
+      if(reader.Read<std::uint64_t>()!=0x31564550464d5545ULL || reader.Read<std::uint32_t>()!=1)
+        throw core::StageError(core::ErrorCode::kInvalidRequest,"physical evidence request version is invalid");
+      const auto kind=reader.Read<std::uint32_t>();
+      const std::vector<std::string> schemas{"boundary-identity-store-v1","boundary-timing-store-v1","logic-segment-timing-store-v1","local-path-timing-store-v1"};
+      if(kind<1 || kind>schemas.size())throw core::StageError(core::ErrorCode::kInvalidRequest,"physical evidence kind is invalid");
+      return {schemas[kind-1],"physical-evidence-validation-request-v1"};
+    }
     case Stage::kValidatePhysicalCells: return {"xilinx-mapped-index-v2","xilinx-physical-handoff-v1","physical-cell-check-request-v1"};
     case Stage::kSealRoutes: return {"system-route-store-v3","system-route-seal-request-v1"};
     case Stage::kImportVivadoLineage: {
@@ -275,6 +289,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
         RefinePartitionHops(inputs,output,!request.summary_output); break;
       case Stage::kValidateAtomicOwnership:
         core::ValidateAtomicOwnership(inputs,output); break;
+      case Stage::kValidatePhysicalEvidence: core::ValidatePhysicalEvidence(inputs,output); break;
       case Stage::kValidatePhysicalCells:
         core::ValidatePhysicalCells(inputs[0],inputs[1],inputs[2],output); break;
       case Stage::kImportVivadoLineage:
@@ -323,6 +338,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
     switch (request.stage) {
       case Stage::kRefinePartitionHops: schema = "hop-refiner-output-v1"; break;
       case Stage::kValidateAtomicOwnership: schema = "atomic-ownership-summary-v1"; break;
+      case Stage::kValidatePhysicalEvidence: schema = "physical-evidence-validation-summary-v1"; break;
       case Stage::kValidatePhysicalCells: schema = "physical-cell-check-summary-v1"; break;
       case Stage::kImportVivadoLineage: schema = "vivado-lineage-store-v2"; break;
       case Stage::kExportRwroute: schema = "rwroute-input-tsv-v1"; break;
