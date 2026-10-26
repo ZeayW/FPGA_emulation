@@ -72,6 +72,8 @@ boundaries and original, datapath-only or clock-aware reference timing, includin
 bounded endpoint sampling-cost queries, installed SelectIO IP inspection and
 package-derived bank recipes, checked output generation and optional out-of-context
 IP synthesis used for PHY integration, with a bounded configuration/port audit.
+Indexed logic timing can retain signed sampling costs beside data delay in one
+sealed store, with an explicit measurement policy and complete cost coverage.
 Native bank wrappers bind training, complete words and receive FIFO clocks;
 an explicit vendor-model loopback tool examines word integrity and latency.
 See the [clock baseline](docs/XILINX_PHYSICAL_FLOW.md#local-implementation-clock-baseline).

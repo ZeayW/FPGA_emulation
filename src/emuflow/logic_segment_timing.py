@@ -70,6 +70,10 @@ VIVADO_LOGIC_SEGMENT_TIMING_HEADER = (
     "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex\t"
     "measurement\tactual_start_object_hex\tactual_end_object_hex"
 )
+VIVADO_LOGIC_SAMPLING_COST_HEADER = (
+    VIVADO_LOGIC_SEGMENT_TIMING_HEADER
+    + "\treference_cost_ns\tcheck_clock_adjustment_ns"
+)
 _LEGACY_VIVADO_LOGIC_SEGMENT_TIMING_HEADER = (
     "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex"
 )
@@ -1786,6 +1790,7 @@ def _indexed_logic_measurement_import(
     """Join a routed TSV to a typed identity without graph-sized dictionaries."""
     from .logic_segment_identity_storage import segment_from_row
     from .logic_segment_timing_storage import write_logic_segment_timing_storage
+    from .sampling_cost import SAMPLING_COST_POLICY, parse_reference_cost_fields
 
     source_bindings = bind_view_sources(
         (identity, "logic-segment-identity-store-v1")
@@ -1806,7 +1811,8 @@ def _indexed_logic_measurement_import(
             "ordinal INTEGER PRIMARY KEY,segment_id TEXT UNIQUE NOT NULL,"
             "kind TEXT NOT NULL,start_object TEXT NOT NULL,end_object TEXT NOT NULL,"
             "delay_ns REAL,measurement TEXT NOT NULL,"
-            "actual_start_object TEXT,actual_end_object TEXT,optimization_source TEXT)"
+            "actual_start_object TEXT,actual_end_object TEXT,optimization_source TEXT,"
+            "sampling_cost_ns REAL)"
         )
         connection.execute(
             "ATTACH DATABASE ? AS identity",
@@ -1818,14 +1824,14 @@ def _indexed_logic_measurement_import(
                 header = next(stream, "").rstrip("\n")
                 if header not in {
                     VIVADO_LOGIC_SEGMENT_TIMING_HEADER,
+                    VIVADO_LOGIC_SAMPLING_COST_HEADER,
                     _LEGACY_VIVADO_LOGIC_SEGMENT_TIMING_HEADER,
                 }:
                     raise ValidationError(
                         "Vivado logic segment timing header is invalid"
                     )
-                extended_format = (
-                    header == VIVADO_LOGIC_SEGMENT_TIMING_HEADER
-                )
+                sampling_costs = header == VIVADO_LOGIC_SAMPLING_COST_HEADER
+                extended_format = header != _LEGACY_VIVADO_LOGIC_SEGMENT_TIMING_HEADER
                 if not extended_format and not allow_legacy_timing_format:
                     raise ValidationError(
                         "legacy Vivado logic timing format requires explicit compatibility"
@@ -1852,7 +1858,7 @@ def _indexed_logic_measurement_import(
                             bytes.fromhex(fields[7]).decode("utf-8")
                             if extended_format else end_object
                         )
-                        expected_fields = 8 if extended_format else 5
+                        expected_fields = 10 if sampling_costs else 8 if extended_format else 5
                         eliminated = measurement.startswith(OPTIMIZED_AWAY + ":")
                         proof_source = measurement.split(":", 1)[1] if eliminated else None
                         if eliminated:
@@ -1861,6 +1867,9 @@ def _indexed_logic_measurement_import(
                             measurement = OPTIMIZED_AWAY
                             actual_start = actual_end = None
                         delay = None if eliminated else float(fields[2])
+                        sampling_cost = parse_reference_cost_fields(
+                            fields[8:], delay, eliminated=eliminated
+                        ) if sampling_costs else None
                     except (IndexError, ValueError, UnicodeDecodeError) as error:
                         label = "Vivado"
                         raise ValidationError(
@@ -1891,12 +1900,12 @@ def _indexed_logic_measurement_import(
                     batch.append((
                         inserted + len(batch), segment_id, fields[1],
                         start_object, end_object, delay, measurement,
-                        actual_start, actual_end, proof_source,
+                        actual_start, actual_end, proof_source, sampling_cost,
                     ))
                     if len(batch) >= 8192:
                         try:
                             connection.executemany(
-                                "INSERT INTO measurements VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                "INSERT INTO measurements VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                                 batch,
                             )
                         except sqlite3.IntegrityError as error:
@@ -1908,7 +1917,7 @@ def _indexed_logic_measurement_import(
                 if batch:
                     try:
                         connection.executemany(
-                            "INSERT INTO measurements VALUES (?,?,?,?,?,?,?,?,?,?)",
+                            "INSERT INTO measurements VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                             batch,
                         )
                     except sqlite3.IntegrityError as error:
@@ -1983,11 +1992,13 @@ def _indexed_logic_measurement_import(
                 "design": identity["design"],
                 "platform": identity["platform"],
                 "fpga": identity["fpga"],
-                "provider": provider,
+                "provider": ("vivado-routed-logic-segment-sampling-cost-v1"
+                             if sampling_costs and provider == "vivado-routed-logic-segment-datapath-v1" else provider),
                 "qualification": qualification,
                 "coverage": identity["coverage"],
                 "system_routes_sha256": identity["system_routes_sha256"],
                 "tdm_schedule_sha256": identity["tdm_schedule_sha256"],
+                **({"sampling_cost_policy": SAMPLING_COST_POLICY} if sampling_costs else {}),
                 **(
                     {"semantic_contract_sha256": identity["semantic_contract_sha256"]}
                     if "semantic_contract_sha256" in identity else {}
@@ -1997,7 +2008,7 @@ def _indexed_logic_measurement_import(
             def measured_records():
                 for row in connection.execute(
                     "SELECT i.*,m.delay_ns,m.measurement,"
-                    "m.actual_start_object,m.actual_end_object,m.optimization_source "
+                    "m.actual_start_object,m.actual_end_object,m.optimization_source,m.sampling_cost_ns "
                     "FROM identity.segments i JOIN measurements m USING(segment_id) "
                     "ORDER BY i.system_path,i.member_path,i.cut_index,i.segment_id"
                 ):
@@ -2008,6 +2019,8 @@ def _indexed_logic_measurement_import(
                     })
                     if row["optimization_source"] is not None:
                         record["optimization_source"] = str(row["optimization_source"])
+                    if row["sampling_cost_ns"] is not None:
+                        record["sampling_cost_ns"] = float(row["sampling_cost_ns"])
                     if row["actual_start_object"] is not None:
                         record["actual_start_object"] = str(
                             row["actual_start_object"]
@@ -2252,6 +2265,9 @@ def validate_logic_segment_timing(
         raise ValidationError("logic segment timing schema is invalid")
     if database.get("status") != "pass":
         raise ValidationError("logic segment timing did not pass")
+    from .sampling_cost import SAMPLING_COST_POLICY, validate_sampling_cost
+    if "sampling_cost_policy" in database and database["sampling_cost_policy"] != SAMPLING_COST_POLICY:
+        raise ValidationError("logic segment timing sampling cost policy is invalid")
     identity = {
         key: database[key]
         for key in (
@@ -2280,6 +2296,7 @@ def validate_logic_segment_timing(
     collection_bound = 0
     optimized_away = 0
     for segment in database["segments"]:
+        validate_sampling_cost(segment, database.get("sampling_cost_policy"))
         if validate_optimization_record(segment):
             optimized_away += 1
             continue

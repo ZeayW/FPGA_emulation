@@ -35,13 +35,18 @@ from .store_publication import (
 )
 from .io import file_sha256, read_json, write_json
 from .timing_disposition import OPTIMIZED_AWAY, validate_optimization_record
+from .sampling_cost import SAMPLING_COST_POLICY, validate_sampling_cost
 
 
 LOGIC_SEGMENT_TIMING_SCHEMA = "emuflow.logic-segment-timing/v1"
 LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA_V1 = "emuflow.logic-segment-timing-storage/v1"
-LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA = "emuflow.logic-segment-timing-storage/v2"
+LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA_V2 = "emuflow.logic-segment-timing-storage/v2"
+LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA = "emuflow.logic-segment-timing-storage/v3"
 LOGIC_SEGMENT_TIMING_APPLICATION_ID = 0x454D5547  # ASCII "EMUG"
-LOGIC_SEGMENT_TIMING_USER_VERSION = 2
+LOGIC_SEGMENT_TIMING_USER_VERSION = 3
+_STORAGE_VERSIONS = {LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA_V1: 1,
+                     LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA_V2: 2,
+                     LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA: 3}
 _STORE_SUFFIX = ".sqlite"
 _SELECTOR_KEYS = {
     "schema", "logical_schema", "application_id", "user_version",
@@ -53,7 +58,7 @@ _HEADER_REQUIRED = {
     "qualification", "coverage", "system_routes_sha256",
     "tdm_schedule_sha256",
 }
-_HEADER_OPTIONAL = {"semantic_contract_sha256"}
+_HEADER_OPTIONAL = {"semantic_contract_sha256", "sampling_cost_policy"}
 _SOURCE_KEYS = {
     "design", "platform", "fpga", "system_routes_sha256",
     "tdm_schedule_sha256", "semantic_contract_sha256",
@@ -70,6 +75,7 @@ _SEGMENT_OPTIONAL = {
     "static_exact_segment_id", "start_object_kind", "end_object_kind",
     "cone_anchor_object_kind", "cone_anchor_pin", "measurement",
     "actual_start_object", "actual_end_object", "optimization_source",
+    "sampling_cost_ns",
 }
 _UNMEASURED_KEYS = {
     "id", "kind", "system_path", "member_path", "reason",
@@ -127,7 +133,7 @@ CREATE UNIQUE INDEX unmeasured_segments_id_unique
 """
 
 
-_DDL = _DDL_V1.replace(
+_DDL_V2 = _DDL_V1.replace(
     "delay_ns REAL NOT NULL CHECK(delay_ns >= 0.0)",
     "delay_ns REAL CHECK(delay_ns >= 0.0)"
 ).replace(
@@ -139,6 +145,14 @@ _DDL = _DDL_V1.replace(
     "CHECK((measurement='optimized-away' AND delay_ns IS NULL AND optimization_source IS NOT NULL "
     "AND actual_start_object IS NULL AND actual_end_object IS NULL) OR "
     "(measurement!='optimized-away' AND delay_ns IS NOT NULL AND optimization_source IS NULL))\n)"
+)
+
+_DDL = _DDL_V2.replace(
+    "actual_end_object TEXT, optimization_source TEXT, ",
+    "actual_end_object TEXT, optimization_source TEXT, sampling_cost_ns REAL, "
+).replace(
+    "AND actual_start_object IS NULL AND actual_end_object IS NULL)",
+    "AND actual_start_object IS NULL AND actual_end_object IS NULL AND sampling_cost_ns IS NULL)"
 )
 
 _EXPECTED_COLUMNS = {
@@ -287,11 +301,11 @@ def _normalized_sql(value: Any) -> str:
     return " ".join(str(value).split())
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=3)
 def _expected_sqlite_objects(version: int = LOGIC_SEGMENT_TIMING_USER_VERSION) -> tuple[tuple[str, str, str, str], ...]:
     connection = sqlite3.connect(":memory:")
     try:
-        connection.executescript(_DDL_V1 if version == 1 else _DDL)
+        connection.executescript(_DDL_V1 if version == 1 else _DDL_V2 if version == 2 else _DDL)
         return tuple(
             (str(row[0]), str(row[1]), str(row[2]), _normalized_sql(row[3]))
             for row in connection.execute(
@@ -325,6 +339,8 @@ def _validate_header(value: Any) -> dict[str, Any]:
     semantic = value.get("semantic_contract_sha256")
     if semantic is not None and not _valid_digest(semantic):
         raise ValidationError("logic segment timing semantic seal is malformed")
+    if "sampling_cost_policy" in value and value["sampling_cost_policy"] != SAMPLING_COST_POLICY:
+        raise ValidationError("logic segment timing sampling cost policy is invalid")
     for key in ("system_routes_sha256", "tdm_schedule_sha256"):
         if not _valid_digest(value.get(key)):
             raise ValidationError(
@@ -341,6 +357,8 @@ def _source(header: Mapping[str, Any]) -> dict[str, Any]:
         "system_routes_sha256": header["system_routes_sha256"],
         "tdm_schedule_sha256": header["tdm_schedule_sha256"],
         "semantic_contract_sha256": header.get("semantic_contract_sha256"),
+        **({"sampling_cost_policy": header["sampling_cost_policy"]}
+           if "sampling_cost_policy" in header else {}),
     }
 
 
@@ -348,11 +366,11 @@ def _validate_selector(value: Any) -> dict[str, Any]:
     if (
         not isinstance(value, dict)
         or set(value) != _SELECTOR_KEYS
-        or value.get("schema") not in {LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA_V1, LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA}
+        or value.get("schema") not in _STORAGE_VERSIONS
         or value.get("logical_schema") != LOGIC_SEGMENT_TIMING_SCHEMA
         or value.get("application_id") != LOGIC_SEGMENT_TIMING_APPLICATION_ID
         or isinstance(value.get("application_id"), bool)
-        or value.get("user_version") != (1 if value.get("schema") == LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA_V1 else LOGIC_SEGMENT_TIMING_USER_VERSION)
+        or value.get("user_version") != _STORAGE_VERSIONS.get(value.get("schema"))
         or isinstance(value.get("user_version"), bool)
     ):
         raise ValidationError("logic segment timing selector is malformed")
@@ -364,7 +382,7 @@ def _validate_selector(value: Any) -> dict[str, Any]:
         or set(counts) not in (_COUNT_KEYS, _COUNT_KEYS | {"endpoint_collection_bound_segments"})
         or any(not _strict_nonnegative_int(item) for item in counts.values())
         or not isinstance(source, dict)
-        or set(source) != _SOURCE_KEYS
+        or set(source) != (_SOURCE_KEYS | ({"sampling_cost_policy"} if "sampling_cost_policy" in header else set()))
         or source != _source(header)
         or not _valid_digest(value.get("logical_sha256"))
     ):
@@ -416,7 +434,7 @@ def _exact_sqlite_envelope(connection: sqlite3.Connection) -> None:
     user_version = connection.execute("PRAGMA user_version").fetchone()[0]
     if (
         application_id != LOGIC_SEGMENT_TIMING_APPLICATION_ID
-        or user_version not in {1, LOGIC_SEGMENT_TIMING_USER_VERSION}
+        or user_version not in {1, 2, LOGIC_SEGMENT_TIMING_USER_VERSION}
     ):
         raise ValidationError("unsupported logic segment timing store")
     objects = tuple(
@@ -429,9 +447,11 @@ def _exact_sqlite_envelope(connection: sqlite3.Connection) -> None:
     if objects != _expected_sqlite_objects(user_version):
         raise ValidationError("logic segment timing store objects are invalid")
     for table, expected in _EXPECTED_COLUMNS.items():
-        if user_version == 2 and table == "segments":
+        if user_version >= 2 and table == "segments":
             expected = tuple((item[:3] + (0,) + item[4:]) if item[1] == "delay_ns" else item for item in expected)
             expected += ((19, "optimization_source", "TEXT", 0, None, 0, 0),)
+        if user_version >= 3 and table == "segments":
+            expected += ((20, "sampling_cost_ns", "REAL", 0, None, 0, 0),)
         actual = tuple(tuple(row) for row in connection.execute(
             f"PRAGMA table_xinfo({table})"
         ))
@@ -461,6 +481,7 @@ def _validate_segment(raw: Mapping[str, Any], header: Mapping[str, Any]) -> dict
         raise ValidationError("logic segment timing record is malformed")
     record = dict(raw)
     eliminated = validate_optimization_record(record)
+    validate_sampling_cost(record, header.get("sampling_cost_policy"))
     strings = ("id", "system_path", "member_path", "fpga", "start_pin", "end_pin")
     delay = record.get("delay_ns")
     cut_index = record.get("cut_index")
@@ -525,6 +546,7 @@ def _segment_tuple(seq: int, record: Mapping[str, Any]) -> tuple[Any, ...]:
         record.get("cone_anchor_object_kind"), record.get("cone_anchor_pin"),
         record["measurement"], record.get("actual_start_object"),
         record.get("actual_end_object"), record.get("optimization_source"),
+        record.get("sampling_cost_ns"),
     )
 
 
@@ -550,6 +572,8 @@ def _segment_from_row(row: sqlite3.Row) -> dict[str, Any]:
     record.update({key: value for key, value in optional.items() if value is not None})
     if "optimization_source" in row.keys() and row["optimization_source"] is not None:
         record["optimization_source"] = str(row["optimization_source"])
+    if "sampling_cost_ns" in row.keys() and row["sampling_cost_ns"] is not None:
+        record["sampling_cost_ns"] = float(row["sampling_cost_ns"])
     record["measurement"] = str(row["measurement"])
     return record
 
@@ -995,14 +1019,14 @@ def write_logic_segment_timing_storage(
             batch.append(_segment_tuple(seq, record))
             if len(batch) >= 8192:
                 connection.executemany(
-                    "INSERT INTO segments VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO segments VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     batch,
                 )
                 batch.clear()
             segment_count += 1
         if batch:
             connection.executemany(
-                "INSERT INTO segments VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO segments VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 batch,
             )
         unsupported_digest = hashlib.sha256()
@@ -1141,7 +1165,7 @@ def write_logic_segment_timing_storage(
             publish_sqlite_store(
                 temporary,
                 published_store,
-                "logic-segment-timing-store-v2",
+                "logic-segment-timing-store-v3",
                 sources=source_bindings,
             )
             created_store = True
@@ -1204,7 +1228,7 @@ def read_logic_segment_timing_storage(
     lease: Optional[_Lease] = _Lease(path, exclusive=False)
     try:
         value = read_json(path)
-        if value.get("schema") in {LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA_V1, LOGIC_SEGMENT_TIMING_STORAGE_SCHEMA}:
+        if value.get("schema") in _STORAGE_VERSIONS:
             view = LogicSegmentTimingView(
                 path,
                 expected_design=expected_design,

@@ -289,7 +289,7 @@ proc get_timing_paths {args} {error "eliminated path was numerically measured"}
                 self.assertEqual(result["optimized_away_segments"],1)
                 self.assertEqual(result["endpoint_exact_segments"],1)
                 with read_logic_segment_timing_storage(root/"timing.json") as view:
-                    self.assertEqual(view.selector["user_version"],2)
+                    self.assertEqual(view.selector["user_version"],3)
                     self.assertEqual(len(view["segments"]),2)
                     self.assertIsNone(view["segments"][0]["delay_ns"])
                     self.assertNotIn("actual_end_object",view["segments"][0])
@@ -300,6 +300,20 @@ proc get_timing_paths {args} {error "eliminated path was numerically measured"}
                     with sqlite3.connect(view.store_path) as db:
                         with self.assertRaises(sqlite3.IntegrityError):
                             db.execute("UPDATE segments SET delay_ns=0 WHERE measurement='optimized-away'")
+                        with self.assertRaises(sqlite3.IntegrityError):
+                            db.execute("UPDATE segments SET sampling_cost_ns=0 WHERE measurement='optimized-away'")
+                from emuflow.logic_segment_timing import VIVADO_LOGIC_SAMPLING_COST_HEADER
+                cost_raw = root/"sampling.tsv"
+                cost_rows = [row + (["", ""] if i == 0 else ["1.25", "-1.25"])
+                             for i, row in enumerate(rows)]
+                cost_raw.write_text(VIVADO_LOGIC_SAMPLING_COST_HEADER+"\n"+
+                                    "".join("\t".join(row)+"\n" for row in cost_rows))
+                result = import_vivado_logic_segment_timing(
+                    cost_raw, identity, root/"sampling.json", optimization_proofs=proof)
+                self.assertEqual(result["optimized_away_segments"], 1)
+                with read_logic_segment_timing_storage(root/"sampling.json") as view:
+                    self.assertNotIn("sampling_cost_ns", view["segments"][0])
+                    self.assertEqual(view["segments"][1]["sampling_cost_ns"], 1.25)
                 rows[0][2] = "0"; write()
                 with self.assertRaises(ValidationError):
                     import_vivado_logic_segment_timing(raw,identity,root/"fake.json",optimization_proofs=proof)

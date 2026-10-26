@@ -765,9 +765,17 @@ fixed-I/O-map arguments. It appends `reference_cost_ns` and the signed
 `check_clock_adjustment_ns` to the ordinary eight-column query result. Missing
 common-reference requirements fail the query, including ignored paths that do
 not expose a usable slack. Optimized-away records keep both values absent.
-This optional format is diagnostic input for sampling-cost qualification;
-the production eight-column importer does not yet consume it. The maximum
-effective sampling cost and its associated raw delay are separate quantities.
+The indexed logic-segment importer accepts this format and stores the canonical
+`sampling_cost_ns` alongside `delay_ns` in the same version 3 SQLite owner. Its
+source seal includes `sampling_cost_policy=vivado-clock-aware-reference-v1`.
+Every implemented segment in that owner must have a finite cost; optimized-away
+segments have none. The signed adjustment remains derivable and is not copied
+into a second stored column. Eight-column data-only measurements remain
+explicitly without a sampling-cost policy, and existing version 1/2 stores
+remain readable. The local-path and boundary importers have separate formats;
+this extension does not silently change those contracts or enable word-global
+timing. The maximum effective sampling cost and its associated raw delay are
+separate quantities.
 
 `scripts/vivado/inspect_constant_frontiers.tcl INPUT_DCP QUERY_TSV OUTPUT_TSV`
 exports selected LUT INIT values and every input driver with its source tag.
