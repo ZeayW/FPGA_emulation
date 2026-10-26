@@ -581,3 +581,23 @@ updates. An integration test forbids the Python primitive normalizer in the
 production hierarchical path. Final native primitive census remains separate
 from rewrite decisions. These are component gates; they do not establish
 complete frontend ownership or real NVDLA Phase 1–7 equivalence/performance.
+
+
+### Native hierarchical compact EmuIR producer
+
+Compare the complete source-to-owner result with the independent original Python
+hierarchy producer and existing flat importer. Check every cell, parameter,
+attribute, resource, constant, port, clock, net ID/name/alias, driver/sink ordinal,
+fanout, cut class and warning. Payload checks retain arbitrary-width integers,
+precise floating-point values and nested Unicode data. Include explicit versus
+inferred clocks, canonical-name collisions and late child constant outputs.
+
+The producer's independent audit merges source and final endpoints and separately
+checks payload preservation, aliases, canonical identities and classification.
+Mutation of either original output generation, callback failure, source changes
+and publication failure must preserve the previous owner. Large fanout verifies
+bounded Python host memory with its row writer and endpoint grouping disabled.
+The final catalog must contain only the current compact schema and required
+index, without source staging tables or raw-record free-page inflation. These
+checks qualify the producer boundary; full Phase 1–7 NVDLA provenance, runtime,
+process-tree RSS, disk, physical and global timing acceptance remain separate.

@@ -135,6 +135,8 @@ constexpr RegisteredSchema schemas[] = {
     {"native-compile-adapter-v1", ArtifactEncoding::kText, 0, 1},
     {"native-compile-state-v1", ArtifactEncoding::kText, 0, 1},
     {"multi-fpga-flow-report-v2", ArtifactEncoding::kText, 0, 2},
+    {"yosys-emuir-import-request-v1", ArtifactEncoding::kBinary, 0x31524959464d5545ULL, 1},
+    {"yosys-emuir-import-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"xilinx-primitive-library-v1", ArtifactEncoding::kText, 0, 1},
     {"yosys-hierarchy-request-v2", ArtifactEncoding::kBinary, 0x31485953464d5545ULL, 2},
     {"yosys-hierarchy-request-v1", ArtifactEncoding::kBinary, 0x31485953464d5545ULL, 1},

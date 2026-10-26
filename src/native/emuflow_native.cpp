@@ -20,6 +20,7 @@ constexpr const char* kUsage =
     "  publish-store REQUEST OUTPUT\n"
     "  compile REQUEST_JSON\n"
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
+    "  phase1 import-yosys REQUEST EMUIR SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
     "  run-tool REQUEST RESULT_JSON\n"
     "  phase3 analyze INPUT OUTPUT\n"
     "  phase3 refine-hops [--trace-output] INPUT OUTPUT\n"
@@ -148,6 +149,12 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if (argc == 4 && std::string(argv[1]) == "publish-store") {
     const auto request = emuflow::core::ArtifactRef::Bind(argv[2],"sqlite-publication-request-v1");
     return Finish(emuflow::core::PublishSqliteStore(request,argv[3],report),report);
+  }
+  if ((argc == 6 || argc == 7) && std::string(argv[1]) == "phase1" && std::string(argv[2]) == "import-yosys") {
+    std::ios::sync_with_stdio(false);std::cin.tie(nullptr);
+    const auto request=emuflow::core::ArtifactRef::Bind(argv[3],"yosys-emuir-import-request-v1");
+    if(argc==7){const auto library=emuflow::core::ArtifactRef::Bind(argv[6],"xilinx-primitive-library-v1");return Finish(emuflow::core::ImportYosysEmuir(request,std::cin,argv[4],argv[5],&library),report);}
+    return Finish(emuflow::core::ImportYosysEmuir(request,std::cin,argv[4],argv[5]),report);
   }
   if ((argc == 6 || argc == 7) && std::string(argv[1]) == "phase1" && std::string(argv[2]) == "stage-yosys-hierarchy") {
     std::ios::sync_with_stdio(false);std::cin.tie(nullptr);

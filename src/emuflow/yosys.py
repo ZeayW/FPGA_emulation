@@ -556,13 +556,24 @@ def import_yosys_json_indexed(
     elif _source_value is None and _source_stream is None:
         source_bindings += (bind_store_source(path, "yosys-source-document-v1"),)
     source_bindings = validate_store_destination(output, source_bindings)
+    if _expand_hierarchy:
+        if top is None or _source_value is not None or _source_index_path is not None:
+            raise ImportError("hierarchical indexed Yosys import requires an explicit top and a stream or path")
+        from .xilinx_primitives import normalize_xilinx_indexed_staging, DEFAULT_XILINX_PRIMITIVE_LIBRARY
+        if staging_transform is not None and staging_transform is not normalize_xilinx_indexed_staging:
+            raise ImportError("hierarchical import requires the current native Xilinx normalization or no transform")
+        from .yosys_hierarchy_native import import_hierarchical_emuir
+        return import_hierarchical_emuir(
+            path, output, top, clocks, source_stream=_source_stream,
+            normalization_library=(DEFAULT_XILINX_PRIMITIVE_LIBRARY if staging_transform is not None else None),
+            source_bindings=source_bindings, finalize=_finalize_emuir,
+        )
     warnings: List[str] = []
     ports: List[Dict[str, Any]] = []
     creator = "unknown"
     top_name = top
     raw_ports: Dict[str, Any] = {}
     transform_report: Optional[Dict[str, Any]] = None
-    hierarchy_report: Optional[Dict[str, Any]] = None
     mapped_index_schema: Optional[str] = None
 
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -576,17 +587,6 @@ def import_yosys_json_indexed(
     staging_path.unlink(missing_ok=True)
     connection: Optional[sqlite3.Connection] = None
     try:
-        if _expand_hierarchy:
-            if top is None or _source_value is not None or _source_index_path is not None:
-                raise ImportError("hierarchical indexed Yosys import requires an explicit top and a stream or path")
-            from .yosys_hierarchy_native import stage_hierarchy
-            from .xilinx_primitives import normalize_xilinx_indexed_staging, DEFAULT_XILINX_PRIMITIVE_LIBRARY
-            native_normalization_library = (DEFAULT_XILINX_PRIMITIVE_LIBRARY
-                if staging_transform is normalize_xilinx_indexed_staging else None)
-            creator, raw_ports, hierarchy_report, transform_report = stage_hierarchy(
-                path, staging_path, top, source_stream=_source_stream,
-                normalization_library=native_normalization_library,
-            )
         connection = sqlite3.connect(staging_path, uri=True)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=OFF")
@@ -809,8 +809,6 @@ def import_yosys_json_indexed(
                  ORDER BY id
                 """
             )
-        elif _expand_hierarchy:
-            top_name = top
         elif _source_value is None and top is not None:
             creator, raw_ports = _stream_yosys_module_records(
                 path,
@@ -856,22 +854,7 @@ def import_yosys_json_indexed(
         if top_name is None:
             raise ImportError(f"{path}: unable to determine top module")
         if staging_transform is not None:
-            if transform_report is None:
-                transform_report = staging_transform(
-                    connection,
-                    raw_ports,
-                    path,
-                    top_name,
-                )
-            if hierarchy_report is not None:
-                transform_report = {
-                    **transform_report,
-                    "hierarchical_interchange": hierarchy_report,
-                }
-        elif hierarchy_report is not None:
-            transform_report = {
-                "hierarchical_interchange": hierarchy_report,
-            }
+            transform_report = staging_transform(connection, raw_ports, path, top_name)
         clock_ports = _resolve_clock_ports(raw_ports, clocks)
         reset_ports = {name for name in raw_ports if _RESET_NAME.search(name)}
         endpoint_sequence = 0

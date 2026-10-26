@@ -80,7 +80,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             timing = root / "timing.json"
             write_json(timing, {"schema": "emuflow.xilinx-preplacement-timing-db/v1"})
             def require(schema):
-                if schema == "yosys-hierarchy-request-v2":
+                if schema == "yosys-emuir-import-request-v1":
                     raise EmuFlowError("missing native frontend contract")
             with (
                 patch("emuflow.multi_fpga_flow.resolve_native_executable", return_value=str(FAKE_OPENSTA)),

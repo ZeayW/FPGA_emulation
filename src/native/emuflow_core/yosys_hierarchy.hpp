@@ -7,4 +7,7 @@ namespace emuflow::core {
 StageResult StageYosysHierarchy(const ArtifactRef& request, std::istream& stream,
                                const std::string& output, const std::string& summary,
                                const ArtifactRef* normalization_library=nullptr);
+StageResult ImportYosysEmuir(const ArtifactRef& request, std::istream& stream,
+                            const std::string& output, const std::string& summary,
+                            const ArtifactRef* normalization_library=nullptr);
 }

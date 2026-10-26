@@ -488,7 +488,7 @@ there is no silent implementation or provider fallback.
 
 | Stage | Existing native/indexed foundation | Remaining delivery obligation |
 | --- | --- | --- |
-| Phase 1–2 | Native synthesis/STA engines; native streamed Yosys hierarchy expansion/alias resolution and hierarchical Xilinx normalization; native OpenSTA input export, indexed path-result import, timing-weight generation and independent validators | Migrate final EmuIR generation, remaining indexed-source adapters and phase lifecycle under the shared artifact API |
+| Phase 1–2 | Native synthesis/STA engines; native source-to-compact hierarchical Yosys import, alias resolution and Xilinx normalization; native OpenSTA input export, indexed path-result import, timing-weight generation and independent validators | Migrate remaining indexed-source adapters, Phase 1 clock analysis/reporting and phase lifecycle under the shared artifact API |
 | Phase 3 | Shared-core candidate eligibility and primary clustering; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Migrate remaining policy/assignment publication and reference modes; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
@@ -822,8 +822,30 @@ native failure. The existing Python normalizer still serves explicit flat and
 mapped-index consumers; those consumers must migrate before that implementation
 can retire. Independent differential tests use it as an oracle.
 
-This closes hierarchy expansion and hierarchical Xilinx normalization, not the
-complete frontend: final EmuIR construction, remaining indexed-source consumers,
+`phase1 import-yosys REQUEST EMUIR SUMMARY [PRIMITIVE_LIBRARY]` now runs the
+complete hierarchical source-to-compact producer in the shared core. Source
+module/cell/name records stay in SQLite TEMP storage under the same private
+connection. The main database contains only the canonical compact owner, so
+retiring raw staging does not leave its pages in the published file. Cell
+payload interning is bounded; pin owners are integer IDs, and endpoint ordering
+uses source cell/port/bit order without a Python fanout list. Canonical names,
+aliases, constant connections, resource vectors, wide integer parameters and
+floating payloads retain their current logical definitions.
+
+Before commit, a separate source cursor merges all original endpoints with the
+finished owner, checks cell payloads and aliases, and independently recomputes
+net classification. Only the final counts, normalization summary and native
+metrics return to the host. The host requires the producer's original output
+generations, adopts the closed file by same-filesystem rename, and invokes the
+shared publisher once. A changed private store or summary rejects without
+rebinding validation to the modified file. An explicit finalizer remains private
+and labels the original validation as preceding that callback; it cannot mutate
+a prior publication. The ordinary hierarchical path has no Python row-writer or
+custom Python transform fallback. Stage-only output remains a component
+qualification interface, not the production handoff.
+
+This closes hierarchical source-to-compact generation, not the complete frontend:
+remaining flat/mapped-index consumers, Phase 1 clock analysis/reporting, complete
 stage ownership and real-design qualification remain open.
 
 ## Validation and completion
