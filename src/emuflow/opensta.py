@@ -1322,6 +1322,35 @@ def check_opensta_export_completion(log: str, *, output_path: Path, clock_count:
     return int(emitted)
 
 
+def _prepare_opensta_source_model(ir, timing_model_path, architecture_timing_db_path,
+                                  clock_budget_policy):
+    """Shared source primitive/clock-cone model for paths and launch tags."""
+    instance_cell_types = None
+    if architecture_timing_db_path is not None:
+        model, instance_cell_types = build_architecture_opensta_timing_model(ir, architecture_timing_db_path)
+    else:
+        model = load_timing_model(timing_model_path)
+    clock_logic = None
+    if clock_budget_policy == 'engine-edge-v1':
+        from .sta_clock_logic import specialize_clock_logic
+        clock_logic = specialize_clock_logic(ir, model)
+        instance_cell_types = ir.timing_types()
+    coverage = validate_timing_model_coverage(ir, model, instance_cell_types)
+    return model, instance_cell_types, clock_logic, coverage
+
+
+def _write_opensta_source_files(ir, root, model, instance_cell_types, clock_map, timing_io):
+    """Write one source context without running STA or enumerating paths."""
+    write_mapped_verilog(ir, root / "mapped.v", timing_only=True,
+                         timing_cell_types=instance_cell_types)
+    (root / "timing.lib").write_text(render_opensta_liberty(model), encoding="utf-8")
+    with (root / "clocks.tsv").open("w", encoding="utf-8") as stream:
+        stream.write("clock_hex\tperiod_ns\n")
+        for name, period in clock_map.items():
+            stream.write(f"{name.encode().hex()}\t{period:.12g}\n")
+    return _write_timing_io_map(ir, clock_map, timing_io, root / "timing-io.tsv")
+
+
 def _run_opensta_path_database(
     ir_path: Path,
     output_path: Path,
@@ -1372,21 +1401,8 @@ def _run_opensta_path_database(
         raise ValidationError(
             f"OpenSTA through_nets are absent from EmuIR: {unknown_through_nets}"
         )
-    instance_cell_types: Optional[Dict[str, str]] = None
-    if architecture_timing_db_path is not None:
-        model, instance_cell_types = build_architecture_opensta_timing_model(
-            ir, architecture_timing_db_path
-        )
-    else:
-        model = load_timing_model(timing_model_path)
-    clock_logic = None
-    if clock_budget_policy == 'engine-edge-v1':
-        from .sta_clock_logic import specialize_clock_logic
-        clock_logic = specialize_clock_logic(ir, model)
-        instance_cell_types = ir.timing_types()
-    coverage = validate_timing_model_coverage(
-        ir, model, instance_cell_types
-    )
+    model, instance_cell_types, clock_logic, coverage = _prepare_opensta_source_model(
+        ir, timing_model_path, architecture_timing_db_path, clock_budget_policy)
     clock_map = _clock_map(ir, clocks)
     opensta = resolve_native_executable("sta", executable)
     engine = require_opensta_engine(opensta)
@@ -1413,14 +1429,8 @@ def _run_opensta_path_database(
         # OpenSTA's intentionally small Verilog reader does not accept net
         # declaration keywords on ports, attributes, or instance parameters.
         # Those constructs do not affect static timing connectivity.
-        write_mapped_verilog(
-            ir, verilog_path,
-            timing_only=True,
-            timing_cell_types=instance_cell_types,
-        )
-        liberty_path.write_text(
-            render_opensta_liberty(model), encoding="utf-8"
-        )
+        timing_io_summary = _write_opensta_source_files(
+            ir, root, model, instance_cell_types, clock_map, timing_io)
         write_emuir_net_map(ir_path, net_map_path, _ir=ir)
         if through_net_ids:
             with through_path.open("w", encoding="utf-8") as stream:
@@ -1437,13 +1447,6 @@ def _run_opensta_path_database(
                         stream.write(
                             f"{net.encode().hex()}\t{pin.encode().hex()}\n"
                         )
-        with clock_path.open("w", encoding="utf-8") as stream:
-            stream.write("clock_hex\tperiod_ns\n")
-            for name, period in clock_map.items():
-                stream.write(f"{name.encode().hex()}\t{period:.12g}\n")
-        timing_io_summary = _write_timing_io_map(
-            ir, clock_map, timing_io, timing_io_path
-        )
 
         environment = os.environ.copy()
         environment.update(

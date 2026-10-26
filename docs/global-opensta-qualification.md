@@ -348,6 +348,19 @@ distinct phases, and rejects unclocked or combinational-through pins. The
 read-only Path accessors use existing engine tags; no timing algorithm changes.
 This is bounded synthetic API qualification, separate from the production
 canonical launch-fact owner and full original-path coverage.
+`emit_opensta_source_context` emits the source model required by that owner
+from the original compact source's existing generation lease. It shares the
+Phase 2 primitive/INIT clock-cone model preparation and Verilog, Liberty,
+primary-clock and explicit I/O serialization. It streams the indexed source
+without rerunning synthesis or timing-path extraction, and uses the original
+reference clocks; DUT implementation scaling remains in the native consumer.
+The emitted bytes are temporary and have their own model, script and engine
+bindings. A newly emitted model is not evidence of restoring historical Phase
+2 model bytes or renewing an older seal. Callers retain its input generations
+through the canonical launch-clock producer and still validate the original
+TimingPathDB relationship. Changed inputs or emitted files invalidate the
+context. Source-context emission alone does not run global STA or establish a
+safe operating frequency.
 The streamed `export_launch_clock_edges.tcl` consumer reads ordered source
 coordinates and queries each exact original pin through that API. It shares
 `design_context.tcl` with Phase 2 path extraction, so original primary clocks

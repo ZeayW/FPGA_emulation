@@ -89,7 +89,9 @@ unnecessarily delayed occurrences without recomputing data arrivals.
 An explicit OpenSTA launch-clock qualifier reads architectural source phases
 without selecting a representative timing path.
 Streamed launch-tag export shares Phase 2's original clock and I/O setup;
-a native producer binds implemented physical starts to original driver
+a source-context emitter reuses its indexed model and constraint generation
+without rerunning synthesis or enumerating timing paths.
+A native producer binds implemented physical starts to original driver
 coordinates and stores their clock/phase tags once. A native original-path
 reader preserves edge windows using complete raw engine clock periods. Full
 word-mode global timing binding remains under integration.
