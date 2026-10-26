@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Check real OpenSTA launch/capture cycle facts on a bounded synthetic design."""
 import argparse
+import csv
+import math
 import os
 import subprocess
 from pathlib import Path
 
 from emuflow.errors import ValidationError
+from emuflow.clock_budget import clock_edge_budget_from_engine_fields
 from emuflow.io import file_sha256,write_json
 from emuflow.opensta import DEFAULT_TIMING_MODEL,load_timing_model,render_opensta_liberty,require_opensta_engine
 
@@ -41,8 +44,24 @@ def main():
     marker='EMUFLOW_CLOCK_BUDGET_QUALIFICATION status=pass cases=6'
     if result.returncode or marker not in(root/'tool.log').read_text():
         raise ValidationError('OpenSTA clock-budget qualification failed; see tool.log')
+    table=root/'clock-budgets.tsv'
+    if table.stat().st_size>65536:raise ValidationError('synthetic clock-budget output exceeds bound')
+    expected={'full':100.,'half':50.,'half_capture':50.,'multi':200.,'rational':10.,'output':100.}
+    seen=set()
+    with table.open()as stream:
+        for row in csv.DictReader(stream,delimiter='\t'):
+            label=row['case']
+            if label not in expected or label in seen:raise ValidationError('clock-budget case coverage differs')
+            seen.add(label);budget=clock_edge_budget_from_engine_fields(row)
+            scaled=budget.scaled_edge_window_ns(source_period_ns=90. if label=='rational'else 100.,target_period_ns=100.)
+            if not math.isclose(scaled,expected[label],rel_tol=0,abs_tol=1e-5):
+                raise ValidationError('uniform clock-budget scaling differs: '+label)
+            relative=budget.launch_relative_arrival_ns(float(row['arrival_ns']))
+            if not math.isclose(relative,cq,rel_tol=0,abs_tol=1e-5):
+                raise ValidationError('clock-budget normalization retained a launch phase or cycle offset')
+    if seen!=set(expected):raise ValidationError('clock-budget cases are incomplete')
     write_json(root/'qualification.json',{'status':'pass','scope':'synthetic-engine-api-only','cases':6,
-        'engine':engine,'command':command,'liberty_sha256':file_sha256(liberty),'verilog_sha256':file_sha256(verilog),
+        'engine':engine,'uniform_edge_window_scaling':'pass','command':command,'liberty_sha256':file_sha256(liberty),'verilog_sha256':file_sha256(verilog),
         'script_sha256':file_sha256(script),'clock_budget_script_sha256':file_sha256(script.with_name('clock_budget.tcl')),
         'budget_sha256':file_sha256(root/'clock-budgets.tsv')})
 
