@@ -1359,7 +1359,7 @@ def _run_opensta_path_database(
     timing_model_path: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db_path: Optional[Path] = None,
     executable: Optional[str] = None,
-    max_paths: int = 200000,
+    max_paths: Optional[int] = None,
     log_path: Optional[Path] = None,
     through_nets: Optional[Sequence[str]] = None,
     through_coverage_path: Optional[Path] = None,
@@ -1374,8 +1374,8 @@ def _run_opensta_path_database(
     if clock_budget_policy=='engine-edge-v1':
         from .native_tools import require_native_schema
         require_native_schema('timing-path-store-v2')
-    if max_paths <= 0:
-        raise ValidationError("OpenSTA max_paths must be positive")
+    if max_paths is not None and (isinstance(max_paths,bool) or not isinstance(max_paths,int) or max_paths<=0):
+        raise ValidationError("OpenSTA max_paths must be a positive integer or None for all endpoints")
     if _stream_output and _return_database:
         raise ValidationError(
             "streamed OpenSTA output cannot return an inline database"
@@ -1458,7 +1458,7 @@ def _run_opensta_path_database(
                 "EMUFLOW_STA_CLOCKS": str(clock_path),
                 "EMUFLOW_STA_TIMING_IO": str(timing_io_path),
                 "EMUFLOW_STA_OUTPUT": str(raw_path),
-                "EMUFLOW_STA_MAX_PATHS": str(max_paths),
+                "EMUFLOW_STA_MAX_PATHS": str(0 if max_paths is None else max_paths),
                 "EMUFLOW_STA_CLOCK_BUDGET_POLICY": clock_budget_policy,
                 "EMUFLOW_STA_THROUGH_NETS": (
                     str(through_path) if through_net_ids else ""
@@ -1634,7 +1634,7 @@ def _run_opensta_path_database(
         "through_nets": through_net_ids,
         "covered_through_nets": covered_through_nets,
         "through_net_coverage": through_coverage,
-        "path_limit_reached": imported["paths"] >= max_paths,
+        "path_limit_reached": max_paths is not None and imported["paths"] >= max_paths,
         "unique_path_nets": imported["unique_path_nets"],
         "used_cell_type_summary": _sealed_string_set_summary(
             coverage["used_cell_types"]
@@ -1656,7 +1656,7 @@ def run_opensta_path_database(
     timing_io: Optional[Mapping[str, Any]] = None,
     timing_model_path: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db_path: Optional[Path] = None,
-    executable: Optional[str] = None, max_paths: int = 200000,
+    executable: Optional[str] = None, max_paths: Optional[int] = None,
     log_path: Optional[Path] = None, through_nets: Optional[Sequence[str]] = None,
     through_coverage_path: Optional[Path] = None, validate_output: bool = True,
     _return_database: bool = False, _stream_output: bool = False,

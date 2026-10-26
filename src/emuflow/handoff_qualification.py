@@ -68,7 +68,7 @@ def main():
     parser.add_argument("--clock", action="append", default=[], help="name=period_ns; repeat for multiple clocks")
     parser.add_argument("--timing-io", type=Path)
     parser.add_argument("--sta-executable")
-    parser.add_argument("--max-paths", type=int, default=200000)
+    parser.add_argument("--max-paths", type=int, default=None)
     parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
     start, initial_io = time.perf_counter(), _io()

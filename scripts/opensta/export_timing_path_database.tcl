@@ -33,8 +33,8 @@ set clock_path [file normalize [emuflow_required_env EMUFLOW_STA_CLOCKS]]
 set timing_io_path [file normalize [emuflow_required_env EMUFLOW_STA_TIMING_IO]]
 set output_path [file normalize [emuflow_required_env EMUFLOW_STA_OUTPUT]]
 set max_paths [emuflow_required_env EMUFLOW_STA_MAX_PATHS]
-if {![string is integer -strict $max_paths] || $max_paths <= 0} {
-  error "EMUFLOW_STA_MAX_PATHS must be a positive integer"
+if {![string is integer -strict $max_paths] || $max_paths < 0} {
+  error "EMUFLOW_STA_MAX_PATHS must be nonnegative; zero selects all endpoints"
 }
 
 set emuflow_allowed_clocks [emuflow_read_design_context]
@@ -266,12 +266,12 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
               $timing_paths output emitted $emuir_name
           }
           if {$emitted > $before_emitted ||
-              $queried_paths - $before_queried >= $max_paths} {
+              ($max_paths > 0 && $queried_paths - $before_queried >= $max_paths)} {
             break
           }
         }
         if {$emitted > $before_emitted ||
-            $queried_paths - $before_queried >= $max_paths} {
+            ($max_paths > 0 && $queried_paths - $before_queried >= $max_paths)} {
           break
         }
       }
@@ -324,7 +324,7 @@ if {[info exists env(EMUFLOW_STA_THROUGH_NETS)] &&
     lappend endpoints $endpoint
   }
   set endpoint_count [llength $endpoints]
-  set report_limit [expr {min($max_paths, $endpoint_count)}]
+  set report_limit [expr {$max_paths == 0 ? $endpoint_count : min($max_paths, $endpoint_count)}]
   if {$report_limit <= 0} {
     error "OpenSTA found no timing endpoints"
   }

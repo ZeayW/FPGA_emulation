@@ -1196,6 +1196,8 @@ class _CompileContext:
         return measure_stage(self.output_dir, stage, function, *args, **kwargs)
 
 def _compile_preflight(ctx: _CompileContext):
+    if ctx.physical and ctx.sta_max_paths is not None:
+        raise EmuFlowError("physical execution requires all-endpoint Phase2 timing; --sta-max-paths is only for non-physical diagnostics")
     from .vivado_clocks import validate_dut_frequency_mhz
     validate_dut_frequency_mhz(ctx.physical_vivado_dut_frequency_mhz,
                                enabled=ctx.physical and ctx.physical_backend == "vivado")
@@ -1608,6 +1610,18 @@ def _compile_timing(ctx: _CompileContext):
                 else {}
             ),
         }
+
+    if ctx.physical:
+        # This is the compact selector already owned by Phase2/admission, not
+        # the graph-sized path payload. Reject historical capped selections
+        # as well as an explicit cap on a fresh physical compilation.
+        if ctx.path_database_path.stat().st_size > 1024*1024:
+            raise ValidationError("physical execution requires a compact all-endpoint Phase2 selector")
+        selection=read_json(ctx.path_database_path).get('source',{}).get('path_selection',{})
+        if (selection.get('policy')!='worst-per-endpoint-per-path-group-v1' or
+                'max_paths_per_group' not in selection or selection['max_paths_per_group'] is not None or
+                selection.get('endpoint_path_count')!=1):
+            raise ValidationError("physical execution requires all-endpoint Phase2 timing; regenerate capped or unqualified prepared timing")
 
     ctx.path_database_payload = (
         sta_path_database_payload_path(ctx.path_database_path)
@@ -2505,7 +2519,7 @@ def run_multi_fpga_flow(
     timing_model: Path = DEFAULT_TIMING_MODEL,
     architecture_timing_db: Optional[Path] = None,
     opensta: Optional[str] = None,
-    sta_max_paths: int = 200000,
+    sta_max_paths: Optional[int] = None,
     timing_criticality_scale: float = 9.0,
     timing_criticality_exponent: float = 2.0,
     route_constraints: Optional[Path] = None,

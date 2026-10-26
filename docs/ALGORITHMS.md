@@ -30,13 +30,20 @@ and TDM optimization. This upstream producer is shared by both maintained
 Xilinx physical backends. The independent Vivado timing producer is retired;
 vendor post-route measurement belongs to Phase 7.
 
-The default export selects one worst path per endpoint, bounded by
-`--sta-max-paths` per path group. Its sealed `source.path_selection` records
-that selection policy and limit. The resulting population does not certify
+The default export requests one worst path per endpoint across all clocked
+endpoints, without a fixed path-count cap. An explicit `--sta-max-paths` caps
+each path group for non-physical diagnostics; physical compilation rejects
+this option before synthesis. Its sealed `source.path_selection` records
+that selection policy and optional limit. The resulting population does not certify
 coverage of every endpoint or every alternative path: partitioning and TDM
 can make an unselected source path critical. A directed through-net query is
 separate qualification evidence and does not expand the Phase 4/5 population
-implicitly.
+implicitly. Removing the endpoint-count cap alone does not restore omitted
+alternative paths; post-partition timing must also use complete-fanin timing
+connectivity with the implemented communication costs.
+Prepared physical continuations must carry the uncapped selection provenance;
+historical capped or undeclared selections must be regenerated from the
+existing source boundary before partitioning or physical acceptance.
 
 This is pre-physical timing: inter-FPGA route, TDM events, and routed FPGA delays
 are resolved later. Phase 7 performs the final global analysis.

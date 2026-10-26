@@ -466,6 +466,7 @@ if "-no_init" in sys.argv:
     print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16")
     raise SystemExit(0)
 timing_io = Path(os.environ["EMUFLOW_STA_TIMING_IO"]).read_text().splitlines()
+assert os.environ["EMUFLOW_STA_MAX_PATHS"] == "0"
 assert timing_io == [
     "direction\\tclock_hex\\tdelay_ns\\tport_hex",
     "output\\t" + "clk".encode().hex() + "\\t1.25\\t" + "q".encode().hex(),
@@ -503,7 +504,7 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
         self.assertEqual(manifest["source"]["path_selection"], report["path_selection"])
         self.assertEqual(report["path_selection"], {
             "policy":"worst-per-endpoint-per-path-group-v1",
-            "scope":"selected-source-paths", "max_paths_per_group":200000,
+            "scope":"selected-source-paths", "max_paths_per_group":None,
             "endpoint_path_count":1,
         })
         self.assertRegex(report["timing_io"]["sha256"], r"^[0-9a-f]{64}$")

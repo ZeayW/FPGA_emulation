@@ -357,6 +357,11 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 validate_multi_fpga_flow_bundle(root)
 
 
+    def test_physical_path_cap_is_rejected_before_frontend(self):
+        from emuflow.multi_fpga_flow import _CompileContext, _compile_preflight
+        with self.assertRaisesRegex(EmuFlowError, "all-endpoint Phase2 timing"):
+            _compile_preflight(_CompileContext(dict(physical=True,sta_max_paths=200000)))
+
     def test_cli_enables_timing_driven_by_default(self) -> None:
         base = [
             "multi-fpga",
@@ -369,12 +374,14 @@ class MultiFpgaFlowTest(unittest.TestCase):
         ]
         defaults = _build_parser().parse_args(base)
         self.assertTrue(defaults.timing_driven)
+        self.assertIsNone(defaults.sta_max_paths)
         self.assertFalse(hasattr(defaults, "ratio_quantum"))
         self.assertFalse(hasattr(defaults, "physical_rapidwright_placer"))
         with self.assertRaises(SystemExit):
             _build_parser().parse_args(
                 [*base, "--physical-rapidwright-placer", "legacy"]
             )
+
         self.assertFalse(
             _build_parser().parse_args(
                 [*base, "--no-timing-driven"]

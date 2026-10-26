@@ -128,3 +128,17 @@ def test_real_emitted_context_keeps_original_positive_and_negative_edges(prepare
         assert len(rows)==3
         phases=sorted(phase/period for _,phase,period in rows)
         assert phases==pytest.approx([0.,0.,.5])
+
+
+@pytest.mark.skipif(not os.environ.get('EMUFLOW_OPENSTA_LAUNCH_ENGINE'),reason='explicit qualified OpenSTA required')
+def test_real_default_path_export_retains_endpoints_beyond_a_diagnostic_cap(prepared,tmp_path):
+    from emuflow.opensta import run_opensta_path_database
+    source,_,_=prepared
+    common=dict(clocks={'clk':10.},timing_io=IO,
+        executable=os.environ['EMUFLOW_OPENSTA_LAUNCH_ENGINE'],
+        _stream_output=True,clock_budget_policy='engine-edge-v1')
+    capped=run_opensta_path_database(source,tmp_path/'capped.json',max_paths=1,**common)
+    complete=run_opensta_path_database(source,tmp_path/'all-endpoints.json',**common)
+    assert capped['paths']==1 and capped['path_limit_reached']
+    assert complete['paths']>capped['paths'] and not complete['path_limit_reached']
+    assert complete['path_selection']['max_paths_per_group'] is None

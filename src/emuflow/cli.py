@@ -932,7 +932,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="explicit OpenSTA executable override",
     )
     multi_fpga_compile.add_argument(
-        "--sta-max-paths", type=int, default=200000
+        "--sta-max-paths", type=int, default=None,
+        help="optional per-group path cap for non-physical diagnostics; default analyzes all endpoints",
     )
     multi_fpga_compile.add_argument(
         "--timing-criticality-scale", type=float, default=9.0
@@ -1480,7 +1481,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="CLOCK=PERIOD_NS",
     )
     arch_run_xilinx_opensta.add_argument("--opensta")
-    arch_run_xilinx_opensta.add_argument("--max-paths", type=int, default=200000)
+    arch_run_xilinx_opensta.add_argument("--max-paths", type=int, default=None)
     arch_run_xilinx_opensta.add_argument("--log", type=Path)
     arch_validate_xilinx_opensta = arch_subparsers.add_parser(
         "validate-xilinx-opensta",
@@ -1732,7 +1733,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="opensta",
         help="explicit comparison override; defaults to the in-tree build",
     )
-    sta_opensta.add_argument("--max-paths", type=int, default=200000)
+    sta_opensta.add_argument("--max-paths", type=int, default=None)
     sta_opensta.add_argument("--log", type=Path)
 
     route_parser = subparsers.add_parser(

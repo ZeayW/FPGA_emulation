@@ -826,7 +826,7 @@ def run_xilinx_routed_opensta(
     *,
     clocks: Mapping[str, float],
     executable: Optional[str] = None,
-    max_paths: int = 200000,
+    max_paths: Optional[int] = None,
     log_path: Optional[Path] = None,
     timing_validation: Optional[Mapping[str, Any]] = None,
     mapped_value: Optional[Mapping[str, Any]] = None,
