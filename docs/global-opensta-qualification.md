@@ -222,7 +222,8 @@ there is no fabricated engine log or numerical-execution claim.
 The standalone engine exposes its source clock edge/offset, target cycle time
 and multicycle adjustment through read-only PathEnd methods. The separate
 `scripts/validation/qualify_opensta_clock_budget.py --sta sta --out build/clock-budget`
-checks full-cycle, shifted half-cycle, multicycle and output-delay paths in the
+checks full-cycle, half-cycle launches and captures, multicycle, rational-period
+cycle offsets and output-delay paths in the
 real engine. Its source-relative arrivals remove the launch phase and engine
 cycle offset explicitly. This is a synthetic API check; it does not supply
 physical margins or qualify full-flow operating-frequency fields.

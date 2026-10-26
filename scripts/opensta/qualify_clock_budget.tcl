@@ -16,11 +16,12 @@ if {[catch {
   link_design clock_budget_fixture
   create_clock -name base -period 10 [get_ports clkp]
   create_clock -name shifted -period 10 -waveform {5 10} [get_ports clkn]
+  create_clock -name rational -period 9 [get_ports clkr]
   set_multicycle_path 2 -setup -from [get_cells launch_multi] -to [get_cells capture_multi]
   set_output_delay 2 -clock base [get_ports raw_output]
   set stream [open $output w]
   set header {}
-  foreach record {{full launch_full capture_full/D 10 0} {half launch_half capture_half/D 5 0} {multi launch_multi capture_multi/D 20 10} {output launch_full raw_output 10 0}} {
+  foreach record {{full launch_full capture_full/D 10 0} {half launch_half capture_half/D 5 0} {half_capture launch_half_capture capture_half_capture/D 5 0} {multi launch_multi capture_multi/D 20 10} {rational launch_rational capture_rational/D 1 0} {output launch_full raw_output 10 0}} {
     lassign $record label source target window adjustment
     if {$label eq "output"} {set endpoint [get_ports $target]} else {set endpoint [get_pins $target]}
     set paths [find_timing_paths -from [get_cells $source] -to $endpoint -path_delay max -group_path_count 1]
@@ -31,6 +32,8 @@ if {[catch {
     emuflow_budget_close [dict get $budget launch_relative_arrival_ns] $expected_cq "$label launch-relative CQ"
     emuflow_budget_close [dict get $budget slack_ns] [expr {[dict get $budget required_ns]-[dict get $budget arrival_ns]}] "$label engine slack"
     if {$label eq "half"} {emuflow_budget_close [dict get $budget launch_edge_ns] 5 "shifted launch"}
+    if {$label eq "half_capture"} {emuflow_budget_close [dict get $budget capture_edge_ns] 5 "shifted capture"}
+    if {$label eq "rational"} {emuflow_budget_close [dict get $budget source_offset_ns] 9 "rational source cycle offset"}
     if {$label eq "output" && ![dict get $budget output_delay]} {error "output-delay path not classified"}
     if {$header eq ""} {set header [dict keys $budget];puts $stream "case\t[join $header \t]"}
     set row [list $label]
@@ -42,5 +45,5 @@ if {[catch {
   puts stderr [dict get $options -errorinfo]
   exit 1
 }
-puts "EMUFLOW_CLOCK_BUDGET_QUALIFICATION status=pass cases=4 scope=synthetic-engine-api-only"
+puts "EMUFLOW_CLOCK_BUDGET_QUALIFICATION status=pass cases=6 scope=synthetic-engine-api-only"
 exit 0
