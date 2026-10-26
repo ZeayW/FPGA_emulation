@@ -711,8 +711,13 @@ owner's generation. The common compact SQL schema is installed once and embedded
 by the native header generator. Independent final-record validation preserves
 endpoint coverage and A/Y/type binding before the grouped graph/library commit.
 
-The old full graph builder is test-only. Independent route qualification, mapped
-Verilog/net-map export and path-result import still have Python data-plane work.
+The old full graph builder is test-only. Indexed timing Verilog and net-map export
+now use one shared-core stage over compact EmuIR, including source-bound negative
+clock specialization, instance-local pin merging, constants and escaped-name
+ambiguity rejection. The Python indexed emitter is retired; standalone text
+exporters select only the requested output. Pre- and post-route OpenSTA use the
+same producer and grouped publication. Independent route qualification and
+path-result import still have Python data-plane work.
 These remaining boundaries, the complete native entry/lifecycle and current-source
 whole-design qualification keep W6/W7 incomplete.
 See [global timing semantics](global-opensta-qualification.md).

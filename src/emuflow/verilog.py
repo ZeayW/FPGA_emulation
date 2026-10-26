@@ -68,8 +68,18 @@ def _mapped_verilog_lines(
     allow_bus_pins: bool = False,
     synthesized_macro_types: Optional[Set[str]] = None,
 ) -> Iterator[str]:
-    if timing_only and hasattr(ir, "timing_verilog_lines"):
-        yield from ir.timing_verilog_lines(timing_cell_types)
+    if timing_only and hasattr(ir, "source"):
+        # Explicit string/line inspection reuses the producer, never a second
+        # graph implementation. The production file writer bypasses this host.
+        import tempfile
+        from .opensta_export_native import export_opensta_inputs
+        with tempfile.TemporaryDirectory(prefix="emuflow-verilog-inspect-") as temporary:
+            path = Path(temporary)/"timing.v"
+            export_opensta_inputs(ir, verilog=path, timing_cell_types=timing_cell_types)
+            with path.open() as stream:
+                for line in stream:
+                    yield line.rstrip("\n")
+            yield ""
         return
     net_wire = {
         net["id"]: f"__emuflow_net_{index}"
@@ -267,6 +277,11 @@ def write_mapped_verilog(
     synthesized_macro_types: Optional[Set[str]] = None,
 ) -> None:
     """Emit the identical Verilog bytes without a complete line/string copy."""
+
+    if timing_only and hasattr(ir, "source"):
+        from .opensta_export_native import export_opensta_inputs
+        export_opensta_inputs(ir, verilog=output_path, timing_cell_types=timing_cell_types)
+        return
 
     temporary = output_path.with_name(f".{output_path.name}.{uuid.uuid4().hex}.tmp")
     try:

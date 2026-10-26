@@ -64,6 +64,18 @@ int main() {
       auto alias=stage;alias.auxiliary_output_path=endpoints;
       if(emuflow::native::ExecuteStage(alias).error!=ErrorCode::kInvalidRequest)throw std::runtime_error("routed OpenSTA library overwrote an input");
       for(const auto& input:inputs)input.RequireUnchanged();for(const auto& output:result.outputs)output.RequireUnchanged();
+      const auto export_config=(root/"timing-export.bin").string();
+      {std::ofstream out(export_config,std::ios::binary);std::uint32_t crc=0;
+        const auto put=[&](const auto& value){out.write(reinterpret_cast<const char*>(&value),sizeof(value));emuflow::core::UpdateCrc32(crc,reinterpret_cast<const unsigned char*>(&value),sizeof(value));};
+        put(std::uint64_t{0x31455853464d5545ULL});put(std::uint32_t{1});const auto& g=result.outputs[0].generation();
+        put(g.device);put(g.inode);put(g.bytes);put(g.modified_seconds);put(g.modified_nanoseconds);put(g.changed_seconds);put(g.changed_nanoseconds);put(std::uint32_t{0});put(std::uint32_t{3});out.write(reinterpret_cast<const char*>(&crc),sizeof(crc));}
+      StageRequest exporter;exporter.stage=Stage::kExportOpenstaInputs;
+      exporter.input_artifacts={result.outputs[0],ArtifactRef::Bind(export_config,"opensta-input-export-request-v1")};
+      exporter.output_path=(root/"timing-export-summary.json").string();exporter.auxiliary_output_path=(root/"timing-export.v").string();exporter.scratch_path=(root/"timing-export.tsv").string();
+      const auto exported=emuflow::native::ExecuteStage(exporter);
+      if(!exported.ok() || exported.inputs.size()!=2 || exported.outputs.size()!=3 || exported.outputs[1].schema()!="opensta-timing-verilog-v1" || exported.outputs[2].schema()!="opensta-net-map-v1")throw std::runtime_error("bound OpenSTA exporter failed: "+exported.message);
+      auto export_alias=exporter;export_alias.auxiliary_output_path=result.outputs[0].path();
+      if(emuflow::native::ExecuteStage(export_alias).error!=ErrorCode::kInvalidRequest)throw std::runtime_error("OpenSTA exporter overwrote its source");
     }
     emuflow::core::ToolRequest tool;
     tool.argv = {"/bin/echo", "native tool API"};

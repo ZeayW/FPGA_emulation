@@ -21,6 +21,8 @@ timing stores; the former Python endpoint and graph builders are test-only oracl
 Routed OpenSTA staging writes compact EmuIR and delay-cell Liberty directly
 in the shared core, with source-bound model queries and independent A/Y checks.
 Its run report retains the bounded model-owner coverage reference.
+Indexed OpenSTA input export writes timing Verilog and the net map in the shared
+core from ordered compact EmuIR cursors, preserving source-bound clock polarity.
 The indexed Vivado adapter consumes current Phase 6 SQLite contracts with
 canonical net identities, fixed LVDS I/O, native sequential control pins, and
 the common physical-result contract. Real-device qualification is in progress. Its OOC implementation retains abstract external clock sources and

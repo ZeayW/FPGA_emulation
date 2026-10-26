@@ -799,6 +799,21 @@ def write_emuir_net_map(
     *,
     _ir: Optional[EmuIR] = None,
 ) -> Dict[str, Any]:
+    if _ir is None:
+        from .emuir_storage import is_emuir_sqlite
+        from .emuir_compact import is_compact_emuir
+        if is_emuir_sqlite(ir_path) and is_compact_emuir(ir_path):
+            from contextlib import closing
+            from .indexed_timing import IndexedTimingView
+            with closing(IndexedTimingView(ir_path)) as view:
+                return write_emuir_net_map(ir_path, output_path, _ir=view)
+    if _ir is not None and hasattr(_ir, "source"):
+        from .opensta_export_native import export_opensta_inputs
+        if _ir.source.path != Path(ir_path).resolve():
+            raise ValidationError("net map belongs to another EmuIR source")
+        report = export_opensta_inputs(_ir, net_map=output_path)
+        return {"status": "pass", "design": _ir.value["design"]["name"],
+                "nets": report["nets"], "output": str(output_path)}
     return _write_net_map(ir_path, output_path, EMUIR_NET_MAP_HEADER, _ir=_ir)
 
 

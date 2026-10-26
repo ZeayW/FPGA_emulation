@@ -62,6 +62,7 @@ constexpr const char* kUsage =
     "  phase7 export-vivado MAPPED REQUEST RTL FUNCTIONS SUMMARY\n"
     "  physical build-routed-segments SUMMARY DIRECTORY MAPPED IR TIMING ENDPOINTS BOUNDARY [LOGIC] [LOCAL] REQUEST\n"
     "  physical stage-routed-opensta MAPPED TIMING ENDPOINTS REQUEST EMUIR LIBERTY SUMMARY\n"
+    "  physical export-opensta-inputs EMUIR REQUEST VERILOG|- NET_MAP|- SUMMARY\n"
     "  physical build-routed-endpoints MAPPED PHYSICAL ROUTE NETS REQUEST ENDPOINTS MANIFEST SUMMARY\n"
     "  phase7 import-vivado-lineage MAPPED FUNCTIONS REQUEST STORE SUMMARY INVENTORY...\n";
 
@@ -174,6 +175,12 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if(phase=="physical" && operation=="stage-routed-opensta" && argc==10) {
     StageRequest request{Stage::kStageRoutedOpensta,{argv[3],argv[4],argv[5],argv[6]},argv[7]};
     request.auxiliary_output_path=argv[8];request.scratch_path=argv[9];return Execute(std::move(request),report);
+  }
+  if(phase=="physical" && operation=="export-opensta-inputs" && argc==8) {
+    StageRequest request{Stage::kExportOpenstaInputs,{argv[3],argv[4]},argv[7]};
+    if(std::string(argv[5])!="-")request.auxiliary_output_path=argv[5];
+    if(std::string(argv[6])!="-")request.scratch_path=argv[6];
+    return Execute(std::move(request),report);
   }
   if(phase=="physical" && operation=="build-routed-endpoints" && argc==11) {
     StageRequest request{Stage::kBuildRoutedEndpoints,{argv[3],argv[4],argv[5],argv[6],argv[7]},argv[8]};

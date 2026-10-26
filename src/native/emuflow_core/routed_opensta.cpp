@@ -1,4 +1,5 @@
 #include "emuflow_core/routed_opensta.hpp"
+#include "emuflow_core/opensta_export.hpp"
 #include "emuflow_core/store.hpp"
 #include "emuflow_core/emuir_compact_schema.hpp"
 #include "emuflow_core/resource_view.hpp"
@@ -46,11 +47,8 @@ class Json {
   I Int(const std::string& json,const std::string& path) {Read(json,path);Check(s_.Text(0)=="integer","integer is invalid: "+path);return s_.TypedInteger(1);}
   double Number(const std::string& json,const std::string& path) {Read(json,path);Check(s_.Text(0)=="real" || s_.Text(0)=="integer","delay is invalid");auto n=s_.TypedReal(1);Check(std::isfinite(n) && n>=0,"delay is invalid");return n;}
   bool Inverted(const std::string& json) {
-    Read(json,"$.IS_C_INVERTED");if(s_.Text(0)=="integer")return s_.Integer(1)==1;
-    if(s_.Text(0)!="text")return false;
-    auto value=s_.Text(1);int base=value.find_first_not_of("01")==std::string::npos?2:10;
-    if(base==10 && value.find('_')!=std::string::npos){std::string digits;for(std::size_t i=0;i<value.size();++i){if(value[i]=='_'){if(i==0 || i+1==value.size() || value[i-1]<'0' || value[i-1]>'9' || value[i+1]<'0' || value[i+1]>'9')return false;}else digits+=value[i];}value=std::move(digits);}
-    try {std::size_t end=0;auto number=std::stoll(value,&end,base);while(end<value.size() && std::isspace(static_cast<unsigned char>(value[end])))++end;return end==value.size() && number==1;}catch(const std::exception&){return false;}
+    Read(json,"$.IS_C_INVERTED");const auto kind=s_.Text(0);
+    return TimingParameterIsOne(kind,kind=="integer"?s_.Integer(1):0,kind=="text"?s_.Text(1):"");
   }
  private:SqliteStatement s_;
 };

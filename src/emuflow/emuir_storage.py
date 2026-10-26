@@ -53,9 +53,8 @@ def open_emuir_sqlite_read_only(path: Path) -> sqlite3.Connection:
         raise ValueError(f"{path}: not an EmuIR SQLite artifact")
     # ``immutable=1`` prevents journal creation beside a sealed artifact and
     # is safe because EmuFlow never mutates a published EmuIR store in place.
-    connection = sqlite3.connect(
-        f"file:{path.resolve()}?mode=ro&immutable=1", uri=True
-    )
+    from .sqlite_artifacts import immutable_sqlite_uri
+    connection = sqlite3.connect(immutable_sqlite_uri(path), uri=True)
     connection.row_factory = sqlite3.Row
     try:
         application_id = connection.execute("PRAGMA application_id").fetchone()[0]

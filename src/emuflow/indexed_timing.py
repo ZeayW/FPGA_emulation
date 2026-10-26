@@ -143,6 +143,8 @@ class _TimingTypes(Mapping):
 
 class IndexedTimingView:
     def __init__(self, path: Path):
+        from .store_publication import bind_store_source, require_store_sources_unchanged
+        self.source = bind_store_source(path, "emuir-compact-v2")
         self.connection = open_emuir_sqlite_read_only(path)
         try:
             if self.connection.execute("PRAGMA user_version").fetchone()[0] != 2:
@@ -161,6 +163,7 @@ class IndexedTimingView:
             self.net_ids = _Ids(self, "net_records")
             self.instance_ids = _Ids(self, "cell_records")
             self.object_index = _Objects(self)
+            require_store_sources_unchanged((self.source,))
         except BaseException:
             self.connection.close()
             raise
@@ -240,89 +243,3 @@ class IndexedTimingView:
             yield instance, wires
         if row is not None:
             raise ValueError("orphaned endpoint owner")
-
-    def _validate_provider_name_aliases(self):
-        """Check only possible escaped-name collisions, not every emitted pin.
-
-        IDs and pin rows have canonical indexed owners. A doubled owner can
-        collide only with an existing literal doubled ID; the indexed join
-        finds those pairs without repeated Python endpoint reconstruction.
-        """
-        if getattr(self, "_provider_aliases_validated", False):
-            return
-        from .sta import _scalar_pin
-        pairs = self.connection.execute("""SELECT a.seq,a.id,b.seq,b.id
-            FROM cell_records a JOIN cell_records b ON b.id=replace(a.id,?,?)
-            WHERE instr(a.id,?)>0 AND a.id<>b.id""", ("\\", "\\\\", "\\"))
-        for seq_a, owner_a, seq_b, owner_b in pairs:
-            ia, oa = self.pins_for(seq_a)
-            ib, ob = self.pins_for(seq_b)
-            pins_a, pins_b = ia | oa, ib | ob
-            aliases_a = {(owner_a + "/" + _scalar_pin(p, bit, pins_a)).replace("\\", "\\\\")
-                         for p, bit in pins_a}
-            names_b = {owner_b + "/" + _scalar_pin(p, bit, pins_b) for p, bit in pins_b}
-            if aliases_a & names_b:
-                raise ValidationError("STA provider object alias is ambiguous")
-        # Top-level names are bounded metadata. They can also alias cell pins.
-        for port in self.value["ports"]:
-            if "\\" not in port["id"]:
-                continue
-            for bit in range(port["width"]):
-                names = [port["id"]] if port["width"] == 1 else [f"{port['id']}[{bit}]", f"{port['id']}__{bit}"]
-                for name in names:
-                    self.object_index.get(name)
-                    self.object_index.get(name.replace("\\", "\\\\"))
-        self._provider_aliases_validated = True
-
-    def timing_verilog_lines(self, timing_cell_types):
-        from .verilog import _identifier, _timing_pin_name
-        self._validate_provider_name_aliases()
-        ports = self.value["ports"]
-        widths = {p["id"]: p["width"] for p in ports}
-        yield f"module {_identifier(self.value['design']['top'])}("
-        yield "  " + ",\n  ".join(_identifier(p["id"]) for p in ports)
-        yield ");"
-        for port in ports:
-            if port["direction"] not in {"input", "output", "inout"}:
-                raise ValidationError("cannot emit unknown-direction port")
-            width = "" if port["width"] == 1 else f"[{port['width'] - 1}:0] "
-            yield f"  {port['direction']} {width}{_identifier(port['id'])};"
-        yield ""
-        for row in self.net_rows():
-            yield f"  wire __emuflow_net_{row[0]};"
-        yield ""
-        for row in self.connection.execute("""SELECT e.net_seq,e.role,p.name,e.bit
-            FROM endpoint_records e LEFT JOIN pin_names p ON p.seq=e.port_seq
-            WHERE e.instance_seq IS NULL ORDER BY e.net_seq,e.role,e.ordinal"""):
-            if row[1] not in (0, 1) or row[2] not in widths or row[3] < 0 or row[3] >= widths[row[2]]:
-                raise ValueError("invalid compact EmuIR top-level endpoint")
-            select = "" if widths[row[2]] == 1 else f"[{row[3]}]"
-            port = _identifier(row[2]) + select
-            wire = f"__emuflow_net_{row[0]}"
-            yield f"  assign {wire} = {port};" if row[1] == 0 else f"  assign {port} = {wire};"
-        for port in ports:
-            for constant in port.get("constant_connections", []):
-                select = "" if port["width"] == 1 else f"[{constant['bit']}]"
-                yield f"  assign {_identifier(port['id'])}{select} = 1'b{constant['value']};"
-        yield ""
-        for instance, wires in self.timing_connections():
-            constants = {(p["port"], p["bit"]): p["value"] for p in instance.get("constant_connections", [])}
-            pins = set(wires) | set(constants)
-            connections = []
-            if any("\\" in port for port, _ in pins):
-                names = {instance["id"] + "/" + _timing_pin_name(pins, p, bit) for p, bit in pins}
-                for name in names:
-                    alias = name.replace("\\", "\\\\")
-                    if alias != name and alias in names:
-                        raise ValidationError("STA provider object alias is ambiguous")
-            for port, bit in sorted(pins):
-                expression = f"__emuflow_net_{wires[(port, bit)]}" if (port, bit) in wires else f"1'b{constants[(port, bit)]}"
-                connections.append(f".{_identifier(_timing_pin_name(pins, port, bit))}({expression})")
-            cell_type = (timing_cell_types.for_instance(instance) if isinstance(timing_cell_types, _TimingTypes)
-                         else timing_cell_types.get(instance["id"], instance["type"]) if timing_cell_types is not None
-                         else instance["type"])
-            yield f"  {_identifier(cell_type)} {_identifier(instance['id'])}("
-            yield "    " + ",\n    ".join(connections)
-            yield "  );"
-        yield "endmodule"
-        yield ""

@@ -1390,15 +1390,21 @@ def _run_opensta_path_database(
         # OpenSTA's intentionally small Verilog reader does not accept net
         # declaration keywords on ports, attributes, or instance parameters.
         # Those constructs do not affect static timing connectivity.
-        write_mapped_verilog(
-            ir, verilog_path,
-            timing_only=True,
-            timing_cell_types=instance_cell_types,
-        )
+        input_export = None
+        if hasattr(ir, "source"):
+            from .opensta_export_native import export_opensta_inputs
+            input_export = export_opensta_inputs(ir, verilog=verilog_path, net_map=net_map_path,
+                                                timing_cell_types=instance_cell_types)
+        else:
+            write_mapped_verilog(
+                ir, verilog_path,
+                timing_only=True,
+                timing_cell_types=instance_cell_types,
+            )
+            write_emuir_net_map(ir_path, net_map_path, _ir=ir)
         liberty_path.write_text(
             render_opensta_liberty(getattr(model, "base_model", model)), encoding="utf-8"
         )
-        write_emuir_net_map(ir_path, net_map_path, _ir=ir)
         if through_net_ids:
             with through_path.open("w", encoding="utf-8") as stream:
                 stream.write("mapped_net_hex\temuir_net_hex\n")
@@ -1607,6 +1613,8 @@ def _run_opensta_path_database(
         "output": str(output_path),
         "log": str(log_path) if log_path is not None else None,
     }
+    if input_export is not None:
+        result["input_export"] = input_export
     if "path_qor" in imported:
         result["path_qor"] = imported["path_qor"]
     if _return_database:

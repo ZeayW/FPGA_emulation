@@ -98,6 +98,8 @@ def test_indexed_runner_keeps_native_coverage_bounded_in_its_final_report(tmp_pa
         report = run_opensta_path_database(output, tmp_path/"paths.json", clocks={"clk": 10},
                                           _timing_model=model, _stream_output=True)
     summary = report["used_cell_type_summary"]
+    assert report["input_export"]["implementation_id"] == "native-opensta-export-v1"
+    assert report["input_export"]["native_metrics"]["wall_seconds"] >= 0
     assert report["paths"] == 1
     assert summary["schema"] == "emuflow.native-routed-model-coverage/v1"
     assert summary["count"] == 3

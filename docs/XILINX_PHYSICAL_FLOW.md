@@ -551,6 +551,23 @@ reconstruct a complete name set for a summary hash. Ordinary bounded models
 retain their existing count/hash summary. The host renders only the bounded base
 model; OpenSTA reads the native delay-cell Liberty as a second library.
 
+`emuflow-native physical export-opensta-inputs EMUIR REQUEST VERILOG NET_MAP SUMMARY`
+emits timing-only Verilog and the original-name net map from the compact owner.
+Either text output can be `-` when an explicit exporter needs only the other;
+normal indexed OpenSTA execution produces both in one call. The checked request
+binds the original file generation and selects either stored cell types or the
+existing Xilinx clock-polarity specialization. Endpoint cursors merge by integer
+owner, and only one instance's pins are retained. Constants, sparse bus pin
+scalarization, inout connections, escaped-provider ambiguity checks and stable
+ordinal/net naming retain the reference semantics. Both text outputs are
+adopted together with rollback and without payload copies. The Python indexed
+Verilog builder is retired; inline EmuIR rendering remains the independent small
+fixture reference. A missing native export capability fails before synthesis
+when compilation requests internal OpenSTA timing.
+The OpenSTA report's bounded `input_export` section records the implementation,
+emitted record counts, maximum per-instance pin population and native stage
+wall/CPU/RSS/I/O metrics separately from the STA engine.
+
 Before publication, an independent shared-core check requires one delay cell per
 sealed endpoint, a valid type/payload binding and exactly one A input and Y output
 on distinct nets for each delay cell. It uses the normal reverse-adjacency index.
