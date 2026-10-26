@@ -275,6 +275,14 @@ contract pass their independent validators.
 
 ## Vivado indexed provider
 
+Boundary, logic-segment and local-path routed measurements are imported through
+the shared native core into the current typed timing owners. Import validates
+source/object identity, measurement classification, order and full coverage
+before atomic selector publication. The local query identity uses the same typed
+zero-delay owner as the OpenPARF/RWRoute route; the private JSON-row SQLite
+identity is retired. See the [global timing contract](global-opensta-qualification.md)
+for partial-diagnostic and terminal original-member coverage rules.
+
 The optional `vivado` backend consumes the current compact Phase 6 split and
 transport contracts. It streams native Xilinx primitives through the canonical
 mapped SQLite index into RTL, then runs Vivado synthesis, optimization,

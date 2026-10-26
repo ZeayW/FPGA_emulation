@@ -329,6 +329,15 @@ physical-lookahead run.
 
 ## Physical implementation
 
+The current Vivado provider publishes local query identity as
+`vivado-local-identity.json`, a bounded selector for the shared typed local-path
+owner. Its measurement importers require current typed identities and produce
+current typed timing selectors directly through `emuflow-native`. Private
+`vivado-local-identity.sqlite` JSON-row inputs, boundary-JSON import and the logic
+importer's legacy-identity switch are retired; historical reruns use their matching Git revision. Native import
+failure never selects a Python importer. These representation changes preserve
+the selected physical backend and measurement qualification.
+
 Standalone RWRoute input export accepts only the current mapped SQLite index and
 one typed physical handoff:
 

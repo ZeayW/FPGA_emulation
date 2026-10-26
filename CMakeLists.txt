@@ -243,6 +243,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/boundary_timing.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/logic_segment_timing.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/local_path_timing.sql"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/logic_segment_identity.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/global_event_index.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/global_event_analyze.tcl")
 execute_process(COMMAND "${Python3_EXECUTABLE}" "${EMUFLOW_STORE_SCHEMA_GENERATOR}"

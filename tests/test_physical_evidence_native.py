@@ -14,7 +14,7 @@ from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import read_json, write_json
 from tests.test_physical_store_publication import producer
 
-KINDS=('boundary_identity','boundary_timing','logic_segment_timing','local_path_timing')
+KINDS=('boundary_identity','boundary_timing','logic_segment_timing','local_path_timing','logic_segment_identity')
 
 
 @pytest.fixture(autouse=True)
@@ -54,6 +54,7 @@ def test_reader_uses_native_full_record_hash_and_validation(tmp_path,kind):
     poison_names={'boundary_identity':['_iter_records','_normalize_record'],
                   'boundary_timing':['_record_from_row','_normalize_record'],
                   'logic_segment_timing':['_segment_from_row','_validate_segment'],
+                  'logic_segment_identity':['segment_from_row','_validate_segment'],
                   'local_path_timing':['_iter_records','_normalize_record']}[kind]
     with ExitStack() as stack:
         for name in poison_names:stack.enter_context(patch.object(m,name,side_effect=AssertionError('Python full-record validation')))
@@ -73,6 +74,7 @@ def test_resealed_file_cannot_bypass_original_logical_seal(tmp_path,kind):
     sql={'boundary_identity':"UPDATE endpoints SET peer='changed'",
          'boundary_timing':'UPDATE timings SET delay_ns=delay_ns+1',
          'logic_segment_timing':'UPDATE segments SET delay_ns=delay_ns+1',
+         'logic_segment_identity':"UPDATE segments SET end_pin='changed'",
          'local_path_timing':'UPDATE timings SET delay_ns=delay_ns+1'}[kind]
     reseal_file(kind,path,sql)
     with pytest.raises(ValidationError,match='logical seal'):
@@ -154,6 +156,11 @@ def test_utf8_control_strings_and_fractional_numbers_keep_original_logical_hash(
         header=_header();header['coverage']={'local_paths':1};records=[_record('路径-😀\n"',1.2345678901234567e-5)]
         with m.write_local_path_timing_storage(tmp_path/'owner.json',header,records) as v:
             digest=v.selector['logical_sha256']
+    elif kind=='logic_segment_identity':
+        with producer(kind,tmp_path/'source.json') as original:header=dict(original.selector['header'])
+        records=[{'id':'片段-😀\t\"','kind':'capture','system_path':'系统路径','member_path':'原始成员','cut_index':0,'fpga':'fpga0','replace_tx_endpoint':None,'start_pin':'start','end_pin':'end'}]
+        with m.write_logic_segment_identity_storage(tmp_path/'owner.json',header=header,segments=records) as v:
+            digest=v.selector['logical_sha256']
     else:
         header={'schema':m.LOGIC_SEGMENT_TIMING_SCHEMA,'status':'pass','design':'设计','platform':'板卡','fpga':'fpga0',
                 'provider':'fixture','qualification':'fixture','coverage':{},'system_routes_sha256':'a'*64,'tdm_schedule_sha256':'b'*64}
@@ -206,7 +213,7 @@ def test_native_empty_store_counts_hash_and_summary(tmp_path,kind):
 def test_publication_reuses_producer_validation_without_reader_replay(tmp_path,kind):
     m=module(kind)
     names={"boundary_identity":"BoundaryIdentityView","boundary_timing":"BoundaryTimingView",
-           "logic_segment_timing":"LogicSegmentTimingView","local_path_timing":"LocalPathTimingView"}
+           "logic_segment_timing":"LogicSegmentTimingView","local_path_timing":"LocalPathTimingView","logic_segment_identity":"LogicSegmentIdentityView"}
     with patch.object(getattr(m,names[kind]),"_validate_store",side_effect=AssertionError("published population replay")):
         with producer(kind,tmp_path/"owner.json") as view:
             if hasattr(view,"validate_timing"):

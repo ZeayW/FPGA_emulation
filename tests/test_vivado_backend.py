@@ -217,7 +217,12 @@ class VivadoBackendTest(unittest.TestCase):
                     }
                 ],
             }
-            write_json(identity_path, identity)
+            from emuflow.boundary_identity_storage import write_boundary_identity_storage
+            identity["endpoints"][0].update(demand="d0",logical_net="n0",link="link",peer="fpga1",
+                lane=0,logical_lane=0,internal_signal="net:n0",source_class="dut-net")
+            with write_boundary_identity_storage(identity_path,
+                    {key:value for key,value in identity.items() if key!="endpoints"},identity["endpoints"]):
+                pass
             query = write_vivado_boundary_timing_query(
                 ir_path, identity_path, query_path
             )

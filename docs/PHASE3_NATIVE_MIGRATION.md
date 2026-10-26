@@ -659,13 +659,17 @@ Python scalar/path arrays. Current typed physical facts now enter
 binder reuses the Phase 5 scheduled-path visitor, merges physical segment cursors
 and queries FPGA-owned endpoint delays without rebuilding Python path/hop or
 endpoint populations. Its final event primary is still independently indexed
-and validated. Mixed typed/inline owners fail rather than fall back. Current boundary
-identity/timing, logic-segment timing and local-path timing readers now delegate
+and validated. Mixed typed/inline owners fail rather than fall back. Current boundary and logic-segment
+identity/timing and local-path timing readers now delegate
 complete record/schema/metadata/logical-seal validation to the shared core.
 Their Python full-store validators are retired. Maximum-delay summaries reuse
-validated facts instead of triggering another whole-table query. Physical
-producers and other phase adapters remain; this boundary alone does not complete
-W6/W7.
+validated facts instead of triggering another whole-table query. Current Vivado boundary/logic/local measurement import producers also write
+and seal the final typed records in the shared core. Their Python measurement
+spools and row reconstruction are retired; the legacy identity importer remains
+only as an independent small fixture oracle in tests; local query identity is shared with
+the existing typed owner rather than stored as private JSON rows. Source query
+construction, the RapidWright routed graph and other phase adapters remain;
+this boundary alone does not complete W6/W7.
 See [global timing semantics](global-opensta-qualification.md).
 
 ## Validation and completion

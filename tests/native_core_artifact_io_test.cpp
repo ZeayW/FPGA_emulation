@@ -227,7 +227,7 @@ int main() {
     }
     const std::set<std::string> expected_named_stores = {
         "vivado-optimization-proofs-v1", "qor-report-store-v1", "openparf-site-store-v1",
-        "vivado-local-identity-private-v1", "openparf-name-map-store-v1",
+        "openparf-name-map-store-v1",
         "chimew-bank-input-store-v1",
         "position-hints-store-v1", "chimew-bank-report-store-v1",
         "transport-store-v1", "chimew-binding-store-v1", "pin-plan-store-v1",

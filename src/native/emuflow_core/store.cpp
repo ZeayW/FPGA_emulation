@@ -63,6 +63,15 @@ void RequireSqliteDDL(SqliteDatabase& db,const char* ddl) {
   }
 }
 
+void RequireEquivalentJson(SqliteDatabase& db,const std::string& left,const std::string& right,const std::string& message) {
+  if(left.size()>8*1024*1024 || right.size()>8*1024*1024)throw StageError(ErrorCode::kInvalidArtifact,"JSON metadata exceeds bound");
+  const char* sql="SELECT 1 FROM (SELECT fullkey,CASE WHEN type IN ('integer','real') THEN 'number' ELSE type END AS type,atom FROM json_tree(?1) "
+    "EXCEPT SELECT fullkey,CASE WHEN type IN ('integer','real') THEN 'number' ELSE type END,atom FROM json_tree(?2)) LIMIT 1";
+  for(unsigned reverse=0;reverse<2;++reverse) {
+    auto row=db.Prepare(sql);row.BindText(1,reverse?right:left);row.BindText(2,reverse?left:right);if(row.Step())throw StageError(ErrorCode::kInvalidArtifact,message);
+  }
+}
+
 namespace {
 std::string CheckedTarget(const std::string& target,const std::string& name,
                           const std::vector<ArtifactRef>& inputs) {

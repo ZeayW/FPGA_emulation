@@ -30,6 +30,9 @@ namespace emuflow::native {
 const char* StageName(Stage stage) {
   switch (stage) {
     case Stage::kInvalid: return "native.request";
+    case Stage::kImportPhysicalBoundary: return "physical.import-boundary-timing";
+    case Stage::kImportPhysicalLogic: return "physical.import-logic-timing";
+    case Stage::kImportPhysicalLocal: return "physical.import-local-timing";
     case Stage::kValidatePhysicalEvidence: return "physical.validate-evidence";
     case Stage::kRefinePartitionHops: return "phase3.refine-hops";
     case Stage::kValidateAtomicOwnership: return "phase7.validate-atomic-ownership";
@@ -76,6 +79,9 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     case Stage::kInvalid: break;
     case Stage::kRefinePartitionHops: return {"hop-refiner-input-v1"};
     case Stage::kValidateAtomicOwnership: return {"xilinx-mapped-index-v2","openparf-atomic-source-store-v1","openparf-placement-certificate-v3","atomic-ownership-request-v1"};
+    case Stage::kImportPhysicalBoundary: return {"boundary-identity-store-v1","physical-timing-measurements-v1","physical-measurement-import-request-v1"};
+    case Stage::kImportPhysicalLogic: return {"logic-segment-identity-store-v1","physical-timing-measurements-v1","physical-measurement-import-request-v1"};
+    case Stage::kImportPhysicalLocal: return {"local-path-timing-store-v1","physical-timing-measurements-v1","physical-measurement-import-request-v1"};
     case Stage::kValidatePhysicalEvidence: {
       const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
       if(count!=2)throw core::StageError(core::ErrorCode::kInvalidRequest,"physical evidence source coverage disagrees");
@@ -84,7 +90,7 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
       if(reader.Read<std::uint64_t>()!=0x31564550464d5545ULL || reader.Read<std::uint32_t>()!=1)
         throw core::StageError(core::ErrorCode::kInvalidRequest,"physical evidence request version is invalid");
       const auto kind=reader.Read<std::uint32_t>();
-      const std::vector<std::string> schemas{"boundary-identity-store-v1","boundary-timing-store-v1","logic-segment-timing-store-v1","local-path-timing-store-v1"};
+      const std::vector<std::string> schemas{"boundary-identity-store-v1","boundary-timing-store-v1","logic-segment-timing-store-v1","local-path-timing-store-v1","logic-segment-identity-store-v1"};
       if(kind<1 || kind>schemas.size())throw core::StageError(core::ErrorCode::kInvalidRequest,"physical evidence kind is invalid");
       return {schemas[kind-1],"physical-evidence-validation-request-v1"};
     }
@@ -190,7 +196,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       throw core::StageError(core::ErrorCode::kInvalidRequest, "native stage artifact coverage is invalid");
     std::vector<std::string> paths = request.input_paths;
     if (bound) for (const auto& input : request.input_artifacts) paths.push_back(input.path());
-    if (request.stage == Stage::kExportBookshelf || request.stage == Stage::kExportRwroute || request.stage == Stage::kImportVivadoLineage) {
+    if (request.stage == Stage::kExportBookshelf || request.stage == Stage::kExportRwroute || request.stage == Stage::kImportVivadoLineage || request.stage == Stage::kImportPhysicalBoundary || request.stage == Stage::kImportPhysicalLogic || request.stage == Stage::kImportPhysicalLocal) {
       if (!bound) {
         try { for (auto& path : paths) path = core::SqliteFilePath(path); }
         catch (const std::exception& error) {
@@ -289,6 +295,9 @@ core::StageResult ExecuteStage(const StageRequest& request) {
         RefinePartitionHops(inputs,output,!request.summary_output); break;
       case Stage::kValidateAtomicOwnership:
         core::ValidateAtomicOwnership(inputs,output); break;
+      case Stage::kImportPhysicalBoundary: core::ImportPhysicalMeasurements(inputs,2,output,request.auxiliary_output_path); break;
+      case Stage::kImportPhysicalLogic: core::ImportPhysicalMeasurements(inputs,3,output,request.auxiliary_output_path); break;
+      case Stage::kImportPhysicalLocal: core::ImportPhysicalMeasurements(inputs,4,output,request.auxiliary_output_path); break;
       case Stage::kValidatePhysicalEvidence: core::ValidatePhysicalEvidence(inputs,output); break;
       case Stage::kValidatePhysicalCells:
         core::ValidatePhysicalCells(inputs[0],inputs[1],inputs[2],output); break;
@@ -338,6 +347,9 @@ core::StageResult ExecuteStage(const StageRequest& request) {
     switch (request.stage) {
       case Stage::kRefinePartitionHops: schema = "hop-refiner-output-v1"; break;
       case Stage::kValidateAtomicOwnership: schema = "atomic-ownership-summary-v1"; break;
+      case Stage::kImportPhysicalBoundary: schema = "boundary-timing-store-v1"; break;
+      case Stage::kImportPhysicalLogic: schema = "logic-segment-timing-store-v1"; break;
+      case Stage::kImportPhysicalLocal: schema = "local-path-timing-store-v1"; break;
       case Stage::kValidatePhysicalEvidence: schema = "physical-evidence-validation-summary-v1"; break;
       case Stage::kValidatePhysicalCells: schema = "physical-cell-check-summary-v1"; break;
       case Stage::kImportVivadoLineage: schema = "vivado-lineage-store-v2"; break;
@@ -376,6 +388,8 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       default: throw core::StageError(core::ErrorCode::kInvalidRequest, "unknown native stage");
     }
     std::vector<core::ArtifactRef> refs{core::ArtifactRef::Bind(request.output_path, schema, request.output_path == "-")};
+    if(request.stage == Stage::kImportPhysicalBoundary || request.stage == Stage::kImportPhysicalLogic || request.stage == Stage::kImportPhysicalLocal)
+      refs.push_back(core::ArtifactRef::Bind(request.auxiliary_output_path,"physical-measurement-import-summary-v1"));
     if (request.stage == Stage::kImportVivadoLineage)
       refs.push_back(core::ArtifactRef::Bind(request.auxiliary_output_path,"vivado-lineage-summary-v2"));
     if (request.stage == Stage::kExportRwroute)

@@ -394,11 +394,7 @@ class TsvInput {
     for(int column=0;column<3;++column) {
       const auto end=line.find('\t',begin);Check((end==std::string::npos)==(column==2),"malformed engine measurement columns");
       const auto text=line.substr(begin,end==std::string::npos?end:end-begin);Check(!text.empty(),"empty engine measurement");
-      for(char c:text)Check((c>='0' && c<='9') || c=='e' || c=='E' || c=='+' || c=='-' || c=='.' || c==' ' || c=='\r' || c=='\v' || c=='\f',"invalid engine number");
-      static const locale_t locale=newlocale(LC_NUMERIC_MASK,"C",nullptr);Check(locale!=nullptr,"cannot create measurement numeric locale");
-      char* rest=nullptr;values[column]=strtod_l(text.c_str(),&rest,locale);
-      Check(rest!=text.c_str(),"invalid engine measurement");while(*rest==' ' || *rest=='\r' || *rest=='\v' || *rest=='\f')++rest;
-      Check(!*rest && std::isfinite(values[column]),"nonfinite/malformed engine measurement");begin=end+1;
+      values[column]=ParseFiniteDecimal(text,"engine measurement");begin=end+1;
     }
     return values;
   }

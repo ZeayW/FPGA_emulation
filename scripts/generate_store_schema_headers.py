@@ -61,6 +61,7 @@ def generate(directory):
         ("kBoundaryTimingDDL", "boundary_timing.sql"),
         ("kLogicSegmentTimingDDL", "logic_segment_timing.sql"),
         ("kLocalPathTimingDDL", "local_path_timing.sql"),
+        ("kLogicSegmentIdentityDDL", "logic_segment_identity.sql"),
     ):
         ddl = (root / "src/emuflow/data/schema" / filename).read_text(encoding="utf-8")
         if ')EMUFLOW_SQL"' in ddl:

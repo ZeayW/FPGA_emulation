@@ -16,6 +16,7 @@ _KINDS = {
     "boundary-timing-store-v1": 2,
     "logic-segment-timing-store-v1": 3,
     "local-path-timing-store-v1": 4,
+    "logic-segment-identity-store-v1": 5,
 }
 
 

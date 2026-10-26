@@ -411,9 +411,10 @@ The shared core imports representative engine scalars, restores all original
 identities, reduces WNS/TNS and publishes typed QoR records. Current typed
 physical facts bind directly to events through the same core,
 without a Python endpoint dictionary or path/hop producer. Shared-core readers
-validate the complete boundary identity/timing, logic-segment timing and local-path
-timing records. Remaining phase producers and backend adapters still require
-migration; W6/W7 are unfinished.
+validate the complete boundary and logic-segment identity/timing records and
+local-path timing records. Vivado measurement TSVs import directly into these owners through
+the shared core; both backends use the same typed local-path identity. Remaining
+phase producers and backend adapters still require migration; W6/W7 are unfinished.
 Historical regrouping and schedule reconstruction fallbacks are retired. See the
 [global timing contract](docs/global-opensta-qualification.md#current-event-stream-contract).
 CLI, Python phase APIs and experiment configurations share these defaults;

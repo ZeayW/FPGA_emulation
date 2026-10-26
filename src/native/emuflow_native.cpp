@@ -45,6 +45,9 @@ constexpr const char* kUsage =
     "  global-sta publish-qor PRIMARY INDEX STORE REQUEST QOR\n"
     "  global-sta validate-qor STORE REQUEST SUMMARY\n"
     "  global-sta bind-events ROUTES SCHEDULE BOARD [PHYSICAL_STORES...] REQUEST PRIMARY\n"
+    "  physical import-boundary-timing IDENTITY TSV REQUEST STORE SUMMARY\n"
+    "  physical import-logic-timing IDENTITY TSV REQUEST STORE SUMMARY\n"
+    "  physical import-local-timing IDENTITY TSV REQUEST STORE SUMMARY\n"
     "  physical validate-evidence STORE REQUEST SUMMARY\n"
     "  global-sta index-events PRIMARY INDEX\n"
     "  global-sta export-events PRIMARY INDEX REQUEST SUMMARY\n"
@@ -235,6 +238,10 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if (phase == "phase4" && operation == "route" && argc == 6 && std::string(argv[3]) == "--typed-output")
     return run(Stage::kRoute, {argv[4]}, argv[5]);
+  if(phase=="physical" && argc==8 && (operation=="import-boundary-timing" || operation=="import-logic-timing" || operation=="import-local-timing")) {
+    const auto stage=operation=="import-boundary-timing"?Stage::kImportPhysicalBoundary:operation=="import-logic-timing"?Stage::kImportPhysicalLogic:Stage::kImportPhysicalLocal;
+    StageRequest request{stage,{argv[3],argv[4],argv[5]},argv[6]};request.auxiliary_output_path=argv[7];return Execute(request,report);
+  }
   if (phase == "physical" && operation == "validate-evidence" && argc==6)
     return run(Stage::kValidatePhysicalEvidence,{argv[3],argv[4]},argv[5]);
   if (phase == "global-sta" && operation == "import-measurements" && argc == 8)

@@ -20,7 +20,7 @@ from emuflow.logic_segment_timing import (
     _normalize_xilinx_logical_endpoint,
     _route_timing_paths,
     _vivado_object,
-    import_vivado_logic_segment_timing,
+    import_vivado_logic_segment_timing as _native_import_vivado_logic_segment_timing,
     prepare_logic_segment_query_inputs,
 )
 from emuflow.logic_segment_timing_storage import (
@@ -51,6 +51,13 @@ from emuflow.local_path_timing_storage import (
 )
 from emuflow.routing import SYSTEM_ROUTES_SCHEMA, system_route_timing_paths
 from emuflow.platform import Platform
+
+
+def import_vivado_logic_segment_timing(*args,allow_legacy_identity=False,**kwargs):
+    if allow_legacy_identity:
+        from tests.physical_timing_reference import import_reference_logic_timing
+        return import_reference_logic_timing(*args,**kwargs)
+    return _native_import_vivado_logic_segment_timing(*args,**kwargs)
 
 
 def _import_fixture_logic_measurements(raw, identity, output, **kwargs):
@@ -1159,7 +1166,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 "store_bytes": new_store.stat().st_size,
             })
             write_json(identity, selector, compact=True)
-            with self.assertRaisesRegex(ValidationError, "objects are invalid"):
+            with self.assertRaisesRegex(ValidationError, "schema objects"):
                 read_logic_segment_identity_storage(identity)
 
     def test_query_spool_is_removed_on_every_early_failure(self):
@@ -1405,7 +1412,9 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 "fromidentity.segmentswheresegment_id=" in statement
                 for statement in normalized
             ))
-            self.assertTrue(any("leftjoinidentity.segments" in statement for statement in normalized))
+            self.assertFalse(any("insertintomeasurements" in statement for statement in normalized))
+            # The native importer owns its measurement spool and set joins.
+            self.assertFalse(any("fromidentity.segments" in statement for statement in normalized))
 
     def test_spool_indexes_schedule_and_exact_candidates_without_graph_maps(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -75,6 +75,9 @@ class SqliteStore : public ArtifactScope {
 void ValidateSqliteSchema(SqliteDatabase& database,const RegisteredSchema& schema);
 // Compare the complete installed schema, without integrity/quick checks or row scans.
 void RequireSqliteDDL(SqliteDatabase& database,const char* ddl);
+// Bounded metadata equality through SQLite JSON1; never a graph JSON parser.
+void RequireEquivalentJson(SqliteDatabase& db,const std::string& left,
+                           const std::string& right,const std::string& message);
 
 // Source checks and closed statement/transaction ownership precede publication.
 // A rejected writer leaves the prior destination intact and retires only its

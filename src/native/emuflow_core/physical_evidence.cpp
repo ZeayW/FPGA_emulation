@@ -43,19 +43,13 @@ std::string JsonText(SqliteDatabase& db,const std::string& object,const char* ke
   Require(row.Step(),"header is missing");if(optional && (row.IsNull(0) || row.Text(0)=="null"))return {};
   Require(row.Text(0)=="text","header text field is invalid");return Text(row,1);
 }
-void EqualJson(SqliteDatabase& db,const std::string& left,const std::string& right,const char* message) {
-  const char* sql="SELECT 1 FROM (SELECT fullkey,CASE WHEN type IN ('integer','real') THEN 'number' ELSE type END AS type,atom FROM json_tree(?1) "
-    "EXCEPT SELECT fullkey,CASE WHEN type IN ('integer','real') THEN 'number' ELSE type END,atom FROM json_tree(?2)) LIMIT 1";
-  for(unsigned reverse=0;reverse<2;++reverse) {
-    auto row=db.Prepare(sql);row.BindText(1,reverse?right:left);row.BindText(2,reverse?left:right);Require(!row.Step(),message);
-  }
-}
+
 void Metadata(SqliteDatabase& db,const std::map<std::string,std::string>& expected) {
   auto rows=db.Prepare("SELECT key,length(value),value FROM metadata ORDER BY key");std::size_t count=0;
   while(rows.Step()) {
     const auto key=Text(rows,0);auto found=expected.find(key);
     Require(found!=expected.end() && Count(rows,1)<=8*1024*1024,"metadata fields are unexpected or oversized");
-    const auto value=rows.TypedText(2);EqualJson(db,value,found->second,"metadata disagrees");++count;
+    const auto value=rows.TypedText(2);RequireEquivalentJson(db,value,found->second,"metadata disagrees");++count;
   }
   Require(count==expected.size(),"metadata coverage disagrees");
 }
@@ -90,12 +84,13 @@ Object BoundaryIdentity(SqliteDatabase& db,Sha256& digest) {
   Require(!have,"boundary register owner is invalid");
   return {{"endpoints",total},{"tx",tx},{"rx",rx},{"external_port_nets",total}};
 }
-Object BoundaryTiming(SqliteDatabase& db,Sha256& digest) {
+Object BoundaryTiming(SqliteDatabase& db,Sha256& digest,double* maximum=nullptr) {
   auto rows=db.Prepare("SELECT id,kind,schedule_entry,delay_ns,start_object,end_object,measurement FROM timings ORDER BY id");
   Integer total=0,tx=0,rx=0;
   while(rows.Step()) {
     const auto kind=Text(rows,1);Require(kind=="tx" || kind=="rx","boundary kind is invalid");
-    Record(digest,Object{{"id",Text(rows,0)},{"kind",kind},{"schedule_entry",Text(rows,2)},{"delay_ns",Real(rows,3)},
+    const auto delay=Real(rows,3);if(maximum)*maximum=std::max(*maximum,delay);
+    Record(digest,Object{{"id",Text(rows,0)},{"kind",kind},{"schedule_entry",Text(rows,2)},{"delay_ns",delay},
         {"start_object",Text(rows,4)},{"end_object",Text(rows,5)},{"measurement",Text(rows,6)}});
     ++total;if(kind=="tx")++tx;else ++rx;
   }
@@ -177,33 +172,117 @@ Object LogicTiming(SqliteDatabase& db,Sha256& segments,Sha256& unsupported,Sha25
   if(collection || !optional.IsNull(0))result.emplace("endpoint_collection_bound_segments",collection);
   return result;
 }
+Object LogicIdentity(SqliteDatabase& db,Sha256& segments,Sha256& unsupported,const std::string& header) {
+  const auto fpga=JsonText(db,header,"$.fpga"),semantic=JsonText(db,header,"$.semantic_contract_sha256",true);
+  auto rows=db.Prepare("SELECT seq,segment_id,kind,system_path,member_path,cut_index,fpga,replace_tx_endpoint,start_pin,end_pin,static_exact_segment_id,start_object_kind,end_object_kind,cone_anchor_object_kind,cone_anchor_pin FROM segments ORDER BY seq");
+  Integer total=0,missing=0;std::string previous;
+  while(rows.Step()) {
+    const auto id=Text(rows,1),kind=Text(rows,2);
+    Require(Count(rows,0)==total && (!total || previous<id),"logic identity sequence/order is invalid");previous=id;
+    Require(Text(rows,6)==fpga && (kind=="launch" || kind=="transition" || kind=="capture"),"logic identity classification is invalid");
+    Require((kind=="capture")==rows.IsNull(7),"logic identity replacement is invalid");
+    Require(semantic.empty()?rows.IsNull(10):!rows.IsNull(10),"logic identity exact identity is invalid");
+    const auto object_kind=[&](int column){const auto value=Text(rows,column);Require(value=="pin" || value=="port","logic identity object kind is invalid");};
+    Require(rows.IsNull(11)==rows.IsNull(12),"logic identity object kinds are invalid");
+    if(!rows.IsNull(11)){object_kind(11);object_kind(12);}
+    Require(rows.IsNull(13)==rows.IsNull(14),"logic identity cone anchor is invalid");
+    if(!rows.IsNull(13)){object_kind(13);(void)Text(rows,14);Require(kind!="capture","logic identity cone anchor is invalid");}
+    Object record{{"id",id},{"kind",kind},{"system_path",Text(rows,3)},{"member_path",Text(rows,4)},
+        {"cut_index",Count(rows,5)},{"fpga",fpga},{"replace_tx_endpoint",rows.IsNull(7)?JsonRecord():JsonRecord(Text(rows,7))},
+        {"start_pin",Text(rows,8)},{"end_pin",Text(rows,9)}};
+    for(auto field:std::initializer_list<std::pair<int,const char*>>{{10,"static_exact_segment_id"},{11,"start_object_kind"},{12,"end_object_kind"},
+        {13,"cone_anchor_object_kind"},{14,"cone_anchor_pin"}})AddOptional(record,rows,field.first,field.second);
+    Record(segments,record);++total;
+  }
+  auto absent=db.Prepare("SELECT seq,path,reason FROM unsupported_members ORDER BY seq");previous.clear();
+  while(absent.Step()) {
+    const auto path=Text(absent,1);Require(Count(absent,0)==missing && (!missing || previous<path),"unsupported member sequence/order is invalid");previous=path;
+    Record(unsupported,{{"path",path},{"reason",Text(absent,2)}});++missing;
+  }
+  auto distinct=db.Prepare("SELECT count(DISTINCT system_path),count(DISTINCT member_path) FROM segments");Require(distinct.Step(),"logic identity counts are missing");
+  return {{"segments",total},{"system_paths",Count(distinct,0)},{"member_paths",Count(distinct,1)},{"unsupported_member_paths",missing}};
+}
 } // namespace
 
 void ValidatePhysicalEvidence(const std::vector<ArtifactRef>& inputs,const std::string& output) {
   Require(inputs.size()==2,"input coverage disagrees");CheckedRequestReader request(inputs[1].path(),8*1024*1024);
   Require(request.Read<std::uint64_t>()==0x31564550464d5545ULL && request.Read<std::uint32_t>()==1,"request version is invalid");
-  const auto kind=request.Read<std::uint32_t>();Require(kind>=1 && kind<=4,"kind is invalid");Generation(request,inputs[0]);
+  const auto kind=request.Read<std::uint32_t>();Require(kind>=1 && kind<=5,"kind is invalid");Generation(request,inputs[0]);
   const auto header=request.ReadString32(false,4*1024*1024),counts=request.ReadString32(false,65536),source=request.ReadString32(false,65536),logical=request.ReadString32(false,64);request.RequireEnd();
   Require(logical.size()==64 && logical.find_first_not_of("0123456789abcdef")==std::string::npos,"logical seal is invalid");
   SqliteStore store(inputs[0]);auto& db=store.database();db.Execute("PRAGMA cache_size=-8192; PRAGMA temp_store=FILE; PRAGMA temp.cache_size=-8192");
-  const char* schemas[]={kBoundaryIdentityDDL,kBoundaryTimingDDL,kLogicSegmentTimingDDL,kLocalPathTimingDDL};RequireSqliteDDL(db,schemas[kind-1]);
+  const char* schemas[]={kBoundaryIdentityDDL,kBoundaryTimingDDL,kLogicSegmentTimingDDL,kLocalPathTimingDDL,kLogicSegmentIdentityDDL};RequireSqliteDDL(db,schemas[kind-1]);
   std::map<std::string,std::string> metadata{{"header",header},{"counts",counts},{"logical_sha256",JsonQuote(logical)}};
-  if(kind==3)metadata.emplace("source",source);else Require(source=="null","unexpected source metadata");Metadata(db,metadata);
+  if(kind==3 || kind==5)metadata.emplace("source",source);else Require(source=="null","unexpected source metadata");Metadata(db,metadata);
   Sha256 records,unsupported,unmeasured;Object actual,measurements;double maximum=0;
   if(kind==1)actual=BoundaryIdentity(db,records);
-  else if(kind==2)actual=BoundaryTiming(db,records);
+  else if(kind==2)actual=BoundaryTiming(db,records,&maximum);
   else if(kind==3)actual=LogicTiming(db,records,unsupported,unmeasured,header,counts,maximum);
+  else if(kind==5)actual=LogicIdentity(db,records,unsupported,header);
   else {auto result=LocalTiming(db,records,header);actual=std::move(result.counts);measurements=std::move(result.measurements);maximum=result.maximum;}
-  const auto actual_json=JsonRecord(actual).EncodeUtf8();EqualJson(db,actual_json,counts,"row counts disagree");
+  const auto actual_json=JsonRecord(actual).EncodeUtf8();RequireEquivalentJson(db,actual_json,counts,"row counts disagree");
   std::string payload="{\"counts\":"+actual_json;
   if(kind<=2)payload+=",\"endpoint_sha256\":"+JsonQuote(Digest(records));
   payload+=",\"header\":"+header;
   if(kind==4)payload+=",\"path_sha256\":"+JsonQuote(Digest(records));
   if(kind==3)payload+=",\"segment_sha256\":"+JsonQuote(Digest(records))+",\"source\":"+source+
       ",\"unmeasured_sha256\":"+JsonQuote(Digest(unmeasured))+",\"unsupported_sha256\":"+JsonQuote(Digest(unsupported));
+  if(kind==5)payload+=",\"segment_sha256\":"+JsonQuote(Digest(records))+",\"source\":"+source+",\"unsupported_sha256\":"+JsonQuote(Digest(unsupported));
   payload+='}';Sha256 hash;Hash(hash,payload);const auto observed=Digest(hash);Require(observed==logical,"logical seal disagrees");
   AtomicBinaryWriter writer(output,inputs);writer.stream()<<JsonRecord(Object{{"schema","emuflow.physical-evidence-validation/v1"},{"status","pass"},
       {"implementation_id","native-physical-evidence-validation-v1"},{"kind",kind},{"counts",std::move(actual)},{"logical_sha256",observed},
       {"maximum_delay_ns",maximum},{"measurement_counts",std::move(measurements)}}).Encode()<<'\n';writer.Commit();
 }
 } // namespace emuflow::core
+
+namespace emuflow::core {
+PhysicalEvidenceSeal SealPhysicalEvidence(SqliteDatabase& db,unsigned kind,const std::string& header,const std::string& source) {
+  Require(kind>=2 && kind<=4,"producer kind is invalid");
+  Sha256 records,unsupported,unmeasured;Object counts,measurements;double maximum=0;
+  if(kind==2)counts=BoundaryTiming(db,records,&maximum);
+  else if(kind==3)counts=LogicTiming(db,records,unsupported,unmeasured,header,"{\"endpoint_collection_bound_segments\":0}",maximum);
+  else {auto result=LocalTiming(db,records,header);counts=std::move(result.counts);measurements=std::move(result.measurements);maximum=result.maximum;}
+  Object output;
+  for(const char* field:{"schema","status","design","fpga","provider","qualification"})
+    output.emplace(field,JsonText(db,header,(std::string("$.")+field).c_str()));
+  Require(JsonText(db,header,"$.status")=="pass","producer status is invalid");
+  Object coverage;auto old=db.Prepare("SELECT key,value FROM json_each(?,'$.coverage') ORDER BY key");old.BindText(1,header);
+  while(old.Step())coverage.emplace(Text(old,0),Count(old,1));
+  if(kind==2) {
+    Require(JsonText(db,header,"$.schema")=="emuflow.boundary-timing/v1","producer schema is invalid");
+    output.emplace("platform",JsonText(db,header,"$.platform"));output.emplace("measurement_scope",JsonText(db,header,"$.measurement_scope"));
+    coverage=counts;
+  } else if(kind==3) {
+    Require(JsonText(db,header,"$.schema")=="emuflow.logic-segment-timing/v1","producer schema is invalid");
+    for(const char* field:{"platform","system_routes_sha256","tdm_schedule_sha256"})output.emplace(field,JsonText(db,header,(std::string("$.")+field).c_str()));
+    const auto semantic=JsonText(db,header,"$.semantic_contract_sha256",true);
+    auto declared=db.Prepare("SELECT json_type(?,'$.semantic_contract_sha256')");declared.BindText(1,header);Require(declared.Step(),"semantic header is missing");
+    if(!declared.IsNull(0))output.emplace("semantic_contract_sha256",semantic.empty()?JsonRecord():JsonRecord(semantic));
+    for(const char* key:{"segments","system_paths","member_paths","unsupported_member_paths","endpoint_exact_segments","cone_bound_segments","endpoint_collection_bound_segments"})coverage[key]=counts.at(key);
+  } else {
+    Require(JsonText(db,header,"$.schema")=="emuflow.local-path-timing/v1","producer schema is invalid");
+    output.emplace("identity_schema",JsonText(db,header,"$.identity_schema"));Object original;
+    auto shape=db.Prepare("SELECT count(*),count(DISTINCT key),sum(key IN ('path_database_sha256','original_ir_sha256','assignment_sha256','routes_sha256','original_path_ids_sha256','original_paths')) FROM json_each(?,'$.source')");shape.BindText(1,header);
+    Require(shape.Step() && Count(shape,0)==6 && Count(shape,1)==6 && Count(shape,2)==6,"original source fields are invalid");
+    for(const char* field:{"path_database_sha256","original_ir_sha256","assignment_sha256","routes_sha256","original_path_ids_sha256"}) {
+      const auto digest=JsonText(db,header,(std::string("$.source.")+field).c_str());Require(digest.size()==64 && digest.find_first_not_of("0123456789abcdef")==std::string::npos,"original source seal is invalid");original.emplace(field,digest);
+    }
+    auto count=db.Prepare("SELECT json_extract(?,'$.source.original_paths')");count.BindText(1,header);Require(count.Step() && Count(count,0)>0,"original source count is invalid");original.emplace("original_paths",Count(count,0));
+    output.emplace("source",std::move(original));coverage=counts;
+  }
+  output.emplace("coverage",std::move(coverage));
+  PhysicalEvidenceSeal result{JsonRecord(output).EncodeUtf8(),JsonRecord(counts).EncodeUtf8(),source,"",JsonRecord(measurements).EncodeUtf8(),maximum};
+  std::string payload="{\"counts\":"+result.counts;
+  if(kind==2)payload+=",\"endpoint_sha256\":"+JsonQuote(Digest(records));
+  payload+=",\"header\":"+result.header;
+  if(kind==4)payload+=",\"path_sha256\":"+JsonQuote(Digest(records));
+  if(kind==3)payload+=",\"segment_sha256\":"+JsonQuote(Digest(records))+",\"source\":"+source+
+      ",\"unmeasured_sha256\":"+JsonQuote(Digest(unmeasured))+",\"unsupported_sha256\":"+JsonQuote(Digest(unsupported));
+  payload+='}';Sha256 hash;Hash(hash,payload);result.logical_sha256=Digest(hash);
+  auto put=db.Prepare("INSERT INTO metadata VALUES(?,?)");
+  std::map<std::string,std::string> metadata{{"header",result.header},{"counts",result.counts},{"logical_sha256",JsonQuote(result.logical_sha256)}};
+  if(kind==3)metadata.emplace("source",source);
+  for(const auto& value:metadata){put.BindText(1,value.first);put.BindText(2,value.second);put.Execute();}
+  return result;
+}
+}

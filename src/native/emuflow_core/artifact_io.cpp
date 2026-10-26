@@ -2,6 +2,12 @@
 #include "emuflow_core/hash.hpp"
 
 #include <atomic>
+#include <cmath>
+#include <cstdlib>
+#include <locale.h>
+#if defined(__APPLE__)
+#include <xlocale.h>
+#endif
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -18,6 +24,16 @@
 #endif
 
 namespace emuflow::core {
+double ParseFiniteDecimal(const std::string& text,const std::string& context) {
+  const auto fail=[&](){throw StageError(ErrorCode::kInvalidArtifact,"invalid/nonfinite "+context);};
+  if(text.empty())fail();
+  for(char c:text)if(!((c>='0' && c<='9') || c=='e' || c=='E' || c=='+' || c=='-' || c=='.' || c==' ' || c=='\r' || c=='\v' || c=='\f'))fail();
+  static const locale_t locale=newlocale(LC_NUMERIC_MASK,"C",nullptr);
+  if(!locale)throw StageError(ErrorCode::kInvalidArtifact,"cannot create numeric locale");
+  char* rest=nullptr;const auto value=strtod_l(text.c_str(),&rest,locale);
+  if(rest==text.c_str())fail();while(*rest==' ' || *rest=='\r' || *rest=='\v' || *rest=='\f')++rest;
+  if(*rest || !std::isfinite(value))fail();return value;
+}
 CheckedRequestReader::CheckedRequestReader(const std::string& path, std::size_t maximum_bytes)
     : reader_(path) {
   if (reader_.size() > maximum_bytes || reader_.remaining() < sizeof(std::uint32_t))

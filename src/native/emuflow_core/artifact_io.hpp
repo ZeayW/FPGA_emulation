@@ -13,6 +13,9 @@
 
 namespace emuflow::core {
 
+// Locale-independent finite decimal numbers for engine text protocols.
+double ParseFiniteDecimal(const std::string& text,const std::string& context);
+
 struct ArtifactSchema {
   std::uint64_t magic;
   std::uint32_t version;

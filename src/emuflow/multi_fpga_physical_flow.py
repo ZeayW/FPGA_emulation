@@ -1424,7 +1424,7 @@ def run_multi_fpga_physical_flow(
                 )
                 from .vivado_physical_timing import write_vivado_local_query
 
-                local_identity_path = fpga_root / "vivado-local-identity.sqlite"
+                local_identity_path = fpga_root / "vivado-local-identity.json"
                 local_query_path = fpga_root / "vivado-local-query.tsv"
                 local_query_report = write_vivado_local_query(
                     merged_ir, fpga_id, local_query_path, local_identity_path,

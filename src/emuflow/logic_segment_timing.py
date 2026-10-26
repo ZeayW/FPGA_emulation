@@ -69,9 +69,6 @@ VIVADO_LOGIC_SEGMENT_TIMING_HEADER = (
     "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex\t"
     "measurement\tactual_start_object_hex\tactual_end_object_hex"
 )
-_LEGACY_VIVADO_LOGIC_SEGMENT_TIMING_HEADER = (
-    "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex"
-)
 _FF_TYPES = {"FDCE", "FDPE", "FDRE", "FDSE"}
 _VIVADO_FF_CONTROLS = {"FDRE": {"CE", "R"}, "FDSE": {"CE", "S"},
                        "FDCE": {"CE", "CLR"}, "FDPE": {"CE", "PRE"}}
@@ -1771,272 +1768,23 @@ def validate_logic_segment_identity(
     }
 
 
-def _indexed_logic_measurement_import(
-    input_path: Path,
-    identity: Any,
-    output_path: Path,
-    *,
-    provider: str,
-    qualification: str,
-    allow_missing: bool,
-    allow_legacy_timing_format: bool,
-) -> Dict[str, Any]:
-    """Join a routed TSV to a typed identity without graph-sized dictionaries."""
-    from .logic_segment_identity_storage import segment_from_row
-    from .logic_segment_timing_storage import write_logic_segment_timing_storage
-
-    source_bindings = bind_view_sources(
-        (identity, "logic-segment-identity-store-v1")
-    ) + (
+def _indexed_logic_measurement_import(input_path, identity, output_path, *, provider, qualification,
+                                       allow_missing, allow_legacy_timing_format):
+    from .physical_measurements_native import import_physical_measurements
+    sources = bind_view_sources((identity, "logic-segment-identity-store-v1")) + (
         bind_store_source(input_path, "physical-timing-measurements-v1"),
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=".logic-measurements.", dir=output_path.parent
-    ) as temporary:
-        spool_path = Path(temporary) / "measurements.sqlite"
-        connection = sqlite3.connect(spool_path, uri=True)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=OFF")
-        connection.execute("PRAGMA synchronous=OFF")
-        connection.execute(
-            "CREATE TABLE measurements("
-            "ordinal INTEGER PRIMARY KEY,segment_id TEXT UNIQUE NOT NULL,"
-            "kind TEXT NOT NULL,start_object TEXT NOT NULL,end_object TEXT NOT NULL,"
-            "delay_ns REAL NOT NULL,measurement TEXT NOT NULL,"
-            "actual_start_object TEXT,actual_end_object TEXT)"
-        )
-        connection.execute(
-            "ATTACH DATABASE ? AS identity",
-            (immutable_sqlite_uri(identity.store_path),),
-        )
-        inserted = 0
-        try:
-            with input_path.open("r", encoding="utf-8") as stream:
-                header = next(stream, "").rstrip("\n")
-                if header not in {
-                    VIVADO_LOGIC_SEGMENT_TIMING_HEADER,
-                    _LEGACY_VIVADO_LOGIC_SEGMENT_TIMING_HEADER,
-                }:
-                    raise ValidationError(
-                        "Vivado logic segment timing header is invalid"
-                    )
-                extended_format = (
-                    header == VIVADO_LOGIC_SEGMENT_TIMING_HEADER
-                )
-                if not extended_format and not allow_legacy_timing_format:
-                    raise ValidationError(
-                        "legacy Vivado logic timing format requires explicit compatibility"
-                    )
-                batch = []
-                for line_number, line in enumerate(stream, start=2):
-                    line = line.rstrip("\n")
-                    if not line:
-                        continue
-                    fields = line.split("\t")
-                    try:
-                        segment_id = bytes.fromhex(fields[0]).decode("utf-8")
-                        start_object = bytes.fromhex(fields[3]).decode("utf-8")
-                        end_object = bytes.fromhex(fields[4]).decode("utf-8")
-                        measurement = (
-                            fields[5]
-                            if extended_format else "endpoint-exact"
-                        )
-                        actual_start = (
-                            bytes.fromhex(fields[6]).decode("utf-8")
-                            if extended_format else start_object
-                        )
-                        actual_end = (
-                            bytes.fromhex(fields[7]).decode("utf-8")
-                            if extended_format else end_object
-                        )
-                        expected_fields = 8 if extended_format else 5
-                        delay = float(fields[2])
-                    except (IndexError, ValueError, UnicodeDecodeError) as error:
-                        label = "Vivado"
-                        raise ValidationError(
-                            f"{label} logic segment timing line {line_number} is invalid"
-                        ) from error
-                    valid = (
-                        len(fields) == expected_fields
-                        and fields[1] in {"launch", "transition", "capture"}
-                        and bool(segment_id and start_object and end_object)
-                        and measurement in {
-                            "endpoint-exact", "cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"
-                        }
-                        and bool(actual_start and actual_end)
-                        and math.isfinite(delay)
-                        and delay >= 0.0
-                    )
-                    if not valid:
-                        label = "Vivado"
-                        raise ValidationError(
-                            f"{label} logic segment timing line {line_number} is invalid"
-                        )
-                    batch.append((
-                        inserted + len(batch), segment_id, fields[1],
-                        start_object, end_object, delay, measurement,
-                        actual_start, actual_end,
-                    ))
-                    if len(batch) >= 8192:
-                        try:
-                            connection.executemany(
-                                "INSERT INTO measurements VALUES (?,?,?,?,?,?,?,?,?)",
-                                batch,
-                            )
-                        except sqlite3.IntegrityError as error:
-                            raise ValidationError(
-                                "logic segment measurement identity duplicates"
-                            ) from error
-                        inserted += len(batch)
-                        batch.clear()
-                if batch:
-                    try:
-                        connection.executemany(
-                            "INSERT INTO measurements VALUES (?,?,?,?,?,?,?,?,?)",
-                            batch,
-                        )
-                    except sqlite3.IntegrityError as error:
-                        raise ValidationError(
-                            "logic segment measurement identity duplicates"
-                        ) from error
-                    inserted += len(batch)
-            unknown = connection.execute(
-                "SELECT m.segment_id FROM measurements m "
-                "LEFT JOIN identity.segments i USING(segment_id) "
-                "WHERE i.segment_id IS NULL ORDER BY m.ordinal LIMIT 1"
-            ).fetchone()
-            if unknown is not None:
-                raise ValidationError(
-                    "logic segment measurement references an unknown identity"
-                )
-            mismatch = connection.execute(
-                "SELECT m.segment_id FROM measurements m JOIN identity.segments i "
-                "USING(segment_id) WHERE m.kind!=i.kind OR "
-                "m.start_object!=i.start_pin OR m.end_object!=i.end_pin "
-                "ORDER BY m.ordinal LIMIT 1"
-            ).fetchone()
-            if mismatch is not None:
-                raise ValidationError(
-                    "logic segment measurement endpoint identity disagrees"
-                )
-            out_of_order = connection.execute(
-                "SELECT 1 FROM (SELECT i.seq,LAG(i.seq) OVER "
-                "(ORDER BY m.ordinal) AS previous_seq FROM measurements m "
-                "JOIN identity.segments i USING(segment_id)) "
-                "WHERE previous_seq IS NOT NULL AND seq<=previous_seq LIMIT 1"
-            ).fetchone()
-            if out_of_order is not None:
-                raise ValidationError("logic segment measurement order is invalid")
-            expected_count = identity.selector["counts"]["segments"]
-            missing_count = expected_count - inserted
-            if missing_count < 0:
-                raise ValidationError("logic segment timing coverage is invalid")
-            if missing_count and not allow_missing:
-                missing = [
-                    str(row[0]) for row in connection.execute(
-                        "SELECT i.segment_id FROM identity.segments i "
-                        "LEFT JOIN measurements m USING(segment_id) "
-                        "WHERE m.segment_id IS NULL ORDER BY i.seq LIMIT 10"
-                    )
-                ]
-                label = "Vivado"
-                raise ValidationError(
-                    f"{label} logic segment timing coverage is incomplete: {missing}"
-                )
-            connection.execute(
-                "CREATE TABLE final_unsupported("
-                "path TEXT PRIMARY KEY,reason TEXT NOT NULL) WITHOUT ROWID"
-            )
-            connection.execute(
-                "INSERT INTO final_unsupported "
-                "SELECT path,reason FROM identity.unsupported_members"
-            )
-            if missing_count:
-                connection.execute(
-                    "INSERT INTO final_unsupported(path,reason) "
-                    "SELECT DISTINCT i.member_path,'no-routed-vivado-board-path' "
-                    "FROM identity.segments i LEFT JOIN measurements m USING(segment_id) "
-                    "WHERE m.segment_id IS NULL "
-                    "ON CONFLICT(path) DO UPDATE SET reason=excluded.reason"
-                )
-            connection.commit()
-
-            header_value = {
-                "schema": LOGIC_SEGMENT_TIMING_SCHEMA,
-                "status": "pass",
-                "design": identity["design"],
-                "platform": identity["platform"],
-                "fpga": identity["fpga"],
-                "provider": provider,
-                "qualification": qualification,
-                "coverage": identity["coverage"],
-                "system_routes_sha256": identity["system_routes_sha256"],
-                "tdm_schedule_sha256": identity["tdm_schedule_sha256"],
-                **(
-                    {"semantic_contract_sha256": identity["semantic_contract_sha256"]}
-                    if "semantic_contract_sha256" in identity else {}
-                ),
-            }
-
-            def measured_records():
-                for row in connection.execute(
-                    "SELECT i.*,m.delay_ns,m.measurement,"
-                    "m.actual_start_object,m.actual_end_object "
-                    "FROM identity.segments i JOIN measurements m USING(segment_id) "
-                    "ORDER BY i.system_path,i.member_path,i.cut_index,i.segment_id"
-                ):
-                    record = segment_from_row(row)
-                    record.update({
-                        "delay_ns": float(row["delay_ns"]),
-                        "measurement": str(row["measurement"]),
-                    })
-                    if row["actual_start_object"] is not None:
-                        record["actual_start_object"] = str(
-                            row["actual_start_object"]
-                        )
-                        record["actual_end_object"] = str(
-                            row["actual_end_object"]
-                        )
-                    yield record
-
-            def unsupported_records():
-                for row in connection.execute(
-                    "SELECT path,reason FROM final_unsupported ORDER BY path"
-                ):
-                    yield {"path": str(row[0]), "reason": str(row[1])}
-
-            def unmeasured_records():
-                for row in connection.execute(
-                    "SELECT i.segment_id,i.kind,i.system_path,i.member_path "
-                    "FROM identity.segments i LEFT JOIN measurements m USING(segment_id) "
-                    "WHERE m.segment_id IS NULL ORDER BY i.segment_id"
-                ):
-                    yield {
-                        "id": str(row[0]), "kind": str(row[1]),
-                        "system_path": str(row[2]), "member_path": str(row[3]),
-                        "reason": "no-routed-vivado-board-path",
-                    }
-
-            view = write_logic_segment_timing_storage(
-                output_path,
-                header=header_value,
-                segments=measured_records(),
-                unsupported_member_paths=unsupported_records(),
-                unmeasured_segments=(unmeasured_records() if allow_missing else ()),
-                source_bindings=source_bindings,
-            )
-            try:
-                validation = view.validate_timing()
-            finally:
-                view.close()
-            return {
-                **validation,
-                **({"missing_segments": missing_count}),
-                "output": str(output_path),
-            }
-        finally:
-            connection.close()
+    header = {key: identity[key] for key in (
+        "design", "platform", "fpga", "coverage", "system_routes_sha256", "tdm_schedule_sha256",
+    )}
+    header.update(schema=LOGIC_SEGMENT_TIMING_SCHEMA, status="pass", provider=provider, qualification=qualification)
+    if "semantic_contract_sha256" in identity:
+        header["semantic_contract_sha256"] = identity["semantic_contract_sha256"]
+    return import_physical_measurements(
+        input_path, identity.store_path, output_path, kind=3, header=header,
+        sources=sources, source=identity.selector["source"], allow_missing=allow_missing,
+        allow_legacy=allow_legacy_timing_format,
+    )
 
 
 def import_vivado_logic_segment_timing(
@@ -2047,7 +1795,6 @@ def import_vivado_logic_segment_timing(
     provider: str = "vivado-routed-logic-segment-datapath-v1",
     qualification: str = "routed-vendor-device-endpoint-chain",
     allow_missing: bool = False,
-    allow_legacy_identity: bool = False,
     allow_legacy_timing_format: bool = False,
 ) -> Dict[str, Any]:
     from .logic_segment_identity_storage import (
@@ -2056,7 +1803,7 @@ def import_vivado_logic_segment_timing(
     )
 
     identity = read_logic_segment_identity_storage(
-        identity_path, allow_legacy=allow_legacy_identity
+        identity_path
     )
     if isinstance(identity, LogicSegmentIdentityView):
         try:
@@ -2071,156 +1818,7 @@ def import_vivado_logic_segment_timing(
             )
         finally:
             identity.close()
-    source_bindings = (
-        bind_store_source(input_path, "physical-timing-measurements-v1"),
-    )
-    validate_logic_segment_identity(identity)
-    expected = {item["id"]: item for item in identity["segments"]}
-    lines = input_path.read_text(encoding="utf-8").splitlines()
-    if not lines or lines[0] not in {
-        VIVADO_LOGIC_SEGMENT_TIMING_HEADER,
-        _LEGACY_VIVADO_LOGIC_SEGMENT_TIMING_HEADER,
-    }:
-        raise ValidationError("Vivado logic segment timing header is invalid")
-    extended_format = lines[0] == VIVADO_LOGIC_SEGMENT_TIMING_HEADER
-    if not extended_format and not allow_legacy_timing_format:
-        raise ValidationError(
-            "legacy Vivado logic timing format requires explicit compatibility"
-        )
-    measurements = {}
-    for line_number, line in enumerate(lines[1:], start=2):
-        if not line:
-            continue
-        fields = line.split("\t")
-        try:
-            segment_id = bytes.fromhex(fields[0]).decode("utf-8")
-            start_object = bytes.fromhex(fields[3]).decode("utf-8")
-            end_object = bytes.fromhex(fields[4]).decode("utf-8")
-            measurement = fields[5] if extended_format else "endpoint-exact"
-            actual_start = (
-                bytes.fromhex(fields[6]).decode("utf-8")
-                if extended_format
-                else start_object
-            )
-            actual_end = (
-                bytes.fromhex(fields[7]).decode("utf-8")
-                if extended_format
-                else end_object
-            )
-        except (IndexError, ValueError, UnicodeDecodeError) as error:
-            raise ValidationError(
-                f"Vivado logic segment timing line {line_number} is invalid"
-            ) from error
-        expected_fields = 8 if extended_format else 5
-        segment = (
-            expected.get(segment_id)
-            if len(fields) == expected_fields
-            else None
-        )
-        if (
-            segment is None
-            or segment_id in measurements
-            or fields[1] != segment["kind"]
-            or start_object != segment["start_pin"]
-            or end_object != segment["end_pin"]
-            or measurement not in {
-                "endpoint-exact",
-                "cut-net-cone-upper-bound",
-                "optimized-endpoint-collection-upper-bound",
-            }
-            or not actual_start
-            or not actual_end
-        ):
-            raise ValidationError(
-                f"Vivado logic segment timing line {line_number} is invalid"
-            )
-        try:
-            delay = float(fields[2])
-        except ValueError as error:
-            raise ValidationError(
-                f"Vivado logic segment timing line {line_number} delay is invalid"
-            ) from error
-        if not math.isfinite(delay) or delay < 0.0:
-            raise ValidationError(
-                f"Vivado logic segment timing line {line_number} delay is invalid"
-            )
-        measurements[segment_id] = {
-            "delay_ns": delay,
-            "measurement": measurement,
-            "actual_start_object": actual_start,
-            "actual_end_object": actual_end,
-        }
-    missing = sorted(set(expected) - set(measurements))
-    if missing and not allow_missing:
-        raise ValidationError(
-            "Vivado logic segment timing coverage is incomplete: "
-            f"{missing[:10]}"
-        )
-    unsupported = {
-        item["path"]: item["reason"]
-        for item in identity["unsupported_member_paths"]
-    }
-    for segment_id in missing:
-        segment = expected[segment_id]
-        unsupported[segment["member_path"]] = (
-            "no-routed-vivado-board-path"
-        )
-    header = {
-        "schema": LOGIC_SEGMENT_TIMING_SCHEMA,
-        "status": "pass",
-        "design": identity["design"],
-        "platform": identity["platform"],
-        "fpga": identity["fpga"],
-        "provider": provider,
-        "qualification": qualification,
-        "coverage": identity["coverage"],
-        "system_routes_sha256": identity["system_routes_sha256"],
-        "tdm_schedule_sha256": identity["tdm_schedule_sha256"],
-        **(
-            {
-                "semantic_contract_sha256": identity[
-                    "semantic_contract_sha256"
-                ]
-            }
-            if "semantic_contract_sha256" in identity
-            else {}
-        ),
-    }
-    from .logic_segment_timing_storage import write_logic_segment_timing_storage
-
-    view = write_logic_segment_timing_storage(
-        output_path,
-        header=header,
-        segments=(
-            {**segment, **measurements[segment["id"]]}
-            for segment in identity["segments"]
-            if segment["id"] in measurements
-        ),
-        unsupported_member_paths=(
-            {"path": path, "reason": reason}
-            for path, reason in sorted(unsupported.items())
-        ),
-        unmeasured_segments=(
-            {
-                "id": segment_id,
-                "kind": expected[segment_id]["kind"],
-                "system_path": expected[segment_id]["system_path"],
-                "member_path": expected[segment_id]["member_path"],
-                "reason": "no-routed-vivado-board-path",
-            }
-            for segment_id in missing
-        ),
-        source_bindings=source_bindings,
-    )
-    try:
-        validation = view.validate_timing()
-    finally:
-        view.close()
-    return {
-        **validation,
-        "missing_segments": len(missing),
-        "output": str(output_path),
-    }
+    raise ValidationError("native physical timing import requires a current typed identity")
 
 
 def validate_logic_segment_timing(

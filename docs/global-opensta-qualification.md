@@ -112,7 +112,7 @@ seal. Unknown/mixed typed representations fail; native failure never invokes the
 inline reference binder. Inline small correctness fixtures remain reference
 inputs; mixed storage-oracle tests invoke their reference producer explicitly.
 
-The same core validates current boundary identity/timing, logic-segment timing
+The same core validates current boundary and logic-segment identity/timing
 and local-path timing stores through `physical validate-evidence`. It checks the
 installed exact schema and effective columns/indexes, complete metadata, ordered
 records, row counts, register/pin ownership and chain order, object/measurement
@@ -121,12 +121,37 @@ not execute SQLite integrity/quick checks. One active record owns its register
 or pin members; there is no Python full-record reconstruction. Logical/count
 summaries return through a bounded source-generation request and atomic result.
 A failed selected native validator stops the reader without a Python fallback.
-The retired Python full-store validator and schema copies are removed.
+The retired Python full-store validators and schema copies are removed, including
+the logic identity reader used before measurement import.
 
 Maximum local/segment delays and measurement coverage reuse the validated
 summary. A summary query does not rescan a complete path/segment table; live
 source generations remain checked. Writers retain their existing logical schema
 and seals, and already validated publications do not run the new reader again.
+
+Current Vivado boundary, logic-segment and local-path measurement TSVs enter
+`physical import-boundary-timing`, `physical import-logic-timing` and
+`physical import-local-timing`. The core decodes bounded records, validates
+finite delays and object identity, joins the source stores, and emits the final
+typed records and canonical logical seals directly. Source set joins remain set
+operations; no per-object Python lookup, measurement spool or final record
+population is reconstructed. Missing, duplicate, unknown, misordered and stale
+inputs fail before selector publication. The explicit partial logic diagnostic
+retains unsupported-member/unmeasured-segment evidence; it cannot pass complete
+global coverage. Numeric text parsing and bounded JSON metadata comparison share
+the core artifact/store APIs.
+
+Vivado local queries use the same zero-delay typed local-path identity owner as
+the other maintained backend. The private SQLite `paths(record_json)` route and
+its registered schema are retired; historical private identities require their
+matching Git revision. Output selectors remain small and source-bound. The
+closed native database is published from the destination directory through the
+common atomic publisher, with no extra database copy. Canonical data schemas and
+logical hashes remain unchanged, including explicitly declared null header fields.
+The former Python legacy-identity importer is retired from the production API;
+its small independent oracle lives only in tests. Source identity/query construction and the
+RapidWright routed timing graph still have Python producers; these imports do
+not complete their migration.
 
 This closes the current typed physical evidence reader/validator, physical-to-event
 producer, event storage, numerical import/reduction and model/QoR export boundary.

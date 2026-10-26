@@ -11,7 +11,6 @@ from __future__ import annotations
 from contextlib import closing
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 import fcntl
-from functools import lru_cache
 import hashlib
 import json
 import os
@@ -66,132 +65,15 @@ _SELECTOR_KEYS = {
     "store_sha256",
 }
 
-_DDL = """
-CREATE TABLE metadata(
-  key TEXT PRIMARY KEY NOT NULL,
-  value TEXT NOT NULL
-) WITHOUT ROWID;
-CREATE TABLE segments(
-  seq INTEGER PRIMARY KEY NOT NULL CHECK(seq >= 0),
-  segment_id TEXT NOT NULL CHECK(length(segment_id) > 0),
-  kind TEXT NOT NULL CHECK(kind IN ('launch','transition','capture')),
-  system_path TEXT NOT NULL CHECK(length(system_path) > 0),
-  member_path TEXT NOT NULL CHECK(length(member_path) > 0),
-  cut_index INTEGER NOT NULL CHECK(cut_index >= 0),
-  fpga TEXT NOT NULL CHECK(length(fpga) > 0),
-  replace_tx_endpoint TEXT,
-  start_pin TEXT NOT NULL CHECK(length(start_pin) > 0),
-  end_pin TEXT NOT NULL CHECK(length(end_pin) > 0),
-  static_exact_segment_id TEXT,
-  start_object_kind TEXT CHECK(start_object_kind IN ('pin','port')),
-  end_object_kind TEXT CHECK(end_object_kind IN ('pin','port')),
-  cone_anchor_object_kind TEXT CHECK(cone_anchor_object_kind IN ('pin','port')),
-  cone_anchor_pin TEXT
-);
-CREATE UNIQUE INDEX segments_id_unique ON segments(segment_id);
-CREATE UNIQUE INDEX segments_sequence_unique ON segments(seq);
-CREATE INDEX segments_canonical_cursor
-  ON segments(system_path,member_path,cut_index,segment_id);
-CREATE TABLE unsupported_members(
-  seq INTEGER PRIMARY KEY NOT NULL CHECK(seq >= 0),
-  path TEXT NOT NULL CHECK(length(path) > 0),
-  reason TEXT NOT NULL CHECK(length(reason) > 0)
-);
-CREATE UNIQUE INDEX unsupported_members_path_unique
-  ON unsupported_members(path);
-"""
+_DDL = (Path(__file__).parent / "data/schema/logic_segment_identity.sql").read_text()
 
 
-def _normalized_sql(value: Any) -> str:
-    return " ".join(str(value).split())
 
 
-@lru_cache(maxsize=1)
-def _expected_sqlite_objects() -> tuple[tuple[str, str, str, str], ...]:
-    connection = sqlite3.connect(":memory:")
-    try:
-        connection.executescript(_DDL)
-        return tuple(
-            (str(row[0]), str(row[1]), str(row[2]), _normalized_sql(row[3]))
-            for row in connection.execute(
-                "SELECT type,name,tbl_name,sql FROM sqlite_master "
-                "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
-            )
-        )
-    finally:
-        connection.close()
 
 
-@lru_cache(maxsize=1)
-def _expected_sqlite_table_envelope() -> dict[str, tuple[Any, ...]]:
-    connection = sqlite3.connect(":memory:")
-    try:
-        connection.executescript(_DDL)
-        result = {}
-        for table in ("metadata", "segments", "unsupported_members"):
-            columns = tuple(tuple(row) for row in connection.execute(
-                f"PRAGMA table_xinfo({table})"
-            ))
-            indexes = []
-            for row in connection.execute(f"PRAGMA index_list({table})"):
-                name = str(row[1])
-                if name.startswith("sqlite_"):
-                    continue
-                index_columns = tuple(
-                    (int(item[0]), int(item[1]), str(item[2]), int(item[5]))
-                    for item in connection.execute(
-                        f"PRAGMA index_xinfo({json.dumps(name)})"
-                    )
-                )
-                indexes.append(
-                    (name, int(row[2]), str(row[3]), int(row[4]), index_columns)
-                )
-            result[table] = (columns, tuple(sorted(indexes)))
-        return result
-    finally:
-        connection.close()
 
 
-def _exact_sqlite_envelope(connection: sqlite3.Connection) -> None:
-    application_id = connection.execute("PRAGMA application_id").fetchone()[0]
-    user_version = connection.execute("PRAGMA user_version").fetchone()[0]
-    if (
-        application_id != LOGIC_SEGMENT_IDENTITY_APPLICATION_ID
-        or user_version != LOGIC_SEGMENT_IDENTITY_USER_VERSION
-    ):
-        raise ValidationError("unsupported logic segment identity store")
-    objects = tuple(
-        (str(row[0]), str(row[1]), str(row[2]), _normalized_sql(row[3]))
-        for row in connection.execute(
-            "SELECT type,name,tbl_name,sql FROM sqlite_master "
-            "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
-        )
-    )
-    if objects != _expected_sqlite_objects():
-        raise ValidationError("logic segment identity store objects are invalid")
-    expected_tables = _expected_sqlite_table_envelope()
-    for table, expected in expected_tables.items():
-        columns = tuple(tuple(row) for row in connection.execute(
-            f"PRAGMA table_xinfo({table})"
-        ))
-        indexes = []
-        for row in connection.execute(f"PRAGMA index_list({table})"):
-            name = str(row[1])
-            if name.startswith("sqlite_"):
-                continue
-            index_columns = tuple(
-                (int(item[0]), int(item[1]), str(item[2]), int(item[5]))
-                for item in connection.execute(
-                    f"PRAGMA index_xinfo({json.dumps(name)})"
-                )
-            )
-            indexes.append(
-                (name, int(row[2]), str(row[3]), int(row[4]), index_columns)
-            )
-        if (columns, tuple(sorted(indexes))) != expected:
-            raise ValidationError(
-                "logic segment identity store table envelope is invalid"
-            )
 
 
 def _canonical(value: Any) -> str:
@@ -633,71 +515,9 @@ class LogicSegmentIdentityView(Mapping[str, Any]):
         self.close()
 
     def _validate_store(self) -> None:
-        segment_digest = hashlib.sha256()
-        unsupported_digest = hashlib.sha256()
-        try:
-            with closing(_connect(self.store_path)) as connection, connection:
-                _exact_sqlite_envelope(connection)
-                metadata_rows = list(connection.execute(
-                    "SELECT key,value FROM metadata ORDER BY key"
-                ))
-                metadata = {
-                    str(row[0]): json.loads(str(row[1])) for row in metadata_rows
-                }
-                if len(metadata) != len(metadata_rows) or metadata != {
-                    key: self.selector[key]
-                    for key in ("header", "counts", "source", "logical_sha256")
-                }:
-                    raise ValidationError("logic segment identity metadata disagrees")
-                count = 0
-                previous_id = None
-                for row in connection.execute("SELECT * FROM segments ORDER BY seq"):
-                    if int(row["seq"]) != count:
-                        raise ValidationError("logic segment identity sequence is invalid")
-                    record = _validate_segment(
-                        segment_from_row(row), self.selector["header"]
-                    )
-                    if previous_id is not None and record["id"] <= previous_id:
-                        raise ValidationError("logic segment identity order is invalid")
-                    previous_id = record["id"]
-                    segment_digest.update(_canonical(record).encode())
-                    segment_digest.update(b"\n")
-                    count += 1
-                unsupported_count = 0
-                previous_path = None
-                for row in connection.execute(
-                    "SELECT seq,path,reason FROM unsupported_members ORDER BY seq"
-                ):
-                    if int(row["seq"]) != unsupported_count:
-                        raise ValidationError("unsupported member sequence is invalid")
-                    record = {"path": str(row["path"]), "reason": str(row["reason"])}
-                    if previous_path is not None and record["path"] <= previous_path:
-                        raise ValidationError("unsupported member order is invalid")
-                    previous_path = record["path"]
-                    unsupported_digest.update(_canonical(record).encode())
-                    unsupported_digest.update(b"\n")
-                    unsupported_count += 1
-                aggregate = connection.execute(
-                    "SELECT COUNT(DISTINCT system_path),COUNT(DISTINCT member_path) FROM segments"
-                ).fetchone()
-        except (sqlite3.DatabaseError, ValueError, TypeError) as error:
-            raise ValidationError("logic segment identity store is corrupt") from error
-        counts = {
-            "segments": count,
-            "system_paths": int(aggregate[0]),
-            "member_paths": int(aggregate[1]),
-            "unsupported_member_paths": unsupported_count,
-        }
-        if counts != self.selector["counts"]:
-            raise ValidationError("logic segment identity counts disagree")
-        logical = hashlib.sha256(_canonical({
-            "header": self.selector["header"], "counts": counts,
-            "source": self.selector["source"],
-            "segment_sha256": segment_digest.hexdigest(),
-            "unsupported_sha256": unsupported_digest.hexdigest(),
-        }).encode()).hexdigest()
-        if logical != self.selector["logical_sha256"]:
-            raise ValidationError("logic segment identity logical seal disagrees")
+        from .physical_evidence_native import validate_physical_evidence
+        validate_physical_evidence(self.store_path,self.selector,self._source_bindings,
+                                   "logic-segment-identity-store-v1")
 
     def __getitem__(self, key: str) -> Any:
         self._ensure_open()
