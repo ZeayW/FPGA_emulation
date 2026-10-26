@@ -80,6 +80,7 @@ def test_policy_and_optimized_away_cost_coverage_are_explicit():
         ({**eliminated, "sampling_cost_ns": 0.}, SAMPLING_COST_POLICY),
         ({"sampling_cost_ns": True}, SAMPLING_COST_POLICY),
         ({"sampling_cost_ns": float("nan")}, SAMPLING_COST_POLICY),
+        ({"sampling_cost_ns": 10 ** 1000}, SAMPLING_COST_POLICY),
     ]:
         with pytest.raises(ValidationError):
             validate_sampling_cost(row, policy)

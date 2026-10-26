@@ -482,6 +482,8 @@ def _validate_segment(raw: Mapping[str, Any], header: Mapping[str, Any]) -> dict
     record = dict(raw)
     eliminated = validate_optimization_record(record)
     validate_sampling_cost(record, header.get("sampling_cost_policy"))
+    if "sampling_cost_ns" in record:
+        record["sampling_cost_ns"] = float(record["sampling_cost_ns"])
     strings = ("id", "system_path", "member_path", "fpga", "start_pin", "end_pin")
     delay = record.get("delay_ns")
     cut_index = record.get("cut_index")

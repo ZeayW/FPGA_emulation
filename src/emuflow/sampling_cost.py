@@ -22,7 +22,12 @@ def validate_sampling_cost(record, policy):
         raise ValidationError("physical sampling cost coverage/policy disagrees")
     if present:
         cost = record["sampling_cost_ns"]
-        if isinstance(cost, bool) or not isinstance(cost, (int, float)) or not math.isfinite(cost):
+        try:
+            valid = (not isinstance(cost, bool) and isinstance(cost, (int, float))
+                     and math.isfinite(float(cost)))
+        except OverflowError:
+            valid = False
+        if not valid:
             raise ValidationError("physical sampling cost must be finite")
 
 
