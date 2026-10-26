@@ -938,6 +938,7 @@ def import_yosys_json_indexed(
     _expand_hierarchy: bool = False,
     source_bindings=(),
     _finalize_emuir: Optional[Callable[[sqlite3.Connection], None]] = None,
+    _validate_emuir: Optional[Callable[[sqlite3.Connection], None]] = None,
     staging_transform: Optional[
         Callable[
             [sqlite3.Connection, Mapping[str, Any], Path, str],
@@ -1410,7 +1411,33 @@ def import_yosys_json_indexed(
                         bit_index,
                     )
 
-        if mapped_index_schema == "emuflow.xilinx-mapped-index/v2":
+        if mapped_index_schema == "emuflow.xilinx-mapped-index/v2" and staging_transform is not None:
+            # The transform owns the new connectivity. Reading the original
+            # typed pins here would silently discard inserted timing arcs.
+            # JSON1 expands its bounded cell records in SQLite, without a
+            # graph-sized Python endpoint inventory or per-pin callback.
+            flush_endpoints()
+            connection.execute(
+                """
+                INSERT INTO staging_endpoints
+                SELECT b.value, r.role,
+                       ? + row_number() OVER (
+                           ORDER BY i.id,p.key,CAST(b.key AS INTEGER),r.role
+                       ) - 1,
+                       i.id,p.key,CAST(b.key AS INTEGER)
+                  FROM staging_instances AS i,
+                       json_each(i.record_json,'$.connections') AS p,
+                       json_each(p.value) AS b,
+                       json_each(i.record_json,'$.port_directions') AS d,
+                       (SELECT 0 AS role UNION ALL SELECT 1) AS r
+                 WHERE b.type='integer' AND d.key=p.key AND (
+                       (r.role=0 AND d.value IN ('output','inout')) OR
+                       (r.role=1 AND d.value IN ('input','inout'))
+                 )
+                """,
+                (endpoint_sequence,),
+            )
+        elif mapped_index_schema == "emuflow.xilinx-mapped-index/v2":
             directions = {0: "input", 1: "output", 2: "inout"}
             for pin in connection.execute(
                 """
@@ -1560,7 +1587,7 @@ def import_yosys_json_indexed(
                  WHERE value_kind=1
                  ORDER BY cell_id,port,port_bit
                 """
-            )) if mapped_index_schema == "emuflow.xilinx-mapped-index/v2" else iter(())
+            )) if mapped_index_schema == "emuflow.xilinx-mapped-index/v2" and staging_transform is None else iter(())
             current_constant = next(constant_rows, None)
             for staged_cell in connection.execute(
                 "SELECT id, type, record_json FROM staging_instances ORDER BY id"
@@ -1572,7 +1599,7 @@ def import_yosys_json_indexed(
                 parameters = raw_cell.get("parameters", {})
                 attributes = raw_cell.get("attributes", {})
                 constants = []
-                if mapped_index_schema == "emuflow.xilinx-mapped-index/v2":
+                if mapped_index_schema == "emuflow.xilinx-mapped-index/v2" and staging_transform is None:
                     if (
                         current_constant is not None
                         and str(current_constant["cell_id"]) < str(cell_name)
@@ -1682,7 +1709,8 @@ def import_yosys_json_indexed(
             "warnings": sorted(set(warnings)),
         }
         write_emuir_sqlite(
-            output, value, source_bindings=source_bindings, _finalize=_finalize_emuir
+            output, value, source_bindings=source_bindings, _finalize=_finalize_emuir,
+            _validate=_validate_emuir,
         )
     finally:
         if connection is not None:

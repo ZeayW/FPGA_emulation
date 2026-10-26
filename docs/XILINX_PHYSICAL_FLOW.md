@@ -528,3 +528,16 @@ and canonical source reference instead of copying the source population into
 every physical report. Route qualification and indexed OpenSTA delay staging
 retain Python data-plane work; these producers do not complete native migration
 or real-design qualification.
+
+Indexed routed OpenSTA staging derives connectivity from the transformed cell
+records, including every inserted route-delay cell, rather than rereading the
+unchanged mapped pin source. SQLite expands those records with deterministic
+cell/port/bit/role ordering, including inout pins; transformed constants are
+likewise authoritative. Before publication, an independent indexed check requires
+one delay cell per sealed logical endpoint and exactly one A input and Y output
+on distinct nets for each delay cell. It runs after the private writer builds its
+normal reverse-adjacency index, without building a second index or publishing a
+partially checked graph. Delay models are emitted in one traversal of the type
+table; their pin declarations do not duplicate the endpoint-sized inventory.
+This preserves the existing setup-only provider limits and does not establish
+hold, clock-skew, physical or whole-design timing qualification.

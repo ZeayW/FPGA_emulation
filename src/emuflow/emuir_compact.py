@@ -94,7 +94,8 @@ class _Intern:
 
 
 def write_compact_emuir(
-    path: Path, value: Mapping[str, Any], *, source_bindings=(), _finalize=None
+    path: Path, value: Mapping[str, Any], *, source_bindings=(), _finalize=None,
+    _validate=None,
 ) -> None:
     source_bindings = validate_store_destination(path, source_bindings)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -178,6 +179,8 @@ def write_compact_emuir(
         # Build the required reverse adjacency once from compact integer rows,
         # rather than randomly updating its B-tree on every pin insertion.
         c.execute("CREATE INDEX endpoint_owner ON endpoint_records(instance_seq,port_seq,bit)")
+        if _validate is not None:
+            _validate(c)
         c.commit()
         c.close()
         publish_sqlite_store(

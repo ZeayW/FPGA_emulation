@@ -1,5 +1,7 @@
 import hashlib
 import json
+import os
+import sqlite3
 import tempfile
 from pathlib import Path
 
@@ -364,6 +366,112 @@ def test_routed_opensta_stages_directly_from_mapped_sqlite(tmp_path):
         item["type"] == "EMUFLOW_RW_ROUTE_DELAY_000000"
         for item in routed.value["instances"]
     )
+    original = next(net for net in routed.value["nets"] if net["id"] == "n")
+    delayed = next(net for net in routed.value["nets"] if net["id"] == "__emuflow_rw_delay_net__00000000")
+    assert original["sinks"] == [{"instance": "__emuflow_rw_delay__00000000", "port": "A", "bit": 0}]
+    assert delayed["drivers"] == [{"instance": "__emuflow_rw_delay__00000000", "port": "Y", "bit": 0}]
+    assert delayed["sinks"] == [{"instance": "ff", "port": "D", "bit": 0}]
+    assert delayed["aliases"] == []
+    assert "yosys_bit" not in delayed
+
+
+def test_typed_routed_connectivity_matches_independent_graph_oracle(tmp_path):
+    from emuflow.xilinx_netlist import IndexedXilinxMappedNetlist
+    mapped, timing = _indexed_routed_fixture(tmp_path)
+    routed = tmp_path / "routed.emuir.sqlite"
+    model, _metadata = build_xilinx_routed_opensta_indexed_inputs(mapped, timing, routed, clocks={"clk": 10.0})
+    source = tmp_path / "reference-mapped.json"
+    with IndexedXilinxMappedNetlist(mapped) as view:
+        module = {**view.module, "cells": dict(view.cells.items()), "netnames": dict(view.netnames.items())}
+        source.write_text(json.dumps({"creator": view.creator, "modules": {view.top: module}}))
+    value = json.loads(timing.read_text())
+    value["source"]["mapped_sha256"] = _sha(source)
+    reference_timing = tmp_path / "reference-timing.json"
+    reference_timing.write_text(json.dumps(value))
+    reference, expected_model, _ = build_xilinx_routed_opensta_inputs(source, reference_timing)
+    actual = EmuIR.load(routed)
+    for field in ("instances", "nets", "ports", "clocks"):
+        lhs, rhs = actual.to_dict()[field], reference.to_dict()[field]
+        if field == "nets":
+            for net in (*lhs, *rhs):
+                net.pop("cut_class", None)  # independent importer recomputes this annotation
+        assert sorted(lhs, key=lambda x: x["id"]) == sorted(rhs, key=lambda x: x["id"])
+    assert model == expected_model
+
+
+@pytest.mark.parametrize("damage", ["input", "output", "short", "cell"])
+def test_routed_finalizer_rejects_disconnected_or_shorted_delay_cell(tmp_path, monkeypatch, damage):
+    mapped, timing = _indexed_routed_fixture(tmp_path)
+    output = tmp_path / "routed.emuir.sqlite"
+    build_xilinx_routed_opensta_indexed_inputs(mapped, timing, output, clocks={"clk": 10.0})
+    previous = output.read_bytes()
+    importer = xilinx_opensta.import_yosys_json_indexed
+    def corrupt_before_validation(*args, **kwargs):
+        validate = kwargs["_validate_emuir"]
+        def inspect(connection):
+            delay = connection.execute("SELECT seq FROM cell_records WHERE type LIKE 'EMUFLOW_RW_ROUTE_DELAY_%'").fetchone()[0]
+            if damage == "short":
+                row = connection.execute("SELECT net_seq FROM endpoint_records WHERE instance_seq=? AND role=1", (delay,)).fetchone()
+                ordinal = connection.execute("SELECT coalesce(max(ordinal),-1)+1 FROM endpoint_records WHERE net_seq=? AND role=0", (row[0],)).fetchone()[0]
+                connection.execute("UPDATE endpoint_records SET net_seq=?,ordinal=? WHERE instance_seq=? AND role=0", (row[0], ordinal, delay))
+            elif damage == "cell":
+                connection.execute("DELETE FROM endpoint_records WHERE instance_seq=?", (delay,))
+                connection.execute("DELETE FROM cell_records WHERE seq=?", (delay,))
+            else:
+                connection.execute("DELETE FROM endpoint_records WHERE instance_seq=? AND role=?", (delay, 1 if damage == "input" else 0))
+            validate(connection)
+        kwargs["_validate_emuir"] = inspect
+        return importer(*args, **kwargs)
+    monkeypatch.setattr(xilinx_opensta, "import_yosys_json_indexed", corrupt_before_validation)
+    with pytest.raises(ValidationError, match="not connected on A/Y|coverage disagrees"):
+        build_xilinx_routed_opensta_indexed_inputs(mapped, timing, output, clocks={"clk": 10.0})
+    assert output.read_bytes() == previous
+
+
+@pytest.mark.skipif(not os.environ.get("EMUFLOW_TEST_OPENSTA"), reason="real OpenSTA not configured")
+def test_real_opensta_accounts_for_each_inserted_route_delay(tmp_path):
+    mapped, timing = _indexed_routed_fixture(tmp_path)
+    original = json.loads(timing.read_text())
+    records = original.pop("endpoints")
+    payload = tmp_path / "routed-endpoints.jsonl"
+    original["schema"] = "emuflow.xilinx-routed-timing/v2"
+    original["payloads"] = {"endpoints": {"format": "jsonl-object/v1", "path": payload.name, "records": len(records)}}
+    results = []
+    for index, delay in enumerate((0.0, 0.123)):
+        records[0]["route_delay_ns"] = delay
+        payload.write_bytes(b"".join(json.dumps(row).encode()+b"\n" for row in records))
+        original["payloads"]["endpoints"]["sha256"] = _sha(payload)
+        original["summary"]["maximum_route_delay_ns"] = delay
+        timing.write_text(json.dumps(original))
+        summary = tmp_path / f"summary-{index}.json"
+        run_xilinx_routed_opensta(mapped, timing, tmp_path / f"paths-{index}.json", summary,
+                                 clocks={"clk": 0.1}, executable=os.environ["EMUFLOW_TEST_OPENSTA"])
+        results.append(json.loads(summary.read_text())["qor"])
+    assert results[1]["wns_ns"] == pytest.approx(results[0]["wns_ns"] - 0.123, abs=1e-3)
+
+
+def test_typed_staging_transform_owns_pin_roles_bits_and_constants(tmp_path):
+    from emuflow.yosys import import_yosys_json_indexed
+    mapped, _timing = _indexed_routed_fixture(tmp_path)
+    output = tmp_path / "transformed.emuir.sqlite"
+    def transform(connection, *_):
+        row = connection.execute("SELECT record_json FROM staging_instances WHERE id='ff'").fetchone()
+        cell = json.loads(row[0])
+        cell["connections"]["CE"] = ["0"]
+        cell["connections"]["R"] = ["1"]
+        cell["connections"]["D"] = [6, 7]
+        cell["connections"]['quoted.pin"/x'] = [3, "1"]
+        cell["port_directions"]['quoted.pin"/x'] = "inout"
+        connection.execute("UPDATE staging_instances SET record_json=? WHERE id='ff'", (json.dumps(cell),))
+        return {"fixture": True}
+    import_yosys_json_indexed(mapped, output, top="top", clocks=["clk"], _source_index_path=mapped, staging_transform=transform)
+    ir = EmuIR.load(output)
+    ff = next(cell for cell in ir.value["instances"] if cell["id"] == "ff")
+    assert ff["constant_connections"] == [{"port": "CE", "bit": 0, "value": "0"}, {"port": "R", "bit": 0, "value": "1"}, {"port": 'quoted.pin"/x', "bit": 1, "value": "1"}]
+    with sqlite3.connect(output) as db:
+        seen = db.execute("SELECT role,port,bit FROM endpoints WHERE instance_id='ff' AND port=? ORDER BY role", ('quoted.pin"/x',)).fetchall()
+    assert seen == [(0, 'quoted.pin"/x', 0), (1, 'quoted.pin"/x', 0)]
+    assert any(endpoint["port"] == "D" and endpoint["bit"] == 1 for net in ir.value["nets"] for endpoint in net["sinks"])
 
 
 def test_dsp_timing_cell_unions_ports_across_cascade_instances():

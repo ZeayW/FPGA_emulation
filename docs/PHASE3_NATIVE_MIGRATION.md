@@ -704,6 +704,13 @@ bounded summaries; diagnostic copies of the undriven population are retired.
 Independent route qualification and indexed OpenSTA staging, including its
 endpoint-delay and pin inventories, still have Python data-plane work. These
 boundaries do not complete W6/W7 or qualify physical timing.
+Indexed OpenSTA transformation must retain inserted delay arcs in the final
+connectivity: the immutable source pin table cannot replace transformed records.
+The compact writer checks delay-cell coverage and A/Y connectivity after building
+its required owner index and before publication. Delay-type model construction
+uses one traversal rather than a repeated reverse search. The endpoint and
+delay-type maps still require migration into the shared core; this correctness
+contract must survive that migration.
 See [global timing semantics](global-opensta-qualification.md).
 
 ## Validation and completion

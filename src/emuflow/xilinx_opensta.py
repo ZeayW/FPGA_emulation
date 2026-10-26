@@ -582,8 +582,6 @@ def build_xilinx_routed_opensta_indexed_inputs(
                             f"__emuflow_rw_delay_net__{index:08d}", 0, 1,
                         ),
                     )
-                    pins[timing_type]["inputs"].add(("A", 0))
-                    pins[timing_type]["outputs"].add(("Y", 0))
                     inserted += 1
             connection.execute(
                 "UPDATE staging_instances SET type=?,record_json=? WHERE id=?",
@@ -615,6 +613,32 @@ def build_xilinx_routed_opensta_indexed_inputs(
         }
         transform_state.update(result)
         return result
+
+    def validate_routed_emuir(connection):
+        # Independently inspect the emitted graph, not the transform's counters.
+        # A timing-only delay cell must lie on a real A -> Y connection.
+        count = connection.execute(
+            "SELECT count(*) FROM cell_records WHERE substr(type,1,23)='EMUFLOW_RW_ROUTE_DELAY_'"
+        ).fetchone()[0]
+        if count != timing["summary"]["logical_endpoints"]:
+            raise ValidationError("routed delay cell coverage disagrees with the timing owner")
+        broken = connection.execute(
+            """
+            SELECT c.id
+              FROM cell_records c
+              LEFT JOIN endpoint_records e INDEXED BY endpoint_owner ON e.instance_seq=c.seq
+              LEFT JOIN pin_names p ON p.seq=e.port_seq
+             WHERE substr(c.type,1,23)='EMUFLOW_RW_ROUTE_DELAY_'
+             GROUP BY c.seq
+            HAVING count(e.net_seq)!=2
+                OR sum(e.role=1 AND p.name='A' AND e.bit=0)!=1
+                OR sum(e.role=0 AND p.name='Y' AND e.bit=0)!=1
+                OR count(DISTINCT e.net_seq)!=2
+             LIMIT 1
+            """
+        ).fetchone()
+        if broken is not None:
+            raise ValidationError(f"routed delay cell {broken[0]!r} is not connected on A/Y")
 
     def finalize_routed_emuir(connection):
         # Preserve timing-only accounting in the private compact generation.
@@ -668,6 +692,7 @@ def build_xilinx_routed_opensta_indexed_inputs(
         staging_transform=stage_route_delays,
         source_bindings=source_bindings,
         _finalize_emuir=finalize_routed_emuir,
+        _validate_emuir=validate_routed_emuir,
     )
     if transform_report is None or transform_report != transform_state:
         raise ValidationError("indexed RapidWright route-delay staging failed")
@@ -749,19 +774,15 @@ def build_xilinx_routed_opensta_indexed_inputs(
                 "outputs": outputs, "delay_ns": 5.0,
             }
             hard_blocks.append(cell_type)
-        elif cell_type.startswith("EMUFLOW_RW_ROUTE_DELAY_"):
-            delay = next(
-                value for value, name in delay_types.items()
-                if name == cell_type
-            )
-            model["cells"][cell_type] = {
-                "kind": "combinational", "inputs": ["A"],
-                "output": "Y", "delay_ns": delay,
-            }
         else:
             raise ValidationError(
                 f"RapidWright OpenSTA model does not cover {cell_type!r}"
             )
+    for delay, cell_type in delay_types.items():
+        model["cells"][cell_type] = {
+            "kind": "combinational", "inputs": ["A"],
+            "output": "Y", "delay_ns": delay,
+        }
     model.update({
         "name": "rapidwright-ultrascaleplus-routed-v1",
         "family": "xcup",
