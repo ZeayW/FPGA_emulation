@@ -94,8 +94,11 @@ coordinates and stores their clock/phase tags once. A native original-path
 reader preserves edge windows using complete raw engine clock periods. Full
 word-mode global timing binding remains under integration.
 The native physical word join binds measured complete fanins, original clock
-facts and relay shadows to the indexed calendar; checked elimination handling
-and all original capture checks remain required before global acceptance.
+facts and relay shadows to the indexed calendar. Its original-member capture
+join preserves measured versus proven optimized-away dispositions and consumes
+checked native proof identities. Required word-fanin elimination handling,
+engine execution and complete coverage remain integration gates before global
+acceptance.
 Native bank wrappers bind training, complete words and receive FIFO clocks;
 an explicit vendor-model loopback tool examines word integrity and latency.
 See the [clock baseline](docs/XILINX_PHYSICAL_FLOW.md#local-implementation-clock-baseline).

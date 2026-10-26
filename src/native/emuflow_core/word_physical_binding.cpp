@@ -96,7 +96,8 @@ BoundPhysicalWordModel BindPhysicalWordModel(const ArtifactRef& assignment,const
         !context.implementation_clock_periods_ns.empty(),"word physical clock or PHY context is invalid");
   for(const auto& item:context.implementation_clock_periods_ns)
     Check(!item.first.empty() && std::isfinite(item.second) && item.second>0,"word physical DUT clock is invalid");
-  ExactSemanticView exact(assignment,semantic);
+  auto shared_semantics=std::make_shared<ExactSemanticView>(assignment,semantic);
+  auto& exact=*shared_semantics;
   Check(exact.semantic_sha256()==context.source.semantic_sha256,"word physical semantic identity differs");
   launches.RequireSourceIdentity(context.source);
   SqliteStore calendar(schedule);auto& db=calendar.database();Attach(db,assignment,"assignment");
@@ -113,7 +114,7 @@ BoundPhysicalWordModel BindPhysicalWordModel(const ArtifactRef& assignment,const
   auto rows=db.Prepare("SELECT e.seq,c.cut_index,e.source_fpga,e.sink_fpga,r.source_fpga,e.slot,e.arrival_slot,"
       "e.tdm_ratio,e.net,r.net,c.source_part_index,e.hop FROM schedule_entries e "
       "LEFT JOIN schedule_routes r ON r.demand=e.demand LEFT JOIN assignment.cuts c ON c.net_id=e.net ORDER BY e.seq");
-  BoundPhysicalWordModel result;
+  BoundPhysicalWordModel result;result.context=context;result.semantics=std::move(shared_semantics);
   result.inputs={assignment,semantic,schedule,launches.artifact(),launches.original_artifact()};
   result.model.period_ns=context.word_period_ns;result.model.epoch_ns=context.epoch_ns;
   result.model.frame_slots=context.frame_slots;

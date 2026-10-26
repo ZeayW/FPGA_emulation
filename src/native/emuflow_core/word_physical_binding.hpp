@@ -32,6 +32,8 @@ struct WordFaninOrigin {
 };
 struct BoundPhysicalWordModel {
   PhysicalWordModel model;
+  WordPhysicalBindingContext context;
+  std::shared_ptr<ExactSemanticView> semantics;
   std::vector<SourceLaunchFact> roots;
   std::vector<WordTransferOrigin> transfers;
   // Same transfer/fanin order used by the independent engine-slack validator.

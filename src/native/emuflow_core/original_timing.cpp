@@ -67,7 +67,7 @@ ScaledOriginalWindow ScaleOriginalWindow(const OriginalClockBudget& budget,const
         "original timing scaled edge window is unrepresentable");return {launch,window,coefficient};
 }
 OriginalTimingView::OriginalTimingView(const ArtifactRef& selector,const ArtifactRef& payload,const std::string& seal)
-    :selector_(selector),paths_(payload) {
+    :selector_(selector),paths_(payload),selector_sha256_(seal) {
   Check(selector.schema()=="sta-path-selector-v1" && payload.schema()=="timing-path-store-v2",
         "original timing requires current clock-budget path owners");Digest(seal);
   Check(selector.generation().bytes>0 && selector.generation().bytes<=1024*1024,"original timing selector exceeds its bound");

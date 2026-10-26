@@ -416,8 +416,33 @@ boundaries. No epsilon snap substitutes for the canonical engine denominator.
 original capture deadline by `E-D`, where `E` is the routed sampling cost.
 The reference model's setup/check margin remains an original fact and is not
 charged a second time. Signed physical clock adjustments remain signed.
-These are native binding APIs; they do not yet supply checked optimization
-elimination, complete physical capture coverage or a global frequency result.
+These are native binding APIs; they do not release global timing or an
+operating-frequency result on their own.
+
+`VisitOriginalPhysicalCaptures` joins every original member to exactly one
+implemented local/capture row or a checked optimized-away disposition. It reuses
+the word binding's semantic view, verifies the original connected endpoint and
+clock identities, and starts a crossing capture at its last canonical RX shadow
+event. The fixed PHY arc already includes RX-to-shadow timing; that timing is
+not added again. A private indexed capture lookup is built once per partition,
+without rescanning all physical segments for each member. Missing, duplicated,
+extra, unsupported or unmeasured members fail. Local explicit-chain and
+endpoint-longest-path measurements retain their producer classifications;
+crossing capture measurements likewise preserve exact versus upper-bound labels.
+
+The native `NativeOptimizationProofView` consumes the physical assembler's
+already checked proof, mapped-index and routed-lineage generation leases.
+`checked_native_optimization_context` requires that live checked reader and
+those existing leases; an arbitrary status document or a fresh snapshot cannot
+renew an earlier validation. Native point queries bind each requested source
+to the endpoint cell, mapped source coordinate and routed inventory. Checked
+unobservable closure and checked constant state remain different facts. Only
+the latter carries a constant value. Vendor-selected constants also require
+the bounded, source-bound confirmation document and synthesized snapshot.
+Conditional candidates and still-retained sources are rejected. Eliminated
+original members retain coverage and proof identity with no numerical data or
+sampling cost. This capture join does not authorize deleting required word
+fanins or treating an unobservable signal as a stable constant.
 
 `BindPhysicalWordModel` is the native indexed join for measured fanins. It
 consumes the paired assignment/semantic owner, current ScheduleStore, launch

@@ -98,6 +98,22 @@ def exact_semantic_view_test() -> Path:
 
 
 @lru_cache(maxsize=1)
+def native_original_physical_captures_test() -> Path:
+    return _build_native_stage_program(
+        ROOT / "tests/native_original_physical_captures_test.cpp",
+        Path(_BUILD_ROOT.name) / "native-original-physical-captures-test",
+    )
+
+
+@lru_cache(maxsize=1)
+def native_optimization_proofs_test() -> Path:
+    return _build_native_stage_program(
+        ROOT / "tests/native_optimization_proofs_test.cpp",
+        Path(_BUILD_ROOT.name) / "native-optimization-proofs-test",
+    )
+
+
+@lru_cache(maxsize=1)
 def original_timing_test() -> Path:
     return _build_native_stage_program(
         ROOT / "tests/native_original_timing_test.cpp",

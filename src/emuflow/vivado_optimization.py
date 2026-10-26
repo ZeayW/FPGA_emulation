@@ -18,8 +18,10 @@ from typing import Any, Mapping
 from .errors import ValidationError
 from .store_publication import (
     bind_store_source,
+    StoreSource,
     publish_sqlite_store,
     validate_store_destination,
+    require_store_sources_unchanged,
 )
 from .xilinx_netlist import open_xilinx_mapped_index
 
@@ -300,6 +302,7 @@ class OptimizationProofView(Mapping[str, Any]):
                  expected_sha256: str | None = None, stage: str = "routed"):
         if not isinstance(expected_fpga,str) or not expected_fpga:
             raise ValidationError("Vivado optimization proof needs an explicit FPGA identity")
+        self._source_binding = bind_store_source(path,"vivado-optimization-proofs-v1")
         if expected_sha256 is not None:
             from .io import file_sha256
             if file_sha256(path) != expected_sha256:
@@ -403,12 +406,18 @@ class OptimizationProofView(Mapping[str, Any]):
                 digest.update((json.dumps(row,separators=(",",":"))+"\n").encode())
             if digest.hexdigest() != self.header.get("source_names_sha256"):
                 raise ValidationError("Vivado optimization proof source-name seal disagrees")
+            self.require_unchanged()
         except (sqlite3.DatabaseError, ValueError, TypeError, KeyError, OverflowError) as error:
             self.close()
             raise ValidationError("Vivado optimization proof document is malformed") from error
         except BaseException:
             self.close()
             raise
+
+    def require_unchanged(self):
+        if self._closed:
+            raise ValidationError("Vivado optimization proof reader is closed")
+        require_store_sources_unchanged((self._source_binding,))
 
     def require_eliminated_source(self, identity: str) -> dict[str, Any]:
         if self._closed:
@@ -444,3 +453,30 @@ class OptimizationProofView(Mapping[str, Any]):
 
     def __exit__(self, *_args):
         self.close()
+
+
+def checked_native_optimization_context(proof, mapped_binding, lineage_binding, *, fpga,
+        mapped_sha256, synthesized_checkpoint_sha256=""):
+    """Pass an already checked physical owner to the native data plane.
+
+    The proof reader performs the canonical publication/row checks once. Its
+    retained generation, rather than a new snapshot, binds that validation.
+    The supplied mapped/lineage leases come from the same physical assembler;
+    native point queries check endpoint, mapped and routed inventory identity.
+    This is not an importer for an arbitrary saved status document.
+    """
+    if not isinstance(proof,OptimizationProofView):
+        raise ValidationError("native optimization context requires the checked proof reader")
+    proof.require_unchanged()
+    if not isinstance(mapped_binding,StoreSource)or not isinstance(lineage_binding,StoreSource):
+        raise ValidationError("native optimization context requires physical generation leases")
+    if (mapped_binding.schema!="xilinx-mapped-index-v2" or lineage_binding.schema!="vivado-lineage-store-v2"
+            or proof['fpga']!=fpga or proof['stage']!='routed' or proof['mapped_index_sha256']!=mapped_sha256):
+        raise ValidationError("native optimization context belongs to another physical input")
+    if 'vendor_confirmation_document_sha256'in proof:
+        if proof['synthesized_checkpoint_sha256']!=synthesized_checkpoint_sha256:
+            raise ValidationError("native optimization context requires the checked synthesized checkpoint")
+    bindings=(proof._source_binding,mapped_binding,lineage_binding)
+    require_store_sources_unchanged(bindings)
+    return dict(fpga=fpga,mapped_sha256=mapped_sha256,synthesized_checkpoint_sha256=synthesized_checkpoint_sha256,
+        inputs=[dict(path=str(binding.path),generation=list(binding.generation))for binding in bindings])

@@ -41,6 +41,7 @@ class OriginalTimingView {
   OriginalTimingView(const ArtifactRef& selector,const ArtifactRef& payload,
                      const std::string& selector_sha256);
   std::uint64_t count() const { return count_; }
+  const std::string& selector_sha256() const { return selector_sha256_; }
   const ArtifactRef& artifact() const { return paths_.artifact(); }
   void Visit(const std::function<void(const OriginalTimingPath&)>& visitor);
   void RequireUnchanged() const;
@@ -49,6 +50,7 @@ class OriginalTimingView {
   ArtifactRef selector_;
   SqliteStore paths_;
   std::uint64_t count_=0;
+  std::string selector_sha256_;
 };
 struct OriginalCaptureCheck {
   // The final event may be an original launch or a routed RX shadow event.
