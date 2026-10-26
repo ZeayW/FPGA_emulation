@@ -1,5 +1,8 @@
 """Complete exact-file transaction; independent fixture oracle stays in tests."""
 from pathlib import Path
+import hashlib
+import json
+import struct
 from unittest.mock import patch
 
 import pytest
@@ -50,3 +53,18 @@ def test_ordinary_reference_file_validator_has_no_host_graph_path(tmp_path,monke
           patch('emuflow.phase3_exact_binary._read_nets',side_effect=AssertionError('host names')),
           patch('emuflow.phase3_exact_binary.iter_phase3_exact_node_sources',side_effect=AssertionError('host sources'))):
         assert validate_phase3_exact_binary(path,descriptor)==expected
+
+
+@pytest.mark.parametrize('field',['schema','parts','sections','counts'])
+def test_resealed_nul_metadata_key_cannot_alias_a_required_member(tmp_path,monkeypatch,field):
+    from tests.native_build import emuflow_native
+    monkeypatch.setenv('EMUFLOW_NATIVE_ROOT',str(emuflow_native().parent.parent))
+    path=tmp_path/'original.bin';descriptor=write_phase3_exact_binary(path,_contract(),['fpga0','fpga1'])
+    assert validate_phase3_exact_binary(path,descriptor)['status']=='pass'
+    data=path.read_bytes();magic,version,offset,length=struct.unpack_from('<8sIQQ',data)
+    manifest=json.loads(data[offset:offset+length]);manifest[field+'\0other']=manifest.pop(field)
+    encoded=json.dumps(manifest,sort_keys=True,separators=(',',':')).encode()
+    damaged=tmp_path/'aliased.bin';damaged.write_bytes(struct.pack('<8sIQQ',magic,version,offset,len(encoded))+data[28:offset]+encoded)
+    descriptor={**descriptor,'bytes':damaged.stat().st_size,'manifest_sha256':hashlib.sha256(encoded).hexdigest()}
+    with pytest.raises(ValidationError):validate_reference(damaged,descriptor)
+    with pytest.raises(ValidationError,match='Static Exact'):validate_phase3_exact_binary(damaged,descriptor)

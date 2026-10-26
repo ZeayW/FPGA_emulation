@@ -40,8 +40,7 @@ class Json {
     Check(type.Step() && type.Text(0)=="object","record must be an object");
     auto duplicate=db_.Prepare("SELECT 1 FROM json_tree(?1) WHERE key IS NOT NULL AND typeof(key)='text' GROUP BY parent,key HAVING count(*)>1 LIMIT 1");
     duplicate.BindText(1,raw);Check(!duplicate.Step(),"duplicate JSON member");
-    auto rows=db_.Prepare("SELECT key,type,CASE type WHEN 'text' THEN json_quote(value) WHEN 'null' THEN 'null' WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' ELSE CAST(value AS TEXT) END FROM json_each(?1) ORDER BY key");
-    rows.BindText(1,raw);Fields fields;while(rows.Step())fields.emplace(rows.Text(0),(rows.Text(1)=="integer" || rows.Text(1)=="real" || rows.Text(1)=="text")?JsonMemberToken(db_,raw,rows.Text(0)):rows.Text(2));return fields;
+    Fields fields;VisitJsonObjectTokens(raw,[&](const auto& key,const auto& token){Check(fields.emplace(key,token).second,"duplicate JSON member");});return fields;
   }
   void Scalar(const std::string& raw) {
     auto row=db_.Prepare("SELECT json_valid(?1)");row.BindText(1,raw);Check(row.Step() && row.Integer(0),"invalid JSON scalar");

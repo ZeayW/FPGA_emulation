@@ -37,6 +37,8 @@ class Json {
     Check(row.Step() && row.Integer(0)==1 && row.Text(1)=="object","manifest is invalid");
     auto duplicate=db.Prepare("SELECT 1 FROM json_tree(?1) WHERE parent IS NOT NULL GROUP BY parent,key HAVING count(*)>1 LIMIT 1");
     duplicate.BindText(1,this->text);Check(!duplicate.Step(),"manifest repeats a JSON key");
+    auto keys=db.Prepare("SELECT key FROM json_tree(?1) WHERE typeof(key)='text'");keys.BindText(1,this->text);
+    while(keys.Step())Check(keys.TypedText(0).find('\0')==std::string::npos,"manifest member name contains NUL");
   }
   U Integer(const std::string& path) {
     auto row=db.Prepare("SELECT json_type(?1,?2),json_extract(?1,?2),typeof(json_extract(?1,?2))");row.BindText(1,text);row.BindText(2,path);

@@ -62,6 +62,8 @@ StageResult PublishPartition(const std::vector<ArtifactRef>& inputs,const std::s
     SqliteDatabase json(":memory:",SqliteDatabase::Mode::kReadOnly);
     auto valid=json.Prepare("SELECT json_valid(?1),json_type(?1)");valid.BindText(1,header);Check(valid.Step() && valid.Integer(0)==1 && valid.Text(1)=="object","header is invalid");
     auto duplicate=json.Prepare("SELECT 1 FROM json_tree(?1) WHERE parent IS NOT NULL GROUP BY parent,key HAVING count(*)>1 LIMIT 1");duplicate.BindText(1,header);Check(!duplicate.Step(),"header repeats a JSON key");
+    auto keys=json.Prepare("SELECT key FROM json_tree(?1) WHERE typeof(key)='text'");keys.BindText(1,header);
+    while(keys.Step())Check(keys.TypedText(0).find('\0')==std::string::npos,"header member name contains NUL");
     const auto raw=[&](const std::string& name){return JsonMemberToken(json,header,name);};
     const auto metadata=raw("index_metadata");
     const auto member=[&](const std::string& name){return JsonMemberToken(json,metadata,name);};
