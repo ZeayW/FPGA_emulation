@@ -32,6 +32,16 @@ if damage=='wait':
  pathlib.Path(os.environ['EMUFLOW_TEST_SOURCE']).write_text(str(os.getpid()))
  time.sleep(60)
 rows=pathlib.Path(os.environ['EMUFLOW_LAUNCH_REQUESTS']).read_text().splitlines()[1:]
+clocks=pathlib.Path(os.environ['EMUFLOW_STA_CLOCKS']).read_text().splitlines()[1:]
+catalog=[]
+for seq,line in enumerate(clocks):
+ name,period=line.split('\t');catalog.append([str(seq),name,str(float(period)*1.0000000222044612)])
+if damage=='omit-clock':catalog=catalog[:-1]
+if damage=='duplicate-clock':catalog.append(catalog[-1])
+if damage=='wrong-clock-name':catalog[0][1]='6f74686572'
+if damage=='wrong-clock-period':catalog[0][2]='30'
+catalog_path=pathlib.Path(os.environ['EMUFLOW_LAUNCH_CLOCK_CATALOG'])
+if damage!='no-clock-catalog':catalog_path.write_text('clock_seq\tclock_hex\tperiod_ns\n'+''.join('\t'.join(r)+'\n'for r in catalog))
 facts=[]
 for row in rows:
  seq,pin=row.split('\t');name=bytes.fromhex(pin).decode()
@@ -50,7 +60,7 @@ output=pathlib.Path(os.environ['EMUFLOW_LAUNCH_OUTPUT'])
 output.write_text('source_seq\tclock_hex\tperiod_ns\tphase_ns\n'+''.join('\t'.join(r)+'\n'for r in facts))
 if damage=='truncate':output.write_bytes(output.read_bytes()[:-1])
 if damage=='changed-input':os.utime(os.environ['EMUFLOW_TEST_SOURCE'],None)
-marker=f'EMUFLOW_LAUNCH_CLOCK_EXPORT status=pass sources={len(rows)} facts={len(facts)} clocks=1'
+marker=f'EMUFLOW_LAUNCH_CLOCK_EXPORT status=pass sources={len(rows)} facts={len(facts)} clocks={len(clocks)}'
 if damage=='wrong-count':marker=marker.replace('facts='+str(len(facts)),'facts=999')
 if damage!='no-completion':print(marker)
 if damage=='duplicate-completion':print(marker)
@@ -140,8 +150,32 @@ def test_original_coordinates_deduplicate_phases_and_scale_engine_time(prepared)
     assert not list(prepared[2].parent.glob('*.facts.tsv'))
 
 
+def test_catalog_keeps_raw_periods_for_clocks_without_requested_launch_tags(prepared):
+    source,config,output=prepared
+    Path(config['clocks']).write_text('clock_hex\tperiod_ns\n636c6b\t10\n756e75736564\t20\n')
+    config['generations'][config['clocks']]=native_file_generation(Path(config['clocks']))
+    for row in config['inputs']:
+        if row['path']==config['clocks']:row['sha256']=hashlib.sha256(Path(config['clocks']).read_bytes()).hexdigest()
+    result=execute(prepared);assert result.returncode==0,result.stderr
+    result=execute(prepared,'clock-references');assert result.returncode==0,result.stderr
+    assert json.loads(result.stdout)==[['clk',10.,10.000000222044612],['unused',20.,20.000000444089224]]
+    with sqlite3.connect(output)as db:
+        assert db.execute('SELECT count(*) FROM facts WHERE clock_seq=1').fetchone()[0]==0
+
+
+@pytest.mark.parametrize('damage',['missing-raw','text-raw','nonpositive-raw','nonfinite-raw'])
+def test_clock_catalog_never_substitutes_a_displayed_period(prepared,damage):
+    assert execute(prepared).returncode==0
+    with sqlite3.connect(prepared[2])as db:
+        value={'missing-raw':None,'text-raw':'bad','nonpositive-raw':0.,'nonfinite-raw':float('inf')}[damage]
+        db.execute('UPDATE clocks SET engine_period_ns=?',(value,))
+    result=execute(prepared,'clock-references')
+    assert result.returncode!=0 and not result.stdout
+
+
 @pytest.mark.parametrize('damage',['omit-source','duplicate-fact','undeclared-clock','wrong-period','nonfinite','reverse',
-    'extra-source','truncate','changed-input','wrong-count','no-completion','duplicate-completion'])
+    'extra-source','truncate','changed-input','wrong-count','no-completion','duplicate-completion',
+    'omit-clock','duplicate-clock','wrong-clock-name','wrong-clock-period','no-clock-catalog'])
 def test_incomplete_engine_results_never_replace_existing_owner(prepared,damage):
     prepared[2].write_bytes(b'prior-source-clock-owner')
     prepared[1]['environment']={'EMUFLOW_TEST_DAMAGE':damage,'EMUFLOW_TEST_SOURCE':str(prepared[0])}

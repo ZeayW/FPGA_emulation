@@ -98,6 +98,14 @@ def exact_semantic_view_test() -> Path:
 
 
 @lru_cache(maxsize=1)
+def original_timing_test() -> Path:
+    return _build_native_stage_program(
+        ROOT / "tests/native_original_timing_test.cpp",
+        Path(_BUILD_ROOT.name) / "native-original-timing-test",
+    )
+
+
+@lru_cache(maxsize=1)
 def source_launch_clocks_test() -> Path:
     return _build_native_stage_program(
         ROOT / "tests/native_source_launch_clocks_test.cpp",

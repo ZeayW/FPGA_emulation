@@ -767,6 +767,11 @@ slack is allowed; this reference is not a DUT/TDM clock or implementation
 closure target. Original implementation reports precede these query overrides.
 This read-only diagnostic helps distinguish clock/skew/check adjustments from
 raw data delay; it is not a timing-result producer or acceptance certificate.
+The separate `qualify_clock_reference_phase.tcl` diagnostic accepts an optional
+`source` or `target` role after its output path. It varies that endpoint's
+primary clock phase at fixed routing and checks that the common-reference
+data/sampling costs remain invariant; it does not write a new checkpoint.
+
 
 The native word provider selects clock-aware queries for all three timing
 classes in its routed session. Imports require the declared sampling-cost policy,

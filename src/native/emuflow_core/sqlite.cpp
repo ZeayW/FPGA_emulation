@@ -137,6 +137,12 @@ bool SqliteStatement::IsNull(int column) const {
 double SqliteStatement::Real(int column) const {
   return sqlite3_column_double(statement_, column);
 }
+double SqliteStatement::TypedReal(int column) const {
+  const auto type=sqlite3_column_type(statement_,column);
+  if(type!=SQLITE_FLOAT && type!=SQLITE_INTEGER)
+    throw StageError(ErrorCode::kInvalidArtifact,"SQLite numerical fact is not numeric");
+  return Real(column);
+}
 
 std::string SqliteStatement::Blob(int column) const {
   const void* value = sqlite3_column_blob(statement_, column);

@@ -90,8 +90,9 @@ An explicit OpenSTA launch-clock qualifier reads architectural source phases
 without selecting a representative timing path.
 Streamed launch-tag export shares Phase 2's original clock and I/O setup;
 a native producer binds implemented physical starts to original driver
-coordinates and stores their clock/phase tags once. Full word-mode global
-timing binding remains under integration.
+coordinates and stores their clock/phase tags once. A native original-path
+reader preserves edge windows using complete raw engine clock periods. Full
+word-mode global timing binding remains under integration.
 The native physical word join binds measured complete fanins, original clock
 facts and relay shadows to the indexed calendar; checked elimination handling
 and all original capture checks remain required before global acceptance.

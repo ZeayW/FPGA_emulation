@@ -394,6 +394,31 @@ The physical consumer also checks all six original source, path-population,
 route, schedule, semantic and I/O parent seals. Uniform implementation-phase
 scaling does not establish the waveform of an external paused runtime clock.
 
+The same launch invocation exports a complete raw engine-period catalog for
+all declared primary clocks, including roots with no requested launch tags.
+These periods occupy the existing per-clock owner rows; the catalog TSV is
+scratch. Missing or inconsistent periods cannot be replaced by the displayed
+clock period. `SourceLaunchClockView::ClockReferences` exposes this bounded
+catalog to original-path consumers.
+
+`OriginalTimingView` streams every original member and its clock budget from
+the paired, sealed v4 selector and v2 SQLite owner, without reading ordered
+nets or building a Python path graph. It requires indexed INIT-based clock
+sense, unique original identities, dense path coordinates, supported check
+classes and exact budget coverage. Its identities remain owned by that input
+generation. `ScaleOriginalWindow` divides the engine edge window by the raw
+capture-clock period before applying the explicit implementation target; it
+also requires consistent raw source periods and uniform root scaling. Using
+the rounded displayed period would perturb exact full/half-cycle word
+boundaries. No epsilon snap substitutes for the canonical engine denominator.
+
+`BindOriginalCaptureCheck` keeps the routed data arc `D` and shifts the
+original capture deadline by `E-D`, where `E` is the routed sampling cost.
+The reference model's setup/check margin remains an original fact and is not
+charged a second time. Signed physical clock adjustments remain signed.
+These are native binding APIs; they do not yet supply checked optimization
+elimination, complete physical capture coverage or a global frequency result.
+
 `BindPhysicalWordModel` is the native indexed join for measured fanins. It
 consumes the paired assignment/semantic owner, current ScheduleStore, launch
 owner and each partition's already validated logic-cost, boundary-identity and

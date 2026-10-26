@@ -4,6 +4,17 @@ source [file join [file dirname [info script]] design_context.tcl]
 source [file join [file dirname [info script]] launch_clock_edges.tcl]
 if {[catch {
   set allowed_clocks [emuflow_read_design_context]
+  set catalog [open [emuflow_required_env EMUFLOW_LAUNCH_CLOCK_CATALOG] w]
+  puts $catalog "clock_seq\tclock_hex\tperiod_ns"
+  set clock_seq 0
+  foreach name $allowed_clocks {
+    set clock [get_clocks -quiet [list $name]]
+    if {[llength $clock]!=1} {error "declared launch clock is absent or ambiguous"}
+    set period [sta::time_sta_ui [$clock period]]
+    puts $catalog "$clock_seq\t[emuflow_hex_encode $name]\t$period"
+    incr clock_seq
+  }
+  close $catalog
   set input [open [emuflow_required_env EMUFLOW_LAUNCH_REQUESTS] r]
   if {[gets $input header] < 0 || $header ne "source_seq\tpin_hex"} {
     error "invalid launch request header"

@@ -171,8 +171,9 @@ ArtifactRef BuildSourceLaunchClocks(const ArtifactRef& source,
       "phase_ns REAL NOT NULL,PRIMARY KEY(source_seq,clock_seq,phase_ns)) WITHOUT ROWID;"
       "CREATE TEMP TABLE requests(kind TEXT NOT NULL,pin TEXT NOT NULL,PRIMARY KEY(kind,pin)) WITHOUT ROWID;");
   std::uint64_t sources=0,facts=0;std::string line;
-  StagedArtifact scratch(output,{".requests.tsv",".facts.tsv"});
+  StagedArtifact scratch(output,{".requests.tsv",".facts.tsv",".clock-periods.tsv"});
   const auto requests=scratch.path()+".requests.tsv",raw=scratch.path()+".facts.tsv";
+  const auto catalog=scratch.path()+".clock-periods.tsv";
   ToolRequest tool=context.tool;
   Check(tool.argv.size()==4 && std::filesystem::path(tool.argv[0]).is_absolute() &&
         std::filesystem::path(tool.argv[3]).is_absolute() && tool.argv[1]=="-no_init" && tool.argv[2]=="-exit" &&
@@ -198,6 +199,7 @@ ArtifactRef BuildSourceLaunchClocks(const ArtifactRef& source,
     found->second=std::filesystem::weakly_canonical(found->second).string();
   }
   environment["EMUFLOW_STA_TOP"]=top;environment["EMUFLOW_LAUNCH_REQUESTS"]=requests;environment["EMUFLOW_LAUNCH_OUTPUT"]=raw;
+  environment["EMUFLOW_LAUNCH_CLOCK_CATALOG"]=catalog;
   tool.environment.assign(environment.begin(),environment.end());
   {
     SqliteTransaction transaction(db);
@@ -256,9 +258,25 @@ ArtifactRef BuildSourceLaunchClocks(const ArtifactRef& source,
         result.diagnostic_tail.substr(result.diagnostic_tail.size()>4096?result.diagnostic_tail.size()-4096:0));
   {
     SqliteTransaction transaction(db);std::ifstream input(raw);
+    std::ifstream clock_input(catalog);std::string catalog_line;
+    Check(Line(clock_input,catalog_line) && catalog_line=="clock_seq\tclock_hex\tperiod_ns",
+          "source launch engine clock catalog header differs");
+    auto declared=db.Prepare("SELECT name,declared_period_ns FROM clocks WHERE clock_seq=?");
+    auto clock_update=db.Prepare("UPDATE clocks SET engine_period_ns=? WHERE clock_seq=?");
+    std::uint64_t clock_count=0;
+    while(Line(clock_input,catalog_line)) {
+      const auto fields=Fields(catalog_line,3);const auto seq=Index(fields[0]);const auto period=Number(fields[2]);
+      declared.BindInteger(1,seq);
+      Check(seq==clock_count && declared.Step() && declared.TypedText(0)==Unhex(fields[1]) && period>0 &&
+            std::abs(period-declared.Real(1))<=1e-6*declared.Real(1),"source launch engine clock catalog differs");
+      declared.Reset();clock_update.BindReal(1,period);clock_update.BindInteger(2,seq);
+      clock_update.Execute();clock_update.Reset();++clock_count;
+    }
+    auto declared_count=db.Prepare("SELECT count(*) FROM clocks");
+    Check(declared_count.Step() && declared_count.TypedInteger(0)==static_cast<std::int64_t>(clock_count),
+          "source launch engine clock catalog coverage differs");
     Check(Line(input,line) && line=="source_seq\tclock_hex\tperiod_ns\tphase_ns","source launch fact header differs");
     auto lookup=db.Prepare("SELECT clock_seq,declared_period_ns,engine_period_ns FROM clocks WHERE name=?");
-    auto clock_update=db.Prepare("UPDATE clocks SET engine_period_ns=? WHERE clock_seq=?");
     auto insert=db.Prepare("INSERT INTO facts VALUES(?,?,?)");
     std::uint64_t covered=0;
     while(Line(input,line)) {
@@ -269,8 +287,7 @@ ArtifactRef BuildSourceLaunchClocks(const ArtifactRef& source,
       const auto period=Number(fields[2]),phase=Number(fields[3]);lookup.BindText(1,Unhex(fields[1]));
       Check(lookup.Step(),"source launch fact uses an undeclared clock");const auto clock=lookup.TypedInteger(0);const auto declared=lookup.Real(1);
       Check(period>0 && std::abs(period-declared)<=1e-6*declared &&
-          (lookup.IsNull(2) || lookup.Real(2)==period),"source launch engine period differs");lookup.Reset();
-      clock_update.BindReal(1,period);clock_update.BindInteger(2,clock);clock_update.Execute();clock_update.Reset();
+          !lookup.IsNull(2) && lookup.Real(2)==period,"source launch engine period differs");lookup.Reset();
       insert.BindInteger(1,source_index);insert.BindInteger(2,clock);insert.BindReal(3,phase);insert.Execute();insert.Reset();++facts;
     }
     Check(covered==sources,"source launch engine omitted requested sources");
@@ -291,7 +308,8 @@ ArtifactRef BuildSourceLaunchClocks(const ArtifactRef& source,
     auto put=db.Prepare("INSERT INTO metadata VALUES(?,?)");
     for(const auto& item:std::map<std::string,std::string>{{"schema","emuflow.source-launch-clocks/v1"},{"source",identity.Encode()},
         {"timing_inputs",JsonRecord(timing_seals).Encode()},
-        {"sources",std::to_string(sources)},{"facts",std::to_string(facts)}}) {
+        {"sources",std::to_string(sources)},{"facts",std::to_string(facts)},
+        {"clock_period_policy","all-declared-engine-periods-v1"}}) {
       put.BindText(1,item.first);put.BindText(2,item.second);put.Execute();put.Reset();
     }
   }
@@ -379,6 +397,21 @@ void SourceLaunchClockView::RequireSourceIdentity(const SourceLaunchIdentity& id
 }
 void SourceLaunchClockView::RequireOwner(const SourceLaunchFact& fact) const {
   clocks_.RequireOwner(fact.source);clocks_.RequireOwner(fact.clock);
+}
+SourceClockReferences SourceLaunchClockView::ClockReferences() {
+  auto rows=clocks_.database().Prepare("SELECT clock_seq,name,declared_period_ns,engine_period_ns,"
+      "typeof(declared_period_ns),typeof(engine_period_ns) FROM clocks ORDER BY clock_seq");
+  SourceClockReferences result;
+  while(rows.Step()) {
+    Check(rows.TypedInteger(0)==static_cast<std::int64_t>(result.size()) && result.size()<4096 &&
+          !rows.IsNull(3) && (rows.TypedText(4)=="real" || rows.TypedText(4)=="integer") &&
+          (rows.TypedText(5)=="real" || rows.TypedText(5)=="integer"),"original clock engine catalog is missing or malformed");
+    const auto name=rows.TypedText(1);const auto declared=rows.Real(2),engine=rows.Real(3);
+    Check(!name.empty() && name!="NULL" && std::isfinite(declared) && declared>0 && std::isfinite(engine) && engine>0 &&
+          std::abs(engine-declared)<=1e-6*declared && result.emplace(name,SourceClockReference{declared,engine}).second,
+          "original clock engine reference differs from its declared clock");
+  }
+  Check(!result.empty(),"original clock engine catalog is empty");return result;
 }
 std::vector<SourceLaunchFact> SourceLaunchClockView::Facts(const std::string& pin,const std::string& kind,
     const std::map<std::string,double>& targets) {

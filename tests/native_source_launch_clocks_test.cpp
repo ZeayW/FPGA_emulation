@@ -61,6 +61,12 @@ int main(int argc,char** argv) {
         BuildSourceLaunchClocks(source,logic,local,context,argv[3]);
       }
       SourceLaunchClockView view(ArtifactRef::Bind(argv[3],"source-launch-clock-store-v1"),source,field("$.original_ir_sha256"));
+      if(std::string(argv[4])=="clock-references") {
+        for(const auto& item:view.ClockReferences()) {
+          separator();result<<"["<<JsonQuote(item.first)<<","<<item.second.declared_period_ns<<","<<item.second.engine_period_ns<<"]";
+        }
+        view.RequireUnchanged();result<<"]\n";std::cout<<result.str();return 0;
+      }
       std::map<std::string,double> targets;
       auto clocks=db.Prepare("SELECT key,value FROM json_each(?1,'$.targets')");clocks.BindText(1,config);
       while(clocks.Step())targets.emplace(clocks.TypedText(0),clocks.Real(1));

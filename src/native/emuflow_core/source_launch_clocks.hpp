@@ -50,6 +50,8 @@ struct SourceLaunchFact {
   ArtifactId<LaunchClockTag> clock;
   double engine_period_ns, engine_phase_ns, launch_ns;
 };
+struct SourceClockReference { double declared_period_ns, engine_period_ns; };
+using SourceClockReferences = std::map<std::string,SourceClockReference>;
 
 // One native owner and one tool invocation. Physical stores are scanned once
 // for complete-contract launch queries and implemented original local starts.
@@ -77,6 +79,9 @@ class SourceLaunchClockView {
       const std::map<std::string,double>& target_periods_ns);
   void RequireSourceIdentity(const SourceLaunchIdentity& identity);
   void RequireOwner(const SourceLaunchFact& fact) const;
+  // Original engine periods, including clocks with no requested launch tags.
+  // A missing raw period is never replaced by the displayed/declared period.
+  SourceClockReferences ClockReferences();
   const ArtifactRef& artifact() const { return clocks_.artifact(); }
   const ArtifactRef& original_artifact() const { return source_.artifact(); }
   void RequireUnchanged() const;
