@@ -63,6 +63,7 @@ proc emuflow_apply_communication_delays {filename {mode delay-ns}} {
   }
   set extra_by_pair [dict create]
   set records {}
+  set integer_total 0
   # Validate names and the transport table before paying for a full timing
   # update. Keep only bound pin handles; no PathEnd/PathRef survives a query.
   set stream [open $filename r]
@@ -104,6 +105,13 @@ proc emuflow_apply_communication_delays {filename {mode delay-ns}} {
         }
         set extra_sta [expr {round($extra)}]
         if {$extra != $extra_sta} {error "source metric wire is not an integer weight"}
+        incr integer_total $extra_sta
+        # Delay is a float. Bounding each wire alone does not prevent path
+        # sums from rounding distinct integer scores to the same arrival.
+        # The sum of all nonnegative wire weights bounds every acyclic path.
+        if {$integer_total >= 8388608} {
+          error "source metric graph exceeds the exact integer scoring range"
+        }
       } else {
         set extra_sta [sta::time_ui_sta $extra]
       }

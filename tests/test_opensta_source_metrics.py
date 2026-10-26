@@ -71,6 +71,9 @@ def test_integer_native_units_avoid_large_ui_rounding_and_reject_invalid_weights
     path = write_costs(tmp_path / 'fractional.tsv', [('launch_b/Q', 'fast/I0', 12.5)])
     path.write_text(path.read_text().replace('extra_delay_ns', 'integer_weight'))
     write_costs(tmp_path / 'ordinary-delay.tsv', [('launch_b/Q', 'fast/I0', 3.)])
+    path = write_costs(tmp_path / 'sum-overflow.tsv', [
+        ('launch_b/Q', 'fast/I0', 8388607), ('fast/O', 'join/I1', 1)])
+    path.write_text(path.read_text().replace('extra_delay_ns', 'integer_weight'))
     run_probe(source, tmp_path, '''
  foreach weight {1 248 8388607} {
   emuflow_apply_communication_delays [file join $env(PROBE_ROOT) w$weight.tsv] metric-integer-seconds-v1
@@ -83,7 +86,7 @@ def test_integer_native_units_avoid_large_ui_rounding_and_reject_invalid_weights
  if {![catch {emuflow_apply_communication_delays [file join $env(PROBE_ROOT) w248.tsv]}]} {
   error "integer metric accepted as physical nanoseconds"
  }
- foreach name {w8388608 fractional ordinary-delay} {
+ foreach name {w8388608 fractional ordinary-delay sum-overflow} {
   if {![catch {emuflow_apply_communication_delays [file join $env(PROBE_ROOT) $name.tsv] metric-integer-seconds-v1}]} {
    error "invalid integer metric accepted: $name"
   }
