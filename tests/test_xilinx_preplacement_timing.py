@@ -115,7 +115,8 @@ CLK ADDR_A[0] 500
             assert report["status"] == "pass"
             mapped = root / "mapped.json"
             _mapped_fixture(mapped)
-            # Many repeated cells must not multiply the pin-set working set.
+            # Known library types need no design-derived pin sets. Every
+            # occurrence of a specialized type must contribute its pins.
             value = json.loads(mapped.read_text(encoding="utf-8"))
             cells = value["modules"]["top"]["cells"]
             for index in range(2000):
@@ -141,9 +142,9 @@ CLK ADDR_A[0] 500
                 "emuflow.opensta._instance_pin_sets", wraps=_instance_pin_sets,
             ) as pin_sets:
                 model, types = build_architecture_opensta_timing_model(ir, database)
-            assert pin_sets.call_args.kwargs["instance_ids"] == {
-                "carry", "lut", "mux", "ram", "dsp",
-            }
+            selected = pin_sets.call_args.kwargs['instance_ids']
+            assert {'carry', 'lut', 'mux', 'ram', 'dsp', 'repeat_lut_1999'} <= selected
+            assert not any(name.startswith('known_lut_') for name in selected)
             # Compare all cells/arcs and per-instance types against the old
             # exhaustive pin collection, not merely aggregate timing scalars.
             with patch(

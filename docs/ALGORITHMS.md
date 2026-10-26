@@ -45,6 +45,19 @@ Prepared physical continuations must carry the uncapped selection provenance;
 historical capped or undeclared selections must be regenerated from the
 existing source boundary before partitioning or physical acceptance.
 
+Design-specialized macro timing cells union the emitted scalar pin names
+from every occurrence, including constant inputs and differing widths. A
+single representative cannot establish pin coverage. Scalar and vector
+spellings remain distinct when source instances use different shapes. The
+compact source reader visits one macro at a time through the owner index
+and retains only the type/pin catalog. It does not build a cell-to-pin graph.
+The timing netlist writer checks each connected or constant pin and its
+direction against the same model during emission, before atomic publication.
+Phase 2 records this check as
+`source.model_pin_coverage=checked-source-emission-directions-v1`;
+physical continuations require it. This closes missing-port omissions but
+does not characterize the macro delay or establish alternative-path coverage.
+
 This is pre-physical timing: inter-FPGA route, TDM events, and routed FPGA delays
 are resolved later. Phase 7 performs the final global analysis.
 

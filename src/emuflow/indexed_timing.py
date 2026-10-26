@@ -249,8 +249,8 @@ class IndexedTimingView:
         return inputs, outputs
 
     def representative_graph(self):
-        # Match exactly the first-occurrence specialization used by the old
-        # Xilinx adapter; additionally retain a negative-clock representative.
+        # Representatives own type discovery and negative-clock polarity.
+        # Macro pin coverage comes separately from every source occurrence.
         instances, types, negative = [], set(), set()
         for seq, instance in enumerate(self.value["instances"]):
             cell_type = instance["type"]
@@ -270,6 +270,29 @@ class IndexedTimingView:
                     nets.append(net)
         return SimpleNamespace(value={**self.value, "instances": [i for _, i in instances], "nets": nets})
 
+    def timing_type_pin_names(self, types):
+        """Union emitted pin spellings over every occurrence of selected types.
+
+        The model owns this bounded type/pin catalog. Read one macro at a time
+        through the original owner index; no cell-to-pin graph is retained.
+        Scalar and vector spellings must both survive when instances differ.
+        """
+        from .opensta import _scalar_pin_names
+        if not types:
+            return {}
+        result = {}
+        rows = self.connection.execute('SELECT seq,type FROM cell_records WHERE type IN ('+
+            ','.join('?' for _ in types)+') ORDER BY seq', tuple(sorted(types)))
+        for seq, cell_type in rows:
+            inputs, outputs = self.pins_for(seq)
+            pins = inputs | outputs
+            entry = result.setdefault(cell_type, {'inputs': set(), 'outputs': set()})
+            entry['inputs'].update(_scalar_pin_names(inputs, all_pins=pins))
+            entry['outputs'].update(_scalar_pin_names(outputs, all_pins=pins))
+            if entry['inputs'] & entry['outputs']:
+                raise ValidationError('timing primitive pin changes direction across instances: '+cell_type)
+        return result
+
     def timing_types(self):
         return _TimingTypes(self)
 
@@ -278,7 +301,7 @@ class IndexedTimingView:
             return sorted({r[0] for r in self.connection.execute("SELECT DISTINCT type FROM cell_records")})
         return sorted({timing_types.for_instance(i) for i in self.value["instances"]})
 
-    def timing_connections(self):
+    def timing_connections(self, *, with_roles=False):
         # Integer-owner index order allows a cursor merge; no global pin map.
         cursor = iter(self.connection.execute("""SELECT e.instance_seq,e.net_seq,p.name AS port,e.bit,e.role
             FROM endpoint_records e INDEXED BY endpoint_owner
@@ -287,15 +310,20 @@ class IndexedTimingView:
         row = next(cursor, None)
         for seq, instance in enumerate(self.value["instances"]):
             wires = {}
+            roles = {} if with_roles else None
             while row is not None and row["instance_seq"] < seq:
                 raise ValueError("orphaned endpoint owner")
             while row is not None and row["instance_seq"] == seq:
                 if row["role"] not in (0, 1) or row["port"] is None or row["bit"] < 0:
                     raise ValueError("invalid compact EmuIR endpoint")
                 key = (row["port"], row["bit"])
+                if roles is not None:
+                    if key in roles and roles[key] != row['role']:
+                        raise ValidationError('timing primitive pin has conflicting directions')
+                    roles[key] = row['role']
                 wires[key] = max(wires.get(key, -1), row["net_seq"])
                 row = next(cursor, None)
-            yield instance, wires
+            yield (instance, wires, roles) if with_roles else (instance, wires)
         if row is not None:
             raise ValueError("orphaned endpoint owner")
 
@@ -332,7 +360,7 @@ class IndexedTimingView:
                     self.object_index.get(name.replace("\\", "\\\\"))
         self._provider_aliases_validated = True
 
-    def timing_verilog_lines(self, timing_cell_types):
+    def timing_verilog_lines(self, timing_cell_types, timing_model_pins=None):
         from .verilog import _identifier, _timing_pin_name
         self._validate_provider_name_aliases()
         ports = self.value["ports"]
@@ -363,10 +391,24 @@ class IndexedTimingView:
                 select = "" if port["width"] == 1 else f"[{constant['bit']}]"
                 yield f"  assign {_identifier(port['id'])}{select} = 1'b{constant['value']};"
         yield ""
-        for instance, wires in self.timing_connections():
+        for instance, wires, roles in self.timing_connections(with_roles=True):
             constants = {(p["port"], p["bit"]): p["value"] for p in instance.get("constant_connections", [])}
             pins = set(wires) | set(constants)
             connections = []
+            cell_type = (timing_cell_types.for_instance(instance) if isinstance(timing_cell_types, _TimingTypes)
+                         else timing_cell_types.get(instance['id'], instance['type']) if timing_cell_types is not None
+                         else instance['type'])
+            if timing_model_pins is not None:
+                from .verilog import require_timing_model_pin
+                inputs, outputs = set(constants), set()
+                # Only the current cell's endpoint roles are needed. The
+                # cursor merge exposes them without another owner-index read.
+                for port_bit, role in roles.items():
+                    (outputs if role == 0 else inputs).add(port_bit)
+                for role, collection in ((1, inputs), (0, outputs)):
+                    for port, bit in collection:
+                        require_timing_model_pin(timing_model_pins, cell_type,
+                            _timing_pin_name(pins, port, bit), role, instance['id'])
             if any("\\" in port for port, _ in pins):
                 names = {instance["id"] + "/" + _timing_pin_name(pins, p, bit) for p, bit in pins}
                 for name in names:
@@ -376,9 +418,6 @@ class IndexedTimingView:
             for port, bit in sorted(pins):
                 expression = f"__emuflow_net_{wires[(port, bit)]}" if (port, bit) in wires else f"1'b{constants[(port, bit)]}"
                 connections.append(f".{_identifier(_timing_pin_name(pins, port, bit))}({expression})")
-            cell_type = (timing_cell_types.for_instance(instance) if isinstance(timing_cell_types, _TimingTypes)
-                         else timing_cell_types.get(instance["id"], instance["type"]) if timing_cell_types is not None
-                         else instance["type"])
             yield f"  {_identifier(cell_type)} {_identifier(instance['id'])}("
             yield "    " + ",\n    ".join(connections)
             yield "  );"

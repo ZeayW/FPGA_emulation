@@ -178,6 +178,8 @@ Path-hop metrics describe the supplied TimingPathDB selection, whose search
 policy is recorded by Phase 2; they do not certify a whole-design maximum.
 Phase 2 requests all clocked endpoints by default; explicit path-count caps
 are restricted to non-physical diagnostics.
+Source timing models cover every macro instance's emitted pins; export rejects
+missing pins or direction mismatches before publishing the timing netlist.
 See [timing coverage](docs/global-opensta-qualification.md#current-event-stream-contract).
 PATRON search uses this unified entry; its separate executable and legacy text
 input are retired. Explicit input copies use the same checked typed binary

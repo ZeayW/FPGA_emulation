@@ -648,14 +648,35 @@ def _instance_pin_sets(
 
 def _scalar_pin_names(
     pins: Sequence[tuple[str, int]],
+    *, all_pins=None,
 ) -> list[str]:
     width_by_port: Dict[str, int] = {}
-    for port, bit in pins:
+    for port, bit in pins if all_pins is None else all_pins:
         width_by_port[port] = max(width_by_port.get(port, 0), bit + 1)
     return [
         port if width_by_port[port] == 1 else f"{port}__{bit}"
         for port, bit in sorted(pins)
     ]
+
+
+_DESIGN_SPECIALIZED_XILINX_TYPES = {'LUT6_2','MUXF9','CARRY8','DSP48E2','RAMB18E2','RAMB36E2','URAM288'}
+
+
+def _timing_type_pin_names(ir, types):
+    if hasattr(ir, 'timing_type_pin_names'):
+        return ir.timing_type_pin_names(types)
+    instances = [cell for cell in ir.value['instances'] if cell['type'] in types]
+    pin_sets = _instance_pin_sets(ir, instance_ids={cell['id'] for cell in instances})
+    result = {}
+    for cell in instances:
+        entry = result.setdefault(cell['type'], {'inputs': set(), 'outputs': set()})
+        pins = pin_sets[cell['id']]
+        all_pins = pins['inputs'] | pins['outputs']
+        for direction in ('inputs','outputs'):
+            entry[direction].update(_scalar_pin_names(pins[direction], all_pins=all_pins))
+        if entry['inputs'] & entry['outputs']:
+            raise ValidationError('timing primitive pin changes direction across instances: '+cell['type'])
+    return result
 
 
 def _integer_parameter(
@@ -682,12 +703,16 @@ def build_xilinx_preplacement_opensta_timing_model(
     ir: EmuIR,
     timing_db_path: Path,
     output_path: Optional[Path] = None,
+    *, _type_pin_names=None,
 ) -> tuple[Dict[str, Any], Dict[str, str]]:
     """Build design-specialized cells from pinned RapidWright delay bounds."""
 
     if hasattr(ir, "representative_graph"):
+        # Representatives suffice for types/clock polarity, never macro pin
+        # coverage. All occurrences contribute their exact emitted spellings.
+        pins = _timing_type_pin_names(ir, _DESIGN_SPECIALIZED_XILINX_TYPES)
         model, _ = build_xilinx_preplacement_opensta_timing_model(
-            ir.representative_graph(), timing_db_path, output_path
+            ir.representative_graph(), timing_db_path, output_path, _type_pin_names=pins
         )
         return model, ir.timing_types()
 
@@ -712,16 +737,8 @@ def build_xilinx_preplacement_opensta_timing_model(
         )
         model["cells"][name]["clock_to_q_ns"] = delays["ff_clock_to_q"]
 
-    # Cells already present in the library need no design-derived pin sets.
-    # The producer below has always specialized each remaining type from its
-    # first occurrence; collect only those representatives, not every cell.
-    representatives: Dict[str, str] = {}
-    for instance in ir.value["instances"]:
-        if instance["type"] not in model["cells"]:
-            representatives.setdefault(instance["type"], instance["id"])
-    pin_sets = _instance_pin_sets(
-        ir, instance_ids=set(representatives.values())
-    )
+    pin_names = (_timing_type_pin_names(ir, _DESIGN_SPECIALIZED_XILINX_TYPES)
+                 if _type_pin_names is None else _type_pin_names)
     instance_cell_types = {
         instance["id"]: instance["type"]
         for instance in ir.value["instances"]
@@ -743,9 +760,11 @@ def build_xilinx_preplacement_opensta_timing_model(
         cell_type = instance["type"]
         if cell_type in model["cells"]:
             continue
-        pins = pin_sets[instance["id"]]
-        inputs = _scalar_pin_names(pins["inputs"])
-        outputs = _scalar_pin_names(pins["outputs"])
+        if cell_type not in _DESIGN_SPECIALIZED_XILINX_TYPES:
+            raise ValidationError(f'RapidWright pre-placement TimingDB does not cover {cell_type!r}')
+        pins = pin_names[cell_type]
+        inputs = sorted(pins['inputs'])
+        outputs = sorted(pins['outputs'])
         if cell_type == "LUT6_2":
             model["cells"][cell_type] = {
                 "kind": "combinational",
@@ -816,6 +835,7 @@ def build_xilinx_preplacement_opensta_timing_model(
             "rapidwright_revision": timing_db["source"]["revision"],
             "sink_interconnect_delay_ns": delays["sink_interconnect"],
             "hard_block_timing": "nonzero-conservative-scalar",
+            "hard_block_pin_coverage": "all-instance-emitted-scalar-pins-v1",
             "hold_analysis": "unavailable",
             "authoritative_setup": "Phase 7 routed timing plus global OpenSTA",
         },
@@ -1339,10 +1359,27 @@ def _prepare_opensta_source_model(ir, timing_model_path, architecture_timing_db_
     return model, instance_cell_types, clock_logic, coverage
 
 
+def _timing_model_pin_directions(model):
+    """Reuse the model's bounded pin owner during the netlist emission pass."""
+    result = {}
+    for name, cell in model['cells'].items():
+        inputs = set(cell.get('inputs', [])) | set(cell.get('controls', []))
+        if cell['kind'] in {'rising_edge_ff', 'falling_edge_ff', 'rising_edge_bank'}:
+            inputs.add(cell['clock'])
+        if cell['kind'] in {'rising_edge_ff', 'falling_edge_ff'}:
+            inputs.add(cell['data'])
+        outputs = set(cell.get('outputs', [cell.get('output')]))
+        if None in outputs or inputs & outputs:
+            raise ValidationError('OpenSTA model pin directions are invalid: '+name)
+        result[name] = {**{pin: 1 for pin in inputs}, **{pin: 0 for pin in outputs}}
+    return result
+
+
 def _write_opensta_source_files(ir, root, model, instance_cell_types, clock_map, timing_io):
     """Write one source context without running STA or enumerating paths."""
     write_mapped_verilog(ir, root / "mapped.v", timing_only=True,
-                         timing_cell_types=instance_cell_types)
+                         timing_cell_types=instance_cell_types,
+                         timing_model_pins=_timing_model_pin_directions(model))
     (root / "timing.lib").write_text(render_opensta_liberty(model), encoding="utf-8")
     with (root / "clocks.tsv").open("w", encoding="utf-8") as stream:
         stream.write("clock_hex\tperiod_ns\n")
@@ -1491,6 +1528,7 @@ def _run_opensta_path_database(
         expected_records=(check_opensta_export_completion(completed.stdout,output_path=raw_path,clock_count=len(clock_map))
             if clock_budget_policy=='engine-edge-v1'else None)
         source_value = {
+            'model_pin_coverage':'checked-source-emission-directions-v1',
             # This owner records the search that selected the source members.
             # Replaying every member downstream does not prove coverage of
             # omitted endpoints or alternative paths after partitioning.

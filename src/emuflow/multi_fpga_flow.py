@@ -1617,8 +1617,11 @@ def _compile_timing(ctx: _CompileContext):
         # as well as an explicit cap on a fresh physical compilation.
         if ctx.path_database_path.stat().st_size > 1024*1024:
             raise ValidationError("physical execution requires a compact all-endpoint Phase2 selector")
-        selection=read_json(ctx.path_database_path).get('source',{}).get('path_selection',{})
-        if (selection.get('policy')!='worst-per-endpoint-per-path-group-v1' or
+        source=read_json(ctx.path_database_path).get('source',{})
+        selection=source.get('path_selection',{})
+        if source.get('model_pin_coverage')!='checked-source-emission-directions-v1':
+            raise ValidationError('physical execution requires checked source-model pin coverage; regenerate unqualified prepared timing')
+        if (not isinstance(selection,dict) or selection.get('policy')!='worst-per-endpoint-per-path-group-v1' or
                 'max_paths_per_group' not in selection or selection['max_paths_per_group'] is not None or
                 selection.get('endpoint_path_count')!=1):
             raise ValidationError("physical execution requires all-endpoint Phase2 timing; regenerate capped or unqualified prepared timing")

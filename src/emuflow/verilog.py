@@ -60,23 +60,29 @@ def _timing_pin_name(
     return port if width == 1 else f"{port}__{bit}"
 
 
+def require_timing_model_pin(model_pins, cell_type, pin, role, owner):
+    if model_pins.get(cell_type, {}).get(pin) != role:
+        raise ValidationError(f'OpenSTA model pin is missing or has wrong direction: {owner}/{pin} ({cell_type})')
+
+
 def _mapped_verilog_lines(
     ir: EmuIR,
     *,
     timing_only: bool = False,
     timing_cell_types: Optional[Mapping[str, str]] = None,
+    timing_model_pins=None,
     allow_bus_pins: bool = False,
     synthesized_macro_types: Optional[Set[str]] = None,
 ) -> Iterator[str]:
     if timing_only and hasattr(ir, "timing_verilog_lines"):
-        yield from ir.timing_verilog_lines(timing_cell_types)
+        yield from ir.timing_verilog_lines(timing_cell_types, timing_model_pins)
         return
     net_wire = {
         net["id"]: f"__emuflow_net_{index}"
         for index, net in enumerate(ir.value["nets"])
     }
     pin_net: Dict[Tuple[str, str, int], str] = {}
-    pins_by_instance: Dict[str, set[Tuple[str, int]]] = {}
+    pins_by_instance: Dict[str, Dict[Tuple[str, int], int]] = {}
     for net in ir.value["nets"]:
         for collection in ("drivers", "sinks"):
             for endpoint in net[collection]:
@@ -84,16 +90,21 @@ def _mapped_verilog_lines(
                     instance_id = endpoint["instance"]
                     port_bit = (endpoint["port"], endpoint["bit"])
                     pin_net[(instance_id, *port_bit)] = net_wire[net["id"]]
-                    pins_by_instance.setdefault(instance_id, set()).add(
-                        port_bit
-                    )
+                    role = 0 if collection == 'drivers' else 1
+                    roles = pins_by_instance.setdefault(instance_id, {})
+                    if timing_only and timing_model_pins is not None and port_bit in roles and roles[port_bit] != role:
+                        raise ValidationError('primitive pin has conflicting directions')
+                    roles[port_bit] = role
     constants: Dict[Tuple[str, str, int], Any] = {}
     for instance in ir.value["instances"]:
         instance_id = instance["id"]
         for item in instance.get("constant_connections", []):
             port_bit = (item["port"], item["bit"])
             constants[(instance_id, *port_bit)] = item["value"]
-            pins_by_instance.setdefault(instance_id, set()).add(port_bit)
+            roles = pins_by_instance.setdefault(instance_id, {})
+            if timing_only and timing_model_pins is not None and roles.get(port_bit, 1) != 1:
+                raise ValidationError('primitive constant drives an output pin')
+            roles[port_bit] = 1
 
     yield from [
         f"module {_identifier(ir.value['design']['top'])}(",
@@ -167,7 +178,14 @@ def _mapped_verilog_lines(
                 f".{_identifier(name)}({_parameter(value)})"
                 for name, value in sorted(parameters.items())
             ) + ")"
-        pins = pins_by_instance.get(instance["id"], set())
+        pins = pins_by_instance.get(instance["id"], {})
+        cell_type = (
+            timing_cell_types.get(instance['id'], instance['type'])
+            if timing_cell_types is not None else instance['type'])
+        if timing_only and timing_model_pins is not None:
+            for (port, bit), role in pins.items():
+                require_timing_model_pin(timing_model_pins, cell_type,
+                    _timing_pin_name(pins, port, bit), role, instance['id'])
         connections = []
         if allow_bus_pins and not timing_only:
             ports: Dict[str, Dict[int, str]] = {}
@@ -248,11 +266,12 @@ def mapped_verilog(
     *,
     timing_only: bool = False,
     timing_cell_types: Optional[Mapping[str, str]] = None,
+    timing_model_pins=None,
     allow_bus_pins: bool = False,
     synthesized_macro_types: Optional[Set[str]] = None,
 ) -> str:
     return "\n".join(_mapped_verilog_lines(
-        ir, timing_only=timing_only, timing_cell_types=timing_cell_types,
+        ir, timing_only=timing_only, timing_cell_types=timing_cell_types, timing_model_pins=timing_model_pins,
         allow_bus_pins=allow_bus_pins, synthesized_macro_types=synthesized_macro_types,
     ))
 
@@ -263,6 +282,7 @@ def write_mapped_verilog(
     *,
     timing_only: bool = False,
     timing_cell_types: Optional[Mapping[str, str]] = None,
+    timing_model_pins=None,
     allow_bus_pins: bool = False,
     synthesized_macro_types: Optional[Set[str]] = None,
 ) -> None:
@@ -272,7 +292,7 @@ def write_mapped_verilog(
     try:
         with temporary.open("w", encoding="utf-8") as stream:
             for index, line in enumerate(_mapped_verilog_lines(
-                ir, timing_only=timing_only, timing_cell_types=timing_cell_types,
+                ir, timing_only=timing_only, timing_cell_types=timing_cell_types, timing_model_pins=timing_model_pins,
                 allow_bus_pins=allow_bus_pins, synthesized_macro_types=synthesized_macro_types,
             )):
                 if index:
