@@ -24,11 +24,14 @@ def kernel(tmp_path_factory):
     return output
 
 
-def project(kernel, roots, transfers, *, period=5., epoch=0., frame=2048, fail=None):
-    text = [f"{period!r} {epoch!r} {frame} {len(roots)} {len(transfers)}", *map(repr, roots)]
+def project(kernel, roots, transfers, *, period=5., epoch=0., frame=2048, fail=None, chosen=None, slacks=None):
+    text = ["check" if chosen is not None else "project",
+            f"{period!r} {epoch!r} {frame} {len(roots)} {len(transfers)}", *map(repr, roots)]
     for phase, ratio, latency, stable, fanins in transfers:
         text.append(f"{phase} {ratio} {latency} {int(stable)} {len(fanins)}")
         text.extend(f"{int(event)} {source} {data!r} {cost!r}" for event, source, data, cost in fanins)
+    if chosen is not None:
+        text.extend([str(len(chosen)), *map(str, chosen), str(len(slacks)), *map(repr, slacks)])
     result = subprocess.run([str(kernel)], input="\n".join(text)+"\n", text=True, capture_output=True)
     if fail:
         assert result.returncode != 0
@@ -152,6 +155,25 @@ def test_changing_dut_period_requires_reprojection_and_is_not_monotone(kernel):
     assert at_99 == [17] and (at_99[0]+6)*5 > 99.
 
 
+def test_native_checker_uses_support_slacks_and_rejects_skipped_or_missed_edges(kernel):
+    transfers = [transfer([(False, 0, 8.642, 5.413)])]
+    assert project(kernel, [0.], transfers, chosen=[2], slacks=[4.587]) is True
+    project(kernel, [0.], transfers, chosen=[1], slacks=[-.413], fail="fails an OpenSTA support check")
+    project(kernel, [0.], transfers, chosen=[3], slacks=[9.587], fail="earlier word occurrence")
+    project(kernel, [0.], transfers, chosen=[2], slacks=[], fail="coverage is incomplete")
+    project(kernel, [0.], transfers, chosen=[2], slacks=[4.587, 0.], fail="extra records")
+    project(kernel, [0.], transfers, chosen=[2], slacks=[math.nan], fail="fails an OpenSTA support check")
+    project(kernel, [0.], transfers, chosen=[], slacks=[], fail="population differs")
+
+
+def test_native_checker_checks_strict_causality_and_explicit_constants(kernel):
+    transfers = [transfer([(False, 0, 0., 0.)]), transfer([(True, 0, 0., 0.)])]
+    assert project(kernel, [0.], transfers, chosen=[1, 8], slacks=[5., 5.]) is True
+    project(kernel, [0.], transfers, chosen=[1, 7], slacks=[5., 0.], fail="reuses its RX capture edge")
+    project(kernel, [], [transfer([], stable=True)], chosen=[2], slacks=[], fail="earlier word occurrence")
+    project(kernel, [0.], transfers, chosen=[1, 8], slacks=[5., 5.], frame=15, fail="phase or frame drain")
+
+
 @pytest.mark.skipif(not os.environ.get("EMUFLOW_TEST_OPENSTA"), reason="explicit qualified OpenSTA required")
 def test_real_opensta_checks_all_fanins_and_independently_verifies_first_legal_word(kernel, tmp_path):
     from emuflow.global_sta import EventCheck, run_event_checks
@@ -173,6 +195,24 @@ def test_real_opensta_checks_all_fanins_and_independently_verifies_first_legal_w
     measurements = run_event_checks(checks, tmp_path, os.environ["EMUFLOW_TEST_OPENSTA"])
     assert all(row["slack_ns"] >= -1e-6 for row in measurements)
     by_check = {(row["path"], row["role"], row["event"]):row for row in measurements}
+    support_slacks = [by_check[(f"synthetic-transfer-{i}", "tx", str(j))]["slack_ns"]
+                      for i, record in enumerate(transfers) for j in range(len(record[4]))]
+    assert project(kernel, roots, transfers, chosen=selected, slacks=support_slacks) is True
+    # Delaying the last transfer by a whole table round passes its numerical
+    # STA checks, but must fail the independent first-occurrence requirement.
+    from dataclasses import replace
+    shift = transfers[-1][1]/8*5.
+    last_name = f"synthetic-transfer-{len(transfers)-1}"
+    late_checks = [replace(row, required_ns=row.required_ns+shift,
+                          launch_ns=row.launch_ns+(shift if row.role in ('target','runtime') else 0.))
+                   if row.path==last_name else row for row in checks]
+    late_measurements = run_event_checks(late_checks, tmp_path/'late', os.environ['EMUFLOW_TEST_OPENSTA'])
+    assert all(row['slack_ns'] >= -1e-6 for row in late_measurements)
+    late_by_check = {(row['path'],row['role'],row['event']):row for row in late_measurements}
+    late_slacks = [late_by_check[(f'synthetic-transfer-{i}','tx',str(j))]['slack_ns']
+                   for i,record in enumerate(transfers)for j in range(len(record[4]))]
+    late_selected = list(selected);late_selected[-1] += transfers[-1][1]//8
+    project(kernel, roots, transfers, chosen=late_selected, slacks=late_slacks, fail='earlier word occurrence')
     for i, (phase, ratio, _, _, fanins) in enumerate(transfers):
         for earlier in range(1, selected[i]):
             if earlier % (ratio//8) != phase:

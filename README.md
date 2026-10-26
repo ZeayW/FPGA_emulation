@@ -81,6 +81,8 @@ consume their clock/check adjustments.
 The shared native periodic-word kernel resolves complete fanin DAGs and strict
 relay capture ordering; production clock/fanin binding into global STA remains
 under integration.
+Its separate native validator uses OpenSTA support slacks to reject missed or
+unnecessarily delayed occurrences without recomputing data arrivals.
 An explicit OpenSTA launch-clock qualifier reads architectural source phases
 without selecting a representative timing path.
 Native bank wrappers bind training, complete words and receive FIFO clocks;

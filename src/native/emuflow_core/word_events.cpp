@@ -125,4 +125,63 @@ std::vector<std::uint32_t> ProjectPhysicalWordEvents(const PhysicalWordModel& mo
   Check(observed == count, "physical word fanin graph contains a cycle");
   return chosen;
 }
+
+void ValidatePhysicalWordEvents(const PhysicalWordModel& model,
+    const std::vector<std::uint32_t>& selected,
+    const std::vector<double>& support_slack_ns, double slack_tolerance_ns) {
+  Check(std::isfinite(model.period_ns) && model.period_ns > 0 &&
+        std::isfinite(model.epoch_ns) && model.frame_slots >= 3 &&
+        std::isfinite(slack_tolerance_ns) && slack_tolerance_ns >= 0,
+        "invalid independent word event check context");
+  Check(selected.size() == model.transfers.size(),
+        "independent word event population differs");
+  for (auto phase : model.root_launch_ns)
+    Check(std::isfinite(phase), "independent word check lacks a launch phase");
+  std::size_t offset = 0;
+  for (std::size_t i = 0; i < selected.size(); ++i) {
+    const auto& transfer = model.transfers[i];
+    Check(transfer.ratio >= 8 && transfer.ratio <= 256 && transfer.ratio % 8 == 0 &&
+          transfer.phase_word < transfer.ratio / 8 && transfer.fixed_latency_words > 0 &&
+          transfer.configuration_stable == transfer.fanins.empty(),
+          "independent word transfer semantics are invalid");
+    const auto index = selected[i], words = transfer.ratio / 8;
+    Check(index > 0 && index % words == transfer.phase_word &&
+          std::uint64_t(index) + transfer.fixed_latency_words < std::uint64_t(model.frame_slots) - 1,
+          "independent word event violates its phase or frame drain");
+    Check(transfer.fanins.size() <= support_slack_ns.size() - offset,
+          "independent word support check coverage is incomplete");
+    const bool have_previous = index > words;
+    const auto previous = have_previous ? index - words : 0;
+    bool previous_excluded = !have_previous;
+    const auto load = WordEventTime(model, index);
+    const auto delta = have_previous ? WordEventTime(model, previous) - load : 0.0;
+    Check(!have_previous || delta < 0, "independent word clock loses edge resolution");
+    for (const auto& fanin : transfer.fanins) {
+      Check(std::isfinite(fanin.data_delay_ns) && fanin.data_delay_ns >= 0 &&
+            std::isfinite(fanin.sampling_cost_ns) &&
+            std::isfinite(fanin.sampling_cost_ns - fanin.data_delay_ns),
+            "independent word check has an invalid physical cost");
+      if (fanin.from_event) {
+        Check(fanin.source < selected.size() && fanin.source != i,
+              "independent word check has an invalid source event");
+        const auto capture = std::uint64_t(selected[fanin.source]) +
+            model.transfers[fanin.source].fixed_latency_words;
+        Check(index > capture, "independent word event reuses its RX capture edge");
+        if (have_previous && previous <= capture) previous_excluded = true;
+      } else {
+        Check(fanin.source < model.root_launch_ns.size(),
+              "independent word check lacks an architectural source");
+      }
+      const auto slack = support_slack_ns[offset++];
+      Check(std::isfinite(slack) && slack >= -slack_tolerance_ns,
+            "independent word event fails an OpenSTA support check");
+      // Changing only the capture deadline by delta changes an engine check's
+      // slack by exactly delta. No producer readiness or data-delay sum enters
+      // this rejection of the immediately preceding calendar occurrence.
+      if (have_previous && slack + delta < -slack_tolerance_ns) previous_excluded = true;
+    }
+    Check(previous_excluded, "an earlier word occurrence is not independently excluded");
+  }
+  Check(offset == support_slack_ns.size(), "independent word support checks contain extra records");
+}
 }  // namespace emuflow::core

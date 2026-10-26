@@ -36,4 +36,10 @@ struct PhysicalWordModel {
 // Result indices alone own the chosen occurrences; RX indices are derivable.
 std::vector<std::uint32_t> ProjectPhysicalWordEvents(const PhysicalWordModel& model);
 double WordEventTime(const PhysicalWordModel& model, std::uint32_t index);
+// Independent acceptance over actual OpenSTA TX-check slacks in canonical
+// transfer/fanin order. Never calls the projector or composes data arrivals.
+// The caller binds the engine checks to these same canonical input records.
+void ValidatePhysicalWordEvents(const PhysicalWordModel& model,
+    const std::vector<std::uint32_t>& selected,
+    const std::vector<double>& support_slack_ns, double slack_tolerance_ns);
 }  // namespace emuflow::core

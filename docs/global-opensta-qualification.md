@@ -124,6 +124,15 @@ Phase 5 uses the same integer calendar selection primitive. This kernel does
 not yet bind the production canonical clock/fanin owners;
 word-mode global acceptance remains disabled until those bindings and the
 independent OpenSTA checks are integrated.
+The separate native validator consumes the TX support slacks in the same
+canonical fanin order. It checks the selected edge and its immediately preceding
+table occurrence using the change in capture deadline, as well as strict RX
+capture ordering and frame drain. It does not call the projector, reuse its
+readiness guard or calculate another data-path arrival. Slack tolerance is an
+explicit consumer input. Missing, extra, nonfinite or failing engine records,
+and an earlier occurrence that has not been independently excluded, fail
+validation. Production still needs to bind those engine records and clock facts
+to the canonical physical/semantic owners.
 
 Sampling costs are effective nominal-edge guards, distinct from raw data
 arrival. Their signed clock/check adjustment shifts the OpenSTA deadline while
