@@ -67,6 +67,14 @@ def generate(directory):
     if not output.exists() or output.read_text(encoding="utf-8") != paths:
         output.write_text(paths, encoding="utf-8")
 
+    ddl = (root / "src/emuflow/data/schema/sta_net_weights.sql").read_text(encoding="utf-8")
+    if ')EMUFLOW_SQL"' in ddl:
+        raise ValueError("SQL schema contains the native raw-string delimiter")
+    weights = '#pragma once\nnamespace emuflow::core {\ninline constexpr const char* kStaNetWeightStoreDDL = R"EMUFLOW_SQL(' + ddl + ')EMUFLOW_SQL";\n}\n'
+    output = Path(directory) / "sta_weight_schema.hpp"
+    if not output.exists() or output.read_text(encoding="utf-8") != weights:
+        output.write_text(weights, encoding="utf-8")
+
     events = "#pragma once\nnamespace emuflow::core {\n"
     for symbol, filename in (
         ("kGlobalEventsDDL", "global_events.sql"),

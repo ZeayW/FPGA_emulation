@@ -58,7 +58,7 @@ def test_compact_stream_uses_real_provider_protocol_without_ir_reload(tmp_path):
     with patch("emuflow.opensta.EmuIR.load", side_effect=AssertionError("whole-graph loading forbidden")):
         report = run_opensta_path_database(
             path, out, clocks={"clk": 10},
-            executable=str(ROOT / "tests/fixtures/fake_opensta_paths.py"), _stream_output=True,
+            executable=str(ROOT / "tests/fixtures/fake_opensta_paths.py"),
         )
     assert report["status"] == "pass"
     records = list(iter_sta_path_database_paths(out, json.loads(out.read_text())))
@@ -67,12 +67,14 @@ def test_compact_stream_uses_real_provider_protocol_without_ir_reload(tmp_path):
     old = tmp_path / "old.emuir.sqlite"
     _write_emuir_sqlite_v1(old, ir.value)
     old_out = tmp_path / "old-paths.json"
+    import os
+    import subprocess
     from tests.sta_path_reference import import_sta_path_database_tsv_streaming as reference_import
-    with patch("emuflow.opensta.import_sta_path_database_tsv_streaming", reference_import):
-        old_report = run_opensta_path_database(
-            old, old_out, clocks={"clk": 10},
-            executable=str(ROOT / "tests/fixtures/fake_opensta_paths.py"), _stream_output=True,
-        )
+    old_map, measured = tmp_path/"old-net-map.tsv", tmp_path/"old-paths.tsv"
+    write_emuir_net_map(old, old_map, _ir=ir)
+    subprocess.run([str(ROOT/"tests/fixtures/fake_opensta_paths.py")],
+        env={**os.environ, "EMUFLOW_STA_NET_MAP": str(old_map), "EMUFLOW_STA_OUTPUT": str(measured)}, check=True)
+    old_report = reference_import(measured, old, old_out, provider="opensta-fpga-path-database-v1", _ir=ir)
     assert records == list(iter_sta_path_database_paths(old_out, json.loads(old_out.read_text())))
     assert report["path_qor"] == old_report["path_qor"]
 
@@ -89,7 +91,7 @@ def test_compact_timing_validators_do_not_reload_the_whole_graph(tmp_path):
         database,
         clocks={"clk": 10},
         executable=str(ROOT / "tests/fixtures/fake_opensta_paths.py"),
-        _stream_output=True,
+
     )
     weights = tmp_path / "weights.json"
     with patch(

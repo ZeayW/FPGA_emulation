@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.sta_path_reference import import_sta_path_database_tsv
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
@@ -16,7 +17,6 @@ from emuflow.sta import (
     STA_PATH_DATABASE_TSV_HEADER,
     STA_PATH_DATABASE_SCHEMA,
     derive_partition_net_weights,
-    import_sta_path_database_tsv,
     import_sta_path_database_tsv_streaming,
     iter_selected_sta_path_database_paths,
     iter_sta_path_database_paths,
@@ -82,7 +82,7 @@ class StaAdapterTest(unittest.TestCase):
             expected_weights = root / "expected.json"
             actual_weights = root / "actual.json"
             with patch("emuflow.sta.sqlite3.connect", without_audits):
-                import_sta_path_database_tsv_streaming(
+                imported = import_sta_path_database_tsv_streaming(
                     tsv, ir_path, database_path,
                     provider="opensta-fpga-path-database-v1", _ir=ir,
                 )
@@ -110,7 +110,7 @@ class StaAdapterTest(unittest.TestCase):
                 derive_partition_net_weights(database_path, ir_path, expected_weights)
                 with patch("emuflow.sta.EmuIR.load", side_effect=AssertionError("unused whole-graph load")):
                     derive_partition_net_weights(
-                        database_path, ir_path, actual_weights, input_already_validated=True,
+                        database_path, ir_path, actual_weights, _validation=imported.validation,
                     )
                 self.assertEqual(load_partition_net_weights_indexed(expected_weights), load_partition_net_weights_indexed(actual_weights))
                 self.assertEqual(
@@ -474,10 +474,15 @@ class StaAdapterTest(unittest.TestCase):
             imported = import_sta_path_database_tsv(
                 tsv_path, ir_path, database_path, provider="opensta-fpga-path-database-v1"
             )
+            indexed_ir, indexed_database = root / "weights.emuir.sqlite", root / "weights-paths.json"
+            ir.save(indexed_ir)
+            import_sta_path_database_tsv_streaming(
+                tsv_path, indexed_ir, indexed_database, provider="opensta-fpga-path-database-v1"
+            )
             weights_path = root / "weights.json"
             weights_report = derive_partition_net_weights(
-                database_path,
-                ir_path,
+                indexed_database,
+                indexed_ir,
                 weights_path,
                 criticality_scale=9.0,
                 criticality_exponent=2.0,

@@ -1673,7 +1673,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sta_database_validate.add_argument("--ir", type=Path, required=True)
     sta_weights = sta_subparsers.add_parser(
         "derive-partition-net-weights",
-        help="derive timing-driven hyperedge weights from OpenSTA paths",
+        help="derive native indexed hyperedge weights from current OpenSTA paths",
     )
     sta_weights.add_argument("--database", type=Path, required=True)
     sta_weights.add_argument("--ir", type=Path, required=True)
@@ -1684,7 +1684,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sta_opensta = sta_subparsers.add_parser(
         "run-opensta",
-        help="build a partition-independent path database with in-tree OpenSTA",
+        help="build indexed TimingPathDB from compact EmuIR v2 with in-tree OpenSTA",
     )
     sta_opensta.add_argument("--ir", type=Path, required=True)
     sta_opensta.add_argument("--output", "-o", type=Path, required=True)
@@ -1703,7 +1703,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--architecture-timing-db",
         type=Path,
         help=(
-            "provider-matched Architecture TimingDB; generates a "
+            "current Xilinx Preplacement TimingDB; generates a "
             "design-specialized pre-placement OpenSTA model"
         ),
     )

@@ -251,7 +251,6 @@ def run_xilinx_routed_opensta(
             ir_path, output_path, clocks=clocks,
             _timing_model=model, executable=opensta,
             max_paths=max_paths, log_path=log_path,
-            _stream_output=True,
         )
     if report["path_limit_reached"]:
         raise ValidationError(

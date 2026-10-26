@@ -1375,6 +1375,7 @@ def _compile_preflight(ctx: _CompileContext):
         from .native_tools import require_native_schema
         require_native_schema("opensta-input-export-request-v1")
         require_native_schema("sta-path-request-v1")
+        require_native_schema("sta-weight-request-v1")
         ctx.opensta = resolve_native_executable("sta", ctx.opensta)
         check_opensta_engine_version(ctx.opensta)
     if ctx.physical:
@@ -1564,6 +1565,7 @@ def _compile_timing(ctx: _CompileContext):
         ctx.timing_report = None
     if ctx.internal_timing_database and ctx.prepared_timing is None:
         ctx.timing_root.mkdir(parents=True, exist_ok=True)
+        path_validation = []
         sta_report = run_opensta_path_database(
             ir_path=ctx.ir_path,
             output_path=ctx.path_database_path,
@@ -1574,18 +1576,20 @@ def _compile_timing(ctx: _CompileContext):
             executable=ctx.opensta,
             max_paths=ctx.sta_max_paths,
             log_path=ctx.timing_root / "opensta.log",
-            _stream_output=True,
+            _capture_validation=path_validation.append,
         )
         timing_mode = "opensta-preplacement"
         weights_report = None
         if ctx.timing_driven:
+            if len(path_validation) != 1:
+                raise ValidationError("OpenSTA original path validation proof is missing")
             weights_report = derive_partition_net_weights(
                 ctx.path_database_path,
                 ctx.ir_path,
                 ctx.net_weights_path,
                 criticality_scale=ctx.timing_criticality_scale,
                 criticality_exponent=ctx.timing_criticality_exponent,
-                input_already_validated=True,
+                _validation=path_validation[0],
             )
         ctx.timing_report = {
             "status": "pass",

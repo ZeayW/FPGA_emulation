@@ -36,12 +36,13 @@ class ImportedPaths(dict):
     validation = None
 
 
-def _execute(inputs, operation, output, summary, root, configuration):
-    require_native_schema("sta-path-request-v1")
+def _execute(inputs, operation, output, summary, root, configuration, *,
+             request_schema="sta-path-request-v1", magic=0x31505453464D5545):
+    require_native_schema(request_schema)
     request = root/"request.bin"
     writer = CheckedRequestWriter(request)
     try:
-        writer.put("QI", 0x31505453464D5545, 1)
+        writer.put("QI", magic, 1)
         for source in inputs:
             writer.put("3Q4q", *source.generation)
         writer.text(json.dumps(configuration, sort_keys=True, separators=(",", ":"), allow_nan=False))

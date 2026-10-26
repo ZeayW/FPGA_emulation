@@ -488,7 +488,7 @@ there is no silent implementation or provider fallback.
 
 | Stage | Existing native/indexed foundation | Remaining delivery obligation |
 | --- | --- | --- |
-| Phase 1–2 | Native synthesis/STA engines; compact indexed inputs; native OpenSTA input export, path-result import and final-record validation | Migrate Yosys import, remaining weight production and phase lifecycle under the shared artifact API |
+| Phase 1–2 | Native synthesis/STA engines; native OpenSTA input export, indexed path-result import, timing-weight generation and independent validators | Migrate Yosys import and remaining phase lifecycle under the shared artifact API |
 | Phase 3 | Shared-core candidate eligibility and primary clustering; native v14 store-based pressure construction/search and semantic/capture production; native exact-binary writer | Migrate remaining policy/assignment publication and reference modes; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
@@ -718,9 +718,8 @@ now use one shared-core stage over compact EmuIR, including source-bound negativ
 clock specialization, instance-local pin merging, constants and escaped-name
 ambiguity rejection. The Python indexed emitter is retired; standalone text
 exporters select only the requested output. Pre- and post-route OpenSTA use the
-same producer and grouped publication. Independent route qualification,
-timing-weight production and phase orchestration still have Python data-plane
-work.
+same producer and grouped publication. Independent route qualification and
+remaining phase orchestration still require migration.
 These remaining boundaries, the complete native entry/lifecycle and current-source
 whole-design qualification keep W6/W7 incomplete.
 See [global timing semantics](global-opensta-qualification.md).
@@ -747,6 +746,35 @@ hash the population a second time. The shared publisher seals the store once,
 then commits the bounded selector. Rejection preserves the previous publication.
 The former Python streaming producer is test-only; native failure never selects
 it. This closes path-result import and validation, not complete Phase 1–2 or W7.
+
+Timing-weight production and validation now use the same core. The operation
+`physical build-sta-weights EMUIR PATH_SELECTOR PATH_STORE REQUEST STORE SUMMARY`
+binds original input generations and reduces path memberships directly into the
+current indexed net-weight owner. Maximum clamped path criticality, membership
+counts, the power-law weight, and summary extrema preserve the existing policy.
+Multiplication and addition round separately, preserving the reference arithmetic
+instead of allowing FMA contraction to change fractional-exponent records.
+
+A separate native auditor visits memberships in net order, independently reduces
+one live net, and merges it with final stored weights. It checks exact coverage,
+counts, scalar domains, policy parameters, source identity, summary and payload
+counts without a Python path or weight dictionary. The producer runs this audit
+before publication. `physical validate-sta-weights` exposes an explicit standalone
+audit. The host performs shared source-bound publication and returns a bounded
+summary. Ordinary compiled timing passes the producer's original generation-bound
+validation proof to the weight consumer. A changed owner or manifest rejects
+instead of rebinding the file or repeating validation. The former unqualified
+`input_already_validated` boolean is retired for this producer; explicit standalone
+input validation retains the strong source/payload audit.
+
+OpenSTA API/CLI/compile extraction now share one current indexed result route and
+require compact EmuIR v2 before engine launch. The full inline path producer and
+unused inline weight producer are retired; the independent former path/weight
+producers remain only under `tests/`. Directed through-net diagnostics query the
+selected membership relation instead of rebuilding the entire path-net population.
+This closes the normal path-result and timing-weight data planes. Yosys import,
+remaining timing configuration/engine orchestration and complete real-design
+qualification still keep Phase 1–2 and W7 open.
 
 ## Validation and completion
 

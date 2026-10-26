@@ -352,13 +352,11 @@ class OpenStaProviderTest(unittest.TestCase):
     def test_runner_imports_and_independently_checks_database(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            ir_path = root / "ir.json"
+            ir_path = root / "ir.emuir.sqlite"
             output_path = root / "database.json"
             log_path = root / "opensta.log"
             executable = root / "fake-openroad"
-            ir_path.write_text(
-                json.dumps(self.ir.value), encoding="utf-8"
-            )
+            self.ir.save(ir_path)
             executable.write_text(
                 """#!/usr/bin/env python3
 import os
@@ -490,7 +488,6 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                     ],
                 },
                 executable=str(executable),
-                _stream_output=True,
             )
             manifest = json.loads(output_path.read_text(encoding="utf-8"))
             checked = validate_sta_path_database(output_path, ir_path)
@@ -507,10 +504,10 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
     def test_timing_io_rejects_absent_or_wrong_direction_ports(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            ir_path = root / "ir.json"
+            ir_path = root / "ir.emuir.sqlite"
             output_path = root / "database.json"
             executable = root / "fake-opensta"
-            ir_path.write_text(json.dumps(self.ir.value), encoding="utf-8")
+            self.ir.save(ir_path)
             executable.write_text(
                 "#!/bin/sh\n"
                 "if [ \"$1\" = \"-version\" ]; then echo 3.1.0; exit 0; fi\n"
@@ -656,11 +653,11 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
     def test_runner_certifies_explicit_zero_path_control_net(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            ir_path = root / "ir.json"
+            ir_path = root / "ir.emuir.sqlite"
             output_path = root / "database.json"
             coverage_path = root / "coverage.json"
             executable = root / "fake-opensta"
-            ir_path.write_text(json.dumps(self.ir.value), encoding="utf-8")
+            self.ir.save(ir_path)
             executable.write_text(
                 """#!/usr/bin/env python3
 import os
@@ -728,10 +725,10 @@ Path(os.environ["EMUFLOW_STA_THROUGH_COVERAGE"]).write_text(
     def test_runner_rejects_zero_path_for_reachable_timed_endpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            ir_path = root / "ir.json"
+            ir_path = root / "ir.emuir.sqlite"
             output_path = root / "database.json"
             executable = root / "fake-opensta"
-            ir_path.write_text(json.dumps(self.ir.value), encoding="utf-8")
+            self.ir.save(ir_path)
             executable.write_text(
                 """#!/usr/bin/env python3
 import os

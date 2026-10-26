@@ -76,7 +76,7 @@ def test_normal_consumer_reuses_native_proof_without_rescanning_rows(tmp_path):
     with patch("emuflow.sta_paths_native.validate_paths", side_effect=AssertionError("redundant native scan")), \
          patch("emuflow.sta._validate_sta_path_database_stream", side_effect=AssertionError("Python validator")):
         report = run_opensta_path_database(source, tmp_path/"engine.json", clocks={"clk": 10},
-            executable=str(ROOT/"tests/fixtures/fake_opensta_paths.py"), _stream_output=True)
+            executable=str(ROOT/"tests/fixtures/fake_opensta_paths.py"))
     assert report["checker"]["status"] == "pass"
     assert report["path_import"]["implementation_id"] == "native-sta-path-import-v1"
 

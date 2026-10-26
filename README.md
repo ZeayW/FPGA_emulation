@@ -254,8 +254,9 @@ The shared core also supervises external tools with process-group cancellation,
 resource limits, literal arguments and environment values (including empty
 values), and bounded diagnostics. Installed Yosys streaming and OpenSTA
 extraction use that lifecycle through small requests.
-OpenSTA path results enter the indexed TimingPathDB through a shared-core
-importer and final-record validator; the host carries file references and bounded
+OpenSTA's API, CLI and compile flow consume compact EmuIR v2 and publish one
+indexed TimingPathDB. The shared core owns result import, timing-weight generation
+and their independent validators; hosts carry file references and bounded
 summaries. See the [migration contract](docs/PHASE3_NATIVE_MIGRATION.md).
 An opt-in `multi-fpga compile --compile-implementation native-control-v1` uses
 the C++ one-shot `emuflow-native compile` controller. Its TDM stage prepares

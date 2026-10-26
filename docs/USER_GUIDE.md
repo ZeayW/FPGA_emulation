@@ -113,6 +113,28 @@ Preserve each measurement's scope. Retain the compact
 controller result alongside normal terminal validation evidence, and apply the
 same experiment cleanup and full Phase 7/7C acceptance requirements.
 
+## Indexed OpenSTA timing inputs and weights
+
+`sta run-opensta` and the Python extraction API require compact EmuIR v2 and
+produce the same indexed TimingPathDB as compilation. A standalone command can
+consume the Phase 1 `design.emuir.sqlite` directly:
+
+```sh
+python3 -m emuflow sta run-opensta --ir build/run/frontend/phase1/design.emuir.sqlite \
+  --clock-period clk=10 --output build/timing/path-database.json
+python3 -m emuflow sta derive-partition-net-weights \
+  --ir build/run/frontend/phase1/design.emuir.sqlite \
+  --database build/timing/path-database.json --output build/timing/net-weights.json
+```
+
+Each JSON file is a bounded selector for its canonical SQLite payload. Native
+weight generation and independent validation preserve maximum path criticality,
+the configured power law and exact membership counts. The old inline result
+producer and private output-mode/inline-return switches are retired. Legacy
+documents remain usable only by their supported explicit readers or the matching
+historical tools; they are not current weight-producer inputs. Version/format
+errors fail before expensive engine execution when the source format is known.
+
 ## Complete build
 
 Run `emuflow-native check-runtime` in the environment that will execute the flow

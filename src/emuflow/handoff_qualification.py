@@ -131,7 +131,7 @@ def main():
             timing_io=json.loads(args.timing_io.read_text()) if args.timing_io else None,
             architecture_timing_db_path=args.architecture_timing_db,
             executable=args.sta_executable, max_paths=args.max_paths,
-            log_path=args.out.with_suffix(".sta.log"), _stream_output=True,
+            log_path=args.out.with_suffix(".sta.log"),
         )
         result["timing"] = timing
         # Explicit paired qualification: seal canonical path records, not run-

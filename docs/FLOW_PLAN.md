@@ -109,6 +109,13 @@ independently, and reduces normalization and original-path QoR without a Python
 path population. The bounded host publishes the selector through the common
 publication API. Immediate consumers reuse the invocation's generation-bound
 validation proof; an explicit standalone audit reopens the canonical owner.
+The current OpenSTA API and CLI use that same indexed result route. Inline
+result production and the private output-mode/inline-return switches are retired.
+Timing-weight generation consumes the typed path owner directly: a native SQL
+reduction applies the unchanged maximum path-criticality policy, and a separate
+ordered source-membership reducer independently checks every final weight.
+Neither operation transfers path or net-weight populations through Python.
+Derived weights retain their existing indexed schema and power-law parameters.
 
 The optional native one-shot controller runs TDM directly through an isolated
 native process, including BoardDB/route configuration preparation. Other phases

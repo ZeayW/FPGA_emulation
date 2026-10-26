@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Any,Dict,Mapping,Optional
 from emuflow.ir import EmuIR
 from emuflow.errors import ValidationError
-from emuflow.sta import (STA_PATH_DATABASE_PROVIDERS,STA_PATH_DATABASE_TSV_HEADER,STA_PATH_DATABASE_INDEX_SCHEMA,STA_PATH_DATABASE_SQLITE_FORMAT,_sta_ir_source_bindings,_parse_sta_path_database_tsv_record,sta_object_index,_adopt_sta_payload)
+from emuflow.io import write_json
+from emuflow.sta import (STA_PATH_DATABASE_SCHEMA,_database_normalization,_normalized_slack,STA_PATH_DATABASE_PROVIDERS,STA_PATH_DATABASE_TSV_HEADER,STA_PATH_DATABASE_INDEX_SCHEMA,STA_PATH_DATABASE_SQLITE_FORMAT,_sta_ir_source_bindings,_parse_sta_path_database_tsv_record,sta_object_index,_adopt_sta_payload)
 from emuflow.store_publication import bind_store_source,validate_store_destination,commit_store_selector
 
 def import_sta_path_database_tsv_streaming(
@@ -240,3 +241,87 @@ def import_sta_path_database_tsv_streaming(
         "path_qor": qor,
         "output": str(output_path),
     }
+
+def import_sta_path_database_tsv(
+    input_path: Path,
+    ir_path: Path,
+    output_path: Path,
+    *,
+    provider: str,
+    source: Optional[Mapping[str, Any]] = None,
+    _ir: Optional[EmuIR] = None,
+    _return_value: bool = False,
+) -> Dict[str, Any]:
+    if provider not in STA_PATH_DATABASE_PROVIDERS:
+        raise ValidationError("STA path database provider is invalid")
+    # Large physical timing graphs can exceed hundreds of MiB.  The OpenSTA
+    # producer already owns the validated EmuIR object, so let that producer
+    # pass the object through rather than reparsing the same JSON solely for
+    # TSV import.  The private arguments deliberately stay out of the public
+    # CLI contract; ordinary standalone callers retain the path-based load.
+    ir = _ir if _ir is not None else EmuIR.load(ir_path)
+    known_nets = ir.net_ids if hasattr(ir, "net_ids") else {net["id"] for net in ir.value["nets"]}
+    object_index = sta_object_index(ir)
+    lines = input_path.read_text(encoding="utf-8").splitlines()
+    if not lines or lines[0] != STA_PATH_DATABASE_TSV_HEADER:
+        raise ValidationError("STA path database TSV: invalid header")
+    paths = []
+    path_ids = set()
+    for index, line in enumerate(lines[1:], start=2):
+        if not line:
+            continue
+        record = _parse_sta_path_database_tsv_record(
+            line,
+            index,
+            known_nets=known_nets,
+            object_index=object_index,
+        )
+        path_id = record["id"]
+        if path_id in path_ids:
+            raise ValidationError(
+                f"STA path database TSV line {index}: "
+                "invalid or duplicate path"
+            )
+        path_ids.add(path_id)
+        paths.append(record)
+    if not paths:
+        raise ValidationError(
+            "STA path database TSV contains no mapped timing paths"
+        )
+    normalization = _database_normalization(paths)
+    for path in paths:
+        path["normalized_slack"] = _normalized_slack(
+            path["clock_period_ns"],
+            path["slack_ns"],
+            normalization,
+        )
+    source_value = dict(source) if source is not None else {}
+    source_value.update(
+        {
+            "provider": provider,
+            "input": str(input_path),
+        }
+    )
+    artifact = {
+        "schema": STA_PATH_DATABASE_SCHEMA,
+        "design": ir.value["design"]["name"],
+        "source": source_value,
+        "normalization": normalization,
+        "paths": paths,
+    }
+    write_json(output_path, artifact)
+    result = {
+        "status": "pass",
+        "design": artifact["design"],
+        "paths": len(paths),
+        "structured_endpoint_paths": sum(
+            "startpoint" in path and "endpoint" in path for path in paths
+        ),
+        "unique_path_nets": len(
+            {net for path in paths for net in path["path_nets"]}
+        ),
+        "output": str(output_path),
+    }
+    if _return_value:
+        result["_value"] = artifact
+    return result

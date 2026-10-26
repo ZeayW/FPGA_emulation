@@ -354,6 +354,20 @@ port bits. Immediate proof reuse must reject altered manifests or generations
 and must not trigger another full-row validation. Fixtures establish component
 correctness only; complete real NVDLA qualification remains required.
 
+Timing-weight gates compare all typed rows, policy fields and summary values with
+the test-only independent producer. Include fractional exponents, zero-criticality
+populations and values sensitive to fused multiplication/addition. Poison Python
+path and weight iteration during both production and independent validation.
+Mutate stored criticality/count/weight, membership coverage, source binding, policy,
+summary and payload descriptors; request CRC/version/generation rejection must
+preserve the prior publication. A distinct path/net population must not create
+Python dictionaries proportional to the population. Exercise the default CLI
+extraction-to-weights chain without private output-mode arguments, and reject
+legacy EmuIR before invoking OpenSTA. The compiled consumer must reuse the original
+generation-bound path proof without a second full audit and reject changed
+owners, manifests or a bare boolean masquerading as that proof. Retain full NVDLA equivalence and performance
+qualification separately from these component gates.
+
 ## Independent native schedule validation
 
 Native compiler gates must prove that TDM never invokes a Python adapter. Compare

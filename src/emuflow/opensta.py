@@ -20,12 +20,9 @@ from .ir import EmuIR
 from .native_tools import resolve_native_executable
 from .process_output import run_with_bounded_output
 from .sta import (
-    import_sta_path_database_tsv,
     import_sta_path_database_tsv_streaming,
     validate_sta_path_database_path_value,
-    write_emuir_net_map,
 )
-from .verilog import write_mapped_verilog
 from .xilinx_preplacement_timing import (
     XILINX_PREPLACEMENT_TIMING_SCHEMA,
     validate_xilinx_preplacement_timing_db,
@@ -1317,33 +1314,25 @@ def _run_opensta_path_database(
     through_nets: Optional[Sequence[str]] = None,
     through_coverage_path: Optional[Path] = None,
     validate_output: bool = True,
-    _return_database: bool = False,
-    _stream_output: bool = False,
     _ir=None,
-    _timing_model=None,
+    _timing_model=None, _capture_validation=None,
 ) -> Dict[str, Any]:
     if max_paths <= 0:
         raise ValidationError("OpenSTA max_paths must be positive")
-    if _stream_output and _return_database:
-        raise ValidationError(
-            "streamed OpenSTA output cannot return an inline database"
-        )
-    ir = _ir if _ir is not None else EmuIR.load(ir_path)
+    if _ir is None:
+        raise ValidationError("OpenSTA requires indexed streaming input")
+    ir = _ir
     through_net_ids = list(through_nets or [])
-    if _stream_output and through_net_ids:
-        raise ValidationError(
-            "streamed OpenSTA output does not support directed through-net queries"
-        )
     if (
         any(not isinstance(net, str) or not net for net in through_net_ids)
         or len(through_net_ids) != len(set(through_net_ids))
     ):
         raise ValidationError("OpenSTA through_nets must be unique net IDs")
-    net_index = (
-        {net["id"]: index for index, net in enumerate(ir.value["nets"])}
-        if through_net_ids
-        else {}
-    )
+    net_index = {}
+    for net in through_net_ids:
+        row = ir.connection.execute("SELECT seq FROM net_records WHERE id=?", (net,)).fetchone()
+        if row is not None:
+            net_index[net] = int(row[0])
     unknown_through_nets = sorted(set(through_net_ids) - set(net_index))
     if unknown_through_nets:
         raise ValidationError(
@@ -1390,18 +1379,9 @@ def _run_opensta_path_database(
         # OpenSTA's intentionally small Verilog reader does not accept net
         # declaration keywords on ports, attributes, or instance parameters.
         # Those constructs do not affect static timing connectivity.
-        input_export = None
-        if hasattr(ir, "source"):
-            from .opensta_export_native import export_opensta_inputs
-            input_export = export_opensta_inputs(ir, verilog=verilog_path, net_map=net_map_path,
-                                                timing_cell_types=instance_cell_types)
-        else:
-            write_mapped_verilog(
-                ir, verilog_path,
-                timing_only=True,
-                timing_cell_types=instance_cell_types,
-            )
-            write_emuir_net_map(ir_path, net_map_path, _ir=ir)
+        from .opensta_export_native import export_opensta_inputs
+        input_export = export_opensta_inputs(ir, verilog=verilog_path, net_map=net_map_path,
+                                            timing_cell_types=instance_cell_types)
         liberty_path.write_text(
             render_opensta_liberty(getattr(model, "base_model", model)), encoding="utf-8"
         )
@@ -1480,27 +1460,11 @@ def _run_opensta_path_database(
             ),
             "timing_io": timing_io_summary,
         }
-        if _stream_output:
-            imported = import_sta_path_database_tsv_streaming(
-                raw_path,
-                ir_path,
-                output_path,
-                provider=OPENSTA_PROVIDER,
-                source=source_value,
-                _ir=ir,
-            )
-            database = read_json(output_path)
-        else:
-            imported = import_sta_path_database_tsv(
-                raw_path,
-                ir_path,
-                output_path,
-                provider=OPENSTA_PROVIDER,
-                source=source_value,
-                _ir=ir,
-                _return_value=True,
-            )
-            database = imported.pop("_value")
+        imported = import_sta_path_database_tsv_streaming(
+            raw_path, ir_path, output_path, provider=OPENSTA_PROVIDER,
+            source=source_value, _ir=ir,
+        )
+        database = read_json(output_path)
 
         through_query_records = (
             _read_through_coverage_tsv(
@@ -1519,11 +1483,16 @@ def _run_opensta_path_database(
     covered_through_nets = []
     through_coverage: Dict[str, Any] | None = None
     if through_net_ids:
-        path_nets = {
-            net
-            for path in database["paths"]
-            for net in path["path_nets"]
-        }
+        from .sta import _sta_path_payload, _open_sqlite_read_only
+        payload, _digest, _count, _format = _sta_path_payload(output_path, database)
+        path_nets = set()
+        connection = _open_sqlite_read_only(payload)
+        try:
+            for net in through_net_ids:
+                if connection.execute("SELECT 1 FROM path_nets WHERE net_id=? LIMIT 1", (net,)).fetchone() is not None:
+                    path_nets.add(net)
+        finally:
+            connection.close()
         coverage_records = []
         for net in through_net_ids:
             query = through_query_records[net]
@@ -1623,8 +1592,13 @@ def _run_opensta_path_database(
         }
     if "path_qor" in imported:
         result["path_qor"] = imported["path_qor"]
-    if _return_database:
-        result["_database"] = database
+    if proof is not None:
+        from .store_publication import require_store_sources_unchanged
+        require_store_sources_unchanged(proof.sources)
+    if _capture_validation is not None:
+        if proof is None:
+            raise ValidationError("OpenSTA did not return its original path validation proof")
+        _capture_validation(proof)
     return result
 
 
@@ -1637,28 +1611,31 @@ def run_opensta_path_database(
     executable: Optional[str] = None, max_paths: int = 200000,
     log_path: Optional[Path] = None, through_nets: Optional[Sequence[str]] = None,
     through_coverage_path: Optional[Path] = None, validate_output: bool = True,
-    _return_database: bool = False, _stream_output: bool = False,
-    _timing_model=None,
+    _timing_model=None, _capture_validation=None,
 ) -> Dict[str, Any]:
     """Use compact streaming input for production Xilinx timing extraction."""
     from .emuir_storage import is_emuir_sqlite
     from .emuir_compact import is_compact_emuir
     from .indexed_timing import IndexedTimingView
-    use_index = (_stream_output and not through_nets and is_emuir_sqlite(ir_path)
-                 and is_compact_emuir(ir_path)
-                 and (architecture_timing_db_path is None or
-                      read_json(architecture_timing_db_path).get("schema") == XILINX_PREPLACEMENT_TIMING_SCHEMA))
-    if _timing_model is not None and not use_index:
-        raise ValidationError("a bound routed model requires indexed streaming OpenSTA input")
-    view = IndexedTimingView(ir_path) if use_index else None
+    if not is_emuir_sqlite(ir_path) or not is_compact_emuir(ir_path):
+        raise ValidationError("OpenSTA requires compact EmuIR v2 and indexed streaming input")
+    if (architecture_timing_db_path is not None and
+            read_json(architecture_timing_db_path).get("schema") != XILINX_PREPLACEMENT_TIMING_SCHEMA):
+        raise ValidationError("OpenSTA requires the current Xilinx architecture timing database")
+    from .native_tools import require_native_schema
+    require_native_schema("opensta-input-export-request-v1")
+    require_native_schema("sta-path-request-v1")
+    if _capture_validation is not None and not callable(_capture_validation):
+        raise ValidationError("OpenSTA validation receiver must be callable")
+    view = IndexedTimingView(ir_path)
     try:
         return _run_opensta_path_database(
             ir_path, output_path, clocks=clocks, timing_io=timing_io,
             timing_model_path=timing_model_path, architecture_timing_db_path=architecture_timing_db_path,
             executable=executable, max_paths=max_paths, log_path=log_path, through_nets=through_nets,
             through_coverage_path=through_coverage_path, validate_output=validate_output,
-            _return_database=_return_database, _stream_output=_stream_output, _ir=view,
-            _timing_model=_timing_model,
+            _ir=view,
+            _timing_model=_timing_model, _capture_validation=_capture_validation,
         )
     finally:
         if view is not None:

@@ -96,7 +96,7 @@ def test_indexed_runner_keeps_native_coverage_bounded_in_its_final_report(tmp_pa
          patch("emuflow.opensta._sealed_string_set_summary", side_effect=AssertionError("expanded model summary")), \
          patch.object(type(model["cells"]), "items", side_effect=AssertionError("expanded model")):
         report = run_opensta_path_database(output, tmp_path/"paths.json", clocks={"clk": 10},
-                                          _timing_model=model, _stream_output=True)
+                                          _timing_model=model)
     summary = report["used_cell_type_summary"]
     assert report["input_export"]["implementation_id"] == "native-opensta-export-v1"
     assert report["input_export"]["native_metrics"]["wall_seconds"] >= 0
@@ -207,9 +207,13 @@ def test_bound_model_cannot_fall_back_to_inline_graph_loading(tmp_path):
     from emuflow.opensta import run_opensta_path_database
     mapped, timing, output = fixture(tmp_path)
     model, _ = stage(mapped, timing, output)
+    from emuflow.ir import EmuIR
+    from emuflow.emuir_storage import _write_emuir_sqlite_v1
+    legacy = tmp_path/"legacy.emuir.sqlite"
+    _write_emuir_sqlite_v1(legacy, EmuIR.load(output).value)
     with patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("whole graph fallback")), \
          pytest.raises(ValidationError, match="indexed streaming"):
-        run_opensta_path_database(output, tmp_path / "paths.json", _timing_model=model)
+        run_opensta_path_database(legacy, tmp_path / "paths.json", _timing_model=model)
 
 
 def test_current_opensta_cli_uses_the_typed_source(tmp_path):
