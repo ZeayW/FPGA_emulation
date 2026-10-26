@@ -41,7 +41,7 @@ The initial topology hop legalizer also links into this core and uses the
 shared stage/error/metrics/source-binding and atomic output contracts. Its old
 standalone build, deployment and test entry are retired. The existing algorithm
 and independent final hop audit remain; summary output retains counters without
-a Python move trace. Native direct model construction is still W4 work.
+a Python move trace. Current primary ownership also supports the direct source-to-kernel hop model described below; complete stage ownership remains W7 work.
 
 The [W0 contract](FLOW_PLAN.md#shared-native-core-w0) specifies shared interfaces,
 compatibility and acceptance separately from the later phase algorithm migrations.
@@ -182,9 +182,7 @@ Owned resource queries consume those same original artifacts through the v2
 request instead of copying a cluster-part column back through Python. Assignment
 construction reuses their bounded counts and exposes any part-coordinate
 translation as a borrowed read-only view, without another cluster-sized array.
-Explicit reference owners retain the existing record request. Configuration,
-hard-hop handling and complete Phase 3/controller ownership still require
-migration and real NVDLA stage qualification.
+Explicit reference owners retain the existing record request. Complete Phase 3 option assembly/controller ownership and real NVDLA stage qualification remain unfinished.
 
 Compact production constraints now normalize through
 `phase3 normalize-configuration` in the shared core. The original constraint
@@ -207,8 +205,7 @@ contract. Raw input size is separate: a large redundant input can still produce
 small effective constraints. Native code checks original generations and closes
 the result before the host reads that bounded configuration. Shared resource
 decoding preserves wide integer amounts and raw field names, including escaped
-NUL, without JSON scalar coercion. Phase 3 option assembly, hard-hop handling
-and complete native stage/controller ownership are still unfinished; this
+NUL, without JSON scalar coercion. Phase 3 option assembly and complete native stage/controller ownership are still unfinished; this
 producer does not establish real NVDLA runtime/RSS gains or W7 completion.
 
 `phase3 reduce-loads EMUIR PRIMARY REQUEST OUTPUT` independently reduces the
@@ -565,7 +562,7 @@ there is no silent implementation or provider fallback.
 | Stage | Existing native/indexed foundation | Remaining delivery obligation |
 | --- | --- | --- |
 | Phase 1–2 | Complete native ordinary RTL frontend under native control, including engine/import/clock/resource/report publication; native OpenSTA input export, indexed path-result import, timing-weight generation and independent validators | Migrate supplied/prepared/other indexed-source adapters and complete timing-stage lifecycle; qualify the whole current-design frontend |
-| Phase 3 | Native source-backed constraint normalization, candidate eligibility/primary clustering, complete TritonPart initialization/native v14 search; original-owner decision and independent audit; selected semantics and final-directory publication | Complete option assembly, hard-hop handling and stage lifecycle/controller integration; qualify complete stage costs |
+| Phase 3 | Native source-backed constraint normalization, candidate eligibility/primary clustering, complete TritonPart initialization/native v14 search; original-owner decision and independent audit; selected semantics and final-directory publication | Complete option assembly and stage lifecycle/controller integration; qualify complete stage costs |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |
@@ -575,6 +572,31 @@ there is no silent implementation or provider fallback.
 Native computation does not eliminate algorithmic search cost. Compare search,
 imported-solution and frozen-output replay as separate execution modes. Porting
 an adapter must not change the algorithm budget or weaken independent legality.
+
+## Source-owned hard-hop generation and audit
+
+`phase3 refine-hops-from-primary EMUIR PRIMARY REQUEST OUTPUT_DIR [OWNER [ORDER]] [WEIGHTS_SELECTOR WEIGHTS_STORE]`
+accepts original TritonPart or PATRON ownership and board-sized policy. It builds
+the existing directed net/resource model in C++, calls the unchanged FM/exact
+fallback kernel, and publishes current ownership columns plus a bounded summary.
+Python does not load timing weights, construct a net population, serialize a
+cluster/net text model or parse per-cluster output. A zero-move result retains
+the original caller ownership without rebuilding assignment semantics.
+
+Independent ordered source endpoint and resource reductions check the original
+and selected assignments, fixed ownership, active/minimum device use, capacity,
+balance, reachability and hard hops. Violation examples retain canonical net and
+FPGA order with a bounded 64-record heap. Inactive devices remain valid topology
+relays. `audit-hops-from-primary` applies those checks to the selected owner
+without another search model or optimization pass. Normal Phase 3 final PATRON
+and single-target audits use this owner when original artifacts are available.
+Generation/CRC/weight seals reject corruption before a complete new directory
+publishes. Failure never retries through the numeric reference path.
+
+This closes source-dependent hop construction, repair handoff and independent
+audit for current native owners. Whole Phase 3 request assembly, stage execution
+and direct compiler integration remain unfinished, as does complete NVDLA
+runtime/RSS and physical/global timing qualification.
 
 ## Structural candidate production
 

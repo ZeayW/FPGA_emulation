@@ -670,3 +670,13 @@ and RSS scopes. Both supported assignment generations must stream exact physical
 segments/captures without a compatibility fallback or full reconstruction.
 These component gates do not qualify the NVDLA design; current-source complete
 physical/global timing evidence remains a separate required gate.
+
+### Native source-owned partition hops
+
+`tests/test_partition_hops_native.py` compares original-owner native model/search
+and independent before/after source audits against the retained numeric oracle.
+It covers timing weights, reordered FPGA coordinates, inactive topology relays,
+fixed infeasibility, zero-move ownership reuse, deterministic replay and corrupt
+ownership/weight rejection. Production Phase 3 tests also exercise the direct
+initializer → hop owner → PATRON → selected source audit → final transaction.
+These are component gates; complete NVDLA acceptance remains separate.

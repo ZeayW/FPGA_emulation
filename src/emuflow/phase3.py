@@ -292,11 +292,13 @@ def _patron_hop_audit_report(
     platform: Platform,
     assignment: Dict[str, Any],
     route_constraints: Dict[str, Any],
+    *, ir=None, clusters=None,
 ) -> Dict[str, Any]:
     """Audit PATRON's native hop contract without another optimizer pass."""
 
     audit = validate_assignment_hops(
-        platform, assignment, route_constraints
+        platform, assignment, route_constraints,
+        _native_context=(ir, clusters, assignment['constraints']) if ir is not None and clusters is not None else None,
     )
     return {
         "schema": "emuflow.hop-partition-refinement/v1",
@@ -314,11 +316,13 @@ def _single_active_hop_audit_report(
     platform: Platform,
     assignment: Dict[str, Any],
     route_constraints: Dict[str, Any],
+    *, ir=None, clusters=None,
 ) -> Dict[str, Any]:
     """Audit hop legality when capacity selection leaves one target."""
 
     audit = validate_assignment_hops(
-        platform, assignment, route_constraints
+        platform, assignment, route_constraints,
+        _native_context=(ir, clusters, assignment['constraints']) if ir is not None and clusters is not None else None,
     )
     return {
         "schema": "emuflow.hop-partition-refinement/v1",
@@ -609,6 +613,7 @@ def run_phase3(
                 platform,
                 initial,
                 route_constraints,
+                ir=ir, clusters=clusters,
             )
         else:
             initial, patron_initial_hop = phase3_runtime_call(
@@ -879,6 +884,7 @@ def run_phase3(
             platform,
             assignment,
             route_constraints,
+            ir=ir, clusters=clusters,
         )
     elif provider == "patron":
         if (
@@ -912,6 +918,7 @@ def run_phase3(
             platform,
             assignment,
             route_constraints,
+            ir=ir, clusters=clusters,
         )
     else:
         assignment, hop_refinement = phase3_runtime_call(

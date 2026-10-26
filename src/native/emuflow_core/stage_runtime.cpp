@@ -137,6 +137,8 @@ constexpr RegisteredSchema schemas[] = {
     {"partition-load-request-v2", ArtifactEncoding::kBinary, 0x3251454c504d5545ULL, 2},
     {"partition-decision-request-v1", ArtifactEncoding::kBinary, 0x31514450464d5545ULL, 1},
     {"partition-decision-summary-v1", ArtifactEncoding::kText, 0, 1},
+    {"partition-hop-request-v1", ArtifactEncoding::kBinary, 0x31514850464d5545ULL, 1},
+    {"partition-hop-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"partition-configuration-request-v1", ArtifactEncoding::kBinary, 0x31474350464d5545ULL, 1},
     {"partition-constraints-v1", ArtifactEncoding::kText, 0, 1},
     {"partition-constraints-input-v1", ArtifactEncoding::kText, 0, 1},

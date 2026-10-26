@@ -10,6 +10,7 @@
 #include "emuflow_core/yosys_hierarchy.hpp"
 #include "emuflow_core/frontend.hpp"
 #include "emuflow_core/partition_init.hpp"
+#include "emuflow_core/partition_hops.hpp"
 #include "emuflow_core/partition_semantics.hpp"
 #include "emuflow_core/phase3_exact_binary.hpp"
 #include "emuflow_core/partition_publish.hpp"
@@ -25,6 +26,8 @@ constexpr const char* kUsage =
     "  publish-store REQUEST OUTPUT\n"
     "  compile REQUEST_JSON\n"
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
+    "  phase3 refine-hops-from-primary EMUIR PRIMARY REQUEST OUTPUT_DIR [OWNER [ORDER]] [WEIGHTS_SELECTOR WEIGHTS_STORE]\n"
+    "  phase3 audit-hops-from-primary EMUIR PRIMARY REQUEST OUTPUT_DIR [OWNER [ORDER]]\n"
     "  phase3 initialize-tritonpart EMUIR PRIMARY REQUEST OUTPUT_DIR [WEIGHTS_SELECTOR WEIGHTS_STORE] [SOLUTION]\n"
     "  phase3 finalize-assignment-semantics EMUIR PRIMARY POLICY REQUEST OUTPUT_DIR [OWNER [ORDER]]\n"
     "  phase3 publish-exact-binary NODES CAPTURES REQUEST OUTPUT_DIR\n"
@@ -163,6 +166,17 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if (argc == 4 && std::string(argv[1]) == "publish-store") {
     const auto request = emuflow::core::ArtifactRef::Bind(argv[2],"sqlite-publication-request-v1");
     return Finish(emuflow::core::PublishSqliteStore(request,argv[3],report),report);
+  }
+  if(argc>=7 && argc<=11 && std::string(argv[1])=="phase3" && (std::string(argv[2])=="refine-hops-from-primary" || std::string(argv[2])=="audit-hops-from-primary")) {
+    std::vector<emuflow::core::ArtifactRef> inputs{emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),emuflow::core::ArtifactRef::Bind(argv[4],"partition-cluster-columns-v2"),emuflow::core::ArtifactRef::Bind(argv[5],"partition-hop-request-v1")};
+    emuflow::core::CheckedRequestReader request(inputs[2].path(),8*1024*1024);
+    if(request.Read<std::uint64_t>()!=0x31514850464d5545ULL || request.Read<std::uint32_t>()!=1)throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidArtifact,"invalid primary hop request");
+    const auto flags=request.Read<std::uint32_t>();const unsigned owners=flags&3,weights=(flags&4)?2:0;
+    if(owners>2 || (flags&~15U) || unsigned(argc)!=7+owners+weights)throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"invalid primary hop source coverage");
+    if(owners)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[7],owners==1?"patron-initial-columns-v1":"patron-output-v1"));
+    if(owners==2)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[8],"patron-cluster-order-v1"));
+    if(weights){inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[7+owners],"net-weight-selector-v2"));inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[8+owners],"net-weight-store-v1"));}
+    return Finish(emuflow::core::RefinePartitionHopsFromPrimary(inputs,argv[6],std::string(argv[2])=="audit-hops-from-primary"),report);
   }
   if(argc>=7 && argc<=10 && std::string(argv[1])=="phase3" && std::string(argv[2])=="initialize-tritonpart") {
     std::vector<emuflow::core::ArtifactRef> inputs{emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),emuflow::core::ArtifactRef::Bind(argv[4],"partition-cluster-columns-v2"),emuflow::core::ArtifactRef::Bind(argv[5],"partition-initialization-request-v1")};

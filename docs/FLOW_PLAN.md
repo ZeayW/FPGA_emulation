@@ -273,13 +273,16 @@ SQLite handles and circuit-sized Python containers do not cross it.
 | Failure and measurements | `StageError`, `RunStage`, `StageResult` | Shared error codes and bounded reports; wall/CPU/I/O intervals and process lifetime RSS retain their stated scopes. |
 | External engine lifecycle | `RunExternalTool`, `ToolRequest`, `ToolResult` | Literal arguments/environment, bounded diagnostics, limits, deadlines, cancellation and reaping; engines remain separate processes. |
 
-The topology hop legalizer is a shared `StageRequest` operation
-(`phase3 refine-hops`), with original source generations, standard errors and
-metrics, and the common atomic text writer. Its existing deterministic FM and
-exact fallback kernel remains unchanged. Production emits ordered assignments
-and counters; optional diagnostic traces retain moves. Model construction still
-uses the streamed numeric input protocol and remains a Phase 3 data-plane task,
-separate from this W0 execution/publication consolidation.
+The topology hop legalizer uses the same source generations, errors, metrics
+and atomic directory publisher. `phase3 refine-hops-from-primary` directly reads
+original source/primary/ownership artifacts and calls the existing deterministic
+FM and tiny-case exact fallback through an internal C++ model. Its independent
+source endpoint/resource audit does not trust projected nets or kernel counters.
+`phase3 audit-hops-from-primary` checks selected ownership without building a
+second search model or executing another optimizer. The numeric `refine-hops`
+protocol remains an explicit reference/diagnostic input, not a production model
+exchange for current native owners. Complete Phase 3 stage/controller ownership
+is still a separate W7 delivery obligation.
 
 `EmuirView` reads indexed v1 and compact v2 directly. Explicit v1 reads derive
 counts because that historical format has no count manifest; compact production

@@ -231,12 +231,20 @@ def validate_assignment_hops(
     platform: Platform,
     assignment: Mapping[str, Any],
     route_constraints: Mapping[str, Any],
+    *, _native_context=None,
 ) -> Dict[str, Any]:
-    """Check an in-memory assignment without materializing refiner input."""
+    """Check original ownership directly when its native sources are available."""
 
     hop_limit = route_constraints.get("max_route_hops")
     if hop_limit is None:
         return {"status": "not-requested", "max_route_hops": None}
+    if _native_context is not None:
+        from .partition_hops_native import run as run_native_hops
+        ir, clusters, constraints = _native_context
+        native = run_native_hops(ir, platform, clusters, constraints, assignment,
+                                 route_constraints, audit_only=True)
+        if native is not None:
+            return native[1]['after']
     audit = audit_assignment_hops(
         assignment,
         _shortest_hop_distances(platform, route_constraints),
@@ -744,6 +752,31 @@ def refine_partition_hops(
             "enabled": False,
             "reason": "route constraints do not define max_route_hops",
         }
+
+    if not retain_diagnostics and (executable is None or is_unified_native_executable(executable)):
+        from .partition_hops_native import run as run_native_hops
+        native = run_native_hops(ir, platform, clusters_artifact, partition_constraints,
+            assignment, route_constraints, weights_path=net_weights_path, executable=executable)
+        if native is not None:
+            owners, summary = native
+            metadata = dict(assignment.get('provider_metadata', {}))
+            metadata['hop_feasibility'] = {'algorithm': HOP_REFINER_PROVIDER,
+                'native_status': 'PASS', 'move_count': summary['move_count'],
+                'native_metrics': summary['native_metrics'], 'implementation_id': summary['implementation_id']}
+            if summary['move_count'] == 0:
+                primary = dict(assignment)
+                primary['provider_metadata'] = metadata
+                owners.part_indices.owner.close()
+            else:
+                primary = build_partition_assignment(ir, platform, clusters_artifact,
+                    partition_constraints, owners, provider=assignment['provider'], seed=assignment['seed'],
+                    provider_metadata=metadata, _include_semantic_contract=not defer_semantic_contract,
+                    _stream_semantic_records=defer_semantic_contract)
+            return primary, {'schema': HOP_REFINER_REPORT_SCHEMA, 'status': 'pass', 'enabled': True,
+                'algorithm': HOP_REFINER_PROVIDER, 'before': summary['before'], 'after': summary['after'],
+                'moves': [], 'move_count': summary['move_count'], 'native_metrics': summary['native_metrics'],
+                'native_operation_metrics': summary['native_operation_metrics'],
+                'implementation_id': summary['implementation_id'], 'timing_weighted_nets': summary['timing_weighted_nets']}
 
     output_dir.mkdir(parents=True, exist_ok=True)
     distances = _shortest_hop_distances(platform, route_constraints)

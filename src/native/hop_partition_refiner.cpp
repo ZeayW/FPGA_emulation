@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <cstdint>
 #include "emuflow_core/native_stages.hpp"
+#include "emuflow_core/partition_hops.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include <iomanip>
 #include <iostream>
@@ -31,31 +32,9 @@ namespace {
 
 constexpr double kEps = 1.0e-9;
 
-struct Cluster {
-  int part = -1;
-  int fixed_part = -1;
-  std::vector<long long> weights;
-};
-
-struct Net {
-  double weight = 1.0;
-  int source = -1;
-  std::vector<int> sinks;
-};
-
-struct Input {
-  int num_parts = 0;
-  int num_clusters = 0;
-  int num_dimensions = 0;
-  int num_nets = 0;
-  int hop_limit = 0;
-  int min_used_parts = 0;
-  std::vector<std::vector<int>> distance;
-  std::vector<std::vector<double>> balance_bound;
-  std::vector<std::vector<long long>> hard_capacity;
-  std::vector<Cluster> clusters;
-  std::vector<Net> nets;
-};
+using Cluster=emuflow::core::PartitionHopCluster;
+using Net=emuflow::core::PartitionHopNet;
+using Input=emuflow::core::PartitionHopModel;
 
 struct Objective {
   long long violations = 0;
@@ -110,6 +89,69 @@ Objective subtract(const Objective& left, const Objective& right) {
           left.weighted_hops - right.weighted_hops,
           left.cut_weight - right.cut_weight,
           left.used_part_deficit - right.used_part_deficit};
+}
+
+void validate_input(const Input& input) {
+  if (input.num_parts<=0 || input.num_clusters<=0 || input.num_dimensions<=0 || input.num_nets<0 ||
+      input.distance.size()!=static_cast<std::size_t>(input.num_parts) ||
+      input.balance_bound.size()!=static_cast<std::size_t>(input.num_parts) ||
+      input.hard_capacity.size()!=static_cast<std::size_t>(input.num_parts) ||
+      input.clusters.size()!=static_cast<std::size_t>(input.num_clusters) ||
+      input.nets.size()!=static_cast<std::size_t>(input.num_nets))
+    throw std::runtime_error("invalid hop model dimensions");
+  for(int p=0;p<input.num_parts;++p)
+    if(input.distance[p].size()!=static_cast<std::size_t>(input.num_parts) ||
+       input.balance_bound[p].size()!=static_cast<std::size_t>(input.num_dimensions) ||
+       input.hard_capacity[p].size()!=static_cast<std::size_t>(input.num_dimensions))
+      throw std::runtime_error("invalid hop board dimensions");
+  for(const auto& cluster:input.clusters)
+    if(cluster.weights.size()!=static_cast<std::size_t>(input.num_dimensions))
+      throw std::runtime_error("invalid hop resource dimensions");
+  if (input.num_parts <= 0 || input.num_clusters <= 0 ||
+      input.num_dimensions <= 0 || input.num_nets < 0 ||
+      input.hop_limit <= 0 || input.min_used_parts <= 0 ||
+      input.min_used_parts > input.num_parts) {
+    throw std::runtime_error("invalid PARAM record");
+  }
+  for (int part = 0; part < input.num_parts; ++part) {
+    if (input.distance[part][part] != 0) {
+      throw std::runtime_error("distance diagonal must be zero");
+    }
+    for (int sink = 0; sink < input.num_parts; ++sink) {
+      if (input.distance[part][sink] < -1) {
+        throw std::runtime_error("distance must be -1 or non-negative");
+      }
+    }
+    for (int dimension = 0; dimension < input.num_dimensions; ++dimension) {
+      if (!std::isfinite(input.balance_bound[part][dimension]) ||
+          input.balance_bound[part][dimension] < 0.0 ||
+          input.hard_capacity[part][dimension] < 0) {
+        throw std::runtime_error("invalid BOUND record");
+      }
+    }
+  }
+  for (const Cluster& cluster : input.clusters) {
+    if (cluster.part < 0 || cluster.part >= input.num_parts ||
+        cluster.fixed_part < -1 || cluster.fixed_part >= input.num_parts ||
+        (cluster.fixed_part >= 0 && cluster.fixed_part != cluster.part) ||
+        std::any_of(cluster.weights.begin(), cluster.weights.end(),
+                    [](long long weight) { return weight < 0; })) {
+      throw std::runtime_error("invalid CLUSTER assignment");
+    }
+  }
+  for (const Net& net : input.nets) {
+    if (!std::isfinite(net.weight) || net.weight <= 0.0 || net.source < 0 ||
+        net.source >= input.num_clusters || net.sinks.empty()) {
+      throw std::runtime_error("invalid NET record");
+    }
+    std::set<int> unique_sinks;
+    for (const int sink : net.sinks) {
+      if (sink < 0 || sink >= input.num_clusters || sink == net.source ||
+          !unique_sinks.insert(sink).second) {
+        throw std::runtime_error("invalid NET sink record");
+      }
+    }
+  }
 }
 
 Input read_input(const std::string& path) {
@@ -221,51 +263,7 @@ Input read_input(const std::string& path) {
       std::find(seen_clusters.begin(),seen_clusters.end(),false)!=seen_clusters.end() ||
       std::find(seen_nets.begin(),seen_nets.end(),false)!=seen_nets.end())
     throw std::runtime_error("incomplete hop input record coverage");
-  if (input.num_parts <= 0 || input.num_clusters <= 0 ||
-      input.num_dimensions <= 0 || input.num_nets < 0 ||
-      input.hop_limit <= 0 || input.min_used_parts <= 0 ||
-      input.min_used_parts > input.num_parts) {
-    throw std::runtime_error("invalid PARAM record");
-  }
-  for (int part = 0; part < input.num_parts; ++part) {
-    if (input.distance[part][part] != 0) {
-      throw std::runtime_error("distance diagonal must be zero");
-    }
-    for (int sink = 0; sink < input.num_parts; ++sink) {
-      if (input.distance[part][sink] < -1) {
-        throw std::runtime_error("distance must be -1 or non-negative");
-      }
-    }
-    for (int dimension = 0; dimension < input.num_dimensions; ++dimension) {
-      if (!std::isfinite(input.balance_bound[part][dimension]) ||
-          input.balance_bound[part][dimension] < 0.0 ||
-          input.hard_capacity[part][dimension] < 0) {
-        throw std::runtime_error("invalid BOUND record");
-      }
-    }
-  }
-  for (const Cluster& cluster : input.clusters) {
-    if (cluster.part < 0 || cluster.part >= input.num_parts ||
-        cluster.fixed_part < -1 || cluster.fixed_part >= input.num_parts ||
-        (cluster.fixed_part >= 0 && cluster.fixed_part != cluster.part) ||
-        std::any_of(cluster.weights.begin(), cluster.weights.end(),
-                    [](long long weight) { return weight < 0; })) {
-      throw std::runtime_error("invalid CLUSTER assignment");
-    }
-  }
-  for (const Net& net : input.nets) {
-    if (!std::isfinite(net.weight) || net.weight <= 0.0 || net.source < 0 ||
-        net.source >= input.num_clusters || net.sinks.empty()) {
-      throw std::runtime_error("invalid NET record");
-    }
-    std::set<int> unique_sinks;
-    for (const int sink : net.sinks) {
-      if (sink < 0 || sink >= input.num_clusters || sink == net.source ||
-          !unique_sinks.insert(sink).second) {
-        throw std::runtime_error("invalid NET sink record");
-      }
-    }
-  }
+  validate_input(input);
   return input;
 }
 
@@ -830,4 +828,28 @@ void emuflow::native::RefinePartitionHops(
   core::PublishTextArtifact(output,inputs,[&](std::ostream& stream) {
     write_result(refine(model),stream,retain_trace);
   });
+}
+
+emuflow::core::PartitionHopSolution emuflow::core::ComputePartitionHops(
+    const PartitionHopModel& model) {
+  validate_input(model);
+  auto result=refine(model);
+  PartitionHopSolution out;
+  out.assignment=std::move(result.assignment);
+  out.pass=result.final.violations==0 && result.final.used_part_deficit==0;
+  const auto objective=[&](const std::string& prefix,const Objective& value) {
+    out.metrics[prefix+"_violations"]=value.violations;
+    out.metrics[prefix+"_unreachable"]=value.unreachable;
+    out.metrics[prefix+"_weighted_excess"]=value.weighted_excess;
+    out.metrics[prefix+"_weighted_hops"]=value.weighted_hops;
+    out.metrics[prefix+"_cut_weight"]=value.cut_weight;
+    out.metrics[prefix+"_used_part_deficit"]=value.used_part_deficit;
+  };
+  objective("initial",result.initial);objective("final",result.final);
+  out.metrics["rounds"]=result.rounds;
+  out.metrics["tentative_moves"]=result.tentative_moves;
+  out.metrics["committed_moves"]=result.committed_moves.size();
+  out.metrics["exact_fallback"]=result.exact_fallback;
+  out.metrics["scale_guard"]=result.scale_guard;
+  return out;
 }

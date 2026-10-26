@@ -1408,6 +1408,7 @@ def _compile_preflight(ctx: _CompileContext):
     require_native_schema("partition-initialization-request-v1")
     require_native_schema("partition-decision-request-v1")
     require_native_schema("partition-configuration-request-v1")
+    require_native_schema("partition-hop-request-v1")
     require_native_schema("partition-load-request-v2")
     require_native_schema("partition-finalization-request-v1")
     require_native_schema("assignment-publication-request-v3")
