@@ -123,6 +123,7 @@ from .xilinx_opensta import (
 )
 from .xilinx_preplacement_timing import (
     build_xilinx_preplacement_timing_db,
+    import_vivado_ff_control_timing,
     validate_xilinx_preplacement_timing_db,
 )
 from .xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
@@ -1358,6 +1359,15 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_build_xilinx_preplacement_timing.add_argument(
         "--output", "-o", type=Path, required=True
     )
+    arch_build_xilinx_preplacement_timing.add_argument(
+        "--ff-control-timing", type=Path,
+        help="device-check supplement for CE, synchronous reset and recovery checks",
+    )
+    arch_import_ff_control_timing = arch_subparsers.add_parser(
+        "import-ff-control-timing", help="import complete Vivado FF control check envelopes"
+    )
+    arch_import_ff_control_timing.add_argument("path", type=Path)
+    arch_import_ff_control_timing.add_argument("--output", "-o", type=Path, required=True)
     arch_validate_xilinx_preplacement_timing = arch_subparsers.add_parser(
         "validate-xilinx-preplacement-timing",
         help="validate a source-sealed RapidWright pre-placement TimingDB",
@@ -2611,8 +2621,10 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif args.arch_command == "build-xilinx-preplacement-timing":
             report = build_xilinx_preplacement_timing_db(
-                args.timing_data_dir, args.output
+                args.timing_data_dir, args.output, ff_control_timing_path=args.ff_control_timing
             )
+        elif args.arch_command == "import-ff-control-timing":
+            report = import_vivado_ff_control_timing(args.path, args.output)
         elif args.arch_command == "validate-xilinx-preplacement-timing":
             report = validate_xilinx_preplacement_timing_db(args.path)
         elif args.arch_command == "build-xilinx-routed-timing":

@@ -17,6 +17,7 @@ from emuflow.xilinx_preplacement_timing import (
     build_xilinx_preplacement_timing_db,
 )
 from emuflow.yosys import import_yosys_json
+from tests.xilinx_timing_fixture import mock_ff_control_timing
 
 
 def _sha(path: Path) -> str:
@@ -106,12 +107,14 @@ CLK ADDR_A[0] 500
             "intrasite_delay_terms.txt": _sha(intra),
         }
         database = root / "xilinx-preplacement.json"
+        controls = root / "controls.json"
+        controls.write_text(json.dumps(mock_ff_control_timing()))
         with patch.dict(
             "emuflow.xilinx_preplacement_timing.RAPIDWRIGHT_TIMING_DATA_SHA256",
             hashes,
             clear=True,
         ):
-            report = build_xilinx_preplacement_timing_db(timing, database)
+            report = build_xilinx_preplacement_timing_db(timing, database, ff_control_timing_path=controls)
             assert report["status"] == "pass"
             mapped = root / "mapped.json"
             _mapped_fixture(mapped)
@@ -211,6 +214,8 @@ CLK ADDR_A[0] 500
             "intrasite_delay_terms.txt": _sha(intra),
         }
         database = root / "xilinx-preplacement.json"
+        controls = root / "controls.json"
+        controls.write_text(json.dumps(mock_ff_control_timing()))
         mapped = root / "mapped.json"
         _mapped_fixture(mapped)
         ir = import_yosys_json(mapped, top="top", clocks=["clk"])
@@ -219,7 +224,7 @@ CLK ADDR_A[0] 500
             hashes,
             clear=True,
         ):
-            build_xilinx_preplacement_timing_db(timing, database)
+            build_xilinx_preplacement_timing_db(timing, database, ff_control_timing_path=controls)
             model, types = build_architecture_opensta_timing_model(ir, database)
             structural = classify_through_net_timing_endpoints(
                 ir, model, [net["id"] for net in ir.value["nets"]], types

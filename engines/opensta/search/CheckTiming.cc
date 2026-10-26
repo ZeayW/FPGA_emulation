@@ -318,7 +318,11 @@ CheckTiming::checkUnconstrainedSetups(PinSet &unconstrained_ends)
       VertexInEdgeIterator edge_iter(vertex, graph_);
       while (edge_iter.hasNext()) {
         Edge *edge = edge_iter.next();
-        if (edge->role() == TimingRole::setup()
+        // Recovery is also a maximum-delay capture check. A reset input
+        // without a clocked arrival must not disappear from source coverage
+        // merely because the endpoint is asynchronous rather than D/CE.
+        if ((edge->role() == TimingRole::setup()
+             || edge->role() == TimingRole::recovery())
             && (!clk_network_->isClock(edge->from(graph_))
                 || !hasClkedArrival(edge->to(graph_)))) {
           unconstrained_ends.insert(vertex->pin());

@@ -7,6 +7,17 @@ import json
 from pathlib import Path
 
 
+def mock_ff_control_timing():
+    """Synthetic check/provenance envelope, never device timing evidence."""
+    return dict(schema='emuflow.xilinx-ff-control-timing/v1',
+        provider='vivado-device-check-envelope-v1', part='xcvu19p-fsva3824-2-e',
+        vivado_version='synthetic fixture', recipe_sha256='a'*64, raw_sha256='b'*64,
+        recovery_transitions='both', checks={cell: {
+            'CE': dict(kind='setup', margin_ps=350.),
+            pin: dict(kind='recovery' if cell in {'FDCE','FDPE'} else 'setup', margin_ps=450.)}
+            for cell, pin in [('FDRE','R'),('FDSE','S'),('FDCE','CLR'),('FDPE','PRE')]})
+
+
 def write_mock_xilinx_timing_contract(path: Path) -> Path:
     from emuflow.xilinx_preplacement_timing import (
         XILINX_PREPLACEMENT_TIMING_SCHEMA, _REQUIRED_DELAYS,
@@ -22,6 +33,7 @@ def write_mock_xilinx_timing_contract(path: Path) -> Path:
             "files_sha256": RAPIDWRIGHT_TIMING_DATA_SHA256,
         },
         "delays_ps": {name: 100.0 for name in sorted(_REQUIRED_DELAYS)},
+        "ff_control_timing": mock_ff_control_timing(),
         "limitations": {"authoritative_setup": "Phase 7 routed timing plus global OpenSTA"},
         "test_fixture": "synthetic delays and mocked provenance; unit contract only",
     }))

@@ -48,6 +48,19 @@ name loses direct input-to-register paths. Port widths, directions, source
 generations and alias collisions are checked before publication. An ordinary
 returned timing path with no resolvable original net fails export instead of
 being silently discarded.
+FF capture checks include CE and synchronous reset/set setup arcs, together
+with asynchronous clear/preset recovery arcs. The source coverage guard checks
+clocked arrivals at recovery endpoints as well as setup endpoints. The open
+analytical library retains its uncharacterized planning margins. Architecture
+timing requires a separate device control-check supplement: the pinned
+RapidWright table provides D setup and clock-to-Q, but no CE/SR/recovery values.
+`scripts/vivado/export_ff_control_checks.tcl` queries sixteen FF probe cells
+covering both clock and reset polarities, without placement or routing.
+`arch import-ff-control-timing` validates all thirty-two checks and envelopes
+their fast/slow, min/max, rise/fall values. Pass the resulting supplement to
+`arch build-xilinx-preplacement-timing --ff-control-timing`. These source
+planning margins do not replace implemented capture checks or routed
+hold/removal analysis.
 The explicit `communication_delays_path` OpenSTA API can re-search the entire
 source timing graph with additive per-driver/per-sink communication costs.
 It requires uncapped, clock-aware extraction and validates each named data

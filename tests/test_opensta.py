@@ -545,7 +545,7 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
                         executable=str(executable),
                     )
 
-    def test_structural_endpoint_classifier_distinguishes_data_and_control(self) -> None:
+    def test_structural_classifier_keeps_control_checks_without_inventing_launches(self) -> None:
         model = load_timing_model(DEFAULT_TIMING_MODEL)
         classified = classify_through_net_timing_endpoints(
             self.ir,
@@ -574,10 +574,13 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
             len(classified[timed]["direct_timed_endpoint_pins"]), 0
         )
         for net in self.ir.value["nets"]:
-            if net["cut_class"] in {"clock", "reset"}:
+            if net["cut_class"] == "clock":
                 self.assertEqual(
                     classified[net["id"]]["direct_timed_endpoint_pins"], []
                 )
+            elif net["cut_class"] == "reset":
+                self.assertEqual(classified[net["id"]]["direct_timed_endpoint_pins"],
+                                 [f"q_reg[{bit}]/R" for bit in range(4)])
 
     def test_structural_classifier_requires_sequential_startpoint(
         self,
@@ -662,7 +665,7 @@ Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
         self.assertEqual(classified["stage"]["status"], "timed")
         self.assertEqual(classified["q"]["status"], "no_timed_endpoint")
 
-    def test_runner_certifies_explicit_zero_path_control_net(self) -> None:
+    def test_runner_keeps_control_capture_in_unclocked_zero_path_diagnostic(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             ir_path = root / "ir.json"
@@ -688,7 +691,9 @@ requested_hex = [row.split("\\t")[1] for row in requested]
 endpoints = Path(os.environ["EMUFLOW_STA_THROUGH_ENDPOINTS"]).read_text().splitlines()
 assert endpoints[0] == "emuir_net_hex\\tendpoint_pin_hex"
 assert any(row.split("\\t")[0] == requested_hex[0] for row in endpoints[1:])
-assert all(row.split("\\t")[0] != requested_hex[1] for row in endpoints[1:])
+assert any(row.split("\\t")[0] == requested_hex[1]
+           and bytes.fromhex(row.split("\\t")[1]).decode().endswith("/R")
+           for row in endpoints[1:])
 header = (
     "path_id_hex\\tclock_domain_hex\\tclock_period_ns\\t"
     "slack_ns\\tfixed_delay_ns\\tpath_nets_hex"

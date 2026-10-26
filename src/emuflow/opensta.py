@@ -300,6 +300,15 @@ def load_timing_model(path: Path) -> Dict[str, Any]:
                 raw_cell.get("clock_to_q_ns"),
                 f"{context}.clock_to_q_ns",
             )
+            checks = raw_cell.get("control_checks", {})
+            if not isinstance(checks, dict) or set(checks) != set(controls):
+                raise ValidationError(f"{context}: every FF control requires a timing check")
+            for pin, check in checks.items():
+                if (not isinstance(check, dict) or set(check) != {"kind", "margin_ns"}
+                        or not isinstance(check["kind"], str)
+                        or check["kind"] not in {"setup", "recovery"}):
+                    raise ValidationError(f"{context}: invalid control timing check: {pin}")
+                _finite_nonnegative(check["margin_ns"], f"{context}.control_checks[{pin!r}]")
         elif kind == "rising_edge_bank":
             clock = raw_cell.get("clock")
             inputs = raw_cell.get("inputs")
@@ -478,11 +487,18 @@ def render_opensta_liberty(model: Mapping[str, Any]) -> str:
                 ]
             )
             for pin in cell["controls"]:
+                check = cell["control_checks"][pin]
                 lines.extend(
                     [
                         f"    pin ({pin}) {{",
                         "      direction : input;",
                         "      capacitance : 0.001;",
+                        "      timing () {",
+                        f'        related_pin : "{cell["clock"]}";',
+                        f"        timing_type : {check['kind']}_{'falling' if falling else 'rising'};",
+                        *_scalar_table("rise_constraint", float(check["margin_ns"]), "        "),
+                        *_scalar_table("fall_constraint", float(check["margin_ns"]), "        "),
+                        "      }",
                         "    }",
                     ]
                 )
@@ -736,6 +752,17 @@ def build_xilinx_preplacement_opensta_timing_model(
             delays["ff_setup"] + delays["sink_interconnect"]
         )
         model["cells"][name]["clock_to_q_ns"] = delays["ff_clock_to_q"]
+        # The pinned RapidWright table has no CE/SR/recovery values. A
+        # source-bound device supplement must supply those missing checks;
+        # neither D setup nor an arbitrary constant is a substitute.
+        supplement = timing_db.get("ff_control_timing")
+        if supplement is None:
+            raise ValidationError("pre-placement TimingDB lacks device FF control timing")
+        for pin, check in model["cells"][name]["control_checks"].items():
+            entry = supplement["checks"][name][pin]
+            if entry["kind"] != check["kind"]:
+                raise ValidationError("FF control timing check kind differs from primitive semantics")
+            check["margin_ns"] = entry["margin_ps"] / 1000.0 + delays["sink_interconnect"]
 
     pin_names = (_timing_type_pin_names(ir, _DESIGN_SPECIALIZED_XILINX_TYPES)
                  if _type_pin_names is None else _type_pin_names)
@@ -834,6 +861,7 @@ def build_xilinx_preplacement_opensta_timing_model(
             "architecture_timing_db": str(timing_db_path),
             "rapidwright_revision": timing_db["source"]["revision"],
             "sink_interconnect_delay_ns": delays["sink_interconnect"],
+            "ff_control_timing": timing_db["ff_control_timing"],
             "hard_block_timing": "nonzero-conservative-scalar",
             "hard_block_pin_coverage": "all-instance-emitted-scalar-pins-v1",
             "hold_analysis": "unavailable",
@@ -1042,7 +1070,7 @@ def classify_through_net_timing_endpoints(
                         forward_edges[net_id].add(successor)
                         reverse_edges[successor].add(net_id)
             elif kind in {"rising_edge_ff", "falling_edge_ff"}:
-                if pin == cell["data"]:
+                if pin == cell["data"] or pin in cell.get("control_checks", {}):
                     direct_timed.add(net_id)
                     direct_timed_counts[net_id] += 1
                     direct_timed_pins[net_id].add(f"{instance_id}/{pin}")
@@ -1172,14 +1200,13 @@ def _classify_indexed_through_net_timing_endpoints(
             output = scalar_wires.get(cell["output"])
             if output is not None:
                 timing_startpoints.add(output)
-            data = scalar_wires.get(cell["data"])
-            if data is not None:
-                direct_timed.add(data)
-                if data in requested:
-                    direct_timed_counts[data] += 1
-                    direct_timed_pins[data].add(
-                        f"{instance_id}/{cell['data']}"
-                    )
+            for pin in [cell["data"], *cell.get("control_checks", {})]:
+                data = scalar_wires.get(pin)
+                if data is not None:
+                    direct_timed.add(data)
+                    if data in requested:
+                        direct_timed_counts[data] += 1
+                        direct_timed_pins[data].add(f"{instance_id}/{pin}")
         elif kind == "rising_edge_bank":
             for pin in cell["outputs"]:
                 output = scalar_wires.get(pin)

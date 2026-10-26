@@ -5,7 +5,8 @@
   "source": {
     "provider": "emuflow-analytical-model",
     "qualification": "analytical_uncharacterized",
-    "description": "Open, deterministic bring-up model for OpenSTA integration. Values are not device characterization and must be calibrated before timing sign-off."
+    "description": "Open, deterministic bring-up model for OpenSTA integration. Values are not device characterization and must be calibrated before timing sign-off.",
+    "control_checks": "Uncharacterized setup/recovery planning margins; recovery checks both input transitions. Hold/removal sign-off requires implemented device timing."
   },
   "cells": {
     "FDCE": {
@@ -14,6 +15,10 @@
       "data": "D",
       "output": "Q",
       "controls": ["CE", "CLR"],
+      "control_checks": {
+        "CE": {"kind": "setup", "margin_ns": 0.08},
+        "CLR": {"kind": "recovery", "margin_ns": 0.08}
+      },
       "setup_ns": 0.08,
       "clock_to_q_ns": 0.12
     },
@@ -23,6 +28,10 @@
       "data": "D",
       "output": "Q",
       "controls": ["CE", "PRE"],
+      "control_checks": {
+        "CE": {"kind": "setup", "margin_ns": 0.08},
+        "PRE": {"kind": "recovery", "margin_ns": 0.08}
+      },
       "setup_ns": 0.08,
       "clock_to_q_ns": 0.12
     },
@@ -32,6 +41,10 @@
       "data": "D",
       "output": "Q",
       "controls": ["CE", "R"],
+      "control_checks": {
+        "CE": {"kind": "setup", "margin_ns": 0.08},
+        "R": {"kind": "setup", "margin_ns": 0.08}
+      },
       "setup_ns": 0.08,
       "clock_to_q_ns": 0.12
     },
@@ -41,6 +54,10 @@
       "data": "D",
       "output": "Q",
       "controls": ["CE", "S"],
+      "control_checks": {
+        "CE": {"kind": "setup", "margin_ns": 0.08},
+        "S": {"kind": "setup", "margin_ns": 0.08}
+      },
       "setup_ns": 0.08,
       "clock_to_q_ns": 0.12
     },

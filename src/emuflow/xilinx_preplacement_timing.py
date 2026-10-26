@@ -47,6 +47,77 @@ _REQUIRED_DELAYS = {
     "sink_interconnect",
 }
 
+_FF_CONTROLS = {"FDRE": ("R", "setup"), "FDSE": ("S", "setup"),
+                "FDCE": ("CLR", "recovery"), "FDPE": ("PRE", "recovery")}
+_FF_DELAY_FIELDS = [f"DELAY_{corner}{bound}_{edge}" for corner in ("FAST_", "SLOW_", "")
+                    for bound in ("MAX", "MIN") for edge in ("RISE", "FALL")]
+
+
+def import_vivado_ff_control_timing(raw_path: Path, output_path: Path) -> Dict[str, Any]:
+    """Reduce all 32 device checks to a conservative, source-sealed envelope."""
+    from .opensta import _runtime_data_path
+    from .store_publication import bind_store_source, require_store_sources_unchanged
+    recipe = _runtime_data_path(Path('scripts/vivado/export_ff_control_checks.tcl'))
+    parents = tuple(bind_store_source(p, 'sta-source-document-v1') for p in (raw_path, recipe))
+    if output_path.resolve() in {parent.path for parent in parents}:
+        raise ValidationError('device control output aliases a source input')
+    with raw_path.open('rb') as stream:
+        raw = stream.read(65537)
+    if len(raw) > 65536 or not raw.endswith(b'\n'):
+        raise ValidationError('device control checks are oversized or truncated')
+    try:
+        lines = [line.split('\t') for line in raw.decode('utf-8').splitlines()]
+    except UnicodeError as error:
+        raise ValidationError('invalid device control check encoding') from error
+    if (len(lines) != 38 or lines[0] != ['schema', 'emuflow.vivado-ff-control-raw/v2']
+            or any(len(lines[i]) != 2 for i in (1, 2, 3))
+            or lines[1][0] != 'part' or lines[2][0] != 'vivado_version'
+            or not lines[1][1] or not lines[2][1]
+            or lines[3] != ['unit', 'ns'] or lines[4] != ['transition_frame', 'library-pin'] or lines[5] !=
+            ['cell_type', 'clock_inverted', 'reset_inverted', 'pin', 'kind', 'transitions', *_FF_DELAY_FIELDS]):
+        raise ValidationError('device control check schema/coverage is invalid')
+    checks = {cell: {pin: dict(kind=kind, margin_ps=0.) for pin, kind in [('CE', 'setup'), pair]}
+              for cell, pair in _FF_CONTROLS.items()}
+    seen = set()
+    for row in lines[6:]:
+        if len(row) != 18:
+            raise ValidationError('device control check row is invalid')
+        cell, clock, reset, pin, kind, transitions = row[:6]
+        key = (cell, clock, reset, pin)
+        if (cell not in checks or clock not in {'0', '1'} or reset not in {'0', '1'}
+                or pin not in checks[cell] or kind != checks[cell][pin]['kind'] or key in seen):
+            raise ValidationError('device control check identity/mode is invalid')
+        edges = transitions.split(',')
+        # Vivado timing_arc transitions/delay suffixes use canonical library
+        # pins, even when the cell's IS_*_INVERTED properties are set. The
+        # producer verifies those properties; do not interpret library-frame
+        # delay columns as external, inversion-adjusted pin transitions.
+        allowed = {'rr', 'rf'}
+        if (not edges or len(set(edges)) != len(edges) or not set(edges) <= allowed
+                or (kind == 'setup' and set(edges) != allowed)
+                or (kind == 'recovery' and set(edges) != {'rf'})):
+            raise ValidationError('device control check transition coverage is invalid')
+        try:
+            values = []
+            for field, text in zip(_FF_DELAY_FIELDS, row[6:]):
+                edge = 'r' if field.endswith('_RISE') else 'f'
+                if any(transition[1] == edge for transition in edges):
+                    values.append(float(text))
+                elif text != '':
+                    raise ValidationError('device check has a value for an inapplicable transition')
+        except ValueError as error:
+            raise ValidationError('invalid device control check value') from error
+        if not all(math.isfinite(v) for v in values):
+            raise ValidationError('non-finite device control check value')
+        checks[cell][pin]['margin_ps'] = max(checks[cell][pin]['margin_ps'], 1000. * max(values))
+        seen.add(key)
+    value = dict(schema='emuflow.xilinx-ff-control-timing/v1', provider='vivado-device-check-envelope-v1',
+                 part=lines[1][1], vivado_version=lines[2][1], recipe_sha256=_sha256(recipe),
+                 raw_sha256=hashlib.sha256(raw).hexdigest(), recovery_transitions='both', checks=checks)
+    require_store_sources_unchanged(parents)
+    write_json(output_path, value)
+    return value
+
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -160,6 +231,7 @@ def _uram_clock_bounds(
 def build_xilinx_preplacement_timing_db(
     timing_data_dir: Path,
     output_path: Path,
+    *, ff_control_timing_path: Path | None = None,
 ) -> Dict[str, Any]:
     """Extract a compact, source-sealed pre-placement timing database."""
 
@@ -276,6 +348,9 @@ def build_xilinx_preplacement_timing_db(
             "authoritative_setup": "Phase 7 routed timing plus global OpenSTA",
         },
     }
+    if ff_control_timing_path is not None:
+        value["ff_control_timing"] = read_json(ff_control_timing_path)
+    validate_xilinx_preplacement_timing_db(value)
     write_json(output_path, value, compact=True)
     return validate_xilinx_preplacement_timing_db(value)
 
@@ -322,6 +397,36 @@ def validate_xilinx_preplacement_timing_db(
                 f"Xilinx pre-placement TimingDB delay {name!r} is invalid"
             )
     limitations = value.get("limitations")
+    supplement = value.get("ff_control_timing")
+    if supplement is not None:
+        if (not isinstance(supplement, dict)
+                or supplement.get("schema") != "emuflow.xilinx-ff-control-timing/v1"
+                or supplement.get("provider") != "vivado-device-check-envelope-v1"
+                or not isinstance(supplement.get("part"), str) or not supplement["part"]
+                or not isinstance(supplement.get("vivado_version"), str) or not supplement["vivado_version"]
+                or supplement.get("recovery_transitions") != "both"
+                or any(not isinstance(supplement.get(key), str)
+                       or len(supplement[key]) != 64
+                       or any(c not in '0123456789abcdef' for c in supplement[key])
+                       for key in ("recipe_sha256", "raw_sha256"))):
+            raise ValidationError("FF control timing device provenance is invalid")
+        kinds = {"FDRE": {"CE": "setup", "R": "setup"},
+                 "FDSE": {"CE": "setup", "S": "setup"},
+                 "FDCE": {"CE": "setup", "CLR": "recovery"},
+                 "FDPE": {"CE": "setup", "PRE": "recovery"}}
+        checks = supplement.get("checks")
+        if not isinstance(checks, dict) or set(checks) != set(kinds):
+            raise ValidationError("FF control timing primitive coverage is incomplete")
+        for cell, pins in kinds.items():
+            if not isinstance(checks[cell], dict) or set(checks[cell]) != set(pins):
+                raise ValidationError("FF control timing pin coverage is incomplete")
+            for pin, kind in pins.items():
+                check = checks[cell][pin]
+                if (not isinstance(check, dict) or set(check) != {"kind", "margin_ps"}
+                        or check["kind"] != kind or isinstance(check["margin_ps"], bool)
+                        or not isinstance(check["margin_ps"], (int, float))
+                        or not math.isfinite(check["margin_ps"]) or check["margin_ps"] < 0):
+                    raise ValidationError("FF control timing check is invalid")
     if not isinstance(limitations, dict) or limitations.get(
         "authoritative_setup"
     ) != "Phase 7 routed timing plus global OpenSTA":
