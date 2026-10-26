@@ -881,6 +881,12 @@ def read_engine_identity(log_path: Path) -> dict:
 
 def bind_physical_checks(runtime, routes, schedule, physical, platform, *, metadata=None,
                          routes_artifact_sha256=None):
+    from .global_binding_native import has_native_physical_inputs, bind_native_physical_checks
+    if has_native_physical_inputs(routes, schedule, physical):
+        return bind_native_physical_checks(
+            runtime, routes, schedule, physical, platform, metadata=metadata,
+            routes_artifact_sha256=routes_artifact_sha256,
+        )
     result = _EventCheckBuilder(bound=True)
     path_metadata = _PathMetadataBuilder(result)
     try:

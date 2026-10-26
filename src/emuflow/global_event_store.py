@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 import json
 import math
 import os
@@ -42,7 +42,7 @@ class _Owner:
     EVENT_CACHE_SIZE = 8192
     CHECK_BATCH_SIZE = 4096
 
-    def __init__(self, mode):
+    def __init__(self, mode, *, native=False):
         # Own retirement after SQLite closure. TemporaryDirectory's independent
         # weak finalizer can run first during cyclic GC, leaving live NFS files.
         self.closed = False
@@ -55,13 +55,14 @@ class _Owner:
         self.primary = self.root / "events.sqlite"
         self.index = self.root / "index.sqlite"
         self.mode = mode
-        self.connection = sqlite3.connect(self.primary)
-        self.connection.executescript(
-            f"PRAGMA application_id={_PRIMARY_ID}; PRAGMA user_version=1;"
-            "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=FILE; PRAGMA cache_size=-8192;"
-            + _PRIMARY_DDL
-        )
-        self.connection.execute("CREATE TEMP TABLE begun_paths(path_seq INTEGER PRIMARY KEY)")
+        if not native:
+            self.connection = sqlite3.connect(self.primary)
+            self.connection.executescript(
+                f"PRAGMA application_id={_PRIMARY_ID}; PRAGMA user_version=1;"
+                "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=FILE; PRAGMA cache_size=-8192;"
+                + _PRIMARY_DDL
+            )
+            self.connection.execute("CREATE TEMP TABLE begun_paths(path_seq INTEGER PRIMARY KEY)")
         self.paths = self.events = self.checks = 0
         self.pending = []
         self.event_cache = OrderedDict()
@@ -234,25 +235,52 @@ class _Owner:
             self.connection.close()
             self.connection = None
             self.event_cache.clear()
-            original = bind_store_source(self.primary, "global-event-primary-v1")
-            _native(["index-events", self.primary, self.index], self.root)
-            require_store_sources_unchanged((original,))
-            derived = bind_store_source(self.index, "global-event-index-v1")
-            self.connection = sqlite3.connect(immutable_sqlite_uri(self.primary), uri=True)
-            self.connection.execute("ATTACH DATABASE ? AS derived", (immutable_sqlite_uri(self.index),))
-            self.connection.executescript("PRAGMA cache_size=-8192; PRAGMA derived.cache_size=-8192; PRAGMA temp_store=FILE;")
-            value = self.connection.execute("SELECT value FROM derived.metadata WHERE key='header'").fetchone()
-            if value is None or len(value[0]) > 8192:
-                raise ValidationError("native global STA index header is missing/oversized")
-            self.header = json.loads(value[0])
-            if (self.header.get("schema") != "emuflow.global-event-index/v1"
-                    or self.header.get("implementation_id") != "native-global-event-index-v1"
-                    or any(self.header.get(key) != header[key] for key in ("mode", "paths", "checks", "events"))
-                    or self.header.get("source_path") != str(original.path)
-                    or self.header.get("source_generation") != [str(n) for n in original.generation]):
-                raise ValidationError("native global STA index ownership disagrees")
-            self.sources = (original, derived)
-            self.require()
+            self._open_index(header)
+        except BaseException:
+            self.close()
+            raise
+
+    def _open_index(self, header):
+        original = bind_store_source(self.primary, "global-event-primary-v1")
+        _native(["index-events", self.primary, self.index], self.root)
+        require_store_sources_unchanged((original,))
+        derived = bind_store_source(self.index, "global-event-index-v1")
+        self.connection = sqlite3.connect(immutable_sqlite_uri(self.primary), uri=True)
+        self.connection.execute("ATTACH DATABASE ? AS derived", (immutable_sqlite_uri(self.index),))
+        self.connection.executescript("PRAGMA cache_size=-8192; PRAGMA derived.cache_size=-8192; PRAGMA temp_store=FILE;")
+        value = self.connection.execute("SELECT value FROM derived.metadata WHERE key='header'").fetchone()
+        if value is None or len(value[0]) > 8192:
+            raise ValidationError("native global STA index header is missing/oversized")
+        self.header = json.loads(value[0])
+        if (self.header.get("schema") != "emuflow.global-event-index/v1"
+                or self.header.get("implementation_id") != "native-global-event-index-v1"
+                or any(self.header.get(key) != header[key] for key in ("mode", "paths", "checks", "events"))
+                or self.header.get("source_path") != str(original.path)
+                or self.header.get("source_generation") != [str(n) for n in original.generation]):
+            raise ValidationError("native global STA index ownership disagrees")
+        self.sources = (original, derived)
+        self.require()
+
+    def accept_native(self):
+        self.writable()
+        try:
+            with closing(sqlite3.connect(immutable_sqlite_uri(self.primary), uri=True)) as connection:
+                values = dict(connection.execute("SELECT key,value FROM metadata"))
+            if set(values) != {"header", "binding"} or any(len(value) > 65536 for value in values.values()):
+                raise ValidationError("native global STA binding metadata is invalid")
+            header, binding = json.loads(values["header"]), json.loads(values["binding"])
+            if (set(header) != {"schema", "mode", "paths", "checks", "events"}
+                    or header["schema"] != "emuflow.global-event-checks/v1" or header["mode"] != 3
+                    or any(type(header[key]) is not int or header[key] < 0 for key in ("paths", "checks", "events"))
+                    or set(binding) != {"implementation_id", "compressed_representative_paths", "source_binding"}
+                    or binding["implementation_id"] != "native-physical-event-binding-v1"
+                    or type(binding["compressed_representative_paths"]) is not int
+                    or binding["compressed_representative_paths"] < 0):
+                raise ValidationError("native global STA binding coverage is invalid")
+            self.paths, self.checks, self.events = (header[key] for key in ("paths", "checks", "events"))
+            self.finished = True
+            self._open_index(header)
+            return binding
         except BaseException:
             self.close()
             raise

@@ -156,6 +156,80 @@ void InstallEvents(std::vector<Model>& models,SqliteDatabase& db,const ExactSche
   }
   Check(!rows.Step(),"cross-layer schedule contains an unexpected routed hop");
 }
+
+ScheduledTimingCounts WalkTimingPaths(const ArtifactRef& route_source,SqliteDatabase& db,
+    SqliteDatabase* schedule,const ExactScheduleBoard* board,bool contract,
+    const std::function<void(const ScheduledTimingPath&)>& visitor) {
+  RouteView route_view(route_source);
+  Check(route_view.count()<UINT32_MAX && route_view.count()<=route_source.generation().bytes,"timing route count exceeds source/rank bounds");
+  std::vector<Model> models;models.reserve(route_view.count());ScheduledTimingCounts total;
+  route_view.VisitNetOrder([&](const RouteCoordinate&,const RouteIdentity& route){total.route_hops+=route.edges.size();models.push_back({route});});
+  if(schedule)InstallEvents(models,*schedule,board);
+  const auto lookup=[&](const std::string& net)->const Model& {
+    auto found=std::lower_bound(models.begin(),models.end(),net,[](const auto& model,const auto& name){return model.route.net<name;});
+    Check(found!=models.end() && found->route.net==net,"cross-layer timing path references unknown cut net");return *found;
+  };
+  auto paths=db.Prepare("SELECT seq,path_id,json_type(record_json),json_extract(record_json,'$.path'),"
+      "json_extract(record_json,'$.clock_domain'),json_type(record_json,'$.cut_nets'),json_array_length(record_json,'$.cut_nets'),"
+      "json_type(record_json,'$.compressed_path_ids'),json_array_length(record_json,'$.compressed_path_ids'),"
+      "json_type(record_json,'$.cut_transitions'),json_array_length(record_json,'$.cut_transitions'),"
+      "json_extract(record_json,'$.clock_period_ns'),json_type(record_json,'$.clock_period_ns'),"
+      "CASE WHEN json_type(record_json,'$.required_time_ns') IS NULL THEN json_extract(record_json,'$.clock_period_ns') ELSE json_extract(record_json,'$.required_time_ns') END,"
+      "coalesce(json_type(record_json,'$.required_time_ns'),json_type(record_json,'$.clock_period_ns')),"
+      "json_extract(record_json,'$.fixed_delay_ns'),json_type(record_json,'$.fixed_delay_ns') FROM timing_paths ORDER BY path_id");
+  auto cuts=db.Prepare("SELECT p.path_id,c.key,c.type,c.value,json_type(p.record_json,'$.cut_transitions['||c.key||']'),"
+      "json_extract(p.record_json,'$.cut_transitions['||c.key||'].net'),json_extract(p.record_json,'$.cut_transitions['||c.key||'].from'),"
+      "json_extract(p.record_json,'$.cut_transitions['||c.key||'].to') FROM timing_paths p,json_each(p.record_json,'$.cut_nets') c ORDER BY p.path_id,c.key");
+  bool have_cut=cuts.Step();std::string previous;
+  while(paths.Step()) {
+    ScheduledTimingPath value;value.source_seq=Number(paths,0);value.path=Text(paths,1);value.clock=Text(paths,4);
+    Check(paths.TypedText(2)=="object" && Text(paths,3)==value.path && (!total.paths || previous<value.path),"timing path identity or order is invalid");previous=value.path;
+    Check(paths.TypedText(5)=="array","cross-layer timing cut nets must be an array");const auto count=Number(paths,6);
+    const bool explicit_transitions=!paths.IsNull(9) && paths.TypedText(9)!="null";
+    if(explicit_transitions)Check(paths.TypedText(9)=="array" && Number(paths,10)==count,"cross-layer timing transition coverage is invalid");
+    value.required=Time(paths,13,14,true);value.fixed=Time(paths,15,16,false);
+    if(board){Check(count>0,"schedule timing path has no cut nets");value.period=Time(paths,11,12,true);}
+    value.explicit_members=!paths.IsNull(7);
+    if(value.explicit_members){Check(paths.TypedText(7)=="array" && Number(paths,8)>0,"cross-layer timing path member identities are invalid");value.member_count=Number(paths,8);}
+    std::set<std::pair<std::uint64_t,std::uint32_t>> seen_hops;std::string prior_sink;
+    for(std::uint64_t index=0;index<count;++index) {
+      Check(have_cut && Text(cuts,0)==value.path && Number(cuts,1)==index && Text(cuts,2)=="text","timing cut sequence is malformed");
+      const auto net=Text(cuts,3);const auto& model=lookup(net);const auto& route=model.route;std::string sink;
+      if(explicit_transitions) {
+        Check(Text(cuts,4)=="object" && Text(cuts,5)==net && Text(cuts,6)==route.source,"cross-layer timing transition does not match route");sink=Text(cuts,7);
+        Check(std::find(route.sinks.begin(),route.sinks.end(),sink)!=route.sinks.end(),"cross-layer timing transition does not match route");
+        if(board && index)Check(prior_sink==route.source,"timing transition member partition chain is discontinuous");
+      } else {
+        if(contract)Check(route.sinks.size()==1,"multicast timing paths require explicit transitions");
+        sink=board?model.longest:route.sinks.front();
+      }
+      prior_sink=sink;
+      ScheduledTimingCut cut{net,route.demand,route.source,sink,value.hops.size(),0};
+      if(board) {
+        const auto& fpgas=board->catalogs.fpgas;auto node=Index(fpgas,sink);const auto source_fpga=Index(fpgas,route.source);
+        std::vector<std::uint32_t> edges;
+        while(node!=source_fpga) {
+          Check(node<model.parents.size() && model.parents[node]>=0,"timing transition has unreachable sink");
+          const auto edge=static_cast<std::uint32_t>(model.parents[node]);edges.push_back(edge);node=model.events[edge].arc->from;
+        }
+        std::reverse(edges.begin(),edges.end());const auto rank=static_cast<std::uint64_t>(&model-models.data());
+        for(auto edge:edges) {
+          Check(seen_hops.emplace(rank,edge).second,"schedule timing path repeats a routed hop");
+          const auto& event=model.events[edge];const auto& arc=*event.arc;const auto& identity=route.edges[edge];
+          volatile double tx=static_cast<double>(event.slot)*arc.period;
+          value.hops.push_back({event.id,route.demand,identity.link,identity.from,identity.to,event.slot,event.ready,event.ratio,arc.period,tx,bool(arc.affine)});
+          if(arc.affine){volatile double scaled=arc.slope*(*event.ratio-1);volatile double delay=arc.base+scaled;value.transport=value.transport+delay;}
+          else value.transport=std::max(value.transport,static_cast<double>(tx))+arc.base;
+        }
+      }
+      cut.hop_count=value.hops.size()-cut.first_hop;value.cuts.push_back(std::move(cut));++total.cuts;have_cut=cuts.Step();
+    }
+    visitor(value);++total.paths;
+  }
+  Check(!have_cut,"timing child record coverage is incomplete");
+  auto expected=db.Prepare("SELECT json_extract(value,'$.timing_paths.records') FROM metadata WHERE key='sections'");
+  Check(expected.Step() && Number(expected,0)==total.paths,"timing path coverage disagrees with source");return total;
+}
 }  // namespace
 
 void ProjectScheduleTiming(const std::vector<ArtifactRef>& inputs,const std::string& output) {
@@ -196,102 +270,39 @@ void ProjectScheduleTiming(const std::vector<ArtifactRef>& inputs,const std::str
     if(bind)Check(Text(h,3)=="sampled-virtual-wire" && Text(h,4)==semantic_schema && Text(h,5)==semantic_sha,"cross-layer schedule transport semantics disagree");
   }
   std::optional<ExactScheduleBoard> board;if(analyze)board=ReadExactScheduleBoard(inputs[0],inputs[2].path());
-  RouteView route_view(inputs[0]);Check(route_view.count()<UINT32_MAX && route_view.count()<=inputs[0].generation().bytes,"timing route count exceeds source/rank bounds");
-  std::vector<Model> models;models.reserve(route_view.count());std::uint64_t hops=0;
-  route_view.VisitNetOrder([&](const RouteCoordinate&,const RouteIdentity& route){hops+=route.edges.size();models.push_back({route});});
-  if(scheduled)InstallEvents(models,schedule->database(),board ? &*board:nullptr);
-  const auto lookup=[&](const std::string& net)->const Model& {
-    auto found=std::lower_bound(models.begin(),models.end(),net,[](const auto& model,const auto& name){return model.route.net<name;});
-    Check(found!=models.end() && found->route.net==net,"cross-layer timing path references unknown cut net");return *found;
-  };
   if(bind) {
-    auto duplicates=db.Prepare("SELECT 1 FROM timing_paths p,json_each(p.record_json,'$.compressed_path_ids') m "
-        "GROUP BY p.path_id,m.value HAVING count(*)>1 LIMIT 1");
+    auto duplicates=db.Prepare("SELECT 1 FROM timing_paths p,json_each(p.record_json,'$.compressed_path_ids') m GROUP BY p.path_id,m.value HAVING count(*)>1 LIMIT 1");
     Check(!duplicates.Step(),"cross-layer timing path member identities repeat");
   }
-  auto paths=db.Prepare("SELECT seq,path_id,json_type(record_json),json_extract(record_json,'$.path'),"
-      "json_extract(record_json,'$.clock_domain'),json_type(record_json,'$.cut_nets'),json_array_length(record_json,'$.cut_nets'),"
-      "json_type(record_json,'$.compressed_path_ids'),json_array_length(record_json,'$.compressed_path_ids'),"
-      "json_type(record_json,'$.cut_transitions'),json_array_length(record_json,'$.cut_transitions'),"
-      "json_extract(record_json,'$.clock_period_ns'),json_type(record_json,'$.clock_period_ns'),"
-      "CASE WHEN json_type(record_json,'$.required_time_ns') IS NULL THEN json_extract(record_json,'$.clock_period_ns') ELSE json_extract(record_json,'$.required_time_ns') END,"
-      "coalesce(json_type(record_json,'$.required_time_ns'),json_type(record_json,'$.clock_period_ns')),"
-      "json_extract(record_json,'$.fixed_delay_ns'),json_type(record_json,'$.fixed_delay_ns') FROM timing_paths ORDER BY path_id");
-  auto cuts=db.Prepare("SELECT p.path_id,c.key,c.type,c.value,json_type(p.record_json,'$.cut_transitions['||c.key||']'),"
-      "json_extract(p.record_json,'$.cut_transitions['||c.key||'].net'),json_extract(p.record_json,'$.cut_transitions['||c.key||'].from'),"
-      "json_extract(p.record_json,'$.cut_transitions['||c.key||'].to') FROM timing_paths p,json_each(p.record_json,'$.cut_nets') c ORDER BY p.path_id,c.key");
   auto members=bind ? db.Prepare("SELECT p.path_id,m.key,m.type,m.value FROM timing_paths p,json_each(p.record_json,'$.compressed_path_ids') m ORDER BY p.path_id,m.key"):SqliteStatement{};
-  bool have_cut=cuts.Step(),have_member=bind && members.Step();
+  bool have_member=bind && members.Step();
   std::unique_ptr<Statistics> statistics;if(analyze)statistics=std::make_unique<Statistics>(db);
-  Sha256 projection;Hash(projection,"[");std::uint64_t path_count=0,cut_count=0;std::string previous;
-  while(paths.Step()) {
-    const auto path=Text(paths,1),clock=Text(paths,4);Number(paths,0);
-    Check(paths.TypedText(2)=="object" && Text(paths,3)==path && (!path_count || previous<path),"timing path identity or order is invalid");previous=path;
-    Check(paths.TypedText(5)=="array","cross-layer timing cut nets must be an array");const auto count=Number(paths,6);
-    const bool explicit_transitions=!paths.IsNull(9) && paths.TypedText(9)!="null";
-    if(explicit_transitions)Check(paths.TypedText(9)=="array" && Number(paths,10)==count,"cross-layer timing transition coverage is invalid");
-    const auto required=Time(paths,13,14,true),fixed=Time(paths,15,16,false);double period=1;
-    if(analyze){Check(count>0,"schedule timing path has no cut nets");period=Time(paths,11,12,true);}
+  Sha256 projection;Hash(projection,"[");std::uint64_t path_count=0;
+  const auto totals=WalkTimingPaths(inputs[0],db,schedule?&schedule->database():nullptr,board?&*board:nullptr,bind,[&](const ScheduledTimingPath& path) {
     if(bind) {
-      if(path_count)Hash(projection,",");Hash(projection,"{\"clock_domain\":");Hash(projection,JsonQuote(clock));Hash(projection,",\"cuts\":[");
-    }
-    double transport=0;std::set<std::pair<std::uint64_t,std::uint32_t>> seen_hops;std::string prior_sink;
-    for(std::uint64_t index=0;index<count;++index) {
-      Check(have_cut && Text(cuts,0)==path && Number(cuts,1)==index && Text(cuts,2)=="text","timing cut sequence is malformed");
-      const auto net=Text(cuts,3);const auto& model=lookup(net);const auto& route=model.route;std::string sink;
-      if(explicit_transitions) {
-        Check(Text(cuts,4)=="object" && Text(cuts,5)==net && Text(cuts,6)==route.source,"cross-layer timing transition does not match route");sink=Text(cuts,7);
-        Check(std::find(route.sinks.begin(),route.sinks.end(),sink)!=route.sinks.end(),"cross-layer timing transition does not match route");
-        if(analyze && index)Check(prior_sink==route.source,"timing transition member partition chain is discontinuous");
-      } else {
-        if(bind)Check(route.sinks.size()==1,"multicast timing paths require explicit transitions");
-        sink=analyze ? model.longest:route.sinks.front();
+      if(path_count)Hash(projection,",");Hash(projection,"{\"clock_domain\":");Hash(projection,JsonQuote(path.clock));Hash(projection,",\"cuts\":[");
+      for(std::size_t i=0;i<path.cuts.size();++i) {
+        const auto& cut=path.cuts[i];if(i)Hash(projection,",");
+        Hash(projection,JsonRecord(Object{{"cut",path.path+":cut:"+std::to_string(i)},{"index",i},{"logical_net",cut.net},{"demand",cut.demand},{"from",cut.from},{"to",cut.to}}).Encode());
       }
-      prior_sink=sink;
-      if(bind) {
-        if(index)Hash(projection,",");Hash(projection,JsonRecord(Object{{"cut",path+":cut:"+std::to_string(index)},
-            {"index",index},{"logical_net",net},{"demand",route.demand},{"from",route.source},{"to",sink}}).Encode());
+      Hash(projection,"],\"estimated_logic_delay_ns\":");Hash(projection,JsonRecord(path.fixed).Encode());Hash(projection,",\"members\":[");
+      if(!path.explicit_members)Hash(projection,JsonQuote(path.path));
+      else for(std::uint64_t i=0;i<path.member_count;++i) {
+        Check(have_member && Text(members,0)==path.path && Number(members,1)==i && Text(members,2)=="text","timing member sequence is malformed");
+        if(i)Hash(projection,",");Hash(projection,JsonQuote(Text(members,3)));have_member=members.Step();
       }
-      if(analyze) {
-        const auto& fpgas=board->catalogs.fpgas;auto node=Index(fpgas,sink);const auto source_fpga=Index(fpgas,route.source);
-        std::vector<std::uint32_t> edges;
-        while(node!=source_fpga) {
-          Check(node<model.parents.size() && model.parents[node]>=0,"timing transition has unreachable sink");
-          auto edge=static_cast<std::uint32_t>(model.parents[node]);edges.push_back(edge);node=model.events[edge].arc->from;
-        }
-        std::reverse(edges.begin(),edges.end());const auto rank=static_cast<std::uint64_t>(&model-models.data());
-        for(auto edge:edges) {
-          Check(seen_hops.emplace(rank,edge).second,"schedule timing path repeats a routed hop");
-          const auto& event=model.events[edge];const auto& arc=*event.arc;
-          if(arc.affine) {volatile double scaled=arc.slope*(*event.ratio-1);volatile double delay=arc.base+scaled;transport=transport+delay;}
-          else {volatile double tx=static_cast<double>(event.slot)*arc.period;transport=std::max(transport,static_cast<double>(tx))+arc.base;}
-        }
-      }
-      ++cut_count;have_cut=cuts.Step();
-    }
-    if(bind) {
-      Hash(projection,"],\"estimated_logic_delay_ns\":");Hash(projection,JsonRecord(fixed).Encode());Hash(projection,",\"members\":[");
-      if(paths.IsNull(7))Hash(projection,JsonQuote(path));
-      else {
-        Check(paths.TypedText(7)=="array" && Number(paths,8)>0,"cross-layer timing path member identities are invalid");
-        for(std::uint64_t index=0;index<Number(paths,8);++index) {
-          Check(have_member && Text(members,0)==path && Number(members,1)==index && Text(members,2)=="text","timing member sequence is malformed");
-          if(index)Hash(projection,",");Hash(projection,JsonQuote(Text(members,3)));have_member=members.Step();
-        }
-      }
-      Hash(projection,"],\"path\":");Hash(projection,JsonQuote(path));Hash(projection,",\"required_time_ns\":");Hash(projection,JsonRecord(required).Encode());Hash(projection,"}");
+      Hash(projection,"],\"path\":");Hash(projection,JsonQuote(path.path));Hash(projection,",\"required_time_ns\":");Hash(projection,JsonRecord(path.required).Encode());Hash(projection,"}");
     }
     if(analyze) {
-      volatile double delay=fixed+transport;const double slack=required-delay;double normalized;
-      if(slack>=0){volatile double numerator=slack*period;volatile double denominator=positive*maximum_period;normalized=numerator/denominator;}
-      else {volatile double denominator=negative*period;normalized=slack/denominator;}
-      statistics->Add(Number(paths,0),normalized,slack,delay);
+      volatile double delay=path.fixed+path.transport;const double slack=path.required-delay;double normalized;
+      if(slack>=0){volatile double numerator=slack*path.period;volatile double denominator=positive*maximum_period;normalized=numerator/denominator;}
+      else {volatile double denominator=negative*path.period;normalized=slack/denominator;}
+      statistics->Add(path.source_seq,normalized,slack,delay);
     }
     ++path_count;
-  }
-  Check(!have_cut && !have_member,"timing child record coverage is incomplete");Hash(projection,"]");
-  auto expected=db.Prepare("SELECT json_extract(value,'$.timing_paths.records') FROM metadata WHERE key='sections'");
-  Check(expected.Step() && Number(expected,0)==path_count,"timing path coverage disagrees with source");
+  });
+  Check(!have_member,"timing child record coverage is incomplete");Hash(projection,"]");
+  const auto cut_count=totals.cuts,hops=totals.route_hops;
   JsonRecord contract;
   if(bind) {
     Object value{{"schema","emuflow.cross-layer-timing/v3"},{"provider","provider-neutral-route-schedule-binding-v3"},
@@ -309,5 +320,11 @@ void ProjectScheduleTiming(const std::vector<ArtifactRef>& inputs,const std::str
   const auto result=JsonRecord(Object{{"schema","emuflow.native-phase5-timing/v1"},{"status","pass"},
       {"implementation_id","native-route-schedule-timing-v1"},{"contract",std::move(contract)},{"timing_validation",std::move(timing)}}).Encode();
   PublishTextArtifact(output,inputs,[&](std::ostream& stream){stream<<result<<'\n';});
+}
+ScheduledTimingCounts VisitScheduledTimingPaths(const ArtifactRef& routes,const ArtifactRef& schedule,
+    const ExactScheduleBoard& board,const std::function<void(const ScheduledTimingPath&)>& visitor) {
+  routes.RequireUnchanged();schedule.RequireUnchanged();SqliteStore r(routes),s(schedule);
+  const auto result=WalkTimingPaths(routes,r.database(),&s.database(),&board,false,visitor);
+  routes.RequireUnchanged();schedule.RequireUnchanged();return result;
 }
 }  // namespace emuflow::core

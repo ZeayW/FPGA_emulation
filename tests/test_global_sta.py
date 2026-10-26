@@ -20,6 +20,20 @@ from emuflow.global_sta import (
 )
 
 
+def _reference_physical_checks(runtime, routes, schedule, physical, platform, *, metadata):
+    # These two storage-oracle cases intentionally combine inline route/endpoint
+    # facts with indexed segments. Production requires complete current owners.
+    from emuflow.global_sta import _bind_physical_checks
+    builder = _EventCheckBuilder(bound=True)
+    try:
+        return _bind_physical_checks(runtime, routes, schedule, physical, platform,
+                                     metadata=metadata, result=builder,
+                                     path_metadata=_PathMetadataBuilder(builder))
+    except BaseException:
+        builder._owner.close()
+        raise
+
+
 def example():
     # Two consecutive transported cuts: a missed first TX must not be hidden
     # by a legal final commit. Delays are separate physical arcs, not a total.
@@ -942,7 +956,7 @@ def test_indexed_logic_segments_are_exact_for_checks_and_system_timing(tmp_path)
     write_json(tmp_path / "physical-summary.json", stored_physical)
     indexed_physical = read_physical_summary(tmp_path / "physical-summary.json")
     indexed_metadata = {}
-    indexed_checks = bind_physical_checks(
+    indexed_checks = _reference_physical_checks(
         build_virtual_runtime(fixture.schedule, fixture.platform),
         routes,
         fixture.schedule,
@@ -1054,7 +1068,7 @@ def test_indexed_logic_segments_expand_compressed_members_exactly(tmp_path):
     write_json(tmp_path / "physical-summary.json", stored)
     with read_physical_summary(tmp_path / "physical-summary.json") as indexed:
         indexed_metadata = {}
-        indexed_checks = bind_physical_checks(
+        indexed_checks = _reference_physical_checks(
             runtime, routes, fixture.schedule, indexed, fixture.platform,
             metadata=indexed_metadata,
         )

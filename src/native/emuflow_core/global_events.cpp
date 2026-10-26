@@ -3,6 +3,9 @@
 #include "emuflow_core/store.hpp"
 #include "emuflow_core/hash.hpp"
 #include "emuflow_core/json_record.hpp"
+#include "emuflow_core/schedule_timing.hpp"
+#include <deque>
+#include <tuple>
 
 #include <algorithm>
 #include <array>
@@ -617,3 +620,235 @@ void ValidateGlobalQor(const std::vector<ArtifactRef>& inputs,const std::string&
   PublishTextArtifact(output,inputs,[&](std::ostream& out){out<<JsonRecord(Object{{"schema","emuflow.native-qor-validation/v1"},{"status","pass"},{"paths",seen},{"logical_sha256",logical}}).Encode()<<'\n';});
 }
 }  // namespace emuflow::core
+
+namespace emuflow::core {
+namespace {
+double BindingReal(SqliteStatement& row,int column,bool positive=false) {
+  const auto value=row.TypedReal(column);
+  Check(std::isfinite(value) && (positive?value>0:value>=0),"physical timing has an invalid delay/period");return value;
+}
+std::string OptionalText(SqliteStatement& row,int column) {return row.IsNull(column)?"":Text(row,column);}
+std::string JsonOptional(SqliteDatabase& db,const std::string& json,const char* path) {
+  auto r=db.Prepare("SELECT json_extract(?1,?2)");r.BindText(1,json);r.BindText(2,path);Check(r.Step(),"binding metadata is missing");return OptionalText(r,0);
+}
+struct EventPrimaryWriter {
+  SqliteDatabase& db;SqliteStatement path,event_find,event_put,check;
+  Integer paths=0,events=0,checks=0;
+  std::map<std::string,Integer> cache;std::deque<std::string> fifo;
+  explicit EventPrimaryWriter(SqliteDatabase& d):db(d) {
+    db.Execute(kGlobalEventsDDL);
+    db.Execute("CREATE TEMP TABLE binding_segment_ids(id TEXT PRIMARY KEY NOT NULL) WITHOUT ROWID");
+    path=db.Prepare("INSERT INTO paths VALUES(?,?,?,?,?,?,?,?)");
+    event_find=db.Prepare("SELECT seq FROM events WHERE event=?");event_put=db.Prepare("INSERT INTO events VALUES(?,?)");
+    check=db.Prepare("INSERT INTO checks VALUES(?,?,?,?,?)");
+  }
+  void Path(const std::string& id,const std::string& representative,bool local,const std::string& clock,double period,bool cone,bool ratio) {
+    Check(!id.empty() && !representative.empty() && std::isfinite(period) && period>0,"path metadata is invalid");
+    path.BindInteger(1,paths++);path.BindText(2,id);path.BindText(3,representative);path.BindInteger(4,local);
+    if(clock.empty())path.BindNull(5);else path.BindText(5,clock);path.BindReal(6,period);path.BindInteger(7,cone);
+    if(ratio)path.BindText(8,"linear-ratio-v1");else path.BindNull(8);path.Execute();
+  }
+  Integer Event(const std::string& id) {
+    auto found=cache.find(id);if(found!=cache.end())return found->second;
+    event_find.BindText(1,id);Integer seq;
+    if(event_find.Step()){seq=Number(event_find,0);Check(!event_find.Step(),"event identity repeats");event_find.Reset();}
+    else {event_find.Reset();seq=events++;event_put.BindInteger(1,seq);event_put.BindText(2,id);event_put.Execute();}
+    cache.emplace(id,seq);fifo.push_back(id);if(fifo.size()>8192){cache.erase(fifo.front());fifo.pop_front();}return seq;
+  }
+  void CheckRow(Integer role,const std::string& id,double launch,const std::vector<double>& arcs,double required) {
+    Check(std::isfinite(launch) && launch>=0 && std::isfinite(required),"bound check has invalid times");
+    std::vector<double> payload{launch,required};for(auto arc:arcs){Check(std::isfinite(arc) && arc>=0,"bound check has invalid arc");payload.push_back(arc);}
+    check.BindInteger(1,checks++);check.BindInteger(2,paths-1);check.BindInteger(3,role);check.BindInteger(4,Event(id));
+    check.BindBlob(5,payload.data(),payload.size()*sizeof(double));check.Execute();
+  }
+};
+struct BindingSegment {
+  std::string system,member,id,kind,replace,fpga,measurement;
+  Integer cut=0;double delay=0;
+};
+struct BindingPhysical {
+  std::string fpga;std::unique_ptr<SqliteStore> timing,identity,logic;
+  SqliteStatement endpoint,segments;bool have=false;BindingSegment current;
+  void Next() {
+    have=segments.Step();if(!have)return;
+    current={Text(segments,0),Text(segments,1),Text(segments,2),Text(segments,3),OptionalText(segments,5),Text(segments,7),Text(segments,8),Number(segments,4),BindingReal(segments,6)};
+    Check(current.fpga==fpga && (current.kind=="launch" || current.kind=="transition" || current.kind=="capture") &&
+       (current.measurement=="endpoint-exact" || current.measurement=="cut-net-cone-upper-bound" || current.measurement=="optimized-endpoint-collection-upper-bound"),"logic segment classification disagrees");
+  }
+  double Endpoint(const std::string& id,const std::string& entry,const char* kind) {
+    endpoint.BindText(1,id);Check(endpoint.Step() && Text(endpoint,0)==kind && Text(endpoint,1)==entry,"missing physical endpoint or schedule binding");
+    const auto delay=BindingReal(endpoint,2);Check(!endpoint.Step(),"physical endpoint repeats");endpoint.Reset();return delay;
+  }
+};
+void BindingHeader(SqliteDatabase& db,const std::string& header,const std::string& fpga,const std::string& design,const std::string& platform,bool local=false) {
+  Check(header.size()<1024*1024 && JsonText(db,header,"$.status")=="pass" && JsonText(db,header,"$.fpga")==fpga &&
+      JsonText(db,header,"$.design")==design,"physical source identity disagrees");
+  if(!local)Check(JsonText(db,header,"$.platform")==platform,"physical platform identity disagrees");
+  (void)JsonText(db,header,"$.provider");
+}
+void ValidateBindingEndpoints(BindingPhysical& p,SqliteDatabase& schedule,const std::string& design,const std::string& platform) {
+  auto& t=p.timing->database();auto& i=p.identity->database();ExactDDL(t,kBoundaryTimingDDL);ExactDDL(i,kBoundaryIdentityDDL);
+  const auto th=Metadata(t,"header"),ih=Metadata(i,"header");
+  BindingHeader(t,th,p.fpga,design,platform);BindingHeader(i,ih,p.fpga,design,platform);
+  (void)JsonText(t,th,"$.qualification");const auto scope=JsonOptional(t,th,"$.measurement_scope");
+  Check(scope.empty() || scope=="partition-boundary" || scope=="board-integrated-interface","boundary measurement scope is invalid");
+  auto a=t.Prepare("SELECT id,kind,schedule_entry,delay_ns,start_object,end_object,measurement FROM timings ORDER BY id");
+  auto b=i.Prepare("SELECT id,kind,schedule_entry,demand,logical_net,link,peer,logical_lane FROM endpoints ORDER BY id");
+  auto entry=schedule.Prepare("SELECT source_fpga,sink_fpga,demand,net,link_id,lane FROM schedule_entries WHERE entry_id=?");
+  Integer count=0,tx=0,rx=0;
+  while(a.Step()) {
+    Check(b.Step(),"boundary endpoint coverage disagrees");
+    const auto id=Text(a,0),kind=Text(a,1),eid=Text(a,2);
+    Check((kind=="tx" || kind=="rx") && id==Text(b,0) && kind==Text(b,1) && eid==Text(b,2),"boundary identity/timing disagrees");
+    Check(id=="__emuflow_"+kind+"_"+eid,"boundary endpoint is outside its schedule namespace");
+    (void)BindingReal(a,3);(void)Text(a,4);(void)Text(a,5);
+    const auto measurement=scope=="board-integrated-interface" ? (kind=="tx"?"routed-launch-through-tx-boundary-to-interface-endpoint":"interface-startpoint-through-rx-boundary-to-shadow-capture"):
+        (kind=="tx"?"logical-source-to-tx-port":"rx-port-to-shadow-capture");
+    Check(Text(a,6)==measurement,"boundary measurement trace scope disagrees");
+    entry.BindText(1,eid);Check(entry.Step(),"boundary references an absent schedule entry");
+    Check(Text(entry,kind=="tx"?0:1)==p.fpga && Text(entry,kind=="tx"?1:0)==Text(b,6) && Text(entry,2)==Text(b,3) &&
+        Text(entry,3)==Text(b,4) && Text(entry,4)==Text(b,5) && Number(entry,5)==Number(b,7),"boundary/schedule ownership disagrees");
+    Check(!entry.Step(),"schedule entry identity repeats");entry.Reset();++count;if(kind=="tx")++tx;else ++rx;
+  }
+  Check(!b.Step() && JsonNumber(t,th,"$.coverage.endpoints")==count && JsonNumber(t,th,"$.coverage.tx")==tx && JsonNumber(t,th,"$.coverage.rx")==rx &&
+      JsonNumber(i,ih,"$.coverage.endpoints")==count && JsonNumber(i,ih,"$.coverage.tx")==tx && JsonNumber(i,ih,"$.coverage.rx")==rx,"boundary endpoint coverage disagrees");
+  p.endpoint=t.Prepare("SELECT kind,schedule_entry,delay_ns FROM timings WHERE id=?");
+}
+} // namespace
+
+void BindGlobalEvents(const std::vector<ArtifactRef>& inputs,const std::string& output) {
+  Check(inputs.size()>=4,"binding input coverage is invalid");
+  CheckedRequestReader request(inputs.back().path(),8*1024*1024);
+  Check(request.Read<std::uint64_t>()==0x31424747464d5545ULL && request.Read<std::uint32_t>()==1,"binding request version is invalid");
+  const auto boundary_count=request.Read<std::uint32_t>(),local_count=request.Read<std::uint32_t>();
+  Check(boundary_count<=256 && local_count<=256 && inputs.size()==4+3*boundary_count+local_count,"binding source coverage is invalid");
+  for(std::size_t i=0;i+1<inputs.size();++i)ExpectedGeneration(request,inputs[i]);
+  const auto route_sha=request.ReadString32(),route_pretty=request.ReadString32(),schedule_sha=request.ReadString32(),schedule_pretty=request.ReadString32();
+  const auto config=request.ReadString32(false,4*1024*1024);request.RequireEnd();
+  SqliteStore routes(inputs[0]),schedule(inputs[1]);auto& r=routes.database();auto& s=schedule.database();
+  const auto rh=Metadata(r,"header"),sh=Metadata(s,"header");
+  Check(Metadata(r,"logical_sha256")==JsonQuote(route_sha) && Metadata(s,"logical_sha256")==JsonQuote(schedule_sha),"binding logical source seals disagree");
+  const auto design=JsonText(r,rh,"$.design"),platform=JsonText(r,rh,"$.platform");
+  Check(JsonText(r,config,"$.design")==design && JsonText(r,config,"$.platform")==platform && JsonText(s,sh,"$.design")==design && JsonText(s,sh,"$.platform")==platform,"binding design/platform disagree");
+  const auto semantics=JsonText(s,sh,"$.transport_semantics");
+  Check(semantics=="sampled-virtual-wire" || semantics=="registered-boundary","binding requires fixed-slot transport");
+  const auto semantic=JsonOptional(r,rh,"$.semantic_contract_sha256");
+  Check(JsonOptional(s,sh,"$.semantic_contract_sha256")==semantic,"binding semantic source seals disagree");
+  const auto board=ReadExactScheduleBoard(inputs[0],inputs[2].path());
+  Check(JsonNumber(s,sh,"$.route_constraints.frame_slots")==board.frame,"binding frame identity disagrees");
+  auto uncertainty_row=r.Prepare("SELECT json_extract(?,'$.uncertainty')");uncertainty_row.BindText(1,config);Check(uncertainty_row.Step(),"uncertainty is missing");const auto uncertainty=BindingReal(uncertainty_row,0);
+  std::map<std::string,double> clocks;
+  auto clock_rows=r.Prepare("SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]') FROM json_each(?,'$.clocks')");clock_rows.BindText(1,config);
+  while(clock_rows.Step())Check(clocks.emplace(Text(clock_rows,0),BindingReal(clock_rows,1,true)).second,"runtime clock repeats");
+  Check(!clocks.empty(),"runtime clocks are missing");
+  const auto virtual_period=[&](const std::string& clock){auto found=clocks.find(clock);if(found!=clocks.end())return found->second;Check(clocks.size()==1,"unknown runtime clock domain");return clocks.begin()->second;};
+  struct Link {double bound=0,alpha=0,beta=0;Integer minimum=0,maximum=0,quantum=0;bool affine=false;};
+  std::map<std::tuple<std::string,std::string,std::string>,Link> links;
+  auto link_rows=r.Prepare("SELECT json_extract(value,'$[0]'),json_extract(value,'$[1]'),json_extract(value,'$[2]'),json_extract(value,'$[3]'),json_extract(value,'$[4]'),json_extract(value,'$[5]'),json_extract(value,'$[6]'),json_extract(value,'$[7]'),json_extract(value,'$[8]') FROM json_each(?,'$.links')");link_rows.BindText(1,config);
+  while(link_rows.Step()) {
+    Link link;link.bound=BindingReal(link_rows,3);link.affine=!link_rows.IsNull(4);
+    if(link.affine){link.alpha=BindingReal(link_rows,4);link.beta=BindingReal(link_rows,5);link.minimum=Number(link_rows,6);link.maximum=Number(link_rows,7);link.quantum=Number(link_rows,8);
+      Check(link.minimum>0 && link.maximum>=link.minimum && link.quantum>0 && link.minimum%link.quantum==0 && link.maximum%link.quantum==0,"physical ratio domain is invalid");}
+    Check(links.emplace(std::make_tuple(Text(link_rows,0),Text(link_rows,1),Text(link_rows,2)),link).second,"directed board link repeats");
+  }
+  SqliteArtifactWriter writer(output,"global-event-primary-v1",inputs);auto& db=writer.database();
+  db.Execute("PRAGMA cache_size=-8192; PRAGMA temp_store=FILE; PRAGMA temp.cache_size=-8192");
+  SqliteTransaction transaction(db);EventPrimaryWriter events(db);
+  std::vector<std::unique_ptr<BindingPhysical>> physical;std::map<std::string,BindingPhysical*> by_fpga;
+  auto fpgas=r.Prepare("SELECT value FROM json_each(?,'$.boundary_fpgas') ORDER BY key");fpgas.BindText(1,config);
+  for(unsigned i=0;i<boundary_count;++i) {
+    Check(fpgas.Step(),"boundary FPGA catalog is incomplete");auto p=std::make_unique<BindingPhysical>();p->fpga=Text(fpgas,0);
+    Check(by_fpga.emplace(p->fpga,p.get()).second,"boundary FPGA repeats");
+    p->timing=std::make_unique<SqliteStore>(inputs[3+3*i]);p->identity=std::make_unique<SqliteStore>(inputs[4+3*i]);p->logic=std::make_unique<SqliteStore>(inputs[5+3*i]);
+    ValidateBindingEndpoints(*p,s,design,platform);
+    auto& l=p->logic->database();ExactDDL(l,kLogicSegmentTimingDDL);const auto lh=Metadata(l,"header");BindingHeader(l,lh,p->fpga,design,platform);
+    Check(JsonText(l,lh,"$.system_routes_sha256")==route_pretty && JsonText(l,lh,"$.tdm_schedule_sha256")==schedule_pretty && JsonOptional(l,lh,"$.semantic_contract_sha256")==semantic,"physical logic source seals disagree");
+    auto missing=l.Prepare("SELECT 1 FROM unsupported_members UNION ALL SELECT 1 FROM unmeasured_segments LIMIT 1");Check(!missing.Step(),"physical logic segments are incomplete");
+    p->segments=l.Prepare("SELECT system_path,member_path,segment_id,kind,cut_index,replace_tx_endpoint,delay_ns,fpga,measurement FROM segments ORDER BY system_path,member_path,cut_index,segment_id");p->Next();physical.push_back(std::move(p));
+  }
+  Check(!fpgas.Step(),"boundary FPGA catalog has extra records");
+  auto segment_id=db.Prepare("INSERT INTO binding_segment_ids VALUES(?)");
+  const auto take=[&](const std::string& path,const std::string& member){
+    std::vector<BindingSegment> result;
+    for(;;) {
+      BindingPhysical* next=nullptr;
+      for(auto& p:physical)if(p->have && (!next || std::tie(p->current.system,p->current.member,p->current.cut,p->current.id)<std::tie(next->current.system,next->current.member,next->current.cut,next->current.id)))next=p.get();
+      if(!next)break;
+      const auto key=std::make_pair(next->current.system,next->current.member),wanted=std::make_pair(path,member);
+      Check(key>=wanted,"unexpected/unconsumed physical logic member");if(key>wanted)break;
+      Check(next->current.cut==static_cast<Integer>(result.size()),"missing or duplicate original-member logic segment");
+      segment_id.BindText(1,next->current.id);segment_id.Execute();result.push_back(next->current);next->Next();
+    }
+    return result;
+  };
+  Integer representatives=0;
+  const auto totals=VisitScheduledTimingPaths(inputs[0],inputs[1],board,[&](const ScheduledTimingPath& path) {
+    ++representatives;const auto runtime=virtual_period(path.clock);
+    auto member_rows=r.Prepare("SELECT type,value FROM json_each((SELECT record_json FROM timing_paths WHERE seq=?),'$.compressed_path_ids') ORDER BY value");member_rows.BindInteger(1,path.source_seq);
+    Integer members=0;const auto emit=[&](const std::string& member) {
+      const auto chain=take(path.path,member);Check(chain.size()==path.cuts.size()+1,"missing original-member logic segments");
+      bool ratio=false,cone=false;std::set<double> periods;
+      for(const auto& hop:path.hops){auto link=links.find({hop.link,hop.from,hop.to});Check(link!=links.end(),"physical board link is missing");ratio|=link->second.affine;}
+      for(const auto& seg:chain)cone|=seg.measurement!="endpoint-exact";
+      for(const auto& hop:path.hops)Check(links.at({hop.link,hop.from,hop.to}).affine==ratio,"one path cannot mix total net-ratio and fixed-slot delay models");
+      events.Path(member,path.path,false,path.clock,path.period,cone,ratio);
+      double origin=0;std::vector<double> trailing,model;std::size_t used=0;
+      for(std::size_t k=0;k<path.cuts.size();++k) {
+        const auto& cut=path.cuts[k];Check(cut.hop_count>0 && cut.first_hop==used && chain[k].replace=="__emuflow_tx_"+path.hops[used].entry,"cut/segment binding disagrees");
+        Check(chain[k].fpga==cut.from && chain[k].kind==(k==0?"launch":"transition"),"logic segment launch/transition ownership disagrees");
+        for(std::size_t j=0;j<cut.hop_count;++j) {
+          const auto& hop=path.hops[used++];periods.insert(hop.period);
+          auto tx=by_fpga.find(hop.from),rx=by_fpga.find(hop.to);Check(tx!=by_fpga.end() && rx!=by_fpga.end(),"physical FPGA endpoint owner is missing");
+          const auto transmit=j?tx->second->Endpoint("__emuflow_tx_"+hop.entry,hop.entry,"tx"):chain[k].delay;
+          const auto receive=rx->second->Endpoint("__emuflow_rx_"+hop.entry,hop.entry,"rx");
+          const auto& link=links.at({hop.link,hop.from,hop.to});double delay=link.bound;
+          if(ratio){Check(hop.ratio && *hop.ratio>=static_cast<std::uint64_t>(link.minimum) && *hop.ratio<=static_cast<std::uint64_t>(link.maximum) && *hop.ratio%link.quantum==0,"ratio model has an unsupported ratio");volatile double product=link.alpha*static_cast<double>(*hop.ratio);delay=product+link.beta;}
+          std::vector<double> arcs=trailing;arcs.push_back(transmit);
+          if(ratio){model.push_back(transmit);model.push_back(delay);model.push_back(receive);}
+          if(semantics!="registered-boundary" || j)events.CheckRow(2,hop.entry,origin,arcs,hop.tx_time-uncertainty);
+          origin=hop.tx_time;trailing={delay,receive};
+        }
+      }
+      Check(periods.size()==1 && used==path.hops.size() && chain.back().kind=="capture" && chain.back().replace.empty() && chain.back().fpga==path.cuts.back().to,"incomplete event coverage or invalid capture");
+      trailing.push_back(chain.back().delay);trailing.push_back(uncertainty);model.push_back(chain.back().delay);model.push_back(uncertainty);
+      const double commit=(board.frame-1)*(*periods.begin());
+      events.CheckRow(0,"capture",ratio?0:origin,ratio?model:trailing,path.required);
+      events.CheckRow(1,"capture",ratio?0:origin,ratio?model:trailing,runtime-(path.period-path.required));
+      events.CheckRow(3,"capture",origin,trailing,commit);++members;
+    };
+    if(!path.explicit_members)emit(path.path);
+    else while(member_rows.Step()){Check(Text(member_rows,0)=="text","path member identity is invalid");emit(Text(member_rows,1));}
+    Check(members==static_cast<Integer>(path.explicit_members?path.member_count:1),"path member coverage disagrees");
+  });
+  (void)totals;for(const auto& p:physical)Check(!p->have,"unconsumed physical logic member");
+  JsonRecord source;std::string source_identity;auto locals=r.Prepare("SELECT value FROM json_each(?,'$.local_fpgas') ORDER BY key");locals.BindText(1,config);
+  for(unsigned i=0;i<local_count;++i) {
+    Check(locals.Step(),"local FPGA catalog is incomplete");const auto fpga=Text(locals,0);
+    SqliteStore local(inputs[3+3*boundary_count+i]);auto& l=local.database();ExactDDL(l,kLocalPathTimingDDL);
+    const auto lh=Metadata(l,"header");BindingHeader(l,lh,fpga,design,platform,true);(void)JsonText(l,lh,"$.qualification");
+    Object binding;for(const char* key:{"path_database_sha256","original_ir_sha256","assignment_sha256","routes_sha256","original_path_ids_sha256"}) {
+      const auto value=JsonText(l,lh,(std::string("$.source.")+key).c_str());Check(value.size()==64 && value.find_first_not_of("0123456789abcdef")==std::string::npos,"local source digest is invalid");binding.emplace(key,value);
+    }
+    const auto original_paths=JsonNumber(l,lh,"$.source.original_paths");Check(original_paths>0,"original path source is empty");
+    binding.emplace("original_paths",original_paths);const auto encoded=JsonRecord(binding).Encode();
+    Check(source_identity.empty() || source_identity==encoded,"local source seals disagree");source_identity=encoded;source=JsonRecord(std::move(binding));
+    const auto identity=JsonText(l,lh,"$.identity_schema");Check(identity=="emuflow.local-path-identity/v1" || identity=="emuflow.local-path-identity/v2","local identity schema is invalid");
+    auto rows=l.Prepare("SELECT id,kind,fpga,clock_domain,clock_period_ns,required_time_ns,measurement,delay_ns FROM timings ORDER BY id");Integer count=0;
+    while(rows.Step()) {
+      const auto id=Text(rows,0),clock=Text(rows,3);Check(Text(rows,1)=="local" && Text(rows,2)==fpga,"local timing identity disagrees");
+      const auto period=BindingReal(rows,4,true),delay=BindingReal(rows,7);double required=period;
+      if(!rows.IsNull(5)){required=BindingReal(rows,5,true);Check(std::isfinite(required),"local required time is invalid");}
+      Check(identity=="emuflow.local-path-identity/v1" ? rows.IsNull(5):!rows.IsNull(5),"local required-time identity disagrees");
+      const auto measurement=OptionalText(rows,6);Check(measurement.empty() || measurement=="explicit-routed-path-chain" || measurement=="endpoint-longest-path-fallback","local measurement is invalid");
+      events.Path(id,id,true,clock,period,measurement!="explicit-routed-path-chain",false);
+      events.CheckRow(0,"capture",0,{delay},required);events.CheckRow(1,"capture",0,{delay},virtual_period(clock)-(period-required));++count;
+    }
+    Check(JsonNumber(l,lh,"$.coverage.local_paths")==count,"local path coverage disagrees");
+  }
+  Check(!locals.Step(),"local FPGA catalog has extra records");
+  PutMetadata(db,"header",Object{{"schema","emuflow.global-event-checks/v1"},{"mode",3},{"paths",events.paths},{"checks",events.checks},{"events",events.events}});
+  PutMetadata(db,"binding",Object{{"implementation_id","native-physical-event-binding-v1"},{"compressed_representative_paths",representatives},{"source_binding",source}});
+  transaction.Commit();events.path=SqliteStatement{};events.event_find=SqliteStatement{};events.event_put=SqliteStatement{};events.check=SqliteStatement{};segment_id=SqliteStatement{};
+  writer.Commit();
+}
+} // namespace emuflow::core

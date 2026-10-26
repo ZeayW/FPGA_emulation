@@ -44,6 +44,7 @@ constexpr const char* kUsage =
     "  global-sta audit-measurements PRIMARY INDEX STORE REQUEST SUMMARY\n"
     "  global-sta publish-qor PRIMARY INDEX STORE REQUEST QOR\n"
     "  global-sta validate-qor STORE REQUEST SUMMARY\n"
+    "  global-sta bind-events ROUTES SCHEDULE BOARD [PHYSICAL_STORES...] REQUEST PRIMARY\n"
     "  global-sta index-events PRIMARY INDEX\n"
     "  global-sta export-events PRIMARY INDEX REQUEST SUMMARY\n"
     "  phase6 assign-banks --typed-input INPUT OUTPUT\n"
@@ -241,6 +242,10 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     return Execute({Stage::kPublishGlobalQor,{argv[3],argv[4],argv[5],argv[6]},argv[7]},report);
   if (phase == "global-sta" && operation == "validate-qor" && argc == 6)
     return Execute({Stage::kValidateGlobalQor,{argv[3],argv[4]},argv[5]},report);
+  if (phase == "global-sta" && operation == "bind-events" && argc>=8) {
+    std::vector<std::string> inputs;for(int i=3;i<argc-1;++i)inputs.push_back(argv[i]);
+    return run(Stage::kBindGlobalEvents,inputs,argv[argc-1]);
+  }
   if (phase == "global-sta" && operation == "index-events" && argc == 5)
     return Execute({Stage::kIndexGlobalEvents,{argv[3]},argv[4]},report);
   if (phase == "global-sta" && operation == "export-events" && argc == 7)

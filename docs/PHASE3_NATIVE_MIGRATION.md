@@ -482,7 +482,7 @@ there is no silent implementation or provider fallback.
 | Phase 5 | Native model/solver/certificate/store producer, independent staged-store validation, and timing/cross-layer projection | Complete native stage lifecycle/report ownership and real-design qualification |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |
 | Phase 7 | Indexed lowering; typed physical handoff and native Bookshelf pin export | Complete remaining backend/export/validation ownership and full physical qualification |
-| Global STA | Typed segments/results and bounded identity/stitching views | Native check/input construction, result import and ordered complete-path stitching |
+| Global STA | Native typed physical-to-event binding, event validation/model export, measurement import, full-original-path reduction and typed QoR publication | Migrate Python physical-view validation and remaining orchestration; qualify complete real-design physical/global timing |
 
 Native computation does not eliminate algorithmic search cost. Compare search,
 imported-solution and frozen-output replay as separate execution modes. Porting
@@ -654,8 +654,14 @@ checks and computes original-path WNS/TNS with faithful partial sums. Native
 QoR publication writes the existing typed final columns directly; the reader
 validates complete ordered records through the shared core. Saved-result
 consumers join the same event namespace rather than load expanded TSV or rebuild
-Python scalar/path arrays. Physical-to-event fact binding remains a bounded
-Python producer; this boundary alone does not complete W6/W7.
+Python scalar/path arrays. Current typed physical facts now enter
+`global-sta bind-events` directly. The
+binder reuses the Phase 5 scheduled-path visitor, merges physical segment cursors
+and queries FPGA-owned endpoint delays without rebuilding Python path/hop or
+endpoint populations. Its final event primary is still independently indexed
+and validated. Mixed typed/inline owners fail rather than fall back. Python
+physical-view validation and other phase adapters remain; this boundary alone
+does not complete W6/W7.
 See [global timing semantics](global-opensta-qualification.md).
 
 ## Validation and completion

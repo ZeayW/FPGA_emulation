@@ -49,6 +49,7 @@ const char* StageName(Stage stage) {
     case Stage::kRoute: return "phase4.route";
     case Stage::kBuildSchedule: return "phase5.build-schedule";
     case Stage::kProjectScheduleTiming: return "phase5.timing-contract";
+    case Stage::kBindGlobalEvents: return "global-sta.bind-events";
     case Stage::kIndexGlobalEvents: return "global-sta.index-events";
     case Stage::kExportGlobalEvents: return "global-sta.export-events";
     case Stage::kImportGlobalMeasurements: return "global-sta.import-measurements";
@@ -125,6 +126,20 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     case Stage::kAuditGlobalMeasurements: return {"global-event-primary-v1","global-event-index-v1","global-measurements-store-v1","global-measurement-audit-request-v1"};
     case Stage::kPublishGlobalQor: return {"global-event-primary-v1","global-event-index-v1","global-measurements-store-v1","global-qor-request-v1"};
     case Stage::kValidateGlobalQor: return {"qor-report-store-v1","global-qor-validation-request-v1"};
+    case Stage::kBindGlobalEvents: {
+      const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
+      if(count<4)throw core::StageError(core::ErrorCode::kInvalidRequest,"global binding source coverage is invalid");
+      const auto path=request.input_artifacts.empty()?request.input_paths.back():request.input_artifacts.back().path();
+      core::CheckedRequestReader reader(path,8*1024*1024);
+      if(reader.Read<std::uint64_t>()!=0x31424747464d5545ULL || reader.Read<std::uint32_t>()!=1)
+        throw core::StageError(core::ErrorCode::kInvalidRequest,"global binding request version is invalid");
+      const auto boundaries=reader.Read<std::uint32_t>(),locals=reader.Read<std::uint32_t>();
+      if(boundaries>256 || locals>256 || count!=4+3*boundaries+locals)
+        throw core::StageError(core::ErrorCode::kInvalidRequest,"global binding source coverage is invalid");
+      std::vector<std::string> schemas{"system-route-store-v3","tdm-schedule-store-v4","exact-schedule-board-request-v1"};
+      for(unsigned i=0;i<boundaries;++i)for(const char* schema:{"boundary-timing-store-v1","boundary-identity-store-v1","logic-segment-timing-store-v1"})schemas.push_back(schema);
+      schemas.insert(schemas.end(),locals,"local-path-timing-store-v1");schemas.push_back("global-event-binding-request-v1");return schemas;
+    }
     case Stage::kIndexGlobalEvents: return {"global-event-primary-v1"};
     case Stage::kExportGlobalEvents: return {"global-event-primary-v1","global-event-index-v1","global-event-export-request-v1"};
     case Stage::kBuildSchedule: return {"system-route-store-v3", "exact-schedule-board-request-v1", "exact-schedule-generation-request-v1"};
@@ -287,6 +302,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kAuditGlobalMeasurements: core::AuditGlobalMeasurements(inputs,output); break;
       case Stage::kPublishGlobalQor: core::PublishGlobalQor(inputs,output); break;
       case Stage::kValidateGlobalQor: core::ValidateGlobalQor(inputs,output); break;
+      case Stage::kBindGlobalEvents: core::BindGlobalEvents(inputs,output); break;
       case Stage::kIndexGlobalEvents: core::IndexGlobalEvents(inputs[0],output); break;
       case Stage::kExportGlobalEvents: core::ExportGlobalEvents(inputs,output); break;
       case Stage::kValidateSchedule: core::ValidateExactSchedule(inputs,output); break;
@@ -329,6 +345,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kAuditGlobalMeasurements: schema = "global-measurement-summary-v1"; break;
       case Stage::kPublishGlobalQor: schema = "qor-report-store-v1"; break;
       case Stage::kValidateGlobalQor: schema = "global-qor-validation-summary-v1"; break;
+      case Stage::kBindGlobalEvents: schema = "global-event-primary-v1"; break;
       case Stage::kIndexGlobalEvents: schema = "global-event-index-v1"; break;
       case Stage::kExportGlobalEvents: schema = "global-event-export-summary-v1"; break;
       case Stage::kValidateSchedule: schema = "exact-schedule-validation-summary-v1"; break;

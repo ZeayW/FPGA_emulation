@@ -93,10 +93,29 @@ Python. Terminal comparison uses independently validated full logical identities
 and bounded headers rather than expanding two whole QoR JSON documents.
 Historical expanded-TSV production results require their matching Git revision.
 
-This closes event storage, numerical import/reduction and model/QoR export
-ownership. Physical-to-event fact binding still runs through a bounded Python
-producer, and remaining phase adapters require migration. This does not establish
-W6/W7 completion or full physical qualification.
+Current typed RouteStore/ScheduleStore and physical evidence select
+`global-sta bind-events`. The native binder consumes boundary timing/identity,
+logic-segment timing and optional local-path timing stores directly. It reuses
+the Phase 5 scheduled-path visitor for route selection and concrete TX events;
+only one original-member segment chain is active. Endpoint lookups remain in
+their FPGA-scoped owners, and a bounded event cache avoids an H-sized Python
+endpoint dictionary. Logic groups merge in canonical path/member/cut order;
+missing, extra or globally duplicated segments fail before publication.
+
+The binder emits the existing event primary directly, then the independent
+native event index validates the complete output. It preserves every original
+member, TX/commit checks, uncertainty placement, per-clock runtime periods,
+registered-boundary exemptions, ratio domains and separate physical link models.
+Physical lane remapping retains the schedule's logical lane identity. Local-path
+sources must agree, and terminal metadata checks the original count and path-ID
+seal. Unknown/mixed typed representations fail; native failure never invokes the
+inline reference binder. Inline small correctness fixtures remain reference
+inputs; mixed storage-oracle tests invoke their reference producer explicitly.
+
+This closes the current typed physical-to-event producer, event storage,
+numerical import/reduction and model/QoR export boundary. Python still validates
+physical-store views before binding, and remaining phase adapters require
+migration. This does not establish W6/W7 completion or full physical qualification.
 
 Timing reconstruction must supply each scheduled hop's concrete
 `fixed_slot_tx_time_ns` and its bound TDM ratio where the link model requires

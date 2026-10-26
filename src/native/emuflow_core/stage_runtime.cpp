@@ -183,6 +183,7 @@ constexpr RegisteredSchema schemas[] = {
      "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'","emuflow.system-routes/v1"},
     {"phase5-timing-request-v1", ArtifactEncoding::kBinary, 0x31544354464d5545ULL, 1},
     {"phase5-timing-summary-v1", ArtifactEncoding::kText, 0, 1},
+    {"global-event-binding-request-v1", ArtifactEncoding::kBinary, 0x31424747464d5545ULL, 1},
     {"global-event-primary-v1", ArtifactEncoding::kSqlite, 0x454d4745, 1, true,
      "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'", "emuflow.global-event-checks/v1"},
     {"global-event-index-v1", ArtifactEncoding::kSqlite, 0x454d4749, 1, true,
