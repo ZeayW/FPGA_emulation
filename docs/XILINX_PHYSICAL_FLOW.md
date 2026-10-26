@@ -487,8 +487,18 @@ P/N pins and a 10 MHz local DUT target. It is an integration fixture, not a
 Phase 1--7 or global-design timing result. Serial-data pads do not receive the
 one-bit adapter's zero-delay constraint relative to the TDM clock. Their fixed
 transfer remains the external link model; routed serial-pad/board/SI signoff is
-outside this qualification. Full-flow word execution remains rejected until
-complete-fanin event projection and independent global timing are integrated.
+outside this qualification.
+
+The multi-FPGA Phase 7B entry accepts the canonical word-mode Phase 6 bank plan
+and wiring with `backend=vivado`. Before starting workers it checks source-bound
+bank allocation and indexed transport lane occupancy. Workers use native banks
+and fixed pins; they do not instantiate the one-bit differential adapter.
+Every active FPGA must provide its matching word-plan/wiring identities,
+fixed-clock infrastructure timing and fixed-pair evidence. Physical batches
+and their common assembler carry these checks independently of Phase 7C.
+The assembled result is a local physical result; complete-fanin word event
+projection and global timing remain required before global WNS/TNS or frequency
+can be reported. The global word-mode timing guard remains in place.
 
 Native-word synthesized continuations additionally compare the complete
 preparation's file population, native IP configurations, pin/XDC sources,
@@ -502,7 +512,8 @@ clock/margin environment is therefore available to the existing standalone
 checkpoint timing exporters. A checkpoint alone is not a timing acceptance
 result; infrastructure checks and complete source-bound exports must still
 pass. The indexed API's `retain_routed_checkpoint` is false by default and is
-restricted to explicit active-run debug/qualification retention. Remove this
+also enabled for word-mode Phase 7B workers while independent Phase 7C extraction
+is being integrated. This is active-run scratch retention. Remove this
 replay input when the active investigation finishes, retaining compact evidence.
 
 The current fixed differential adapter supplies IBUFDS/OBUFDS boundaries; it

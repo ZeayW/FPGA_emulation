@@ -263,9 +263,9 @@ clock-edge cases fail explicitly rather than receiving an assumed full cycle.
 The named `legacy-absolute-arrival-v1` policy remains the default during global
 budget integration. Historical indexed v3/v1 data remains readable without
 inventing missing clock facts. Clock-budget rows cannot be repacked through the
-legacy key-free JSON row writer. Full-flow word physical/global execution and
-safe-frequency reporting remain unqualified until their consumers use these
-budgets and physical margins.
+legacy key-free JSON row writer. Native word Phase 7B executes independently;
+word-mode global timing and safe-frequency reporting remain unqualified until
+their consumers use these budgets and physical margins.
 
 The separate indexed producer qualification uses real positive and negative
 `FDRE` models behind an INIT-defined AND clock gate and two cancelling

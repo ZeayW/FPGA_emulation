@@ -8,7 +8,7 @@ from typing import Mapping, Sequence
 
 from .errors import ValidationError
 from .io import file_sha256, read_json
-from .multi_fpga_physical_flow import _assemble_multi_fpga_physical_results
+from .multi_fpga_physical_flow import _assemble_multi_fpga_physical_results, _native_word_physical_sources
 from .netlist import SPLIT_MANIFEST_SCHEMA
 from .physical_backend import physical_backend_descriptor
 from .platform import Platform
@@ -49,6 +49,7 @@ def assemble_vivado_physical_batches(
     if not isinstance(clock_periods, dict) or not clock_periods:
         raise ValidationError("physical batch lacks Phase 6 clock periods")
     schedule = read_tdm_schedule(schedule_path)
+    _native_word_physical_sources(split_root, manifest, platform, schedule, 'vivado')
     runtime = build_virtual_runtime(schedule, platform, clock_periods)
     io_sources = manifest.get("virtual_board_binding")
     binding = None

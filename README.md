@@ -37,8 +37,9 @@ receive-alignment candidates, with complete generated-IP interface checks.
 The indexed provider exposes a native-bank physical qualification path with
 buffered reference clocks and checked synthesized continuations.
 TX timing queries bind pad-anchored serializer bits across folded input aliases.
-Full-flow word-PHY execution and global physical event projection remain unqualified;
-unsupported full-flow physical bindings are rejected.
+Word-mode Phase 7B can implement and assemble native-bank partitions from the
+checked Phase 6 plan independently of Phase 7C. Complete global physical event
+projection remains under integration and is rejected until qualified.
 Its required [timing contract](docs/global-opensta-qualification.md#ratio-estimates-and-schedule-resolved-phy-timing)
 distinguishes pre-schedule ratio estimates from post-schedule per-signal events.
 Safe-frequency fields remain unavailable until edge/phase and physical margins

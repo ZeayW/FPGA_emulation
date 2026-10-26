@@ -114,6 +114,41 @@ def test_word_mode_cannot_be_executed_as_the_bit_adapter(tmp_path):
     assert not (tmp_path/'physical').exists()
 
 
+def test_word_physical_preflight_consumes_phase6_without_global_sta(tmp_path,monkeypatch):
+    from emuflow.multi_fpga_physical_flow import _native_word_physical_sources
+    from emuflow.tdm_schedule_storage import read_tdm_schedule
+    args,out,_report=emit_word_case(tmp_path,monkeypatch)
+    platform=Platform.load(args[3]);schedule=read_tdm_schedule(args[2]);manifest=read_json(out/'manifest.json')
+    old=TransportView.__getitem__
+    def without_endpoints(self,key):
+        if key=='endpoints':raise AssertionError('word physical preflight expanded endpoint JSON')
+        return old(self,key)
+    monkeypatch.setattr(TransportView,'__getitem__',without_endpoints)
+    sources=_native_word_physical_sources(out,manifest,platform,schedule,'vivado')
+    assert sources=={'wiring':out/'virtual_board_wiring.json','plan':out/'word_phy_plan.json'}
+    with pytest.raises(ValidationError,match='requires Vivado'):
+        _native_word_physical_sources(out,manifest,platform,schedule,'rapidwright')
+    invalid=copy.deepcopy(read_json(sources['plan']));invalid['fpgas'][0]['banks'][0]['logical_lsb']+=8
+    write_json(sources['plan'],invalid)
+    with pytest.raises(ValidationError,match='differs from its canonical'):
+        _native_word_physical_sources(out,manifest,platform,schedule,'vivado')
+
+
+def test_word_physical_evidence_cannot_mix_sources_or_drop_fixed_clocks():
+    from emuflow.multi_fpga_physical_flow import _require_native_word_evidence
+    hashes={'word_phy_plan':'a'*64,'word_wiring':'b'*64}
+    evidence={'status':'pass','infrastructure_timing':{'fixed_clock_contract_met':True},
+        'differential_pairs':42,'preparation':{'fpga':'fpga0','part':'part','data_pairs':40,'forwarded_clock_pairs':2}}
+    record={'fpga':'fpga0','part':'part','active':True,'stages':{'word_phy_implementation':evidence,
+        'vivado_implementation':{'word_phy_implementation':copy.deepcopy(evidence),
+            'input_identity':{key:{'sha256':value}for key,value in hashes.items()}}}}
+    _require_native_word_evidence(record,hashes)
+    changed=copy.deepcopy(record);changed['stages']['vivado_implementation']['input_identity']['word_phy_plan']['sha256']='c'*64
+    with pytest.raises(ValidationError,match='different Phase6'):_require_native_word_evidence(changed,hashes)
+    changed=copy.deepcopy(record);changed['stages']['word_phy_implementation']['infrastructure_timing']['fixed_clock_contract_met']=False
+    with pytest.raises(ValidationError,match='evidence.*missing'):_require_native_word_evidence(changed,hashes)
+
+
 def test_word_format_is_explicit_and_rejects_unsupported_width(tmp_path):
     from emuflow.cli import _build_parser,_dispatch
     path=tmp_path/'word.json'

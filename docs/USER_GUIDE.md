@@ -473,6 +473,13 @@ summary still requires whole-design Phase 7C analysis; joining workers does
 not produce global WNS/TNS. These records are temporary active-run inputs,
 not a persistent checkpoint library.
 
+Word-mode Phase 7B workers use the Phase 6 `word_phy_plan.json` and
+`virtual_board_wiring.json` directly. Their preflight and assembler validate
+the plan's schedule/transport identities and native-bank physical evidence.
+They may complete while Phase 7C integration is pending. Routed checkpoints
+remain temporary inputs for that active timing investigation; a completed
+Phase 7B batch does not certify global timing or an operating frequency.
+
 For independent terminal validation, require the physical endpoint:
 
 ```bash

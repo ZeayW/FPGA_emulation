@@ -108,6 +108,62 @@ _TRANSPORT_MODULE = re.compile(r"^module\s+([A-Za-z_][A-Za-z0-9_$]*)", re.M)
 _INACTIVE_PARTITION_PROVIDER = "inactive-empty-partition-v1"
 
 
+def _native_word_physical_sources(split_root, manifest, platform, schedule, backend):
+    """Check the canonical Phase6 bank plan independently of Phase7C.
+
+    Wiring and bank assignments stay in their Phase6 owners. This preflight
+    returns references only; indexed transports reduce lane occupancy natively.
+    """
+    word = any(link.word_timing is not None for link in platform.links)
+    references = manifest.get('word_phy_plan')
+    if not word:
+        if references is not None:
+            raise ValidationError('native word physical-top plan requires a word platform')
+        return None
+    if backend != 'vivado' or not all(link.word_timing is not None for link in platform.links):
+        raise ValidationError('native word physical-top execution requires Vivado and uniform word links')
+    if (references != {'wiring':'virtual_board_wiring.json','plan':'word_phy_plan.json'} or
+            manifest.get('virtual_board_binding') is not None):
+        raise ValidationError('native word physical-top requires its Phase6 bank plan and wiring without a bit adapter')
+    paths = {key: split_root / name for key, name in references.items()}
+    for path in paths.values():
+        if not path.is_file() or path.is_symlink() or path.stat().st_size > 16*1024*1024:
+            raise ValidationError('native word physical-top source is missing or exceeds board scope')
+    from .lvds_word_plan import validate_word_phy_plan
+    transports = {}
+    try:
+        for item in manifest.get('fpgas', []):
+            if item['fpga'] in transports:
+                raise ValidationError('native word physical-top FPGA is duplicated')
+            transports[item['fpga']] = read_transport(split_root / item['transport'])
+        validate_word_phy_plan(platform, read_json(paths['wiring']), schedule,
+                               transports, read_json(paths['plan']))
+    finally:
+        for transport in transports.values():
+            close = getattr(transport, 'close', None)
+            if callable(close): close()
+    return paths
+
+
+def _require_native_word_evidence(record, source_hashes):
+    if record.get('active') is False:
+        return
+    stages = record.get('stages', {})
+    native = stages.get('vivado_implementation', {})
+    evidence = stages.get('word_phy_implementation')
+    if (not isinstance(evidence, Mapping) or evidence.get('status') != 'pass' or
+            evidence != native.get('word_phy_implementation') or
+            evidence.get('infrastructure_timing', {}).get('fixed_clock_contract_met') is not True):
+        raise ValidationError(f"completed native word PHY evidence for {record['fpga']} is missing")
+    identity = native.get('input_identity', {})
+    if any(identity.get(key, {}).get('sha256') != digest for key, digest in source_hashes.items()):
+        raise ValidationError('completed native word PHY belongs to different Phase6 sources')
+    preparation = evidence.get('preparation', {})
+    if (preparation.get('fpga') != record['fpga'] or preparation.get('part') != record['part'] or
+            evidence.get('differential_pairs') != preparation.get('data_pairs', -1) + preparation.get('forwarded_clock_pairs', -1)):
+        raise ValidationError('completed native word PHY device or fixed-pair evidence differs')
+
+
 @contextmanager
 def _open_position_hint_lookup(
     position_hints: Mapping[str, Any],
@@ -641,8 +697,10 @@ def run_multi_fpga_physical_flow(
     if manifest.get("schema") != SPLIT_MANIFEST_SCHEMA:
         raise ValidationError("multi-FPGA physical input split manifest is invalid")
     platform = Platform.load(platform_path)
-    if any(link.word_timing is not None for link in platform.links):
-        raise ValidationError('periodic LVDS physical execution requires native word physical-top and event-projection integration; a bit adapter cannot consume a word PHY plan')
+    word_mode = any(link.word_timing is not None for link in platform.links)
+    if word_mode and (backend != 'vivado' or
+            manifest.get('word_phy_plan') != {'wiring':'virtual_board_wiring.json','plan':'word_phy_plan.json'}):
+        raise ValidationError('native word physical-top execution requires Vivado and the Phase6 bank plan')
     raw_reservations = manifest.get("resource_reservations_by_fpga", {})
     if (
         not isinstance(raw_reservations, Mapping)
@@ -662,6 +720,7 @@ def run_multi_fpga_physical_flow(
         platform.fpgas, transport_resource_reservations
     )
     schedule = read_tdm_schedule(schedule_path)
+    word_sources = _native_word_physical_sources(split_root, manifest, platform, schedule, backend)
     position_hints = None
     electrical_binding = None
     virtual_board = None
@@ -1457,6 +1516,9 @@ def run_multi_fpga_physical_flow(
                 virtual_io_contract=virtual_io_contract,
                 local_identity_path=local_identity_path,
                 local_query_path=local_query_path,
+                **({'word_phy_plan_path':word_sources['plan'],
+                    'word_wiring_path':word_sources['wiring'],
+                    'retain_routed_checkpoint':True} if word_sources is not None else {}),
             )
             if logic_query_report is not None:
                 vivado_report["logic_segment_timing"][
@@ -1466,6 +1528,8 @@ def run_multi_fpga_physical_flow(
                 vivado_report["local_path_timing"]["query"] = local_query_report
             if virtual_io_contract is not None:
                 stages["virtual_io_implementation"] = vivado_report["virtual_io_implementation"]
+            if word_sources is not None:
+                stages['word_phy_implementation'] = vivado_report['word_phy_implementation']
             physical_result = vivado_report["result"]
             stages.update(
                 {
@@ -1635,6 +1699,16 @@ def _assemble_multi_fpga_physical_results(
         raise ValidationError("physical result FPGA coverage is incomplete")
     records = [by_fpga[fpga] for fpga in expected_fpgas]
     requires_virtual_io = manifest.get("virtual_board_binding") is not None
+    requires_word_phy = manifest.get('word_phy_plan') is not None
+    if requires_word_phy:
+        if backend != 'vivado' or requires_virtual_io:
+            raise ValidationError('completed word PHY evidence requires the native Vivado adapter')
+        if manifest['word_phy_plan'] != {'wiring':'virtual_board_wiring.json','plan':'word_phy_plan.json'}:
+            raise ValidationError('completed word PHY source references are invalid')
+        hashes = {'word_phy_plan':_sha256(split_root/'word_phy_plan.json'),
+                  'word_wiring':_sha256(split_root/'virtual_board_wiring.json')}
+        for record in records:
+            _require_native_word_evidence(record, hashes)
     if requires_virtual_io:
         if backend not in {"rapidwright", "vivado"}:
             raise ValidationError("completed fixed differential I/O requires a supported Xilinx backend")
@@ -1676,6 +1750,14 @@ def _assemble_multi_fpga_physical_results(
         "fpgas": physical_fpgas,
         "boundary_identities": {},
     }
+    if requires_word_phy:
+        evidence = {r['fpga']:r['stages']['word_phy_implementation']
+                    for r in records if r.get('active') is not False}
+        physical_summary['word_phy_implementation'] = {
+            'status':'pass', 'provider':'vivado-native-lvds-word-physical-v1',
+            'fpgas':evidence, 'differential_pairs':sum(e['differential_pairs'] for e in evidence.values()),
+            'global_timing_status':'pending-independent-phase7c',
+        }
     if backend == "vivado":
         from .physical_summary_storage import publish_optimization_proofs
         proof_references = {}
