@@ -77,7 +77,10 @@ if {[catch {
   place_design -directive $place_directive
   phys_opt_design
   route_design -directive $route_directive
-  emuflow_inventory "$out/routed_mapped_cells.tsv" $prefix 1
+  # Retain the completed router output before reports and source inventories.
+  # The snapshot preserves the original constraints; DRC, route completeness
+  # and timing qualification below still decide whether it is acceptable.
+  if {$emuflow_retain_routed_checkpoint} {write_checkpoint -force "$out/routed.dcp"}
   report_route_status -file "$out/route_status.rpt"
   report_drc -file "$out/drc.rpt"
   report_timing_summary -file "$out/timing_summary.rpt"
@@ -93,10 +96,7 @@ if {[catch {
   if {$errors != 0} {error "post-route DRC has $errors blocking violations"}
   set incomplete [get_nets -quiet -hier -filter {ROUTE_STATUS == UNROUTED || ROUTE_STATUS == PARTIAL || ROUTE_STATUS == CONFLICTS}]
   if {[llength $incomplete] != 0} {error "post-route design contains incomplete nets"}
-  # Explicit debug/qualification scratch for checkpoint-based timing exporters.
-  # Keep the original clock/margin constraints, including a timing-failing
-  # infrastructure attempt; a checkpoint itself is not an acceptance result.
-  if {$emuflow_retain_routed_checkpoint} {write_checkpoint -force "$out/routed.dcp"}
+  emuflow_inventory "$out/routed_mapped_cells.tsv" $prefix 1
   set pairs 0
   if {$io_query ne ""} {
     set stream [open $io_query r]

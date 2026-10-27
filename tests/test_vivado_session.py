@@ -440,7 +440,7 @@ proc emuflow_session_source {script arguments} {
 
 @pytest.mark.skipif(TCL86 is None, reason="native stage bridge requires Tcl 8.6")
 @pytest.mark.parametrize("resume", [False, True])
-@pytest.mark.parametrize("proof_mode", ["pass", "fail", "pass-diagnostic", "fail-diagnostic", "empty-diagnostic"])
+@pytest.mark.parametrize("proof_mode", ["pass", "fail", "pass-diagnostic", "fail-diagnostic", "empty-diagnostic", "inventory-fail-diagnostic"])
 def test_native_stage_bridge_does_not_run_source_shape_checks(tmp_path, resume, proof_mode):
     session, _, _ = session_fixture(tmp_path, require_constant=False)
     out = Path(session["output"])
@@ -471,6 +471,10 @@ proc source {path} {
   if {[file tail $path] eq "source_inventory.tcl"} {
     proc emuflow_inventory {path prefix {placed 0}} {
       if {!$placed} {file copy -force $::template $path;return 2}
+      if {$::proof_mode eq "inventory-fail-diagnostic"} {
+        lappend ::trace inventory_failure
+        error "routed source inventory unavailable"
+      }
       set input [open $::template r];set output [open $path w]
       gets $input header;puts $output $header;set index 0
       while {[gets $input line]>=0} {
@@ -547,6 +551,13 @@ set env(PYTHONPATH) /invalid-vendor-package
     assert ("synth" in trace) is (not resume)
     assert ("open" in trace) is resume
     assert "placed.dcp" not in trace
+    if proof_mode == "inventory-fail-diagnostic":
+        assert completed.returncode != 0
+        assert trace[-2:] == ["routed.dcp", "inventory_failure"]
+        assert (out/"routed.dcp").is_file()
+        assert (out/"route_status.rpt").is_file() and (out/"timing_summary.rpt").is_file()
+        assert not (out/"routed-query-preparation.json").exists()
+        return
     assert completed.returncode == 0, completed.stdout+completed.stderr
     assert read_json(out/"routed-query-preparation.json")["status"] == "pass"
     assert not (out/"optimization-proofs.sqlite").exists()
