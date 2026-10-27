@@ -17,7 +17,7 @@ from emuflow.yosys import import_yosys_json
 
 
 class VivadoOptimizationTests(unittest.TestCase):
-    def prepare(self, root, *, stage="routed", empty=False):
+    def prepare(self, root, *, stage="routed", empty=False, dynamic_dead=False):
         cells = {}
 
         def register(name, q, d, *, init="0", ce="1", reset="0", kind="FDRE", parameters=None):
@@ -34,8 +34,8 @@ class VivadoOptimizationTests(unittest.TestCase):
                            "connections": {**{f"I{i}":[bit] for i,bit in enumerate(bits)}, "O":[q]}}
 
         register("kept", 4, 3)
-        register("dead", 5, 6)
-        lut("dead_feedback", 6, [5], "10")
+        register("dead", 5, 3 if dynamic_dead else 6)
+        lut("dead_feedback", 6, [5, 3] if dynamic_dead else [5], "0110" if dynamic_dead else "10")
         register("zero", 7, "0", init="x", ce=3)
         register("zero_chain", 8, 7)
         register("dynamic", 9, 3)
@@ -107,6 +107,28 @@ class VivadoOptimizationTests(unittest.TestCase):
             self.assertEqual(rows["dead_feedback"], rows["dead"])
             self.assertIsNone(rows["dynamic"])
             self.assertIsNone(rows["kept"])
+
+    def test_unobservable_only_analysis_keeps_dynamic_closure_without_constant_hypotheses(self):
+        from emuflow.vivado_optimization import OptimizationProofView
+        from emuflow.errors import ValidationError
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            mapped, lineage, digest, origins = self.prepare(root, dynamic_dead=True)
+            output = root/"unobservable.sqlite"
+            report = build_optimization_proofs(mapped, lineage, output,
+                mapped_sha256=digest, fpga="fpga0", unobservable_only=True)
+            self.assertEqual(report["unobservable_source_cells"], 2)
+            for count in ["constant_state_cells", "constant_hypotheses", "constant_refinement_iterations",
+                          "strict_constant_refinement_iterations", "conditional_constant_state_candidates"]:
+                self.assertEqual(report[count], 0)
+            with OptimizationProofView(output, expected_fpga="fpga0") as proof:
+                fact = proof.require_eliminated_source(f"s{origins['dead']}")
+                self.assertEqual(fact["reason"], "unobservable-source-closure")
+                self.assertIsNone(fact["constant_value"])
+                self.assertIsNone(fact["initialization"])
+                for name in ["one", "dynamic", "kept"]:
+                    with self.assertRaises(ValidationError):
+                        proof.require_eliminated_source(f"s{origins[name]}")
 
     def test_joint_constant_proof_and_initialization_qualification(self):
         with tempfile.TemporaryDirectory() as directory:

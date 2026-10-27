@@ -68,13 +68,16 @@ def _lut_value(cell: Mapping[str, Any], output: str, values: Mapping[str, int | 
 def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Path, *,
                               mapped_sha256: str, stage: str = "routed",
                               fpga: str | None = None, checked_constants=None,
-                              synthesized_checkpoint_sha256: str | None = None) -> dict[str, Any]:
+                              synthesized_checkpoint_sha256: str | None = None,
+                              unobservable_only: bool = False) -> dict[str, Any]:
     """Prove closed unobservable regions and simultaneous constant states.
 
     Graph traversal and state hypotheses live in SQLite. Python reconstructs
     only the primitive currently needed by a bounded expression evaluation.
     Unknown INIT is recorded as a legal initialization choice, rather than
     represented as equivalence for every possible initial state.
+    Unobservable-only analysis skips state hypotheses and vendor constant
+    confirmation; a disconnected dynamic region needs neither assumption.
     """
     if stage not in {"synthesized", "optimized", "routed"}:
         raise ValidationError("unsupported Vivado optimization proof stage")
@@ -83,6 +86,8 @@ def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Pat
     if output.exists():
         raise ValidationError("Vivado optimization proof output already exists")
     confirmation = None
+    if unobservable_only and checked_constants is not None:
+        raise ValidationError("unobservable-only analysis cannot consume constant confirmations")
     if checked_constants is not None:
         from .vivado_constant_frontier import CheckedConstantSources
         if not isinstance(checked_constants, CheckedConstantSources):
@@ -146,7 +151,8 @@ def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Pat
             CREATE TEMP TABLE rejected(origin INTEGER PRIMARY KEY);
         """)
         with open_xilinx_mapped_index(mapped_path) as mapped:
-            for origin, name in db.execute("SELECT c.seq,c.id FROM absent a JOIN source.cells c ON c.seq=a.origin WHERE c.type IN ('FDRE','FDSE','FDCE','FDPE') AND c.seq NOT IN (SELECT origin FROM eliminated_sources) ORDER BY c.seq"):
+            candidates = () if unobservable_only else db.execute("SELECT c.seq,c.id FROM absent a JOIN source.cells c ON c.seq=a.origin WHERE c.type IN ('FDRE','FDSE','FDCE','FDPE') AND c.seq NOT IN (SELECT origin FROM eliminated_sources) ORDER BY c.seq")
+            for origin, name in candidates:
                 cell = mapped.cells[name]
                 q = cell["connections"].get("Q", [])
                 initial = cell.get("parameters", {}).get("INIT", str(_RESET[cell["type"]][1]))
@@ -222,14 +228,14 @@ def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Pat
                     db.execute("DELETE FROM states WHERE origin IN (SELECT origin FROM rejected)")
                 return iterations
 
-            iterations = refine_states()
+            iterations = 0 if unobservable_only else refine_states()
             db.execute("CREATE TABLE constant_candidates(origin INTEGER PRIMARY KEY,constant_value INTEGER NOT NULL CHECK(constant_value IN (0,1)),initialization TEXT NOT NULL)")
             db.execute("INSERT INTO constant_candidates SELECT origin,value,initialization FROM states")
             # A legal choice of unknown INIT is only a candidate until the
             # vendor implementation confirms that choice. Re-prove the strict
             # subset without assuming any of those conditional states.
             db.execute("DELETE FROM states WHERE initialization != 'specified'")
-            strict_iterations = refine_states()
+            strict_iterations = 0 if unobservable_only else refine_states()
             db.execute("INSERT INTO eliminated_sources SELECT origin,'constant-state',value,initialization FROM states")
             db.execute("DELETE FROM constant_candidates WHERE origin IN (SELECT origin FROM eliminated_sources)")
         vendor_confirmed = 0
@@ -272,6 +278,8 @@ def build_optimization_proofs(mapped_path: Path, lineage_path: Path, output: Pat
                   "strict_constant_refinement_iterations": strict_iterations,
                   "conditional_constant_state_candidates": db.execute("SELECT count(*) FROM constant_candidates").fetchone()[0],
                   "proof_rows_sha256": digest.hexdigest()}
+        if unobservable_only:
+            header["qualification"] = "unobservable-source-closure-only; no state or initialization assumptions"
         header["source_names_sha256"] = names_digest.hexdigest()
         if vendor_confirmed:
             document = json.dumps(confirmation,sort_keys=True,separators=(",",":"),allow_nan=False)
