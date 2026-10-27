@@ -48,8 +48,6 @@ def _indexed_split_schedule(root,value):
 
 from emuflow.split_netlist_storage import (
     SplitNetlistView,
-    _schedule_incoming_rows,
-    build_streaming_split_metadata,
 )
 from emuflow.pin_planning import (
     CHIMEW_PIN_PLAN_PROVIDER,
@@ -448,12 +446,10 @@ class Phase6Test(unittest.TestCase):
             )
             with open_tdm_schedule_view(path) as indexed:
                 rows = list(
-                    _schedule_incoming_rows(
-                        indexed, {"a": 0, "b": 1, "c": 2}
-                    )
+                    indexed.iter_incoming_records()
                 )
         self.assertEqual(
-            rows, [("n0", 1, "s000000"), ("n0", 2, "s000001")]
+            rows, [("n0", "b", "s000000"), ("n0", "c", "s000001")]
         )
 
     def test_transport_store_joins_indexed_pin_plan_by_entry_identity(
@@ -745,14 +741,11 @@ class Phase6Test(unittest.TestCase):
                                     PLATFORM_PATH, output / "manifest.json")
             write_json(output / "manifest.json", manifest)
 
-            legacy_control = build_streaming_split_metadata(
-                root / "assignment.sqlite",
-                self.schedule,
-                self.platform,
-                design=self.ir.value["design"],
-                clocks=self.ir.value["clocks"],
+            expected_transport = reference_transport(
+                root / "reference-transport", root / "assignment.sqlite",
+                _indexed_split_schedule(root, self.schedule), self.platform,
+                design=self.ir.value["design"], clocks=self.ir.value["clocks"],
             )
-            self.assertEqual(legacy_control["manifest"]["resource_reservations_by_fpga"], reservations)
             raw_lane_manifest = json.loads(
                 (output / "lane_map.json").read_text(encoding="utf-8")
             )
@@ -771,16 +764,16 @@ class Phase6Test(unittest.TestCase):
             )
             self.assertEqual(
                 read_json(output / "lane_map.json"),
-                legacy_control["lane_map"],
+                expected_transport["lane_map"].materialize(),
             )
             self.assertEqual(
                 read_json(output / "fpga0/transport.json"),
-                legacy_control["transports"]["fpga0"],
+                expected_transport["transports"]["fpga0"].materialize(),
             )
             self.assertEqual(
                 (output / "fpga0/transport_schedule.sv").read_text(),
                 transport_to_systemverilog(
-                    legacy_control["transports"]["fpga0"], self.platform
+                    expected_transport["transports"]["fpga0"].materialize(), self.platform
                 ),
             )
             self.assertEqual(
@@ -789,14 +782,14 @@ class Phase6Test(unittest.TestCase):
             )
             self.assertEqual(
                 len(TransportView(output / "fpga0/transport.json")["endpoints"]),
-                len(legacy_control["transports"]["fpga0"]["endpoints"]),
+                len(expected_transport["transports"]["fpga0"].materialize()["endpoints"]),
             )
 
             relocated = root / "phase6-relocated"
             shutil.copytree(output, relocated)
             self.assertEqual(
                 read_json(relocated / "fpga0/transport.json"),
-                legacy_control["transports"]["fpga0"],
+                expected_transport["transports"]["fpga0"].materialize(),
             )
             store = relocated / "transport.sqlite"
             store.write_bytes(store.read_bytes()[:-31])

@@ -6,11 +6,8 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
-from emuflow.io import write_json
-from emuflow.verilog import mapped_verilog
 from emuflow.xilinx_netlist import (
     emit_xilinx_mapped_index,
-    emit_xilinx_mapped_json,
     is_xilinx_mapped_index,
     open_xilinx_mapped_index,
 )
@@ -57,51 +54,112 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             }},
         }
 
-    @staticmethod
-    def _table_rows(path: Path, table: str) -> list[tuple]:
-        connection = sqlite3.connect(path)
-        try:
-            columns = [
-                row[1] for row in connection.execute(f"PRAGMA table_info({table})")
-            ]
-            order = ",".join(columns)
-            return list(connection.execute(f"SELECT * FROM {table} ORDER BY {order}"))
-        finally:
-            connection.close()
-
-    def test_native_production_index_matches_python_reference_rows(self) -> None:
+    def test_native_production_index_preserves_mixed_cell_facts(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source.json"
             ir_path = root / "source.emuir.sqlite"
-            native_index = root / "native.sqlite"
-            reference_index = root / "reference.sqlite"
-            reference_json = root / "reference.json"
+            index = root / "mapped.sqlite"
             source.write_text(json.dumps(self._fixture()), encoding="utf-8")
             import_yosys_json(source, clocks=("clk",)).save(ir_path)
             source_hash = hashlib.sha256(ir_path.read_bytes()).hexdigest()
             source_mtime = ir_path.stat().st_mtime_ns
-
-            native_report = emit_xilinx_mapped_index(ir_path, native_index)
-            reference_report = emit_xilinx_mapped_json(
-                ir_path, reference_json, index_path=reference_index
-            )
-
-            self.assertEqual(
-                native_report["index_builder"], "sqlite-native-primitive-v1"
-            )
-            self.assertEqual(
-                reference_report["index_builder"], "python-lowering-v2"
-            )
-            for table in ("metadata", "cells", "cell_pins", "netnames"):
-                self.assertEqual(
-                    self._table_rows(native_index, table),
-                    self._table_rows(reference_index, table),
-                )
-            self.assertEqual(
-                hashlib.sha256(ir_path.read_bytes()).hexdigest(), source_hash
-            )
+            report = emit_xilinx_mapped_index(ir_path, index)
+            self.assertEqual(report["index_builder"], "sqlite-native-primitive-v1")
+            with open_xilinx_mapped_index(index) as indexed:
+                module = indexed["modules"]["top"]
+                self.assertEqual(indexed.cell_type_counts(), {"FDRE": 1, "LUT1": 1})
+                for name, expected in self._fixture()["modules"]["top"]["cells"].items():
+                    self.assertEqual(module["cells"][name], {"hide_name": 0, **expected})
+                self.assertEqual(module["ports"], self._fixture()["modules"]["top"]["ports"])
+                self.assertEqual(set(module["netnames"]), {"clk", "a", "comb", "y"})
+                for name, bit in (("clk", 2), ("a", 3), ("comb", 4), ("y", 5)):
+                    self.assertEqual(module["netnames"][name]["bits"], [bit])
+            self.assertEqual(hashlib.sha256(ir_path.read_bytes()).hexdigest(), source_hash)
             self.assertEqual(ir_path.stat().st_mtime_ns, source_mtime)
+
+    def test_native_index_preserves_sparse_identities_and_escaped_unicode_names(self) -> None:
+        mapped = self._fixture()
+        cells = mapped["modules"]["top"]["cells"]
+        lut_name, ff_name = "\\层/LUT [0]", "\\层/FF α"
+        cells[lut_name] = cells.pop("lut")
+        cells[ff_name] = cells.pop("ff")
+        netnames = mapped["modules"]["top"]["netnames"]
+        netnames["\\层/组合 α"] = netnames.pop("comb")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.json"
+            ir_path = root / "source.emuir.sqlite"
+            index = root / "mapped.sqlite"
+            source.write_text(json.dumps(mapped, ensure_ascii=False), encoding="utf-8")
+            ir = import_yosys_json(source, clocks=("clk",))
+            next(port for port in ir.value["ports"] if port["id"] == "a")["width"] = 2
+            ir.save(ir_path)
+            connection = sqlite3.connect(ir_path)
+            try:
+                connection.executescript("""
+                    UPDATE net_records SET seq=seq*10+10;
+                    UPDATE endpoint_records SET net_seq=net_seq*10+10;
+                    UPDATE alias_records SET net_seq=net_seq*10+10;
+                    UPDATE cell_records SET seq=seq*10+11;
+                    UPDATE endpoint_records SET instance_seq=instance_seq*10+11
+                      WHERE instance_seq IS NOT NULL;
+                """)
+                connection.commit()
+            finally:
+                connection.close()
+            report = emit_xilinx_mapped_index(ir_path, index)
+            self.assertEqual(report["index_builder"], "sqlite-native-primitive-v1")
+            self.assertEqual(report["unconnected_input_bits"], 1)
+            with open_xilinx_mapped_index(index) as indexed:
+                module = indexed["modules"]["top"]
+                self.assertEqual(set(module["cells"]), {lut_name, ff_name})
+                self.assertEqual(module["cells"][lut_name]["connections"], {
+                    "I0": [22], "O": [32],
+                })
+                self.assertEqual(module["cells"][ff_name]["connections"], {
+                    "C": [12], "CE": ["1"], "D": [32], "R": ["0"], "Q": [42],
+                })
+                self.assertEqual(module["netnames"]["\\层/组合 α"]["bits"], [32])
+                self.assertEqual(module["ports"]["a"]["bits"], [22, 43])
+                self.assertEqual(module["ports"]["y"]["bits"], [42])
+                self.assertNotIn(43, {pin[0] for pin in indexed.iter_pins_by_net()})
+
+    def test_native_index_preserves_bram_macro_parameters_and_pin_vectors(self) -> None:
+        mapped = self._fixture()
+        module = mapped["modules"]["top"]
+        memory_bits = list(range(6, 22))
+        macro = {
+            "type": "RAMB18E2",
+            "parameters": {"READ_WIDTH_A": "00000000000000000000000000010010"},
+            "attributes": {"keep": "1"},
+            "port_directions": {
+                "CLKARDCLK": "input", "ENARDEN": "input",
+                "ADDRARDADDR": "input", "DOADO": "output",
+            },
+            "connections": {
+                "CLKARDCLK": [2], "ENARDEN": ["1"],
+                "ADDRARDADDR": ["0"] * 14, "DOADO": memory_bits,
+            },
+        }
+        module["cells"]["memory"] = macro
+        module["ports"]["memory_data"] = {"direction": "output", "bits": memory_bits}
+        module["netnames"]["memory_data"] = {"bits": memory_bits}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source.json"
+            ir_path = root / "source.emuir.sqlite"
+            index = root / "mapped.sqlite"
+            source.write_text(json.dumps(mapped), encoding="utf-8")
+            import_yosys_json(source, clocks=("clk",)).save(ir_path)
+            report = emit_xilinx_mapped_index(ir_path, index)
+            self.assertEqual(report["index_builder"], "sqlite-native-primitive-v1")
+            self.assertEqual(report["audit"]["hard_block_cells"], {"RAMB18E2": 1})
+            with open_xilinx_mapped_index(index) as indexed:
+                module = indexed["modules"]["top"]
+                self.assertEqual(module["cells"]["memory"], {"hide_name": 0, **macro})
+                self.assertEqual(module["ports"]["memory_data"]["bits"], memory_bits)
+                self.assertEqual(indexed.cell_type_counts(), {"FDRE": 1, "LUT1": 1, "RAMB18E2": 1})
 
     def test_generic_lut_keeps_python_lowering_fallback(self) -> None:
         mapped = self._fixture()
@@ -464,25 +522,21 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             root = Path(temporary)
             source = root / "source.json"
             ir_path = root / "source.emuir.sqlite"
-            output = root / "mapped.json"
             index = root / "mapped.sqlite"
             source.write_text(json.dumps(mapped), encoding="utf-8")
             import_yosys_json(source).save(ir_path)
-            report = emit_xilinx_mapped_json(
-                ir_path, output, index_path=index
-            )
-            emitted = json.loads(output.read_text(encoding="utf-8"))
+            report = emit_xilinx_mapped_index(ir_path, index)
             with open_xilinx_mapped_index(index) as indexed:
                 self.assertEqual(
                     indexed["modules"]["top"]["cells"]["lut"],
-                    emitted["modules"]["top"]["cells"]["lut"],
+                    {"hide_name": 0, **mapped["modules"]["top"]["cells"]["lut"]},
                 )
                 self.assertEqual(len(indexed["modules"]["top"]["cells"]), 1)
                 self.assertEqual(
                     set(indexed["modules"]["top"]["netnames"]), {"a", "y"}
                 )
         self.assertEqual(report["provider"],
-                         "emuflow-emuir-to-xilinx-yosys-json-indexed-v1")
+                         "emuflow-emuir-to-xilinx-sqlite-index-v2")
         self.assertEqual(report["cells"], 1)
         self.assertEqual(report["nets"], 2)
 
@@ -509,8 +563,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source.json"
-            ir_path = root / "source.emuir.json"
-            output = root / "mapped.json"
+            ir_path = root / "source.emuir.sqlite"
             source.write_text(json.dumps(mapped), encoding="utf-8")
             ir = import_yosys_json(source)
             value = ir.value
@@ -518,12 +571,13 @@ class XilinxMappedNetlistTests(unittest.TestCase):
                 port for port in value["ports"] if port["id"] == "y"
             )
             output_port["width"] = 2
-            write_json(ir_path, value)
-            report = emit_xilinx_mapped_json(ir_path, output)
-            emitted = json.loads(output.read_text(encoding="utf-8"))
+            ir.save(ir_path)
+            report = emit_xilinx_mapped_index(ir_path, root / "mapped.sqlite")
+            with open_xilinx_mapped_index(root / "mapped.sqlite") as indexed:
+                ports = indexed.ports
 
         self.assertEqual(
-            emitted["modules"]["top"]["ports"]["y"]["bits"], [3, "x"]
+            ports["y"]["bits"], [3, "x"]
         )
         self.assertEqual(report["unconnected_output_bits"], 1)
 
@@ -550,8 +604,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source.json"
-            ir_path = root / "source.emuir.json"
-            output = root / "mapped.json"
+            ir_path = root / "source.emuir.sqlite"
             source.write_text(json.dumps(mapped), encoding="utf-8")
             ir = import_yosys_json(source)
             value = ir.value
@@ -559,11 +612,12 @@ class XilinxMappedNetlistTests(unittest.TestCase):
                 port for port in value["ports"] if port["id"] == "a"
             )
             input_port["width"] = 2
-            write_json(ir_path, value)
-            report = emit_xilinx_mapped_json(ir_path, output)
-            emitted = json.loads(output.read_text(encoding="utf-8"))
+            ir.save(ir_path)
+            report = emit_xilinx_mapped_index(ir_path, root / "mapped.sqlite")
+            with open_xilinx_mapped_index(root / "mapped.sqlite") as indexed:
+                ports = indexed.ports
 
-        bits = emitted["modules"]["top"]["ports"]["a"]["bits"]
+        bits = ports["a"]["bits"]
         self.assertEqual(bits[0], 2)
         self.assertIsInstance(bits[1], int)
         self.assertNotEqual(bits[1], 2)
@@ -602,17 +656,17 @@ class XilinxMappedNetlistTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source.json"
-            ir_path = root / "source.emuir.json"
-            output = root / "mapped.json"
+            ir_path = root / "source.emuir.sqlite"
             source.write_text(json.dumps(mapped), encoding="utf-8")
-            write_json(ir_path, import_yosys_json(source).value)
-            emit_xilinx_mapped_json(ir_path, output)
-            emitted = json.loads(output.read_text(encoding="utf-8"))
-        self.assertEqual(
-            emitted["modules"]["top"]["cells"]["lut"]["type"], "LUT6_2"
-        )
+            import_yosys_json(source).save(ir_path)
+            emit_xilinx_mapped_index(ir_path, root / "mapped.sqlite")
+            with open_xilinx_mapped_index(root / "mapped.sqlite") as indexed:
+                self.assertEqual(
+                    indexed["modules"]["top"]["cells"]["lut"],
+                    {"hide_name": 0, **mapped["modules"]["top"]["cells"]["lut"]},
+                )
 
-    def test_emuir_roundtrip_preserves_cells_ports_and_nets(self) -> None:
+    def test_index_preserves_cells_constants_ports_and_nets(self) -> None:
         mapped = {
             "creator": "fixture",
             "modules": {
@@ -656,25 +710,23 @@ class XilinxMappedNetlistTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source.json"
-            ir_path = root / "source.emuir.json"
-            output = root / "mapped.json"
+            ir_path = root / "source.emuir.sqlite"
             source.write_text(json.dumps(mapped), encoding="utf-8")
             ir = import_yosys_json(source, clocks=("clk",))
-            write_json(ir_path, ir.value)
-            report = emit_xilinx_mapped_json(ir_path, output)
-            roundtrip = import_yosys_json(output, clocks=("clk",))
+            ir.save(ir_path)
+            report = emit_xilinx_mapped_index(ir_path, root / "mapped.sqlite")
+            with open_xilinx_mapped_index(root / "mapped.sqlite") as indexed:
+                module = indexed["modules"]["top"]
+                self.assertEqual(module["ports"]["zero"]["bits"], ["0"])
+                self.assertEqual(
+                    [(name, cell["type"]) for name, cell in module["cells"].items()],
+                    [("ff", "FDRE"), ("lut", "LUT1")],
+                )
+                self.assertEqual(module["cells"]["ff"]["connections"], {
+                    "C": [2], "CE": ["1"], "D": [4], "R": ["0"], "Q": [5],
+                })
+                self.assertEqual(len(module["netnames"]), 4)
             self.assertEqual(report["cells"], 2)
-            self.assertEqual(
-                json.loads(output.read_text(encoding="utf-8"))["modules"]
-                ["top"]["ports"]["zero"]["bits"],
-                ["0"],
-            )
-            self.assertEqual(
-                [(item["id"], item["type"]) for item in roundtrip.value["instances"]],
-                [("ff", "FDRE"), ("lut", "LUT1")],
-            )
-            self.assertEqual(len(roundtrip.value["nets"]), 4)
-            self.assertIn("assign \\zero  = 1'b0;", mapped_verilog(roundtrip))
 
 
 if __name__ == "__main__":

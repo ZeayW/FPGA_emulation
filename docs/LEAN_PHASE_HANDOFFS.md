@@ -89,9 +89,12 @@ following boundaries. Their former Python execution paths have been removed:
 
 | Boundary | Removed | Retained |
 | --- | --- | --- |
-| Phase 3 | Complete compressed/packed cluster publishers, assignment-index publisher and unused initializer/hop/publication wrappers | Current native whole-stage entry, typed readers and independent semantic checks |
+| Phase 2 | Whole-graph Python STA object index, obsolete TSV importer helpers and selected-path wrapper | Native path importer, typed path reader and independent semantic checks |
+| Phase 3 | Complete compressed/packed cluster publishers, assignment-index publisher, old PATRON host model/runner and unused initializer/hop/publication wrappers | Current native whole-stage entry, typed readers and independent semantic checks |
 | Phase 4 | Unused Python RouteStore-seal wrapper | Native routing and seal kernels |
 | Phase 5 | Python route/schedule timing reconstruction and obsolete deadline-index execution chain | Native schedule/timing projection, current typed readers and schedule legality checks |
+| Phase 6 | Old transport metadata builder, complete-partition dictionary adapter and unused anchor/XDC producer helpers | Native split/transport producers, typed views, Chimew and bounded behavioral qualification |
+| Phase 7 mapped netlist | Whole-graph JSON export and optional JSON/index dual writing | The canonical indexed mapped-netlist producer |
 | Global STA | Inline model exporter, Python bundle compression/expansion and scalar-result reader | Native event owner/model export/measurement import and full original-path reduction |
 | Physical support | Unused source-marker capability matrix and unintegrated Vivado optimization-proof producer | OpenPARF/RWRoute and Vivado implementation backends |
 

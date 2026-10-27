@@ -9,7 +9,7 @@ import subprocess
 import pytest
 
 from emuflow.transport_storage import write_transport_storage
-from emuflow.netlist import anchors_to_xdc_template
+from tests.virtual_anchor_fixture import expected_anchor_xdc
 from emuflow.runtime import build_virtual_runtime,virtual_runtime_controller_to_systemverilog
 from emuflow.virtual_board import build_virtual_board,virtual_binding_to_systemverilog,virtual_binding_to_xdc
 from tests.transport_reference import write_transport_storage as reference,write_transport_systemverilog
@@ -27,7 +27,7 @@ def compare(expected,actual,platform,root,runtime=None):
         old=root/(fpga+'.sv')
         write_transport_systemverilog(old,expected['transports'][fpga],platform)
         assert (root/'native'/fpga/'transport_schedule.sv').read_bytes()==old.read_bytes()
-        assert (root/'native'/fpga/'virtual_anchors.xdc.template').read_text()==anchors_to_xdc_template(expected['anchors'][fpga])
+        assert (root/'native'/fpga/'virtual_anchors.xdc.template').read_text()==expected_anchor_xdc(expected['anchors'][fpga])
     if expected['binding'] is not None:
         assert actual['binding'].materialize()==expected['binding'].materialize()
         assert actual['binding'].canonical_sha256==expected['binding'].canonical_sha256

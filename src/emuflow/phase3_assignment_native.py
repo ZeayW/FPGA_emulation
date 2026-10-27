@@ -13,7 +13,7 @@ import tempfile
 
 from .errors import ValidationError
 from .native_tools import native_file_generation, resolve_native_executable
-from .phase3_pressure_native import _Writer
+from .native_protocol import CheckedRequestWriter as _Writer
 from .resources import RESOURCE_FIELDS
 from .tool_runtime import NativeToolProcess
 

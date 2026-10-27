@@ -15,7 +15,7 @@ from emuflow.emuir_compact import write_compact_emuir
 from emuflow.ir import EmuIR
 from emuflow.lowering import run_placement_ir_lowering_from_split
 from emuflow.netlist import transport_endpoint_port
-from emuflow.split_netlist_storage import read_split_netlist_sqlite
+from tests.native_split_fixture import materialize_partition_fixture
 from emuflow.split_overlay import build_native_split
 from emuflow.transport_storage import write_transport_storage
 from tests.test_split_overlay_native import owners
@@ -90,7 +90,7 @@ def prepare(owners,root,shared=False,fpga_index=0):
     artifacts=write_transport_storage(root/'transport',assignment,schedule,case.platform,
         design=case.ir.value['design'],clocks=case.ir.value['clocks'])
     fpga=case.platform.fpgas[fpga_index].id;transport=artifacts['transports'][fpga]
-    logical=read_split_netlist_sqlite(split,fpga)
+    logical=materialize_partition_fixture(split,fpga)
     port=next((p for p in logical['ports'] if p['id']=='shared_reset'),None) if shared else None
     if shared and port is None:pytest.skip('partition has no shared DUT input')
     ir=synthesized_transport(transport.materialize(),port)

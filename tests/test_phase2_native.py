@@ -139,7 +139,7 @@ def phase2_runtime(tmp_path, monkeypatch):
 
 def _counter_stage_input(root):
     from pathlib import Path
-    from emuflow.sta import sta_object_index
+    from tests.sta_path_reference import endpoint_facts
     from emuflow.yosys import import_yosys_json
     repository = Path(__file__).resolve().parents[1]
     ir = import_yosys_json(repository / 'examples/yosys/counter.json',
@@ -148,7 +148,7 @@ def _counter_stage_input(root):
         'parameters']['IS_C_INVERTED'] = '1'
     source = root / 'counter ?#é.emuir.sqlite'
     ir.save(source)
-    objects = sorted(sta_object_index(ir))
+    objects = sorted(endpoint_facts(ir))
     nets = [net['id'] for net in ir.value['nets']]
     records = []
     for seq, slack in enumerate((1.5, -1e16, -1.0, -1e-16, 0.0, -2.3, 1e-30)):

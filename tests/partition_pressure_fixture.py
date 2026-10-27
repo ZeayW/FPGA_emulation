@@ -217,7 +217,7 @@ def prepare_native(root, reference, platform, constraints, timing, routes, origi
     from emuflow.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
     from emuflow.opensta import OPENSTA_PROVIDER
     from emuflow.io import read_json
-    from emuflow.phase3_pressure_native import build_native_pressure_model
+    from tests.patron_kernel_fixture import pressure_kernel_inputs, write_pressure_requests, run_pressure_kernel
     source = root / 'source.sqlite'
     write_compact_emuir(source, reference.value)
     ir = load_partition_ir(source)
@@ -251,7 +251,7 @@ def prepare_native(root, reference, platform, constraints, timing, routes, origi
     selector = root / 'timing.json'
     import_sta_path_database_tsv_streaming(measured, source, selector, provider=OPENSTA_PROVIDER)
     args = ir, platform, clusters, constraints, read_json(selector), routes
-    return SimpleNamespace(args=args, initial=initial, model=build_native_pressure_model(
+    return SimpleNamespace(args=args, initial=initial, model=pressure_kernel_inputs(
         *args, timing_database_path=selector), timing=selector, reference=reference)
 
 

@@ -18,7 +18,6 @@ from emuflow.sta import (
     STA_PATH_DATABASE_SCHEMA,
     derive_partition_net_weights,
     import_sta_path_database_tsv_streaming,
-    iter_selected_sta_path_database_paths,
     iter_sta_path_database_paths,
     load_partition_net_weights_indexed,
     project_sta_path_database,
@@ -89,24 +88,8 @@ class StaAdapterTest(unittest.TestCase):
                 records = list(iter_sta_path_database_paths(database_path, read_json(database_path)))
                 self.assertEqual(len(records), 1)
                 self.assertEqual(records[0]["path_nets"], [net_id])
-                selected = list(
-                    iter_selected_sta_path_database_paths(
-                        database_path,
-                        read_json(database_path),
-                        {"path0"},
-                    )
-                )
-                self.assertEqual(selected, records)
-                with self.assertRaisesRegex(
-                    ValidationError, "lacks selected paths"
-                ):
-                    list(
-                        iter_selected_sta_path_database_paths(
-                            database_path,
-                            read_json(database_path),
-                            {"missing"},
-                        )
-                    )
+                from emuflow import sta
+                self.assertFalse(hasattr(sta, 'iter_selected_sta_path_database_paths'))
                 derive_partition_net_weights(database_path, ir_path, expected_weights)
                 with patch("emuflow.sta.EmuIR.load", side_effect=AssertionError("unused whole-graph load")):
                     derive_partition_net_weights(
@@ -293,22 +276,28 @@ class StaAdapterTest(unittest.TestCase):
                 "warnings": [],
             }
         )
+        ir.value['nets'].append(dict(id='data', drivers=[], sinks=[], cut_class='undriven'))
+        ambiguous = 'unit' + '\\' * 2 + 'ff/I0'
+        identity = f'{ambiguous}->{ambiguous}#00000000'
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            ir_path = root / "ir.json"
+            ir_path = root / "ir.emuir.sqlite"
             input_path = root / "paths.tsv"
-            write_json(ir_path, ir.value)
+            ir.save(ir_path)
             input_path.write_text(
-                STA_PATH_DATABASE_TSV_HEADER + "\n",
+                STA_PATH_DATABASE_TSV_HEADER + "\n" + "\t".join([
+                    identity.encode().hex(), b'clk'.hex(), '10', '-1', '0', b'data'.hex(),
+                ]) + "\n",
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(ValidationError, "alias is ambiguous"):
-                import_sta_path_database_tsv(
+                import_sta_path_database_tsv_streaming(
                     input_path,
                     ir_path,
                     root / "paths.json",
                     provider="opensta-fpga-path-database-v1",
                 )
+            self.assertFalse((root / "paths.json").exists())
 
 
     def test_projection_keeps_member_specific_multicast_sinks(self) -> None:

@@ -25,7 +25,6 @@ from .netlist import (
     LOGICAL_LANE_MAP_SCHEMA,
     TRANSPORT_ENDPOINTS_SCHEMA,
     VIRTUAL_IO_ANCHORS_SCHEMA,
-    _endpoint_id,
     _sv_name,
     transport_endpoint_port,
 )

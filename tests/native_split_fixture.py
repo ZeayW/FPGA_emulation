@@ -76,3 +76,19 @@ class NativeSplitFixture:
                 'lane_map': read_lane_map(self.output/'lane_map.json', materialize=True),
                 'transports': {row['fpga']: read_transport(self.output/row['transport'], materialize=True)
                                for row in self.manifest['fpgas']}}
+
+
+def materialize_partition_fixture(path, fpga):
+    """Decode a small current reader for lowering expectations, never a flow API."""
+    with SplitNetlistView(path, fpga) as view:
+        if any(count > 4096 for count in view.counts().values()):
+            raise ValidationError('partition fixture exceeds population bound')
+        return {'schema': 'emuflow.fpga-netlist/v1', 'design': view.metadata['design'],
+                'platform': view.metadata['platform'], 'fpga': fpga,
+                'ports': view.ports, 'instances': [
+                    {key: value for key, value in row.items()
+                     if key != 'name' or value is not None}
+                    for row in view.instances()],
+                'nets': list(view.nets()), 'resources': view.resources,
+                **({'semantic_contract_sha256': view.metadata['semantic_contract_sha256']}
+                   if view.metadata.get('semantic_contract_sha256') is not None else {})}

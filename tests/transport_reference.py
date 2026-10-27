@@ -11,7 +11,7 @@ from emuflow.transport_storage import (
     VIRTUAL_BINDING_STORAGE_SCHEMA,VIRTUAL_BINDING_LOGICAL_SCHEMA,TRANSPORT_STORE_NAME,
 )
 from emuflow.netlist import (LOGICAL_LANE_MAP_SCHEMA,TRANSPORT_ENDPOINTS_SCHEMA,VIRTUAL_IO_ANCHORS_SCHEMA,
-    _endpoint_id,_sv_name,transport_endpoint_port)
+    _sv_name,transport_endpoint_port)
 from emuflow.errors import ValidationError
 from emuflow.io import write_json
 from emuflow.phase3_assignment_index import open_phase3_assignment_index
@@ -288,8 +288,8 @@ def write_transport_storage(
                         "pin plan must cover every schedule entry exactly"
                     )
                 seen_pin_entries.add(entry_id)
-            tx_id = _endpoint_id("tx", entry_id)
-            rx_id = _endpoint_id("rx", entry_id)
+            tx_id = f"__emuflow_tx_{entry_id}"
+            rx_id = f"__emuflow_rx_{entry_id}"
             tx_signal = (
                 f"net:{net}"
                 if source == route_source

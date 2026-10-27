@@ -618,20 +618,14 @@ class Phase3Test(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
-                with (
-                    patch(
-                        "emuflow.phase3_pressure_native.NativePressureModel.execute"
-                    ) as patron,
-                ):
-                    report = run_phase3(
-                        ir_path=ir_path,
-                        platform_path=PLATFORM_PATH,
-                        output_dir=root / "phase3",
-                        constraints_path=constraints_path,
-                        provider="patron",
-                        seed=19,
-                    )
-                patron.assert_not_called()
+                report = run_phase3(
+                    ir_path=ir_path,
+                    platform_path=PLATFORM_PATH,
+                    output_dir=root / "phase3",
+                    constraints_path=constraints_path,
+                    provider="patron",
+                    seed=19,
+                )
                 self.assertEqual(
                     report["provider"],
                     "single-active-fpga-capacity-selection-v1",

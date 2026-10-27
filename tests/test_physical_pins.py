@@ -7,7 +7,7 @@ from tests.native_build import _runtime_link_flags
 
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.board_arm_mps4 import materialize_arm_mps4_boarddb
-from emuflow.netlist import _build_virtual_anchors
+from tests.virtual_anchor_fixture import anchor_facts
 from emuflow.physical_pins import (
     LEGACY_PACKAGE_PIN_PROVIDERS,
     PACKAGE_PIN_PROVIDER,
@@ -435,7 +435,7 @@ class PhysicalPinBindingTest(unittest.TestCase):
                     }
                 )
         anchors = {
-            fpga.id: _build_virtual_anchors(
+            fpga.id: anchor_facts(
                 fpga.id, platform, endpoints[fpga.id]
             )
             for fpga in platform.fpgas
@@ -490,7 +490,7 @@ class PhysicalPinBindingTest(unittest.TestCase):
                     }
                 )
         default_anchors = {
-            fpga.id: _build_virtual_anchors(
+            fpga.id: anchor_facts(
                 fpga.id, platform, default_endpoints[fpga.id]
             )
             for fpga in platform.fpgas

@@ -15,7 +15,6 @@ from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
 from emuflow.partition import (compute_cut_nets, validate_partition_artifacts_online,
     CUT_MODE_STATIC_EXACT, build_clusters, build_partition_assignment, normalize_partition_constraints)
-from emuflow.phase3_pressure_native import NativePressureModel
 from emuflow.phase3 import run_phase3
 from emuflow.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
 from emuflow.opensta import OPENSTA_PROVIDER
@@ -25,6 +24,7 @@ from tests.phase3_decision_reference import (PATRON_PATH_OBJECTIVE_SELECTION_PRO
 from tests.partition_pressure_fixture import _endpoint, _ir, PressureFixture, prepare_native
 from tests import partition_pressure_fixture as fixtures
 from tests.native_build import emuflow_native, patron_ingress_oracle
+from tests.patron_kernel_fixture import write_pressure_requests, run_pressure_kernel
 
 
 @pytest.fixture(autouse=True)
@@ -418,7 +418,7 @@ def case(root, kind='default'):
 
 def model_facts(value, root):
     root.mkdir()
-    columns, board = value.model.write_requests(root, value.initial, 0)
+    columns, board = write_pressure_requests(value.model,root, value.initial, 0)
     result = subprocess.run([str(patron_ingress_oracle()), '--facts', str(value.args[0].path),
         str(value.model.timing_path), str(value.model.primary_artifact), str(columns), str(board)],
         capture_output=True, text=True)
@@ -427,7 +427,7 @@ def model_facts(value, root):
 
 
 def checked(value, *, max_moves):
-    final, trace = value.model.refine(value.initial, max_moves=max_moves)
+    final, trace = run_pressure_kernel(value.model,value.initial, max_moves=max_moves)
     assert trace['mode'] == 'endpoint-exact-critical-flow-v14'
     assert trace['native_input_transport'] == 'native-primary-store-model-v2'
     assert validate_partition_artifacts_online(value.args[1], value.args[2], final)['status'] == 'pass'
@@ -501,7 +501,6 @@ def test_endpoint_exact_multicast_ignores_unrelated_remote_sink(tmp_path):
                                          ('balanced_ejection',4), ('third_block_ejection',4)])
 def test_retained_native_sweeps_and_capacity_release_improve_timing(tmp_path, kind, budget):
     value = case(tmp_path, kind)
-    assert value.model['configuration']['max_scalable_sweeps'] == 4
     with patch.dict(os.environ, {'EMUFLOW_PATRON_FLOW_APPLY': '1', 'EMUFLOW_PATRON_FLOW_DISTANCE': '999999'}):
         final, trace = checked(value, max_moves=budget)
     # ABI change_count counts batch members; independent moves/ejections use move_count.
@@ -533,10 +532,22 @@ def test_v14_keeps_maximum_path_hops_ahead_of_scalar_predictive_slack(tmp_path):
 
 
 @pytest.mark.parametrize('argument', [0, -1, True, 0.5])
-def test_current_typed_owner_rejects_invalid_timeout_before_search(tmp_path, argument):
-    value = case(tmp_path)
-    with pytest.raises(ValidationError, match='timeout'):
-        value.model.refine(value.initial, timeout_seconds=argument)
+def test_current_native_stage_rejects_invalid_timeout_without_publication(tmp_path, argument):
+    from emuflow.phase3_native import run as run_stage
+    value = case(tmp_path/'facts')
+    ir, platform, clusters, constraints, _, routes = value.args
+    for name, document in (('board', platform.to_dict()), ('constraints', constraints), ('routes', routes)):
+        write_json(tmp_path/(name+'.json'), document)
+    parts = [fpga.id for fpga in platform.fpgas if fpga.id in constraints['active_fpgas']]
+    solution = tmp_path/'solution.txt'
+    solution.write_text(''.join(str(parts.index(value.initial['cluster_assignment'][f'c{i:06d}']))+'\n'
+        for i in range(len(clusters['clusters']))))
+    output = tmp_path/'rejected'
+    with pytest.raises(ValidationError):
+        run_stage(output, ir.path, tmp_path/'board.json', constraints_path=tmp_path/'constraints.json',
+            route_constraints_path=tmp_path/'routes.json', timing_database_path=value.timing,
+            tritonpart_solution=solution, tritonpart_timeout_seconds=argument)
+    assert not output.exists()
 
 
 @pytest.mark.parametrize('direction,expected_domains,expected_ratio', [

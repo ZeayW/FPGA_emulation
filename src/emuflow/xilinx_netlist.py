@@ -1,9 +1,8 @@
-"""Provider-neutral EmuIR to normalized Xilinx Yosys JSON lowering."""
+"""Compact EmuIR to the canonical indexed Xilinx mapped netlist."""
 
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import uuid
 from collections import Counter, defaultdict
@@ -25,13 +24,10 @@ from .store_publication import (
 )
 from .io import file_sha256, write_json
 from .native_tools import native_file_generation
-from .ir import EmuIR
 from .resources import ResourceVector
-from .vivado_netlist import lower_vivado_primitives
 from .xilinx_primitives import (
     DEFAULT_XILINX_PRIMITIVE_LIBRARY,
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
-    audit_xilinx_mapped_json,
     load_xilinx_primitive_library,
 )
 
@@ -1002,39 +998,6 @@ def is_xilinx_mapped_index(path: Path) -> bool:
         connection.close()
 
 
-def _pin_inventory(ir: EmuIR) -> Tuple[
-    Dict[str, Dict[str, Dict[int, str]]],
-    Dict[Tuple[str, str, int], str],
-]:
-    pins: Dict[str, Dict[str, Dict[int, str]]] = defaultdict(
-        lambda: defaultdict(dict)
-    )
-    constants: Dict[Tuple[str, str, int], str] = {}
-    for net in ir.value["nets"]:
-        for collection, direction in (("drivers", "output"), ("sinks", "input")):
-            for endpoint in net[collection]:
-                instance = endpoint["instance"]
-                if instance is None:
-                    continue
-                port = endpoint["port"]
-                bit = endpoint["bit"]
-                previous = pins[instance][port].setdefault(bit, direction)
-                if previous != direction:
-                    pins[instance][port][bit] = "inout"
-    for instance in ir.value["instances"]:
-        for connection in instance.get("constant_connections", []):
-            key = (instance["id"], connection["port"], connection["bit"])
-            if key in constants:
-                raise ValidationError(
-                    f"Xilinx mapped netlist repeats constant pin {key!r}"
-                )
-            constants[key] = connection["value"]
-            pins[instance["id"]][connection["port"]].setdefault(
-                connection["bit"], "input"
-            )
-    return pins, constants
-
-
 def _lower_instance(
     instance: Mapping[str, Any], native_xilinx_cells: set[str]
 ) -> Tuple[Dict[str, Any], Dict[Tuple[str, int], Tuple[str, int]]]:
@@ -1085,22 +1048,6 @@ def _lower_instance(
     raise ValidationError(
         f"Vivado backend does not yet lower mapped primitive type {cell_type!r}"
     )
-
-
-def _write_object_entries(
-    stream: Any, entries: Iterator[Tuple[str, Mapping[str, Any]]]
-) -> int:
-    stream.write("{")
-    count = 0
-    for name, value in entries:
-        if count:
-            stream.write(",")
-        stream.write(_json(name))
-        stream.write(":")
-        stream.write(_json(value))
-        count += 1
-    stream.write("}")
-    return count
 
 
 def _emit_native_xilinx_mapped_index_sql(
@@ -1418,31 +1365,16 @@ def _emit_native_xilinx_mapped_index_sql(
             pass
 
 
-def _emit_compact_xilinx_mapped_artifacts(
+def _emit_compact_xilinx_mapped_index(
     ir_path: Path,
-    output_path: Optional[Path],
     index_path: Path,
 ) -> Dict[str, Any]:
-    """Stream compact EmuIR to one canonical index and optional JSON export.
-
-    The physical flow uses the SQLite index as its sole mapped-netlist
-    representation.  A JSON document is emitted only for the explicit export
-    API; producing both representations in the Phase 7 hot path duplicates
-    graph-sized serialization and I/O without adding information.
-    """
+    """Stream compact EmuIR to the sole production mapped-netlist index."""
 
     source_bindings = validate_store_destination(
         index_path, (bind_store_source(ir_path, "emuir-compact-v2"),)
     )
-    if output_path is not None:
-        validate_store_destination(output_path, source_bindings)
-        if output_path.resolve() == index_path.resolve():
-            raise ValidationError("mapped JSON and index outputs alias")
     source: Optional[sqlite3.Connection] = open_emuir_sqlite_read_only(ir_path)
-    output_temp = (
-        output_path.with_name(f".{output_path.name}.{uuid.uuid4().hex}.tmp")
-        if output_path is not None else None
-    )
     index_temp = index_path.with_name(
         f".{index_path.name}.{uuid.uuid4().hex}.tmp"
     )
@@ -1513,8 +1445,6 @@ def _emit_compact_xilinx_mapped_artifacts(
                 "direction": port["direction"], "bits": bits,
             }
 
-        if output_path is not None:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
         index_path.parent.mkdir(parents=True, exist_ok=True)
         index = sqlite3.connect(index_temp, uri=True)
         index.executescript(
@@ -1561,14 +1491,9 @@ def _emit_compact_xilinx_mapped_artifacts(
             ),
         )
 
-        native_sql_projection = (
-            output_temp is None
-            and not any(
-                row[0] not in native_xilinx_cells
-                for row in source.execute(
-                    "SELECT DISTINCT type FROM cell_records"
-                )
-            )
+        native_sql_projection = not any(
+            row[0] not in native_xilinx_cells
+            for row in source.execute("SELECT DISTINCT type FROM cell_records")
         )
         endpoint_rows = _RowsForOwner(
             source.execute(
@@ -1734,25 +1659,9 @@ def _emit_compact_xilinx_mapped_artifacts(
             ) = _emit_native_xilinx_mapped_index_sql(
                 index, ir_path, contracts
             )
-        elif output_temp is None:
+        else:
             cell_count = sum(1 for _name, _value in cells())
             emitted_net_count = sum(1 for _name, _value in netnames())
-        else:
-            with output_temp.open("w", encoding="utf-8") as stream:
-                stream.write(
-                    '{"creator":"EmuFlow Xilinx mapped-netlist exporter",'
-                )
-                stream.write('"modules":{')
-                stream.write(_json(top))
-                stream.write(':{"attributes":{"top":"1"},')
-                stream.write('"parameter_default_values":{},"ports":')
-                stream.write(_json(ports))
-                stream.write(',"cells":')
-                cell_count = _write_object_entries(stream, cells())
-                stream.write(',"memories":{},"netnames":')
-                emitted_net_count = _write_object_entries(stream, netnames())
-                stream.write("}}}\n")
-                stream.flush()
         # No consumer reads this unpublished database during construction.
         # Build auxiliary pin orders in bulk rather than updating a random
         # net-order B-tree for every pin on the shared physical-flow filesystem.
@@ -1767,12 +1676,7 @@ def _emit_compact_xilinx_mapped_artifacts(
         index.commit()
         index.close()
         index = None
-        if output_temp is not None:
-            with output_temp.open("rb") as stream:
-                os.fsync(stream.fileno())
         require_store_sources_unchanged(source_bindings)
-        if output_temp is not None and output_path is not None:
-            os.replace(output_temp, output_path)
         publish_sqlite_store(
             index_temp, index_path, "xilinx-mapped-index-v2", sources=source_bindings
         )
@@ -1787,12 +1691,7 @@ def _emit_compact_xilinx_mapped_artifacts(
             )
             for cell_type, count in inventory.items()
         )
-        canonical_path = output_path if output_path is not None else index_path
-        output_sha256 = file_sha256(canonical_path)
-        representation = (
-            "yosys-json+sqlite-index"
-            if output_path is not None else "sqlite-index"
-        )
+        output_sha256 = file_sha256(index_path)
         audit = {
             "status": "pass",
             "schema": "emuflow.xilinx-primitive-audit/v1",
@@ -1805,10 +1704,8 @@ def _emit_compact_xilinx_mapped_artifacts(
             "unknown_cell_types": {},
             "external_macros": {},
             "mapped_sha256": output_sha256,
-            "mapped_json_sha256": (
-                output_sha256 if output_path is not None else None
-            ),
-            "mapped_representation": representation,
+            "mapped_json_sha256": None,
+            "mapped_representation": "sqlite-index",
             "primitive_library_sha256": file_sha256(
                 DEFAULT_XILINX_PRIMITIVE_LIBRARY
             ),
@@ -1835,8 +1732,6 @@ def _emit_compact_xilinx_mapped_artifacts(
             source.close()
         if index is not None:
             index.close()
-        if output_temp is not None:
-            output_temp.unlink(missing_ok=True)
         index_temp.unlink(missing_ok=True)
 
 
@@ -1856,9 +1751,7 @@ def emit_xilinx_mapped_index(
         raise ValidationError(
             "Xilinx mapped-index production input must be compact EmuIR"
         )
-    streamed = _emit_compact_xilinx_mapped_artifacts(
-        ir_path, None, index_path
-    )
+    streamed = _emit_compact_xilinx_mapped_index(ir_path, index_path)
     report = {
         "schema": XILINX_MAPPED_NETLIST_REPORT_SCHEMA,
         "status": "pass",
@@ -1866,191 +1759,6 @@ def emit_xilinx_mapped_index(
         "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
         **streamed,
         "output": str(index_path),
-    }
-    if report_path is not None:
-        write_json(report_path, report)
-    return report
-
-
-def emit_xilinx_mapped_json(
-    ir_path: Path,
-    output_path: Path,
-    report_path: Path | None = None,
-    *,
-    index_path: Optional[Path] = None,
-) -> Mapping[str, Any]:
-    """Emit a normalized, primitive-only Yosys JSON netlist.
-
-    This is the inverse provider boundary of :func:`import_yosys_json`; it
-    does not resynthesize or reinterpret the design.  It preserves each
-    EmuIR net and cell identity while lowering only provider-neutral LUT/FF
-    spellings into the explicit UltraScale+ primitive namespace.
-    """
-
-    if index_path is not None and is_compact_emuir(ir_path):
-        streamed = _emit_compact_xilinx_mapped_artifacts(
-            ir_path, output_path, index_path
-        )
-        report = {
-            "schema": XILINX_MAPPED_NETLIST_REPORT_SCHEMA,
-            "status": "pass",
-            "provider": "emuflow-emuir-to-xilinx-yosys-json-indexed-v1",
-            "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
-            **streamed,
-            "output": str(output_path),
-        }
-        if report_path is not None:
-            write_json(report_path, report)
-        return report
-
-    source = EmuIR.load(ir_path)
-    ir = lower_vivado_primitives(source)
-    pin_inventory, constants = _pin_inventory(ir)
-    net_bits = {
-        net["id"]: index + 2 for index, net in enumerate(ir.value["nets"])
-    }
-    pin_bits: Dict[Tuple[str, str, int], Any] = {}
-    for net in ir.value["nets"]:
-        value = net_bits[net["id"]]
-        for collection in ("drivers", "sinks"):
-            for endpoint in net[collection]:
-                if endpoint["instance"] is not None:
-                    pin_bits[
-                        (
-                            endpoint["instance"], endpoint["port"],
-                            endpoint["bit"],
-                        )
-                    ] = value
-
-    cells: Dict[str, Any] = {}
-    for instance in sorted(ir.value["instances"], key=lambda item: item["id"]):
-        name = instance["id"]
-        ports: Dict[str, Any] = {}
-        directions: Dict[str, str] = {}
-        for port, bits in sorted(pin_inventory.get(name, {}).items()):
-            width = max(bits) + 1
-            if set(bits) != set(range(width)):
-                raise ValidationError(
-                    f"Xilinx mapped cell {name!r}.{port} is not contiguous"
-                )
-            values = []
-            for bit in range(width):
-                key = (name, port, bit)
-                if key in pin_bits:
-                    values.append(pin_bits[key])
-                elif key in constants:
-                    values.append(constants[key])
-                else:
-                    raise ValidationError(
-                        f"Xilinx mapped cell pin {key!r} is unconnected"
-                    )
-            ports[port] = values
-            observed = set(bits.values())
-            directions[port] = (
-                "inout" if "inout" in observed or len(observed) > 1
-                else next(iter(observed))
-            )
-        cells[name] = {
-            "hide_name": 0,
-            "type": instance["type"],
-            "parameters": dict(instance.get("parameters", {})),
-            "attributes": dict(instance.get("attributes", {})),
-            "port_directions": directions,
-            "connections": ports,
-        }
-
-    top_port_bits: Dict[Tuple[str, int], int] = {}
-    for net in ir.value["nets"]:
-        value = net_bits[net["id"]]
-        for collection in ("drivers", "sinks"):
-            for endpoint in net[collection]:
-                if endpoint["instance"] is None:
-                    key = (endpoint["port"], endpoint["bit"])
-                    previous = top_port_bits.setdefault(key, value)
-                    if previous != value:
-                        raise ValidationError(
-                            f"Xilinx mapped top pin {key!r} has multiple nets"
-                        )
-    ports = {}
-    unconnected_output_bits = 0
-    unconnected_input_bits = 0
-    next_dead_input_bit = max(net_bits.values(), default=1) + 1
-    for port in ir.value["ports"]:
-        port_constants = {
-            item["bit"]: item["value"]
-            for item in port.get("constant_connections", [])
-        }
-        bits = []
-        for bit in range(port["width"]):
-            key = (port["id"], bit)
-            if key in top_port_bits:
-                bits.append(top_port_bits[key])
-            elif bit in port_constants:
-                bits.append(port_constants[bit])
-            elif port["direction"] == "output":
-                # A split partition retains the original top-level vector
-                # shape even when another partition owns some output bits.
-                # Yosys JSON represents such genuinely undriven output bits
-                # with the constant ``x`` token.  They are not physical nets
-                # and therefore must not be fabricated merely to satisfy the
-                # vector width.
-                bits.append("x")
-                unconnected_output_bits += 1
-            elif port["direction"] == "input":
-                # An unused input bit is still a legal top-level input in
-                # Yosys JSON.  Give it a private, sinkless signal identifier;
-                # physical routing only consumes cell-to-cell nets, so this
-                # preserves the interface without inventing a routed load.
-                bits.append(next_dead_input_bit)
-                next_dead_input_bit += 1
-                unconnected_input_bits += 1
-            else:
-                raise ValidationError(
-                    f"Xilinx mapped top pin {key!r} is unconnected"
-                )
-        ports[port["id"]] = {
-            "direction": port["direction"],
-            "bits": bits,
-        }
-    netnames = {
-        net["id"]: {
-            "hide_name": 0,
-            "bits": [net_bits[net["id"]]],
-            "attributes": {},
-        }
-        for net in ir.value["nets"]
-    }
-    top = ir.value["design"]["top"]
-    mapped = {
-        "creator": "EmuFlow Xilinx mapped-netlist exporter",
-        "modules": {
-            top: {
-                "attributes": {"top": "1"},
-                "parameter_default_values": {},
-                "ports": ports,
-                "cells": cells,
-                "memories": {},
-                "netnames": netnames,
-            }
-        },
-    }
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    write_json(output_path, mapped, compact=True)
-    audit = audit_xilinx_mapped_json(output_path, top=top)
-    report = {
-        "schema": XILINX_MAPPED_NETLIST_REPORT_SCHEMA,
-        "status": "pass",
-        "provider": "emuflow-emuir-to-xilinx-yosys-json-v1",
-        "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
-        "top": top,
-        "cells": len(cells),
-        "nets": len(netnames),
-        "ports": len(ports),
-        "unconnected_input_bits": unconnected_input_bits,
-        "unconnected_output_bits": unconnected_output_bits,
-        "output": str(output_path),
-        "output_sha256": file_sha256(output_path),
-        "audit": audit,
     }
     if report_path is not None:
         write_json(report_path, report)

@@ -5,10 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import re
 import sqlite3
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterator, Mapping, Optional
 
@@ -124,48 +122,6 @@ def _open_sqlite_read_only(path: Path) -> sqlite3.Connection:
 def _verify_file_digest(path: Path, expected: str, context: str) -> None:
     if _file_sha256(path) != expected:
         raise ValidationError(f"{context} digest disagrees")
-
-
-def _sta_path_endpoint_row(endpoint: Mapping[str, Any]) -> list[Any]:
-    return [
-        endpoint.get("object"),
-        endpoint.get("instance"),
-        endpoint.get("port"),
-        endpoint.get("bit"),
-    ]
-
-
-def _sta_path_record_row(record: Mapping[str, Any]) -> list[Any]:
-    """Encode one path without repeating JSON object keys per endpoint."""
-
-    row: list[Any] = [
-        record.get("id"),
-        record.get("clock_domain"),
-        record.get("clock_period_ns"),
-        record.get("slack_ns"),
-        record.get("fixed_delay_ns"),
-        record.get("path_nets"),
-    ]
-    has_startpoint = "startpoint" in record
-    has_endpoint = "endpoint" in record
-    if has_startpoint != has_endpoint:
-        raise ValidationError("STA path database record endpoints are invalid")
-    if has_startpoint:
-        startpoint = record["startpoint"]
-        endpoint = record["endpoint"]
-        if not isinstance(startpoint, Mapping) or not isinstance(
-            endpoint, Mapping
-        ):
-            raise ValidationError(
-                "STA path database record endpoints are invalid"
-            )
-        row.extend(
-            [
-                _sta_path_endpoint_row(startpoint),
-                _sta_path_endpoint_row(endpoint),
-            ]
-        )
-    return row
 
 
 def _sta_path_record_from_row(value: Any, index: int) -> Dict[str, Any]:
@@ -349,143 +305,6 @@ def iter_sta_path_database_paths(
         raise ValidationError("STA path database payload digest disagrees")
 
 
-def iter_selected_sta_path_database_paths(
-    path: Path,
-    value: Mapping[str, Any],
-    path_ids: set[str],
-    *,
-    verify_payload: bool = False,
-) -> Iterator[Mapping[str, Any]]:
-    """Read only named timing paths from an indexed TimingPathDB.
-
-    Phase 7 logic-segment binding needs the paths named by Phase 4 routes, not
-    the complete endpoint population.  Loading the whole SQLite sidecar into
-    Python used several gigabytes on NVDLA.  The v3 payload already has a
-    unique index on ``paths.path_id``; use it directly and retain the generic
-    streaming fallback for small legacy databases.
-
-    ``verify_payload`` defaults to false deliberately.  The producer validated
-    and sealed the payload when publishing the phase boundary.  Routine
-    consumers validate schema, selected-record coverage, and circuit identity;
-    rereading a multi-gigabyte payload solely to repeat its hash is an explicit
-    offline audit, not part of the hot path.
-    """
-
-    requested = set(path_ids)
-    if not requested:
-        return
-    schema = value.get("schema")
-    if schema == STA_PATH_DATABASE_INDEX_SCHEMA:
-        payload_path, expected_digest, _records, payload_format = (
-            _sta_path_payload(path, value)
-        )
-        if payload_format == STA_PATH_DATABASE_SQLITE_FORMAT:
-            if verify_payload:
-                _verify_file_digest(
-                    payload_path,
-                    expected_digest,
-                    "STA path database payload",
-                )
-            normalization = _validate_database_normalization(
-                value.get("normalization")
-            )
-            connection = _open_sqlite_read_only(payload_path)
-            found: set[str] = set()
-            ordered_requested = sorted(requested)
-            try:
-                for offset in range(0, len(ordered_requested), 400):
-                    batch = ordered_requested[offset : offset + 400]
-                    placeholders = ",".join("?" for _ in batch)
-                    cursor = connection.execute(
-                        f"""
-                        SELECT p.ordinal, p.path_id, p.clock_domain,
-                               p.clock_period_ns, p.slack_ns,
-                               p.fixed_delay_ns, p.start_object,
-                               p.start_instance, p.start_port, p.start_bit,
-                               p.end_object, p.end_instance, p.end_port,
-                               p.end_bit, n.net_ordinal, n.net_id
-                        FROM paths AS p JOIN path_nets AS n
-                          ON n.path_ordinal = p.ordinal
-                        WHERE p.path_id IN ({placeholders})
-                        ORDER BY p.ordinal, n.net_ordinal
-                        """,
-                        batch,
-                    )
-                    current_ordinal: Optional[int] = None
-                    record: Optional[Dict[str, Any]] = None
-                    for row in cursor:
-                        ordinal = int(row[0])
-                        if current_ordinal != ordinal:
-                            if record is not None:
-                                found.add(record["id"])
-                                yield record
-                            current_ordinal = ordinal
-                            record = {
-                                "id": row[1],
-                                "clock_domain": row[2],
-                                "clock_period_ns": float(row[3]),
-                                "slack_ns": float(row[4]),
-                                "fixed_delay_ns": float(row[5]),
-                                "path_nets": [],
-                                "normalized_slack": _normalized_slack(
-                                    float(row[3]),
-                                    float(row[4]),
-                                    normalization,
-                                ),
-                            }
-                            if row[6] is not None:
-                                record["startpoint"] = {
-                                    "object": row[6],
-                                    "instance": row[7],
-                                    "port": row[8],
-                                    "bit": int(row[9]),
-                                }
-                                record["endpoint"] = {
-                                    "object": row[10],
-                                    "instance": row[11],
-                                    "port": row[12],
-                                    "bit": int(row[13]),
-                                }
-                        if (
-                            record is None
-                            or int(row[14]) != len(record["path_nets"])
-                        ):
-                            raise ValidationError(
-                                "STA path database SQLite net ordering is invalid"
-                            )
-                        record["path_nets"].append(row[15])
-                    if record is not None:
-                        found.add(record["id"])
-                        yield record
-            except sqlite3.DatabaseError as error:
-                raise ValidationError(
-                    "STA path database SQLite payload is invalid"
-                ) from error
-            finally:
-                connection.close()
-            missing = sorted(requested - found)
-            if missing:
-                raise ValidationError(
-                    "STA path database lacks selected paths: "
-                    + ", ".join(repr(item) for item in missing[:10])
-                )
-            return
-
-    found = set()
-    for record in iter_sta_path_database_paths(
-        path, value, verify_payload=verify_payload
-    ):
-        if record.get("id") in requested:
-            found.add(record["id"])
-            yield record
-    missing = sorted(requested - found)
-    if missing:
-        raise ValidationError(
-            "STA path database lacks selected paths: "
-            + ", ".join(repr(item) for item in missing[:10])
-        )
-
-
 def sta_path_database_qor(
     database_path: Path, value: Optional[Mapping[str, Any]] = None
 ) -> Dict[str, Any]:
@@ -535,121 +354,6 @@ def load_sta_path_database(
     }
 
 
-def _instance_pin_inventory(ir: EmuIR) -> Dict[str, set[tuple[str, int]]]:
-    result: Dict[str, set[tuple[str, int]]] = {
-        instance["id"]: set() for instance in ir.value["instances"]
-    }
-    for net in ir.value["nets"]:
-        for collection in ("drivers", "sinks"):
-            for endpoint in net[collection]:
-                instance = endpoint["instance"]
-                if instance is not None:
-                    result[instance].add((endpoint["port"], endpoint["bit"]))
-    for instance in ir.value["instances"]:
-        for endpoint in instance.get("constant_connections", []):
-            result[instance["id"]].add((endpoint["port"], endpoint["bit"]))
-    return result
-
-
-def _scalar_pin(port: str, bit: int, pins: set[tuple[str, int]]) -> str:
-    width = max(
-        (
-            candidate_bit + 1
-            for candidate_port, candidate_bit in pins
-            if candidate_port == port
-        ),
-        default=0,
-    )
-    return port if width <= 1 else f"{port}__{bit}"
-
-
-def sta_object_index(ir: EmuIR) -> Dict[str, Dict[str, Any]]:
-    """Map provider object names to stable EmuIR endpoint identities."""
-    if hasattr(ir, "object_index"):
-        return ir.object_index
-    pins = _instance_pin_inventory(ir)
-    canonical: Dict[str, Dict[str, Any]] = {}
-    for instance in ir.value["instances"]:
-        instance_id = instance["id"]
-        for port, bit in pins[instance_id]:
-            name = f"{instance_id}/{_scalar_pin(port, bit, pins[instance_id])}"
-            canonical[name] = {
-                "object": name,
-                "instance": instance_id,
-                "port": port,
-                "bit": bit,
-            }
-    for port in ir.value["ports"]:
-        for bit in range(port["width"]):
-            names = [port["id"]]
-            if port["width"] > 1:
-                names = [f"{port['id']}[{bit}]", f"{port['id']}__{bit}"]
-            for name in names:
-                canonical[name] = {
-                    "object": name,
-                    "instance": None,
-                    "port": port["id"],
-                    "bit": bit,
-                }
-
-    # OpenSTA reports Verilog escaped identifiers through Tcl.  A literal
-    # backslash in the mapped-Verilog object name is therefore escaped one
-    # additional time in ``get_full_name`` and in the exported path ID.  Add
-    # that exact provider spelling as an O(1) alias while retaining the
-    # provider-neutral EmuIR spelling in the endpoint certificate.
-    #
-    # Do not guess through an ambiguous name.  It is possible (although very
-    # unusual) for one canonical object to contain one literal backslash and
-    # another to contain two.  Such an IR cannot be mapped bijectively through
-    # OpenSTA's textual path identity, so reject it instead of silently binding
-    # the path to the wrong endpoint.
-    result = dict(canonical)
-    for name, endpoint in canonical.items():
-        alias = name.replace("\\", "\\\\")
-        if alias == name:
-            continue
-        existing = result.get(alias)
-        if existing is not None and existing != endpoint:
-            raise ValidationError(
-                "STA provider object alias is ambiguous between "
-                f"{existing['object']!r} and {name!r}"
-            )
-        result[alias] = endpoint
-    return result
-
-
-def sta_path_endpoints(
-    path: Mapping[str, Any],
-    object_index: Mapping[str, Mapping[str, Any]],
-) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    """Resolve structured or legacy provider path endpoints."""
-    raw_start = path.get("startpoint")
-    raw_end = path.get("endpoint")
-    if isinstance(raw_start, dict) and isinstance(raw_end, dict):
-        return dict(raw_start), dict(raw_end)
-    path_id = path.get("id")
-    match = (
-        re.fullmatch(r"(.+)->(.+)#\d{8}", path_id)
-        if isinstance(path_id, str)
-        else None
-    )
-    if match is None:
-        raise ValidationError(
-            f"STA path {path_id!r} lacks provider-neutral endpoint identity"
-        )
-    missing = [
-        name for name in match.groups() if name not in object_index
-    ]
-    if missing:
-        raise ValidationError(
-            f"STA path {path_id!r} has unmapped endpoint objects {missing}"
-        )
-    return (
-        dict(object_index[match.group(1)]),
-        dict(object_index[match.group(2)]),
-    )
-
-
 def _validate_endpoint_identity(
     endpoint: Any,
     known_instances: set[str],
@@ -682,34 +386,6 @@ def _validate_endpoint_identity(
 
 def _hex_encode(value: str) -> str:
     return value.encode("utf-8").hex()
-
-
-def _hex_decode(value: str, context: str) -> str:
-    try:
-        return bytes.fromhex(value).decode("utf-8")
-    except (ValueError, UnicodeDecodeError) as error:
-        raise ValidationError(f"{context}: invalid UTF-8 hex") from error
-
-
-def _database_normalization(paths: list[Dict[str, Any]]) -> Dict[str, float]:
-    positive_scale = max(
-        (path["slack_ns"] for path in paths if path["slack_ns"] >= 0.0),
-        default=1.0,
-    )
-    if positive_scale == 0.0:
-        positive_scale = 1.0
-    negative_scale = abs(
-        min(
-            (path["slack_ns"] for path in paths if path["slack_ns"] < 0.0),
-            default=-1.0,
-        )
-    )
-    max_period = max(path["clock_period_ns"] for path in paths)
-    return {
-        "positive_slack_scale_ns": positive_scale,
-        "negative_slack_scale_ns": negative_scale,
-        "max_clock_period_ns": max_period,
-    }
 
 
 def _validate_database_normalization(
@@ -814,86 +490,6 @@ def write_emuir_net_map(
         return {"status": "pass", "design": _ir.value["design"]["name"],
                 "nets": report["nets"], "output": str(output_path)}
     return _write_net_map(ir_path, output_path, EMUIR_NET_MAP_HEADER, _ir=_ir)
-
-
-def _parse_sta_path_database_tsv_record(
-    line: str,
-    index: int,
-    *,
-    known_nets: set[str],
-    object_index: Mapping[str, Mapping[str, Any]],
-) -> Dict[str, Any]:
-    fields = line.split("\t")
-    if len(fields) != 6:
-        raise ValidationError(
-            f"STA path database TSV line {index}: expected six fields"
-        )
-    path_id = _hex_decode(
-        fields[0], f"STA path database TSV line {index} path"
-    )
-    clock_domain = _hex_decode(
-        fields[1], f"STA path database TSV line {index} clock"
-    )
-    if not path_id or not clock_domain:
-        raise ValidationError(
-            f"STA path database TSV line {index}: invalid path identity"
-        )
-    try:
-        clock_period = float(fields[2])
-        slack = float(fields[3])
-        fixed_delay = float(fields[4])
-    except ValueError as error:
-        raise ValidationError(
-            f"STA path database TSV line {index}: invalid numeric field"
-        ) from error
-    if (
-        not all(
-            math.isfinite(value)
-            for value in (clock_period, slack, fixed_delay)
-        )
-        or clock_period <= 0.0
-        or fixed_delay < 0.0
-    ):
-        raise ValidationError(
-            f"STA path database TSV line {index}: invalid period/delay"
-        )
-    raw_nets = fields[5].split(",")
-    if not raw_nets or any(not item for item in raw_nets):
-        raise ValidationError(
-            f"STA path database TSV line {index}: empty path-net list"
-        )
-    path_nets = [
-        _hex_decode(
-            item, f"STA path database TSV line {index} path_nets_hex"
-        )
-        for item in raw_nets
-    ]
-    if len(set(path_nets)) != len(path_nets):
-        raise ValidationError(
-            f"STA path database TSV line {index}: duplicate net"
-        )
-    unknown = sorted(set(path_nets) - known_nets)
-    if unknown:
-        raise ValidationError(
-            f"STA path database TSV line {index}: unknown EmuIR nets {unknown}"
-        )
-    record = {
-        "id": path_id,
-        "clock_domain": clock_domain,
-        "clock_period_ns": clock_period,
-        "slack_ns": slack,
-        "fixed_delay_ns": fixed_delay,
-        "path_nets": path_nets,
-    }
-    try:
-        startpoint, endpoint = sta_path_endpoints(record, object_index)
-    except ValidationError:
-        pass
-    else:
-        record["startpoint"] = startpoint
-        record["endpoint"] = endpoint
-    return record
-
 
 
 def _adopt_sta_payload(temporary, selector, kind, schema, sources):
@@ -1293,7 +889,6 @@ def derive_partition_net_weights(
     return build_weights(database_path, ir_path, output_path,
         criticality_scale=criticality_scale, criticality_exponent=criticality_exponent,
         validation=_validation)
-
 
 
 def iter_partition_net_weight_records(

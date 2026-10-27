@@ -17,13 +17,13 @@ from emuflow.resources import ResourceVector
 from emuflow.sta import (
     derive_partition_net_weights,
     iter_sta_path_database_paths,
-    sta_object_index,
     validate_partition_net_weights,
     validate_sta_path_database,
     write_emuir_net_map,
 )
 from emuflow.verilog import mapped_verilog, write_mapped_verilog
 from emuflow.yosys import import_yosys_json
+from tests.sta_path_reference import endpoint_facts
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -44,7 +44,7 @@ def test_compact_stream_preserves_exact_timing_netlist_and_endpoint_identity(tmp
         assert out.read_text() == mapped_verilog(ir, timing_only=True)
         write_emuir_net_map(source, tmp_path / "old.tsv", _ir=ir)
         assert (tmp_path / "stream.tsv").read_bytes() == (tmp_path / "old.tsv").read_bytes()
-        for name, endpoint in sta_object_index(ir).items():
+        for name, endpoint in endpoint_facts(ir).items():
             assert view.object_index[name] == endpoint
     finally:
         view.close()
@@ -66,17 +66,16 @@ def test_compact_stream_uses_real_provider_protocol_without_ir_reload(tmp_path):
     # Compare the actual path population, not only summary scalars.
     old = tmp_path / "old.emuir.sqlite"
     _write_emuir_sqlite_v1(old, ir.value)
-    old_out = tmp_path / "old-paths.json"
     import os
     import subprocess
-    from tests.sta_path_reference import import_sta_path_database_tsv_streaming as reference_import
+    from tests.sta_path_reference import path_facts
     old_map, measured = tmp_path/"old-net-map.tsv", tmp_path/"old-paths.tsv"
     write_emuir_net_map(old, old_map, _ir=ir)
     subprocess.run([str(ROOT/"tests/fixtures/fake_opensta_paths.py")],
         env={**os.environ, "EMUFLOW_STA_NET_MAP": str(old_map), "EMUFLOW_STA_OUTPUT": str(measured)}, check=True)
-    old_report = reference_import(measured, old, old_out, provider="opensta-fpga-path-database-v1", _ir=ir)
-    assert records == list(iter_sta_path_database_paths(old_out, json.loads(old_out.read_text())))
-    assert report["path_qor"] == old_report["path_qor"]
+    expected = path_facts(measured, ir)
+    assert records == expected["paths"]
+    assert report["path_qor"] == expected["summary"]["qor"]
 
 
 def test_compact_timing_validators_do_not_reload_the_whole_graph(tmp_path):

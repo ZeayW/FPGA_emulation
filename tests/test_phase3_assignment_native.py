@@ -18,7 +18,7 @@ from emuflow.partition import (
     validate_partition_artifacts_online, CUT_MODE_STATIC_EXACT,
 )
 from emuflow.phase3_assignment_native import reduce_native_partition_loads
-from emuflow.phase3_pressure_native import _Writer
+from emuflow.native_protocol import CheckedRequestWriter as _Writer
 from tests.test_phase3_clusters_native import source
 from tests import partition_pressure_fixture as reference_fixture
 from tests.native_build import emuflow_native

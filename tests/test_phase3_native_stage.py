@@ -13,7 +13,7 @@ from tests.test_phase3_pressure_native import inputs
 
 
 @pytest.mark.parametrize('name', ['partition_init_native', 'partition_hops_native',
-    'phase3_publication_native', 'route_seal_native', 'partition_inputs'])
+    'phase3_publication_native', 'route_seal_native', 'partition_inputs', 'phase3_pressure_native', 'patron_policy'])
 def test_retired_stage_wrappers_are_not_production_imports(name):
     assert importlib.util.find_spec('emuflow.'+name) is None
 
@@ -84,7 +84,7 @@ def test_public_compact_api_uses_complete_native_stage_without_python_phase_bodi
     from emuflow.phase3 import run_phase3 as public
     ir, board, config = options(inputs, tmp_path)
     with ExitStack() as guards:
-        for name in ('partition.build_clusters', 'phase3_pressure_native.NativePressureModel.execute',
+        for name in ('partition.build_clusters',
                      'partition.build_partition_assignment', 'partition.validate_partition_artifacts_online'):
             guards.enter_context(patch('emuflow.'+name, side_effect=AssertionError('Python phase body: '+name)))
         output = tmp_path/'public'

@@ -10,7 +10,7 @@ from emuflow.board_arm_mps4 import (
 )
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
-from emuflow.netlist import _build_virtual_anchors
+from tests.virtual_anchor_fixture import anchor_facts
 from emuflow.platform import Platform
 
 
@@ -116,7 +116,7 @@ class ArmMps4BoardTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValidationError, "duplicate"):
             Platform.from_dict(duplicate_service)
-        anchors = _build_virtual_anchors(
+        anchors = anchor_facts(
             "mps4_1",
             platform,
             [

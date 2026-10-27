@@ -24,6 +24,7 @@ from emuflow.routing import (
 from emuflow.timing_routing import (GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, normalize_sta_paths, validate_native_system_routes)
 from tests.native_build import emuflow_native, tlr_router
 from tests import partition_pressure_fixture as pressure_fixture
+from tests.patron_kernel_fixture import run_pressure_kernel
 from tests.test_phase4 import _assignment, _link, _platform_value
 
 
@@ -101,7 +102,7 @@ def test_native_partition_uses_the_shared_bank_delay_model(tmp_path, monkeypatch
                                          'frame_slots': 32}, platform)
     case = prepare_native(tmp_path, fixture.ir, platform, fixture.constraints, fixture.timing,
                           routes, fixture.clusters, fixture.initial['cluster_assignment'])
-    final, trace = case.model.refine(case.initial, max_moves=0)
+    final, trace = run_pressure_kernel(case.model,case.initial, max_moves=0)
     # Both original paths cross one ratio-eight link: 30 + 0.5*8 = 34 ns.
     assert trace['initial_metrics']['maximum_predicted_tdm_ratio'] == 8
     assert trace['initial_metrics']['worst_normalized_slack'] == pytest.approx(-3.1)
@@ -206,7 +207,7 @@ def test_partition_move_recomputes_opposite_direction_pressure(tmp_path, monkeyp
     from emuflow.partition import validate_partition_artifacts_online
     case = prepare_native(tmp_path, ir, platform, constraints, timing, route_constraints,
                           clusters, assignment)
-    final, trace = case.model.refine(case.initial, max_moves=8)
+    final, trace = run_pressure_kernel(case.model,case.initial, max_moves=8)
     assert trace['initial_metrics']['maximum_predicted_tdm_ratio'] == 3
     assert trace['final_metrics']['maximum_predicted_tdm_ratio'] <= 3
     # Independent moves are recorded separately from flow-batch changes.

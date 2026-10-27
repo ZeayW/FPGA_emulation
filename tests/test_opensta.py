@@ -25,12 +25,12 @@ from emuflow.opensta import (
 from emuflow.sta import (
     import_sta_path_database_tsv_streaming,
     iter_sta_path_database_paths,
-    sta_object_index,
     sta_path_database_qor,
     validate_sta_path_database,
 )
 from emuflow.verilog import mapped_verilog
 from emuflow.yosys import import_yosys_json
+from tests.sta_path_reference import endpoint_facts
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,7 +80,7 @@ class OpenStaProviderTest(unittest.TestCase):
             ir_path = root / "ir.emuir.sqlite"
             self.ir.save(ir_path)
             net = self.ir.value["nets"][0]["id"]
-            objects = sorted(sta_object_index(self.ir))
+            objects = sorted(endpoint_facts(self.ir))
             path_id = f"{objects[0]}->{objects[-1]}#00000000"
             raw = root / "paths.tsv"
             raw.write_text(

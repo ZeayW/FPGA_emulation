@@ -1075,7 +1075,7 @@ def _classify_indexed_through_net_timing_endpoints(
 ) -> Dict[str, Dict[str, Any]]:
     """Classify compact EmuIR using integer connectivity, not Python records."""
 
-    from .sta import _scalar_pin
+    from .indexed_timing import _scalar_pin
 
     requested: Dict[int, str] = {}
     for net in through_nets:

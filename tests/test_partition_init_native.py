@@ -173,17 +173,15 @@ from tests.test_phase3_pressure_native import inputs as pressure_inputs
 
 def test_pressure_model_borrows_the_native_initial_owner_without_republishing_it(pressure_inputs,tmp_path):
     from emuflow.partition import build_partition_assignment
-    from emuflow.phase3_pressure_native import build_native_pressure_model
-    from emuflow.phase3_pressure_native import NativePressureModel
+    from tests.patron_kernel_fixture import pressure_kernel_inputs, write_pressure_requests, run_pressure_kernel
     args,reference_initial,timing=pressure_inputs
     ir,platform,clusters,constraints,manifest,routes=args
     imported=solution(tmp_path,len(clusters['clusters']),(0,1))
     actual,summary=initialize(ir,platform,clusters,constraints,seed=0,executable=None,solution_input=imported)
     initial=build_partition_assignment(ir,platform,clusters,constraints,actual,'fixture',0,_include_semantic_contract=False,_stream_semantic_records=True,_defer_derived_records=True)
-    model=build_native_pressure_model(*args,timing_database_path=timing)
+    model=pressure_kernel_inputs(*args,timing_database_path=timing)
     request_root=tmp_path/'requests';request_root.mkdir()
-    with patch.object(NativePressureModel,'_write_initial_ownership',side_effect=AssertionError('initial ownership copied back through Python')):
-        columns,board=model.write_requests(request_root,initial,0)
+    columns,board=write_pressure_requests(model,request_root,initial,0)
     assert columns==actual.native_initial_source.path
     assert not (request_root/'initial.bin').exists()
     assert board.is_file()
@@ -195,20 +193,19 @@ def test_pressure_model_borrows_the_native_initial_owner_without_republishing_it
 def test_borrowed_initializer_rejects_replaced_python_part_columns(pressure_inputs,tmp_path):
     from array import array
     from emuflow.partition import build_partition_assignment
-    from emuflow.phase3_pressure_native import build_native_pressure_model
+    from tests.patron_kernel_fixture import pressure_kernel_inputs, write_pressure_requests, run_pressure_kernel
     args,_,timing=pressure_inputs;ir,platform,clusters,constraints,_,_=args
     actual,_=initialize(ir,platform,clusters,constraints,seed=0,executable=None,solution_input=solution(tmp_path,len(clusters['clusters']),(0,1)))
     initial=build_partition_assignment(ir,platform,clusters,constraints,actual,'fixture',0,_include_semantic_contract=False,_stream_semantic_records=True,_defer_derived_records=True)
     actual.part_indices=array('I',actual.part_indices)
-    model=build_native_pressure_model(*args,timing_database_path=timing)
+    model=pressure_kernel_inputs(*args,timing_database_path=timing)
     request_root=tmp_path/'requests';request_root.mkdir()
-    with pytest.raises(Exception,match='another pressure model'):model.write_requests(request_root,initial,0)
+    with pytest.raises(Exception,match='another source or column'):write_pressure_requests(model,request_root,initial,0)
 
 
 def test_native_initializer_runs_through_patron_without_host_ownership_rewrite(pressure_inputs,tmp_path):
     from emuflow.partition import build_partition_assignment, _PackedClusterAssignment
-    from emuflow.phase3_pressure_native import build_native_pressure_model
-    from emuflow.phase3_pressure_native import NativePressureModel
+    from tests.patron_kernel_fixture import pressure_kernel_inputs, write_pressure_requests, run_pressure_kernel
     from tests.test_phase3_pressure_native import run
     args,_,timing=pressure_inputs
     ir,platform,clusters,constraints,_,_=args
@@ -222,10 +219,9 @@ def test_native_initializer_runs_through_patron_without_host_ownership_rewrite(p
         return build_partition_assignment(ir,platform,clusters,constraints,column,'fixture',0,
             _include_semantic_contract=False,_stream_semantic_records=True,_defer_derived_records=True)
     def model():
-        return build_native_pressure_model(*args,timing_database_path=timing)
+        return pressure_kernel_inputs(*args,timing_database_path=timing)
     expected,expected_trace=run(args,model(),initial(copied),max_moves=2)
-    with patch.object(NativePressureModel,'_write_initial_ownership',side_effect=AssertionError('native ownership rewritten in host')):
-        actual,trace=run(args,model(),initial(owners),max_moves=2)
+    actual,trace=run(args,model(),initial(owners),max_moves=2)
     assert actual['cluster_assignment']==expected['cluster_assignment']
     assert trace['initial_metrics']==expected_trace['initial_metrics']
     assert trace['final_metrics']==expected_trace['final_metrics']
@@ -236,11 +232,10 @@ def test_native_initializer_runs_through_patron_without_host_ownership_rewrite(p
 def test_real_tritonpart_initializer_reaches_final_phase3_publication(pressure_inputs,tmp_path):
     from emuflow.io import write_json
     from emuflow.phase3 import run_phase3, validate_phase3_indexed
-    from emuflow.phase3_pressure_native import NativePressureModel
     args,_,timing=pressure_inputs
     platform=tmp_path/'platform.json';write_json(platform,args[1].to_dict())
     routes=tmp_path/'routes.json';write_json(routes,args[5])
-    with patch('emuflow.partition.build_partition_assignment',side_effect=AssertionError('Python initializer')),patch.object(NativePressureModel,'_write_initial_ownership',side_effect=AssertionError('Python ownership rewrite')):
+    with patch('emuflow.partition.build_partition_assignment', side_effect=AssertionError('Python initializer')):
         report=run_phase3(args[0].path,platform,tmp_path/'phase3-real-engine',provider='patron',
             min_used_fpgas=2,balance_tolerance=1.0,patron_max_moves=2,
             openroad=os.environ['EMUFLOW_TEST_OPENROAD'],tritonpart_timeout_seconds=120,

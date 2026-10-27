@@ -15,9 +15,10 @@ from emuflow.indexed_timing import IndexedTimingView
 from emuflow.io import file_sha256
 from emuflow.opensta import OPENSTA_PROVIDER, run_opensta_path_database
 from emuflow.sta import (STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming,
-                         iter_sta_path_database_paths, sta_object_index, validate_sta_path_database)
+                         iter_sta_path_database_paths, validate_sta_path_database)
 from emuflow.yosys import import_yosys_json
-from tests.sta_path_reference import import_sta_path_database_tsv_streaming as reference_import
+from tests.sta_path_reference import endpoint_facts
+from tests.sta_path_reference import path_facts
 
 ROOT = Path(__file__).parents[1]
 
@@ -32,7 +33,7 @@ def runtime(tmp_path, monkeypatch):
 def fixture(tmp_path):
     ir = import_yosys_json(ROOT/"examples/yosys/counter.json", top="counter", clocks=["clk"])
     path = tmp_path/"ir ?#%é.emuir.sqlite";ir.save(path)
-    objects = sorted(sta_object_index(ir))
+    objects = sorted(endpoint_facts(ir))
     nets = [n["id"] for n in ir.value["nets"]]
     records = []
     for i, slack in enumerate((1.5, -1e16, -1.0, -1e-16, 0.0, -2.3, 1e-30)):
@@ -54,17 +55,18 @@ def produce(measured, source, destination, view=None):
 
 def test_final_records_and_exact_reduction_match_independent_producer(tmp_path):
     ir, source, measured, _records = fixture(tmp_path)
-    old, new = tmp_path/"old.json", tmp_path/"new.json"
-    reference_import(measured, source, old, provider=OPENSTA_PROVIDER, _ir=ir)
+    new = tmp_path/"new.json"
+    expected = path_facts(measured, ir)
+    from emuflow import sta
+    assert not hasattr(sta, "_parse_sta_path_database_tsv_record")
+    assert not hasattr(sta, "sta_object_index")
     with closing(IndexedTimingView(source)) as view, \
-         patch("emuflow.sta._parse_sta_path_database_tsv_record", side_effect=AssertionError("Python path parser")), \
-         patch("emuflow.sta.sta_object_index", side_effect=AssertionError("Python object table")), \
          patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("Python graph")):
         result = produce(measured, source, new, view)
-    expected, actual = json.loads(old.read_text()), json.loads(new.read_text())
+    actual = json.loads(new.read_text())
     assert actual["normalization"] == expected["normalization"]
     assert actual["summary"] == expected["summary"]
-    assert list(iter_sta_path_database_paths(new, actual)) == list(iter_sta_path_database_paths(old, expected))
+    assert list(iter_sta_path_database_paths(new, actual)) == expected["paths"]
     assert result["implementation_id"] == "native-sta-path-import-v1"
     with patch("emuflow.sta.iter_sta_path_database_paths", side_effect=AssertionError("Python path validation")):
         checked = validate_sta_path_database(new, source)
@@ -92,15 +94,15 @@ def test_escaped_cell_and_bus_provider_spellings_match_reference_certificates(tm
                 endpoint["instance"] = renamed[endpoint["instance"]]
     ir.value["ports"].append({"id": "bus\\wire", "direction": "input", "width": 3})
     source = tmp_path/"escaped.emuir.sqlite";ir.save(source)
-    index = sta_object_index(ir)
+    index = endpoint_facts(ir)
     internal = next(name for name in sorted(index) if "/" in name and name == index[name]["object"])
     pairs = [(internal, "bus\\wire[2]"), (internal.replace("\\", "\\\\"), "bus\\wire__2".replace("\\", "\\\\"))]
     measured = tmp_path/"escaped.tsv"
     write(measured, [[f"{start}->{end}#{i:08d}".encode().hex(), b"clk".hex(), "10", "-0.5", "0", ir.value["nets"][0]["id"].encode().hex()] for i, (start, end) in enumerate(pairs)])
-    old, new = tmp_path/"old.json", tmp_path/"new.json"
-    reference_import(measured, source, old, provider=OPENSTA_PROVIDER, _ir=ir)
+    new = tmp_path/"new.json"
+    expected = path_facts(measured, ir)
     produce(measured, source, new)
-    assert list(iter_sta_path_database_paths(new, json.loads(new.read_text()))) == list(iter_sta_path_database_paths(old, json.loads(old.read_text())))
+    assert list(iter_sta_path_database_paths(new, json.loads(new.read_text()))) == expected["paths"]
 
 
 @pytest.mark.parametrize("damage", ["duplicate-id", "duplicate-net", "unknown-net", "empty-net", "bad-hex", "nonfinite", "period", "negative-delay", "empty", "crc", "truncated", "version", "generation"])
@@ -205,7 +207,7 @@ def test_unreached_wide_top_port_does_not_expand_for_internal_endpoint_queries(t
     from emuflow.tool_runtime import NativeToolProcess
 
     ir = import_yosys_json(ROOT/"examples/yosys/counter.json", top="counter", clocks=["clk"])
-    objects = sorted(name for name in sta_object_index(ir) if "/" in name)
+    objects = sorted(name for name in endpoint_facts(ir) if "/" in name)
     ir.value["ports"].append({"id": "unreached", "direction": "input", "width": 10000000})
     source = tmp_path/"wide.emuir.sqlite";ir.save(source)
     measured = tmp_path/"wide.tsv"

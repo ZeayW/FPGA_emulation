@@ -3,6 +3,7 @@ from tests.phase3_store_fixture import write_assignment_index_fixture
 
 from unittest.mock import patch
 import os
+import shutil
 
 import pytest
 
@@ -109,7 +110,7 @@ def test_exact_owner_is_borrowed_without_alias_or_copy(tmp_path,touch_metadata):
     with patch.object(owner,'bind_split_sources',side_effect=check), \
          patch.object(owner,'publish_sqlite_store',side_effect=commit), \
          patch.object(os,'link',side_effect=AssertionError('borrowed owner must not be linked')), \
-         patch.object(split.shutil,'copyfile',side_effect=AssertionError('borrowed owner must not be copied')):
+         patch.object(shutil,'copyfile',side_effect=AssertionError('borrowed owner must not be copied')):
         def produce():return split.write_split_netlists_sqlite(output,ir,assignment,schedule,
             expected_design=case.ir.value['design']['name'],expected_platform=case.platform.name)
         if touch_metadata:

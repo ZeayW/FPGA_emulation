@@ -14,7 +14,7 @@ from emuflow.opensta import OPENSTA_PROVIDER
 from emuflow.split_overlay import build_native_split
 from emuflow.transport_storage import write_transport_storage
 from emuflow.lowering import run_placement_ir_lowering_from_split
-from emuflow.split_netlist_storage import read_split_netlist_sqlite
+from tests.native_split_fixture import materialize_partition_fixture
 from tests.test_placement_lowering_native import synthesized_transport
 from tests.test_phase5_native_stage import current_case
 

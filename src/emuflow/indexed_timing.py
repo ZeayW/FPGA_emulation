@@ -120,6 +120,18 @@ class _Ids:
         return {key for key in values if key not in self}
 
 
+def _scalar_pin(port: str, bit: int, pins: set[tuple[str, int]]) -> str:
+    width = max(
+        (
+            candidate_bit + 1
+            for candidate_port, candidate_bit in pins
+            if candidate_port == port
+        ),
+        default=0,
+    )
+    return port if width <= 1 else f"{port}__{bit}"
+
+
 class _Objects:
     def __init__(self, view):
         self.view = view
@@ -139,7 +151,6 @@ class _Objects:
             return None
         inputs, outputs = self.view.pins_for(row[0])
         pins = inputs | outputs
-        from .sta import _scalar_pin
         for port, bit in pins:
             if scalar == _scalar_pin(port, bit, pins):
                 return {"object": name, "instance": owner, "port": port, "bit": bit}

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from typing import Any, Dict, List, Mapping, Sequence, Set, Tuple
+from typing import Any, Dict, Mapping, Set, Tuple
 
 from .errors import ValidationError
 from .platform import Platform
@@ -14,24 +14,11 @@ VIRTUAL_IO_ANCHORS_SCHEMA = "emuflow.virtual-io-anchors/v1"
 SPLIT_MANIFEST_SCHEMA = "emuflow.split-manifest/v1"
 
 
-def _endpoint_id(kind: str, schedule_entry_id: str) -> str:
-    return f"__emuflow_{kind}_{schedule_entry_id}"
-
-
 def _sv_name(value: str) -> str:
     name = re.sub(r"[^A-Za-z0-9_]", "_", value)
     if not name or name[0].isdigit():
         name = f"n_{name}"
     return name
-
-
-def schedule_routes(schedule: Mapping[str, Any]) -> Sequence[Mapping[str, Any]]:
-    routes = schedule.get("routes")
-    if isinstance(routes, list):
-        return routes
-    raise ValidationError(
-        "schedule.routes metadata is required for Phase 6 netlist splitting"
-    )
 
 
 def transport_endpoint_port(endpoint: Mapping[str, Any]) -> str:
@@ -217,99 +204,3 @@ def transport_to_systemverilog(
         ]
     )
     return "\n".join(lines)
-
-
-def anchors_to_xdc_template(anchors: Mapping[str, Any]) -> str:
-    lines = [
-        "# EmuFlow virtual IO anchors.",
-        "# This file is intentionally non-binding until a hardware BSP is selected.",
-        "# Replace placeholders through the hardware pin planner; do not source this",
-        "# template directly in Vivado.",
-        "",
-    ]
-    records = anchors["anchors"]
-    iter_headers = getattr(records, "iter_headers", None)
-    for anchor in iter_headers() if iter_headers is not None else records:
-        port = _sv_name(anchor["id"])
-        lines.extend(
-            [
-                f"# anchor={anchor['id']} peer={anchor['peer']} "
-                f"lane={anchor['logical_lane']} "
-                f"direction={anchor['direction']}",
-                f"# set_property PACKAGE_PIN <PACKAGE_PIN> "
-                f"[get_ports {{{port}}}]",
-                f"# set_property IOSTANDARD <IOSTANDARD> "
-                f"[get_ports {{{port}}}]",
-                "",
-            ]
-        )
-    return "\n".join(lines)
-
-
-def _build_virtual_anchors(
-    fpga_id: str,
-    platform: Platform,
-    endpoints: Sequence[Mapping[str, Any]],
-) -> Dict[str, Any]:
-    links = {link.id: link for link in platform.links}
-    grouped: Dict[Tuple[str, str, str, int], List[Mapping[str, Any]]] = (
-        defaultdict(list)
-    )
-    for endpoint in endpoints:
-        grouped[
-            (
-                endpoint["link"],
-                endpoint["peer"],
-                endpoint["kind"],
-                endpoint["lane"],
-            )
-        ].append(endpoint)
-    records = []
-    for (link, peer, kind, lane), items in sorted(grouped.items()):
-        board_link = links[link]
-        if board_link.mode == "serial":
-            required_fields = [
-                "package_pin_p",
-                "package_pin_n",
-                "connector",
-                "transceiver_site",
-            ]
-            physical_lane = lane // board_link.payload_bits_per_lane_per_cycle
-            bit_within_physical_lane = (
-                lane % board_link.payload_bits_per_lane_per_cycle
-            )
-        else:
-            required_fields = ["package_pin", "bank", "iostandard"]
-            physical_lane = lane
-            bit_within_physical_lane = 0
-        records.append(
-            {
-                "id": f"{link}:{fpga_id}:{kind}:{lane}",
-                "link": link,
-                "peer": peer,
-                "direction": kind,
-                "logical_lane": lane,
-                "physical_lane": physical_lane,
-                "bit_within_physical_lane": bit_within_physical_lane,
-                "endpoint_ids": sorted(item["id"] for item in items),
-                "slots": sorted(item["slot"] for item in items),
-                "placement_class": "virtual_link_io_region",
-                "binding_status": "unbound",
-                "required_hardware_binding_fields": required_fields,
-            }
-        )
-    required_fields = sorted(
-        {
-            field
-            for record in records
-            for field in record["required_hardware_binding_fields"]
-        }
-    )
-    return {
-        "schema": VIRTUAL_IO_ANCHORS_SCHEMA,
-        "platform": platform.name,
-        "fpga": fpga_id,
-        "part": next(fpga.part for fpga in platform.fpgas if fpga.id == fpga_id),
-        "anchors": records,
-        "required_hardware_binding_fields": required_fields,
-    }

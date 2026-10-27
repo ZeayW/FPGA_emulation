@@ -11,7 +11,7 @@ from emuflow.errors import ValidationError
 from emuflow.partition import (build_partition_assignment,
     validate_partition_artifacts_online, _cluster_assignment_summary)
 from tests.native_partition_kernel_driver import initialize
-from emuflow.phase3_pressure_native import build_native_pressure_model
+from tests.patron_kernel_fixture import pressure_kernel_inputs, write_pressure_requests, run_pressure_kernel
 from tests.phase3_decision_reference import _select_patron_timing_assignment
 from emuflow.phase3_decision_native import select_assignment, audit_assignment
 from emuflow.store_publication import bind_store_source
@@ -31,7 +31,7 @@ def decision(inputs, tmp_path):
     initial = build_partition_assignment(ir, platform, clusters, constraints,
         owners, 'tritonpart', 0, _include_semantic_contract=False,
         _stream_semantic_records=True, _defer_derived_records=True)
-    model = build_native_pressure_model(*args, timing_database_path=timing)
+    model = pressure_kernel_inputs(*args, timing_database_path=timing)
     candidate, trace = run(args, model, initial, max_moves=12)
     return args, initial, candidate, trace
 
@@ -57,7 +57,7 @@ def test_original_owner_pair_matches_reference_choice_and_independent_legality(d
 def test_native_decision_and_owned_reduction_never_serialize_or_compare_host_columns(decision):
     args, initial, candidate, _ = decision
     _, platform, clusters, *_ = args
-    from emuflow.phase3_pressure_native import _Writer
+    from emuflow.native_protocol import CheckedRequestWriter as _Writer
     from emuflow.partition import _PackedClusterAssignment
     original_bytes = _Writer.bytes
     def bounded_bytes(writer, data):
@@ -224,7 +224,7 @@ def test_original_nonlexical_part_coordinates_remain_a_borrowed_view(inputs, tmp
             _stream_semantic_records=True, _defer_derived_records=True)
     assert isinstance(initial['instance_assignment']._cluster_parts, _TranslatedPartColumn)
     args = (ir, platform, clusters, constraints, manifest, routes)
-    model = build_native_pressure_model(*args, timing_database_path=timing)
+    model = pressure_kernel_inputs(*args, timing_database_path=timing)
     candidate, trace = run(args, model, initial, max_moves=12)
     result = select_assignment(platform, clusters, initial, candidate)
     assert result['selection'] == _select_patron_timing_assignment(initial, candidate, trace)[1]

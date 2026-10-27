@@ -11,7 +11,14 @@ from emuflow.store_publication import (StoreSource,bind_store_source,bind_view_s
 from emuflow.split_netlist_storage import (DDL,SPLIT_NETLIST_APPLICATION_ID,
     PREVIOUS_SPLIT_NETLIST_USER_VERSION as SPLIT_NETLIST_USER_VERSION,
     PREVIOUS_SPLIT_NETLIST_STORAGE_SCHEMA as SPLIT_NETLIST_STORAGE_SCHEMA,
-    _binary_artifact_path,_stage_binary_artifact,_sqlite_uri,_source_metadata,_json,_schedule_incoming_rows,validate_split_netlists_sqlite)
+    _binary_artifact_path,_sqlite_uri,_json,read_compact_emuir_control_metadata,validate_split_netlists_sqlite)
+
+def _schedule_incoming_rows(schedule, parts):
+    if len(schedule['entries']) > 16384:
+        raise ValidationError('split relation fixture exceeds hop bound')
+    return [(net, parts[fpga], entry) for net, fpga, entry
+            in schedule.iter_incoming_records()]
+
 
 def write_split_netlists_sqlite(
     output_path: Path,
@@ -81,7 +88,8 @@ def write_split_netlists_sqlite(
         binary_binding = bind_store_source(source_binary, binary_schema)
         phase3_exact_binary_counts(source_binary, exact_binary)
         final_binary = _binary_artifact_path(output_path, exact_binary)
-        staged_binary = _stage_binary_artifact(source_binary, final_binary)
+        staged_binary = final_binary.with_name(".fixture-exact.bin")
+        shutil.copyfile(source_binary, staged_binary)
         linked_binary = staged_binary is not None and os.path.samefile(
             source_binary, staged_binary
         )
@@ -121,7 +129,7 @@ def write_split_netlists_sqlite(
             raise ValidationError(
                 "streaming Phase 6 requires compact EmuIR SQLite v2"
             )
-        source = _source_metadata(connection)
+        source = read_compact_emuir_control_metadata(ir_path)
         if source["design"].get("name") != expected_design:
             raise ValidationError("Phase 6 EmuIR design disagrees")
 
