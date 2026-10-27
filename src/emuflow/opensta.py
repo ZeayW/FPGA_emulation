@@ -269,6 +269,12 @@ def load_timing_model(path: Path) -> Dict[str, Any]:
             ):
                 raise ValidationError(f"{context}: invalid pin definition")
             _finite_nonnegative(raw_cell.get("delay_ns"), f"{context}.delay_ns")
+            functions = raw_cell.get('output_functions')
+            if functions is not None and (not isinstance(functions, dict) or set(functions) != set(outputs)
+                    or any(not isinstance(v, str) or not v or not re.fullmatch(r'[A-Za-z0-9_\[\] !~&|^*+()]+', v)
+                           or not set(re.findall(r'[A-Za-z_][A-Za-z0-9_]*(?:\[[0-9]+\])?', v)) <= set(inputs+controls)
+                           for v in functions.values())):
+                raise ValidationError(f'{context}: invalid per-output Boolean function')
             senses = raw_cell.get('timing_sense')
             if senses is not None and (not isinstance(senses, dict) or set(senses) != set(outputs) or any(
                 not isinstance(arcs, dict) or not set(arcs) <= set(inputs) or any(
@@ -418,6 +424,8 @@ def render_opensta_liberty(model: Mapping[str, Any]) -> str:
                         "      direction : output;",
                     ]
                 )
+                if 'output_functions' in cell:
+                    lines.append(f'      function : "{cell["output_functions"][output]}";')
                 for pin in cell["inputs"]:
                     senses = cell.get('timing_sense')
                     if senses is not None and pin not in senses[output]:
@@ -1384,6 +1392,7 @@ def _prepare_opensta_source_model(ir, timing_model_path, architecture_timing_db_
     if clock_budget_policy == 'engine-edge-v1':
         from .sta_clock_logic import specialize_clock_logic
         clock_logic = specialize_clock_logic(ir, model)
+        ir.enable_source_lut_functions(model)
         instance_cell_types = ir.timing_types()
     coverage = validate_timing_model_coverage(ir, model, instance_cell_types)
     return model, instance_cell_types, clock_logic, coverage

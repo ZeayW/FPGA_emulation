@@ -11,10 +11,18 @@ from .emuir_storage import open_emuir_sqlite_read_only
 from .errors import ValidationError
 
 
-def _timing_instances(connection, clock_logic=False):
+def _timing_type_projection(clock_logic=False, lut_functions=False):
+    joins = 'LEFT JOIN temp.timing_clock_cells t ON t.seq=c.seq' if clock_logic else ''
+    expression = 't.timing_type' if clock_logic else 'NULL'
+    if lut_functions:
+        joins += ' LEFT JOIN source_lut_models.variants l ON l.source_type=c.type AND l.parameters_seq=c.parameters_seq'
+        expression = f'coalesce({expression},l.timing_type)'
+    return joins, expression
+
+
+def _timing_instances(connection, clock_logic=False, lut_functions=False):
     """Do not decode resources, attributes or LUT/RAM INIT data for STA."""
-    join = 'LEFT JOIN temp.timing_clock_cells t ON t.seq=c.seq' if clock_logic else ''
-    timing_type = 't.timing_type' if clock_logic else 'NULL'
+    join, timing_type = _timing_type_projection(clock_logic, lut_functions)
     for row in connection.execute(f"""SELECT c.id,c.type,
         CASE WHEN c.type IN ('FDCE','FDPE','FDRE','FDSE') THEN p.value END AS parameters_json,
         {timing_type} AS timing_type,
@@ -135,8 +143,7 @@ class _TimingTypes(Mapping):
     def __getitem__(self, key):
         from .emuir_compact import _decode
         enabled = getattr(self.view, '_clock_logic_enabled', False)
-        timing_type = 't.timing_type' if enabled else 'NULL'
-        join = 'LEFT JOIN temp.timing_clock_cells t ON t.seq=c.seq' if enabled else ''
+        join, timing_type = _timing_type_projection(enabled, getattr(self.view, '_lut_functions_enabled', False))
         row = self.view.connection.execute(f"""SELECT c.type,p.value,{timing_type} FROM cell_records c
             LEFT JOIN payloads p ON p.seq=c.parameters_seq {join} WHERE c.id=?""", (key,)).fetchone()
         if row is None:
@@ -152,6 +159,32 @@ class _TimingTypes(Mapping):
 
 
 class IndexedTimingView:
+    def enable_source_lut_functions(self, model):
+        import json
+        import tempfile
+        from .sta_lut_functions import build_source_lut_catalog, add_lut_catalog_models
+        from .sqlite_artifacts import immutable_sqlite_uri
+        from .store_publication import bind_store_source, require_store_sources_unchanged
+        if getattr(self, '_lut_functions_enabled', False):
+            raise ValidationError('source LUT functions already enabled')
+        self._lut_scratch = tempfile.TemporaryDirectory(prefix='emuflow-source-lut-models-')
+        output = Path(self._lut_scratch.name)/'models.sqlite'
+        original = build_source_lut_catalog(self.source_path, output)
+        catalog = bind_store_source(output, 'source-lut-model-store-v1')
+        self._lut_bindings = (original, catalog)
+        self.connection.execute('ATTACH DATABASE ? AS source_lut_models', (immutable_sqlite_uri(output),))
+        header = self.connection.execute("SELECT value FROM source_lut_models.metadata WHERE key='header'").fetchone()
+        header = json.loads(header[0]) if header else {}
+        if (header.get('schema') != 'emuflow.source-lut-models/v1'
+                or header.get('source_path') != str(original.path)
+                or header.get('source_generation') != list(original.generation)):
+            raise ValidationError('source LUT catalog belongs to another original generation')
+        add_lut_catalog_models(self.connection, model)
+        require_store_sources_unchanged(self._lut_bindings)
+        self._lut_functions_enabled = True
+        self.value['instances'] = _Rows(self, 'cell_records', lambda c: _timing_instances(
+            c, getattr(self, '_clock_logic_enabled', False), True))
+
     def enable_clock_logic(self, model):
         if getattr(self, '_clock_logic_enabled', False):
             raise ValidationError('clock-cone projection already enabled')
@@ -201,6 +234,7 @@ class IndexedTimingView:
             WHERE seq=(SELECT seq FROM cell_records WHERE id=?)''', (timing_type, instance))
 
     def __init__(self, path: Path):
+        self.source_path = Path(path).resolve()
         self.connection = open_emuir_sqlite_read_only(path)
         try:
             if self.connection.execute("PRAGMA user_version").fetchone()[0] != 2:
@@ -224,7 +258,14 @@ class IndexedTimingView:
             raise
 
     def close(self):
-        self.connection.close()
+        try:
+            if hasattr(self, '_lut_bindings'):
+                from .store_publication import require_store_sources_unchanged
+                require_store_sources_unchanged(self._lut_bindings)
+        finally:
+            self.connection.close()
+            if hasattr(self, '_lut_scratch'):
+                self._lut_scratch.cleanup()
 
     def net_rows(self):
         count = 0

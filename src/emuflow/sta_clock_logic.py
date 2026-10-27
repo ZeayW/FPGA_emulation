@@ -54,6 +54,8 @@ def lut_clock_model(instance, base):
         senses[output] = arcs
     model = deepcopy(base)
     model['timing_sense'] = senses
+    from .sta_lut_functions import lut_output_functions
+    model['output_functions'] = lut_output_functions(cell_type, init)
     suffix = '' if not mask else '_CONST_' + format(mask, 'x') + '_' + format(value, 'x')
     return cell_type + '__CLOCK_INIT_' + format(init, 'x') + suffix, model
 

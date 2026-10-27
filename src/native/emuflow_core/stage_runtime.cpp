@@ -50,6 +50,8 @@ constexpr RegisteredSchema schemas[] = {
     {"source-net-map-tsv-v1", ArtifactEncoding::kText, 0, 1},
     {"mapped-normalization-request-v1", ArtifactEncoding::kBinary, 0x31514e4d464d5545ULL, 1},
     {"mapped-normalization-proof-v1", ArtifactEncoding::kText, 0, 1},
+    {"source-lut-model-store-v1", ArtifactEncoding::kSqlite, 0, 1, true,
+     "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'", "emuflow.source-lut-models/v1"},
     {"source-net-map-request-v1", ArtifactEncoding::kBinary, 0x31514d4e534d5545ULL, 1},
     {"sta-path-selector-v1", ArtifactEncoding::kText, 0, 1},
     {"net-weight-store-v1", ArtifactEncoding::kSqlite, 0, 1, true,
