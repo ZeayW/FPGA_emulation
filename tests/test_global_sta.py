@@ -59,6 +59,49 @@ def test_exports_raw_arc_chain_and_absolute_events(tmp_path):
     assert "get_property $p points" not in (tmp_path / "analyze.tcl").read_text()
 
 
+@pytest.mark.parametrize("indexed", [False, True])
+def test_capture_relative_events_preserve_slack_across_time_origins(tmp_path, indexed):
+    # A continuous TDM calendar is expressed around its DUT capture edge.
+    # Launch/TX events can occur before zero; their arc durations cannot.
+    original = example()
+    shifted = [EventCheck(r.path, r.role, r.event, r.launch_ns - 32.0,
+                          r.arcs_ns, r.required_ns - 32.0) for r in original]
+    if indexed:
+        builder = _EventCheckBuilder()
+        for row in shifted:
+            builder.append(row)
+        shifted = builder.finish()
+        # Exercise the indexed reader's validation as well as its builder.
+        shifted._validated = False
+    left, right = tmp_path / "original", tmp_path / "shifted"
+    export_event_checks(original, left)
+    export_event_checks(shifted, right)
+    for name in ("global_timing.v", "global_timing.lib", "global_timing.sdc", "analyze.tcl"):
+        assert (left / name).read_bytes() == (right / name).read_bytes()
+    measurements = right / "measurements.tsv"
+    measurements.write_text("endpoint\tarrival_ns\trequired_ns\tslack_ns\n" + "".join(
+        f"o{i}\t{sum(row.arcs_ns)}\t{row.required_ns-row.launch_ns}\t"
+        f"{row.required_ns-row.launch_ns-sum(row.arcs_ns)}\n"
+        for i, row in enumerate(original)))
+    values = read_measurements(measurements, shifted)
+    assert values[0]["arrival_ns"] == -29.0
+    assert values[0]["required_ns"] == -28.0
+    assert values[0]["slack_ns"] == 1.0
+    assert values[2]["arrival_ns"] == -.5
+    assert values[2]["required_ns"] == -14.0
+    assert values[2]["slack_ns"] == -13.5
+
+
+@pytest.mark.parametrize("indexed", [False, True])
+def test_signed_event_coordinates_do_not_allow_negative_physical_delays(indexed):
+    bad = EventCheck("p", "target", "capture", -10., (-.5,), 0.)
+    with pytest.raises(ValidationError, match="arc delay must be nonnegative"):
+        if indexed:
+            _EventCheckBuilder().append(bad)
+        else:
+            validate_checks([bad])
+
+
 def test_reject_incomplete_duplicate_and_nan():
     rows = example()
     for bad in (rows[:-2]+rows[-1:], rows+rows[:1],
@@ -1352,17 +1395,27 @@ def test_indexed_timing_stream_delegates_path_order_to_route_store(tmp_path):
 
 
 @pytest.mark.skipif(not os.environ.get("EMUFLOW_TEST_OPENSTA"), reason="real OpenSTA not configured")
-def test_real_opensta_fixed_events_and_late_tx(tmp_path):
-    rows = example()
-    measurements = run_event_checks(rows, tmp_path, os.environ["EMUFLOW_TEST_OPENSTA"])
+@pytest.mark.parametrize("origin_shift", [0., -32., -1000.125])
+@pytest.mark.parametrize("indexed", [False, True])
+def test_real_opensta_fixed_events_and_late_tx(tmp_path, origin_shift, indexed):
+    rows = [EventCheck(r.path, r.role, r.event, r.launch_ns + origin_shift,
+                       r.arcs_ns, r.required_ns + origin_shift) for r in example()]
+    def selected_checks(values):
+        if not indexed:
+            return values
+        builder = _EventCheckBuilder()
+        for row in values:
+            builder.append(row)
+        return builder.finish()
+    measurements = run_event_checks(selected_checks(rows), tmp_path, os.environ["EMUFLOW_TEST_OPENSTA"])
     for row, check in zip(measurements, rows):
         arrival = check.launch_ns + sum(check.arcs_ns)
         assert row["arrival_ns"] == pytest.approx(arrival, abs=1e-3)
         assert row["required_ns"] == pytest.approx(check.required_ns, abs=1e-3)
         assert row["slack_ns"] == pytest.approx(check.required_ns-arrival, abs=1e-3)
     late = rows.copy()
-    late[0] = EventCheck("p", "tx", "first", 0, (4.5,), 4)
-    result = run_event_checks(late, tmp_path / "late", os.environ["EMUFLOW_TEST_OPENSTA"])
+    late[0] = EventCheck("p", "tx", "first", origin_shift, (4.5,), 4 + origin_shift)
+    result = run_event_checks(selected_checks(late), tmp_path / "late", os.environ["EMUFLOW_TEST_OPENSTA"])
     assert result[0]["slack_ns"] == pytest.approx(-.5, abs=1e-3)
     assert result[3]["slack_ns"] > 0
 

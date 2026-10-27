@@ -36,6 +36,9 @@ from .timing_disposition import (OPTIMIZED_AWAY, PATH_POPULATION_POLICY,
 
 @dataclass(frozen=True)
 class EventCheck:
+    # Absolute event coordinates may precede the chosen time origin. Only
+    # physical arc durations must be nonnegative; the exporter translates
+    # each independent check to its launch before passing it to OpenSTA.
     path: str
     role: str
     event: str
@@ -899,17 +902,13 @@ class _IndexedEventChecks(Sequence[EventCheck]):
             or not math.isfinite(required)
         ):
             raise ValidationError("global STA times must be finite numbers")
-        if launch < 0:
-            raise ValidationError(
-                "global STA launch/arc delay must be nonnegative"
-            )
         for offset in range(begin, end):
             value = self._arcs[offset]
             if not math.isfinite(value):
                 raise ValidationError("global STA times must be finite numbers")
             if value < 0:
                 raise ValidationError(
-                    "global STA launch/arc delay must be nonnegative"
+                    "global STA arc delay must be nonnegative"
                 )
 
     def _physical_chain_equal(self, left: int, right: int) -> bool:
@@ -1211,9 +1210,9 @@ class _EventCheckBuilder:
         for value in (launch_ns, required_ns, *arcs_ns):
             if isinstance(value, bool) or not math.isfinite(value):
                 raise ValidationError("global STA times must be finite numbers")
-        if launch_ns < 0 or any(value < 0 for value in arcs_ns):
+        if any(value < 0 for value in arcs_ns):
             raise ValidationError(
-                "global STA launch/arc delay must be nonnegative"
+                "global STA arc delay must be nonnegative"
             )
         role_index = _EVENT_CHECK_ROLE_INDEX[role]
         if path != self._current_path:
@@ -1343,8 +1342,8 @@ def _validate_check_values(row: EventCheck) -> None:
     for value in (row.launch_ns, row.required_ns, *row.arcs_ns):
         if isinstance(value, bool) or not math.isfinite(value):
             raise ValidationError("global STA times must be finite numbers")
-    if row.launch_ns < 0 or any(x < 0 for x in row.arcs_ns):
-        raise ValidationError("global STA launch/arc delay must be nonnegative")
+    if any(x < 0 for x in row.arcs_ns):
+        raise ValidationError("global STA arc delay must be nonnegative")
 
 
 def _validate_indexed_checks(rows: _IndexedEventChecks) -> None:
