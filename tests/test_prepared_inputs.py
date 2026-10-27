@@ -184,3 +184,86 @@ def test_native_published_phase2_checks_clocks_and_counts_without_standalone_rep
     with pytest.raises(ValidationError, match="clock constraints mismatch"):
         bind_prepared_inputs(front, timing, tmp_path / "invalid/front", tmp_path / "invalid/timing",
                              DEFAULT_PLATFORM_PATH, {"clk": 20.0}, PROFILE)
+
+
+@pytest.fixture
+def clock_boundaries(tmp_path,boundaries):
+    """Use the actual v4 importer, including full/half-cycle clock rows."""
+    import sqlite3
+    from tests.test_sta_clock_budgets import prepare
+    from emuflow.sta import sta_path_database_payload_path
+    front,timing=boundaries
+    _source,manifest,value=prepare(tmp_path/'clock-source')
+    # Keep the importer-owned payload and expose it through the normal
+    # continuation layout; no fake v4 clock records are manufactured.
+    payload=sta_path_database_payload_path(manifest,value)
+    (timing/payload.name).symlink_to(payload)
+    write_json(timing/'path-database.json',value)
+    weights=read_json(timing/'partition-net-weights.json')
+    weights.update(design='counter',summary=dict(weighted_nets=1))
+    weight_payload=timing/weights['payloads']['weights']['path'];weight_payload.unlink()
+    with closing(sqlite3.connect(weight_payload))as db,db:
+        db.executescript("PRAGMA user_version=1; CREATE TABLE net_weights(net_id TEXT); INSERT INTO net_weights VALUES('n0')")
+    write_json(timing/'partition-net-weights.json',weights)
+    return front,timing,payload,value
+
+
+def test_v4_continuation_keeps_half_cycle_rows_and_never_replays_source(clock_boundaries,tmp_path):
+    import sqlite3
+    front,timing,payload,value=clock_boundaries
+    with patch('emuflow.ir.EmuIR.load',side_effect=AssertionError('whole graph load')):
+        bind_prepared_inputs(front,timing,tmp_path/'continued/front',tmp_path/'continued/timing',
+                             DEFAULT_PLATFORM_PATH,{'clk':10.},PROFILE)
+        checked=validate_prepared_timing_boundary(front,timing,{'clk':10.})
+    assert checked['publication_validation']=='sqlite-version-clocks-budget-coverage-v2'
+    retained=tmp_path/'continued/timing'/payload.name
+    assert retained.is_symlink() and retained.resolve()==payload.resolve()
+    with closing(sqlite3.connect(retained))as db:
+        assert db.execute('SELECT launch_edge_ns,capture_edge_ns,target_cycle_time_ns FROM clock_budgets '
+                          'ORDER BY path_ordinal').fetchall()==[(0.,5.,5.),(5.,0.,10.),(0.,0.,10.)]
+
+
+def test_v4_mainline_continuation_reaches_v15_partition_without_rerunning_phase1_or_phase2(clock_boundaries,tmp_path):
+    front,timing,_payload,_value=clock_boundaries
+    architecture=tmp_path/'architecture.json'
+    write_json(architecture,dict(schema='emuflow.xilinx-preplacement-timing-db/v1'))
+    class ReachedPartition(Exception):
+        pass
+    context=object()
+    with patch('emuflow.multi_fpga_flow.run_phase3',side_effect=ReachedPartition) as phase3, \
+         patch('emuflow.opensta_source_context.emit_opensta_source_context',return_value=context), \
+         patch('emuflow.multi_fpga_flow.run_phase1',side_effect=AssertionError('repeated synthesis')), \
+         patch('emuflow.multi_fpga_flow.run_opensta_path_database',side_effect=AssertionError('repeated Phase2')), \
+         patch('emuflow.multi_fpga_flow.resolve_native_executable',return_value='/usr/bin/true'), \
+         patch('emuflow.multi_fpga_flow.check_opensta_engine_version'):
+        with pytest.raises(ReachedPartition):
+            run_multi_fpga_flow(output_dir=tmp_path/'continued',prepared_frontend=front,prepared_timing=timing,
+                                clock_periods={'clk':10.},patron_algorithm_version=15,
+                                architecture_timing_db=architecture)
+    assert phase3.call_args.kwargs['patron_algorithm_version']==15
+    assert phase3.call_args.kwargs['patron_source_context'] is context
+    assert read_json(tmp_path/'continued/timing/path-database.json')['schema']=='emuflow.sta-path-database/v4'
+
+
+@pytest.mark.parametrize('damage',['missing','extra','source-clock','source-period','nonfinite','absolute-check',
+                                  'schema-format','storage-version','summary-count'])
+def test_passing_standalone_report_cannot_hide_broken_v4_budgets(clock_boundaries,tmp_path,damage):
+    import sqlite3
+    front,timing,payload,value=clock_boundaries
+    with closing(sqlite3.connect(payload))as db,db:
+        if damage=='missing':db.execute('DELETE FROM clock_budgets WHERE path_ordinal=1')
+        elif damage=='extra':db.execute('UPDATE clock_budgets SET path_ordinal=99 WHERE path_ordinal=1')
+        elif damage=='source-clock':db.execute("UPDATE clock_budgets SET source_clock='unknown' WHERE path_ordinal=1")
+        elif damage=='source-period':db.execute('UPDATE clock_budgets SET source_period_ns=20 WHERE path_ordinal=1')
+        elif damage=='nonfinite':db.execute('UPDATE clock_budgets SET check_margin_ns=? WHERE path_ordinal=1',(float('inf'),))
+        elif damage=='absolute-check':db.execute('UPDATE clock_budgets SET path_delay=1 WHERE path_ordinal=1')
+        elif damage=='storage-version':db.execute('PRAGMA user_version=1')
+    if damage=='schema-format':value['payloads']['paths']['format']='sqlite-sta-path/v1'
+    elif damage=='summary-count':value['summary']['clock_budget_paths']=2
+    write_json(timing/'path-database.json',value)
+    for operation in [lambda:bind_prepared_inputs(front,timing,tmp_path/'bad/front',tmp_path/'bad/timing',
+                                                DEFAULT_PLATFORM_PATH,{'clk':10.},PROFILE),
+                      lambda:validate_prepared_timing_boundary(front,timing,{'clk':10.})]:
+        with pytest.raises(ValidationError,match='budget|version|payload'):
+            operation()
+    assert not(tmp_path/'bad/front').exists()

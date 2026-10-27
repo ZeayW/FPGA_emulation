@@ -3,12 +3,48 @@
 from contextlib import closing
 from pathlib import Path
 import sqlite3
+import math
 from typing import Mapping
 
 from .errors import ValidationError
 from .io import read_json, write_json
 from .platform import BOARDDB_SCHEMA, Platform
 from .split_netlist_storage import read_compact_emuir_control_metadata
+from .sta_clock_budgets import SCHEMA as CLOCK_SCHEMA, FORMAT as CLOCK_FORMAT, FIELDS
+
+
+_INDEXED_SCHEMAS = {'emuflow.sta-path-database/v3', CLOCK_SCHEMA}
+
+
+def _check_clock_budget_rows(connection, records, clocks):
+    """SQLite checks the complete relation; no Python path graph is loaded."""
+    columns = tuple(row[1] for row in connection.execute('PRAGMA table_info(clock_budgets)'))
+    if columns != ('path_ordinal', *FIELDS):
+        raise ValidationError('prepared clock budget columns mismatch')
+    if connection.execute('SELECT count(*) FROM clock_budgets').fetchone()[0] != records:
+        raise ValidationError('prepared clock budget row count mismatch')
+    missing = connection.execute('SELECT 1 FROM paths p LEFT JOIN clock_budgets b '
+        'ON b.path_ordinal=p.ordinal WHERE b.path_ordinal IS NULL LIMIT 1').fetchone()
+    extra = connection.execute('SELECT 1 FROM clock_budgets b LEFT JOIN paths p '
+        'ON p.ordinal=b.path_ordinal WHERE p.ordinal IS NULL LIMIT 1').fetchone()
+    if missing or extra:
+        raise ValidationError('prepared clock budget path coverage mismatch')
+    finite = ' AND '.join("typeof("+name+") IN ('real','integer') AND abs("+name+")<=1.7976931348623157e308"
+                          for name in FIELDS[1:-3])
+    valid = finite + (" AND typeof(source_clock)='text' AND length(source_clock)>0 AND source_clock!='NULL'"
+        " AND typeof(path_ordinal)='integer' AND source_period_ns>0"
+        " AND target_cycle_time_ns+multicycle_adjustment_ns-launch_edge_ns>0"
+        " AND typeof(output_delay)='integer' AND output_delay IN (0,1)"
+        " AND typeof(path_delay)='integer' AND path_delay=0"
+        " AND typeof(latch_check)='integer' AND latch_check=0")
+    if connection.execute('SELECT 1 FROM clock_budgets WHERE NOT coalesce(('+valid+'),0) LIMIT 1').fetchone():
+        raise ValidationError('prepared clock budget facts are invalid')
+    # There can be many paths, but only the bounded declared clock catalog.
+    rows = connection.execute('SELECT source_clock,source_period_ns FROM clock_budgets '
+                              'GROUP BY source_clock,source_period_ns LIMIT 65').fetchall()
+    if len(rows)>64 or any(name not in clocks or not math.isclose(period,clocks[name],rel_tol=1e-6,abs_tol=1e-9)
+                          for name,period in rows):
+        raise ValidationError('prepared source clock budget constraints mismatch')
 
 
 def _prepared_device_parts(platform_path: Path):
@@ -41,24 +77,32 @@ def _published_timing_report(timing, database, weights, clock_periods):
     """Validate atomically published native flow payloads without rerunning STA."""
     if weights.get("schema") != "emuflow.partition-net-weights/v2" or weights.get("design") != database.get("design"):
         raise ValidationError("prepared indexed timing/weight identity mismatch")
+    clock_aware = database.get('schema') == CLOCK_SCHEMA
     payloads = []
-    for value, key, fmt in ((database, "paths", "sqlite-sta-path/v1"),
+    for value, key, fmt in ((database, "paths", CLOCK_FORMAT if clock_aware else "sqlite-sta-path/v1"),
                             (weights, "weights", "sqlite-net-weights/v1")):
         descriptor = value.get("payloads", {}).get(key, {})
         name = descriptor.get("path")
         if (not isinstance(name, str) or Path(name).name != name
             or descriptor.get("format") != fmt
-            or not isinstance(descriptor.get("records"), int)
+            or type(descriptor.get("records")) is not int
             or descriptor["records"] <= 0 or not (timing / name).is_file()):
             raise ValidationError("prepared published timing payload is invalid or missing")
         payloads.append((timing / name, descriptor["records"]))
     try:
         with closing(sqlite3.connect(f"file:{payloads[0][0]}?mode=ro", uri=True)) as connection, connection:
-            if connection.execute("PRAGMA user_version").fetchone()[0] != 1:
+            if connection.execute("PRAGMA user_version").fetchone()[0] != (2 if clock_aware else 1):
                 raise ValidationError("prepared timing SQLite version mismatch")
             rows = list(connection.execute(
                 "SELECT clock_domain,clock_period_ns,COUNT(*) FROM paths "
-                "GROUP BY clock_domain,clock_period_ns"))
+                "GROUP BY clock_domain,clock_period_ns LIMIT 65"))
+            if len(rows)>64:
+                raise ValidationError('prepared target clock catalog exceeds bound')
+            if clock_aware:
+                count = database.get('summary',{}).get('clock_budget_paths')
+                if type(count) is not int or count != payloads[0][1]:
+                    raise ValidationError('prepared clock budget publication count mismatch')
+                _check_clock_budget_rows(connection,payloads[0][1],clock_periods)
         observed = {name: float(period) for name, period, _count in rows}
         if len(rows) != len(observed) or observed != dict(clock_periods):
             raise ValidationError("prepared Phase 2 clock constraints mismatch")
@@ -76,7 +120,8 @@ def _published_timing_report(timing, database, weights, clock_periods):
             "sta": {"engine": database.get("source", {}).get("engine"),
                     "paths": payloads[0][1]},
             "weights": {"weighted_nets": count},
-            "publication_validation": "sqlite-version-clocks-row-counts-v1"}
+            "publication_validation": ('sqlite-version-clocks-budget-coverage-v2' if clock_aware
+                                       else 'sqlite-version-clocks-row-counts-v1')}
 
 
 def validate_prepared_timing_boundary(frontend, timing, clock_periods):
@@ -99,7 +144,7 @@ def validate_prepared_timing_boundary(frontend, timing, clock_periods):
     database = read_json(timing / "path-database.json")
     weights = read_json(timing / "partition-net-weights.json")
     if (
-        database.get("schema") != "emuflow.sta-path-database/v3"
+        database.get("schema") not in _INDEXED_SCHEMAS
         or database.get("design") != design
         or weights.get("schema") != "emuflow.partition-net-weights/v2"
         or weights.get("design") != design
@@ -144,7 +189,7 @@ def bind_prepared_inputs(frontend, timing, phase1_out, timing_out, platform_path
     }:
         raise ValidationError("prepared Phase 1 device part differs from the selected platform")
     database = read_json(timing / "path-database.json")
-    if database.get("schema") != "emuflow.sta-path-database/v3" or database.get("design") != report["design"]:
+    if database.get("schema") not in _INDEXED_SCHEMAS or database.get("design") != report["design"]:
         raise ValidationError("prepared Phase 2 must be the indexed database for this design")
     weights = read_json(timing / "partition-net-weights.json")
     timing_report_path = timing / "experiment-timing-report.json"
@@ -162,6 +207,9 @@ def bind_prepared_inputs(frontend, timing, phase1_out, timing_out, platform_path
         raise ValidationError(
             "prepared Phase 2 publication or clock constraints mismatch"
         )
+    if database.get('schema') == CLOCK_SCHEMA:
+        # A standalone report cannot bypass the new per-path clock relation.
+        timing_report = {**timing_report, **_published_timing_report(timing,database,weights,clock_periods)}
     phase1_out.mkdir(parents=True, exist_ok=True)
     timing_out.mkdir(parents=True, exist_ok=True)
     (phase1_out / "design.emuir.sqlite").symlink_to(source_ir)
