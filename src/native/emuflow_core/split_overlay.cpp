@@ -99,7 +99,9 @@ StageResult AuditSplitOverlay(const ArtifactRef& split,const std::string& output
     auto summary=ValidateSplitOverlay(split);PublishTextArtifact(output,refs,[&](std::ostream& out){out<<summary<<'\n';});
   },[&]{return std::vector<ArtifactRef>{ArtifactRef::Bind(output,"split-validation-v1")};});
 }
-StageResult BuildSplitOverlay(const std::vector<ArtifactRef>& original,const std::string& output){
+StageResult BuildSplitOverlay(const std::vector<ArtifactRef>& original,const std::string& output,
+                              std::string* validated_summary){
+  if(validated_summary)validated_summary->clear();
   std::vector<ArtifactRef> inputs;std::string descriptor;
   return RunStage("phase6.split",[&]{
     Check(original.size()==3 && original[0].schema()=="emuir-compact-v2" && original[1].schema()=="assignment-index-v4" && original[2].schema()=="tdm-schedule-store-v4","source role/schema disagrees");inputs=original;
@@ -130,6 +132,7 @@ StageResult BuildSplitOverlay(const std::vector<ArtifactRef>& original,const std
     metadata["validation"]=Summary(db);
     {auto q=db.Prepare("INSERT INTO main.metadata VALUES ('validation',?)");q.BindText(1,metadata["validation"]);q.Execute();}
     RequireSources(refs);writer.Commit();
+    if(validated_summary)*validated_summary=metadata.at("validation");
   },[&]{return std::vector<ArtifactRef>{ArtifactRef::Bind(output,"split-netlists-v3")};});
 }
 }

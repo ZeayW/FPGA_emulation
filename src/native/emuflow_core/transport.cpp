@@ -431,12 +431,15 @@ StageResult RunPhase6(const std::vector<ArtifactRef>& original,const std::string
     const auto result=BuildTransportArtifacts({original[1],original[2],
         ArtifactRef::Bind(configuration.string(),"transport-stage-request-v1")},root.string());
     if(!result.ok())throw StageError(result.error,result.stage+": "+result.message);
-    const auto split=BuildSplitOverlay({original[0],original[1],original[2]},(root/"split-netlists.sqlite").string());
+    std::string split_validation;
+    const auto split=BuildSplitOverlay({original[0],original[1],original[2]},
+        (root/"split-netlists.sqlite").string(),&split_validation);
     if(!split.ok())throw StageError(split.error,split.stage+": "+split.message);
-    const auto split_ref=ArtifactRef::Bind((root/"split-netlists.sqlite").string(),"split-netlists-v3");
-    // Recompute from original circuit/assignment/schedule relations; do not
-    // treat the producer's report as independent validation.
-    auto validation=Fields(ValidateSplitOverlay(split_ref));
+    // The nested producer has just recomputed coverage from the original
+    // circuit/assignment/schedule and committed with those generations bound.
+    // Reuse that result inside this invocation instead of running the same
+    // full endpoint aggregate again. Explicit artifact audit remains separate.
+    auto validation=Fields(split_validation);
     auto summary=Fields(Canonical(Read(root/"transport-summary.json")));
     const auto order=Values(Get(summary,"fpga_order"));
     summary.erase("fpga_order");summary.erase("status");summary.erase("implementation_id");
@@ -611,6 +614,7 @@ StageResult RunPhase6(const std::vector<ArtifactRef>& original,const std::string
     // Readers/mappings close before retirement on both success and failure.
     // They borrow only original stores, which outlive the stage workspace.
     if(cancelled && *cancelled)throw StageError(ErrorCode::kExecutionFailed,"Phase 6 stage cancelled before publication");
+    for(const auto& artifact:split.outputs)artifact.RequireUnchanged();
     PublishNewDirectory(root.string(),destination.string(),bound);
     generation.root.clear();
   },[&]{return std::vector<ArtifactRef>{
