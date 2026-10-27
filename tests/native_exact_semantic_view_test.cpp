@@ -11,6 +11,9 @@ int main(int argc,char** argv) {
                            ArtifactRef::Bind(argv[2],"exact-semantic-binary-v2"));
     if (argc==4 && std::string(argv[3])=="mutate") { std::ofstream changed(argv[2],std::ios::app|std::ios::binary);changed.put('\0'); }
     view.RequireUnchanged();
+    std::vector<ExactCaptureEndpoint> captures;
+    const bool summary=argc==4 && std::string(argv[3])=="summary";
+    view.VisitCaptures([&](const auto& capture){if(!summary)captures.push_back(capture);});
     if (argc==4 && std::string(argv[3])=="summary") {
       std::uint64_t fanins=0;
       for (std::uint32_t cut=0;cut<view.cut_count();++cut) {
@@ -34,6 +37,13 @@ int main(int argc,char** argv) {
     }
     std::cout<<"],\"source_parts\":[";
     for (std::uint32_t cut=0;cut<view.cut_count();++cut) { if(cut)std::cout<<",";std::cout<<view.SourcePart(cut); }
+    std::cout<<"],\"captures\":[";
+    for(std::size_t i=0;i<captures.size();++i) {
+      if(i)std::cout<<",";const auto& c=captures[i];std::string bit;
+      for(auto byte:c.bit) {bit+="0123456789abcdef"[byte>>4];bit+="0123456789abcdef"[byte&15];}
+      std::cout<<"["<<c.capture<<","<<c.segment<<","<<c.cut<<","<<c.part<<","<<unsigned(c.kind)
+          <<","<<JsonQuote(c.endpoint)<<","<<JsonQuote(c.port)<<","<<JsonQuote(bit)<<"]";
+    }
     std::cout<<"],\"semantic_sha256\":"<<JsonQuote(view.semantic_sha256())<<"}\n";
     return 0;
   } catch(const std::exception& error) { std::cerr<<error.what()<<"\n";return 1; }

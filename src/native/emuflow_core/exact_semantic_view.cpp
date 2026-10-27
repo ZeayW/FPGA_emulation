@@ -41,15 +41,22 @@ class SectionReader {
   SectionReader(const std::string& path,const Section& section)
       : input_(path),remaining_(section.bytes),expected_(section.sha256) { input_.Seek(section.offset); }
   template<class T> T Read() { T result{};Bytes(&result,sizeof result);return result; }
-  std::string Text() {
+  std::string Text(bool allow_nul=false) {
     const auto bytes=Read<std::uint32_t>();
     Check(bytes && bytes<=remaining_,"semantic net string is truncated");
     std::string result(bytes,'\0');Bytes(result.data(),bytes);
-    Check(result.find('\0')==std::string::npos,"semantic net contains NUL");
+    Check(allow_nul || result.find('\0')==std::string::npos,"semantic net contains NUL");
     JsonQuote(result); // Common strict UTF-8 validation, preserving the spelling.
     return result;
   }
   void Finish() { Check(!remaining_ && Hex(hash_)==expected_,"semantic section checksum or extent differs"); }
+  std::vector<std::uint8_t> CaptureBit() {
+    const auto bytes=Read<std::uint32_t>();
+    Check(bytes && bytes<=1024 && bytes<=remaining_,"semantic capture bit extent is invalid");
+    std::vector<std::uint8_t> result(bytes);Bytes(result.data(),bytes);
+    Check(bytes==1 || result.front()!=0,"semantic capture bit is not canonical");
+    return result;
+  }
  private:
   void Bytes(void* output,std::uint64_t bytes) {
     Check(bytes<=remaining_,"semantic section is truncated");
@@ -148,6 +155,7 @@ ExactSemanticView::ExactSemanticView(const ArtifactRef& assignment,const Artifac
   Check(!cut_rows.Step(),"assignment contains extra semantic cuts");nets.Finish();
   Check(segment_count<=semantic.generation().bytes/14,"semantic segment allocation exceeds source extent");
   segments_.resize(segment_count);std::vector<bool> seen(segment_count,false);
+  capture_segments_.assign(counts.at("capture_requirements"),UINT32_MAX);
   std::uint64_t observed=0,capture_segments=0,launches=0,captures=0;
   for (std::size_t part=0;part<parts_.size();++part) {
     const auto& section=sections.at("segments:"+std::to_string(part));
@@ -161,9 +169,15 @@ ExactSemanticView::ExactSemanticView(const ArtifactRef& assignment,const Artifac
             (kind==2 && from<cuts && to<counts.at("capture_requirements")),"semantic segment coordinates are invalid");
       Check(kind==2 || source_parts_[to]==part,"semantic segment source FPGA differs");
       seen[id]=true;segments_[id]={from,to,static_cast<std::uint32_t>(part),kind,flags!=0};
+      if(kind==2) {
+        Check(capture_segments_[to]==UINT32_MAX,"semantic capture has more than one segment");
+        capture_segments_[to]=id;
+      }
       ++observed;if(kind==2)++capture_segments;if(kind==0)++launches;
     }
-    input.Finish();captures+=sections.at("captures:"+std::to_string(part)).records;
+    input.Finish();const auto& capture_section=sections.at("captures:"+std::to_string(part));
+    captures+=capture_section.records;
+    capture_sections_.push_back({capture_section.offset,capture_section.bytes,capture_section.records,capture_section.sha256});
   }
   Check(observed==segment_count && capture_segments==counts.at("capture_requirements") && captures==capture_segments &&
         observed-capture_segments==counts.at("source_segments") && observed-launches==counts.at("consumer_segments"),
@@ -192,6 +206,30 @@ std::uint32_t ExactSemanticView::SourcePart(std::uint32_t cut) const {
 ExactSourceRange ExactSemanticView::Sources(std::uint32_t cut) const {
   Check(cut<source_parts_.size(),"semantic cut coordinate is unknown");
   return {source_ids_.data()+offsets_[cut],source_ids_.data()+offsets_[cut+1]};
+}
+void ExactSemanticView::VisitCaptures(const std::function<void(const ExactCaptureEndpoint&)>& visitor) const {
+  RequireUnchanged();std::uint64_t observed=0;
+  for(std::uint32_t part=0;part<capture_sections_.size();++part) {
+    const auto& section=capture_sections_[part];
+    SectionReader input(semantic_.path(),{section.offset,section.bytes,section.records,section.sha256});
+    std::uint32_t previous=0;
+    for(std::uint64_t row=0;row<section.records;++row) {
+      const auto id=input.Read<std::uint32_t>(),cut=input.Read<std::uint32_t>();
+      const auto kind=input.Read<std::uint8_t>();
+      Check(id<capture_segments_.size() && cut<cut_count() && kind<=1 && (!row || id>previous),
+            "semantic capture identity or order is invalid");
+      const auto segment=capture_segments_[id];
+      Check(segment<segments_.size() && segments_[segment].kind==2 && segments_[segment].target==id &&
+            segments_[segment].source==cut && segments_[segment].part==part,
+            "semantic capture endpoint differs from its segment");
+      ExactCaptureEndpoint capture{id,segment,cut,part,kind,input.Text(true),{}, {}};
+      if(kind) {capture.port=input.Text(true);capture.bit=input.CaptureBit();}
+      visitor(capture);previous=id;++observed;
+    }
+    input.Finish();
+  }
+  Check(observed==capture_segments_.size(),"semantic capture endpoint coverage is incomplete");
+  RequireUnchanged();
 }
 void ExactSemanticView::RequireUnchanged() const { assignment_.RequireUnchanged();semantic_.RequireUnchanged(); }
 }  // namespace emuflow::core

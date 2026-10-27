@@ -1,6 +1,7 @@
 #pragma once
 #include "emuflow_core/store.hpp"
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 namespace emuflow::core {
@@ -17,6 +18,14 @@ struct ExactSourceRange {
   const std::uint32_t* begin() const { return first; }
   const std::uint32_t* end() const { return last; }
 };
+struct ExactCaptureEndpoint {
+  std::uint32_t capture,segment,cut,part;
+  // top-output=0, architectural-state=1. Architectural bits retain their
+  // canonical big-endian encoding, including the format's 8192-bit domain.
+  std::uint8_t kind;
+  std::string endpoint,port;
+  std::vector<std::uint8_t> bit;
+};
 
 // One native consumer of the published v4 index and its v2 semantic sidecar.
 // Required sections are checked during their single visit. No logical JSON
@@ -29,6 +38,10 @@ class ExactSemanticView {
   const std::vector<ExactLogicCoordinate>& segments() const { return segments_; }
   std::uint32_t SourcePart(std::uint32_t cut) const;
   ExactSourceRange Sources(std::uint32_t cut) const;
+  // Stream every semantic capture, including endpoints absent from the
+  // selected original path library. Each record must own exactly one capture
+  // segment in this partition. The callback's record is invocation-scoped.
+  void VisitCaptures(const std::function<void(const ExactCaptureEndpoint&)>& visitor) const;
   const std::string& semantic_sha256() const { return semantic_sha256_; }
   void RequireUnchanged() const;
  private:
@@ -38,5 +51,8 @@ class ExactSemanticView {
   std::vector<std::uint32_t> source_parts_, source_ids_;
   std::vector<std::uint64_t> offsets_;
   std::vector<ExactLogicCoordinate> segments_;
+  struct CaptureSection { std::uint64_t offset,bytes,records;std::string sha256; };
+  std::vector<CaptureSection> capture_sections_;
+  std::vector<std::uint32_t> capture_segments_;
 };
 }  // namespace emuflow::core

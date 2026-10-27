@@ -57,6 +57,16 @@ def test_native_fanins_match_independent_logical_reconstruction(source,tmp_path,
     if mode=='transitions':assert {row[3]for row in segments}=={0,1,2}
     assert actual['sources']==[[int(identity[7:])for identity in node['source_segment_ids']]for node in contract['cut_nodes']]
     assert actual['source_parts']==[row[2]for row in cuts]
+    capture_segments={segment['capture_requirement']:int(segment['id'][7:])
+                      for segment in contract['logic_segments']if segment['kind']=='rx_to_capture'}
+    captures=[]
+    for capture in contract['capture_requirements']:
+        state=capture['kind']=='architectural-state'
+        bit=capture.get('bit',0)
+        captures.append([int(capture['id'][7:]),capture_segments[capture['id']],net_ids[capture['cut_net']],
+                         parts.index(capture['fpga']),int(state),capture['endpoint'],capture.get('port',''),
+                         bit.to_bytes(max(1,(bit.bit_length()+7)//8),'big').hex()if state else ''])
+    assert actual['captures']==sorted(captures,key=lambda row:(row[3],row[0]))
     assert actual['semantic_sha256']==descriptor['semantic_contract_sha256']
 
 
@@ -118,6 +128,95 @@ def rewrite(path,binary,descriptor,manifest,payload):
     descriptor={**descriptor,'bytes':len(data),'manifest_sha256':hashlib.sha256(encoded).hexdigest()}
     with closing(sqlite3.connect(path))as db, db:
         db.execute("UPDATE metadata SET value=? WHERE key='semantic_contract_binary'",(json.dumps(descriptor),))
+
+
+def test_all_capture_endpoints_stream_without_a_selected_path_library(source,tmp_path):
+    from tests.test_phase3_exact_binary import _contract
+    from emuflow.phase3_exact_binary import write_phase3_exact_binary
+    path,binary,_descriptor,_old_contract,_cuts=prepare(source,tmp_path)
+    contract=_contract('all_capture_endpoints');count=5000
+    contract.update(cut_nodes=[],logic_segments=[],capture_requirements=[],dependency_edges=[])
+    for cut in range(2):
+        contract['cut_nodes'].append(dict(net=f'net{cut}',cut_class='combinational',source_fpgas=[('a','b')[cut]],
+            sink_fpgas=[('a','b')[1-cut]],dependency_level=0,combinational_dependency_depth=0,
+            predecessor_cut_nets=[],source_segment_ids=[f'segment{cut:06d}'],capture_segment_ids=[]))
+        contract['logic_segments'].append(dict(id=f'segment{cut:06d}',kind='launch_to_tx',fpga=('a','b')[cut],sink_cut_net=f'net{cut}'))
+    expected=[]
+    for i in range(count):
+        cut=i%2;part=1-cut;state=i%3!=0;segment=f'segment{i+2:06d}';capture=f'capture{i:06d}'
+        endpoint=f'state\\雪/hier\x00{i}/D'if state else f'top:output[{i}]'
+        row=dict(id=capture,cut_net=f'net{cut}',fpga=('a','b')[part],kind='architectural-state'if state else'top-output',endpoint=endpoint)
+        bit=[0,256,1<<64,1<<8191][i%4]
+        if state:row.update(port='D\t雪',bit=bit)
+        contract['capture_requirements'].append(row)
+        contract['logic_segments'].append(dict(id=segment,kind='rx_to_capture',fpga=row['fpga'],source_cut_net=f'net{cut}',capture_requirement=capture))
+        contract['cut_nodes'][cut]['capture_segment_ids'].append(segment)
+        expected.append([i,i+2,cut,part,int(state),endpoint,row.get('port',''),
+                         bit.to_bytes(max(1,(bit.bit_length()+7)//8),'big').hex()if state else''])
+    contract['metrics']=dict(transported_cut_nets=2,logic_segments=count+2,capture_requirements=count,dependency_edges=0)
+    descriptor=write_phase3_exact_binary(binary,contract,['a','b'])
+    with closing(sqlite3.connect(path))as db,db:
+        db.execute('DELETE FROM cut_predecessors');db.execute('DELETE FROM cut_sinks');db.execute('DELETE FROM cuts')
+        db.executemany('INSERT INTO cuts VALUES(?,?,?,?,?,?,?,?)',[(i,f'net{i}',i,'combinational',1,None,0,0)for i in range(2)])
+        db.executemany('UPDATE metadata SET value=? WHERE key=?',[(json.dumps(value),key)for key,value in dict(
+            cut_records=2,semantic_contract_binary=descriptor,semantic_contract_sha256=descriptor['semantic_contract_sha256']).items()])
+    result=subprocess.run([str(exact_semantic_view_test()),str(path),str(binary)],capture_output=True,text=True)
+    assert result.returncode==0,result.stderr
+    assert json.loads(result.stdout)['captures']==sorted(expected,key=lambda row:(row[3],row[0]))
+
+
+@pytest.mark.parametrize('damage',['checksum','unknown-id','wrong-cut','wrong-kind','zero-bit-length','oversized-bit','missing-endpoint-binding'])
+def test_capture_sections_are_checked_against_the_complete_segment_population(source,tmp_path,damage):
+    path,binary,descriptor,contract,_cuts=prepare(source,tmp_path,'transitions')
+    if damage=='missing-endpoint-binding':
+        from emuflow.phase3_exact_binary import write_phase3_exact_binary
+        capture=dict(contract['capture_requirements'][0]);capture['id']=f"capture{len(contract['capture_requirements']):06d}"
+        capture['endpoint']+='__additional';segment=f"segment{len(contract['logic_segments']):06d}"
+        contract['capture_requirements'].append(capture)
+        contract['logic_segments'].append(dict(id=segment,kind='rx_to_capture',fpga=capture['fpga'],
+                                              source_cut_net=capture['cut_net'],capture_requirement=capture['id']))
+        next(n for n in contract['cut_nodes']if n['net']==capture['cut_net'])['capture_segment_ids'].append(segment)
+        contract['metrics']['logic_segments']+=1;contract['metrics']['capture_requirements']+=1
+        with closing(sqlite3.connect(path))as db:
+            parts=[row[0]for row in db.execute('SELECT fpga FROM parts ORDER BY part_index')]
+        descriptor=write_phase3_exact_binary(binary,contract,parts)
+        with closing(sqlite3.connect(path))as db,db:
+            db.executemany('UPDATE metadata SET value=? WHERE key=?',[(json.dumps(value),key)for key,value in dict(
+                semantic_contract_binary=descriptor,semantic_contract_sha256=descriptor['semantic_contract_sha256']).items()])
+    data=binary.read_bytes();_magic,_version,offset,length=struct.unpack_from('<8sIQQ',data)
+    manifest=json.loads(data[offset:offset+length]);payload=bytearray(data[:offset])
+    records=[]
+    for name,section in manifest['sections'].items():
+        if not name.startswith('captures:'):continue
+        position=section['offset']
+        for _ in range(section['records']):
+            record=position;kind=payload[position+8];position+=9
+            position+=4+struct.unpack_from('<I',payload,position)[0]
+            bit_position=None
+            if kind:
+                position+=4+struct.unpack_from('<I',payload,position)[0]
+                bit_position=position;position+=4+struct.unpack_from('<I',payload,position)[0]
+            records.append((section,record,bit_position))
+    section,position,bit_position=next(row for row in records if row[2]is not None)if damage in {'zero-bit-length','oversized-bit'}else records[0]
+    if damage=='checksum':payload[position+9+4]^=1
+    elif damage=='unknown-id':struct.pack_into('<I',payload,position,2**32-1)
+    elif damage=='wrong-cut':struct.pack_into('<I',payload,position+4,2**32-1)
+    elif damage=='wrong-kind':payload[position+8]=2
+    elif damage=='missing-endpoint-binding':
+        # Keep record totals and every checksum valid while making one ID own
+        # two capture segments and another none. Count-only checking misses it.
+        segments=[s for n,s in manifest['sections'].items()if n.startswith('segments:')]
+        captures=[(s,p)for s in segments for p in range(s['offset'],s['offset']+s['bytes'],14)if payload[p+4]==2]
+        assert len(captures)>=2
+        target=struct.unpack_from('<I',payload,captures[0][1]+10)[0]
+        owner,record=captures[1];struct.pack_into('<I',payload,record+10,target)
+        owner['sha256']=hashlib.sha256(payload[owner['offset']:owner['offset']+owner['bytes']]).hexdigest()
+    else:
+        struct.pack_into('<I',payload,bit_position,0 if damage=='zero-bit-length'else 1025)
+    if damage!='checksum':section['sha256']=hashlib.sha256(payload[section['offset']:section['offset']+section['bytes']]).hexdigest()
+    rewrite(path,binary,descriptor,manifest,payload)
+    result=subprocess.run([str(exact_semantic_view_test()),str(path),str(binary)],capture_output=True,text=True)
+    assert result.returncode!=0 and not result.stdout and result.stderr
 
 
 @pytest.mark.parametrize('damage',['magic','truncated','checksum','manifest-seal','overlap','extra-section',
