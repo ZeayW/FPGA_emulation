@@ -17,14 +17,15 @@ from tests.test_native_schedule_generation import install_runtime
 
 def current_case(tmp_path, affine=False, repeated=False):
     from emuflow.io import read_json
-    from emuflow.system_route_storage import read_system_routes, write_system_route_storage
+    from emuflow.system_route_storage import read_system_routes
+    from tests.native_route_seal_fixture import write_route_store_fixture
 
     case, legacy = _case(tmp_path, affine, repeated)
     contract = legacy["semantic_contract"]
     value = read_json(tmp_path / "routes.json")
     value.pop("semantic_contract", None)
     path = tmp_path / "current/routes.json"
-    write_system_route_storage(path, value)
+    write_route_store_fixture(path, value)
     persisted = read_system_routes(path)
     # Phase 3 semantic ownership is an in-memory bounded overlay, not another
     # persisted copy in the RouteStore. Keep the original reader generation.

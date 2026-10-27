@@ -24,13 +24,8 @@ from emuflow.routing import (
 )
 from tests.routing_reference import exact_route_tree_selection
 from emuflow.timing_routing import (GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, load_sta_paths, normalize_sta_paths, reconstruct_system_route_timing, validate_native_system_routes)
-from emuflow.system_route_storage import (
-    SYSTEM_ROUTE_STORAGE_SCHEMA,
-    SYSTEM_ROUTE_USER_VERSION,
-    SystemRoutesView,
-    read_system_routes,
-    write_system_route_storage,
-)
+from emuflow.system_route_storage import SYSTEM_ROUTE_STORAGE_SCHEMA, SYSTEM_ROUTE_USER_VERSION, SystemRoutesView, read_system_routes
+from tests.native_route_seal_fixture import write_route_store_fixture
 from emuflow.yosys import import_yosys_json
 from tests.native_build import emuflow_native, tlr_router
 
@@ -166,12 +161,17 @@ def _assignment(platform, cuts):
 
 class Phase4Test(unittest.TestCase):
 
+    def test_route_store_has_no_python_production_publisher(self) -> None:
+        from emuflow import system_route_storage
+        self.assertFalse(hasattr(system_route_storage, 'write_system_route_storage'))
+        self.assertFalse(hasattr(system_route_storage, '_typed_route_scalar_values'))
+
     def test_route_store_v1_remains_readable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             selector_path = root / "routes.json"
             logical = _storage_routes(0)
-            manifest = write_system_route_storage(selector_path, logical)
+            manifest = write_route_store_fixture(selector_path, logical)
             store_path = root / manifest["artifact"]
             _downgrade_route_relation_to_v2(store_path)
             legacy_header = {
@@ -218,7 +218,7 @@ class Phase4Test(unittest.TestCase):
             root = Path(temporary_directory)
             selector_path = root / "routes.json"
             logical = _storage_routes(0)
-            manifest = write_system_route_storage(selector_path, logical)
+            manifest = write_route_store_fixture(selector_path, logical)
             store_path = root / manifest["artifact"]
             _downgrade_route_relation_to_v2(store_path)
             store_sha256 = file_sha256(store_path)
@@ -261,7 +261,7 @@ class Phase4Test(unittest.TestCase):
                     "predecessor_cut_nets": [],
                 }
             )
-            manifest = write_system_route_storage(selector_path, logical)
+            manifest = write_route_store_fixture(selector_path, logical)
             self.assertEqual(manifest["user_version"], SYSTEM_ROUTE_USER_VERSION)
             with closing(sqlite3.connect(root / manifest["artifact"])) as connection, connection:
                 columns = tuple(
@@ -276,22 +276,12 @@ class Phase4Test(unittest.TestCase):
             self.assertEqual(row, (1, 2, "register_output", 0, 0, 3, 4.5))
             self.assertEqual(read_json(selector_path), logical)
 
-    def test_route_store_v3_rejects_untyped_route_scalars(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            logical = _storage_routes(0)
-            logical["routes"][0]["future_payload"] = {"large": True}
-            with self.assertRaisesRegex(
-                ValidationError, "unsupported scalar fields"
-            ):
-                write_system_route_storage(
-                    Path(temporary_directory) / "routes.json", logical
-                )
 
     def test_route_store_v3_rejects_schema_extensions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             selector_path = root / "routes.json"
-            manifest = write_system_route_storage(
+            manifest = write_route_store_fixture(
                 selector_path, _storage_routes(0)
             )
             store_path = root / manifest["artifact"]
@@ -314,120 +304,12 @@ class Phase4Test(unittest.TestCase):
             ):
                 read_system_routes(selector_path)
 
-    def test_route_store_selector_failure_preserves_previous_generation(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            selector_path = root / "routes.json"
-            first = write_system_route_storage(
-                selector_path, _storage_routes(0)
-            )
-            old_selector = selector_path.read_bytes()
-            old_artifact = root / first["artifact"]
-            old_store = old_artifact.read_bytes()
-
-            with mock.patch(
-                "emuflow.system_route_storage.write_json",
-                side_effect=OSError("injected selector failure"),
-            ):
-                with self.assertRaisesRegex(OSError, "injected selector"):
-                    write_system_route_storage(
-                        selector_path, _storage_routes(1)
-                    )
-
-            self.assertEqual(selector_path.read_bytes(), old_selector)
-            self.assertEqual(old_artifact.read_bytes(), old_store)
-            self.assertEqual(
-                sorted(path.name for path in root.glob("routes.*.sqlite")),
-                [old_artifact.name],
-            )
-            self.assertEqual(
-                read_system_routes(selector_path)["generation"], 0
-            )
-
-    def test_route_store_post_publish_failure_restores_previous_generation(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            selector_path = root / "routes.json"
-            first = write_system_route_storage(
-                selector_path, _storage_routes(0)
-            )
-            old_selector = selector_path.read_bytes()
-            old_artifact = root / first["artifact"]
-            original_view = SystemRoutesView
-            calls = 0
-
-            def injected_view(path):
-                nonlocal calls
-                calls += 1
-                if calls == 2:
-                    raise ValidationError("injected published-view failure")
-                return original_view(path)
-
-            with mock.patch(
-                "emuflow.system_route_storage.SystemRoutesView",
-                side_effect=injected_view,
-            ):
-                with self.assertRaisesRegex(
-                    ValidationError, "injected published-view"
-                ):
-                    write_system_route_storage(
-                        selector_path, _storage_routes(1)
-                    )
-
-            self.assertEqual(selector_path.read_bytes(), old_selector)
-            self.assertTrue(old_artifact.is_file())
-            self.assertEqual(
-                sorted(path.name for path in root.glob("routes.*.sqlite")),
-                [old_artifact.name],
-            )
-            self.assertEqual(
-                read_system_routes(selector_path)["generation"], 0
-            )
-
-    def test_route_store_reclaims_only_validated_obsolete_generations(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            selector_path = root / "routes.json"
-            first = write_system_route_storage(
-                selector_path, _storage_routes(0)
-            )
-            first_path = root / first["artifact"]
-
-            second = write_system_route_storage(
-                selector_path, _storage_routes(1)
-            )
-            second_path = root / second["artifact"]
-            self.assertNotEqual(first_path, second_path)
-            self.assertFalse(first_path.exists())
-            self.assertTrue(second_path.is_file())
-
-            repeated = write_system_route_storage(
-                selector_path, _storage_routes(1)
-            )
-            self.assertEqual(repeated["artifact"], second["artifact"])
-            self.assertTrue(second_path.is_file())
-
-            third = write_system_route_storage(
-                selector_path, _storage_routes(2)
-            )
-            third_path = root / third["artifact"]
-            self.assertFalse(second_path.exists())
-            self.assertTrue(third_path.is_file())
-            self.assertEqual(
-                sorted(path.name for path in root.glob("routes.*.sqlite")),
-                [third_path.name],
-            )
-            self.assertEqual(
-                read_system_routes(selector_path)["generation"], 2
-            )
 
     def test_route_store_rejects_renamed_content_addressed_sidecar(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             selector_path = root / "routes.json"
-            manifest = write_system_route_storage(
+            manifest = write_route_store_fixture(
                 selector_path, _storage_routes(0)
             )
             original = root / manifest["artifact"]
@@ -442,11 +324,11 @@ class Phase4Test(unittest.TestCase):
             ):
                 read_system_routes(selector_path)
 
-    def test_route_store_rewrite_rejects_previous_artifact_escape(self) -> None:
+    def test_route_store_reader_rejects_artifact_escape(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             selector_path = root / "routes.json"
-            manifest = write_system_route_storage(
+            manifest = write_route_store_fixture(
                 selector_path, _storage_routes(0)
             )
             victim = root.parent / "route-store-victim.sqlite"
@@ -457,11 +339,9 @@ class Phase4Test(unittest.TestCase):
             old_selector = selector_path.read_bytes()
             try:
                 with self.assertRaisesRegex(
-                    ValidationError, "previous.*path is invalid"
+                    ValidationError, "store path is invalid"
                 ):
-                    write_system_route_storage(
-                        selector_path, _storage_routes(1)
-                    )
+                    read_system_routes(selector_path)
                 self.assertEqual(selector_path.read_bytes(), old_selector)
                 self.assertEqual(victim.read_bytes(), b"keep")
             finally:
@@ -495,9 +375,6 @@ class Phase4Test(unittest.TestCase):
         self.assertEqual(checked["status"], "pass")
         self.assertEqual(checked["demands"], 0)
         self.assertEqual(checked["total_link_bit_hops"], 0)
-
-
-
 
 
     def test_path_compression_keeps_distinct_required_times(self) -> None:

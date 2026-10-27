@@ -26,7 +26,8 @@ from tests.system_timing_oracle import (
     _fixed_slot_transport_path_delay,
     build_system_timing,
 )
-from emuflow.system_route_storage import read_system_routes, write_system_route_storage
+from emuflow.system_route_storage import read_system_routes
+from tests.native_route_seal_fixture import write_route_store_fixture
 from emuflow.tdm import validate_tdm_schedule
 from tests.tdm_timing_oracle import timing_summary as reconstruct_tdm_schedule_timing
 from tests.schedule_reference import build_tdm_schedule
@@ -260,7 +261,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             write_tdm_schedule_storage(path, schedule)
             indexed = read_tdm_schedule(path)
             route_path = Path(temporary) / "routes.json"
-            write_system_route_storage(route_path, routes)
+            write_route_store_fixture(route_path, routes)
             indexed_routes = read_system_routes(route_path)
             with mock.patch.object(
                 ScheduleRecordSequence,
@@ -306,7 +307,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             route_path = root / "routes.json"
-            write_system_route_storage(route_path, routes)
+            write_route_store_fixture(route_path, routes)
             routes = read_system_routes(route_path)
             for index, (candidate, message) in enumerate(cases):
                 path = root / f"schedule-{index}.json"
@@ -338,7 +339,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             schedule_path = root / "schedule.json"
             value = dict(routes)
             contract = value.pop("semantic_contract")
-            write_system_route_storage(routes_path, value)
+            write_route_store_fixture(routes_path, value)
             indexed_routes = read_system_routes(routes_path)
             indexed_routes["semantic_contract"] = contract
             platform_path.write_text(
@@ -454,7 +455,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             route_path = root / "routes.json"
-            write_system_route_storage(route_path, routes)
+            write_route_store_fixture(route_path, routes)
             routes = read_system_routes(route_path)
             for index, (candidate, error) in enumerate(candidates):
                 path = root / f"schedule-{index}.json"

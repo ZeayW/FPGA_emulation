@@ -18,14 +18,15 @@ from tests.native_build import emuflow_native
 
 def test_unified_typed_route_producer_selects_native_store(tmp_path,monkeypatch):
     from tests.test_combinational_cut import StaticExactCombinationalCutPartitionTest
-    from emuflow.system_route_storage import write_system_route_storage,read_system_routes
+    from emuflow.system_route_storage import read_system_routes
+    from tests.native_route_seal_fixture import write_route_store_fixture
     from tests.schedule_reference import build_tdm_schedule
     case=StaticExactCombinationalCutPartitionTest();case.setUp()
     _,assignment=case._exact_artifacts(dependent_return=True)
     routes=case._exact_routes(assignment)
     routes["semantic_contract"]={**routes["semantic_contract"],"indexed":True}
     reference=build_tdm_schedule(routes,case.platform)
-    route_path=tmp_path/"routes.json";write_system_route_storage(route_path,routes)
+    route_path=tmp_path/"routes.json";write_route_store_fixture(route_path,routes)
     native_bin = tmp_path/"install"/"bin"
     native_bin.mkdir(parents=True)
     (native_bin/"emuflow-native").symlink_to(emuflow_native())
@@ -35,7 +36,7 @@ def test_unified_typed_route_producer_selects_native_store(tmp_path,monkeypatch)
     from emuflow.phase5 import run_phase5, validate_phase5
     from tests.test_combinational_cut import PLATFORM_PATH
     persisted = case._persisted_routes(case._exact_routes(assignment))
-    write_system_route_storage(route_path,persisted)
+    write_route_store_fixture(route_path,persisted)
     assignment_path=tmp_path/"assignment.json"
     assignment_path.write_text(json.dumps(assignment),encoding="utf-8")
     output=tmp_path/"phase5"

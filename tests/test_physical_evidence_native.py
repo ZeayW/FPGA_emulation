@@ -13,6 +13,7 @@ import pytest
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import read_json, write_json
 from tests.test_physical_store_publication import producer
+from tests.logic_identity_fixture import identity_facts
 
 KINDS=('boundary_identity','boundary_timing','logic_segment_timing','local_path_timing','logic_segment_identity')
 
@@ -54,7 +55,7 @@ def test_reader_uses_native_full_record_hash_and_validation(tmp_path,kind):
     poison_names={'boundary_identity':['_iter_records','_normalize_record'],
                   'boundary_timing':['_record_from_row','_normalize_record'],
                   'logic_segment_timing':['_segment_from_row','_validate_segment'],
-                  'logic_segment_identity':['segment_from_row','_validate_segment'],
+                  'logic_segment_identity':['segment_from_row'],
                   'local_path_timing':['_iter_records','_normalize_record']}[kind]
     with ExitStack() as stack:
         for name in poison_names:stack.enter_context(patch.object(m,name,side_effect=AssertionError('Python full-record validation')))
@@ -159,7 +160,7 @@ def test_utf8_control_strings_and_fractional_numbers_keep_original_logical_hash(
     elif kind=='logic_segment_identity':
         with producer(kind,tmp_path/'source.json') as original:header=dict(original.selector['header'])
         records=[{'id':'片段-😀\t\"','kind':'capture','system_path':'系统路径','member_path':'原始成员','cut_index':0,'fpga':'fpga0','replace_tx_endpoint':None,'start_pin':'start','end_pin':'end'}]
-        with m.write_logic_segment_identity_storage(tmp_path/'owner.json',header=header,segments=records) as v:
+        with identity_facts(tmp_path/'owner.json',header=header,segments=records) as v:
             digest=v.selector['logical_sha256']
     else:
         header={'schema':m.LOGIC_SEGMENT_TIMING_SCHEMA,'status':'pass','design':'设计','platform':'板卡','fpga':'fpga0',
@@ -198,7 +199,7 @@ def test_native_empty_store_counts_hash_and_summary(tmp_path,kind):
     with producer(kind,tmp_path/'original.json') as v:
         header=dict(v.selector['header'])
     if kind=='local_path_timing':header['coverage']={'local_paths':0}
-    m=module(kind);writer=getattr(m,'write_'+kind+'_storage');path=tmp_path/'empty.json'
+    m=module(kind);writer=identity_facts if kind=='logic_segment_identity' else getattr(m,'write_'+kind+'_storage');path=tmp_path/'empty.json'
     if kind.startswith('logic_'):
         owner=writer(path,header=header,segments=[])
     else:owner=writer(path,header,[])
@@ -209,7 +210,7 @@ def test_native_empty_store_counts_hash_and_summary(tmp_path,kind):
         if hasattr(view,'validate_timing'):assert view.validate_timing()['maximum_delay_ns']==0
 
 
-@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("kind", [kind for kind in KINDS if kind != "logic_segment_identity"])
 def test_publication_reuses_producer_validation_without_reader_replay(tmp_path,kind):
     m=module(kind)
     names={"boundary_identity":"BoundaryIdentityView","boundary_timing":"BoundaryTimingView",

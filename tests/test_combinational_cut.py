@@ -1,3 +1,4 @@
+from tests.phase3_exact_fixture import write_exact_fixture
 from tests.phase3_store_fixture import assignment_selector_fixture, cluster_document_fixture, write_assignment_index_fixture
 from tests.native_split_fixture import NativeSplitFixture
 from tests.native_route_fixture import route_system_native
@@ -65,10 +66,7 @@ from emuflow.phase3_exact_records import (
     read_native_static_exact_cut_node_stream,
     read_native_static_exact_capture_stream,
 )
-from emuflow.phase3_exact_binary import (
-    validate_phase3_exact_binary,
-    write_phase3_exact_binary,
-)
+from emuflow.phase3_exact_binary import (validate_phase3_exact_binary)
 from emuflow.phase3_storage import (PACKED_ASSIGNMENT_SCHEMA, read_phase3_assignment_view)
 from emuflow.routing import (
     build_directed_graph,
@@ -88,11 +86,8 @@ from tests.schedule_reference import (
 )
 from emuflow.tdm_schedule_storage import (read_tdm_schedule)
 from emuflow.transport_storage import write_transport_storage
-from emuflow.system_route_storage import (
-    SystemRoutesView,
-    read_system_routes,
-    write_system_route_storage,
-)
+from emuflow.system_route_storage import SystemRoutesView, read_system_routes
+from tests.native_route_seal_fixture import write_route_store_fixture
 from tests.native_build import emuflow_native, static_exact_analyzer, tlr_router
 
 
@@ -1511,10 +1506,10 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 root = Path(temporary)
                 expected_path = root / "expected.bin"
                 streamed_path = root / "streamed.bin"
-                expected_descriptor = write_phase3_exact_binary(
+                expected_descriptor = write_exact_fixture(
                     expected_path, expected, ["fpga0", "fpga1"]
                 )
-                streamed_descriptor = write_phase3_exact_binary(
+                streamed_descriptor = write_exact_fixture(
                     streamed_path,
                     streamed,
                     ["fpga0", "fpga1"],
@@ -1669,8 +1664,8 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 self.assertEqual([path.name for path in capture_path.parent.iterdir()], ["captures.bin"])
                 self.assertEqual(list(streamed["capture_requirements"]), expected["capture_requirements"])
                 expected_bin, actual_bin = Path(temporary) / "expected.bin", Path(temporary) / "actual.bin"
-                write_phase3_exact_binary(expected_bin, expected, ["fpga0", "fpga1"])
-                write_phase3_exact_binary(actual_bin, streamed, ["fpga0", "fpga1"])
+                write_exact_fixture(expected_bin, expected, ["fpga0", "fpga1"])
+                write_exact_fixture(actual_bin, streamed, ["fpga0", "fpga1"])
                 self.assertEqual(expected_bin.read_bytes(), actual_bin.read_bytes())
 
         self.assertEqual(actual, expected)
@@ -2828,19 +2823,16 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     with self.subTest(version=version, reader=reader), self.assertRaisesRegex(ValidationError, "unsupported Phase 3 assignment index"):
                         reader()
 
-    def test_indexed_assignment_publish_reuses_owned_exact_digest(self):
+    def test_indexed_assignment_binary_retains_owned_exact_digest(self):
         _, assignment = self._exact_artifacts(dependent_return=True)
-        with tempfile.TemporaryDirectory() as temporary_directory, patch(
-            "emuflow.phase3_exact_binary.semantic_contract_sha256",
-            side_effect=AssertionError(
-                "production publication must not rehash the resident contract"
-            ),
-        ):
-            write_assignment_index_fixture(
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            summary = write_assignment_index_fixture(
                 Path(temporary_directory) / "assignment.sqlite",
                 self.ir,
                 assignment,
             )
+            self.assertEqual(summary["semantic_contract_sha256"], assignment["semantic_contract_sha256"])
+            self.assertEqual(summary["semantic_binary"]["semantic_contract_sha256"], assignment["semantic_contract_sha256"])
 
     def _exact_artifacts(
         self, frame_slots=16, dependent_return=False, dependency_depth=1
@@ -3040,7 +3032,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 route_path = root / "routes.json"
                 value = dict(candidate)
                 contract = value.pop("semantic_contract")
-                write_system_route_storage(route_path, value)
+                write_route_store_fixture(route_path, value)
                 native_routes = read_system_routes(route_path)
                 native_routes["semantic_contract"] = contract
                 request = build_native_exact_schedule_request(native_routes, self.platform)
@@ -3088,7 +3080,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         compare(repeated)
         with tempfile.TemporaryDirectory() as temporary:
             route_path = Path(temporary) / "routes.json"
-            write_system_route_storage(route_path, repeated)
+            write_route_store_fixture(route_path, repeated)
             indexed_routes = read_system_routes(route_path)
             self.assertIsInstance(indexed_routes, SystemRoutesView)
             self.assertEqual(list.__len__(indexed_routes["routes"]), 0)
@@ -4262,8 +4254,8 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             routes_path = root / "routes.json"
             assignment_path = root / "assignment.json"
             output = root / "phase5"
-            from emuflow.system_route_storage import write_system_route_storage
-            write_system_route_storage(routes_path, routes)
+            from tests.native_route_seal_fixture import write_route_store_fixture
+            write_route_store_fixture(routes_path, routes)
             assignment_path.write_text(
                 json.dumps(assignment), encoding="utf-8"
             )

@@ -2,21 +2,18 @@
 
 The public ``*.json`` path is a small atomic selector.  The graph-sized
 segment population lives in one immutable, content-addressed SQLite
-generation.  Readers keep a shared owner lease while cursors are live;
-writers publish the selector last while holding the exclusive lease.
+generation, produced by the native physical-query owner. Readers keep a
+shared owner lease while cursors are live.
 """
 
 from __future__ import annotations
 
 from contextlib import closing
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 import fcntl
-import hashlib
-import json
 import os
 from pathlib import Path
 import sqlite3
-import tempfile
 from typing import Any, Optional
 import weakref
 
@@ -24,10 +21,7 @@ from .errors import ValidationError
 from .store_publication import (
     StoreSource,
     bind_store_source,
-    commit_store_selector,
-    publish_sqlite_store,
     require_store_sources_unchanged,
-    validate_store_destination,
 )
 from .io import file_sha256, read_json
 
@@ -51,41 +45,11 @@ _SOURCE_KEYS = {
 _COUNT_KEYS = {
     "segments", "system_paths", "member_paths", "unsupported_member_paths",
 }
-_SEGMENT_REQUIRED = {
-    "id", "kind", "system_path", "member_path", "cut_index", "fpga",
-    "replace_tx_endpoint", "start_pin", "end_pin",
-}
-_SEGMENT_OPTIONAL = {
-    "static_exact_segment_id", "start_object_kind", "end_object_kind",
-    "cone_anchor_object_kind", "cone_anchor_pin",
-}
 _SELECTOR_KEYS = {
     "schema", "logical_schema", "application_id", "user_version", "header",
     "counts", "source", "logical_sha256", "artifact", "store_bytes",
     "store_sha256",
 }
-
-_DDL = (Path(__file__).parent / "data/schema/logic_segment_identity.sql").read_text()
-
-
-
-
-
-
-
-
-
-
-def _canonical(value: Any) -> str:
-    try:
-        return json.dumps(
-            value, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
-            allow_nan=False,
-        )
-    except (TypeError, ValueError) as error:
-        raise ValidationError(
-            "logic segment identity value is not canonical"
-        ) from error
 
 
 def _valid_digest(value: Any) -> bool:
@@ -98,14 +62,6 @@ def _valid_digest(value: Any) -> bool:
 
 def _strict_nonnegative_int(value: Any) -> bool:
     return not isinstance(value, bool) and isinstance(value, int) and value >= 0
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def _owner_prefix(path: Path) -> str:
@@ -136,11 +92,6 @@ class _Lease:
             self.closed = True
             raise
 
-    def downgrade_shared(self) -> None:
-        if self.closed:
-            raise ValidationError("logic segment identity lease is closed")
-        fcntl.flock(self.descriptor, fcntl.LOCK_SH)
-
     def close(self) -> None:
         if self.closed:
             return
@@ -151,9 +102,7 @@ class _Lease:
             os.close(self.descriptor)
 
 
-def _validate_header(
-    raw: Mapping[str, Any], *, require_exact_coverage: bool = True
-) -> dict[str, Any]:
+def _validate_header(raw: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, Mapping) or set(raw) - _HEADER_REQUIRED - _HEADER_OPTIONAL:
         raise ValidationError("logic segment identity header is malformed")
     if not _HEADER_REQUIRED <= set(raw):
@@ -170,7 +119,7 @@ def _validate_header(
     ):
         raise ValidationError("logic segment identity header is malformed")
     coverage = header["coverage"]
-    if require_exact_coverage and (
+    if (
         not isinstance(coverage, dict)
         or set(coverage) != _COUNT_KEYS
         or any(not _strict_nonnegative_int(value) for value in coverage.values())
@@ -189,67 +138,6 @@ def _validate_header(
 
 def _source(header: Mapping[str, Any]) -> dict[str, Any]:
     return {key: header.get(key) for key in sorted(_SOURCE_KEYS)}
-
-
-def _validate_segment(raw: Mapping[str, Any], header: Mapping[str, Any]) -> dict[str, Any]:
-    if (
-        not isinstance(raw, Mapping)
-        or set(raw) - _SEGMENT_REQUIRED - _SEGMENT_OPTIONAL
-        or not _SEGMENT_REQUIRED <= set(raw)
-    ):
-        raise ValidationError("logic segment identity record is malformed")
-    record = dict(raw)
-    if (
-        any(
-            not isinstance(record.get(key), str) or not record[key]
-            for key in ("id", "system_path", "member_path", "fpga", "start_pin", "end_pin")
-        )
-        or record["kind"] not in {"launch", "transition", "capture"}
-        or record["fpga"] != header["fpga"]
-        or not _strict_nonnegative_int(record.get("cut_index"))
-    ):
-        raise ValidationError("logic segment identity record is malformed")
-    replacement = record.get("replace_tx_endpoint")
-    if (record["kind"] == "capture") != (replacement is None) or (
-        replacement is not None
-        and (not isinstance(replacement, str) or not replacement)
-    ):
-        raise ValidationError("logic segment identity replacement is invalid")
-    exact_id = record.get("static_exact_segment_id")
-    semantic = header.get("semantic_contract_sha256")
-    if (semantic is None and exact_id is not None) or (
-        semantic is not None and (not isinstance(exact_id, str) or not exact_id)
-    ):
-        raise ValidationError("logic segment identity exact identity is invalid")
-    kinds = (record.get("start_object_kind"), record.get("end_object_kind"))
-    if (kinds[0] is None) != (kinds[1] is None) or any(
-        value is not None and value not in {"pin", "port"} for value in kinds
-    ):
-        raise ValidationError("logic segment identity object kinds are invalid")
-    anchor_kind = record.get("cone_anchor_object_kind")
-    anchor_pin = record.get("cone_anchor_pin")
-    if (anchor_kind is None) != (anchor_pin is None) or (
-        anchor_kind is not None
-        and (
-            anchor_kind not in {"pin", "port"}
-            or record["kind"] == "capture"
-            or not isinstance(anchor_pin, str)
-            or not anchor_pin
-        )
-    ):
-        raise ValidationError("logic segment identity cone anchor is invalid")
-    return record
-
-
-def _segment_tuple(seq: int, record: Mapping[str, Any]) -> tuple[Any, ...]:
-    return (
-        seq, record["id"], record["kind"], record["system_path"],
-        record["member_path"], record["cut_index"], record["fpga"],
-        record.get("replace_tx_endpoint"), record["start_pin"],
-        record["end_pin"], record.get("static_exact_segment_id"),
-        record.get("start_object_kind"), record.get("end_object_kind"),
-        record.get("cone_anchor_object_kind"), record.get("cone_anchor_pin"),
-    )
 
 
 def segment_from_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -466,28 +354,6 @@ class LogicSegmentIdentityView(Mapping[str, Any]):
             self.close()
             raise
 
-    @classmethod
-    def _from_publication(
-        cls, selector_path: Path, selector: dict[str, Any], store_path: Path,
-        lease: _Lease,
-    ) -> "LogicSegmentIdentityView":
-        value = cls.__new__(cls)
-        value._lease = lease
-        value._closed = False
-        value.selector_path = selector_path.resolve()
-        value.selector = selector
-        value.store_path = store_path.resolve()
-        value._source_bindings = (
-            bind_store_source(
-                value.selector_path, "logic-segment-identity-selector-v1"
-            ),
-            bind_store_source(value.store_path, "logic-segment-identity-store-v1"),
-        )
-        value._segments = _SegmentSequence(value, selector["counts"]["segments"])
-        value._unsupported = _UnsupportedSequence(
-            value, selector["counts"]["unsupported_member_paths"]
-        )
-        return value
 
     def bound_store_sources(self):
         self._ensure_open()
@@ -554,262 +420,6 @@ class LogicSegmentIdentityView(Mapping[str, Any]):
             "member_paths": counts["member_paths"],
             "system_paths": counts["system_paths"],
         }
-
-
-def _collect_stale(path: Path, keep: Path) -> None:
-    changed = False
-    for candidate in path.parent.glob(f"{_owner_prefix(path)}*.sqlite"):
-        if candidate.is_symlink() or candidate.resolve() == keep.resolve():
-            continue
-        try:
-            candidate.unlink()
-            changed = True
-        except OSError:
-            continue
-    if changed:
-        _fsync_directory(path.parent)
-
-
-def write_logic_segment_identity_storage(
-    path: Path,
-    *,
-    header: Mapping[str, Any],
-    segments: Iterable[Mapping[str, Any]],
-    unsupported_member_paths: Iterable[Mapping[str, Any]] = (),
-    sidecar_publication: Optional[tuple[Path, Path]] = None,
-    source_bindings=(),
-) -> LogicSegmentIdentityView:
-    normalized_header = _validate_header(
-        header, require_exact_coverage=False
-    )
-    source_bindings = validate_store_destination(path, source_bindings)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lease: Optional[_Lease] = _Lease(path, exclusive=True)
-    temporary: Optional[Path] = None
-    connection: Optional[sqlite3.Connection] = None
-    published_store: Optional[Path] = None
-    created_store = False
-    selector_committed = False
-    selector_commit_started = False
-    sidecar_published = False
-    sidecar_backup: Optional[Path] = None
-    sidecar_temporary = (
-        sidecar_publication[0] if sidecar_publication is not None else None
-    )
-    sidecar_target = (
-        sidecar_publication[1] if sidecar_publication is not None else None
-    )
-    try:
-        if path.is_symlink():
-            raise ValidationError(
-                "logic segment identity selector is a symbolic link"
-            )
-        if path.exists() and not path.is_file():
-            raise ValidationError("logic segment identity selector is invalid")
-        descriptor, name = tempfile.mkstemp(
-            prefix=f".{path.stem}.", suffix=".sqlite.tmp", dir=path.parent
-        )
-        os.close(descriptor)
-        temporary = Path(name)
-        connection = sqlite3.connect(temporary)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=OFF")
-        connection.execute("PRAGMA synchronous=OFF")
-        connection.execute(
-            f"PRAGMA application_id={LOGIC_SEGMENT_IDENTITY_APPLICATION_ID}"
-        )
-        connection.execute(
-            f"PRAGMA user_version={LOGIC_SEGMENT_IDENTITY_USER_VERSION}"
-        )
-        connection.executescript(_DDL)
-        segment_digest = hashlib.sha256()
-        segment_count = 0
-        previous_id = None
-        batch = []
-        for seq, raw in enumerate(segments):
-            record = _validate_segment(raw, normalized_header)
-            if previous_id is not None and record["id"] <= previous_id:
-                raise ValidationError(
-                    "logic segment identity input is not canonically ordered"
-                )
-            previous_id = record["id"]
-            batch.append(_segment_tuple(seq, record))
-            segment_digest.update(_canonical(record).encode())
-            segment_digest.update(b"\n")
-            if len(batch) >= 8192:
-                connection.executemany(
-                    "INSERT INTO segments VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    batch,
-                )
-                batch.clear()
-            segment_count += 1
-        if batch:
-            connection.executemany(
-                "INSERT INTO segments VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                batch,
-            )
-        unsupported_digest = hashlib.sha256()
-        unsupported_count = 0
-        previous_path = None
-        for seq, raw in enumerate(unsupported_member_paths):
-            if (
-                not isinstance(raw, Mapping)
-                or set(raw) != {"path", "reason"}
-                or any(not isinstance(raw.get(key), str) or not raw[key]
-                       for key in ("path", "reason"))
-            ):
-                raise ValidationError("unsupported logic timing member is malformed")
-            record = dict(raw)
-            if previous_path is not None and record["path"] <= previous_path:
-                raise ValidationError("unsupported logic timing members are not ordered")
-            previous_path = record["path"]
-            connection.execute(
-                "INSERT INTO unsupported_members VALUES (?,?,?)",
-                (seq, record["path"], record["reason"]),
-            )
-            unsupported_digest.update(_canonical(record).encode())
-            unsupported_digest.update(b"\n")
-            unsupported_count += 1
-        aggregate = connection.execute(
-            "SELECT COUNT(DISTINCT system_path),COUNT(DISTINCT member_path) FROM segments"
-        ).fetchone()
-        counts = {
-            "segments": segment_count,
-            "system_paths": int(aggregate[0]),
-            "member_paths": int(aggregate[1]),
-            "unsupported_member_paths": unsupported_count,
-        }
-        coverage = dict(normalized_header["coverage"])
-        coverage.update(counts)
-        normalized_header = {**normalized_header, "coverage": coverage}
-        normalized_header = _validate_header(normalized_header)
-        source = _source(normalized_header)
-        logical_sha = hashlib.sha256(_canonical({
-            "header": normalized_header, "counts": counts, "source": source,
-            "segment_sha256": segment_digest.hexdigest(),
-            "unsupported_sha256": unsupported_digest.hexdigest(),
-        }).encode()).hexdigest()
-        selector = {
-            "schema": LOGIC_SEGMENT_IDENTITY_STORAGE_SCHEMA,
-            "logical_schema": LOGIC_SEGMENT_IDENTITY_SCHEMA,
-            "application_id": LOGIC_SEGMENT_IDENTITY_APPLICATION_ID,
-            "user_version": LOGIC_SEGMENT_IDENTITY_USER_VERSION,
-            "header": normalized_header, "counts": counts, "source": source,
-            "logical_sha256": logical_sha, "artifact": "", "store_bytes": 0,
-            "store_sha256": "",
-        }
-        for key, value in (
-            ("header", normalized_header), ("counts", counts),
-            ("source", source), ("logical_sha256", logical_sha),
-        ):
-            connection.execute(
-                "INSERT INTO metadata VALUES (?,?)", (key, _canonical(value))
-            )
-        connection.commit()
-        connection.close()
-        connection = None
-        store_sha = file_sha256(temporary)
-        published_store = path.with_name(_store_name(path, store_sha))
-        if published_store.is_symlink():
-            raise ValidationError("logic segment identity generation is a symlink")
-        require_store_sources_unchanged(source_bindings)
-        if published_store.is_file():
-            if file_sha256(published_store) != store_sha:
-                raise ValidationError("logic segment identity generation seal disagrees")
-            temporary.unlink()
-        else:
-            publish_sqlite_store(
-                temporary,
-                published_store,
-                "logic-segment-identity-store-v1",
-                sources=source_bindings,
-            )
-            created_store = True
-        selector.update({
-            "artifact": published_store.name,
-            "store_bytes": published_store.stat().st_size,
-            "store_sha256": store_sha,
-        })
-        _validate_selector(selector)
-        if sidecar_temporary is not None and sidecar_target is not None:
-            if (
-                sidecar_temporary.is_symlink()
-                or not sidecar_temporary.is_file()
-                or sidecar_target.is_symlink()
-                or sidecar_temporary.parent.resolve()
-                != sidecar_target.parent.resolve()
-                or (sidecar_target.exists() and not sidecar_target.is_file())
-            ):
-                raise ValidationError(
-                    "logic segment identity sidecar publication is invalid"
-                )
-            if sidecar_target.exists():
-                descriptor, backup_name = tempfile.mkstemp(
-                    prefix=f".{sidecar_target.name}.", suffix=".rollback.tmp",
-                    dir=sidecar_target.parent,
-                )
-                os.close(descriptor)
-                sidecar_backup = Path(backup_name)
-                sidecar_backup.unlink()
-                os.replace(sidecar_target, sidecar_backup)
-            os.replace(sidecar_temporary, sidecar_target)
-            sidecar_published = True
-            _fsync_directory(sidecar_target.parent)
-        # The common commit owns selector backup and SQL generation recovery.
-        # Once entered, its retained payloads must survive a failed rollback.
-        selector_commit_started = True
-        commit_store_selector(
-            path,
-            selector,
-            source_bindings,
-            published_store,
-            created_store,
-            durable=True,
-        )
-        selector_committed = True
-        if sidecar_backup is not None:
-            sidecar_backup.unlink(missing_ok=True)
-            _fsync_directory(sidecar_target.parent)
-        try:
-            _collect_stale(path, published_store)
-        except OSError:
-            pass
-        assert lease is not None
-        lease.downgrade_shared()
-        view = LogicSegmentIdentityView._from_publication(
-            path, selector, published_store, lease
-        )
-        lease = None
-        return view
-    except BaseException as error:
-        if connection is not None:
-            connection.close()
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-        if (
-            published_store is not None
-            and created_store
-            and not selector_committed
-            and not selector_commit_started
-        ):
-            published_store.unlink(missing_ok=True)
-        if not selector_committed and sidecar_target is not None:
-            if sidecar_backup is not None and sidecar_backup.is_file():
-                os.replace(sidecar_backup, sidecar_target)
-            elif sidecar_published:
-                sidecar_target.unlink(missing_ok=True)
-            if sidecar_published or sidecar_backup is not None:
-                _fsync_directory(sidecar_target.parent)
-        if isinstance(error, sqlite3.IntegrityError):
-            raise ValidationError("logic segment identity is duplicated") from error
-        raise
-    finally:
-        if sidecar_temporary is not None:
-            sidecar_temporary.unlink(missing_ok=True)
-        if sidecar_backup is not None and selector_committed:
-            sidecar_backup.unlink(missing_ok=True)
-        if lease is not None:
-            lease.close()
 
 
 def read_logic_segment_identity_storage(

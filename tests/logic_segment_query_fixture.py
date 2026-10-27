@@ -6,7 +6,8 @@ from types import SimpleNamespace
 
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.phase5_native import run_native_phase5
-from emuflow.system_route_storage import read_system_routes, write_system_route_storage
+from emuflow.system_route_storage import read_system_routes
+from tests.native_route_seal_fixture import write_route_store_fixture
 from emuflow.tdm import build_native_exact_schedule_request
 from emuflow.tdm_schedule_storage import read_tdm_schedule
 from emuflow.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
@@ -72,7 +73,7 @@ def sources(root, *, members=1, extra_launch=False, wrong_owner=False, paths=Tru
                 'required_time_ns':18.,'fixed_delay_ns':2.,'cut_nets':['n0','d']}]}
     if not paths:
         route_value.pop('timing',None)
-    route_path=root/'current/routes.json';write_system_route_storage(route_path,route_value)
+    route_path=root/'current/routes.json';write_route_store_fixture(route_path,route_value)
     routes=read_system_routes(route_path)
     producer=build_native_exact_schedule_request({**routes,'semantic_contract':{**contract,'indexed':True}},
         case.platform,source_bindings=routes.bound_store_sources())

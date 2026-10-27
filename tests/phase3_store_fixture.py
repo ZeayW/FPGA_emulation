@@ -3,6 +3,7 @@
 No selector transaction, rollback, legacy flow, graph construction or search is
 implemented here. Native complete-stage tests qualify production publication.
 """
+from tests.phase3_exact_fixture import write_exact_fixture
 import base64
 import hashlib
 import json
@@ -102,7 +103,7 @@ def write_cluster_fixture(path, value, **_options):
 
 
 def write_assignment_index_fixture(path, ir, assignment):
-    from emuflow.phase3_exact_binary import write_phase3_exact_binary, EXACT_BINARY_ARTIFACT
+    from emuflow.phase3_exact_binary import (EXACT_BINARY_ARTIFACT)
     from emuflow.routing import static_exact_contract_from_assignment
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
     owners = assignment['instance_assignment']
@@ -125,7 +126,7 @@ def write_assignment_index_fixture(path, ir, assignment):
     require_store_sources_unchanged(sources)
     with tempfile.TemporaryDirectory(prefix='assignment-facts-', dir=path.parent) as temporary:
         root = Path(temporary); target = root/path.name
-        binary = write_phase3_exact_binary(root/EXACT_BINARY_ARTIFACT, contract, parts,
+        binary = write_exact_fixture(root/EXACT_BINARY_ARTIFACT, contract, parts,
             semantic_digest=assignment.get('semantic_contract_sha256')) if contract is not None else None
         metadata = {key:assignment.get(key) for key in ('design','platform','provider','seed','constraints')}
         metadata.update(schema=index.ASSIGNMENT_INDEX_SCHEMA,source_instance_count=len(ir.value['instances']),

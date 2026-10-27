@@ -18,7 +18,8 @@ from emuflow.io import read_json
 from emuflow.tdm import build_native_exact_schedule_request
 from tests.schedule_reference import build_tdm_schedule
 from emuflow.tdm_schedule_storage import (read_tdm_schedule)
-from emuflow.system_route_storage import read_system_routes, write_system_route_storage
+from emuflow.system_route_storage import read_system_routes
+from tests.native_route_seal_fixture import write_route_store_fixture
 from tests.native_build import emuflow_native, native_json_record
 from tests.native_schedule_case import _case
 
@@ -129,7 +130,7 @@ def test_empty_indexed_production_uses_native_and_matches_reference(tmp_path, mo
     empty["routes"] = []
     empty["demands"] = []
     path = tmp_path / "empty.json"
-    write_system_route_storage(path, empty)
+    write_route_store_fixture(path, empty)
     routes = read_system_routes(path)
     routes["semantic_contract"] = _routes["semantic_contract"]
     reference = build_tdm_schedule(routes, case.platform)

@@ -21,11 +21,8 @@ from emuflow.errors import ValidationError
 from tests.physical_coverage_fixture import build_cross_layer_physical_binding, validate_cross_layer_physical_binding
 from emuflow.platform import Platform
 from emuflow.tdm_schedule_storage import (ScheduleRecordSequence, read_tdm_schedule)
-from emuflow.system_route_storage import (
-    SystemRouteSequence,
-    read_system_routes,
-    write_system_route_storage,
-)
+from emuflow.system_route_storage import SystemRouteSequence, read_system_routes
+from tests.native_route_seal_fixture import write_route_store_fixture
 
 
 def _semantic_contract():
@@ -237,7 +234,7 @@ class CrossLayerTimingContractTest(unittest.TestCase):
             root = Path(temporary_directory)
             route_path = root / "routes.json"
             schedule_path = root / "schedule.json"
-            write_system_route_storage(route_path, routes)
+            write_route_store_fixture(route_path, routes)
             write_tdm_schedule_storage(schedule_path, schedule)
             indexed_routes = read_system_routes(route_path)
             indexed_schedule = read_tdm_schedule(schedule_path)

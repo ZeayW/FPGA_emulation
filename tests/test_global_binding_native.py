@@ -14,7 +14,8 @@ from tests.global_sta_fixture import bind_physical_checks as fixture_bind
 from emuflow.boundary_identity_storage import write_boundary_identity_storage
 from emuflow.boundary_timing_storage import write_boundary_timing_storage
 from emuflow.logic_segment_timing_storage import write_logic_segment_timing_storage
-from emuflow.system_route_storage import read_system_routes, write_system_route_storage, pretty_system_routes_sha256
+from emuflow.system_route_storage import read_system_routes, pretty_system_routes_sha256
+from tests.native_route_seal_fixture import write_route_store_fixture
 from emuflow.tdm_schedule_storage import read_tdm_schedule
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 from tests import test_static_exact_system_timing as fixture_module
@@ -55,7 +56,7 @@ def physical_case(tmp_path, *, members=1, uncertainty=0.125, registered=False, m
                                   'boundary_register_instances':[] if kind == 'tx' else ['rx']})
     if mutate is not None:
         mutate(routes, schedule, physical)
-    write_system_route_storage(tmp_path/'routes.json', routes)
+    write_route_store_fixture(tmp_path/'routes.json', routes)
     indexed_routes = read_system_routes(tmp_path/'routes.json')
     write_tdm_schedule_storage(tmp_path/'schedule.json', schedule)
     indexed_schedule = read_tdm_schedule(tmp_path/'schedule.json')

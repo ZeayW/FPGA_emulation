@@ -18,7 +18,8 @@ from emuflow.cross_layer_timing import (
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.phase5_timing_native import project_native_schedule_timing
-from emuflow.system_route_storage import read_system_routes, write_system_route_storage
+from emuflow.system_route_storage import read_system_routes
+from tests.native_route_seal_fixture import write_route_store_fixture
 from tests.tdm_timing_oracle import timing_summary as reconstruct_tdm_schedule_timing
 from emuflow.tdm_schedule_storage import read_tdm_schedule
 from tests.native_schedule_case import _case
@@ -63,7 +64,7 @@ def _timed_case(tmp_path, monkeypatch, kind=False, count=9):
 
 def _publish_case(tmp_path, monkeypatch, case, value, semantic):
     selector = tmp_path / "current-routes.json"
-    write_system_route_storage(selector, value)
+    write_route_store_fixture(selector, value)
     routes = read_system_routes(selector)
     hydrated = {**routes, "semantic_contract": semantic}
     reference_schedule = build_tdm_schedule(hydrated, case.platform)
@@ -242,7 +243,7 @@ def test_freshly_sealed_malformed_path_contract_is_rejected(
     # The schedule is unchanged; only the RouteStore path population is
     # regenerated/sealed to avoid relying on a stale byte/logical hash.
     fresh = tmp_path / "bad-routes.json"
-    write_system_route_storage(fresh, value)
+    write_route_store_fixture(fresh, value)
     routes = read_system_routes(fresh)
     with pytest.raises(ValidationError, match="native Phase5 timing projection failed"):
         project_native_schedule_timing(

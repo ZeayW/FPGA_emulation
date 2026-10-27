@@ -24,8 +24,7 @@ def report(assignment):
 
 def test_complete_directory_uses_native_transaction_and_reloads_without_private_sources(selected,tmp_path):
     actual=build(selected);output=tmp_path/'published'
-    with (patch('emuflow.phase3_assignment_native.publish_native_assignment_descriptor',side_effect=AssertionError('host descriptor publisher')),
-          patch('emuflow.phase3_exact_binary.write_phase3_exact_binary',side_effect=AssertionError('host binary publisher'))):
+    with patch('emuflow.phase3_assignment_native.publish_native_assignment_descriptor', side_effect=AssertionError('host descriptor publisher')):
         final=publish(output,selected[0],selected[2],actual,report(actual))
     assert final['finalization_implementation_id']=='native-partition-publication-v1'
     close_published_semantics(actual)

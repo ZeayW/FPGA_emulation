@@ -11,7 +11,8 @@ from unittest.mock import patch
 import pytest
 from emuflow.errors import ValidationError
 from tests.native_route_seal_fixture import seal_native_system_routes, write_route_seal_request
-from emuflow.system_route_storage import write_system_route_storage, _demand_from_route
+from emuflow.system_route_storage import _demand_from_route
+from tests.native_route_seal_fixture import write_route_store_fixture
 from tests.native_build import emuflow_native
 from tests.test_phase4 import _storage_routes
 
@@ -54,7 +55,7 @@ def fixture(count=1, rich=False):
 @pytest.mark.parametrize('count,rich', [(0,False), (1,False), (0,True), (8,True), (4096,True)])
 def test_native_matches_independent_python_logical_and_all_section_hashes(native_root, tmp_path, count, rich):
     logical = fixture(count, rich)
-    manifest = write_system_route_storage(tmp_path/'routes.json', logical)
+    manifest = write_route_store_fixture(tmp_path/'routes.json', logical)
     store = tmp_path/manifest['artifact']
     before = store.read_bytes()
     result = seal_native_system_routes(store, logical)
@@ -80,10 +81,10 @@ def test_request_carries_shape_only_without_expanding_large_populations(tmp_path
     assert request.stat().st_size < 4096
 
 
-@pytest.mark.parametrize('corruption', ['truncated', 'crc', 'header', 'orphan-demand', 'orphan-sink', 'edge-order', 'timing', 'selection', 'batch', 'count', 'shape-count', 'version', 'numeric-type', 'source-seal'])
+@pytest.mark.parametrize('corruption', ['truncated', 'crc', 'header', 'orphan-demand', 'orphan-sink', 'edge-order', 'timing', 'selection', 'batch', 'count', 'shape-count', 'version', 'numeric-type', 'zero-width', 'fractional-width', 'fractional-round', 'negative-depth', 'incomplete-depth', 'cut-class', 'nonfinite-delay', 'sparse-route', 'missing-route', 'source-seal'])
 def test_native_rejects_corruption_without_replacing_prior_seal(native_root, tmp_path, corruption):
     logical = fixture(8, True)
-    manifest = write_system_route_storage(tmp_path/'routes.json', logical)
+    manifest = write_route_store_fixture(tmp_path/'routes.json', logical)
     store = tmp_path/manifest['artifact']; request = tmp_path/'request'; output = tmp_path/'seal'
     write_route_seal_request(request, logical)
     output.write_text('previous')
@@ -108,6 +109,21 @@ def test_native_rejects_corruption_without_replacing_prior_seal(native_root, tmp
             if corruption == 'numeric-type':
                 db.execute('PRAGMA ignore_check_constraints=ON')
                 db.execute("UPDATE routes SET predicted_max_delay_ns='not-a-number' WHERE seq=0")
+            scalar_corruption = {
+                'zero-width': ('width_bits', 0),
+                'fractional-width': ('width_bits', 1.5),
+                'fractional-round': ('transport_round', 1.5),
+                'negative-depth': ('dependency_level', -1),
+                'incomplete-depth': ('combinational_dependency_depth', None),
+                'cut-class': ('cut_class', 'unsupported'),
+                'nonfinite-delay': ('predicted_max_delay_ns', float('inf')),
+            }
+            if corruption in scalar_corruption:
+                field, value = scalar_corruption[corruption]
+                db.execute('PRAGMA ignore_check_constraints=ON')
+                db.execute(f'UPDATE routes SET {field}=? WHERE seq=0', (value,))
+            if corruption == 'sparse-route': db.execute('UPDATE routes SET seq=10000 WHERE seq=0')
+            if corruption == 'missing-route': db.execute('DELETE FROM routes WHERE seq=0')
             if corruption == 'timing': db.execute("UPDATE timing_paths SET record_json=replace(record_json,'path0','bad') WHERE seq=0")
             if corruption == 'selection': db.execute("UPDATE route_master_selections SET generator='wrong' WHERE seq=0")
             if corruption == 'batch': db.execute('UPDATE refinement_batch_paths SET position=4 WHERE seq=0')
@@ -128,7 +144,7 @@ def test_native_rejects_corruption_without_replacing_prior_seal(native_root, tmp
 def test_post_storage_float_owner_and_empty_batches_match_reference(native_root,tmp_path):
     logical=fixture(1,True)
     logical['joint_optimization']['refinement_batches']={'batch_count':3,'maximum_parallel_batch':2,'batches':[[0,2],[],[1]]}
-    manifest=write_system_route_storage(tmp_path/'routes.json',logical)
+    manifest=write_route_store_fixture(tmp_path/'routes.json',logical)
     store=tmp_path/manifest['artifact']
     # SQLite's numeric owner normalizes -0.0 to +0.0. Both native and Python
     # typed readers seal the stored value; header literals retain their spelling.
@@ -154,7 +170,7 @@ def test_binary64_and_int64_records_match_python_oracle(native_root,tmp_path):
     for row,value in zip(logical['routes'],values):row['predicted_max_delay_ns']=value
     logical['routes'][0]['width_bits']=(1<<63)-1
     logical['demands']=[_demand_from_route(row) for row in logical['routes']]
-    manifest=write_system_route_storage(tmp_path/'routes.json',logical)
+    manifest=write_route_store_fixture(tmp_path/'routes.json',logical)
     result=seal_native_system_routes(tmp_path/manifest['artifact'],logical)
     assert result['logical_sha256']==manifest['logical_sha256']
     assert result['sections']==manifest['sections']
@@ -171,7 +187,7 @@ def test_large_unexpected_header_stops_at_request_bound(tmp_path):
 
 def test_source_output_alias_rejected_before_mutation(native_root,tmp_path):
     logical=fixture(1)
-    manifest=write_system_route_storage(tmp_path/'routes.json',logical)
+    manifest=write_route_store_fixture(tmp_path/'routes.json',logical)
     store=tmp_path/manifest['artifact'];request=tmp_path/'request'
     write_route_seal_request(request,logical)
     original=store.read_bytes()

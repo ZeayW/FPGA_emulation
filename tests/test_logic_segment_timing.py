@@ -26,8 +26,8 @@ from emuflow.logic_segment_timing_storage import (
 )
 from emuflow.logic_segment_identity_storage import (
     read_logic_segment_identity_storage,
-    write_logic_segment_identity_storage,
 )
+from tests.logic_identity_fixture import identity_facts
 import emuflow.logic_segment_identity_storage as identity_storage
 import emuflow.logic_segment_timing as logic_segment_timing
 from emuflow.local_path_timing import (
@@ -765,7 +765,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
                     "static_exact_segment_id": f"segment{index:08d}",
                 }
 
-        view = write_logic_segment_identity_storage(
+        view = identity_facts(
             path, header=header, segments=records()
         )
         view.close()

@@ -86,7 +86,8 @@ def test_native_bank_split_preserves_independent_direction_objective(tmp_path, m
     from dataclasses import replace
     from emuflow.io import read_json
     from emuflow.routing import normalize_route_constraints
-    from emuflow.system_route_storage import read_system_routes, write_system_route_storage, _demand_from_route
+    from emuflow.system_route_storage import read_system_routes, _demand_from_route
+    from tests.native_route_seal_fixture import write_route_store_fixture
     from emuflow.tdm import build_native_exact_schedule_request
 
     case, routes, producer, inputs = native_inputs(tmp_path, "banks")
@@ -100,7 +101,7 @@ def test_native_bank_split_preserves_independent_direction_objective(tmp_path, m
             population.append(row)
     value["routes"] = population; value["demands"] = [_demand_from_route(r) for r in population]
     value["constraints"] = normalize_route_constraints(None, case.platform, frame_slots=256)
-    write_system_route_storage(inputs[0], value)
+    write_route_store_fixture(inputs[0], value)
     inputs[2].write_text(json.dumps(case.platform.to_dict()))
     persisted = read_system_routes(inputs[0]); configured = {**persisted, "semantic_contract": routes["semantic_contract"]}
     producer = build_native_exact_schedule_request(configured, case.platform, source_bindings=persisted.bound_store_sources())

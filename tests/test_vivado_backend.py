@@ -6,9 +6,6 @@ from unittest.mock import patch
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import write_json
 from emuflow.ir import EmuIR
-from emuflow.logic_segment_identity_storage import (
-    write_logic_segment_identity_storage,
-)
 from emuflow.yosys import import_yosys_json
 from emuflow.vivado_backend import (
     vivado_runtime_xdc,
@@ -18,7 +15,6 @@ from emuflow.vivado_physical import execute_vivado
 from emuflow.vivado_physical_timing import import_indexed_vivado_boundary
 from emuflow.vivado_netlist import (
     emit_vivado_mapped_verilog,
-    lower_vivado_primitives,
 )
 
 
@@ -355,20 +351,29 @@ class VivadoBackendTest(unittest.TestCase):
                         "vivado.log",
                     )
 
-    def test_shared_xilinx_reference_conversion_retains_generic_cell_semantics(self):
+    def test_current_indexed_export_retains_generic_cell_semantics(self):
+        from emuflow.emuir_compact import write_compact_emuir
+        from emuflow.xilinx_netlist import open_xilinx_mapped_index
         value = _ir().to_dict()
-        value["instances"][0]["type"] = "$lut"
-        value["instances"][0]["parameters"] = {
-            "WIDTH": "1",
-            "LUT": "10",
-        }
-        value["nets"][0]["sinks"][0]["port"] = "A"
-        value["instances"][1]["type"] = "$_DFF_P_"
-        value["instances"][1]["parameters"] = {}
-        lowered = lower_vivado_primitives(EmuIR(value))
-        self.assertEqual(lowered.value["instances"][0]["type"], "LUT1")
-        self.assertEqual(lowered.value["instances"][1]["type"], "FDRE")
-        self.assertEqual(lowered.value["nets"][0]["sinks"][0]["port"], "I0")
+        value['instances'][0].update(type='$lut', parameters={'WIDTH': '1', 'LUT': '10'})
+        value['nets'][0]['sinks'][0]['port'] = 'A'
+        value['instances'][1].update(type='$_DFF_P_', parameters={})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root/'input.sqlite'
+            write_compact_emuir(source, value)
+            report = emit_vivado_mapped_verilog(source, root/'dut.v')
+            with open_xilinx_mapped_index(Path(report['mapped_index']['path'])) as mapped:
+                cells = mapped['modules'][value['design']['top']]['cells']
+                lut = cells[value['instances'][0]['id']]
+                flop = cells[value['instances'][1]['id']]
+                self.assertEqual(lut['type'], 'LUT1')
+                self.assertEqual(lut['parameters'], {'INIT': '10'})
+                self.assertIn('I0', lut['connections'])
+                self.assertNotIn('A', lut['connections'])
+                self.assertEqual(flop['type'], 'FDRE')
+                self.assertEqual(flop['connections']['CE'], ['1'])
+                self.assertEqual(flop['connections']['R'], ['0'])
 
     def test_runtime_xdc_uses_the_common_clock_contract(self):
         with tempfile.TemporaryDirectory() as temporary:

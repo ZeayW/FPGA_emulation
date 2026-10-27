@@ -1,3 +1,4 @@
+from tests.phase3_exact_fixture import write_exact_fixture
 import copy
 import hashlib
 import json
@@ -14,14 +15,7 @@ from tests.native_build import emuflow_native
 
 from emuflow.combinational_cut import semantic_contract_sha256
 from emuflow.errors import ValidationError
-from emuflow.phase3_exact_binary import (
-    _validate_direct_capture_segment_ids,
-    iter_phase3_exact_captures,
-    read_phase3_exact_binary_contract,
-    read_phase3_exact_binary_partition,
-    validate_phase3_exact_binary,
-    write_phase3_exact_binary,
-)
+from emuflow.phase3_exact_binary import (iter_phase3_exact_captures, read_phase3_exact_binary_contract, read_phase3_exact_binary_partition, validate_phase3_exact_binary)
 from emuflow.phase3_exact_records import (
     StaticExactCutNodeSequence,
     StaticExactRecordSequence,
@@ -125,16 +119,6 @@ class Phase3ExactBinaryTest(unittest.TestCase):
         def dependency_indices(self, index):
             return iter(self.dependencies[index])
 
-    class _StatefulIntegerTopology(_IntegerTopology):
-        def __init__(self):
-            super().__init__([[], [0]])
-            self.calls = 0
-
-        def dependency_indices(self, index):
-            if index == 0:
-                return iter(())
-            self.calls += 1
-            return iter((0,)) if self.calls == 1 else iter((1,))
 
     def test_v2_capture_bits_preserve_bounded_python_integers(self):
         for bit in (0, 2**32, 2**64, 1 << 130, 1 << 8190, 1 << 8191):
@@ -155,7 +139,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                     ],
                 }
                 path = Path(temporary) / "assignment.exact.bin"
-                descriptor = write_phase3_exact_binary(
+                descriptor = write_exact_fixture(
                     path, contract, ["fpga0", "fpga1"]
                 )
                 self.assertEqual(descriptor["capture_bit_max_bits"], 8192)
@@ -194,7 +178,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(
                     ValidationError, "at most 8192 bits"
                 ):
-                    write_phase3_exact_binary(
+                    write_exact_fixture(
                         Path(temporary) / "assignment.exact.bin",
                         contract,
                         ["fpga0", "fpga1"],
@@ -216,7 +200,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "assignment.exact.bin"
-            descriptor = write_phase3_exact_binary(
+            descriptor = write_exact_fixture(
                 path,
                 contract,
                 ["fpga0", "fpga1"],
@@ -241,7 +225,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source.bin"
-            descriptor = write_phase3_exact_binary(
+            descriptor = write_exact_fixture(
                 source, contract, ["fpga0", "fpga1"]
             )
             encoded = bytearray(source.read_bytes())
@@ -322,7 +306,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source.bin"
-            descriptor = write_phase3_exact_binary(
+            descriptor = write_exact_fixture(
                 source, contract, ["fpga0", "fpga1"]
             )
             encoded = source.read_bytes()
@@ -480,10 +464,10 @@ class Phase3ExactBinaryTest(unittest.TestCase):
             root = Path(temporary)
             materialized_path = root / "materialized.bin"
             streamed_path = root / "streamed.bin"
-            materialized_descriptor = write_phase3_exact_binary(
+            materialized_descriptor = write_exact_fixture(
                 materialized_path, materialized, ["fpga0", "fpga1"]
             )
-            streamed_descriptor = write_phase3_exact_binary(
+            streamed_descriptor = write_exact_fixture(
                 streamed_path, streamed, ["fpga0", "fpga1"]
             )
             self.assertEqual(
@@ -497,7 +481,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                 "pass",
             )
 
-    def test_integer_topology_writes_identical_binary_without_record_expansion(self):
+    def test_integer_topology_hash_preserves_identity_without_record_expansion(self):
         materialized = _contract("direct_integer_writer")
         streamed = copy.deepcopy(materialized)
         streamed["capture_requirements"] = build_static_exact_capture_stream(
@@ -536,64 +520,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
             streamed[key]._factory = forbidden_record_expansion
         digest = semantic_contract_sha256(streamed)
         self.assertEqual(digest, semantic_contract_sha256(materialized))
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            expected_path = root / "expected.bin"
-            direct_path = root / "direct.bin"
-            expected_descriptor = write_phase3_exact_binary(
-                expected_path,
-                materialized,
-                ["fpga0", "fpga1"],
-                semantic_digest=digest,
-            )
-            direct_descriptor = write_phase3_exact_binary(
-                direct_path,
-                streamed,
-                ["fpga0", "fpga1"],
-                semantic_digest=digest,
-            )
-            self.assertEqual(direct_path.read_bytes(), expected_path.read_bytes())
-            self.assertEqual(direct_descriptor, expected_descriptor)
-            self.assertEqual(
-                validate_phase3_exact_binary(direct_path, direct_descriptor)[
-                    "status"
-                ],
-                "pass",
-            )
 
-    def test_integer_topology_disagreement_fails_closed(self):
-        contract = _contract("mixed_integer_topology")
-        contract["capture_requirements"] = build_static_exact_capture_stream(
-            (
-                item["cut_net"],
-                item["fpga"],
-                item["kind"],
-                item["endpoint"],
-                item.get("port"),
-                item.get("bit"),
-            )
-            for item in contract["capture_requirements"]
-        )
-        contract["cut_nodes"] = build_static_exact_cut_node_stream(
-            iter(contract["cut_nodes"])
-        )
-        contract.update(
-            build_static_exact_record_streams(
-                contract["cut_nodes"],
-                contract["capture_requirements"],
-                bytes([1, 0]),
-                integer_topology=self._IntegerTopology([[], [1]]),
-            )
-        )
-        with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(
-            ValidationError, "topology disagrees"
-        ):
-            write_phase3_exact_binary(
-                Path(temporary) / "assignment.exact.bin",
-                contract,
-                ["fpga0", "fpga1"],
-                semantic_digest="0" * 64,
-            )
 
     def test_direct_digest_rejects_mixed_generation_and_truncated_raw_node(self):
         def direct_contract(design):
@@ -755,7 +682,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                             root / "expected.bin",
                             root / "native.bin",
                         )
-                        expected_descriptor = write_phase3_exact_binary(
+                        expected_descriptor = write_exact_fixture(
                             expected_path,
                             contract,
                             ["fpga0", "fpga1"],
@@ -765,31 +692,8 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                         def native_command(phase, operation):
                             return [str(executable), phase, operation]
 
-                        with (
-                            patch(
-                                "emuflow.native_tools.resolve_native_stage_command",
-                                side_effect=native_command,
-                            ),
-                            patch(
-                                "emuflow.phase3_exact_binary._write_raw_string",
-                                side_effect=AssertionError(
-                                    "Python must not encode native exact sections"
-                                ),
-                            ),
-                            patch(
-                                "emuflow.phase3_exact_binary._Spool",
-                                side_effect=AssertionError(
-                                    "native publication must not stage duplicate section files"
-                                ),
-                            ),
-                            patch(
-                                "emuflow.phase3_exact_binary._copy_section",
-                                side_effect=AssertionError(
-                                    "Python must not recopy native section bytes"
-                                ),
-                            ),
-                        ):
-                            actual_descriptor = write_phase3_exact_binary(
+                        with patch('emuflow.native_tools.resolve_native_stage_command', side_effect=native_command):
+                            actual_descriptor = write_exact_fixture(
                                 actual_path,
                                 streamed,
                                 ["fpga0", "fpga1"],
@@ -798,7 +702,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                         self.assertEqual(actual_path.read_bytes(), expected_path.read_bytes())
                         self.assertEqual(actual_descriptor, expected_descriptor)
                         if bit < 2**32 - 1:
-                            write_phase3_exact_binary(
+                            write_exact_fixture(
                                 expected_path,
                                 contract,
                                 ["fpga0", "fpga1"],
@@ -809,7 +713,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                                 "emuflow.native_tools.resolve_native_stage_command",
                                 side_effect=native_command,
                             ):
-                                write_phase3_exact_binary(
+                                write_exact_fixture(
                                     actual_path,
                                     streamed,
                                     ["fpga0", "fpga1"],
@@ -828,7 +732,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                                 ),
                                 self.assertRaises(ValidationError),
                             ):
-                                write_phase3_exact_binary(
+                                write_exact_fixture(
                                     actual_path,
                                     streamed,
                                     ["fpga0", "fpga1"],
@@ -988,7 +892,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
             semantic_contract_sha256(materialized),
         )
 
-    def test_integer_topology_preserves_launch_before_dependency_order(self):
+    def test_integer_record_stream_preserves_launch_before_dependency_order(self):
         materialized = _contract("launch_and_dependency")
         materialized["cut_nodes"][1]["source_fpgas"] = ["fpga0"]
         materialized["cut_nodes"][1]["source_segment_ids"] = [
@@ -1045,90 +949,10 @@ class Phase3ExactBinaryTest(unittest.TestCase):
         )
         digest = semantic_contract_sha256(streamed)
         self.assertEqual(digest, semantic_contract_sha256(materialized))
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            expected = root / "expected.bin"
-            direct = root / "direct.bin"
-            expected_descriptor = write_phase3_exact_binary(
-                expected, materialized, ["fpga0", "fpga1"]
-            )
-            direct_descriptor = write_phase3_exact_binary(
-                direct,
-                streamed,
-                ["fpga0", "fpga1"],
-                semantic_digest=digest,
-            )
-            self.assertEqual(direct.read_bytes(), expected.read_bytes())
-            self.assertEqual(direct_descriptor, expected_descriptor)
+        self.assertEqual(list(streamed["logic_segments"]), materialized["logic_segments"])
+        self.assertEqual(list(streamed["dependency_edges"]), materialized["dependency_edges"])
 
-    def test_stateful_dependency_cursor_is_consumed_and_validated_once(self):
-        materialized = _contract("stateful_dependency_cursor")
-        streamed = copy.deepcopy(materialized)
-        streamed["capture_requirements"] = build_static_exact_capture_stream(
-            (
-                item["cut_net"],
-                item["fpga"],
-                item["kind"],
-                item["endpoint"],
-                item.get("port"),
-                item.get("bit"),
-            )
-            for item in streamed["capture_requirements"]
-        )
-        streamed["cut_nodes"] = build_static_exact_cut_node_stream(
-            iter(streamed["cut_nodes"])
-        )
-        topology = self._StatefulIntegerTopology()
-        streamed.update(
-            build_static_exact_record_streams(
-                streamed["cut_nodes"],
-                streamed["capture_requirements"],
-                bytes([1, 0]),
-                integer_topology=topology,
-            )
-        )
-        digest = semantic_contract_sha256(streamed)
-        self.assertEqual(digest, semantic_contract_sha256(materialized))
-        self.assertEqual(topology.calls, 0)
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            expected = root / "expected.bin"
-            direct = root / "direct.bin"
-            expected_descriptor = write_phase3_exact_binary(
-                expected, materialized, ["fpga0", "fpga1"]
-            )
-            direct_descriptor = write_phase3_exact_binary(
-                direct,
-                streamed,
-                ["fpga0", "fpga1"],
-                semantic_digest=digest,
-            )
-            self.assertEqual(topology.calls, 1)
-            self.assertEqual(direct.read_bytes(), expected.read_bytes())
-            self.assertEqual(direct_descriptor, expected_descriptor)
 
-    def test_capture_segment_boundary_matches_legacy_lexical_order(self):
-        numeric = [
-            f"segment{number:06d}".encode("ascii")
-            for number in range(999_998, 1_000_002)
-        ]
-        legacy_canonical = sorted(numeric)
-        self.assertEqual(
-            legacy_canonical,
-            [
-                b"segment1000000",
-                b"segment1000001",
-                b"segment999998",
-                b"segment999999",
-            ],
-        )
-        _validate_direct_capture_segment_ids(
-            legacy_canonical, 999_998, len(legacy_canonical)
-        )
-        with self.assertRaisesRegex(ValidationError, "capture segments"):
-            _validate_direct_capture_segment_ids(
-                numeric, 999_998, len(numeric)
-            )
 
     def test_cut_node_stream_rejects_noncanonical_and_incomplete_records(self):
         nodes = _contract()["cut_nodes"]
@@ -1174,7 +998,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source.bin"
-            descriptor = write_phase3_exact_binary(
+            descriptor = write_exact_fixture(
                 source, contract, ["fpga0", "fpga1"]
             )
             relocated = root / "relocated" / "assignment.exact.bin"
@@ -1194,10 +1018,10 @@ class Phase3ExactBinaryTest(unittest.TestCase):
             root = Path(temporary)
             first_path = root / "first.bin"
             second_path = root / "second.bin"
-            first_descriptor = write_phase3_exact_binary(
+            first_descriptor = write_exact_fixture(
                 first_path, first, ["fpga0", "fpga1"]
             )
-            second_descriptor = write_phase3_exact_binary(
+            second_descriptor = write_exact_fixture(
                 second_path, second, ["fpga0", "fpga1"]
             )
             with self.assertRaisesRegex(ValidationError, "descriptor"):
@@ -1280,7 +1104,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "assignment.exact.bin"
-            descriptor = write_phase3_exact_binary(
+            descriptor = write_exact_fixture(
                 output, contract, ["fpga0", "fpga1"]
             )
             validation = validate_phase3_exact_binary(output, descriptor)

@@ -205,12 +205,12 @@ def test_shared_local_identity_query_rejects_destination_aliases(tmp_path):
 
 
 def test_native_preserves_explicit_null_semantic_header_in_logical_namespace(tmp_path):
-    from emuflow.logic_segment_identity_storage import write_logic_segment_identity_storage
+    from tests.logic_identity_fixture import identity_facts
     with producer('logic_segment_identity',tmp_path/'source.json') as view:
         header=dict(view.selector['header']);expected=list(view['segments'])
     header['semantic_contract_sha256']=None
     identity=tmp_path/'identity.json'
-    with write_logic_segment_identity_storage(identity,header=header,segments=expected):pass
+    with identity_facts(identity,header=header,segments=expected):pass
     rows=[[r['id'],r['kind'],.25,r['start_pin'],r['end_pin'],'endpoint-exact',r['start_pin'],r['end_pin']] for r in expected]
     raw=tmp_path/'measured.tsv';_tsv(raw,rows,3)
     with _reference(3,tmp_path/'reference.json',header,expected,rows) as view:digest=view.selector['logical_sha256']

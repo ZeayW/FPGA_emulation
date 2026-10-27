@@ -9,7 +9,7 @@ from emuflow.emuir_compact import write_compact_emuir
 from emuflow.ir import EmuIR
 from emuflow.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
 from emuflow.opensta import OPENSTA_PROVIDER
-from emuflow.system_route_storage import write_system_route_storage
+from tests.native_route_seal_fixture import write_route_store_fixture
 
 
 def ep(instance, port, bit=0):
@@ -56,7 +56,7 @@ def sources(root, *, value=None, owners=None, paths=None, cross=()):
     path_database = root/'paths.json'
     import_sta_path_database_tsv_streaming(measured, original, path_database, provider=OPENSTA_PROVIDER)
     routes = root/'routes.json'
-    write_system_route_storage(routes, {'schema': 'emuflow.system-routes/v1',
+    write_route_store_fixture(routes, {'schema': 'emuflow.system-routes/v1',
         'design': value['design']['name'], 'platform': 'fixture', 'demands': [], 'routes': [],
         'timing': {'paths': list(cross)}})
     merged = {}

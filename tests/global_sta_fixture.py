@@ -19,7 +19,8 @@ _COUNTS = {}
 def bind_physical_checks(runtime, routes, schedule, physical, platform, *, metadata=None,
                          routes_artifact_sha256=None):
     from emuflow.global_sta import bind_physical_checks as bind
-    from emuflow.system_route_storage import read_system_routes, write_system_route_storage, pretty_system_routes_sha256
+    from emuflow.system_route_storage import read_system_routes, pretty_system_routes_sha256
+    from tests.native_route_seal_fixture import write_route_store_fixture
     from emuflow.tdm_schedule_storage import read_tdm_schedule
     from tests.schedule_store_fixture import write_tdm_schedule_storage
     from emuflow.boundary_identity_storage import write_boundary_identity_storage
@@ -29,7 +30,7 @@ def bind_physical_checks(runtime, routes, schedule, physical, platform, *, metad
     with tempfile.TemporaryDirectory(prefix='global-sta-input-fixture-') as temporary, ExitStack() as stack:
         root = Path(temporary)
         if not getattr(routes['routes'], 'store_path', None):
-            write_system_route_storage(root / 'routes.json', routes)
+            write_route_store_fixture(root / 'routes.json', routes)
             indexed_routes = read_system_routes(root / 'routes.json')
         else:
             indexed_routes = routes

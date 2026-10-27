@@ -273,17 +273,15 @@ def test_empty_typed_schedule_is_validated_without_a_host_special_case(
     tmp_path, monkeypatch
 ):
     from emuflow.io import read_json
-    from emuflow.system_route_storage import (
-        write_system_route_storage,
-        read_system_routes,
-    )
+    from emuflow.system_route_storage import read_system_routes
+    from tests.native_route_seal_fixture import write_route_store_fixture
 
     case, _routes = _case(tmp_path, False, False)
     empty = read_json(tmp_path / "routes.json")
     empty["routes"] = []
     empty["demands"] = []
     selector = tmp_path / "empty.json"
-    write_system_route_storage(selector, empty)
+    write_route_store_fixture(selector, empty)
     routes = read_system_routes(selector)
     routes["semantic_contract"] = _routes["semantic_contract"]
     install_runtime(tmp_path, monkeypatch)

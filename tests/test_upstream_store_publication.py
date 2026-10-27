@@ -13,7 +13,7 @@ from emuflow.errors import ValidationError
 from emuflow.store_publication import bind_store_source
 
 ROOT = Path(__file__).resolve().parents[1]
-KINDS = ("emuir", "routes", "paths", "weights", "qor", "functions", "sites")
+KINDS = ("emuir", "paths", "weights", "qor", "functions", "sites")
 
 
 def coordinates(generation=0):
@@ -98,9 +98,8 @@ def setup_case(kind, root):
         if kind == "routes":
             from tests.test_phase4 import _storage_routes
 
-            manifest = module.write_system_route_storage(
-                output, _storage_routes(generation)
-            )
+            from tests.native_route_seal_fixture import write_route_store_fixture
+            manifest = write_route_store_fixture(output, _storage_routes(generation))
             return root / manifest["artifact"]
         if kind == "paths":
             write_measurement(generation)
@@ -153,9 +152,7 @@ def test_native_rejection_keeps_prior_primary_owner(
     assert not list(tmp_path.glob("*.tmp")) and not list(tmp_path.glob("*.previous"))
 
 
-@pytest.mark.parametrize(
-    "kind", [kind for kind in KINDS if kind != "routes"]
-)
+@pytest.mark.parametrize("kind", KINDS)
 def test_changed_source_after_row_build_rejects_publication(tmp_path, kind):
     module, output, produce = setup_case(kind, tmp_path)
     previous = produce()

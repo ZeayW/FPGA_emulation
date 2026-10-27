@@ -3,7 +3,6 @@
 import importlib
 import json
 import os
-import stat
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +10,7 @@ import pytest
 
 from emuflow.errors import ValidationError
 from tests.test_split_overlay_native import owners
+from tests.logic_identity_fixture import identity_facts
 
 
 KINDS = (
@@ -20,6 +20,9 @@ KINDS = (
     "logic_segment_timing",
     "local_path_timing",
 )
+
+
+PYTHON_WRITER_KINDS = tuple(kind for kind in KINDS if kind != "logic_segment_identity")
 
 
 def producer(
@@ -70,6 +73,9 @@ def producer(
             before_records()
         yield from records
 
+    if kind == "logic_segment_identity":
+        assert not source_bindings and before_records is None and not options
+        return identity_facts(path, header=header, segments=records)
     writer = getattr(module, "write_" + kind + "_storage")
     if kind.startswith("logic_"):
         return writer(
@@ -82,101 +88,7 @@ def producer(
     return writer(path, header, stream(), source_bindings=source_bindings)
 
 
-@pytest.mark.parametrize("companion", [False, True])
-def test_logic_identity_partial_selector_backup_keeps_prior_owner_and_query(
-    tmp_path, companion
-):
-    from emuflow import store_publication as module
-
-    path = tmp_path / "identity.json"
-    with producer("logic_segment_identity", path) as prior:
-        previous = path.read_bytes()
-        store = prior.store_path
-        previous_store = store.read_bytes()
-    query, staged = tmp_path / "query.tsv", tmp_path / ".query.publish.tmp"
-    query.write_text("previous query\n")
-    staged.write_text("replacement query\n")
-    options = {"sidecar_publication": (staged, query)} if companion else {}
-    copy = module.shutil.copyfile
-
-    def fail_partial(source, target, *args, **kwargs):
-        if Path(source) == path:
-            Path(target).write_bytes(b"{partial")
-            raise OSError("injected incomplete selector backup")
-        return copy(source, target, *args, **kwargs)
-
-    with patch.object(module.shutil, "copyfile", side_effect=fail_partial):
-        with pytest.raises(OSError, match="incomplete selector backup"):
-            producer("logic_segment_identity", path, generation=1, **options)
-    assert path.read_bytes() == previous
-    assert store.read_bytes() == previous_store
-    assert set(tmp_path.glob("*.sqlite")) == {store}
-    assert query.read_text() == "previous query\n"
-    assert not list(tmp_path.glob("*.previous"))
-    assert not list(tmp_path.glob("*.rollback.tmp"))
-    if companion:
-        assert not staged.exists()
-
-
-@pytest.mark.parametrize("when", ["before", "after", "restore", "directory"])
-def test_logic_identity_shared_selector_commit_preserves_recovery_generations(
-    tmp_path, when
-):
-    from emuflow import store_publication as common
-
-    path = tmp_path / "identity.json"
-    with producer("logic_segment_identity", path) as prior:
-        previous = path.read_bytes()
-        previous_store = prior.store_path
-    write, replace, fsync = common.write_json, common.os.replace, common.os.fsync
-    directory_failed = False
-
-    def reject_write(target, value, **kwargs):
-        if Path(target) != path or when == "directory":
-            return write(target, value, **kwargs)
-        if when != "before":
-            write(target, value, **kwargs)
-        raise OSError("injected selector commit error")
-
-    def reject_restore(source, target):
-        if (
-            when == "restore"
-            and Path(target) == path
-            and str(source).endswith(".previous")
-        ):
-            raise OSError("injected selector recovery error")
-        return replace(source, target)
-
-    def reject_directory(descriptor):
-        nonlocal directory_failed
-        if (
-            when == "directory"
-            and not directory_failed
-            and stat.S_ISDIR(os.fstat(descriptor).st_mode)
-        ):
-            directory_failed = True
-            raise OSError("injected selector directory sync error")
-        return fsync(descriptor)
-
-    with (
-        patch.object(common, "write_json", side_effect=reject_write),
-        patch.object(common.os, "replace", side_effect=reject_restore),
-        patch.object(common.os, "fsync", side_effect=reject_directory),
-    ):
-        with pytest.raises(OSError, match="injected selector"):
-            producer("logic_segment_identity", path, generation=1)
-    assert previous_store.exists()
-    recovery = list(tmp_path.glob("*.previous"))
-    if when == "restore":
-        assert len(recovery) == 1 and recovery[0].read_bytes() == previous
-        assert path.read_bytes() != previous
-        assert (tmp_path / json.loads(path.read_text())["artifact"]).is_file()
-    else:
-        assert path.read_bytes() == previous and not recovery
-        assert set(tmp_path.glob("*.sqlite")) == {previous_store}
-
-
-@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("kind", PYTHON_WRITER_KINDS)
 @pytest.mark.parametrize("changed", ["selector", "store"])
 def test_changed_input_during_record_generation_keeps_prior_publication(
     tmp_path, kind, changed
@@ -210,7 +122,7 @@ def test_changed_input_during_record_generation_keeps_prior_publication(
         source.close()
 
 
-@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("kind", PYTHON_WRITER_KINDS)
 def test_native_rejection_has_no_reference_fallback(tmp_path, kind):
     output = tmp_path / "result.json"
     with producer(kind, output) as prior:
@@ -250,7 +162,7 @@ def test_input_scope_is_bound_before_independent_reader_validation(tmp_path, kin
         fresh.bound_store_sources()
 
 
-@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("kind", PYTHON_WRITER_KINDS)
 def test_same_selector_and_hardlink_alias_rejected_before_writer_lease(tmp_path, kind):
     output, alias = tmp_path / "result.json", tmp_path / "alias.json"
     with producer(kind, output) as source:

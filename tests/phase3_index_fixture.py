@@ -1,4 +1,5 @@
 """Small packed-v3 assignment fixtures; no historical SQL payload producer."""
+from tests.phase3_exact_fixture import write_exact_fixture
 
 from contextlib import closing
 import json
@@ -10,13 +11,13 @@ from emuflow.phase3_assignment_index import (
     CORE_DDL,
     PACKED_EXACT_ASSIGNMENT_INDEX_SCHEMA,
 )
-from emuflow.phase3_exact_binary import EXACT_BINARY_ARTIFACT, write_phase3_exact_binary
+from emuflow.phase3_exact_binary import (EXACT_BINARY_ARTIFACT)
 
 
 def write_assignment_v3_fixture(
     path: Path, *, parts, semantic, metadata, cut_sinks=(), copies=()
 ):
-    descriptor = write_phase3_exact_binary(
+    descriptor = write_exact_fixture(
         path.with_name(EXACT_BINARY_ARTIFACT), semantic, list(parts),
         semantic_digest=metadata["semantic_contract_sha256"],
     )

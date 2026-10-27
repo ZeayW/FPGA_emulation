@@ -970,11 +970,8 @@ def test_indexed_physical_binding_streams_routes_paths_and_schedule(tmp_path):
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
     from emuflow.board_link_timing import build_board_link_timing_model
     from emuflow.runtime import build_virtual_runtime
-    from emuflow.system_route_storage import (
-        SystemRouteSequence,
-        read_system_routes,
-        write_system_route_storage,
-    )
+    from emuflow.system_route_storage import SystemRouteSequence, read_system_routes
+    from tests.native_route_seal_fixture import write_route_store_fixture
     from emuflow.tdm_schedule_storage import (read_tdm_schedule)
 
     fixture = StaticExactSystemTimingTest()
@@ -991,7 +988,7 @@ def test_indexed_physical_binding_streams_routes_paths_and_schedule(tmp_path):
 
     route_path = tmp_path / "routes.json"
     schedule_path = tmp_path / "schedule.json"
-    write_system_route_storage(route_path, routes)
+    write_route_store_fixture(route_path, routes)
     write_tdm_schedule_storage(schedule_path, fixture.schedule)
     indexed_routes = read_system_routes(route_path)
     indexed_schedule = read_tdm_schedule(schedule_path)

@@ -17,7 +17,7 @@ from tests.xilinx_segment_timing_reference import (_TimingGraph,
     build_xilinx_boundary_timing, build_xilinx_logic_segment_timing, build_xilinx_local_path_timing)
 from emuflow.yosys import import_yosys_json
 from emuflow.boundary_identity_storage import write_boundary_identity_storage
-from emuflow.logic_segment_identity_storage import write_logic_segment_identity_storage
+from tests.logic_identity_fixture import identity_facts
 from emuflow.local_path_timing_storage import write_local_path_timing_storage
 from emuflow.local_path_timing import LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION
 
@@ -75,7 +75,7 @@ def case(root):
                  "fpga": "fpga0", "replace_tx_endpoint": "tx", "start_pin": "cell:shadow/Q", "end_pin": "top:tx"},
                 {"id": "s1", "kind": "capture", "system_path": "p1", "member_path": "m1", "cut_index": 0,
                  "fpga": "fpga0", "replace_tx_endpoint": None, "start_pin": "top:rx", "end_pin": "cell:shadow/D"}]
-    with write_logic_segment_identity_storage(logic, header=logic_header, segments=segments):
+    with identity_facts(logic, header=logic_header, segments=segments):
         pass
     from tests.test_local_path_timing_storage import _header as local_header, _record as local_record
     header = local_header()

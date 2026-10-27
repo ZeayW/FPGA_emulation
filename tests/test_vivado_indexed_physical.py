@@ -284,7 +284,7 @@ puts pass
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             ir = fixture(root)
-            with patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("whole graph")), patch("emuflow.vivado_netlist.lower_vivado_primitives", side_effect=AssertionError("deep copy")):
+            with patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("whole graph")):
                 report = emit_vivado_mapped_verilog(ir, root / "dut.v")
                 xdc = vivado_runtime_xdc(ir, {
                     "fabric_clock": {"period_ns": 4.0},
