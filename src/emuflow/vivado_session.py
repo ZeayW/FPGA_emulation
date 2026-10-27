@@ -330,6 +330,16 @@ def _prepare_measurable_timing(session, destination):
     lineage = destination/"cell-lineage.sqlite"
     coverage = import_cell_lineage(mapped, functions, {"routed": out/"routed_mapped_cells.tsv"},
         lineage, mapped_sha256=session["mapped_index_sha256"], retain_stage="routed")
+    # These post-route facts explain disconnected source regions. They never
+    # impose state/INIT assumptions or prevent the vendor implementation.
+    proof_path = destination/"routed-unobservable-sources.sqlite"
+    try:
+        proof = build_optimization_proofs(mapped, lineage, proof_path,
+            mapped_sha256=session["mapped_index_sha256"], fpga=session["fpga"], unobservable_only=True)
+        disposition_analysis = {"status":"pass"}
+    except (ValidationError, sqlite3.Error) as error:
+        proof = None
+        disposition_analysis = {"status":"incomplete", "error":str(error)}
     resolutions = {}
     rx_scope = None
     with (destination/"timing-exports.tsv").open("w") as plan:
@@ -339,12 +349,15 @@ def _prepare_measurable_timing(session, destination):
             raw = destination/(kind+"-all.tsv")
             result = resolve_timing_query(mapped, functions, lineage, Path(source), raw,
                 boundary=kind == "boundary_timing", stage="routed",
+                optimization_proofs=proof_path if proof is not None else None,
+                allow_eliminated=proof is not None,
                 diagnostic_unresolved_path=destination/(kind+"-routed-unassociated.sqlite"))
             query = destination/(kind+"-resolved.tsv")
             unresolved = destination/(kind+"-unresolved.tsv")
             counts = [0, 0]
+            unassociated_rows = eliminated_rows = 0
             rx_cells = set()
-            rx_requested = rx_unresolved = 0
+            rx_requested = rx_unresolved = rx_eliminated = 0
             with raw.open(newline="") as incoming, query.open("w", newline="") as ready, unresolved.open("w", newline="") as missing:
                 reader = csv.reader(incoming, delimiter="\t")
                 writers = [csv.writer(stream, delimiter="\t", lineterminator="\n") for stream in (ready, missing)]
@@ -353,19 +366,28 @@ def _prepare_measurable_timing(session, destination):
                     writer.writerow(header)
                 hints = 1 if kind == "boundary_timing" else 3
                 for row in reader:
-                    index = int("unresolved-source" in row[-hints:])
+                    unassociated = "unresolved-source" in row[-hints:]
+                    eliminated = any(value.startswith("optimized-away:") for value in row[-hints:])
+                    unassociated_rows += int(unassociated)
+                    eliminated_rows += int(eliminated)
+                    index = int(unassociated and not eliminated)
                     writers[index].writerow(row)
                     counts[index] += 1
                     if kind == "boundary_timing" and row[1] == "rx":
                         rx_requested += 1
                         rx_unresolved += index
-                        if not index:
+                        rx_eliminated += int(eliminated)
+                        if not index and not eliminated:
                             for candidate in row[-1].split(","):
                                 rx_cells.add(bytes.fromhex(candidate).decode("utf-8"))
-            if sum(counts) != result["queries"] or counts[1] != result["unresolved_query_rows"]:
+            if sum(counts) != result["queries"] or unassociated_rows != result["unresolved_query_rows"]:
                 raise ValidationError("routed timing query coverage differs")
             raw.unlink()
-            result.update(output=str(query), measurable_queries=counts[0], unresolved_queries=str(unresolved))
+            result.update(output=str(query), measurable_queries=counts[0]-eliminated_rows,
+                unresolved_queries=str(unresolved), unresolved_query_rows=counts[1],
+                status="pass" if not counts[1] else "incomplete")
+            if eliminated_rows:
+                result["optimized_away_queries"] = eliminated_rows
             resolutions[kind] = result
             exports.writerow([kind, str(query).encode().hex(), str(destination/(kind+".tsv")).encode().hex()])
             if kind == "boundary_timing":
@@ -379,17 +401,23 @@ def _prepare_measurable_timing(session, destination):
                 rx_scope = {"status":status, "requested_queries":rx_requested,
                     "unresolved_queries":rx_unresolved, "native_cells":len(rx_cells),
                     "path":str(scope_path), "sha256":file_sha256(scope_path)}
+                if rx_eliminated:
+                    rx_scope["optimized_away_queries"] = rx_eliminated
     requested = sum(item["queries"] for item in resolutions.values())
     measurable = sum(item["measurable_queries"] for item in resolutions.values())
+    eliminated = sum(item.get("optimized_away_queries",0) for item in resolutions.values())
     return {"status": "pass", "coverage": coverage, "resolutions": resolutions,
+        "source_disposition_analysis":disposition_analysis,
+        **({"optimization_proofs":proof} if proof is not None else {}),
         **({"rx_shadow_scope":rx_scope} if rx_scope is not None else {}),
-        "timing_coverage": {"status": "complete" if requested == measurable else "incomplete",
+        "timing_coverage": {"status": "complete" if requested == measurable+eliminated else "incomplete",
             "requested_queries": requested, "measurable_queries": measurable,
-            "unresolved_queries": requested - measurable}}
+            "unresolved_queries": requested - measurable-eliminated,
+            **({"optimized_away_queries":eliminated} if eliminated else {})}}
 
 
 def prepare_timing(session):
-    """Export routed measurements independently of source elimination proofs.
+    """Export routed measurements and source-bound unobservable dispositions.
 
     Missing source associations affect timing coverage, never the validity of
     the vendor implementation. They are neither zero delays nor removal facts.

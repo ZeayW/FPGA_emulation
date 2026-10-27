@@ -34,7 +34,7 @@ class VivadoOptimizationTests(unittest.TestCase):
                            "connections": {**{f"I{i}":[bit] for i,bit in enumerate(bits)}, "O":[q]}}
 
         register("kept", 4, 3)
-        register("dead", 5, 3 if dynamic_dead else 6)
+        register("dead", 5, 3 if dynamic_dead else 6, init="1" if dynamic_dead else "0")
         lut("dead_feedback", 6, [5, 3] if dynamic_dead else [5], "0110" if dynamic_dead else "10")
         register("zero", 7, "0", init="x", ce=3)
         register("zero_chain", 8, 7)

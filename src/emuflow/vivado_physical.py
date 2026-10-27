@@ -173,7 +173,8 @@ def validate_synthesized_continuation(checkpoint: Path, expected_sha256: str, so
             "input_contracts":expected_files,"scope":"active-experiment synthesized-boundary continuation only"}
 
 
-def _import_routed_measurement(*, kind, output, identity, resolution, importer, export, **options):
+def _import_routed_measurement(*, kind, output, identity, resolution, importer, export,
+                               source_dispositions=None, **options):
     """Keep partial observations separate from complete timing databases."""
     measured = output/f"{kind}.tsv"
     observation = {"path":str(measured), "sha256":file_sha256(measured), "bytes":measured.stat().st_size}
@@ -181,7 +182,14 @@ def _import_routed_measurement(*, kind, output, identity, resolution, importer, 
         "measurement":observation}
     if resolution["status"] == "pass":
         destination = output/("boundary-timing.json" if kind == "boundary_timing" else f"{kind}.json")
-        stage["import"] = importer(measured, identity, destination, **options)
+        if source_dispositions is None:
+            stage["import"] = importer(measured, identity, destination, **options)
+        else:
+            from .vivado_optimization import OptimizationProofView
+            with OptimizationProofView(Path(source_dispositions["output"]),
+                    expected_fpga=source_dispositions["fpga"]) as proof:
+                stage["import"] = importer(measured, identity, destination,
+                    optimization_proofs=proof, **options)
     else:
         stage["import"] = {"status":"incomplete", "reason":"unassociated-source-endpoints",
             "unresolved_queries":resolution["unresolved_query_rows"]}
@@ -362,6 +370,7 @@ def run_indexed_vivado_partition(
     if "resource_budget" in runtime:
         usage = {"physical": validate_device_resource_usage(counts, runtime["resource_budget"], stage="post-physical-materialization")}
     stages = {}
+    source_dispositions = preparation.get("optimization_proofs")
     query_mode = "clock-aware-reference" if word_mode else "datapath-only"
     cost_expectation = {"expected_sampling_cost_policy": SAMPLING_COST_POLICY} if word_mode else {}
     export = {"status":"pass","mode":"current-routed-native-session","log":implementation["log"],
@@ -370,6 +379,7 @@ def run_indexed_vivado_partition(
         stages["boundary_timing"] = _import_routed_measurement(kind="boundary_timing", output=output_dir,
             identity=boundary_identity_path, resolution=preparation["resolutions"]["boundary_timing"],
             importer=import_indexed_vivado_boundary, export=export,
+            source_dispositions=source_dispositions,
             measurement_scope="native-word-registered-interface" if word_mode else
                 ("board-integrated-interface" if virtual_io_contract is not None else "partition-boundary"),
             **cost_expectation)
@@ -383,7 +393,8 @@ def run_indexed_vivado_partition(
         if identity is None:
             continue
         stages[kind] = _import_routed_measurement(kind=kind, output=output_dir, identity=identity,
-            resolution=preparation["resolutions"][kind], importer=importer, export=export, **cost_expectation)
+            resolution=preparation["resolutions"][kind], importer=importer, export=export,
+            source_dispositions=source_dispositions, **cost_expectation)
     virtual_io = None
     if virtual_io_contract is not None:
         pairs = _integer(metrics, "virtual_io_pairs")
@@ -402,6 +413,9 @@ def run_indexed_vivado_partition(
         require_store_sources_unchanged(word_sources)
     require_store_sources_unchanged((lineage_binding,))
     artifacts = {"cell-lineage.sqlite":lineage_artifact}
+    if source_dispositions is not None:
+        path = Path(source_dispositions["output"])
+        artifacts[path.name] = {"path":str(path), "sha256":file_sha256(path), "bytes":path.stat().st_size}
     for name in ("route_status.rpt", "drc.rpt", "timing_summary.rpt", "utilization.rpt", "implementation_metrics.tsv",
                  "native-session.json", "native-session.tcl", "clock-contract.tsv",
                  "routed-query-preparation.json", "timing-exports.tsv"):
@@ -459,6 +473,7 @@ def run_indexed_vivado_partition(
             "scripts_sha256": {name:file_sha256(_vivado_script(name)) for name in native_scripts},
             "planner_sha256":file_sha256(Path(__file__).with_name("vivado_session.py"))},
         "cell_coverage": coverage, "timing_coverage": timing_coverage, **stages,
+        **({"optimization_proofs":source_dispositions} if source_dispositions is not None else {}),
         **({"virtual_io_implementation": virtual_io} if virtual_io is not None else {}),
         **({'word_phy_implementation':{'status':'pass','preparation':top_report,
             'sampling_cost_policy':SAMPLING_COST_POLICY,
