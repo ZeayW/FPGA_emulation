@@ -19,7 +19,7 @@ if {[catch {
   if {[llength $incomplete]} {error "retained checkpoint contains incomplete routing"}
   emuflow_inventory "$emuflow_session_out/routed_mapped_cells.tsv" $emuflow_source_prefix 1
   set prepared false
-  if {$emuflow_allow_generated_clocks} {
+  if {[info exists emuflow_export_word_control_timing] && $emuflow_export_word_control_timing} {
     source [file join $emuflow_script_directory word_native_physical.tcl]
     emuflow_session_child prepare-timing
     set prepared true

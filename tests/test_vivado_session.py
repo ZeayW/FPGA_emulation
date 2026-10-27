@@ -657,6 +657,9 @@ def test_retained_checkpoint_exports_without_reimplementation(tmp_path, conditio
     session.update(source_hierarchy_prefix="", queries={}, implementation_timing={"dut_clock_periods_ns":{"clk":100}})
     if word_mode:
         session.update(source_hierarchy_prefix="partition", word_phy_directory=str(prior), timing_query_mode="clock-aware-reference")
+        boundary = prior/"boundary-query.tsv"
+        boundary.write_text("endpoint_hex\tkind\texternal_port_hex\tbit\tlogical_net_hex\tboundary_cell_hex\n")
+        session["queries"]["boundary_timing"] = str(boundary)
     write_json(prior/"native-session.json", session)
     (prior/"routed.dcp").write_bytes(b"retained routed physical design")
     (prior/"clock-contract.tsv").write_text("clock_hex\tport_hex\tperiod_ns\n"+b"core_clk".hex()+"\t"+b"clk".hex()+"\t100\n")
@@ -686,8 +689,9 @@ proc source {path} {
   } else {uplevel 1 [list original_source $path]}
 }
 proc set_param {args} {}
+proc set_max_delay {args} {}
 proc open_checkpoint {path} {puts "opened [file tail $path]"}
-proc current_design {} {return dut}
+proc current_design {args} {return dut}
 proc get_property {property object} {
   switch $property {
     PART {return [expr {$::condition eq "wrong-part" ? "another-part" : $::expected_part}]}
@@ -767,3 +771,44 @@ def test_retained_checkpoint_can_measure_a_new_complete_query_library(tmp_path):
     assert recovered["routed_export"]["query_overrides"] == {
         "local_path_timing":{"path":str(complete), "sha256":file_sha256(complete)}}
     assert parents == {p: file_sha256(p) for p in parents}
+
+
+def test_complete_local_queries_can_be_extracted_independently_of_word_boundaries(tmp_path):
+    from emuflow.vivado_session import prepare_routed_timing_export, load_session
+    session, _, _ = session_fixture(tmp_path, require_constant=False)
+    prior = Path(session["output"])
+    session.update(source_hierarchy_prefix="partition", word_phy_directory=str(prior), timing_query_mode="clock-aware-reference")
+    boundary = tmp_path/"boundary-query.tsv"; boundary.write_text("separate canonical boundary query")
+    session["queries"]["boundary_timing"] = str(boundary)
+    write_json(prior/"native-session.json", session)
+    (prior/"routed.dcp").write_bytes(b"completed physical implementation")
+    (prior/"clock-contract.tsv").write_text("clock_hex\tport_hex\tperiod_ns\n")
+    original = Path(session["queries"]["local_path_timing"])
+    complete = tmp_path/"complete-local-query.tsv"
+    complete.write_text(original.read_text().replace(b"path0".hex(), b"complete-local-member".hex()))
+    parents = {p:file_sha256(p) for p in [prior/"native-session.json", prior/"routed.dcp", boundary, original, complete]}
+    out = tmp_path/"local-export"
+    config = prepare_routed_timing_export(prior/"native-session.json", out,
+        query_overrides={"local_path_timing":complete}, query_kinds=["local_path_timing"])
+    recovered = load_session(config.with_suffix(".json"))
+    assert recovered["queries"] == {"local_path_timing":str(complete)}
+    assert recovered["routed_export"]["query_kinds"] == ["local_path_timing"]
+    assert 'set emuflow_allow_generated_clocks "true"' in config.read_text()
+    assert 'set emuflow_export_word_control_timing "false"' in config.read_text()
+    shutil.copyfile(prior/"routed_mapped_cells.tsv", out/"routed_mapped_cells.tsv")
+    assert prepare_timing(recovered)["timing_coverage"] == {"status":"complete",
+        "requested_queries":1, "measurable_queries":1, "unresolved_queries":0}
+    assert parents == {p:file_sha256(p) for p in parents}
+
+
+@pytest.mark.parametrize("selection", [[], ["missing"], ["local_path_timing", "local_path_timing"]])
+def test_invalid_routed_query_selection_does_not_create_an_export(tmp_path, selection):
+    from emuflow.vivado_session import prepare_routed_timing_export
+    session, _, _ = session_fixture(tmp_path)
+    prior = Path(session["output"]); session["source_hierarchy_prefix"] = ""
+    write_json(prior/"native-session.json", session)
+    (prior/"routed.dcp").write_bytes(b"retained routed design")
+    out = tmp_path/"invalid-export"
+    with pytest.raises(ValidationError, match="query selection"):
+        prepare_routed_timing_export(prior/"native-session.json", out, query_kinds=selection)
+    assert not out.exists()

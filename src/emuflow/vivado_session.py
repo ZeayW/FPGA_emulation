@@ -129,13 +129,16 @@ def load_session(path: Path):
     return value
 
 
-def prepare_routed_timing_export(manifest_path: Path, output: Path, *, query_overrides=None):
+def prepare_routed_timing_export(manifest_path: Path, output: Path, *, query_overrides=None,
+                                query_kinds=None):
     """Prepare read-only timing extraction from a session's retained DCP.
 
     Keep recovery outputs apart from the original implementation. The original
     constraints stay in the DCP; this operation never regenerates clocks or RTL.
     New source-path libraries can replace selected query classes without
     changing the original implementation session or its other queries.
+    An explicit selection permits independent extraction of a complete local
+    path library while canonical boundary/segment extraction is still running.
     """
     import shutil
     manifest_path = manifest_path.resolve()
@@ -156,6 +159,16 @@ def prepare_routed_timing_export(manifest_path: Path, output: Path, *, query_ove
             if not path.is_file():
                 raise ValidationError("routed timing query override is missing")
             replacements[kind] = {"path":str(path), "sha256":file_sha256(path)}
+    selected = None
+    if query_kinds is not None:
+        try:
+            selected = tuple(query_kinds) if not isinstance(query_kinds, str) else ()
+        except TypeError:
+            selected = ()
+        if (not selected or any(not isinstance(kind, str) for kind in selected) or
+                len(set(selected)) != len(selected) or
+                set(selected) - (set(session["queries"]) | set(replacements))):
+            raise ValidationError("invalid routed timing query selection")
     checkpoint_sha = file_sha256(checkpoint)
     output.mkdir(parents=True)
     (output/".tmp").mkdir()
@@ -171,6 +184,9 @@ def prepare_routed_timing_export(manifest_path: Path, output: Path, *, query_ove
     if replacements:
         session["queries"].update({kind:item["path"] for kind,item in replacements.items()})
         session["routed_export"]["query_overrides"] = replacements
+    if selected is not None:
+        session["queries"] = {kind:session["queries"][kind] for kind in selected}
+        session["routed_export"]["query_kinds"] = list(selected)
     if session.get("word_phy_directory") is not None:
         session["word_phy_directory"] = str(output)
     write_json(output/"native-session.json", session, compact=True)
@@ -180,6 +196,7 @@ def prepare_routed_timing_export(manifest_path: Path, output: Path, *, query_ove
         "emuflow_source_prefix":session.get("source_hierarchy_prefix", ""),
         "emuflow_clock_contract":str(output/"clock-contract.tsv"),
         "emuflow_allow_generated_clocks":"true" if session.get("word_phy_directory") else "false",
+        "emuflow_export_word_control_timing":"true" if session.get("word_phy_directory") and "boundary_timing" in session["queries"] else "false",
         "emuflow_io_timing_map":str(output/"fixed-io-timing-map.tsv") if (output/"fixed-io-timing-map.tsv").is_file() else ""}
     lines = [f"set {key} {_tcl_word(value)}" for key,value in settings.items()]
     lines.append("set emuflow_child_command [list "+" ".join(_tcl_word(value) for value in _child_command(output))+"]")
