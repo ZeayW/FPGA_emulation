@@ -17,8 +17,8 @@ pytestmark = pytest.mark.skipif(not os.environ.get('EMUFLOW_OPENSTA_LAUNCH_ENGIN
                                reason='qualified real OpenSTA required')
 
 
-def context(root, *, negative=False, io=True):
-    source = prepare_source(root, negative_capture=negative)
+def context(root, *, negative=False, io=True, fast_name='fast'):
+    source = prepare_source(root, negative_capture=negative, fast_name=fast_name)
     return emit_opensta_source_context(bind_store_source(source, 'emuir-compact-v2'),
         root/'context', clocks={'clk': 10.}, timing_io=dict(
             input_groups=[dict(clock='clk', delay_ns=0., ports=['a', 'b'])] if io else [],
@@ -45,7 +45,7 @@ def test_independent_maxima_and_critical_witnesses_change_and_restore_in_one_gra
     with patch('emuflow.ir.EmuIR.load', side_effect=AssertionError('second Python graph')):
         result = evaluate_patron_source_checkpoints(source, [
             PatronSourceCheckpoint('candidate', costly), PatronSourceCheckpoint('local', local),
-            PatronSourceCheckpoint('restored', costly)], output, top='retime')
+            PatronSourceCheckpoint('restored', costly)], output, top='retime', export_feedback=True)
     assert result['engine_contexts'] == 1
     first, zero, repeated = result['checkpoints']
     assert first['maximum_physical_hops'] == 3
@@ -70,6 +70,94 @@ def test_independent_maxima_and_critical_witnesses_change_and_restore_in_one_gra
         assert pins[0] == bytes.fromhex(row[4]).decode()
         assert pins[-1] == bytes.fromhex(row[5]).decode()
         assert 'clk' not in pins
+    from emuflow.sta import iter_sta_path_database_paths, validate_sta_path_database
+    feedback = output/result['feedback']['selector']
+    manifest = json.loads(feedback.read_text())
+    paths = list(iter_sta_path_database_paths(feedback, manifest))
+    assert validate_sta_path_database(feedback, source.source_bindings[0].path)['paths'] == len(rows)
+    assert len(paths) == result['feedback']['paths'] == len(rows)
+    captures = [p for p in paths if p['endpoint']['instance'] == 'capture']
+    assert {'launch_a','launch_b'} <= {p['startpoint']['instance'] for p in captures}
+    for path in captures:
+        expected = .54 if path['startpoint']['instance'] == 'launch_a' else .34
+        assert path['fixed_delay_ns'] == pytest.approx(expected, abs=2e-6)
+        assert path['slack_ns'] == pytest.approx((5. if negative else 10.)-expected-.08, abs=2e-6)
+        assert path['clock_budget']['check_margin_ns'] == pytest.approx(.08, abs=2e-6)
+        assert path['clock_budget']['capture_edge_ns'] == pytest.approx(5. if negative else 0., abs=2e-6)
+
+
+@pytest.mark.parametrize('name', ['fast[0:0]','fast*literal?','fast\\雪/hier'])
+def test_feedback_replay_uses_literal_data_pin_names(tmp_path, name):
+    source = context(tmp_path, fast_name=name)
+    escaped = name.replace('\\','\\\\')
+    rows = [(a.replace('fast/',escaped+'/'),b.replace('fast/',escaped+'/'),h,r,d)
+            for a,b,h,r,d in ROWS]
+    costs = profile(tmp_path/'costs.tsv', rows)
+    result = evaluate_patron_source_checkpoints(source, [PatronSourceCheckpoint('literal',costs)],
+        tmp_path/'literal',top='retime',export_feedback=True)
+    assert result['feedback']['paths'] == result['checkpoints'][0]['witnesses']
+
+
+def test_feedback_replay_preserves_primary_input_to_output_chain(tmp_path):
+    from emuflow.sta import iter_sta_path_database_paths
+    from emuflow.yosys import import_yosys_json
+    prepare_source(tmp_path)
+    path = tmp_path/'source.json'
+    value = json.loads(path.read_text())
+    design = value['modules']['retime']
+    ff = design['cells']['launch_b']
+    ff['connections']['Q'] = [17]
+    design['cells'] = dict(dummy=ff,
+        driver=dict(type='LUT1',parameters={'INIT':'10'},
+            port_directions=dict(I0='input',O='output'),connections=dict(I0=[3],O=[10])),
+        sink=dict(type='LUT1',parameters={'INIT':'10'},
+            port_directions=dict(I0='input',O='output'),connections=dict(I0=[10],O=[11])))
+    design['ports']['q']['bits'] = [11]
+    design['ports']['dummy_q'] = dict(direction='output',bits=[17])
+    path.write_text(json.dumps(value))
+    original = tmp_path/'primary.emuir.sqlite'
+    import_yosys_json(path,top='retime',clocks=['clk']).save(original)
+    source = emit_opensta_source_context(bind_store_source(original,'emuir-compact-v2'),
+        tmp_path/'context',clocks={'clk':10.},timing_io=dict(
+            input_groups=[dict(clock='clk',delay_ns=0.,ports=['a','b'])],
+            output_groups=[dict(clock='clk',delay_ns=0.,ports=['q','dummy_q'])]),
+        executable=os.environ['EMUFLOW_OPENSTA_LAUNCH_ENGINE'])
+    costs = profile(tmp_path/'costs.tsv',[('driver/O','sink/I0',1,8,30.)])
+    output = tmp_path/'primary-feedback'
+    result = evaluate_patron_source_checkpoints(source,[PatronSourceCheckpoint('primary',costs)],
+        output,top='retime',export_feedback=True)
+    selector = output/result['feedback']['selector']
+    paths = list(iter_sta_path_database_paths(selector,json.loads(selector.read_text())))
+    assert len(paths) == 3
+    assert all(p['startpoint']['instance'] is p['endpoint']['instance'] is None for p in paths)
+    assert all(p['startpoint']['port']=='a' and p['endpoint']['port']=='q' for p in paths)
+    assert all(p['fixed_delay_ns'] == pytest.approx(.2,abs=2e-6) for p in paths)
+
+
+@pytest.mark.parametrize('cell_type,pin', [('FDCE','CLR'),('FDPE','PRE')])
+@pytest.mark.parametrize('negative', [False,True])
+def test_feedback_retains_recovery_control_check_and_clock_edges(tmp_path,cell_type,pin,negative):
+    from emuflow.sta import iter_sta_path_database_paths
+    from tests.test_opensta_ff_control_coverage import source_fixture
+    _,original = source_fixture(tmp_path,cell_type,pin,negative)
+    source = emit_opensta_source_context(bind_store_source(original,'emuir-compact-v2'),
+        tmp_path/'context',clocks={'clk':10.},timing_io=dict(
+            input_groups=[dict(clock='clk',delay_ns=0.,ports=['a'])],
+            output_groups=[dict(clock='clk',delay_ns=0.,ports=['q'])]),
+        executable=os.environ['EMUFLOW_OPENSTA_LAUNCH_ENGINE'])
+    costs = profile(tmp_path/'costs.tsv',[('launch/Q','delay/I0',1,8,30.)])
+    output = tmp_path/'recovery'
+    result = evaluate_patron_source_checkpoints(source,[PatronSourceCheckpoint('recovery',costs)],
+        output,top='controls',export_feedback=True)
+    selector = output/result['feedback']['selector']
+    paths = list(iter_sta_path_database_paths(selector,json.loads(selector.read_text())))
+    captures = [p for p in paths if p['endpoint']['instance']=='capture']
+    assert len(captures) == 3
+    for path in captures:
+        assert path['endpoint']['instance']=='capture' and path['endpoint']['port']==pin
+        assert path['fixed_delay_ns'] == pytest.approx(.22,abs=2e-6)
+        assert path['clock_budget']['check_margin_ns'] == pytest.approx(.08,abs=2e-6)
+        assert path['clock_budget']['capture_edge_ns'] == pytest.approx(5. if negative else 0.,abs=2e-6)
 
 
 @pytest.mark.parametrize('damage', ['unconstrained', 'wrong-pin', 'integer-overflow', 'changed-lease'])
@@ -94,7 +182,7 @@ def test_native_assignment_costs_feed_the_source_graph_without_a_selected_path_p
     from emuflow.partition import (build_clusters, build_partition_assignment,
                                   normalize_partition_constraints, CUT_MODE_STATIC_EXACT)
     from emuflow.partition_ir import load_partition_ir
-    from emuflow.partition_pressure import build_partition_pressure_model
+    from emuflow.partition_pressure import build_partition_pressure_model,run_partition_pressure_native
     from emuflow.platform import Platform
     from emuflow.routing import normalize_route_constraints
     from tests.test_phase5 import _platform_value, _link
@@ -127,3 +215,15 @@ def test_native_assignment_costs_feed_the_source_graph_without_a_selected_path_p
     assert result['profiles'][0]['producer']['selected_paths_loaded'] == 0
     assert (output/result['profiles'][0]['path']).is_file()
     assert (output/result['witnesses']['path']).is_file()
+    feedback = output/result['feedback']['selector']
+    proposal = build_partition_pressure_model(ir,platform,clusters,constraints,
+        json.loads(feedback.read_text()),routes,independent_validation=False,
+        timing_database_path=feedback,native_store_model=True)
+    candidate,trace = run_partition_pressure_native(ir,platform,clusters,constraints,routes,proposal,
+        initial,max_moves=1,algorithm_version=14,retain_trace_seals=False,stream_semantic_records=True,
+        output_validation='caller',_release_model_before_assignment=True,_defer_candidate_derived_records=True)
+    assert trace['model_counts']['paths'] == result['feedback']['paths']
+    # A witness-guided proposal still needs a new complete-graph evaluation;
+    # its selected-path trace is never the global acceptance result.
+    checked = check_patron_source_assignments(model,source,[('proposal',candidate)],tmp_path/'rechecked')
+    assert checked['engine_contexts'] == 1 and checked['checkpoints'][0]['witnesses'] > 0

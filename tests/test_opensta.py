@@ -296,6 +296,9 @@ class OpenStaProviderTest(unittest.TestCase):
             ROOT / "scripts/opensta/export_timing_path_database.tcl"
         ).read_text(encoding="utf-8")
         context = (ROOT / "scripts/opensta/design_context.tcl").read_text(encoding="utf-8")
+        rows = (ROOT / "scripts/opensta/timing_path_rows.tcl").read_text(encoding="utf-8")
+        self.assertIn("source [file join [file dirname [info script]] timing_path_rows.tcl]", script)
+        script += rows
         self.assertIn("source [file join [file dirname [info script]] design_context.tcl]", script)
         # Keep hexadecimal transport on the portable H* API.
         self.assertIn("binary format H* $value", context)
@@ -342,10 +345,7 @@ class OpenStaProviderTest(unittest.TestCase):
         )
         self.assertNotIn("split [read $map_input]", script)
         self.assertNotIn("get_pins -quiet -of_objects $mapped_net", script)
-        emit_body = script[
-            script.index("proc emuflow_emit_timing_paths") :
-            script.index("if {[info exists env(EMUFLOW_STA_THROUGH_NETS)]")
-        ]
+        emit_body = rows[rows.index("proc emuflow_emit_timing_paths") :]
         self.assertIn("get_nets -quiet -of_objects [list $pin]", emit_body)
         self.assertIn(
             '$required_net ne "" && ![info exists seen_net($required_net)]',

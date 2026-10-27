@@ -15,7 +15,7 @@ import tempfile
 from .errors import EmuFlowError, ValidationError
 from .io import file_sha256, write_json
 from .native_tools import resolve_native_executable
-from .opensta import OPENSTA_EXPORT_SCRIPT
+from .opensta import OPENSTA_EXPORT_SCRIPT, OPENSTA_PROVIDER
 from .opensta_source_context import OpenSTASourceContext
 from .store_publication import (VerifiedStoreFile, bind_store_source,
     StoreSource, require_store_sources_unchanged, validate_store_destination)
@@ -61,9 +61,12 @@ def check_patron_source_assignments(model, context, assignments, output, *, time
             checkpoints.append(PatronSourceCheckpoint(identity, VerifiedStoreFile(path, 'patron-source-proxy-tsv-v1')))
             profiles.append(dict(checkpoint=identity, path=path.relative_to(root).as_posix(), producer=report))
         result = evaluate_patron_source_checkpoints(context, checkpoints, root/'evaluation',
-            top=model.ir.value['design']['top'], timeout_seconds=timeout_seconds)
+            top=model.ir.value['design']['top'], timeout_seconds=timeout_seconds, export_feedback=True)
         result = {**result, 'profiles': profiles,
             'witnesses': {**result['witnesses'], 'path':'evaluation/witnesses.tsv'}}
+        result['feedback'] = {**result['feedback'],
+            'selector':'evaluation/'+result['feedback']['selector'],
+            'links':'evaluation/'+result['feedback']['links']}
         # Producer diagnostics contain temporary absolute paths. Artifact
         # references use the retained relative profile above after publication.
         for profile in profiles:
@@ -75,7 +78,7 @@ def check_patron_source_assignments(model, context, assignments, output, *, time
 
 
 def evaluate_patron_source_checkpoints(context, checkpoints, output, *, top,
-                                      timeout_seconds=3600):
+                                      timeout_seconds=3600, export_feedback=False):
     """Search every supplied assignment profile without reloading the graph.
 
     Profiles come from the shared native complete-connectivity producer.
@@ -88,7 +91,8 @@ def evaluate_patron_source_checkpoints(context, checkpoints, output, *, top,
             or not isinstance(checkpoints, (list, tuple)) or not 1 <= len(checkpoints) <= 64
             or not isinstance(top, str) or not top or '\0' in top
             or isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int)
-            or timeout_seconds <= 0 or not 1 <= len(context.reference_clocks_ns) <= 64):
+            or timeout_seconds <= 0 or not 1 <= len(context.reference_clocks_ns) <= 64
+            or not isinstance(export_feedback, bool)):
         raise ValidationError('invalid bounded PATRON source checkpoint request')
     labels = []
     for item in checkpoints:
@@ -101,7 +105,8 @@ def evaluate_patron_source_checkpoints(context, checkpoints, output, *, top,
         labels.append(item.identity)
     context.require_unchanged()
     scripts = tuple(bind_store_source(OPENSTA_EXPORT_SCRIPT.with_name(name), 'sta-source-document-v1')
-        for name in ('patron_source_checkpoints.tcl', 'communication_delays.tcl', 'design_context.tcl'))
+        for name in ('patron_source_checkpoints.tcl', 'communication_delays.tcl', 'design_context.tcl',
+                     'timing_path_rows.tcl', 'clock_budget.tcl'))
     parents = (*context.source_bindings, *scripts, *(item.profile.source for item in checkpoints))
     output = Path(output).resolve()
     validate_store_destination(output, parents)
@@ -111,21 +116,33 @@ def evaluate_patron_source_checkpoints(context, checkpoints, output, *, top,
     with tempfile.TemporaryDirectory(prefix='.patron-source-checkpoints-', dir=output.parent) as temporary:
         root = Path(temporary)
         request, metrics, witnesses = (root/name for name in ('requests.tsv', 'metrics.tsv', 'witnesses.tsv'))
+        net_map_seal = None
+        if export_feedback:
+            from .sta import write_emuir_net_map
+            write_emuir_net_map(context.source_bindings[0].path, root/'net-map.tsv')
+            net_map_seal = VerifiedStoreFile(root/'net-map.tsv', 'sta-source-document-v1')
+            (root/'nominal-profile.tsv').write_text(
+                'from_pin_hex\tto_pin_hex\tphysical_hops\tmaximum_net_route_ratio\tpredicted_delay_ns\n')
         request.write_text('checkpoint_hex\tprofile_path_hex\n' + ''.join(
             f'{item.identity.encode().hex()}\t{str(item.profile.source.path).encode().hex()}\n'
             for item in checkpoints))
         environment = {**os.environ, **context.environment, 'EMUFLOW_STA_TOP': top,
             'EMUFLOW_PATRON_CHECKPOINTS': str(request), 'EMUFLOW_PATRON_METRICS': str(metrics),
-            'EMUFLOW_PATRON_WITNESSES': str(witnesses)}
+            'EMUFLOW_PATRON_WITNESSES': str(witnesses),
+            'EMUFLOW_PATRON_FEEDBACK_OUTPUT': str(root/'feedback.tsv') if export_feedback else '',
+            'EMUFLOW_PATRON_FEEDBACK_LINKS': str(root/'feedback-links.tsv') if export_feedback else '',
+            'EMUFLOW_PATRON_NOMINAL_PROFILE': str(root/'nominal-profile.tsv') if export_feedback else '',
+            'EMUFLOW_STA_NET_MAP': str(root/'net-map.tsv') if export_feedback else ''}
         command = [context.command[0], '-no_init', '-exit', str(scripts[0].path)]
         with NativeToolProcess(resolve_native_executable('emuflow-native'), command,
                 environment=environment, timeout_ms=timeout_seconds*1000,
                 scratch_parent=root, maximum_bytes=65536) as process:
             completed = process.finish()
         require_store_sources_unchanged(parents)
-        completion = re.findall(r'^EMUFLOW_PATRON_SOURCE_CHECKPOINTS status=pass contexts=1 checkpoints=(\d+)\r?$',
+        completion = re.findall(r'^EMUFLOW_PATRON_SOURCE_CHECKPOINTS status=pass contexts=1 checkpoints=(\d+) feedback_paths=(\d+)\r?$',
                                 completed.stdout, re.M)
-        if completed.returncode or completion != [str(len(checkpoints))]:
+        if (completed.returncode or len(completion) != 1 or completion[0][0] != str(len(checkpoints))
+                or (int(completion[0][1]) > 0) != export_feedback):
             raise EmuFlowError('PATRON full-source checkpoint search failed: '+completed.stdout)
         if not metrics.is_file() or metrics.stat().st_size > 65536 or not witnesses.is_file():
             raise EmuFlowError('PATRON full-source checkpoint output is incomplete or unbounded')
@@ -150,6 +167,31 @@ def evaluate_patron_source_checkpoints(context, checkpoints, output, *, top,
             rows.append(dict(checkpoint=item.identity, maximum_physical_hops=hops,
                 maximum_path_route_ratio_sum=ratios, worst_slack_ns=slack,
                 total_negative_slack_ns=tns, witnesses=count, profile_sha256=item.profile.sha256))
+        feedback = None
+        if export_feedback:
+            from .indexed_timing import IndexedTimingView
+            from .sta import import_sta_path_database_tsv_streaming
+            expected = sum(row['witnesses'] for row in rows)
+            if int(completion[0][1]) != expected:
+                raise EmuFlowError('source feedback lost a checkpoint witness')
+            net_map_seal.require_unchanged()
+            view = IndexedTimingView(context.source_bindings[0].path)
+            try:
+                imported = import_sta_path_database_tsv_streaming(root/'feedback.tsv',
+                    context.source_bindings[0].path, root/'feedback-paths.json', provider=OPENSTA_PROVIDER,
+                    source=dict(clock_budget_policy='engine-edge-v1',
+                        clock_logic_policy=context.model['clock_logic']['policy'],
+                        source_timing_coverage=dict(policy='engine-no-clock-unconstrained-loops-v1',status='pass'),
+                        path_selection=dict(policy='checkpoint-witnesses-v1',scope='selected-witnesses'),
+                        local_costs='nominal-source-replay-with-original-clock-edges-v1'),
+                    _ir=view, expected_records=expected)
+            finally:
+                view.close()
+            feedback = dict(selector='feedback-paths.json', sha256=file_sha256(root/'feedback-paths.json'),
+                links='feedback-links.tsv', links_sha256=file_sha256(root/'feedback-links.tsv'),
+                paths=imported['paths'], source_net_map_sha256=net_map_seal.sha256)
+            net_map_seal.require_unchanged()
+            (root/'net-map.tsv').unlink()
         result = dict(schema='emuflow.patron-source-checkpoints/v1', status='pass',
             scope='partition-planning-full-source-checkpoints', engine_contexts=1,
             objective_policy='independent-source-hops-route-ratio-and-setup-sta-v1',
@@ -158,6 +200,8 @@ def evaluate_patron_source_checkpoints(context, checkpoints, output, *, top,
             adapter_scripts={str(p.path):file_sha256(p.path) for p in scripts},
             witnesses=dict(path='witnesses.tsv', sha256=file_sha256(witnesses)),
             engine_metrics=completed.native_metrics)
+        if feedback is not None:
+            result['feedback'] = feedback
         write_json(root/'summary.json', result)
         require_store_sources_unchanged(parents)
         os.rename(root, output)
