@@ -30,6 +30,22 @@ int main(int argc,char** argv) {
         "json_extract(value,'$.costs') FROM json_each(?1,'$.partitions') ORDER BY key");rows.BindText(1,json);
     while(rows.Step())parts.push_back({ArtifactRef::Bind(rows.TypedText(0),"logic-segment-timing-store-v3"),
         ArtifactRef::Bind(rows.TypedText(1),"boundary-identity-store-v1"),ArtifactRef::Bind(rows.TypedText(2),"boundary-timing-store-v3")});
+    std::unique_ptr<NativeOptimizationProofView> proof;
+    auto optional=parser.Prepare("SELECT json_type(?,'$.proof_context')");optional.BindText(1,json);
+    if(optional.Step() && !optional.IsNull(0)) {
+      CheckedOptimizationContext checked;checked.fpga=text("$.proof_context.fpga");checked.mapped_sha256=text("$.proof_context.mapped_sha256");
+      checked.synthesized_checkpoint_sha256=text("$.proof_context.synthesized_checkpoint_sha256");
+      std::vector<ArtifactRef> artifacts;
+      for(unsigned i=0;i<3;++i) {
+        const auto base="$.proof_context.inputs["+std::to_string(i)+"]";
+        artifacts.push_back(ArtifactRef::Bind(text(base+".path"),i==0?"vivado-optimization-proofs-v1":i==1?"xilinx-mapped-index-v2":"vivado-lineage-store-v2"));
+        auto values=parser.Prepare("SELECT value FROM json_each(?1,?2) ORDER BY key");values.BindText(1,json);values.BindText(2,base+".generation");
+        std::vector<std::int64_t> v;while(values.Step())v.push_back(values.TypedInteger(0));if(v.size()!=7)return 2;
+        checked.generations[i]={std::uint64_t(v[0]),std::uint64_t(v[1]),std::uint64_t(v[2]),v[3],v[4],v[5],v[6]};
+      }
+      proof=std::make_unique<NativeOptimizationProofView>(artifacts[0],artifacts[1],artifacts[2],checked);
+      parts.at(0).optimization=proof.get();
+    }
     auto result=BindPhysicalWordModel(ArtifactRef::Bind(text("$.assignment"),"assignment-index-v4"),
         ArtifactRef::Bind(text("$.semantic"),"exact-semantic-binary-v2"),
         ArtifactRef::Bind(text("$.schedule"),"tdm-schedule-store-v4"),launches,context,parts);
@@ -44,6 +60,9 @@ int main(int argc,char** argv) {
     VisitPhysicalWordSupportChecks(result,selected,[&](const auto& check){++check_count;if(!summary)checks.push_back(check);});
     if(argc==3) {
       if(std::string(argv[2])=="mutate") {std::ofstream changed(text("$.clocks"),std::ios::app|std::ios::binary);changed.put('\0');}
+      else if(std::string(argv[2])=="mutate-proof") {
+        std::ofstream changed(text("$.proof_context.inputs[0].path"),std::ios::app|std::ios::binary);changed.put('\0');
+      }
       else if(std::string(argv[2])=="mix-clock-owner") {
         const auto other=ArtifactRef::Bind(text("$.other_clocks"),"source-launch-clock-store-v1");
         SourceLaunchClockView alternate(other,source,identity.original_ir_sha256);
@@ -79,6 +98,16 @@ int main(int argc,char** argv) {
     for(std::size_t i=0;i<checks.size();++i) {
       if(i)std::cout<<",";const auto& c=checks[i];
       std::cout<<"["<<c.transfer<<","<<c.fanin<<","<<c.launch_ns<<","<<c.data_delay_ns<<","<<c.required_ns<<"]";
+    }
+    std::cout<<"],\"eliminated\":[";
+    for(std::size_t i=0;i<result.eliminated_fanins.size();++i) {
+      if(i)std::cout<<",";std::cout<<"[";bool first=true;
+      for(const auto& removed:result.eliminated_fanins[i]) {
+        if(!first)std::cout<<",";first=false;
+        if(!proof)throw std::runtime_error("missing elimination owner");proof->RequireOwner(removed.disposition);
+        std::cout<<"["<<JsonQuote(removed.disposition.source_cell)<<","<<removed.origin.logic->sequence()<<"]";
+      }
+      std::cout<<"]";
     }
     std::cout<<"],\"inputs\":"<<result.inputs.size()<<"}\n";return 0;
   }catch(const std::exception& error){std::cerr<<error.what()<<"\n";return 1;}

@@ -41,9 +41,13 @@ std::string ShadowQ(SqliteDatabase& db,const std::string& endpoint) {
   std::string result;for(char c:row.TypedText(0)) {if(c=='\\')result+='\\';result+=c;}
   Check(!result.empty() && !row.Step(),"word physical RX shadow is ambiguous");return result+"/Q";
 }
-std::pair<double,double> Cost(SqliteStatement& row,int data,int sampling,int disposition,int proof) {
-  Check(row.TypedText(disposition)!="optimized-away" && row.IsNull(proof),
+std::pair<double,double> Cost(SqliteStatement& row,int data,int sampling,int disposition,int proof,const char* boundary=nullptr) {
+  const auto kind=row.TypedText(disposition);
+  Check(kind!="optimized-away" && row.IsNull(proof),
         "word physical optimized-away row requires a checked disposition owner");
+  Check(kind=="endpoint-exact" || (boundary ? kind==boundary :
+        kind=="cut-net-cone-upper-bound" || kind=="optimized-endpoint-collection-upper-bound"),
+        "word physical measurement classification is unsupported");
   Check(!row.IsNull(data) && !row.IsNull(sampling) && std::isfinite(row.Real(data)) && row.Real(data)>=0 &&
         std::isfinite(row.Real(sampling)) && std::isfinite(row.Real(sampling)-row.Real(data)),
         "word physical row lacks finite clock-aware costs");
@@ -132,6 +136,7 @@ BoundPhysicalWordModel BindPhysicalWordModel(const ArtifactRef& assignment,const
     result.model.transfers.push_back({slot%(ratio/8),ratio,context.fixed_latency_words,false,{}});
     result.transfers.push_back({calendar.Id<WordScheduleEntryTag>(seq),cut,from,to});
     result.fanins.emplace_back();
+    result.eliminated_fanins.emplace_back();
   }
   auto count=db.Prepare("SELECT json_extract(value,'$') FROM metadata WHERE key='entry_relation_records'");
   Check(count.Step() && count.TypedInteger(0)==static_cast<std::int64_t>(entries.size()),"word physical schedule coverage differs");
@@ -171,6 +176,11 @@ BoundPhysicalWordModel BindPhysicalWordModel(const ArtifactRef& assignment,const
           Header(local,"tdm_schedule_sha256")==context.source.schedule_sha256 &&
           Header(local,"semantic_contract_sha256")==context.source.semantic_sha256,"word physical cost context differs");
     for(const auto* owner:{&partition.logic_costs,&partition.boundary_identity,&partition.boundary_costs})result.inputs.push_back(*owner);
+    if(partition.optimization) {
+      Check(partition.optimization->fpga()==exact.parts()[part],"word physical optimization proof belongs to another partition");
+      for(const auto& owner:partition.optimization->artifacts())result.inputs.push_back(owner);
+      partition.optimization->RequireUnchanged();
+    }
     // At most three attachments per connection, independent of FPGA count.
     Attach(local,partition.boundary_identity,"boundary");Attach(local,partition.boundary_costs,"costs");Attach(local,schedule,"calendar");
     auto endpoints=local.Prepare("SELECT b.id,b.kind,b.source_class,b.logical_net,b.demand,b.link,b.peer,b.lane,"
@@ -189,7 +199,8 @@ BoundPhysicalWordModel BindPhysicalWordModel(const ArtifactRef& assignment,const
             endpoints.TypedText(6)==endpoints.TypedText(tx?13:12) && endpoints.TypedInteger(7)==endpoints.TypedInteger(14) &&
             endpoints.TypedText(15)==kind && !endpoints.IsNull(16),"word physical endpoint identity differs from its schedule");
       Check(endpoints.TypedText(21)==endpoints.TypedText(16),"word physical timing endpoint belongs to another transfer");
-      const auto cost=Cost(endpoints,17,18,19,20);
+      const auto cost=Cost(endpoints,17,18,19,20,tx?"logical-source-to-native-tx-word-sampling-pin":
+          "registered-native-rx-word-to-shadow-capture-within-fixed-arc");
       if(tx) {
         Check(!tx_seen[i] && endpoints.TypedText(2)==(entry.origin?"dut-net":"forwarded-shadow"),"word physical TX source class differs");
         tx_seen[i]=true;
@@ -214,7 +225,8 @@ BoundPhysicalWordModel BindPhysicalWordModel(const ArtifactRef& assignment,const
     auto support=local.Prepare("SELECT s.seq,s.kind,s.static_exact_segment_id,s.system_path,s.start_pin,s.start_object_kind,"
         "CASE WHEN typeof(s.delay_ns) IN ('real','integer') THEN s.delay_ns END,"
         "CASE WHEN typeof(s.sampling_cost_ns) IN ('real','integer') THEN s.sampling_cost_ns END,"
-        "s.measurement,s.optimization_source,s.fpga,b.kind,e.seq "
+        "s.measurement,s.optimization_source,s.fpga,b.kind,e.seq,s.end_pin,s.end_object_kind,"
+        "typeof(s.delay_ns),typeof(s.sampling_cost_ns) "
         "FROM segments s LEFT JOIN boundary.endpoints b ON b.id=s.replace_tx_endpoint "
         "LEFT JOIN calendar.schedule_entries e ON e.entry_id=b.schedule_entry "
         "WHERE s.kind IN ('launch','transition') AND s.system_path GLOB 'static-exact-contract:*' ORDER BY s.seq");
@@ -229,19 +241,33 @@ BoundPhysicalWordModel BindPhysicalWordModel(const ArtifactRef& assignment,const
             support.TypedText(3)=="static-exact-contract:"+support.TypedText(2) &&
             support.TypedText(10)==exact.parts()[part] && support.TypedText(11)=="tx",
             "word physical complete fanin disagrees with the semantic contract");
-      const auto cost=Cost(support,6,7,8,9);const auto origin=logic.Id<WordLogicCostTag>(Index(support.TypedInteger(0)));
+      const auto origin=logic.Id<WordLogicCostTag>(Index(support.TypedInteger(0)));
+      std::optional<EliminatedSourceFact> eliminated;
+      std::optional<std::pair<double,double>> cost;
+      if(support.TypedText(8)=="optimized-away") {
+        Check(partition.optimization && support.TypedText(15)=="null" && support.TypedText(16)=="null" &&
+              support.IsNull(6) && support.IsNull(7) && !support.IsNull(9),
+              "word physical eliminated fanin lacks its checked proof or has numerical costs");
+        std::vector<std::string> cells;
+        for(const auto& endpoint:{std::make_pair(4,5),std::make_pair(13,14)})
+          if(support.TypedText(endpoint.second)=="pin")cells.push_back(LogicalTimingCell(support.TypedText(endpoint.first)));
+        Check(!cells.empty(),"word physical eliminated fanin has no typed cell endpoint");
+        eliminated=partition.optimization->Require(support.TypedText(9),cells);
+        partition.optimization->RequireOwner(*eliminated);
+      } else cost=Cost(support,6,7,8,9);
       if(semantic_segment.kind==0) {
         for(const auto& fact:launches.Facts(support.TypedText(4),support.TypedText(5),context.implementation_clock_periods_ns)) {
           launches.RequireOwner(fact);
           const auto key=std::make_tuple(fact.source.sequence(),fact.clock.sequence(),fact.engine_phase_ns);
           Check(launch_seen.emplace(i,group,fact.source.sequence(),fact.clock.sequence(),fact.engine_phase_ns).second,
                 "word physical architectural fanin is repeated");
+          if(eliminated)continue;
           auto found=roots.find(key);std::uint32_t root;
           if(found==roots.end()) {
             Check(roots.size()<UINT32_MAX,"word physical root population exceeds native domain");root=roots.size();roots.emplace(key,root);
             result.roots.push_back(fact);result.model.root_launch_ns.push_back(fact.launch_ns);
           } else root=found->second;
-          result.model.transfers[i].fanins.push_back({false,root,cost.first,cost.second});
+          result.model.transfers[i].fanins.push_back({false,root,cost->first,cost->second});
           result.fanins[i].push_back({part,group,origin,{}});
         }
         groups.emplace(i,group);
@@ -253,9 +279,12 @@ BoundPhysicalWordModel BindPhysicalWordModel(const ArtifactRef& assignment,const
         Check(rx.Step(),"word physical transition RX boundary is missing");const auto source=rx.TypedText(0);
         Check(!rx.Step() && support.TypedText(5)=="pin" && support.TypedText(4)==ShadowQ(local,source),
               "word physical transition starts at another RX shadow");
-        result.model.transfers[i].fanins.push_back({true,found->second,cost.first,cost.second});
-        result.fanins[i].push_back({part,group,origin,{}});
+        if(!eliminated) {
+          result.model.transfers[i].fanins.push_back({true,found->second,cost->first,cost->second});
+          result.fanins[i].push_back({part,group,origin,{}});
+        }
       }
+      if(eliminated)result.eliminated_fanins[i].push_back({{part,group,origin,{}},*eliminated});
     }
   }
   Check(seen_parts.size()==exact.parts().size(),"word physical partition coverage is incomplete");
@@ -275,6 +304,14 @@ BoundPhysicalWordModel BindPhysicalWordModel(const ArtifactRef& assignment,const
         Check(result.model.transfers[i].fanins.empty(),"word physical constant cut has dynamic fanins");
         result.model.transfers[i].configuration_stable=true;
       } else Check(groups.count({i,group}),"word physical complete source group is missing");
+    }
+    if(entries[i].origin && result.model.transfers[i].fanins.empty()) {
+      // Every original dynamic group was accounted above. A cut with no
+      // remaining architectural/RX dependency is stable; the removed source
+      // records remain proof dispositions, without numerical physical costs.
+      Check(result.model.transfers[i].configuration_stable || !result.eliminated_fanins[i].empty(),
+            "word physical empty source has no constant contract or checked removal");
+      result.model.transfers[i].configuration_stable=true;
     }
     for(auto& fanin:result.model.transfers[i].fanins)if(!fanin.from_event)fanin.source=root_order[fanin.source];
     Check(result.fanins[i].size()==result.model.transfers[i].fanins.size(),"word physical cost origins are incomplete");

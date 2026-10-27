@@ -2,12 +2,14 @@
 #include "emuflow_core/exact_semantic_view.hpp"
 #include "emuflow_core/source_launch_clocks.hpp"
 #include "emuflow_core/word_events.hpp"
+#include "emuflow_core/optimization_proofs.hpp"
 #include <optional>
 
 namespace emuflow::core {
 struct WordPhysicalPartition {
   // Already validated physical-result owners from the same Phase7 invocation.
   ArtifactRef logic_costs, boundary_identity, boundary_costs;
+  NativeOptimizationProofView* optimization = nullptr;
 };
 struct WordPhysicalBindingContext {
   SourceLaunchIdentity source;
@@ -38,6 +40,13 @@ struct BoundPhysicalWordModel {
   std::vector<WordTransferOrigin> transfers;
   // Same transfer/fanin order used by the independent engine-slack validator.
   std::vector<std::vector<WordFaninOrigin>> fanins;
+  struct EliminatedFanin {
+    WordFaninOrigin origin;
+    EliminatedSourceFact disposition;
+  };
+  // Complete physical source rows retain a typed proof instead of a fake
+  // numerical data/check arc. Support-check indices enumerate active fanins.
+  std::vector<std::vector<EliminatedFanin>> eliminated_fanins;
   std::vector<ArtifactRef> inputs;
   void RequireUnchanged() const;
 };
@@ -56,8 +65,9 @@ void VisitPhysicalWordSupportChecks(const BoundPhysicalWordModel& binding,
 // the current assignment, ScheduleStore, complete-contract physical rows and
 // original launch facts, retaining only native coordinates and numerical arcs.
 // Selected original timing-path subsets cannot supply complete fanins.
-// This entry rejects required optimized-away rows until their checked native
-// disposition owner is bound; it never interprets missing facts as constants.
+// Eliminated source rows require a checked proof owner and explicit endpoint
+// cell identities. Boundary measurements remain mandatory. Missing facts are
+// never interpreted as constants or zero-cost physical arcs.
 // Callers must still validate OpenSTA support slacks, all original captures,
 // and target/runtime clock semantics before releasing the global result.
 BoundPhysicalWordModel BindPhysicalWordModel(const ArtifactRef& assignment,

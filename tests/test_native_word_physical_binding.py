@@ -1,5 +1,7 @@
 """Canonical indexed owners -> physical word fanins (no Python timing graph)."""
 from contextlib import closing
+from copy import deepcopy
+import csv
 import hashlib
 import json
 import os
@@ -140,6 +142,103 @@ def run(physical,mode=None):
     return subprocess.run([str(word_physical_binding_test()),str(path),*([mode]if mode else[])],capture_output=True,text=True)
 
 
+@pytest.fixture
+def eliminated_fanin(physical,tmp_path,monkeypatch):
+    from emuflow.emuir_compact import read_compact_emuir
+    from emuflow.vivado_netlist import emit_vivado_mapped_verilog
+    from emuflow.vivado_lineage import import_cell_lineage,INVENTORY_HEADER
+    from emuflow.vivado_optimization import build_optimization_proofs
+    from tests.test_native_optimization_proofs import checked_context
+    from tests.native_build import emuflow_native
+    if not os.environ.get('EMUFLOW_NATIVE_ROOT'):
+        native=tmp_path/'native';(native/'bin').mkdir(parents=True)
+        (native/'bin/emuflow-native').symlink_to(emuflow_native());monkeypatch.setenv('EMUFLOW_NATIVE_ROOT',str(native))
+    config,path=physical
+    value=read_compact_emuir(Path(config['source']))
+    dead=deepcopy(next(c for c in value['instances']if c['id']=='positive'));dead.update(id='dead',name='dead')
+    value['instances'].append(dead)
+    for net in value['nets']:
+        for endpoint in list(net['sinks']):
+            if endpoint['instance']=='positive' and endpoint['port']in {'C','R'}:
+                net['sinks'].append(dict(endpoint,instance='dead'))
+        if any(e['instance']=='positive' and e['port']=='Q' for e in net['drivers']):
+            net['sinks'].append(dict(instance='dead',port='D',bit=0))
+        net['fanout']=len(net['sinks'])
+    value['nets'].append(dict(id='dead_q',name='dead_q',aliases=[],drivers=[dict(instance='dead',port='Q',bit=0)],
+                             sinks=[],fanout=0,cut_class='register_output'))
+    source=tmp_path/'source-with-dead.sqlite';write_compact_emuir(source,value);config['source']=str(source)
+    seal=hashlib.sha256(source.read_bytes()).hexdigest();config['identity']['original_ir_sha256']=seal
+    with closing(sqlite3.connect(source))as original,closing(sqlite3.connect(config['clocks']))as clocks,clocks:
+        clocks.execute("UPDATE metadata SET value=json_set(value,'$.original_ir_sha256',?) WHERE key='source'",(seal,))
+        for i,name in enumerate(['positive','negative\\雪/hier','dead']):
+            row=original.execute("SELECT e.instance_seq,e.port_seq,e.bit FROM endpoint_records e JOIN cell_records c "
+                "ON c.seq=e.instance_seq JOIN pin_names p ON p.seq=e.port_seq WHERE c.id=? AND p.name='Q' AND e.role=0",(name,)).fetchone()
+            if i<2:clocks.execute('UPDATE sources SET cell_seq=?,port_seq=?,bit=? WHERE source_seq=?',(*row,i))
+            else:
+                clocks.execute('INSERT INTO sources VALUES(?,?,?,?)',(i,*row));clocks.execute('INSERT INTO facts VALUES(2,0,0)')
+    mapped_report=emit_vivado_mapped_verilog(source,tmp_path/'physical.v')
+    mapped=Path(mapped_report['mapped_index']['path']);functions=Path(mapped_report['source_functions']['path']);digest=mapped_report['mapped_index']['sha256']
+    inventory=tmp_path/'routed.tsv'
+    with closing(sqlite3.connect(mapped))as db,inventory.open('w')as output:
+        writer=csv.writer(output,delimiter='\t',lineterminator='\n');writer.writerow(INVENTORY_HEADER)
+        cells=list(db.execute('SELECT seq,id,type FROM cells ORDER BY seq'));origin=next(row[0]for row in cells if row[1]=='dead')
+        for i,(seq,name,kind)in enumerate(cells):
+            if name!='dead':writer.writerow(['partition/'+name,kind,f's{seq}','',f'SLICE_X{i}Y0','AFF',str(i),'0','LEAF'])
+    lineage=tmp_path/'routed.sqlite';import_cell_lineage(mapped,functions,{'routed':inventory},lineage,mapped_sha256=digest)
+    proof=tmp_path/'proof.sqlite';build_optimization_proofs(mapped,lineage,proof,mapped_sha256=digest,fpga='fpga0')
+    config['proof_context']=checked_context(proof,mapped,lineage,digest)
+    with closing(sqlite3.connect(config['partitions'][0]['logic']))as db,db:
+        db.execute("INSERT INTO segments SELECT seq+100,'removed-root',kind,system_path,'removed-root',cut_index+100,fpga,"
+            "replace_tx_endpoint,'dead/Q',end_pin,NULL,static_exact_segment_id,start_object_kind,end_object_kind,"
+            "cone_anchor_object_kind,cone_anchor_pin,'optimized-away',NULL,NULL,?,NULL FROM segments WHERE segment_id='root0'",(f's{origin}',))
+    return config,path
+
+
+def test_checked_removed_fanin_keeps_its_proof_and_cannot_become_a_zero_cost_arc(eliminated_fanin):
+    result=run(eliminated_fanin);assert result.returncode==0,result.stderr
+    report=json.loads(result.stdout)
+    assert report['events']==[11,19,27] and len(report['checks'])==5
+    assert report['costs'][0]==[[0,0,2,2],[0,1,2,2],[0,2,2,2]]
+    assert len(report['eliminated'][0])==1 and report['eliminated'][0][0][0]=='dead'
+    assert report['inputs']==17
+
+
+def test_complete_removed_source_group_has_proofs_without_inventing_dynamic_costs(eliminated_fanin):
+    # Direct published-owner fixture: its complete source group contains
+    # only the checked removed root. This qualifies the consumer disposition,
+    # rather than asserting source-graph coverage for a manufactured fixture.
+    config,_=eliminated_fanin
+    with closing(sqlite3.connect(config['partitions'][0]['logic']))as db,db:
+        db.execute("DELETE FROM segments WHERE segment_id IN ('root0','root1')")
+    result=run(eliminated_fanin);assert result.returncode==0,result.stderr
+    report=json.loads(result.stdout)
+    assert report['roots']==[] and report['costs'][0]==[] and report['events']==[1,9,17]
+    assert len(report['checks'])==2 and len(report['eliminated'][0])==1
+
+
+@pytest.mark.parametrize('damage',['missing-owner','numeric-cost','text-cost','wrong-endpoint','missing-clock','duplicate-source'])
+def test_removed_fanin_must_keep_the_exact_proof_source_and_clock_owner(eliminated_fanin,damage):
+    config,_=eliminated_fanin
+    if damage=='missing-owner':del config['proof_context']
+    elif damage=='missing-clock':
+        with closing(sqlite3.connect(config['clocks']))as db,db:db.execute('DELETE FROM facts WHERE source_seq=2')
+    else:
+        with closing(sqlite3.connect(config['partitions'][0]['logic']))as db,db:
+            if damage in {'numeric-cost','text-cost'}:
+                db.execute('PRAGMA ignore_check_constraints=ON')
+                db.execute("UPDATE segments SET delay_ns=? WHERE segment_id='removed-root'",(0 if damage=='numeric-cost' else 'invalid',))
+            elif damage=='wrong-endpoint':db.execute("UPDATE segments SET start_pin='positive/Q' WHERE segment_id='removed-root'")
+            else:db.execute("INSERT INTO segments SELECT seq+100,'removed-copy',kind,system_path,'removed-copy',cut_index+100,fpga,"
+                "replace_tx_endpoint,start_pin,end_pin,delay_ns,static_exact_segment_id,start_object_kind,end_object_kind,"
+                "cone_anchor_object_kind,cone_anchor_pin,measurement,actual_start_object,actual_end_object,optimization_source,"
+                "sampling_cost_ns FROM segments WHERE segment_id='removed-root'")
+    result=run(eliminated_fanin);assert result.returncode!=0 and not result.stdout
+
+
+def test_removed_fanin_proof_lease_remains_live_through_projection(eliminated_fanin):
+    result=run(eliminated_fanin,'mutate-proof');assert result.returncode!=0 and 'changed'in result.stderr
+
+
 def test_complete_unselected_negative_root_and_relay_cost_bind_to_actual_owner(physical):
     result=run(physical);assert result.returncode==0,result.stderr
     report=json.loads(result.stdout)
@@ -149,6 +248,19 @@ def test_complete_unselected_negative_root_and_relay_cost_bind_to_actual_owner(p
     assert report['inputs']==14
     assert report['checks']==[[0,0,0,2,55],[0,1,25,2,55],[0,2,50,2,55],
                               [1,0,85,10,96],[2,0,125,4,141]]
+
+
+def test_native_interface_and_conservative_logic_measurements_keep_their_costs(physical):
+    config,_=physical
+    for part in config['partitions']:
+        with closing(sqlite3.connect(part['costs']))as db,db:
+            db.execute("UPDATE timings SET measurement=CASE kind WHEN 'tx' THEN "
+                "'logical-source-to-native-tx-word-sampling-pin' ELSE "
+                "'registered-native-rx-word-to-shadow-capture-within-fixed-arc' END")
+        with closing(sqlite3.connect(part['logic']))as db,db:
+            db.execute("UPDATE segments SET measurement='optimized-endpoint-collection-upper-bound'")
+    result=run(physical);assert result.returncode==0,result.stderr
+    assert json.loads(result.stdout)['events']==[11,19,27]
 
 
 @pytest.mark.parametrize('kind',['schedule','semantic','timing_io','routes','path_database'])
@@ -163,7 +275,7 @@ def test_source_clock_context_cannot_cross_runs(physical,kind):
     'wrong-fixed-arc','wrong-route-root','duplicate-arrival','missing-rx','extra-cost','missing-phase',
     'unclocked-source','missing-part','repeated-part','wrong-cost-policy','wrong-phy-scope','rx-stage-failure',
     'eliminated-support','eliminated-boundary','missing-cost','wrong-group','wrong-boundary-entry',
-    'text-cost','text-phase','zero-hop-relay',
+    'text-cost','text-phase','zero-hop-relay','unknown-measurement','unknown-boundary-measurement',
 ])
 def test_invalid_binding_never_guesses_fanins_or_zero_cost(physical,damage):
     config,_path=physical
@@ -197,8 +309,12 @@ def test_invalid_binding_never_guesses_fanins_or_zero_cost(physical,damage):
     elif damage=='text-cost':sql="UPDATE segments SET sampling_cost_ns='bad'"
     elif damage=='text-phase':target=config['clocks'];sql="UPDATE facts SET phase_ns='bad' WHERE source_seq=1"
     elif damage=='zero-hop-relay':target=config['schedule'];sql='UPDATE schedule_entries SET hop=0 WHERE seq=1'
+    elif damage=='unknown-measurement':sql="UPDATE segments SET measurement='unqualified-guess'"
+    elif damage=='unknown-boundary-measurement':target=parts[1]['costs'];sql="UPDATE timings SET measurement='unqualified-guess'"
     if sql:
-        with closing(sqlite3.connect(target))as db, db:db.execute(sql)
+        with closing(sqlite3.connect(target))as db, db:
+            if damage.startswith('unknown-'):db.execute('PRAGMA ignore_check_constraints=ON')
+            db.execute(sql)
     result=run(physical);assert result.returncode!=0,(damage,result.stdout)
 
 
