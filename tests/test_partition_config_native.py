@@ -1,4 +1,4 @@
-"""Full policy differential gates; NVDLA remains the real-design acceptance."""
+"""Explicit configuration goldens; NVDLA remains the real-design acceptance."""
 import copy
 from contextlib import closing
 import fnmatch
@@ -18,7 +18,7 @@ import pytest
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
-from emuflow.partition import normalize_partition_constraints, _normalize_partition_constraints_reference
+from tests.native_partition_facts import (normalize_partition_constraints)
 from emuflow.partition_ir import load_partition_ir
 from emuflow.platform import Platform, FpgaNode, BoardLink
 from emuflow.resources import RESOURCE_FIELDS
@@ -29,9 +29,10 @@ from tests import partition_pressure_fixture as reference_fixture
 @pytest.fixture(params=['normal', 'unicode', 'nul'])
 def configuration(request, tmp_path, monkeypatch):
     monkeypatch.setenv('EMUFLOW_NATIVE_ROOT', str(emuflow_native().parent.parent))
-    fixture = reference_fixture.PressureFixture()
-    fixture.setUp()
-    value = copy.deepcopy(fixture.ir.value)
+    value = copy.deepcopy(reference_fixture._ir().value)
+    platform = Platform.from_dict(reference_fixture._platform_value(
+        "pressure_platform", ["a", "b"],
+        [reference_fixture._link("ab", "a", "b", lanes=1, latency=1)]))
     if request.param != 'normal':
         names = {cell['id']: ('目录/🙂'+cell['id']+'[0]' if request.param == 'unicode' else cell['id']+'\x00tail')
                  for cell in value['instances']}
@@ -46,20 +47,19 @@ def configuration(request, tmp_path, monkeypatch):
     reference.validate()
     path = tmp_path/'configuration-source.sqlite'
     write_compact_emuir(path, value)
-    return reference, load_partition_ir(path), fixture.platform
+    return reference, load_partition_ir(path), platform
 
 
-def compare(configuration, raw, **overrides):
-    reference, indexed, platform = configuration
-    expected = _normalize_partition_constraints_reference(raw, reference, platform, **overrides)
-    actual = normalize_partition_constraints(raw, indexed, platform, **overrides)
-    assert actual == expected
-    assert actual.implementation_id == 'native-partition-configuration-v1'
-    return actual
+def configuration_facts(active=('a', 'b')):
+    """Fixed four-LUT fixture expectations, not a constraint normalizer."""
+    return dict(schema='emuflow.partition-constraints/v1', groups=[], fixed=[],
+        fpga_selection_policy='all', active_fpgas=list(active), min_used_fpgas=len(active),
+        balance_tolerance=0.1, balance_tolerance_by_dimension={},
+        balance_dimensions=['cells', 'ff', 'lut'])
 
 
 @pytest.mark.parametrize('case', ['default', 'all', 'explicit', 'minimum', 'override', 'groups', 'fixed', 'reservations', 'dimensions'])
-def test_complete_configuration_matches_reference(configuration, case):
+def test_complete_configuration_matches_explicit_facts(configuration, case):
     reference, _, platform = configuration
     names = sorted(cell['id'] for cell in reference.value['instances'])
     raw = {'schema': 'emuflow.partition-constraints/v1'}
@@ -84,7 +84,25 @@ def test_complete_configuration_matches_reference(configuration, case):
         raw['resource_reservations_by_fpga'] = {platform.fpgas[0].id: {'lut': 1, 'ff': 0}}
     elif case == 'dimensions':
         raw.update(balance_dimensions=['ff', 'lut', 'cells'], balance_tolerance_by_dimension={'lut': 0.2, 'ff': 0.0})
-    compare(configuration, raw, **overrides)
+    expected = configuration_facts()
+    if case == 'explicit':
+        expected.update(active_fpgas=['b'], min_used_fpgas=1, fpga_selection_policy='explicit')
+    elif case == 'minimum':
+        expected.update(active_fpgas=['a'], min_used_fpgas=1, fpga_selection_policy='minimum-capacity')
+    elif case == 'override':
+        expected.update(min_used_fpgas=1, balance_tolerance=0.0)
+    elif case == 'groups':
+        expected['groups'] = [{'id': 'first', 'instances': names},
+                              {'id': '重复\x00组', 'instances': names}]
+    elif case == 'fixed':
+        expected['fixed'] = [{'instance': name, 'fpga': 'a'} for name in [names[0], *names]]
+    elif case == 'reservations':
+        expected['resource_reservations_by_fpga'] = {'a': {'lut': 1}}
+    elif case == 'dimensions':
+        expected['balance_tolerance_by_dimension'] = {'ff': 0.0, 'lut': 0.2}
+    actual = normalize_partition_constraints(raw, configuration[1], platform, **overrides)
+    assert actual == expected
+    assert actual.implementation_id == 'native-partition-configuration-v1'
 
 
 @pytest.mark.parametrize('seed', range(25))
@@ -109,16 +127,19 @@ def test_capacity_selection_preserves_topology_and_heterogeneous_ties(configurat
         raw['min_used_fpgas'] = rng.randint(1, count)
     if seed % 5 == 0:
         raw['fixed'] = [{'instance': reference.value['instances'][0]['id'], 'fpga': fpgas[-1].id}]
-    try:
-        expected = _normalize_partition_constraints_reference(raw, reference, platform)
-    except ValidationError:
-        with pytest.raises(ValidationError):
-            normalize_partition_constraints(raw, indexed, platform)
-    else:
-        actual = normalize_partition_constraints(raw, indexed, platform)
-        assert actual == expected
-        # A sealed choice must revalidate against precisely the same policy.
-        assert normalize_partition_constraints(actual, indexed, platform) == expected
+    # Frozen choices exercise asymmetric directed topology, capacities, fixed
+    # members and platform-order ties without retaining a second selector.
+    choices = ('1 4', '0 1', '0 1', '1', '0 1 2', '0 2 3 5', '0 3', '2',
+        '0 1 2', '1', '0 1 2 3 4 5', '1 2 3 4', '0 2', '0 1 2', '0 1',
+        '2', '0 1 2', '0', '0 2', '0', '1 2', '0', '0 1', '0 2 3', '1 4')
+    active = ['p'+p for p in choices[seed].split()]
+    expected = configuration_facts(active)
+    expected.update(fpga_selection_policy='minimum-capacity',
+                    min_used_fpgas=raw.get('min_used_fpgas', len(active)),
+                    fixed=raw.get('fixed', []))
+    actual = normalize_partition_constraints(raw, indexed, platform)
+    assert actual == expected
+    assert normalize_partition_constraints(actual, indexed, platform) == expected
 
 
 def test_homogeneous_32_fpga_selection_has_no_python_cell_or_identity_population(configuration):
@@ -130,10 +151,13 @@ def test_homogeneous_32_fpga_selection_has_no_python_cell_or_identity_population
     raw = {'schema': 'emuflow.partition-constraints/v1', 'fpga_selection_policy': 'minimum-capacity',
            'min_used_fpgas': 3, 'groups': [{'id': 'group', 'patterns': ['*']}],
            'fixed': [{'patterns': ['*'], 'fpga': 'p31'}]}
-    expected = _normalize_partition_constraints_reference(raw, reference, platform)
-    with (patch('emuflow.partition._normalize_partition_constraints_reference', side_effect=AssertionError('Python policy entered')),
-          patch('emuflow.partition._ordered_partition_instance_ids', side_effect=AssertionError('Python cell catalog')),
-          patch.object(type(indexed.value['instances']), '__iter__', side_effect=AssertionError('Python resource population'))):
+    names = sorted(cell['id'] for cell in reference.value['instances'])
+    expected = configuration_facts(('p0', 'p1', 'p31'))
+    expected.update(fpga_selection_policy='minimum-capacity',
+        groups=[{'id': 'group', 'instances': names}],
+        fixed=[{'instance': name, 'fpga': 'p31'} for name in names])
+    with patch.object(type(indexed.value['instances']), '__iter__',
+                      side_effect=AssertionError('Python resource population')):
         actual = normalize_partition_constraints(raw, indexed, platform)
     assert actual == expected
 
@@ -153,11 +177,15 @@ def test_glob_expansion_matches_fnmatchcase_without_sqlite_scalar_coercion(confi
             valid.append(pattern)
         if len(valid) >= 2048:
             break
-    compare(configuration, {'schema': 'emuflow.partition-constraints/v1',
-                           'groups': [{'id': str(i), 'patterns': [pattern]} for i, pattern in enumerate(valid)]})
+    raw = {'schema': 'emuflow.partition-constraints/v1',
+           'groups': [{'id': str(i), 'patterns': [pattern]} for i, pattern in enumerate(valid)]}
+    expected = configuration_facts()
+    expected['groups'] = [{'id': str(i), 'instances': sorted(name for name in names
+                           if fnmatch.fnmatchcase(name, pattern))} for i, pattern in enumerate(valid)]
+    assert normalize_partition_constraints(raw, configuration[1], configuration[2]) == expected
 
 
-def test_empty_range_convention_matches_current_reference_without_host_version_drift(configuration):
+def test_empty_range_convention_matches_fnmatch_without_host_version_drift(configuration):
     reference, indexed, platform = configuration
     executable = sys.executable if sys.version_info >= (3, 12) else shutil.which('python3.12')
     if executable is None:
@@ -181,8 +209,8 @@ json.dump(rows,sys.stdout)
         input=json.dumps([names, patterns]), text=True))
     raw = {'schema': 'emuflow.partition-constraints/v1',
            'groups': [{'id': str(i), 'patterns': [pattern]} for i, (pattern, _) in enumerate(rows)]}
-    expanded = dict(raw, groups=[{'id': str(i), 'instances': matched} for i, (_, matched) in enumerate(rows)])
-    expected = _normalize_partition_constraints_reference(expanded, reference, platform)
+    expected = configuration_facts()
+    expected['groups'] = [{'id': str(i), 'instances': sorted(matched)} for i, (_, matched) in enumerate(rows)]
     with patch('emuflow.partition_config_native._pattern_range_policy', return_value='empty-ranges-v1'):
         actual = normalize_partition_constraints(raw, indexed, platform)
     assert actual == expected
@@ -209,10 +237,7 @@ def test_invalid_configuration_rejects_without_reference_retry(configuration, ra
     reference, indexed, platform = configuration
     raw = dict({'schema': 'emuflow.partition-constraints/v1'}, **raw)
     with pytest.raises(ValidationError):
-        _normalize_partition_constraints_reference(raw, reference, platform)
-    with patch('emuflow.partition._normalize_partition_constraints_reference', side_effect=AssertionError('reference retry')):
-        with pytest.raises(ValidationError):
-            normalize_partition_constraints(raw, indexed, platform)
+        normalize_partition_constraints(raw, indexed, platform)
 
 
 @pytest.mark.parametrize('damage', ['request-crc', 'generation', 'output-generation'])
@@ -234,8 +259,7 @@ def test_producer_bindings_reject_tampered_requests_sources_and_outputs(configur
                 return result
             child.finish = finish
         return child
-    with patch.object(module, 'NativeToolProcess', changed_process), patch(
-            'emuflow.partition._normalize_partition_constraints_reference', side_effect=AssertionError('reference retry')):
+    with patch.object(module, 'NativeToolProcess', changed_process):
         with pytest.raises(ValidationError):
             normalize_partition_constraints(None, indexed, platform)
 
@@ -253,12 +277,15 @@ def test_capacity_demand_never_narrows_source_resource_integers(configuration, a
         fpgas=tuple(FpgaNode(id=f'p{p}', part='fixture', utilization_limit=1.0,
                             capacity={'lut': 2**62}) for p in range(32)))
     raw = {'schema': 'emuflow.partition-constraints/v1', 'fpga_selection_policy': 'minimum-capacity'}
-    try:
-        expected = _normalize_partition_constraints_reference(raw, reference, platform)
-    except ValidationError:
+    if amount == 10**200:
         with pytest.raises(ValidationError):
             normalize_partition_constraints(raw, indexed, platform)
     else:
+        # Preserve the existing selection policy at these integer boundaries.
+        # Final assignment capacity is independently checked by the strict audit.
+        active = [f'p{i}' for i in range(16 if amount == 2**64+17 else 1)]
+        expected = configuration_facts(active)
+        expected['fpga_selection_policy'] = 'minimum-capacity'
         assert normalize_partition_constraints(raw, indexed, platform) == expected
 
 
@@ -274,25 +301,31 @@ def test_resource_keys_cannot_alias_through_sqlite_nul_truncation(configuration)
 
 def test_original_constraint_file_bypasses_host_json_and_small_request_size(configuration, tmp_path):
     reference, indexed, platform = configuration
-    from emuflow.partition import load_partition_constraints
+    from emuflow.partition_config_native import prepare_configuration
     path = tmp_path/'large-whitespace.json'
     with path.open('w') as stream:
         stream.write(' '*(8*1024*1024+1))
         json.dump({'schema': 'emuflow.partition-constraints/v1'}, stream)
-    expected = _normalize_partition_constraints_reference(None, reference, platform)
-    with patch('emuflow.partition.read_json', side_effect=AssertionError('host JSON input loaded')):
-        actual = load_partition_constraints(path, indexed, platform)
+    expected = configuration_facts()
+    read_text = Path.read_text
+    def reject_input_read(owner, *args, **kwargs):
+        if owner == path:
+            raise AssertionError('host JSON input loaded')
+        return read_text(owner, *args, **kwargs)
+    with patch.object(Path, 'read_text', reject_input_read):
+        actual = prepare_configuration(indexed.path, platform, None, constraints_path=path)
     assert actual == expected
 
 
 @pytest.mark.parametrize('tolerance', ['-0', '-0.0', '-0e0'])
 def test_original_numeric_tokens_preserve_integer_and_float_zero(configuration, tmp_path, tolerance):
     reference, indexed, platform = configuration
-    from emuflow.partition import load_partition_constraints
+    from emuflow.partition_config_native import prepare_configuration
     text = ('{"schema":"emuflow.partition-constraints/v1","balance_tolerance":'+tolerance+
             ',"resource_reservations_by_fpga":{"a":{"lut":-0}}}')
     path = tmp_path/'numeric-zero.json'
     path.write_text(text)
-    expected = _normalize_partition_constraints_reference(json.loads(text), reference, platform)
-    actual = load_partition_constraints(path, indexed, platform)
+    expected = configuration_facts()
+    expected['balance_tolerance'] = float(json.loads(tolerance))
+    actual = prepare_configuration(indexed.path, platform, None, constraints_path=path)
     assert json.dumps(actual, sort_keys=True) == json.dumps(expected, sort_keys=True)

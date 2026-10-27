@@ -10,7 +10,7 @@ from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from tests.native_partition_kernel_driver import publish_partition as publish
 from emuflow.phase3_assignment_index import validate_phase3_assignment_index_against_emuir
-from emuflow.phase3_semantics_native import close_published_semantics
+from tests.native_partition_facts import close_published_semantics
 from tests.test_phase3_semantics_native import selected, build
 
 
@@ -24,7 +24,7 @@ def report(assignment):
 
 def test_complete_directory_uses_native_transaction_and_reloads_without_private_sources(selected,tmp_path):
     actual=build(selected);output=tmp_path/'published'
-    with patch('emuflow.phase3_assignment_native.publish_native_assignment_descriptor', side_effect=AssertionError('host descriptor publisher')):
+    with patch('tests.native_assignment_publication_fixture.publish_native_assignment_descriptor', side_effect=AssertionError('host descriptor publisher')):
         final=publish(output,selected[0],selected[2],actual,report(actual))
     assert final['finalization_implementation_id']=='native-partition-publication-v1'
     close_published_semantics(actual)

@@ -16,7 +16,8 @@ from emuflow import phase3_storage as storage, store_publication
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.native_tools import native_file_generation
-from emuflow.partition import build_clusters, CUT_MODE_STATIC_EXACT
+from emuflow.partition import (CUT_MODE_STATIC_EXACT)
+from tests.native_partition_facts import (build_clusters)
 from tests.test_phase3_clusters_native import source
 
 
@@ -292,7 +293,7 @@ def test_failed_selector_rollback_retains_recovery_and_both_payloads(tmp_path):
     ],
 )
 def test_bad_native_catalog_requests_leave_previous_commit(source, tmp_path, kind):
-    from emuflow import phase3_cluster_catalog as catalog
+    from tests import native_cluster_catalog_fixture as catalog
 
     actual, expected = catalogs(source, "positive")
     output = tmp_path / "clusters.json"

@@ -7,9 +7,8 @@ from typing import Any, Dict, Optional
 
 from .errors import ValidationError
 from .io import read_json
-from .ir import EmuIR
 from .partition import (DEFAULT_PARTITION_CUT_MODE, DEFAULT_PATRON_ALGORITHM_VERSION,
-    CUT_MODE_STATIC_EXACT, validate_partition_artifacts, summarize_balance_observation)
+    CUT_MODE_STATIC_EXACT, summarize_balance_observation)
 from .partition_limits import planning_resource_capacities, strict_balance_limits
 from .platform import Platform
 from .resources import RESOURCE_FIELDS
@@ -94,19 +93,6 @@ def run_phase3(
         cut_nets=report['validation']['cut_nets'])
     return report
 
-
-def validate_phase3(
-    ir_path: Path,
-    platform_path: Path,
-    clusters_path: Path,
-    assignment_path: Path,
-) -> Dict[str, Any]:
-    return validate_partition_artifacts(
-        EmuIR.load(ir_path),
-        Platform.load(platform_path),
-        read_json(clusters_path),
-        read_json(assignment_path),
-    )
 
 def validate_phase3_indexed(
     ir_path: Path,

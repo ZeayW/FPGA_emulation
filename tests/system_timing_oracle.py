@@ -22,10 +22,48 @@ from tests.static_exact_deadline_oracle import (
 from tests.tdm_timing_oracle import timing_paths as reconstruct_tdm_schedule_timing_paths
 
 
-from emuflow.physical_timing_inputs import (
-    _finite_number, _endpoint_delay_database, _logic_segment_database,
-    _board_link_delay_database,
-)
+from emuflow.physical_timing_inputs import _board_link_delay_database
+
+
+def _finite_number(value, context):
+    if type(value) not in (int, float) or not math.isfinite(value):
+        raise ValidationError(f"{context} must be a finite number")
+    return float(value)
+
+
+def _fixture_physical_arcs(physical):
+    """Index explicit small measured facts for the independent arithmetic oracle."""
+    boundary = physical.get("boundary_timing")
+    endpoints = None if boundary is None else {}
+    if boundary is not None:
+        if set(boundary) != set(physical["boundary_identities"]):
+            raise ValidationError("fixture boundary FPGA coverage disagrees")
+        for database in boundary.values():
+            for row in database["endpoints"]:
+                if row["id"] in endpoints:
+                    raise ValidationError("duplicate fixture boundary endpoint")
+                endpoints[row["id"]] = _finite_number(row["delay_ns"], "fixture endpoint delay")
+                if endpoints[row["id"]] < 0:
+                    raise ValidationError("fixture endpoint delay must be non-negative")
+                if len(endpoints) > 4096:
+                    raise ValidationError("timing oracle requires small explicit facts")
+    timing = physical.get("logic_segment_timing")
+    groups = None if timing is None else {}
+    seen = set()
+    for fpga, database in (timing or {}).items():
+        if database["fpga"] != fpga:
+            raise ValidationError("fixture logic FPGA identity disagrees")
+        for row in database["segments"]:
+            if row["id"] in seen:
+                raise ValidationError("duplicate fixture logic segment")
+            seen.add(row["id"])
+            if _finite_number(row["delay_ns"], "fixture logic delay") < 0:
+                raise ValidationError("fixture logic delay must be non-negative")
+            if len(seen) > 4096:
+                raise ValidationError("timing oracle requires small explicit facts")
+            groups.setdefault(row["system_path"], {}).setdefault(row["member_path"], []).append(row)
+    return endpoints, groups
+
 
 SYSTEM_TIMING_SCHEMA = "emuflow.system-timing/v2"
 
@@ -498,8 +536,7 @@ def build_system_timing(
             )
 
     delays = _physical_delay_database(physical_summary)
-    endpoint_delays = _endpoint_delay_database(physical_summary)
-    logic_segments = _logic_segment_database(physical_summary)
+    endpoint_delays, logic_segments = _fixture_physical_arcs(physical_summary)
     board_link_delays = _board_link_delay_database(
         physical_summary, platform
     )

@@ -12,7 +12,7 @@ from emuflow.io import read_json
 from emuflow.platform import Platform
 from emuflow.phase5 import run_phase5, validate_phase5
 from emuflow.routing import normalize_route_constraints
-from emuflow.tdm import _bank_direction_allocations, schedule_to_systemverilog_testbench, tdm_hop_latency_cycles, validate_tdm_schedule
+from emuflow.tdm import _bank_direction_allocations, tdm_hop_latency_cycles, validate_tdm_schedule
 from tests.tdm_timing_oracle import timing_summary as reconstruct_tdm_schedule_timing, timing_paths as reconstruct_tdm_schedule_timing_paths, timing_paths as reconstruct_tdm_schedule_timing_paths_from_routes
 from tests.schedule_reference import build_tdm_schedule
 from tests.test_phase5 import _platform_value, _link
@@ -121,14 +121,49 @@ class BankRatioModelTest(unittest.TestCase):
 
 
     @unittest.skipUnless(shutil.which('iverilog') and shutil.which('vvp'),'iverilog is not installed')
-    def test_transport_rtl_testbench_uses_schedule_latency(self):
-        platform,routes=platform_and_routes(chain=True,minimum=8)
-        schedule=build_tdm_schedule(routes,platform)
-        text=schedule_to_systemverilog_testbench(routes,schedule,platform,frames=3)
-        self.assertIn('.LATENCY(9)',text)
-        self.assertNotIn('.LATENCY(2)',text)
-        with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp);(root/'tb.sv').write_text(text)
-            subprocess.run(['iverilog','-g2012','-s','transport_schedule_tb','-o',str(root/'sim'),
-                            str(ROOT/'rtl/transport/emuflow_tdm_link.sv'),str(root/'tb.sv')],check=True,capture_output=True)
-            subprocess.run(['vvp',str(root/'sim')],check=True,capture_output=True)
+    def test_transport_primitive_preserves_ratio_latency_golden_pulses(self):
+        platform, _routes = platform_and_routes(chain=True, minimum=8)
+        for ratio, latency in ((8, 9), (16, 10)):
+            with self.subTest(ratio=ratio):
+                self.assertEqual(tdm_hop_latency_cycles(platform.links[0], ratio), latency)
+                # Fixed two-lane waveform: this is a primitive truth table,
+                # independent of routes and schedule-to-HDL generation.
+                text = """module latency_tb;
+  localparam integer LATENCY = LATENCY_VALUE;
+  reg clk=0, reset=1;
+  reg [1:0] tx_data=0, tx_valid=0;
+  wire [1:0] rx_data, rx_valid;
+  integer cycle;
+  always #5 clk=~clk;
+  emuflow_tdm_link #(.LANES(2), .LATENCY(LATENCY)) dut
+    (clk, reset, tx_data, tx_valid, rx_data, rx_valid);
+  initial begin
+    repeat (2) @(negedge clk);
+    reset=0;
+    for (cycle=0; cycle<=LATENCY+5; cycle=cycle+1) begin
+      tx_valid=0; tx_data=0;
+      case(cycle)
+        0: begin tx_valid=3; tx_data=2; end
+        2: begin tx_valid=3; tx_data=1; end
+        4: begin tx_valid=3; tx_data=3; end
+      endcase
+      @(posedge clk); #1;
+      case(cycle-LATENCY)
+        0: if (rx_valid!==3 || rx_data!==2) $fatal(1, "first pulse");
+        2: if (rx_valid!==3 || rx_data!==1) $fatal(1, "second pulse");
+        4: if (rx_valid!==3 || rx_data!==3) $fatal(1, "third pulse");
+        default: if (rx_valid!==0) $fatal(1, "unexpected valid");
+      endcase
+      @(negedge clk);
+    end
+    $finish;
+  end
+endmodule
+""".replace('LATENCY_VALUE', str(latency))
+                with tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    (root/'tb.sv').write_text(text)
+                    subprocess.run(['iverilog', '-g2012', '-s', 'latency_tb', '-o', str(root/'sim'),
+                                    str(ROOT/'rtl/transport/emuflow_tdm_link.sv'), str(root/'tb.sv')],
+                                   check=True, capture_output=True)
+                    subprocess.run(['vvp', str(root/'sim')], check=True, capture_output=True)

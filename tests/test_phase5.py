@@ -21,8 +21,9 @@ from emuflow.io import read_json
 from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow.phase5 import run_phase5, validate_phase5
 from emuflow.platform import Platform
+from emuflow.tdm_schedule_storage import read_tdm_schedule
 from emuflow.routing import normalize_route_constraints
-from emuflow.tdm import _independently_reconstruct_exact_captures, schedule_to_tsv, schedule_to_systemverilog_testbench, simulate_tdm_schedule, validate_tdm_schedule, write_schedule_tsv
+from emuflow.tdm import _independently_reconstruct_exact_captures, validate_tdm_schedule
 from tests.tdm_timing_oracle import timing_summary as reconstruct_tdm_schedule_timing, timing_paths as reconstruct_tdm_schedule_timing_paths, timing_paths as reconstruct_tdm_schedule_timing_paths_from_routes
 from tests.schedule_reference import build_tdm_schedule
 from tests.phase5_fixture import write_native_phase5_fixture
@@ -124,21 +125,15 @@ class Phase5Test(unittest.TestCase):
                 run_phase5(routes_path, PLATFORM_PATH, root / "output", assignment_path)
             self.assertFalse((root / "output").exists())
 
-    def test_schedule_tsv_streaming_writer_matches_compatibility_value(self):
-        schedule = {
-            "entries": [{
-                "id": "e0", "demand": "d0", "net": "n0", "link": "l0",
-                "from": "a", "to": "b", "slot": 1, "lane": 2,
-                "ready_slot": 0, "arrival_slot": 3,
-            }]
-        }
-        with tempfile.TemporaryDirectory() as temporary:
-            output = Path(temporary) / "schedule.tsv"
-            write_schedule_tsv(output, schedule)
-            self.assertEqual(
-                output.read_text(encoding="utf-8"),
-                schedule_to_tsv(schedule),
-            )
+    def test_retired_schedule_export_and_simulation_apis_are_absent(self):
+        from emuflow import tdm
+        for name in (
+            'simulate_tdm_schedule', 'iter_schedule_tsv_lines', 'schedule_to_tsv',
+            'write_schedule_tsv', 'build_transport_manifest',
+            'schedule_to_systemverilog_testbench',
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(tdm, name))
 
     def test_zero_demand_schedule_has_no_timing_paths(self) -> None:
         platform = Platform.from_dict(
@@ -209,7 +204,7 @@ class Phase5Test(unittest.TestCase):
         self.assertEqual(minimum, 1)
         self.assertEqual(segments.values_calls, 1)
 
-    def test_schedule_validate_simulate_and_write_artifacts(self) -> None:
+    def test_schedule_validation_preserves_hop_coverage_and_semantics(self) -> None:
         platform = Platform.from_dict(
             _platform_value(
                 "two",
@@ -228,14 +223,12 @@ class Phase5Test(unittest.TestCase):
         )
         schedule = build_tdm_schedule(routes, platform)
         validation = validate_tdm_schedule(routes, platform, schedule)
-        simulation = simulate_tdm_schedule(routes, schedule, frames=9)
         self.assertEqual(validation["status"], "pass")
         self.assertEqual(
             schedule["transport_semantics"], "registered-boundary"
         )
         self.assertEqual(validation["scheduled_bit_hops"], 3)
         self.assertEqual(validation["collisions"], 0)
-        self.assertEqual(simulation["delivered_sink_values"], 27)
         mismatched = copy.deepcopy(schedule)
         mismatched["transport_semantics"] = "sampled-virtual-wire"
         with self.assertRaisesRegex(
@@ -253,6 +246,21 @@ class Phase5Test(unittest.TestCase):
             self.assertEqual(report["phase_implementation"], "native-exact-phase5-v1")
             self.assertEqual(set(report["artifacts"]), {"schedule", "schedule_store", "cross_layer_timing", "report"})
             self.assertEqual(validate_phase5(routes_path, platform_path, output / "schedule.json", assignment_path)["status"], "pass")
+            with read_tdm_schedule(output / "schedule.json") as schedule:
+                entries = list(schedule['entries'])
+                completions = {row['demand']: row for row in schedule['demand_completions']}
+                routes = read_json(routes_path)['routes']
+                self.assertTrue(entries)
+                self.assertEqual(set(completions), {row['id'] for row in routes})
+                arrivals = {(entry['demand'], entry['to']): entry['arrival_slot'] for entry in entries}
+                for entry in entries:
+                    self.assertLessEqual(entry['ready_slot'], entry['slot'])
+                    self.assertGreater(entry['arrival_slot'], entry['slot'])
+                for route in routes:
+                    completion = completions[route['id']]
+                    self.assertEqual(set(completion['sink_arrival_slots']), set(route['sinks']))
+                    for sink in route['sinks']:
+                        self.assertEqual(completion['sink_arrival_slots'][sink], arrivals[route['id'], sink])
             before = {name: (output / name).read_bytes() for name in report["artifacts"].values()}
             failed = interrupt_native_phase5(routes_path, platform_path, assignment_path, output, "scheduled")
             self.assertEqual(failed.returncode, 71, failed.stderr)
@@ -532,25 +540,6 @@ class Phase5Test(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "ready-slot mismatch"):
             validate_tdm_schedule(routes, platform, broken)
 
-    def test_generated_testbench_contains_real_schedule(self) -> None:
-        platform = Platform.from_dict(
-            _platform_value(
-                "sv",
-                ["a", "b"],
-                [_link("ab", "a", "b", lanes=2, latency=2)],
-            )
-        )
-        routes = _routes(platform, [("n0", "a", ["b"])], frame_slots=8)
-        schedule = build_tdm_schedule(routes, platform)
-        testbench = schedule_to_systemverilog_testbench(
-            routes,
-            schedule,
-            platform,
-            frames=5,
-        )
-        self.assertIn("emuflow_tdm_link", testbench)
-        self.assertIn("EMUFLOW_TDM_RTL_SIM status=pass", testbench)
-        self.assertIn("delivery mismatch", testbench)
 
 
 if __name__ == "__main__":

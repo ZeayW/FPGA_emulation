@@ -90,15 +90,16 @@ removed. Current stage producers, readers and required checks remain:
 | Boundary | Removed | Retained |
 | --- | --- | --- |
 | Phase 2 | Whole-graph Python STA object index, obsolete TSV importer helpers and selected-path wrapper | Native path importer, typed path reader and independent semantic checks |
-| Phase 3 | Complete compressed/packed cluster publishers, assignment-index and exact-binary publishers, old PATRON host model/runner and unused initializer/hop/publication wrappers | Current native whole-stage entry, typed readers and independent semantic checks |
+| Phase 3 | Python graph clustering, assignment and semantic producers, old graph validator/characterization commands, compressed/packed and exact-binary publishers, old PATRON host model/runner and unused wrappers | Current native whole-stage entry, typed readers and independent semantic checks |
 | Phase 4 | Complete Python RouteStore writer and unused seal wrapper | Native routing/publication/seal kernels and typed readers |
-| Phase 5 | Python route/schedule timing reconstruction and obsolete deadline-index execution chain | Native schedule/timing projection, current typed readers and schedule legality checks |
+| Phase 5 | Python route/schedule timing reconstruction, obsolete deadline-index execution chain and unused schedule simulation/TSV/manifest/testbench generators | Native schedule/timing projection, current typed readers and schedule legality checks |
 | Phase 6 | Old transport metadata builder, complete-partition dictionary adapter and unused anchor/XDC producer helpers | Native split/transport producers, typed views, Chimew and bounded behavioral qualification |
 | Phase 7 mapped netlist | Whole-graph JSON export and optional JSON/index dual writing | The canonical indexed mapped-netlist producer |
+| Boundary timing | Old boundary constructor and endpoint/logic dictionary helpers | Native boundary production, typed readers, complete coverage validators and board-link timing |
 | Physical query identity | Python identity-store publisher and sidecar/selector transaction | Native complete query producer, shared-lease readers and source validation |
 | Physical conversion | Whole-graph Vivado primitive lowering and transport fanout transform | Indexed Vivado export and the writer-owned fanout transform |
 | Global STA | Inline model exporter, Python bundle compression/expansion and scalar-result reader | Native event owner/model export/measurement import and full original-path reduction |
-| Physical support | Unused source-marker capability matrix, OpenPARF eligibility probe/hardblock-only qualification path and unintegrated Vivado optimization-proof producer | OpenPARF/RWRoute and Vivado implementation backends |
+| Physical support | Unused placer/source-marker capability matrices, OpenPARF eligibility probe/hardblock-only qualification path and unintegrated Vivado optimization-proof producer | OpenPARF/RWRoute and Vivado implementation backends |
 
 Small test fixtures encode explicit facts for retained readers and kernels.
 Independent timing arithmetic stays bounded in tests; it has no stage entry,

@@ -86,8 +86,9 @@ def test_native_complete_event_namespace_matches_reference(tmp_path,members,regi
     expected=fixture_bind(runtime,routes,schedule,physical,f.platform,metadata=expected_meta)
     import emuflow.tdm as tdm
     assert not hasattr(tdm, 'open_tdm_schedule_timing_path_stream')
-    with patch('emuflow.physical_timing_inputs._endpoint_delay_database',side_effect=AssertionError('Python endpoint dictionary')):
-        actual=bind_physical_checks(runtime,ir,ischedule,ip,f.platform,metadata=actual_meta)
+    import emuflow.physical_timing_inputs as physical_inputs
+    assert not hasattr(physical_inputs, '_endpoint_delay_database')
+    actual=bind_physical_checks(runtime,ir,ischedule,ip,f.platform,metadata=actual_meta)
     try:
         assert list(actual)==list(expected)
         assert dict(actual_meta['paths'])==dict(expected_meta['paths'])

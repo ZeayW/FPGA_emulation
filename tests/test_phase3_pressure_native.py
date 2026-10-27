@@ -13,7 +13,8 @@ import pytest
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.io import read_json, write_json
 from emuflow.opensta import OPENSTA_PROVIDER
-from emuflow.partition import build_clusters, build_partition_assignment, CUT_MODE_STATIC_EXACT
+from emuflow.partition import (CUT_MODE_STATIC_EXACT)
+from tests.native_partition_facts import (build_clusters, build_partition_assignment)
 from emuflow.partition_ir import load_partition_ir
 from tests.patron_kernel_fixture import pressure_kernel_inputs, write_pressure_requests, run_pressure_kernel
 from emuflow.native_tools import native_file_generation
@@ -175,7 +176,11 @@ def test_primary_owner_rejects_corruption_before_publication(inputs,tmp_path,cor
     copy.write_bytes(data)
     model.primary_artifact=copy
     model.primary_generation=native_file_generation(copy)
-    columns,board=write_pressure_requests(model,tmp_path,initial,0)
+    # The malformed primary is an explicit untrusted input. Encode the same
+    # small ownership facts without borrowing a different primary's receipt;
+    # the native reader must reject the corrupted bytes itself.
+    untrusted_initial=dict(initial,cluster_assignment=dict(initial['cluster_assignment']))
+    columns,board=write_pressure_requests(model,tmp_path,untrusted_initial,0)
     output=tmp_path/'result.bin'; output.write_bytes(b'keep-published-result')
     result=subprocess.run([str(emuflow_native()),'phase3','refine-patron-from-primary',str(args[0].path),
         str(model.timing_path),str(copy),str(columns),str(board),str(output)],capture_output=True,text=True)
@@ -243,7 +248,7 @@ def test_phase3_production_selects_native_model_and_keeps_independent_validation
     solution=tmp_path/'initial.part.2'
     solution.write_text('\n'.join('0' if initial['cluster_assignment'][c['id']]=='a' else '1'
                                    for c in args[2]['clusters'])+'\n')
-    with patch('emuflow.partition.build_partition_assignment', side_effect=AssertionError('Python initializer')):
+    with patch('tests.native_partition_facts.build_partition_assignment', side_effect=AssertionError('Python initializer')):
         report=run_phase3(args[0].path,platform,tmp_path/'phase3',provider='patron',
                          min_used_fpgas=2,balance_tolerance=1.0,patron_max_moves=0,
                          tritonpart_solution=solution,route_constraints_path=routes,timing_database_path=timing,
@@ -323,7 +328,9 @@ def test_retired_snapshot_command_is_rejected_before_opening_inputs(tmp_path):
 def test_native_pressure_rejects_reference_columns_instead_of_snapshot(inputs):
     from emuflow.errors import ValidationError
     args,_initial,timing=inputs
-    reference=build_clusters(args[0],args[3],cut_mode=CUT_MODE_STATIC_EXACT)
+    # Plain explicit facts carry no native primary owner; no retired builder
+    # is needed to exercise this required rejection.
+    reference=dict(args[2],clusters=list(args[2]['clusters']))
     with pytest.raises(ValidationError,match='native primary artifact reference is unavailable'):
         pressure_kernel_inputs(*args[:2],reference,*args[3:],
             timing_database_path=timing)

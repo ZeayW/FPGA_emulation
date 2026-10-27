@@ -16,7 +16,7 @@ from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.io import read_json, write_json
-from emuflow.partition import (build_clusters, normalize_partition_constraints)
+from tests.native_partition_facts import (build_clusters, normalize_partition_constraints)
 from tests.partition_reference import assign_clusters
 from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.platform import Platform

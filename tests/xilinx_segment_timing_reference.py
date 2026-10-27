@@ -9,7 +9,6 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 from emuflow.boundary_timing import (
     boundary_timing_header,
-    boundary_timing_record,
     validate_boundary_timing_database,
 )
 from emuflow.boundary_identity_storage import read_boundary_identity_storage
@@ -388,14 +387,13 @@ def build_xilinx_boundary_timing(
                 target = f"cell:{registers[0]}/D"
                 delay, start = graph.longest([top_node], target)
                 end = target
-            yield boundary_timing_record(
-                endpoint,
-                {
-                    "delay_ns": delay,
-                    "start_object": start,
-                    "end_object": end,
-                },
-            )
+            yield {
+                "id": endpoint["id"], "kind": endpoint["kind"],
+                "schedule_entry": endpoint["schedule_entry"],
+                "delay_ns": delay, "start_object": start, "end_object": end,
+                "measurement": ("logical-source-to-tx-port" if endpoint["kind"] == "tx"
+                                else "rx-port-to-shadow-capture"),
+            }
     header = boundary_timing_header(
         identity,
         provider="rapidwright-lightweight-segment-graph-v1",

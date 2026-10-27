@@ -87,8 +87,6 @@ from .combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
     STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH,
-    characterize_combinational_cuts,
-    validate_combinational_cut_characterization,
 )
 from .rapidwright_provider import (
     load_rapidwright_provider_manifest,
@@ -142,7 +140,7 @@ from .opensta import (
     run_opensta_path_database,
 )
 from .phase1 import run_phase1
-from .phase3 import run_phase3, validate_phase3
+from .phase3 import run_phase3, validate_phase3_indexed
 from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
 from .phase6 import run_phase6, validate_phase6
@@ -534,36 +532,6 @@ def _build_parser() -> argparse.ArgumentParser:
     ir_validate.add_argument("path", type=Path)
     ir_stats = ir_subparsers.add_parser("stats", help="show EmuIR statistics")
     ir_stats.add_argument("path", type=Path)
-
-    combinational_cut = subparsers.add_parser(
-        "combinational-cut",
-        help="characterize and validate static exact combinational-cut eligibility",
-    )
-    combinational_cut_subparsers = combinational_cut.add_subparsers(
-        dest="combinational_cut_command", required=True
-    )
-    combinational_cut_characterize = combinational_cut_subparsers.add_parser(
-        "characterize",
-        help="write a read-only SCC, eligibility, and depth report",
-    )
-    combinational_cut_characterize.add_argument("--ir", type=Path, required=True)
-    combinational_cut_characterize.add_argument(
-        "--depth-limit",
-        type=int,
-        choices=(1, 2),
-        action="append",
-        default=[],
-        help="dependency-depth upper bound to characterize (default: 1 and 2)",
-    )
-    combinational_cut_characterize.add_argument(
-        "--output", "-o", type=Path, required=True
-    )
-    combinational_cut_validate = combinational_cut_subparsers.add_parser(
-        "validate",
-        help="independently reconstruct and validate a characterization report",
-    )
-    combinational_cut_validate.add_argument("report", type=Path)
-    combinational_cut_validate.add_argument("--ir", type=Path, required=True)
 
     importer = subparsers.add_parser(
         "import-yosys", help="convert Yosys JSON to EmuIR"
@@ -1422,16 +1390,18 @@ def _build_parser() -> argparse.ArgumentParser:
     partition_validate = partition_subparsers.add_parser(
         "validate", help="independently validate Phase 3 partition artifacts"
     )
-    partition_validate.add_argument("assignment", type=Path)
-    partition_validate.add_argument("--clusters", type=Path, required=True)
+    partition_validate.add_argument(
+        "assignment_index", type=Path, help="current assignment SQLite owner"
+    )
+    partition_validate.add_argument("--phase3-report", type=Path, required=True)
     partition_validate.add_argument("--ir", type=Path, required=True)
     partition_validate.add_argument("--platform", type=Path, required=True)
 
     phase3 = subparsers.add_parser(
         "phase3",
         help=(
-            "run multi-FPGA partitioning with the default register-boundary "
-            "PATRON policy or an explicit generalized Static Exact comparison"
+            "run multi-FPGA partitioning with the retained "
+            "PATRON v14 generalized Static Exact policy"
         ),
     )
     phase3.add_argument("--ir", type=Path, required=True)
@@ -2263,20 +2233,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             _print_json(ir.stats())
         return 0
 
-    if args.command == "combinational-cut":
-        ir = EmuIR.load(args.ir)
-        if args.combinational_cut_command == "characterize":
-            report = characterize_combinational_cuts(
-                ir, args.depth_limit or (1, 2)
-            )
-            write_json(args.output, report)
-        else:
-            report = validate_combinational_cut_characterization(
-                ir, read_json(args.report)
-            )
-        _print_json(report)
-        return 0
-
     if args.command == "import-yosys":
         ir = import_yosys_json(args.input, top=args.top, clocks=args.clock)
         write_json(args.output, ir.to_dict())
@@ -2795,11 +2751,11 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0 if report["status"] == "pass" else 2
 
     if args.command == "partition":
-        report = validate_phase3(
+        report = validate_phase3_indexed(
             ir_path=args.ir,
             platform_path=args.platform,
-            clusters_path=args.clusters,
-            assignment_path=args.assignment,
+            phase3_report_path=args.phase3_report,
+            assignment_index_path=args.assignment_index,
         )
         _print_json(report)
         return 0

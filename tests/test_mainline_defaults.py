@@ -8,9 +8,7 @@ from emuflow.cli import _build_parser
 from emuflow.errors import ValidationError
 from emuflow.multi_fpga_flow import run_multi_fpga_flow
 from emuflow.native_compile import _request
-from emuflow.partition import (
-    build_clusters, DEFAULT_PARTITION_CUT_MODE, DEFAULT_PATRON_ALGORITHM_VERSION,
-)
+from emuflow.partition import (DEFAULT_PARTITION_CUT_MODE, DEFAULT_PATRON_ALGORITHM_VERSION)
 from emuflow.phase3 import run_phase3
 from emuflow.phase3_native import write_request
 
@@ -36,7 +34,8 @@ def test_api_and_native_request_share_the_same_defaults(tmp_path):
         assert parameters["cut_mode"].default == DEFAULT_PARTITION_CUT_MODE
         assert parameters["patron_algorithm_version"].default == DEFAULT_PATRON_ALGORITHM_VERSION
         assert "patron_flow_refinement" not in parameters
-    assert inspect.signature(build_clusters).parameters["cut_mode"].default == "static-exact-combinational"
+    import emuflow.partition as retired_host
+    assert not hasattr(retired_host, "build_clusters")
     assert inspect.signature(write_request).parameters["patron_max_moves"].default is None
     assert "flow_refinement" not in inspect.signature(write_request).parameters
     value, _ = _request((), {"output_dir": tmp_path / "flow"})

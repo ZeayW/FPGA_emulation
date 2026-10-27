@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.boundary_timing import build_boundary_identity_database
+from emuflow.boundary_timing import validate_boundary_identity_database
 from emuflow.boundary_identity_storage import read_boundary_identity_storage
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.ir import EmuIR
@@ -103,8 +103,9 @@ def prepare(owners,root,shared=False,fpga_index=0):
 def test_native_whole_lowering_preserves_sources_and_boundary_identities(owners, tmp_path, shared, fpga_index):
     case, split, fpga, transport, logical, ir, path = prepare(owners, tmp_path, shared, fpga_index)
     output = tmp_path / 'native/placement.emuir.sqlite'
-    with patch('emuflow.ir.EmuIR.load', side_effect=AssertionError('Python graph import')), \
-         patch('emuflow.boundary_timing.iter_boundary_identity_records', side_effect=AssertionError('Python endpoint binder')):
+    import emuflow.boundary_timing as boundary
+    assert not hasattr(boundary, 'iter_boundary_identity_records')
+    with patch('emuflow.ir.EmuIR.load', side_effect=AssertionError('Python graph import')):
         report = run_placement_ir_lowering_from_split(split, fpga, transport.manifest_path, path, output)
     assert report['implementation_id'] == 'native-placement-lowering-v1'
     actual = EmuIR.load(output)
@@ -172,11 +173,32 @@ def test_native_whole_lowering_preserves_sources_and_boundary_identities(owners,
     assert not {'source_values', 'shadow_values'} & {port['id'] for port in actual.value['ports']}
     assert not any((ep['instance'] or '').startswith('__emuflow_rx_')
                    for net in nets.values() for ep in net['drivers'] + net['sinks'])
-    # An independent endpoint/port binder must reconstruct the exact emitted
-    # boundary facts from the physical netlist, including relay-only devices.
-    identities = build_boundary_identity_database(transport.materialize(), actual, ir)
+    # Compare the complete native boundary population to independent facts from
+    # this synthesized fixture. No second transport-to-EmuIR binder is retained.
+    shadow_index = {row['signal']: row['index'] for row in transport['shadow_signals']}
     with read_boundary_identity_storage(output.with_name('boundary-identities.json')) as emitted:
-        assert {**emitted, 'endpoints': list(emitted['endpoints'])} == identities
+        emitted_by_id = {row['id']: row for row in emitted['endpoints']}
+        assert set(emitted_by_id) == {row['id'] for row in transport['endpoints']}
+        for source in transport['endpoints']:
+            port, lane = transport_endpoint_port(source), source['lane']
+            is_dut = source['kind'] == 'tx' and source['signal'].startswith('net:')
+            registers = ([] if is_dut else [
+                '__emuflow_transport__/shadow' + str(shadow_index[source['signal']])])
+            expected_external = '__emuflow_transport__/' + port + ':' + str(lane)
+            assert emitted_by_id[source['id']] == {
+                **{key: source[key] for key in ('id', 'kind', 'schedule_entry', 'demand',
+                    'link', 'peer', 'lane', 'logical_lane')},
+                'logical_net': source['net'], 'internal_signal': source['signal'],
+                'source_class': ('dut-net' if is_dut else 'captured-shadow'
+                                 if source['kind'] == 'rx' else 'forwarded-shadow'),
+                'merged_ir': {'external_port': port, 'external_port_bit': lane,
+                    'external_net': expected_external,
+                    'logical_net': source['net'] if source['net'] in nets else None,
+                    'boundary_register_instances': registers},
+            }
+            external_role = 'sinks' if source['kind'] == 'tx' else 'drivers'
+            assert {'instance': None, 'port': port, 'bit': lane} in nets[expected_external][external_role]
+        validate_boundary_identity_database(emitted, transport)
     assert report['original_instances'] == len(logical['instances'])
     assert report['transport_instances'] == len(ir.value['instances'])
     assert report['boundary_identity']['validation']['endpoints'] == len(transport['endpoints'])

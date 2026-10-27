@@ -111,7 +111,8 @@ def write_pressure_requests(value, root, initial, max_moves):
 
 
 def run_pressure_kernel(value, initial, *, max_moves=0):
-    from emuflow.partition import _PackedClusterAssignment, build_partition_assignment
+    from emuflow.partition import (_PackedClusterAssignment)
+    from tests.native_partition_facts import (build_partition_assignment)
     count = len(value.clusters)
     workspace = _ClusterScratch(prefix='patron-kernel-facts-'); root = Path(workspace.name)
     retained = False

@@ -15,14 +15,8 @@ from emuflow.errors import ValidationError
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.io import read_json
 from emuflow.ir import EmuIR
-from emuflow.partition import (
-    build_partition_assignment,
-    build_clusters,
-    normalize_partition_constraints,
-    validate_cluster_assignment_balance,
-    validate_partition_artifacts,
-    validate_partition_artifacts_online,
-)
+from emuflow.partition import (validate_cluster_assignment_balance)
+from tests.native_partition_facts import (build_partition_assignment, build_clusters, normalize_partition_constraints, validate_partition_artifacts, validate_partition_artifacts_online)
 from tests.partition_reference import assign_clusters
 from emuflow.partition_ir import load_partition_ir
 from emuflow.phase3 import run_phase3, validate_phase3_indexed
@@ -114,50 +108,50 @@ class Phase3Test(unittest.TestCase):
             self.assertIsInstance(packed_clusters, list)
             self.assertEqual(list.__len__(packed_clusters), 0)
             self.assertGreater(packed_clusters.packed_payload_bytes, 0)
-        self.assertEqual(actual, expected)
-        self.assertEqual(list(actual["clusters"]), expected["clusters"])
-        self.assertEqual(actual["clusters"][0], expected["clusters"][0])
-        self.assertEqual(actual["clusters"][-1], expected["clusters"][-1])
-        self.assertEqual(
-            json.dumps(actual, sort_keys=True, separators=(",", ":")),
-            json.dumps(expected, sort_keys=True, separators=(",", ":")),
-        )
-        copied_clusters = copy.deepcopy(actual)["clusters"]
-        self.assertIs(type(copied_clusters), list)
-        self.assertEqual(copied_clusters, expected["clusters"])
-        self.assertEqual(actual_exact, expected_exact)
-        streamed_names = streamed_exact["policy"][
-            "eligible_combinational_cut_nets"
-        ]
-        self.assertIsInstance(streamed_names, list)
-        self.assertEqual(list.__len__(streamed_names), 0)
-        self.assertEqual(streamed_exact, expected_exact)
-        self.assertEqual(
-            json.dumps(streamed_exact, sort_keys=True, separators=(",", ":")),
-            json.dumps(expected_exact, sort_keys=True, separators=(",", ":")),
-        )
-        copied = copy.deepcopy(streamed_exact)
-        self.assertIs(
-            type(copied["policy"]["eligible_combinational_cut_nets"]),
-            list,
-        )
-        self.assertEqual(copied, expected_exact)
-        streamed_assignment = assign_clusters(
-            self.ir,
-            self.platform,
-            streamed_exact,
-            constraints,
-            seed=3,
-        )
-        self.assertEqual(
-            validate_partition_artifacts(
+            self.assertEqual(actual, expected)
+            self.assertEqual(list(actual["clusters"]), expected["clusters"])
+            self.assertEqual(actual["clusters"][0], expected["clusters"][0])
+            self.assertEqual(actual["clusters"][-1], expected["clusters"][-1])
+            self.assertEqual(
+                json.dumps(actual, sort_keys=True, separators=(",", ":")),
+                json.dumps(expected, sort_keys=True, separators=(",", ":")),
+            )
+            copied_clusters = copy.deepcopy(actual)["clusters"]
+            self.assertIs(type(copied_clusters), list)
+            self.assertEqual(copied_clusters, expected["clusters"])
+            self.assertEqual(actual_exact, expected_exact)
+            streamed_names = streamed_exact["policy"][
+                "eligible_combinational_cut_nets"
+            ]
+            self.assertIsInstance(streamed_names, list)
+            self.assertEqual(list.__len__(streamed_names), 0)
+            self.assertEqual(streamed_exact, expected_exact)
+            self.assertEqual(
+                json.dumps(streamed_exact, sort_keys=True, separators=(",", ":")),
+                json.dumps(expected_exact, sort_keys=True, separators=(",", ":")),
+            )
+            copied = copy.deepcopy(streamed_exact)
+            self.assertIs(
+                type(copied["policy"]["eligible_combinational_cut_nets"]),
+                list,
+            )
+            self.assertEqual(copied, expected_exact)
+            streamed_assignment = assign_clusters(
                 self.ir,
                 self.platform,
                 streamed_exact,
-                streamed_assignment,
-            )["status"],
-            "pass",
-        )
+                constraints,
+                seed=3,
+            )
+            self.assertEqual(
+                validate_partition_artifacts(
+                    self.ir,
+                    self.platform,
+                    streamed_exact,
+                    streamed_assignment,
+                )["status"],
+                "pass",
+            )
 
     def test_compact_cluster_builder_decodes_each_resource_payload_once(
         self,
@@ -179,12 +173,12 @@ class Phase3Test(unittest.TestCase):
             self.assertLess(unique_payloads, cell_count)
             compact_ir = load_partition_ir(ir_path)
             with patch(
-                "emuflow.partition.ResourceVector.from_mapping",
+                "emuflow.resources.ResourceVector.from_mapping",
                 wraps=ResourceVector.from_mapping,
             ) as decode:
                 actual = build_clusters(compact_ir, constraints, cut_mode="sequential-only")
         self.assertEqual(actual, expected)
-        self.assertEqual(decode.call_count, unique_payloads)
+        self.assertEqual(decode.call_count, 0)
 
     def test_compact_default_constraints_skip_instance_catalog(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -227,7 +221,7 @@ class Phase3Test(unittest.TestCase):
                 )
             compact_ir = load_partition_ir(ir_path)
             with self.assertRaisesRegex(
-                ValidationError, "endpoint owner is invalid"
+                ValidationError, "native compact EmuIR endpoint is invalid"
             ):
                 build_clusters(compact_ir, constraints, cut_mode="sequential-only")
 
@@ -250,7 +244,7 @@ class Phase3Test(unittest.TestCase):
                 )
             compact_ir = load_partition_ir(ir_path)
             with self.assertRaisesRegex(
-                ValidationError, "resource payload is missing"
+                ValidationError, "missing or invalid compact resources"
             ):
                 build_clusters(compact_ir, constraints, cut_mode="sequential-only")
 
@@ -271,7 +265,7 @@ class Phase3Test(unittest.TestCase):
                 )
             compact_ir = load_partition_ir(ir_path)
             with self.assertRaisesRegex(
-                ValidationError, "resources: expected an object"
+                ValidationError, "missing or invalid compact resources"
             ):
                 build_clusters(compact_ir, constraints, cut_mode="sequential-only")
 
@@ -737,7 +731,7 @@ class Phase3Test(unittest.TestCase):
         self.assertEqual(report["balance_loads"]["fpga1"]["cells"], 2)
 
     def test_dimension_specific_balance_rejects_unknown_resource(self) -> None:
-        with self.assertRaisesRegex(ValidationError, "unknown dimensions"):
+        with self.assertRaisesRegex(ValidationError, "unknown dimension/resource"):
             normalize_partition_constraints(
                 {
                     "schema": "emuflow.partition-constraints/v1",
@@ -775,7 +769,7 @@ class Phase3Test(unittest.TestCase):
             self.platform,
         )
         self.assertEqual(constraints["balance_dimensions"], ["cells", "lut"])
-        with self.assertRaisesRegex(ValidationError, "unknown dimensions"):
+        with self.assertRaisesRegex(ValidationError, "unknown dimension/resource"):
             normalize_partition_constraints(
                 {
                     "schema": "emuflow.partition-constraints/v1",
@@ -894,42 +888,6 @@ class Phase3Test(unittest.TestCase):
                 broken,
             )
 
-    def test_register_input_cut_uses_second_transport_round(self) -> None:
-        constraints = normalize_partition_constraints(
-            None, self.ir, self.platform
-        )
-        clusters = build_clusters(self.ir, constraints, cut_mode="sequential-only")
-        cluster_by_instance = {
-            instance: cluster["id"]
-            for cluster in clusters["clusters"]
-            for instance in cluster["instances"]
-        }
-        cluster_assignment = {
-            cluster["id"]: "fpga0" for cluster in clusters["clusters"]
-        }
-        cluster_assignment[cluster_by_instance["next_lut[0]"]] = "fpga1"
-        assignment = build_partition_assignment(
-            self.ir,
-            self.platform,
-            clusters,
-            constraints,
-            cluster_assignment,
-            provider="test",
-            seed=0,
-        )
-        cut_by_net = {
-            cut["net"]: cut for cut in assignment["cut_nets"]
-        }
-        self.assertEqual(
-            cut_by_net["next_q[0]"]["cut_class"], "register_input"
-        )
-        self.assertEqual(cut_by_net["next_q[0]"]["transport_round"], 1)
-        self.assertNotIn("transport_round", cut_by_net["q[0]"])
-        self.assertEqual(
-            assignment["metrics"]["register_input_cut_nets"], 1
-        )
-        self.assertEqual(assignment["metrics"]["transport_rounds"], 2)
-        self.assertEqual(assignment["metrics"]["round_barriers"], 1)
 
     def test_infeasible_capacity_is_rejected(self) -> None:
         platform_value = self.platform.to_dict()

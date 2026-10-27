@@ -177,8 +177,8 @@ def run_hops(ir, platform, clusters, constraints, assignment, routes, *, weights
 
 
 def publish_partition(output, ir, clusters, assignment, report):
-    from emuflow.phase3_assignment_native import native_assignment_cut_source
-    from emuflow.phase3_cluster_catalog import catalog_sources, write_catalog_request
+    from tests.native_assignment_publication_fixture import native_assignment_cut_source
+    from tests.native_cluster_catalog_fixture import catalog_sources, write_catalog_request
     cut = native_assignment_cut_source(assignment)
     records, policy = clusters['clusters'], clusters['policy']
     eligible = policy.get('eligible_combinational_cut_nets', [])

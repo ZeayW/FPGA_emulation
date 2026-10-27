@@ -1,7 +1,8 @@
 """Small input data and current typed-store preparation; no pressure algorithm."""
 import copy
 from emuflow.ir import EmuIR
-from emuflow.partition import build_clusters, build_partition_assignment, normalize_partition_constraints, CUT_MODE_STATIC_EXACT
+from emuflow.partition import (CUT_MODE_STATIC_EXACT)
+from tests.native_partition_facts import (build_clusters, build_partition_assignment, normalize_partition_constraints)
 from emuflow.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
 from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints

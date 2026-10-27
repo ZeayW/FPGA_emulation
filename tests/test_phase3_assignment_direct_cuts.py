@@ -10,13 +10,10 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.errors import ValidationError
-from emuflow.partition import (
-    _StaticExactCutNetRecords,
-    _PackedClusterAssignment,
-    build_partition_assignment,
-)
+from emuflow.partition import (_StaticExactCutNetRecords, _PackedClusterAssignment)
+from tests.native_partition_facts import (build_partition_assignment)
 from emuflow.phase3_exact_binary import EXACT_BINARY_ARTIFACT
-from emuflow.phase3_assignment_native import native_assignment_cut_source
+from tests.native_assignment_publication_fixture import native_assignment_cut_source
 from tests.test_phase3_assignment_native import prepare, _published_rows
 from tests.test_phase3_clusters_native import source
 
@@ -32,24 +29,21 @@ def _assignment(source, mode="normal"):
     ir, platform, constraints, clusters, parts = prepare(source)
     if mode == "no-cuts":
         parts = _PackedClusterAssignment(("a", "b"), [0] * len(parts))
-    with patch(
-        "emuflow.combinational_cut.static_exact_analysis_engine",
-        return_value="native-cpp-v1",
-    ):
-        assignment = build_partition_assignment(
-            ir,
-            platform,
-            clusters,
-            constraints,
-            parts,
-            "fixture",
-            7,
-            _include_semantic_contract=True,
-            _stream_semantic_records=True,
-        )
+    assignment = build_partition_assignment(
+        ir,
+        platform,
+        clusters,
+        constraints,
+        parts,
+        "fixture",
+        7,
+        _include_semantic_contract=True,
+        _stream_semantic_records=True,
+    )
     nodes = assignment["semantic_contract"]["cut_nodes"]
     captures = nodes.direct_binary_source.captures
     primary_owner = clusters["clusters"]._member_offsets.owner
+    count_owner = assignment["cut_nets"]._cuts._sink_endpoints.owner
     try:
         assert isinstance(assignment["cut_nets"], list)
         typed = native_assignment_cut_source(assignment)
@@ -58,6 +52,7 @@ def _assignment(source, mode="normal"):
     finally:
         nodes.close()
         captures.close()
+        count_owner.close()
         primary_owner.close()
 
 
@@ -65,7 +60,7 @@ def _assignment(source, mode="normal"):
 def test_native_cut_publication_matches_reference_without_host_records(
     source, tmp_path, mode
 ):
-    import emuflow.phase3_assignment_native as producer
+    import tests.native_assignment_publication_fixture as producer
 
     with _assignment(source, mode) as (ir, assignment, typed):
         reference = dict(
@@ -144,7 +139,9 @@ def test_native_cut_source_rejection_preserves_existing_pair(source, tmp_path, k
                 assignment["semantic_contract"], cut_nodes=[]
             )
         else:
-            assignment["cut_nets"]._cuts._sink_endpoints.append(1)
+            from array import array
+            previous=assignment['cut_nets']._cuts._sink_endpoints
+            assignment['cut_nets']._cuts._sink_endpoints=array('Q',[*previous,1])
         index = tmp_path / "index.sqlite"
         index.write_bytes(b"prior-index")
         binary = tmp_path / EXACT_BINARY_ARTIFACT
@@ -173,7 +170,7 @@ def test_native_request_rejection_is_atomic_and_never_imports_host_cuts(
     source, tmp_path, kind
 ):
     import zlib
-    import emuflow.phase3_assignment_native as producer
+    import tests.native_assignment_publication_fixture as producer
     from emuflow.tool_runtime import NativeToolProcess
 
     with _assignment(source) as (ir, assignment, typed):
@@ -187,7 +184,7 @@ def test_native_request_rejection_is_atomic_and_never_imports_host_cuts(
         def corrupt(executable, command, **kwargs):
             request = Path(command[5])
             data = bytearray(request.read_bytes())
-            assert struct.unpack_from("<I", data, 8)[0] == 2 and len(command) == 8
+            assert struct.unpack_from("<I", data, 8)[0] == 3 and len(command) == 10
             observed.append(True)
             if kind == "checksum":
                 data[-1] ^= 1
@@ -199,13 +196,18 @@ def test_native_request_rejection_is_atomic_and_never_imports_host_cuts(
                 struct.pack_into(
                     "<Q",
                     data,
-                    len(data) - 4 - 8 * len(typed.endpoint_counts) - 8,
+                    len(data) - 12,
                     len(typed.endpoint_counts) + 1,
                 )
             elif kind == "zero-endpoints":
-                struct.pack_into(
-                    "<Q", data, len(data) - 4 - 8 * len(typed.endpoint_counts), 0
-                )
+                # V3 borrows the native count owner, so corrupt that source
+                # and explicitly bind its new generation in this malformed
+                # request. This reaches the independent count validator.
+                from emuflow.native_tools import native_file_generation
+                counts=typed.endpoint_counts.native_source.path
+                raw=bytearray(counts.read_bytes());struct.pack_into('<Q',raw,20,0)
+                struct.pack_into('<I',raw,len(raw)-4,zlib.crc32(raw[:-4]));counts.write_bytes(raw)
+                struct.pack_into('<3Q4q',data,12+3*56,*native_file_generation(counts))
             else:
                 with typed.paths[0].open("ab") as output:
                     output.write(b"changed")
@@ -240,7 +242,7 @@ def test_native_request_rejection_is_atomic_and_never_imports_host_cuts(
 )
 def test_native_node_decoder_rejects_bound_malformed_records(source, tmp_path, kind):
     import zlib
-    import emuflow.phase3_assignment_native as producer
+    import tests.native_assignment_publication_fixture as producer
     from emuflow.native_tools import native_file_generation
     from emuflow.tool_runtime import NativeToolProcess
 

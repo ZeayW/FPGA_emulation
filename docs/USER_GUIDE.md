@@ -206,8 +206,8 @@ the source generation; `OUTPUT` contains sealed membership bits, a streamed UTF-
 name pool and integer offsets. Python borrows those columns and sends no graph
 or cell-class arrays to the operation. `candidate_implementation_id` reports
 `native-candidate-ids-v1`; `native_candidate_metrics` uses the same native metric
-scopes as clustering below. Large compact native semantic analysis uses this
-producer too; explicit reference and full characterization APIs stay available.
+scopes as clustering below. Native semantic analysis uses the same source-bound
+producer. The former Python graph-characterization command is retired.
 
 The public Phase 3 API executes `phase3 run REQUEST OUTPUT` in the shared core.
 It accepts compact indexed EmuIR and the current Static Exact contract. Native
@@ -219,16 +219,26 @@ references; it does not coordinate a second graph-level implementation.
 `stage_implementation_id` reports `native-phase3-v1`. Native operation metrics
 and the sampled whole-stage process-tree measurements have separate scopes.
 The stage retains atomic publication and rejects changed source generations.
-Independent `validate_phase3` and `validate_phase3_indexed` APIs remain available
-for source-to-result legality and terminal artifact checks.
+Independent `validate_phase3_indexed` checks source-to-result legality and
+terminal artifact ownership without rebuilding a Python graph. The public CLI
+consumes the current assignment index and its phase report:
+
+```bash
+emuflow partition validate OUTPUT/assignment.sqlite \
+  --phase3-report OUTPUT/phase3_report.json \
+  --ir INPUT.emuir.sqlite --platform BOARD.json
+```
+
+The former clusters/assignment JSON validator is retired.
 
 The previous Python Phase 3 coordinator, TritonPart exporter/executor and frozen
 assignment promotion route are retired. Full diagnostic snapshots, retained
 baseline assignments and alternative refiner executables cannot select an old
 production chain. Historical tools and source remain available through Git.
-Small graph/model APIs used by independent correctness tests do not constitute
-another supported full-stage flow. Complete NVDLA physical and global timing
-qualification is separate from a Phase 3 stage result.
+Tests retain bounded explicit record fixtures and independent kernel assertions;
+they do not retain a second full Python cluster/assignment/semantic producer.
+Complete NVDLA physical and global timing qualification is separate from a
+Phase 3 stage result.
 
 `emuflow-native [--report OPERATION_JSON] phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL`
 streams the finalized mapped v2 and private lexical atom relations to OpenPARF

@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.errors import ValidationError
-from emuflow.partition import build_partition_assignment, validate_partition_artifacts_online
+from tests.native_partition_facts import (build_partition_assignment, validate_partition_artifacts_online)
 from tests.native_partition_kernel_driver import run_hops as run
 from tests.native_partition_kernel_driver import initialize
 from emuflow.partition_topology import _shortest_hop_distances
@@ -68,7 +68,7 @@ def test_zero_move_owner_preserves_original_assignment_contract(case):
     routes = dict(load_route_constraints(f.route_path, f.platform), max_route_hops=3)
     original = f.assignment['cluster_assignment']
     contract = f.assignment.get('semantic_contract')
-    with patch('emuflow.partition.build_partition_assignment', side_effect=AssertionError('no-op rebuilt assignment')):
+    with patch('tests.native_partition_facts.build_partition_assignment', side_effect=AssertionError('no-op rebuilt assignment')):
         owners, report = run(f.ir, f.platform, f.clusters, f.constraints, f.assignment, routes)
     assert report['move_count'] == 0
     assert dict(owners) == dict(original)

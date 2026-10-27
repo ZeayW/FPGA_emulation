@@ -1,4 +1,4 @@
-"""Selected-record differential/negative gates; NVDLA acceptance is separate."""
+"""Selected typed records, explicit chain facts and independent rejection gates."""
 import copy
 from contextlib import closing
 import gc
@@ -10,12 +10,12 @@ import pytest
 
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.errors import ValidationError
-from emuflow.partition import (build_clusters,build_partition_assignment,
-    normalize_partition_constraints,CUT_MODE_STATIC_EXACT)
+from emuflow.partition import (CUT_MODE_STATIC_EXACT)
+from tests.native_partition_facts import (build_clusters, build_partition_assignment, normalize_partition_constraints)
 from emuflow.partition_ir import load_partition_ir
 from tests.native_partition_kernel_driver import initialize
 from tests.phase3_store_fixture import write_assignment_index_fixture
-from emuflow.phase3_assignment_native import publish_native_assignment_descriptor
+from tests.native_assignment_publication_fixture import publish_native_assignment_descriptor
 from emuflow.phase3_exact_records import StaticExactRecordSequence
 from emuflow.platform import Platform
 from tests.native_build import emuflow_native
@@ -56,6 +56,15 @@ def selected(request,tmp_path,monkeypatch):
     solution=tmp_path/'owner.part';solution.write_text('\n'.join(str(parts.index(targets[c['id']])) for c in clusters['clusters'])+'\n')
     owners,_=initialize(ir,platform,clusters,constraints,seed=0,executable=None,solution_input=solution)
     expected=build_partition_assignment(ir,platform,clusters,constraints,dict(owners),'fixture',0)
+    # Algorithm facts are fixed independently of the output-projection checks.
+    if mode in {'chain','reordered','sparse'}:
+        nodes=expected['semantic_contract']['cut_nodes']
+        assert [(n['net'],n['source_fpgas'],n['sink_fpgas'],n['dependency_level'],n['combinational_dependency_depth'],n['predecessor_cut_nets']) for n in nodes]==[
+            ('n0',['fpga0'],['fpga1'],1,1,[]),('n1',['fpga1'],['fpga0'],2,2,['n0'])]
+        assert [(c['cut_net'],c['fpga'],c['endpoint'],c.get('port'),c.get('bit')) for c in expected['semantic_contract']['capture_requirements']]==[('n1','fpga0','q1','D',0)]
+    if mode=='empty-cuts':
+        assert not expected['semantic_contract']['cut_nodes']
+        assert not expected['semantic_contract']['capture_requirements']
     yield ir,platform,clusters,constraints,owners,expected
     gc.collect()
 
@@ -65,10 +74,11 @@ def build(selected):
     return build_partition_assignment(ir,platform,clusters,constraints,owners,'fixture',0,_stream_semantic_records=True)
 
 
-def test_complete_selected_semantic_generation_and_publication_match_reference(selected,tmp_path):
+def test_complete_selected_semantic_generation_and_publication_match_explicit_projection(selected,tmp_path):
     from emuflow.partition import _CompactInstanceAssignment
-    with (patch('emuflow.partition._compute_compact_cut_nets_with_ordinals',side_effect=AssertionError('host endpoint projection')),
-          patch('emuflow.combinational_cut.build_static_exact_semantic_contract',side_effect=AssertionError('host semantic builder')),
+    import emuflow.combinational_cut as retired_semantics
+    assert not hasattr(retired_semantics,'build_static_exact_semantic_contract')
+    with (patch('tests.native_partition_facts.compute_cut_nets',side_effect=AssertionError('host endpoint projection')),
           patch.object(_CompactInstanceAssignment,'canonical_sha256',side_effect=AssertionError('host instance hash')),
           patch.object(StaticExactRecordSequence,'__iter__',side_effect=AssertionError('host semantic population'))):
         actual=build(selected)
@@ -144,7 +154,7 @@ def test_changed_count_generation_preserves_the_previous_index_and_binary(select
 
 def test_depth_policy_is_enforced_by_the_native_final_owner(selected):
     from emuflow.partition import _CompactInstanceAssignment
-    from emuflow.phase3_semantics_native import finalize_selected_semantics
+    from tests.native_partition_facts import finalize_selected_semantics
     ir,platform,clusters,_,owners,expected=selected
     if expected['semantic_contract']['metrics']['maximum_combinational_dependency_depth']<=1:return
     instance=_CompactInstanceAssignment(ir.path,clusters['clusters'],owners)

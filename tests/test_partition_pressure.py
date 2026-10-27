@@ -13,8 +13,8 @@ import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
-from emuflow.partition import (compute_cut_nets, validate_partition_artifacts_online,
-    CUT_MODE_STATIC_EXACT, build_clusters, build_partition_assignment, normalize_partition_constraints)
+from emuflow.partition import (CUT_MODE_STATIC_EXACT)
+from tests.native_partition_facts import (compute_cut_nets, validate_partition_artifacts_online, build_clusters, build_partition_assignment, normalize_partition_constraints)
 from emuflow.phase3 import run_phase3
 from emuflow.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
 from emuflow.opensta import OPENSTA_PROVIDER

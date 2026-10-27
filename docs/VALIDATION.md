@@ -163,40 +163,26 @@ identities, comparison and resource evidence, then retire the invocation's
 scratch after its processes exit. Component qualification does not establish
 complete Phase 1--7/7C, physical or global timing acceptance.
 
-Final cluster catalog component gates compare every decoded section, member,
-resource, sparse fixed/group entry, candidate name and document against the
-independent reference serializer. Include nonempty eligibility, Unicode and
-source-sequence order distinct from lexical ordinals. Prohibit host cluster/name
-iteration on the native path. Reject resealed duplicate members, mismatched names,
-foreign/missing native owners, malformed checked requests and source changes
-between native generation and final adoption. Selector tests cover pre/post-write
-failure, incomplete backup and failed rollback recovery. Small fixtures establish
-these contracts only; real NVDLA equivalence, wall/RSS/I/O and complete physical
-and global timing acceptance retain their normal gates.
+## Native Phase 3 qualification
 
-## Native producer differential
+Current Phase 3 tests exercise source-bound native clustering, semantic
+construction, decision audit and whole-stage publication. Bounded explicit
+fixtures compare complete member, resource, fixed/group, candidate and semantic
+records, including Unicode, nonlexical source order, SCC/control-pin/capture
+semantics and replica identities. Independent assertions must reject duplicate
+or missing ownership, changed generations, malformed requests, checksum/version
+errors and capacity violations. Atomic failure tests preserve previous outputs.
 
-The offline command
-`PYTHONPATH=src python scripts/validation/qualify_phase3_native_producers.py --ir INPUT.sqlite --platform BOARD.json --out OUTPUT --expected-design TOP`
-compares the reference and native candidate/primary-cluster producers on the
-same immutable compact input. Optional `--constraints`, `--minimum-instances`
-and `--source-commit` freeze explicit constraints, a scale floor and versioned
-runtime identity. It does not rerun synthesis or partition search.
+The former Python full-graph cluster/assignment/semantic producers and their
+offline producer-comparison commands are retired. Tests may encode explicit
+facts for kernel inputs; they must not restore those old algorithms as a second
+flow. Current typed readers and independent legality checks remain required.
 
-Each arm executes in its own supervised process with separate temporary storage.
-The tool hashes the input once before both arms and compares all ordered bitmap,
-name, offset, member, source-owner, resource and fixed/group columns. Hashing is
-outside the measured producer intervals. Results retain arm order, sampled
-process-tree RSS, wall time, parent CPU and separately scoped native operation
-metrics. A native process RSS high-water value is not combined tree RSS.
-Only compact identities and measurements remain after worker exit and scratch
-retirement. Failure cannot publish a passing certificate.
-
-This is a representation-boundary diagnostic, not Static Exact feature evidence,
-a whole-Phase-3 performance result, an algorithm/provider comparison or complete
-Phase 1–7/7C qualification. The declared real workload, naturally selected cuts,
-physical gates and original-path timing coverage still need their normal terminal
-acceptance; fixtures and this producer comparison do not replace them.
+Small fixtures establish contracts only. Real NVDLA qualification must freeze
+input, tools, provider, seed, workers and source identities, measure the complete
+native stage, and retain complete logical-record comparisons and separately
+scoped wall/RSS/I/O evidence. A component or Phase 3 result does not establish
+complete Phase 1–7/7C, physical legality or original-path global timing acceptance.
 
 ## Native physical export differential
 
@@ -256,22 +242,12 @@ tests; the retired membership/resource snapshot reader is not retained for it.
 These contracts do not qualify algorithm-selected cuts, whole-Phase-3 speedup
 or complete Phase 1–7/7C physical/global timing.
 
-`PYTHONPATH=src python scripts/validation/qualify_primary_loads.py --ir INPUT.sqlite --platform BOARD.json --out OUTPUT --expected-design TOP`
-performs an explicit offline arithmetic differential. Optional `--constraints`,
-`--minimum-instances` and `--source-commit` freeze workload and installation identity.
-It builds the shared primary store once and compares complete per-partition
-cluster/cell/resource sums from independently expanded reference records with
-the native reduction. Both consume the same declared round-robin integer vector.
-This arithmetic vector is not a legal candidate or feature qualification and is
-never submitted to partition search; no capacity or balance policy is relaxed.
-The compact result includes the complete load identity, both reduction wall
-times and native subprocess metrics. Whole-worker RSS is a lifetime high-water
-value, not an incremental reference/native memory comparison. Parent-owned
-scratch is removed only after the supervised worker and native readers exit.
-Unit contracts also poison compact record expansion in assignment construction
-and final validation, compare full independent balance reports, and require
-coverage, catalog, version, checksum, generation, ownership and capacity failures
-to preserve any previously published output.
+Primary-load qualification uses bounded explicit membership/resource facts and
+independent arithmetic assertions over native reductions. Compare complete
+per-partition cluster, cell and resource sums, and reject coverage, catalog,
+version, checksum, generation, ownership and capacity failures. These fixtures
+are arithmetic checks, not legal search candidates or large-design performance
+evidence. The old full-reference producer comparison command is retired.
 
 Native cut publication compares every SQL record, the canonical cut digest and
 exact-binary bytes with the independent reference writer. Tests poison host cut

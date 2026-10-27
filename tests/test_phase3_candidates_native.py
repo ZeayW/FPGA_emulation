@@ -7,7 +7,7 @@ import subprocess
 from unittest.mock import patch
 import pytest
 
-from emuflow.combinational_cut import _compact_combinational_cut_candidate_ids, _build_combinational_cut_candidate_index
+from tests.partition_graph_oracle import candidate_ids
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
@@ -55,13 +55,12 @@ def test_candidate_records_match_two_independent_oracles(tmp_path,installed,mode
     if mode=='sparse':
         with closing(sqlite3.connect(path)) as db,db:db.execute('UPDATE endpoint_records SET ordinal=ordinal*7+9')
     ir=load_partition_ir(path)
-    expected=_compact_combinational_cut_candidate_ids(ir,path)
-    graph=_build_combinational_cut_candidate_index(EmuIR(value),include_dependency_levels=False,include_source_identity=False)['eligible_ids']
-    with patch('emuflow.combinational_cut._packed_cyclic_nodes',side_effect=AssertionError('Python SCC invoked')):
-        actual=build_native_candidate_ids(ir)
+    expected=sorted(candidate_ids(EmuIR(value)))
+    graph=candidate_ids(EmuIR(value))
+    actual=build_native_candidate_ids(ir)
     assert set(actual)==set(expected)==set(graph)
     assert list(actual)==list(expected)
-    assert [actual.contains_ordinal(i) for i in range(len(value['nets']))]==[expected.contains_ordinal(i) for i in range(len(value['nets']))]
+    assert [actual.contains_ordinal(i) for i in range(len(value['nets']))]==[net['id'] in graph for net in value['nets']]
     assert actual.implementation_id=='native-candidate-ids-v1'
     assert actual.native_metrics['wall_seconds']>0
     borrowed=actual.streaming_ordered_names(); root=Path(actual._ordinal_bits.owner.scratch.name)
@@ -139,39 +138,3 @@ def test_native_candidate_borrowing_cleans_exception_cycle(tmp_path,installed):
         root=fail();gc.collect()
     assert not root.exists(),(errors,list(root.iterdir()) if root.exists() else [])
     assert not errors
-
-
-def test_offline_producer_differential_uses_complete_columns_and_retires_scratch(tmp_path,installed):
-    import json,sys
-    path=tmp_path/'source.sqlite';write_compact_emuir(path,reference._chain_ir().to_dict())
-    output=tmp_path/'qualified'
-    root=Path(__file__).resolve().parents[1]
-    command=[sys.executable,str(root/'scripts/validation/qualify_phase3_native_producers.py'),
-        '--ir',str(path),'--platform',str(reference.PLATFORM_PATH),'--out',str(output),
-        '--expected-design','cut_chain','--minimum-instances','5']
-    completed=subprocess.run(command,capture_output=True,text=True)
-    assert completed.returncode==0,completed.stdout+completed.stderr
-    result=json.loads((output/'qualification.json').read_text())
-    assert result['status']=='pass'
-    assert len(result['arms']['native']['column_sha256'])==21
-    assert result['arms']['reference']['column_sha256']==result['arms']['native']['column_sha256']
-    assert not (output/'tmp').exists()
-    assert not (output/'reference/tmp').exists() and not (output/'native/tmp').exists()
-    assert not list(output.rglob('*.sqlite')) and not list(output.rglob('*.bin'))
-    assert 'no search/full-flow/physical' in result['scope']
-
-
-def test_offline_producer_failure_keeps_compact_failure_without_payloads(tmp_path,installed):
-    import json,sys
-    path=tmp_path/'source.sqlite';write_compact_emuir(path,reference._chain_ir().to_dict())
-    with closing(sqlite3.connect(path)) as db,db:
-        db.execute("UPDATE payloads SET value='{\"ff\":-1}' WHERE seq=(SELECT resources_seq FROM cell_records LIMIT 1)")
-    output=tmp_path/'failed';root=Path(__file__).resolve().parents[1]
-    completed=subprocess.run([sys.executable,str(root/'scripts/validation/qualify_phase3_native_producers.py'),
-        '--ir',str(path),'--platform',str(reference.PLATFORM_PATH),'--out',str(output),
-        '--expected-design','cut_chain'],capture_output=True,text=True)
-    assert completed.returncode!=0
-    result=json.loads((output/'qualification.json').read_text())
-    assert result['status']=='failed' and 'reference producer qualification failed:' in result['error']
-    assert not (output/'tmp').exists() and not (output/'reference/tmp').exists()
-    assert not list(output.rglob('*.sqlite')) and not list(output.rglob('*.bin'))

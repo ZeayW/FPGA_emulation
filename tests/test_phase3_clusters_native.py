@@ -11,7 +11,8 @@ import pytest
 
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.errors import ValidationError
-from emuflow.partition import build_clusters, CUT_MODE_STATIC_EXACT
+from emuflow.partition import (CUT_MODE_STATIC_EXACT)
+from tests.native_partition_facts import (build_clusters)
 from emuflow.partition_ir import load_partition_ir
 from emuflow.phase3_clusters_native import build_native_clusters
 from tests.native_build import emuflow_native
@@ -46,14 +47,11 @@ def test_primary_columns_match_independent_reference(source,mode):
             else:
                 db.execute('UPDATE endpoint_records SET ordinal=ordinal*7+3')
     options={'cut_mode':CUT_MODE_STATIC_EXACT if mode=='static' else 'sequential-only'}
-    expected=build_clusters(ir,constraints,**options)
-    with patch('emuflow.partition._build_clusters_from_compact_ir',side_effect=AssertionError('Python UF invoked')):
-        actual=build_clusters(ir,constraints,_native_compact_clusters=True,**options)
-    a,b=actual['clusters'],expected['clusters']
-    assert list(a)==list(b)
-    for key in ('_name_bytes','_name_offsets','_member_offsets','_member_ordinals','source_cluster_indices'):
-        assert bytes(getattr(a,key))==bytes(getattr(b,key))
-    assert [list(c) for c in a._resource_columns]==[list(c) for c in b._resource_columns]
+    from tests.partition_graph_oracle import candidate_ids, cluster_records
+    expected=cluster_records(ir,constraints,candidate_ids(ir) if mode=='static' else ())
+    actual=build_clusters(ir,constraints,_native_compact_clusters=True,**options)
+    a=actual['clusters']
+    assert list(a)==expected
     assert a.source_cluster_indices.readonly
     assert a.implementation_id=='native-primary-clusters-v1'
     assert a.native_metrics['wall_seconds']>0
@@ -144,11 +142,10 @@ def test_large_fanout_primary_union_matches_reference(tmp_path,monkeypatch):
         sinks=[{'instance':f'cell-{i:05d}','port':'I','bit':0} for i in range(1,5000)])]
     path=tmp_path/'fanout.sqlite'; write_compact_emuir(path,value)
     ir=load_partition_ir(path)
-    expected=build_clusters(ir,fixture.constraints, cut_mode="sequential-only")
-    with patch('emuflow.partition._UnionFind',side_effect=AssertionError('Python UF invoked')):
-        actual=build_clusters(ir,fixture.constraints,cut_mode="sequential-only", _native_compact_clusters=True)
-    assert list(actual['clusters'])==list(expected['clusters'])
+    actual=build_clusters(ir,fixture.constraints,cut_mode="sequential-only", _native_compact_clusters=True)
     assert len(actual['clusters'])==1
+    assert actual['clusters'][0]['instances']==sorted(cell['id'] for cell in value['instances'])
+    assert actual['clusters'][0]['resources']=={'lut':5000}
 
 
 def test_source_setup_failure_retires_unmapped_scratch(source,tmp_path):

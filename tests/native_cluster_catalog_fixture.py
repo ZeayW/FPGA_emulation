@@ -1,4 +1,8 @@
-"""Final native cluster records without a host cluster/member serialization."""
+"""Bounded request driver for native catalog record and corruption tests.
+
+This has no stage entry, selector transaction, graph construction or search.
+The current complete native stage owns production cluster publication.
+"""
 
 from __future__ import annotations
 
@@ -7,14 +11,16 @@ from pathlib import Path
 import sys
 import tempfile
 
-from .errors import ValidationError
-from .native_protocol import CheckedRequestWriter
-from .native_tools import resolve_native_executable
-from .store_publication import StoreSource, require_store_sources_unchanged
-from .tool_runtime import NativeToolProcess
+from emuflow.errors import ValidationError
+from emuflow.native_protocol import CheckedRequestWriter
+from emuflow.native_tools import resolve_native_executable
+from emuflow.store_publication import StoreSource, require_store_sources_unchanged
+from emuflow.tool_runtime import NativeToolProcess
 
 
 def catalog_sources(clusters, eligible):
+    if len(clusters) > 65536:
+        raise ValidationError("catalog qualification fixture exceeds bound")
     if getattr(clusters, "native_artifact", None) is None:
         if getattr(clusters, "implementation_id", None) == "native-primary-clusters-v1":
             raise ValidationError("native cluster catalog ownership is missing")
@@ -56,8 +62,10 @@ def catalog_sources(clusters, eligible):
 
 
 def write_catalog_request(request, value, document, eligible, eligible_present, sources):
-    from .phase3_storage import _canonical_json
+    from emuflow.phase3_storage import _canonical_json
     clusters = value["clusters"]
+    if len(clusters) > 65536 or len(eligible) > 65536:
+        raise ValidationError("catalog qualification fixture exceeds bound")
     writer = CheckedRequestWriter(request)
     try:
         writer.put("QI", 0x31514343464D5545, 1)
@@ -127,7 +135,7 @@ def build_native_cluster_catalog(
             executable,
             command,
             environment=dict(os.environ),
-            timeout_ms=21600000,
+            timeout_ms=60000,
             scratch_parent=Path(temporary),
         ) as process:
             completed = process.finish()

@@ -44,7 +44,6 @@ from .openparf import validate_openparf_runtime
 from .phase1 import run_phase1
 from .phase3 import (
     run_phase3,
-    validate_phase3,
     validate_phase3_indexed,
 )
 from .phase4 import run_phase4, validate_phase4

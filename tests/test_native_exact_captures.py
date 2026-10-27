@@ -10,7 +10,6 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.combinational_cut import _resolve_compact_native_coordinate_capture_stream
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.phase3_exact_records import read_native_static_exact_capture_stream
 from tests import test_combinational_cut as reference
@@ -79,9 +78,23 @@ def pack_records(rows):
 def test_native_build_matches_explicit_reference_and_retires_private_index(captures, tmp_path):
     output, proof = [tmp_path/name for name in ('captures.bin', 'proof.json')]
     subprocess.run(command(captures, 'build-captures', output), check=True)
-    expected = _resolve_compact_native_coordinate_capture_stream(captures['source'], iter(captures['coordinates']),
-        [cut['net'] for cut in captures['cuts']], captures['parts'], captures['cuts'],
-        captures['assignment']['instance_assignment'], tmp_path/'reference.sqlite')
+    # Independent explicit endpoints; no old Python ordered-merge publisher.
+    assert len(captures['coordinates']) <= 65536
+    facts=set()
+    with closing(sqlite3.connect(captures['source'])) as db:
+        for cut,part,net,sink in captures['coordinates']:
+            row=db.execute("SELECT c.id,p.name,e.bit FROM endpoint_records e LEFT JOIN cell_records c ON c.seq=e.instance_seq JOIN pin_names p ON p.seq=e.port_seq WHERE e.net_seq=? AND e.role=1 ORDER BY e.ordinal LIMIT 1 OFFSET ?",(net,sink)).fetchone()
+            assert row is not None
+            instance,port,bit=row
+            facts.add((captures['cuts'][cut]['net'],captures['parts'][part],
+                'top-output' if instance is None else 'architectural-state',
+                f'top:{port}[{bit}]' if instance is None else instance,
+                '' if instance is None else port,-1 if instance is None else bit))
+    expected=[]
+    for i,(net,part,kind,endpoint,port,bit) in enumerate(sorted(facts)):
+        row=dict(id=f'capture{i:06d}',cut_net=net,fpga=part,kind=kind,endpoint=endpoint)
+        if kind=='architectural-state':row.update(port=port,bit=bit)
+        expected.append(row)
     assert list(read_native_static_exact_capture_stream(output)) == list(expected)
     subprocess.run(command(captures, 'validate-captures', proof, output), check=True)
     summary = json.loads(proof.read_text())
@@ -133,13 +146,6 @@ def test_build_independent_source_validation_failure_preserves_previous_generati
     assert not list(tmp_path.glob('*.stage.*'))
 
 
-def test_production_capture_bridge_never_replays_python_relation(captures, tmp_path):
-    from emuflow.combinational_cut import _produce_native_compact_captures
-    with patch('emuflow.combinational_cut._iter_compact_native_capture_relation', side_effect=AssertionError('Python graph replay')):
-        result = _produce_native_compact_captures(captures['source'], captures['request'], captures['topology'],
-            captures['parts'], tmp_path)
-    assert len(result) <= len(captures['coordinates'])
-    assert [path.name for path in result.native_capture_artifact_path.parent.iterdir()] == ['captures.bin']
 
 
 def test_retired_capture_index_entry_and_schema_are_rejected(tmp_path):

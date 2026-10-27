@@ -22,7 +22,7 @@ from emuflow.physical_summary_storage import (
     read_physical_summary,
 )
 from emuflow.logic_segment_timing import validate_logic_segment_timing
-from emuflow.physical_timing_inputs import _logic_segment_database
+from emuflow.logic_segment_timing_storage import LogicSegmentTimingCollection
 
 
 class PhysicalSummaryStorageTest(unittest.TestCase):
@@ -310,7 +310,7 @@ class PhysicalSummaryStorageTest(unittest.TestCase):
                 database = summary["logic_segment_timing"]["fpga0"]
                 self.assertEqual(len(database["segments"]), 7)
                 self.assertEqual(validate_logic_segment_timing(database)["segments"], 7)
-                lookup = _logic_segment_database(summary)
+                lookup = LogicSegmentTimingCollection(list(summary["logic_segment_timing"].values()))
                 with lookup.ordered_cursor() as cursor:
                     for index in range(3):
                         cursor.take(
@@ -502,7 +502,7 @@ class PhysicalSummaryStorageTest(unittest.TestCase):
             duplicate = read_physical_summary(root / "duplicate.json")
             cursor = None
             with self.assertRaisesRegex(ValidationError, "ordered key"):
-                cursor = _logic_segment_database(duplicate).ordered_cursor()
+                cursor = LogicSegmentTimingCollection(list(duplicate["logic_segment_timing"].values())).ordered_cursor()
                 cursor.take("system-00000000", "member-00000000")
             if cursor is not None:
                 cursor.close()
@@ -525,7 +525,7 @@ class PhysicalSummaryStorageTest(unittest.TestCase):
             write_json(root / "duplicate-id.json", duplicate_value)
             duplicate = read_physical_summary(root / "duplicate-id.json")
             with self.assertRaisesRegex(ValidationError, "duplicate physical"):
-                cursor = _logic_segment_database(duplicate).ordered_cursor()
+                cursor = LogicSegmentTimingCollection(list(duplicate["logic_segment_timing"].values())).ordered_cursor()
                 cursor.take("system-00000000", "member-00000000")
                 cursor.take("system-00000001", "member-00000001")
             cursor.close()
@@ -540,11 +540,11 @@ class PhysicalSummaryStorageTest(unittest.TestCase):
                 "logic_segment_timing": {"fpga0": reference},
             })
             with read_physical_summary(root / "ordered.json") as summary:
-                cursor = _logic_segment_database(summary).ordered_cursor()
+                cursor = LogicSegmentTimingCollection(list(summary["logic_segment_timing"].values())).ordered_cursor()
                 with self.assertRaisesRegex(ValidationError, "missing an ordered key"):
                     cursor.take("system-00000000", "aaaa")
                 cursor.close()
-                cursor = _logic_segment_database(summary).ordered_cursor()
+                cursor = LogicSegmentTimingCollection(list(summary["logic_segment_timing"].values())).ordered_cursor()
                 cursor.take("system-00000000", "member-00000000")
                 with self.assertRaisesRegex(ValidationError, "unconsumed"):
                     cursor.finish()
@@ -724,9 +724,9 @@ class PhysicalSummaryStorageTest(unittest.TestCase):
                 "logic_segment_timing": references,
             })
             summary = read_physical_summary(summary_path)
-            lookup = _logic_segment_database(summary)
+            lookup = LogicSegmentTimingCollection(list(summary["logic_segment_timing"].values()))
             cursor = lookup.ordered_cursor()
-            summary.close()
+            lookup.close()
             for system_path, member_path in keys:
                 self.assertEqual(
                     len(cursor.take(system_path, member_path)), 1
@@ -734,6 +734,7 @@ class PhysicalSummaryStorageTest(unittest.TestCase):
             cursor.finish()
             with self.assertRaisesRegex(ValidationError, "closed"):
                 len(lookup.views[0]["segments"])
+            summary.close()
 
 
 if __name__ == "__main__":

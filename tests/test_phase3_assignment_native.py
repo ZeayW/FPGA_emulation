@@ -12,11 +12,8 @@ import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.native_tools import native_file_generation
-from emuflow.partition import (
-    _CompactClusterRecords, _CompactInstanceAssignment, _PackedClusterAssignment,
-    build_clusters, build_partition_assignment, validate_cluster_assignment_balance,
-    validate_partition_artifacts_online, CUT_MODE_STATIC_EXACT,
-)
+from emuflow.partition import (_CompactClusterRecords, _CompactInstanceAssignment, _PackedClusterAssignment, validate_cluster_assignment_balance, CUT_MODE_STATIC_EXACT)
+from tests.native_partition_facts import (build_clusters, build_partition_assignment, validate_partition_artifacts_online)
 from emuflow.phase3_assignment_native import reduce_native_partition_loads
 from emuflow.native_protocol import CheckedRequestWriter as _Writer
 from tests.test_phase3_clusters_native import source
@@ -140,28 +137,6 @@ def test_capacity_and_reserved_budget_remain_hard_constraints(source):
             resource_reservations_by_fpga=reservations)
 
 
-def test_offline_load_differential_seals_summary_and_retires_payloads(source, tmp_path):
-    ir, platform, _constraints, _clusters, _assignment = prepare(source)
-    board = tmp_path/'board.json'; board.write_text(json.dumps(platform.to_dict()))
-    output = tmp_path/'diagnostic'
-    script = Path(__file__).resolve().parents[1]/'scripts/validation/qualify_primary_loads.py'
-    result = subprocess.run([sys.executable, str(script), '--ir', str(ir.path),
-        '--platform', str(board), '--out', str(output), '--expected-design', ir.value['design']['name']],
-        env=dict(os.environ), capture_output=True, text=True)
-    assert result.returncode == 0, result.stdout+result.stderr
-    summary = json.loads((output/'qualification.json').read_text())
-    assert summary['status'] == 'pass'
-    assert summary['instances'] == len(ir.value['instances'])
-    assert len(summary['ordered_load_sha256']) == 64
-    assert summary['reference_wall_seconds'] > 0 and summary['native_wall_seconds'] > 0
-    assert 'not a legal candidate' in summary['scope']
-    assert not (output/'tmp').exists()
-    failed = tmp_path/'bad-design'
-    result = subprocess.run([sys.executable, str(script), '--ir', str(ir.path),
-        '--platform', str(board), '--out', str(failed), '--expected-design', 'wrong-design'],
-        env=dict(os.environ), capture_output=True, text=True)
-    assert result.returncode != 0
-    assert (failed/'failure.json').is_file() and not (failed/'tmp').exists()
 
 
 def _published_rows(path):
@@ -211,7 +186,7 @@ def test_native_index_failure_preserves_published_pair_without_retry(source, tmp
     import struct
     from emuflow.phase3_exact_binary import EXACT_BINARY_ARTIFACT
     from emuflow.tool_runtime import NativeToolProcess
-    import emuflow.phase3_assignment_native as publication
+    import tests.native_assignment_publication_fixture as publication
     ir, platform, constraints, clusters, parts = prepare(source)
     assignment = build_partition_assignment(ir, platform, clusters, constraints, parts, 'fixture', 7,
         _include_semantic_contract=False, _stream_semantic_records=True)

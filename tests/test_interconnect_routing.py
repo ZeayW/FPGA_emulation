@@ -9,11 +9,7 @@ import pytest
 from emuflow.bank_allocation import allocate_shared_banks
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.ir import EmuIR
-from emuflow.partition import (
-    build_clusters,
-    build_partition_assignment,
-    normalize_partition_constraints,
-)
+from tests.native_partition_facts import (build_clusters, build_partition_assignment, normalize_partition_constraints)
 from emuflow.platform import Platform
 from emuflow.routing import (
     build_directed_graph,
@@ -92,7 +88,7 @@ def test_per_hop_ratio_delay_does_not_use_fabric_slot_period():
 def test_native_partition_uses_the_shared_bank_delay_model(tmp_path, monkeypatch):
     monkeypatch.setenv("EMUFLOW_NATIVE_ROOT", str(emuflow_native().parent.parent))
     from tests.partition_pressure_fixture import prepare_native
-    from emuflow.partition import validate_partition_artifacts_online
+    from tests.native_partition_facts import (validate_partition_artifacts_online)
     fixture = pressure_fixture.PressureFixture()
     fixture.setUp()
     value = fixture.platform.to_dict()
@@ -204,7 +200,7 @@ def test_partition_move_recomputes_opposite_direction_pressure(tmp_path, monkeyp
         "path_nets": [f"n{i}"], "normalized_slack": 0.0 if i == 0 else 1.0,
     } for i in range(4)]
     from tests.partition_pressure_fixture import prepare_native
-    from emuflow.partition import validate_partition_artifacts_online
+    from tests.native_partition_facts import (validate_partition_artifacts_online)
     case = prepare_native(tmp_path, ir, platform, constraints, timing, route_constraints,
                           clusters, assignment)
     final, trace = run_pressure_kernel(case.model,case.initial, max_moves=8)

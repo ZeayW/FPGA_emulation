@@ -14,7 +14,7 @@ def write_fixture_solution(ir, platform_path, path, *, cut_mode="sequential-only
                            seed=0, min_used_fpgas=None, balance_tolerance=None,
                            constraints_path=None, max_cross_fpga_dependency_depth=0,
                            static_exact_candidate_policy="assignment-derived-acyclic-v2"):
-    from emuflow.partition import (build_clusters, load_partition_constraints)
+    from tests.native_partition_facts import (build_clusters, load_partition_constraints)
     from tests.partition_reference import assign_clusters
     from emuflow.platform import Platform
     if len(ir.value["instances"]) > 256:

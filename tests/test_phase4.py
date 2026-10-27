@@ -12,7 +12,8 @@ from unittest import mock
 
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import file_sha256, read_json
-from emuflow.partition import (PARTITION_ASSIGNMENT_SCHEMA, build_clusters, normalize_partition_constraints)
+from emuflow.partition import (PARTITION_ASSIGNMENT_SCHEMA)
+from tests.native_partition_facts import (build_clusters, normalize_partition_constraints)
 from tests.partition_reference import assign_clusters
 from emuflow.phase4 import run_phase4
 from emuflow.platform import Platform

@@ -75,9 +75,13 @@ def _run(kind,raw,identity,output,**kwargs):
 def _reference(kind,output,identity_header,expected,rows):
     m=_module(kind);measurements={row[0]:row for row in rows}
     if kind==2:
-        from emuflow.boundary_timing import boundary_timing_header,boundary_timing_record
+        from emuflow.boundary_timing import boundary_timing_header
         header=boundary_timing_header(identity_header,provider='vivado-indexed-routed-boundary-v1',qualification='routed-vendor-device-boundary')
-        records=[boundary_timing_record(row,{'delay_ns':measurements[row['id']][2],'start_object':measurements[row['id']][3],'end_object':measurements[row['id']][4]}) for row in expected]
+        records=[{'id':row['id'],'kind':row['kind'],'schedule_entry':row['schedule_entry'],
+                  'delay_ns':measurements[row['id']][2],'start_object':measurements[row['id']][3],
+                  'end_object':measurements[row['id']][4],
+                  'measurement':'logical-source-to-tx-port' if row['kind']=='tx' else 'rx-port-to-shadow-capture'}
+                 for row in expected]
         return m.write_boundary_timing_storage(output,header,records)
     if kind==3:
         header={**identity_header,'schema':m.LOGIC_SEGMENT_TIMING_SCHEMA,'provider':'vivado-routed-logic-segment-datapath-v1','qualification':'routed-vendor-device-endpoint-chain'}

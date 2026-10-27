@@ -8,8 +8,8 @@ import zlib
 import pytest
 
 from emuflow.errors import ValidationError
-from emuflow.partition import (build_partition_assignment,
-    validate_partition_artifacts_online, _cluster_assignment_summary)
+from emuflow.partition import (_cluster_assignment_summary)
+from tests.native_partition_facts import (build_partition_assignment, validate_partition_artifacts_online)
 from tests.native_partition_kernel_driver import initialize
 from tests.patron_kernel_fixture import pressure_kernel_inputs, write_pressure_requests, run_pressure_kernel
 from tests.phase3_decision_reference import _select_patron_timing_assignment

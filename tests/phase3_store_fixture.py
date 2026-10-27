@@ -57,7 +57,7 @@ def assignment_selector_fixture(value, clusters_artifact, *, cut_nets_index=None
 
 
 def write_cluster_fixture(path, value, **_options):
-    from emuflow.phase3_cluster_catalog import catalog_sources, build_native_cluster_catalog
+    from tests.native_cluster_catalog_fixture import catalog_sources, build_native_cluster_catalog
     from emuflow import phase3_storage as storage
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
     rows, policy = value['clusters'], value['policy']
@@ -118,7 +118,7 @@ def write_assignment_index_fixture(path, ir, assignment):
         if owners._native_primary_artifact is None: raise ValidationError('native assignment primary ownership is missing')
         sources = [StoreSource(Path(owners.path), 'emuir-compact-v2', owners._native_source_generation),
             StoreSource(Path(owners._native_primary_artifact), 'partition-cluster-columns-v2', owners._native_primary_generation)]
-        from emuflow.phase3_assignment_native import native_assignment_cut_source
+        from tests.native_assignment_publication_fixture import native_assignment_cut_source
         cuts = native_assignment_cut_source(assignment)
         if cuts is not None:
             sources.extend(cuts.auxiliary_sources)
@@ -134,7 +134,7 @@ def write_assignment_index_fixture(path, ir, assignment):
             semantic_contract_schema=contract.get('schema') if contract is not None else None,
             semantic_contract_header=({key:item for key,item in contract.items() if key not in {'cut_nodes','dependency_edges','logic_segments','capture_requirements'}} if contract is not None else None),semantic_contract_binary=binary)
         if native:
-            from emuflow.phase3_assignment_native import publish_native_assignment_index
+            from tests.native_assignment_publication_fixture import publish_native_assignment_index
             metrics = publish_native_assignment_index(target, ir, assignment, parts, metadata)
         else:
             with sqlite3.connect(target) as db:

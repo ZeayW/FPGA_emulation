@@ -32,11 +32,7 @@ from emuflow.io import file_sha256, read_json, write_json
 from emuflow.netlist import (
     transport_to_systemverilog,
 )
-from emuflow.partition import (
-    build_partition_assignment,
-    build_clusters,
-    normalize_partition_constraints,
-)
+from tests.native_partition_facts import (build_partition_assignment, build_clusters, normalize_partition_constraints)
 from tests.partition_reference import assign_clusters
 from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.tdm_schedule_storage import read_tdm_schedule
@@ -1136,6 +1132,12 @@ class Phase6Test(unittest.TestCase):
             provider="test-dependent-cut",
             seed=0,
         )
+        # The retired protocol encoded rounds explicitly. Current Phase 3
+        # facts carry cut classes instead, so construct the obsolete input
+        # deliberately rather than depending on a former publisher default.
+        for cut in assignment['cut_nets']:
+            cut['transport_round'] = 1 if cut['cut_class'] == 'register_input' else 0
+        self.assertEqual({cut['transport_round'] for cut in assignment['cut_nets']}, {0, 1})
         route_constraints = normalize_route_constraints(
             None, self.platform, frame_slots=32
         )

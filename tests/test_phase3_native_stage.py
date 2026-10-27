@@ -7,13 +7,14 @@ import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
-from emuflow.phase3 import run_phase3, validate_phase3, validate_phase3_indexed
+from emuflow.phase3 import run_phase3, validate_phase3_indexed
 from emuflow.phase3_native import run as native_run
 from tests.test_phase3_pressure_native import inputs
 
 
 @pytest.mark.parametrize('name', ['partition_init_native', 'partition_hops_native',
-    'phase3_publication_native', 'route_seal_native', 'partition_inputs', 'phase3_pressure_native', 'patron_policy'])
+    'phase3_publication_native', 'route_seal_native', 'partition_inputs', 'phase3_pressure_native', 'patron_policy',
+    'phase3_cluster_catalog', 'replication'])
 def test_retired_stage_wrappers_are_not_production_imports(name):
     assert importlib.util.find_spec('emuflow.'+name) is None
 
@@ -33,15 +34,20 @@ def options(inputs, tmp_path):
 def test_native_phase3_runs_complete_stage_with_independent_record_validation(inputs, tmp_path):
     ir, board, config = options(inputs, tmp_path)
     actual = tmp_path/'native-stage'
-    with patch('emuflow.partition.build_clusters', side_effect=AssertionError('Python stage clusters')):
+    import emuflow.partition as partition
+    assert not hasattr(partition, 'build_clusters')
+    with patch('emuflow.ir.EmuIR.load', side_effect=AssertionError('Python graph import')):
         report = native_run(actual, ir.path, board, **config)
     generated = read_json(actual/'assignment.json')
     assert report['stage_implementation_id'] == 'native-phase3-v1'
     assert report['algorithm_validation']['native_input_transport'] == 'native-primary-store-model-v2'
     # These validators reconstruct legality from source IR and final records,
     # independently of the producer's cluster selection and timing decision.
-    assert validate_phase3(ir.path, board, actual/'clusters.json', actual/'assignment.json')['status'] == 'pass'
     assert validate_phase3_indexed(ir.path, board, actual/'phase3_report.json', actual/'assignment.sqlite')['status'] == 'pass'
+    from emuflow.cli import main
+    assert main(['partition', 'validate', str(actual/'assignment.sqlite'),
+                 '--phase3-report', str(actual/'phase3_report.json'),
+                 '--ir', str(ir.path), '--platform', str(board)]) == 0
     assert len(generated['instance_assignment']) == len(inputs[0][0].value['instances'])
 
 
@@ -80,13 +86,12 @@ def test_complete_stage_rejects_invalid_sources_without_publishing(inputs, tmp_p
 
 
 def test_public_compact_api_uses_complete_native_stage_without_python_phase_bodies(inputs, tmp_path):
-    from contextlib import ExitStack
     from emuflow.phase3 import run_phase3 as public
     ir, board, config = options(inputs, tmp_path)
-    with ExitStack() as guards:
-        for name in ('partition.build_clusters',
-                     'partition.build_partition_assignment', 'partition.validate_partition_artifacts_online'):
-            guards.enter_context(patch('emuflow.'+name, side_effect=AssertionError('Python phase body: '+name)))
+    import emuflow.partition as partition
+    for name in ('build_clusters', 'build_partition_assignment', 'validate_partition_artifacts_online'):
+        assert not hasattr(partition, name)
+    with patch('emuflow.ir.EmuIR.load', side_effect=AssertionError('Python graph import')):
         output = tmp_path/'public'
         report = public(ir.path, board, output, **config)
     assert report['stage_implementation_id'] == 'native-phase3-v1'
