@@ -160,21 +160,18 @@ preserve both generations and the recovery selector. Exercise typed bank-input
 relocation with the same source and rollback gates.
 
 
-The noninstalled `scripts/validation/qualify_phase6_publication.py` executes the
-complete production Phase 6 API. Its bounded JSON request uses
-`emuflow.phase6-publication-qualification/v1` and declares the source commit,
+The noninstalled `scripts/validation/qualify_phase6_stage.py` executes the
+complete native baseline Phase 6 API. Its bounded request uses
+`emuflow.phase6-stage-qualification/v1` and declares the source commit,
 workspace, fresh output directory, current typed schedule, compact EmuIR,
 assignment, BoardDB, explicit clock periods, expected design/platform/FPGA IDs
 and a positive instance floor. Static Exact requests also freeze the semantic
-contract identity. The selected native runtime must name the same
-source revision. Temporary files remain inside the invocation workspace.
+contract identity. The selected native runtime must name the same source
+revision. Temporary files remain inside the invocation workspace.
 
-Both qualification modes use identical row construction and independent
-validators. `native` calls the shared publisher. `python-reference` replaces
-only closed-file fsync/rename with the prior I/O boundary inside that isolated
-qualification process. No production option or error fallback selects this
-reference. This comparison measures publication integration overhead, not a
-different scheduler, split algorithm or physical backend.
+The retired closed-file Python publisher comparison is no longer a mode.
+Repeated native runs establish complete record and generated-text identity;
+they do not establish a reference speedup or full-flow physical acceptance.
 
 Run each arm in a separate process. The tool measures complete API wall time,
 sampled process-tree RSS and workspace logical/allocated file bytes. Its Linux
@@ -182,7 +179,7 @@ disk sampler includes the producer's unlinked workspace file descriptors and
 deduplicates hardlinked inodes; borrowed symlinks are excluded. Record sampling
 and CPU scopes explicitly; these samples are not guaranteed high-water values.
 The current result contract is
-`emuflow.phase6-publication-qualification-result/v2`. `compare_results()` requires
+`emuflow.phase6-stage-qualification-result/v1`. `compare_results()` requires
 matching source/configuration and input generations, all generated RTL/XDC hashes,
 and full-record seals of both SQLite owners. Each seal records the file hash,
 application/version identity, every table's column/primary-key signature, row count

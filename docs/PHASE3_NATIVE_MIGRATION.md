@@ -566,7 +566,7 @@ there is no silent implementation or provider fallback.
 | Phase 3 | Complete shared-core stage owns source-backed configuration, candidate/primary clustering, TritonPart initialization, v14 search, independent decision/hop audits, selected semantics and final-directory publication; native compiler executes it directly | Qualify whole-stage NVDLA equivalence and wall/process-tree RSS/I/O; retire replaced reference production scopes after acceptance |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
-| Phase 6 | Native source-bound split memberships; native typed-hop transport/binding owner, source audit and streamed RTL/XDC | Complete-stage configuration, Chimew qualification/report ownership and real-design acceptance remain; the bounded clock-calendar host is still Python |
+| Phase 6 | Native baseline stage owns source-bound split, typed-hop transport/binding, independent audits, RTL/XDC, cost aggregation, manifest/report and atomic directory publication | Native-control direct integration, retained Chimew qualification/report ownership and real-design acceptance remain; bounded configuration/calendar and the small independent behavioral oracle remain in the API host |
 | Phase 7 | Indexed lowering; typed physical handoff and native Bookshelf pin export | Complete remaining backend/export/validation ownership and full physical qualification |
 | Global STA | Native typed physical-to-event binding, event validation/model export, measurement import, full-original-path reduction and typed QoR publication | Migrate remaining physical producers and orchestration; qualify complete real-design physical/global timing |
 
@@ -611,9 +611,18 @@ The shared native stage emits transport RTL, the runtime controller, anchor
 templates and fixed-pin RTL/XDC directly from typed cursors. It publishes its
 complete per-FPGA tree with one directory rename. Nested directory publication
 retains source checks and rejects symlinks and source aliases at every depth.
-The current Python stage adapter adopts those outputs and still owns the
-enclosing Phase 6 configuration and report lifecycle. This is not a declaration
-that complete Phase 6 or W7 has been qualified.
+`phase6 run EMUIR ASSIGNMENT SCHEDULE REQUEST OUTPUT_DIR` owns the complete
+baseline generation. It consumes original circuit/schedule/assignment owners and
+bounded board/runtime configuration. Both source-backed split and transport
+independent audits run before manifest/report publication. Cost-model features
+are SQL aggregates over typed rows, not repeated Python endpoint scans. Original
+board/cost/exact generations remain checked through the final directory rename.
+A late split or source failure exposes no partial phase; an existing output is
+rejected. The baseline API supplies bounded configuration and returns the report;
+it no longer adopts individual phase files. Small independent behavioral replay
+retains its existing size limit. The retained Chimew adapter, direct compiler
+integration and actual NVDLA acceptance remain unfinished, so this does not
+establish complete Phase 6 or W7 qualification.
 
 `phase6 audit-transport STORE SUMMARY` independently merges stored hop facts
 against the original schedule and pin-plan owners in identity order, then

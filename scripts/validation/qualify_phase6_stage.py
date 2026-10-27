@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Time the complete Phase 6 API with native or qualification-only reference I/O.
+"""Qualify the complete native baseline Phase 6 stage and its original records.
 
-This script is not installed. Both modes use the same production row builders
-and independent validators. The reference replaces only closed-file publication;
-it is not another production flow or a fallback from a native error.
+The retired Python closed-file publisher experiment is no longer an execution
+mode. Repeated native runs establish identity, not a reference speedup claim.
 """
 
 from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack, closing
-import importlib
 import hashlib
 import json
 import math
@@ -32,25 +30,11 @@ from emuflow.sqlite_artifacts import immutable_sqlite_uri
 from emuflow.native_tools import native_file_generation, resolve_native_executable
 from emuflow.phase6 import run_phase6
 from emuflow.split_netlist_storage import open_split_netlists_sqlite
-from emuflow.store_publication import require_store_sources_unchanged
 from emuflow.stage_metrics import _tree_rss_kib
 
 
-PUBLICATION_MODULES = (
-    "split_netlist_storage",
-    "split_overlay",
-    "transport_storage",
-    "transport_native",
-    "position_hints_storage",
-    "pin_plan_storage",
-    "chimew_binding_storage",
-    "chimew_bank_channel_storage",
-    "chimew_bank_channel_report_storage",
-)
-
-
 def workspace_bytes(workspace):
-    """Visible files plus this producer's unlinked SQLite workspace files."""
+    """Visible files plus unlinked workspace files in the producer tree."""
     sizes = {}
 
     def add(path):
@@ -67,9 +51,20 @@ def workspace_bytes(workspace):
             path = Path(directory) / filename
             if not path.is_symlink():
                 add(path)
-    descriptors = Path("/proc/self/fd")
-    if descriptors.is_dir():
-        for descriptor in descriptors.iterdir():
+    pending=[os.getpid()];seen=set()
+    while pending:
+        pid=pending.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        process=Path('/proc')/str(pid)
+        try:
+            for task in (process/'task').iterdir():
+                pending.extend(int(value) for value in (task/'children').read_text().split())
+            descriptors=list((process/'fd').iterdir())
+        except OSError:
+            continue
+        for descriptor in descriptors:
             try:
                 target = os.readlink(descriptor)
                 if target.endswith(" (deleted)"):
@@ -84,7 +79,7 @@ def workspace_bytes(workspace):
 
 
 SQLITE_RECORD_SEAL_SCHEMA = "emuflow.sqlite-ordered-record-seal/v1"
-RESULT_SCHEMA = "emuflow.phase6-publication-qualification-result/v2"
+RESULT_SCHEMA = "emuflow.phase6-stage-qualification-result/v1"
 
 
 def _quote(name):
@@ -305,8 +300,8 @@ def compare_results(first, second):
             or result.get("inputs_unchanged") is not True
         ):
             raise ValidationError("qualification arm lacks a successful sealed result")
-    if {first.get("mode"), second.get("mode")} != {"native", "python-reference"}:
-        raise ValidationError("qualification needs one native and one reference arm")
+    if first.get("mode") != "native" or second.get("mode") != "native":
+        raise ValidationError("qualification needs two sealed native stage runs")
     for key in (
         "schema",
         "source_commit",
@@ -349,11 +344,11 @@ def qualify(request_path: Path, result_path: Path):
         raise ValidationError("Phase 6 qualification request exceeds bound")
     request_generation = native_file_generation(request_path)
     request = json.loads(request_path.read_text(encoding="utf-8"))
-    if request.get("schema") != "emuflow.phase6-publication-qualification/v1":
+    if request.get("schema") != "emuflow.phase6-stage-qualification/v1":
         raise ValidationError("Phase 6 qualification request schema is unsupported")
     mode = request.get("mode")
-    if mode not in {"native", "python-reference"}:
-        raise ValidationError("unknown qualification publication mode")
+    if mode != "native":
+        raise ValidationError("whole-stage qualification requires native mode")
     root = Path(__file__).resolve().parents[2]
     commit = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=root, text=True
@@ -417,38 +412,9 @@ def qualify(request_path: Path, result_path: Path):
     ):
         raise ValidationError("qualification needs explicit positive clock periods")
     generations = {name: native_file_generation(path) for name, path in sources.items()}
-    publications = []
+    operations=[]
     scratch = workspace / "tmp"
     scratch.mkdir(exist_ok=True)
-
-    def instrument(original):
-        def publish(temporary, destination, schema, *, sources=()):
-            started = time.perf_counter()
-            if mode == "native":
-                result = original(temporary, destination, schema, sources=sources)
-            else:
-                # The prior publication boundary, used only in this explicitly
-                # selected qualification process. No producer or validator is
-                # replaced, and no native failure selects this branch.
-                require_store_sources_unchanged(sources)
-                with Path(temporary).open("rb") as stream:
-                    os.fsync(stream.fileno())
-                os.replace(temporary, destination)
-                result = None
-            publications.append(
-                {
-                    "schema": schema,
-                    "wall_seconds": time.perf_counter() - started,
-                    **(
-                        {"native_metrics": result["metrics"]}
-                        if result is not None
-                        else {}
-                    ),
-                }
-            )
-            return result
-
-        return publish
 
     with ExitStack() as stack:
         stack.enter_context(
@@ -467,15 +433,13 @@ def qualify(request_path: Path, result_path: Path):
             )
         )
         stack.enter_context(patch.object(tempfile, "tempdir", str(scratch)))
-        for name in PUBLICATION_MODULES:
-            module = importlib.import_module("emuflow." + name)
-            stack.enter_context(
-                patch.object(
-                    module,
-                    "publish_sqlite_store",
-                    instrument(module.publish_sqlite_store),
-                )
-            )
+        from emuflow import phase6_native
+        original_stage=phase6_native.run_native_phase6
+
+        def capture_stage(*args, **kwargs):
+            return original_stage(*args, _capture_operation=operations.append, **kwargs)
+
+        stack.enter_context(patch.object(phase6_native, 'run_native_phase6', capture_stage))
         done = threading.Event()
         peaks = [0, 0, 0]
 
@@ -493,6 +457,7 @@ def qualify(request_path: Path, result_path: Path):
         sampler = threading.Thread(target=sample, daemon=True)
         sampler.start()
         before = resource.getrusage(resource.RUSAGE_SELF)
+        children_before = resource.getrusage(resource.RUSAGE_CHILDREN)
         started = time.perf_counter()
         try:
             report = run_phase6(
@@ -506,12 +471,15 @@ def qualify(request_path: Path, result_path: Path):
             )
             elapsed = time.perf_counter() - started
             after = resource.getrusage(resource.RUSAGE_SELF)
+            children_after = resource.getrusage(resource.RUSAGE_CHILDREN)
         finally:
             done.set()
             sampler.join()
             sample_once()
-    if report.get("status") != "pass":
+    if report.get("status") != "pass" or report.get("stage_implementation_id") != "native-baseline-phase6-v1":
         raise ValidationError("Phase 6 production API did not pass")
+    if len(operations)!=1 or operations[0].get('stage')!='phase6.run' or operations[0].get('status')!='pass':
+        raise ValidationError('qualification requires one complete native stage operation')
     manifest_path = output / "manifest.json"
     if manifest_path.stat().st_size > 1048576:
         raise ValidationError("qualification phase manifest exceeds bound")
@@ -543,13 +511,6 @@ def qualify(request_path: Path, result_path: Path):
     generated_text = {
         str(path.relative_to(output)): file_sha256(path) for path in text_files
     }
-    if {entry["schema"] for entry in publications} != {
-        "transport-store-v2",
-        "split-netlists-v3",
-    }:
-        raise ValidationError(
-            "qualification did not exercise both baseline Phase 6 publishers"
-        )
     if native_file_generation(request_path) != request_generation or any(
         native_file_generation(sources[name]) != generation
         for name, generation in generations.items()
@@ -581,19 +542,22 @@ def qualify(request_path: Path, result_path: Path):
         "semantic_contract_sha256": manifest.get("semantic_contract_sha256"),
         "fpgas": request["expected_fpgas"],
         "mode": mode,
-        "scope": "complete Phase6 API; publication integration only; no complete-flow or physical/timing claim",
+        "scope": "complete native baseline Phase6 API; repeated-run identity and stage measurements; no old-publisher comparison or complete-flow/physical/timing claim",
         "clock_periods": clocks,
         "api_wall_seconds": elapsed,
         "sampled_peak_process_tree_rss_kib": peaks[0],
         "sampled_peak_workspace_logical_bytes": peaks[1],
         "sampled_peak_workspace_allocated_bytes": peaks[2],
         "rss_measurement": "stage_metrics-sampled-at-0.5s",
-        "disk_measurement": "workspace files and producer unlinked workspace fds; inode deduplicated; sampled-at-0.5s plus final; not guaranteed high-water",
+        "disk_measurement": "workspace files and process-tree unlinked workspace fds; inode deduplicated; sampled-at-0.5s plus final; not guaranteed high-water",
         "unlinked_fd_sampling_available": Path("/proc/self/fd").is_dir(),
         "user_cpu_seconds": after.ru_utime - before.ru_utime,
         "system_cpu_seconds": after.ru_stime - before.ru_stime,
-        "cpu_scope": "self-process-interval; native child metrics are separate",
-        "publications": publications,
+        "children_user_cpu_seconds": children_after.ru_utime - children_before.ru_utime,
+        "children_system_cpu_seconds": children_after.ru_stime - children_before.ru_stime,
+        "cpu_scope": "separate self and reaped-child process-interval deltas; do not add native operation CPU a second time",
+        "native_stage_operation": operations[0],
+        "stage_implementation_id": report["stage_implementation_id"],
         "inputs_unchanged": True,
         "input_generations": {name: list(value) for name, value in generations.items()},
         "artifact_seals": artifact_seals,

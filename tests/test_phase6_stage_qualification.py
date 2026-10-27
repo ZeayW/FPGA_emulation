@@ -1,4 +1,4 @@
-"""The offline I/O oracle exercises the production API, never another flow."""
+"""Whole native stage qualification, record identity and failure boundaries."""
 
 import importlib.util
 import json
@@ -21,8 +21,8 @@ from tests.schedule_store_fixture import write_tdm_schedule_storage
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
-    "phase6_publication_qualification",
-    ROOT / "scripts/validation/qualify_phase6_publication.py",
+    "phase6_stage_qualification",
+    ROOT / "scripts/validation/qualify_phase6_stage.py",
 )
 QUALIFY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(QUALIFY)
@@ -58,7 +58,7 @@ def prepare(root, monkeypatch):
     (runtime / "SOURCE_COMMIT").write_text(commit + "\n")
     monkeypatch.setenv("EMUFLOW_NATIVE_ROOT", str(runtime))
     return {
-        "schema": "emuflow.phase6-publication-qualification/v1",
+        "schema": "emuflow.phase6-stage-qualification/v1",
         "source_commit": commit,
         "workspace": str(root),
         "clock_periods": {clock["id"]: 10.0 for clock in case.ir.value["clocks"]},
@@ -75,34 +75,27 @@ def prepare(root, monkeypatch):
     }
 
 
-def test_both_qualification_modes_run_the_same_complete_api(tmp_path, monkeypatch):
+def test_complete_native_stage_qualification_repeats_all_records(tmp_path, monkeypatch):
     request = prepare(tmp_path, monkeypatch)
     results = []
-    for mode in ("python-reference", "native"):
-        path = tmp_path / f"{mode}.request.json"
-        path.write_text(
-            json.dumps({**request, "mode": mode, "output": str(tmp_path / mode)})
-        )
-        result = QUALIFY.qualify(path, tmp_path / f"{mode}.result.json")
+    for run in (0, 1):
+        output = tmp_path / f"native-{run}"
+        path = tmp_path / f"native-{run}.request.json"
+        path.write_text(json.dumps({**request, "mode": "native", "output": str(output)}))
+        result = QUALIFY.qualify(path, tmp_path / f"native-{run}.result.json")
         assert result["status"] == "pass" and result["inputs_unchanged"]
         assert result["api_wall_seconds"] > 0
+        assert result["stage_implementation_id"] == "native-baseline-phase6-v1"
+        assert result['native_stage_operation']['stage']=='phase6.run'
+        assert result['native_stage_operation']['metrics']['wall_seconds']>0
+        assert result['children_user_cpu_seconds']>=0
         assert result["design"] == request["expected_design"]
-        assert len(result["publications"]) == 2
-        assert all(
-            ("native_metrics" in item) == (mode == "native")
-            for item in result["publications"]
-        )
         assert result["record_seal_wall_seconds"] > 0
         assert set(result["artifact_seals"]) == {"split", "transport"}
-        results.append(json.loads((tmp_path / f"{mode}.result.json").read_text()))
-        # Sequential qualification retains full-record seals, not both payloads.
-        shutil.rmtree(tmp_path / mode)
-    assert all(
-        item["logical_identity"] for item in QUALIFY.compare_results(*results).values()
-    )
-    assert all(
-        item["file_identity"] for item in QUALIFY.compare_results(*results).values()
-    )
+        results.append(result)
+        shutil.rmtree(output)
+    assert all(item["logical_identity"] for item in QUALIFY.compare_results(*results).values())
+    assert all(item["file_identity"] for item in QUALIFY.compare_results(*results).values())
     for key, value in (
         ("input_generations", {}),
         ("generated_text", {}),
@@ -327,8 +320,8 @@ def test_workspace_measurement_deduplicates_aliases_and_excludes_borrowed_symlin
             assert QUALIFY.workspace_bytes(workspace)[0] == 4096
 
 
-def test_native_failure_never_selects_the_reference_publisher(tmp_path, monkeypatch):
-    from emuflow import split_overlay as split_netlist_storage
+def test_native_stage_failure_never_selects_an_adapter_fallback(tmp_path, monkeypatch):
+    from emuflow import phase6_native
 
     request = prepare(tmp_path, monkeypatch)
     path = tmp_path / "request.json"
@@ -337,13 +330,25 @@ def test_native_failure_never_selects_the_reference_publisher(tmp_path, monkeypa
     )
 
     def fail(*args, **kwargs):
-        raise ValidationError("injected native publisher failure")
+        raise ValidationError("injected native stage failure")
 
-    monkeypatch.setattr(split_netlist_storage, "publish_sqlite_store", fail)
+    monkeypatch.setattr(phase6_native, "NativeToolProcess", fail)
     result_path = tmp_path / "result.json"
-    with pytest.raises(ValidationError, match="injected native publisher failure"):
+    with pytest.raises(ValidationError, match="injected native stage failure"):
         QUALIFY.qualify(path, result_path)
     assert not result_path.exists()
+
+
+def test_retired_publication_mode_never_starts_a_phase(tmp_path, monkeypatch):
+    def fail(*args, **kwargs):
+        raise AssertionError('retired publisher experiment started a phase')
+    monkeypatch.setattr(QUALIFY, 'run_phase6', fail)
+    path=tmp_path/'request.json'
+    path.write_text(json.dumps({'schema':'emuflow.phase6-stage-qualification/v1',
+                               'mode':'python-reference'}))
+    with pytest.raises(ValidationError,match='requires native mode'):
+        QUALIFY.qualify(path,tmp_path/'result.json')
+    assert not (tmp_path/'result.json').exists()
 
 
 def test_qualification_rejects_wrong_source_without_starting_a_flow(tmp_path):
@@ -351,7 +356,7 @@ def test_qualification_rejects_wrong_source_without_starting_a_flow(tmp_path):
     request.write_text(
         json.dumps(
             {
-                "schema": "emuflow.phase6-publication-qualification/v1",
+                "schema": "emuflow.phase6-stage-qualification/v1",
                 "mode": "native",
                 "source_commit": "0" * 40,
             }

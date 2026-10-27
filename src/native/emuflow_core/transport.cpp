@@ -2,6 +2,8 @@
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/hash.hpp"
 #include "emuflow_core/json_record.hpp"
+#include "emuflow_core/emuir_view.hpp"
+#include "emuflow_core/split_overlay.hpp"
 #include "emuflow_core/store.hpp"
 #include "emuflow_core/transport_schema.hpp"
 #include <algorithm>
@@ -15,6 +17,7 @@
 #include <set>
 #include <tuple>
 #include <unistd.h>
+#include <zlib.h>
 
 namespace emuflow::core {
 namespace {
@@ -293,5 +296,279 @@ StageResult BuildTransportArtifacts(const std::vector<ArtifactRef>& inputs,const
 StageResult AuditTransportArtifacts(const ArtifactRef& artifact,const std::string& summary){
   std::vector<ArtifactRef> sources{artifact};
   return RunStage("phase6.audit-transport",[&]{Check(artifact.schema()=="transport-store-v2","audit requires current hop owner");SqliteStore store(artifact);for(const auto& token:Values(Get(Fields(Meta(store.database(),"configuration")),"sources"))){const auto value=Fields(token);sources.push_back(ArtifactRef::Bind(Text(value,"path"),Text(value,"schema")));}return sources;},[&](const auto& refs){auto text=AuditRecords(artifact);PublishTextArtifact(summary,refs,[&](std::ostream& out){out<<text<<'\n';});},[&]{return std::vector<ArtifactRef>{ArtifactRef::Bind(summary,"transport-audit-summary-v1")};});
+}
+StageResult RunPhase6(const std::vector<ArtifactRef>& original,const std::string& directory){
+  std::vector<ArtifactRef> sources=original;
+  return RunStage("phase6.run",[&]{
+    Check(original.size()==4 && original[0].schema()=="emuir-compact-v2" &&
+          original[1].schema()=="assignment-index-v4" &&
+          original[2].schema()=="tdm-schedule-store-v4" &&
+          original[3].schema()=="phase6-stage-request-v1","stage input roles disagree");
+    const auto request=Fields(Canonical(Read(original[3].path())));
+    const auto configuration_sources=Values(Get(request,"configuration_sources"));
+    Check(configuration_sources.size()==1 || configuration_sources.size()==2,"stage configuration source coverage disagrees");
+    for(std::size_t i=0;i<configuration_sources.size();++i){
+      const auto fields=Fields(configuration_sources[i]);
+      Check(fields.size()==3 && Text(fields,"schema")==(i==0?"boarddb-v1":"transport-cost-input-v1"),
+            "stage configuration source roles disagree");
+      auto ref=ArtifactRef::Bind(Text(fields,"path"),Text(fields,"schema"));
+      const auto g=Values(Get(fields,"generation"));Check(g.size()==7,"stage source generation coverage disagrees");
+      const FileGeneration generation{UInt(g[0]),UInt(g[1]),UInt(g[2]),Int(g[3]),Int(g[4]),Int(g[5]),Int(g[6])};
+      if(!(generation==ref.generation()))throw StageError(ErrorCode::kMixedGeneration,"Phase 6 configuration source generation changed");
+      if(i==1)Check(Canonical(Read(ref.path()))==Get(request,"transport_cost"),"transport cost source disagrees");
+      sources.push_back(std::move(ref));
+    }
+    // Retain the original exact owner until the entire generation is visible,
+    // rather than only until the nested split producer returns.
+    SqliteStore assignment(original[1]);
+    const auto descriptor=Canonical(Meta(assignment.database(),"semantic_contract_binary"));
+    if(descriptor!="null"){
+      const auto fields=Fields(descriptor);const auto artifact=Text(fields,"artifact");
+      Check(fs::path(artifact).filename()==artifact,"exact owner escapes assignment directory");
+      const auto schema=Text(fields,"schema");
+      Check(schema=="emuflow.phase3-static-exact-binary/v1" ||
+            schema=="emuflow.phase3-static-exact-binary/v2","unknown exact owner");
+      sources.push_back(ArtifactRef::Bind((fs::path(original[1].path()).parent_path()/artifact).string(),
+          schema=="emuflow.phase3-static-exact-binary/v1"?"phase3-exact-data-v1":"phase3-exact-data-v2"));
+    }
+    return sources;
+  },[&](const auto& bound){
+    const auto destination=fs::absolute(directory);
+    Check(!fs::exists(destination) && !fs::is_symlink(destination),"stage output directory exists");
+    fs::create_directories(destination.parent_path());
+    Workspace workspace(destination.parent_path());
+    Workspace generation(destination.parent_path());const auto root=generation.root;
+    // Both nested and final directory commits require a sibling destination.
+    // Configuration has a separate lifetime and never enters the public tree.
+    fs::remove(root);
+    SqliteDatabase json(":memory:",SqliteDatabase::Mode::kReadOnly);
+    const auto document=Read(original[3].path());
+    auto valid=json.Prepare("SELECT json_valid(?1)");valid.BindText(1,document);
+    Check(valid.Step() && valid.Integer(0),"invalid stage request");
+    auto duplicate=json.Prepare("SELECT 1 FROM json_tree(?1) WHERE parent IS NOT NULL GROUP BY parent,key HAVING count(*)>1 LIMIT 1");
+    duplicate.BindText(1,document);Check(!duplicate.Step(),"duplicate stage request member");
+    const auto request=Fields(Canonical(document));
+    Check(request.size()==6 && Text(request,"schema")=="emuflow.phase6-stage/v1" &&
+          request.count("transport") && request.count("small_design_equivalence") &&
+          request.count("transport_cost") && request.count("managed_storage") &&
+          request.count("configuration_sources"),"stage request fields disagree");
+    Check(Get(request,"managed_storage")=="true" || Get(request,"managed_storage")=="false","invalid manifest storage policy");
+    const auto transport=Fields(Get(request,"transport"));
+    Check((Get(request,"transport_cost")=="null")==
+          (Values(Get(request,"configuration_sources")).size()==1),"transport cost source coverage disagrees");
+    const auto original_board=Fields(Canonical(Read(bound[4].path())));
+    Check(Text(Fields(Get(original_board,"platform")),"name")==Text(transport,"platform"),
+          "stage original board namespace disagrees");
+    Raw original_parts,configured_parts;
+    for(const auto& token:Values(Get(original_board,"fpgas"))){const auto row=Fields(token);
+      Check(original_parts.emplace(Text(row,"id"),Get(row,"part")).second,"duplicate original FPGA");}
+    for(const auto& token:Values(Get(transport,"fpgas"))){const auto row=Fields(token);
+      Check(configured_parts.emplace(Text(row,"id"),Get(row,"part")).second,"duplicate configured FPGA");}
+    Check(original_parts==configured_parts,"stage FPGA inventory disagrees with original board");
+    Raw original_links,configured_links;
+    for(const auto& token:Values(Get(original_board,"links"))){const auto row=Fields(token);
+      const auto payload=row.count("payload_bits_per_lane_per_cycle")?Int(Get(row,"payload_bits_per_lane_per_cycle")):1;
+      const auto lanes=Int(Get(row,"data_lanes_per_direction"));
+      Check(lanes>0 && payload>0 && payload<=INT64_MAX/lanes,"invalid original link width");
+      Check(original_links.emplace(Text(row,"id"),Object({{"mode",Get(row,"mode")},
+        {"payload",std::to_string(payload)},{"width",std::to_string(lanes*payload)}})).second,"duplicate original link");}
+    for(const auto& token:Values(Get(transport,"links"))){const auto row=Fields(token);
+      Check(configured_links.emplace(Text(row,"id"),Object({{"mode",Get(row,"mode")},
+        {"payload",Get(row,"payload")},{"width",Get(row,"width")}})).second,"duplicate configured link");}
+    Check(original_links==configured_links,"stage link inventory disagrees with original board");
+    Check(Get(transport,"emit_rtl")=="true" && Get(transport,"runtime")!="null",
+          "complete stage requires runtime and engine inputs");
+    // Every nested producer consumes the same original generations. The local
+    // request is bounded configuration and is retired with the private stage.
+    const auto configuration=workspace.root/"transport-request.json";
+    PublishText(configuration,Object(transport)+'\n',bound);
+    const auto result=BuildTransportArtifacts({original[1],original[2],
+        ArtifactRef::Bind(configuration.string(),"transport-stage-request-v1")},root.string());
+    if(!result.ok())throw StageError(result.error,result.stage+": "+result.message);
+    const auto split=BuildSplitOverlay({original[0],original[1],original[2]},(root/"split-netlists.sqlite").string());
+    if(!split.ok())throw StageError(split.error,split.stage+": "+split.message);
+    const auto split_ref=ArtifactRef::Bind((root/"split-netlists.sqlite").string(),"split-netlists-v3");
+    // Recompute from original circuit/assignment/schedule relations; do not
+    // treat the producer's report as independent validation.
+    auto validation=Fields(ValidateSplitOverlay(split_ref));
+    auto summary=Fields(Canonical(Read(root/"transport-summary.json")));
+    const auto order=Values(Get(summary,"fpga_order"));
+    summary.erase("fpga_order");summary.erase("status");summary.erase("implementation_id");
+    for(const auto* name:{"scheduled_hops","transport_endpoints","lane_entries"})validation[name]=Get(summary,name);
+    const auto hops=Int(Get(validation,"scheduled_hops"));
+    Check(Int(Get(validation,"transport_endpoints"))==2*hops &&
+          Int(Get(validation,"lane_entries"))==hops,"stage transport coverage disagrees");
+    EmuirView source(original[0]);SqliteStore assignment(original[1]),schedule(original[2]);
+    const auto design=Fields(Canonical(Meta(source.store().database(),"design_json")));
+    const auto design_name=Text(design,"name"),platform=Text(transport,"platform");
+    Check(Object(design)==Get(transport,"design"),"stage source design disagrees");
+    std::vector<std::string> declared_clocks;
+    auto declared=source.store().database().Prepare("SELECT record_json FROM clocks ORDER BY seq");
+    while(declared.Step())declared_clocks.push_back(Canonical(declared.TypedText(0)));
+    Check(Array(declared_clocks)==Get(transport,"clocks"),"stage original clock catalog disagrees");
+    const auto runtime=Fields(Get(transport,"runtime"));
+    Raw periods;std::vector<std::string> clock_names;
+    for(const auto& clock:Fields(Get(runtime,"virtual_dut_clocks"))){
+      periods[clock.first]=Get(Fields(clock.second),"target_period_ns");clock_names.push_back(JsonQuote(clock.first));
+      Check(ParseFiniteDecimal(periods[clock.first],"root clock period")>0,"invalid root clock period");
+    }
+    std::vector<std::string> original_clock_names;
+    for(const auto& record:declared_clocks)original_clock_names.push_back(Get(Fields(record),"id"));
+    std::sort(original_clock_names.begin(),original_clock_names.end());
+    Check(original_clock_names==clock_names,"runtime root clocks disagree with original circuit");
+    const auto semantic=Canonical(Meta(assignment.database(),"semantic_contract_sha256"));
+    const auto exact=Canonical(Meta(assignment.database(),"semantic_contract_binary"));
+    const Raw board_binding{{"status",JsonQuote("virtual")},{"requires_hardware_bsp_for_package_pins","true"}};
+    std::vector<std::string> fpgas;
+    for(const auto& token:order){const auto id=DecodeJsonString(token);
+      fpgas.push_back(Object({{"fpga",token},{"netlist",JsonQuote("split-netlists.sqlite")},
+        {"netlist_selector",token},{"transport",JsonQuote(id+"/transport.json")},
+        {"transport_rtl",JsonQuote(id+"/transport_schedule.sv")},{"virtual_anchors",JsonQuote(id+"/virtual_anchors.json")},
+        {"virtual_xdc_template",JsonQuote(id+"/virtual_anchors.xdc.template")}}));
+    }
+    Raw manifest{{"schema",JsonQuote("emuflow.split-manifest/v1")},{"design",JsonQuote(design_name)},
+      {"platform",JsonQuote(platform)},{"provider",JsonQuote("sqlite-streaming-cut-shadow-split-v1")},
+      {"board_binding",Object(board_binding)},{"netlist_storage",JsonQuote("split-netlists.sqlite")},
+      {"transport_storage",JsonQuote("transport.sqlite")},{"fpgas",Array(fpgas)},
+      {"lane_map",JsonQuote("lane_map.json")},{"runtime_controller_rtl",JsonQuote("virtual_runtime_controller.sv")},
+      {"clock_periods",Object(periods)}};
+    const auto constraints=Fields(Meta(assignment.database(),"constraints"));
+    const auto reservations=constraints.find("resource_reservations_by_fpga");
+    if(reservations!=constraints.end() && reservations->second!="{}")manifest[reservations->first]=reservations->second;
+    if(semantic!="null"){
+      manifest["cut_mode"]=JsonQuote("static-exact-combinational");
+      manifest["qualification"]=JsonQuote("exact-boundary-materialization-pass");
+      manifest["semantic_contract_sha256"]=semantic;
+      if(exact!="null")manifest["semantic_contract_storage"]=exact;
+    }
+    Raw equivalence{{"status",JsonQuote("pass")},{"provider",JsonQuote("constructive-sqlite-split-certificate-v1")},
+      {"qualification",JsonQuote("lossless-source-record-and-cut-boundary-proof")},{"mismatches","0"},
+      {"cycles","0"},{"compared_state_bits","0"},{"compared_output_bits","0"},
+      {"source_instances",Get(validation,"instances")},{"net_segments",Get(validation,"net_segments")},
+      {"endpoints",Get(validation,"endpoints")},{"synthetic_shadow_drivers",Get(validation,"synthetic_shadow_drivers")},
+      {"scope",JsonQuote("constructive Phase 6 transformation proof; exhaustive or trace behavioral replay remains an explicit small-design qualification")}};
+    equivalence["trace_sha256"]=JsonQuote(Digest(Object({{"provider",Get(validation,"provider")},
+      {"instances",Get(validation,"instances")},{"net_segments",Get(validation,"net_segments")},
+      {"endpoints",Get(validation,"endpoints")},{"schedule_entries",std::to_string(hops)}})));
+    if(semantic!="null")equivalence["semantic_contract_sha256"]=semantic;
+    if(Get(request,"small_design_equivalence")!="null"){
+      Check(source.counts().cells<=10000 && source.counts().endpoints<=100000,
+            "behavioral oracle is limited to independent small-design qualification");
+      const auto oracle=Fields(Get(request,"small_design_equivalence"));
+      Check(Text(oracle,"status")=="pass" && Int(Get(oracle,"mismatches"))==0,"behavioral qualification failed");
+      equivalence=oracle;
+    }
+    Raw artifacts{{"manifest",JsonQuote("manifest.json")},{"lane_map",JsonQuote("lane_map.json")},
+      {"split_netlists",JsonQuote("split-netlists.sqlite")},{"transport_store",JsonQuote("transport.sqlite")},
+      {"runtime_controller_rtl",JsonQuote("virtual_runtime_controller.sv")},{"report",JsonQuote("phase6_report.json")}};
+    if(Get(request,"transport_cost")!="null"){
+      const auto cost=Fields(Get(request,"transport_cost"));
+      Check(Text(cost,"platform")==platform,"transport cost platform disagrees");
+      Check(Text(cost,"schema")=="emuflow.transport-cost/v2" &&
+            Text(cost,"model")=="production-transport-rtl-structural-v2",
+            "unsupported transport cost model");
+      const auto profile=Text(cost,"profile");
+      Check(profile=="aggressive" || profile=="nominal" || profile=="conservative","invalid transport cost profile");
+      const auto provenance=Fields(Get(cost,"provenance"));
+      Check(Text(provenance,"class")=="open_source_rtl_characterization" &&
+            Text(provenance,"fit_sha256").size()==64,"invalid transport cost provenance");
+      const auto frame=Int(Get(Fields(Get(runtime,"frame")),"slots"));
+      Check(frame==2 || frame==4 || frame==8 || frame==16,"transport frame is outside characterized range");
+      const auto feature_names=Values(Get(cost,"feature_names"));
+      Check(std::set<std::string>(feature_names.begin(),feature_names.end()).size()==feature_names.size() &&
+            !Fields(Get(cost,"resources")).empty(),"duplicate transport feature or empty resource model");
+      std::vector<std::string> prediction;
+      std::map<std::string,double> totals;
+      SqliteStore transport_store(ArtifactRef::Bind((root/"transport.sqlite").string(),"transport-store-v2"));
+      for(const auto& token:order){const auto id=DecodeJsonString(token);
+        const auto scalar=[&](const std::string& sql){auto q=transport_store.database().Prepare(sql);q.BindText(1,id);Check(q.Step(),"missing transport feature");return q.TypedInteger(0);};
+        std::map<std::string,double> features{{"fixed_shell",1.0},
+          {"tx_output_lanes",double(scalar("SELECT count(*) FROM (SELECT 1 FROM endpoint_values WHERE fpga=? AND kind='tx' GROUP BY link,peer,lane)"))},
+          {"rx_shadow_bits",double(scalar("SELECT count(*) FROM signals WHERE fpga=? AND kind='shadow'"))},
+          {"rx_arrival_slot_groups",double(scalar("SELECT count(*) FROM (SELECT 1 FROM endpoint_values WHERE fpga=? AND kind='rx' GROUP BY link,peer,arrival_slot)"))},
+          {"tx_deep_mux_lanes",double(scalar("SELECT count(*) FROM (SELECT 1 FROM endpoint_values WHERE fpga=? AND kind='tx' GROUP BY link,peer,lane HAVING count(*)>=4)"))}};
+        for(const auto slots:{4,8,16})features["frame_slots_"+std::to_string(slots)]=frame==slots?1.0:0.0;
+        Check(feature_names.size()==features.size(),"transport feature coverage disagrees");
+        Raw encoded_features,resources;
+        for(const auto& feature:features)encoded_features[feature.first]=JsonRecord(feature.second).Encode();
+        for(const auto& resource:Fields(Get(cost,"resources"))){const auto coefficients=Fields(resource.second);
+          Check(coefficients.size()==features.size(),"transport coefficient coverage disagrees");
+          double amount=0;
+          for(const auto& name:feature_names){const auto field=DecodeJsonString(name);
+            Check(features.count(field),"unknown transport feature");
+            const auto coefficient=ParseFiniteDecimal(Get(coefficients,field),"transport coefficient");
+            Check(coefficient>=0,"negative transport coefficient");amount+=features.at(field)*coefficient;
+          }
+          resources[resource.first]=JsonRecord(amount).Encode();totals[resource.first]+=amount;
+        }
+        prediction.push_back(Object({{"fpga",token},{"features",Object(encoded_features)},{"resources",Object(resources)}}));
+      }
+      Raw encoded_totals;for(const auto& total:totals)encoded_totals[total.first]=JsonRecord(total.second).Encode();
+      validation["transport_cost_prediction"]=Object({{"schema",JsonQuote("emuflow.transport-cost-prediction/v1")},
+        {"status",JsonQuote("pass")},{"platform",JsonQuote(platform)},{"profile",Get(cost,"profile")},
+        {"model",Get(cost,"model")},{"fpgas",Array(prediction)},{"total_resources",Object(encoded_totals)}});
+      manifest["transport_cost"]=artifacts["transport_cost"]=JsonQuote("transport-cost.json");
+      PublishText(root/"transport-cost.json",Object(cost)+'\n',bound);
+    }
+    std::string board_validation;
+    if(Get(transport,"virtual_board")!="null"){
+      const auto board=Fields(Get(transport,"virtual_board"));
+      const auto selector=Fields(Canonical(Read(root/"virtual_board_binding.json")));
+      const auto header=Fields(Get(selector,"header"));
+      const auto wiring=Fields(Get(board,"metrics")),binding=Fields(Get(header,"metrics"));
+      Raw wiring_validation=wiring,binding_validation=binding;
+      wiring_validation["status"]=binding_validation["status"]=JsonQuote("pass");
+      wiring_validation["qualification"]=Get(board,"qualification");
+      binding_validation["qualification"]=Get(header,"qualification");
+      binding_validation["physical_backend_status"]=Get(header,"physical_backend_status");
+      board_validation=Object({{"status",JsonQuote("pass")},{"qualification",Get(header,"qualification")},
+        {"physical_backend_status",Get(header,"physical_backend_status")},
+        {"wiring_validation",Object(wiring_validation)},{"binding_validation",Object(binding_validation)}});
+      validation["virtual_board_binding"]=board_validation;
+      Raw xdc,io;for(const auto& token:order){const auto id=DecodeJsonString(token);
+        xdc[id]=JsonQuote(id+"/virtual_data_pins.xdc");io[id]=JsonQuote(id+"/virtual_differential_io.sv");}
+      const auto paths=Object({{"wiring",JsonQuote("virtual_board_wiring.json")},
+        {"binding",JsonQuote("virtual_board_binding.json")},{"xdc",Object(xdc)},{"differential_io",Object(io)}});
+      manifest["virtual_board_binding"]=artifacts["virtual_board_binding"]=paths;
+      PublishText(root/"virtual_board_wiring.json",Object(board)+'\n',bound);
+    }
+    Raw report{{"schema",JsonQuote("emuflow.phase6-report/v1")},{"phase","6"},
+      {"increment",JsonQuote("board-independent-netlist-and-lane-planning")},{"status",JsonQuote("pass")},
+      {"design",JsonQuote(design_name)},{"platform",JsonQuote(platform)},
+      {"provider",Get(manifest,"provider")},{"stage_implementation_id",JsonQuote("native-baseline-phase6-v1")},
+      {"schedule_input",Object({{"dataflow",JsonQuote("indexed-lazy-sqlite-v1")},
+        {"logical_sha256",Meta(schedule.database(),"logical_sha256")},
+        {"store_bytes",std::to_string(fs::file_size(original[2].path()))}})},
+      {"transport_storage",Object(summary)},{"virtual_runtime_provider",Get(runtime,"provider")},
+      {"virtual_dut_clocks",Array(clock_names)},{"clock_contract_ref",JsonQuote("manifest.json#/clock_periods")},
+      {"validation",Object(validation)},{"equivalence",Object(equivalence)},
+      {"board_binding",Object(board_binding)},{"artifacts",Object(artifacts)}};
+    if(!board_validation.empty())report["virtual_board_binding"]=board_validation;
+    auto manifest_text=Object(manifest);
+    if(Get(request,"managed_storage")=="true"){
+      // The manifest is bounded control data. Preserve the existing explicit
+      // envelope without introducing a second graph payload or host adoption.
+      uLongf size=compressBound(manifest_text.size());std::vector<unsigned char> compressed(size);
+      Check(compress2(compressed.data(),&size,reinterpret_cast<const Bytef*>(manifest_text.data()),
+                      manifest_text.size(),1)==Z_OK,"cannot encode managed manifest");
+      const char* alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+      std::string encoded;for(uLongf i=0;i<size;i+=3){const unsigned bits=(unsigned(compressed[i])<<16) |
+          (i+1<size?unsigned(compressed[i+1])<<8:0) | (i+2<size?unsigned(compressed[i+2]):0);
+        encoded+=alphabet[(bits>>18)&63];encoded+=alphabet[(bits>>12)&63];
+        encoded+=i+1<size?alphabet[(bits>>6)&63]:'=';encoded+=i+2<size?alphabet[bits&63]:'=';}
+      manifest_text=Object({{"schema",JsonQuote("emuflow.managed-json-storage/v1")},
+        {"logical_schema",Get(manifest,"schema")},{"codec",JsonQuote("zlib-level-1-base64-canonical-json")},
+        {"uncompressed_bytes",std::to_string(manifest_text.size())},{"data",JsonQuote(encoded)}});
+    }
+    PublishText(root/"manifest.json",manifest_text+'\n',bound);
+    PublishText(root/"phase6_report.json",Object(report)+'\n',bound);
+    // Readers/mappings close before retirement on both success and failure.
+    // They borrow only original stores, which outlive the stage workspace.
+    PublishNewDirectory(root.string(),destination.string(),bound);
+    generation.root.clear();
+  },[&]{return std::vector<ArtifactRef>{
+    ArtifactRef::Bind((fs::path(directory)/"phase6_report.json").string(),"phase6-report-v1"),
+    ArtifactRef::Bind((fs::path(directory)/"split-netlists.sqlite").string(),"split-netlists-v3"),
+    ArtifactRef::Bind((fs::path(directory)/"transport.sqlite").string(),"transport-store-v2")};});
 }
 }

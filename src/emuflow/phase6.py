@@ -264,6 +264,41 @@ def run_phase6(
         if position_hints_path is not None
         else None
     )
+    if pin_plan is None and position_hints is None and electrical_binding_path is None:
+        from .phase6_native import run_native_phase6
+        from .tdm import is_sampled_virtual_wire_schedule
+
+        runtime = build_virtual_runtime(schedule, platform, clock_periods)
+        virtual_board = None
+        if platform.virtual_board_model is not None:
+            from .virtual_board import build_virtual_board
+            virtual_board = build_virtual_board(platform)
+        transport_cost = None
+        if transport_cost_path is not None:
+            transport_cost = read_json(transport_cost_path.resolve())
+            validate_transport_cost_database(transport_cost, expected_platform=platform.name)
+        # Independent behavioral replay is bounded to the existing small-model
+        # qualification scope. The native stage always checks constructive
+        # source/split/transport coverage, including for large production input.
+        counts = source.get("record_counts", {})
+        equivalence = None
+        if int(counts.get("cell_records", 0)) <= 10_000 and int(counts.get("endpoint_records", 0)) <= 100_000:
+            qualification_schedule = schedule.materialize()
+            ir = EmuIR.load(ir_path)
+            assignment_json = assignment_path.with_name("assignment.json") if assignment_path.suffix == ".sqlite" else assignment_path
+            assignment = read_json(assignment_json)
+            if is_sampled_virtual_wire_schedule(qualification_schedule):
+                equivalence = _static_exact_equivalence_evidence(ir, assignment,
+                    qualification_schedule, cycles=equivalence_cycles,
+                    seed=equivalence_seed, clock_periods=clock_periods)
+            else:
+                equivalence = simulate_partition_equivalence(ir, assignment,
+                    qualification_schedule, cycles=equivalence_cycles, seed=equivalence_seed)
+        return run_native_phase6(ir_path, assignment_index_path, schedule,
+            platform, platform_path, output_dir, design=source["design"],
+            clocks=source["clocks"], virtual_board=virtual_board, runtime=runtime,
+            equivalence=equivalence, managed_storage=managed_storage,
+            transport_cost=transport_cost, transport_cost_path=transport_cost_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     pin_validation = None
     electrical_validation = None

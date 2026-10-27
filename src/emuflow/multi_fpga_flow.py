@@ -1421,6 +1421,7 @@ def _compile_preflight(ctx: _CompileContext):
     require_native_schema("phase5-stage-request-v1")
     require_native_schema("split-netlists-v3")
     require_native_schema("transport-stage-request-v1")
+    require_native_schema("phase6-stage-request-v1")
     require_native_schema("boarddb-v1")
     ctx.output_dir.mkdir(parents=True, exist_ok=True)
     if ctx._native_mode and ctx.prepared_frontend is None and ctx.yosys_json is None and ctx.sources:

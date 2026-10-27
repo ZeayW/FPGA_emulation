@@ -51,9 +51,9 @@ def audit_transport(view):
     return value['ports']
 
 
-def build_transport(output,assignment,schedule,platform,*,design,clocks,
-                    pin_plan=None,virtual_board=None,runtime=None,emit_rtl=False):
-    require_native_schema('transport-stage-request-v1')
+def transport_request(assignment,schedule,platform,*,design,clocks,
+                      pin_plan=None,virtual_board=None,runtime=None,emit_rtl=False):
+    """Prepare bounded configuration; record populations stay in their owners."""
     schedule_path=getattr(schedule,'store_path',None)
     pin_path=getattr(pin_plan,'store_path',None) if pin_plan is not None else None
     if schedule_path is None or (pin_plan is not None and pin_path is None):
@@ -62,8 +62,6 @@ def build_transport(output,assignment,schedule,platform,*,design,clocks,
               bind_store_source(schedule_path,'tdm-schedule-store-v4')]
     if pin_path is not None:original.append(bind_store_source(pin_path,'pin-plan-store-v1'))
     sources=tuple(original)+bind_view_sources((schedule,'tdm-schedule-store-v4'),(pin_plan,'pin-plan-store-v1'))
-    output=Path(output);store=output/'transport.sqlite'
-    sources=validate_store_destination(store,sources);output.mkdir(parents=True,exist_ok=True)
     request={
         'schema':'emuflow.transport-stage/v1',
         'sources':[{'path':str(ref.path),'schema':ref.schema,'generation':list(ref.generation)} for ref in original],
@@ -73,6 +71,18 @@ def build_transport(output,assignment,schedule,platform,*,design,clocks,
                   'payload':link.payload_bits_per_lane_per_cycle} for link in platform.links],
         'virtual_board':virtual_board,'emit_rtl':emit_rtl,'runtime':runtime,
     }
+    return request,sources
+
+
+def build_transport(output,assignment,schedule,platform,*,design,clocks,
+                    pin_plan=None,virtual_board=None,runtime=None,emit_rtl=False):
+    require_native_schema('transport-stage-request-v1')
+    request,sources=transport_request(assignment,schedule,platform,design=design,clocks=clocks,
+        pin_plan=pin_plan,virtual_board=virtual_board,runtime=runtime,emit_rtl=emit_rtl)
+    schedule_path=getattr(schedule,'store_path',None)
+    pin_path=getattr(pin_plan,'store_path',None) if pin_plan is not None else None
+    output=Path(output);store=output/'transport.sqlite'
+    sources=validate_store_destination(store,sources);output.mkdir(parents=True,exist_ok=True)
     encoded=json.dumps(request,ensure_ascii=True,sort_keys=True,separators=(',',':'),allow_nan=False)
     if len(encoded.encode())>8*1024*1024:
         raise ValidationError('transport control request exceeds bound')
