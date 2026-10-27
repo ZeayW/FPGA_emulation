@@ -104,7 +104,7 @@ def test_native_word_top_rtl_connects_all_lanes_startup_status_and_payload(tmp_p
     partition_ports=[];partition_body=[];native_modules=[];checks=[]
     for name,p in ports.items():
         width=len(p['bits']);partition_ports.append(f"{p['direction']} wire "+(f'[{width-1}:0] 'if width>1 else'')+name)
-    for record in node['banks']:
+    for bank_index,record in enumerate(node['banks']):
         recipe=selectio_bank_recipe(record['bank'],record['direction'],
             **({'rx_alignment':WORD_PHY_RX_ALIGNMENT}if record['direction']=='rx'else{}))
         bus=record['logical_port'];base=record['logical_lsb']
@@ -121,6 +121,7 @@ def test_native_word_top_rtl_connects_all_lanes_startup_status_and_payload(tmp_p
             declarations.append(f"{'input'if direction=='IN'else'output'} wire "+(f'[{width-1}:0] 'if width>1 else'')+name)
             if direction=='OUT':
                 value="1'b1"if name.startswith(('vtc_rdy','dly_rdy'))or name in {'pll0_locked','intf_rdy','fifo_rd_data_valid'}else"'0"
+                if name=='pll0_locked':value=f'tb.pll_ok[{bank_index}]'
                 if name=='rst_seq_done':value='!rst'
                 if name in words:value=f"(tb.payload ? 8'd{17+words[name]} : 8'h2c)"
                 assignments.append(f'assign {name}={value};')
@@ -130,18 +131,29 @@ def test_native_word_top_rtl_connects_all_lanes_startup_status_and_payload(tmp_p
     calls=['.fabric_clk(clk)','.clk(clk)','.d(1\'b0)','.reset(reset)',".links_ready(1'b1)",'.q(q)']
     calls+=['.__emuflow_riu_clk(clk)',".__emuflow_all_tx_ready(1'b1)",".__emuflow_all_plls_locked(1'b1)",
         ".__emuflow_alignment_enable(1'b1)",'.__emuflow_payload_enable(payload)',
+        '.__emuflow_local_tx_ready(tx_ready)','.__emuflow_local_plls_locked(plls_locked)',
+        '.__emuflow_local_reset_done(reset_done)',
         '.__emuflow_local_rx_ready(ready)','.__emuflow_local_rx_word_valid(valid)','.__emuflow_local_training_error(error)']
     bench='''`timescale 1ns/1ps
 module tb;
 reg clk=0;always #2.5 clk=~clk;
-reg reset=1,payload=0;wire[7:0]q;wire ready,valid,error;
+reg reset=1,payload=0;reg[1:0]pll_ok=2'b11;
+wire[7:0]q;wire ready,valid,error,tx_ready,plls_locked,reset_done;
 __emuflow_physical_top dut('''+','.join(calls)+''');
 initial begin
  repeat(3)@(negedge clk);reset=0;
  wait(ready&&valid);@(negedge clk);payload=1;
  repeat(4)@(posedge clk);#0.1;
  if(q!==8'd17||error)$fatal(1,"partition RX/status binding");
+ if(tx_ready!==1'b1||plls_locked!==1'b1||reset_done!==1'b1)
+   $fatal(1,"top startup status outputs must be driven and ready");
 '''+''.join(checks)+'''
+ for(integer bank=0;bank<2;bank=bank+1)begin
+   pll_ok[bank]=0;#0.1;
+   if(plls_locked!==1'b0)$fatal(1,"one unlocked bank must clear PLL consensus");
+   pll_ok[bank]=1;#0.1;
+   if(plls_locked!==1'b1)$fatal(1,"all locked banks must assert PLL consensus");
+ end
  $display("NATIVE_WORD_TOP_WIRING_PASS");$finish;
 end
 initial begin #5000;$fatal(1,"top training timeout");end

@@ -191,7 +191,8 @@ def write_vivado_word_top(ir_path:Path,output:Path,*,fpga,board,plan):
     for signal,values in status.items():
         op=' | 'if signal=='training_error'else' & '
         expression=op.join(values)if values else("1'b0"if signal=='training_error'else"1'b1")
-        lines.append(f'  assign __emuflow_local_{signal} = {expression};')
+        status_port='plls_locked'if signal=='pll_locked'else signal
+        lines.append(f'  assign __emuflow_local_{status_port} = {expression};')
     lines+=['endmodule','']
     for name,port,period in [('emuflow_riu_clk','__emuflow_riu_clk','10'),*clock_rows]:
         xdc.append(f'create_clock -name {name} -period {period} [get_ports {{{port}}}]')
