@@ -35,7 +35,6 @@ from .local_path_timing_storage import (
 from .timing_disposition import OPTIMIZED_AWAY, is_optimized_away, validate_optimization_record
 from .partition import PARTITION_ASSIGNMENT_SCHEMA
 from .phase3_storage import read_phase3_assignment_view
-from .routing import system_route_timing_paths
 from .system_route_storage import read_system_routes
 from .sta import (
     STA_PATH_DATABASE_SCHEMA,
@@ -695,14 +694,14 @@ def _same_endpoint(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
     )
 
 
-def _resolve_local_path_fpga(
+def _resolve_path_fpga_owners(
     path: Mapping[str, Any],
     start: Mapping[str, Any],
     end: Mapping[str, Any],
     original_nets: Mapping[str, Mapping[str, Any]],
     instance_assignment: Mapping[str, Any],
-) -> str | None:
-    """Resolve a path owner without pretending top-level ports are instances.
+) -> set[str] | None:
+    """Resolve current source-path owners independently of route path IDs.
 
     OpenSTA legitimately reports primary inputs and outputs as path endpoints,
     whose provider-neutral ``instance`` is ``None``.  The selected
@@ -712,8 +711,8 @@ def _resolve_local_path_fpga(
     of the same net may live on other FPGAs.
 
     Return ``None`` when the evidence contains no assigned instance or an
-    instance is absent from the assignment.  Multiple evidenced FPGAs mean the
-    path is cross-partition and must have appeared in Phase 4 instead.
+    instance is absent from the assignment. Multiple evidenced FPGAs classify
+    the path as cross-partition, including paths from a newer complete library.
     """
 
     path_id = path.get("id")
@@ -766,12 +765,16 @@ def _resolve_local_path_fpga(
         if not isinstance(assigned, str) or not assigned:
             return None
         assigned_fpgas.add(assigned)
-    if len(assigned_fpgas) != 1:
-        raise ValidationError(
-            f"original path {path_id!r} is cross-partition but absent "
-            "from the Phase 4 timing population"
-        )
-    return next(iter(assigned_fpgas))
+    return assigned_fpgas
+
+
+def _resolve_local_path_fpga(path, start, end, original_nets, instance_assignment):
+    owners = _resolve_path_fpga_owners(path, start, end, original_nets, instance_assignment)
+    if owners is None:
+        return None
+    if len(owners) != 1:
+        raise ValidationError(f"original path {path.get('id')!r} is cross-partition")
+    return next(iter(owners))
 
 
 @dataclass(frozen=True)
@@ -840,29 +843,11 @@ def prepare_local_path_query_inputs(
     instance_assignment = assignment.get("instance_assignment")
     if not isinstance(instance_assignment, Mapping):
         raise ValidationError("local path instance assignment is invalid")
-    raw_route_timing = system_route_timing_paths(
-        routes,
-        context="local path system routes",
-    )
+    # TimingPathDB IDs are local to their source generation. An older route
+    # catalog can omit new paths or reuse their IDs for different endpoints.
+    # Classify every current path from its endpoints and selected-net drivers.
     lifetime = _PreparedStoreLifetime()
     writer = _LocalPathPreparationWriter(lifetime)
-    cross_batch: list[str] = []
-    for item in raw_route_timing:
-        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
-            raise ValidationError("local path system route timing is invalid")
-        members = item.get("compressed_path_ids", [item["path"]])
-        if (
-            not isinstance(members, list)
-            or not all(isinstance(member, str) and member for member in members)
-        ):
-            raise ValidationError("local path route member coverage is invalid")
-        for member in members:
-            cross_batch.append(member)
-            if len(cross_batch) >= 4096:
-                writer.add_cross_paths(cross_batch)
-                cross_batch.clear()
-    writer.add_cross_paths(cross_batch)
-    writer.connection.commit()
 
     indexed = (
         original_ir is None
@@ -898,11 +883,7 @@ def prepare_local_path_query_inputs(
                     break
                 batch_ids = [path["id"] for path in batch]
                 writer.add_path_ids(batch_ids)
-                cross_ids = writer.cross_paths(batch_ids)
-                candidates = [
-                    path for path in batch
-                    if path["id"] not in cross_ids
-                ]
+                candidates = batch
                 selected_ids = {
                     net_id
                     for path in candidates
@@ -914,7 +895,7 @@ def prepare_local_path_query_inputs(
                 for path in candidates:
                     try:
                         start, end = sta_path_endpoints(path, object_index)
-                        path_fpga = _resolve_local_path_fpga(
+                        owners = _resolve_path_fpga_owners(
                             path,
                             start,
                             end,
@@ -924,6 +905,10 @@ def prepare_local_path_query_inputs(
                     except (KeyError, ValidationError) as error:
                         unresolved(path["id"], str(error))
                         continue
+                    if owners is not None and len(owners) > 1:
+                        writer.add_cross_paths([path["id"]])
+                        continue
+                    path_fpga = next(iter(owners)) if owners else None
                     if path_fpga is None:
                         unresolved(
                             path["id"], "path-partition-unresolved"
@@ -956,11 +941,9 @@ def prepare_local_path_query_inputs(
             verify_payload=False,
         ):
             writer.add_path_ids([path["id"]])
-            if writer.contains_cross_path(path["id"]):
-                continue
             try:
                 start, end = sta_path_endpoints(path, object_index)
-                path_fpga = _resolve_local_path_fpga(
+                owners = _resolve_path_fpga_owners(
                     path,
                     start,
                     end,
@@ -970,6 +953,10 @@ def prepare_local_path_query_inputs(
             except (KeyError, ValidationError) as error:
                 unresolved(path["id"], str(error))
                 continue
+            if owners is not None and len(owners) > 1:
+                writer.add_cross_paths([path["id"]])
+                continue
+            path_fpga = next(iter(owners)) if owners else None
             if path_fpga is None:
                 unresolved(path["id"], "path-partition-unresolved")
                 continue

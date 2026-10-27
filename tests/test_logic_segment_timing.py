@@ -102,7 +102,8 @@ class LogicSegmentTimingTest(unittest.TestCase):
             2,
         )
 
-    def test_compact_local_path_preparation_never_loads_whole_graph(self):
+    @staticmethod
+    def compact_source_fixture():
         value = {
             "schema": "emuflow.emuir/v1",
             "design": {"name": "dut", "top": "dut", "source_format": "test"},
@@ -157,6 +158,10 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 "normalized_slack": 0.1,
             }],
         }
+        return value, database
+
+    def test_compact_local_path_preparation_never_loads_whole_graph(self):
+        value, database = self.compact_source_fixture()
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             ir_path = root / "dut.emuir.sqlite"
@@ -247,6 +252,32 @@ class LogicSegmentTimingTest(unittest.TestCase):
         self.assertIsNone(logic.original_ir)
         self.assertEqual(set(logic.original_nets), {"n0", "n1"})
 
+    def test_complete_path_preparation_uses_current_ownership_instead_of_route_path_ids(self):
+        value, database = self.compact_source_fixture()
+        cases = [
+            ({"launch":"fpga0", "logic":"fpga0", "capture":"fpga0"},
+             [{"path":"p0", "compressed_path_ids":["p0", "stale-old-id"]}], False),
+            ({"launch":"fpga0", "logic":"fpga1", "capture":"fpga0"}, [], True),
+            ({"launch":"fpga0", "logic":"fpga0", "capture":"fpga1"}, [], True),
+        ]
+        for indexed in (False, True):
+            for owners, old_paths, crosses in cases:
+                with self.subTest(indexed=indexed, owners=owners), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    ir_path, assignment, paths, routes = [root/name for name in
+                        ("source.emuir.sqlite", "assignment.json", "paths.json", "routes.json")]
+                    ir = EmuIR(value)
+                    ir.save(ir_path)
+                    write_json(assignment, {"schema":"emuflow.partition-assignment/v1",
+                        "design":"dut", "instance_assignment":owners})
+                    write_json(paths, database)
+                    write_json(routes, {"schema":SYSTEM_ROUTES_SCHEMA, "routes":[], "timing":{"paths":old_paths}})
+                    prepared = prepare_local_path_query_inputs(ir_path, assignment, paths, routes,
+                        **({} if indexed else {"original_ir":ir}))
+                    self.assertEqual(set(prepared.cross_path_ids), {"p0"} if crosses else set())
+                    self.assertEqual(sum(len(rows) for rows in prepared.local_paths_by_fpga.values()), int(not crosses))
+                    self.assertEqual(prepared.source_manifest["original_paths"], 1)
+
     def test_local_path_owner_uses_selected_drivers_for_top_level_ports(self):
         nets = {
             "input": {
@@ -278,7 +309,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
             "fpga0",
         )
 
-    def test_local_path_owner_rejects_unreported_cross_partition_path(self):
+    def test_single_owner_lookup_does_not_label_cross_partition_path_local(self):
         nets = {
             "n0": {
                 "drivers": [
@@ -295,7 +326,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
         }
         with self.assertRaisesRegex(
             ValidationError,
-            "cross-partition but absent from the Phase 4 timing population",
+            "cross-partition",
         ):
             _resolve_local_path_fpga(
                 {"id": "missing-cross", "path_nets": ["n0", "n1"]},
