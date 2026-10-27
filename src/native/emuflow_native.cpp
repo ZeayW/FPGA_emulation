@@ -49,6 +49,7 @@ constexpr const char* kUsage =
     "  phase7 export-source-metric-weights ORIGINAL_IR ASSIGNMENT SCHEDULE REQUEST OUTPUT\n"
     "  phase3 export-source-proxy ORIGINAL_IR PRIMARY INITIAL REQUEST OUTPUT\n"
     "  phase3 merge-witness-paths ORIGINAL_IR REQUEST OUTPUT TSV...\n"
+    "  phase1 validate-mapped-normalization ORIGINAL_IR NORMALIZED_IR PRIMITIVE_SOURCE REQUEST OUTPUT\n"
     "  phase2 export-net-map ORIGINAL_IR [LEGACY_SOURCE] REQUEST OUTPUT\n"
     "  phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL\n"
     "  phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY\n"
@@ -145,6 +146,8 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     request.expected_sha256 = sha;
     return Execute(std::move(request), report);
   };
+  if (phase == "phase1" && operation == "validate-mapped-normalization" && argc == 8)
+    return run(Stage::kValidateMappedNormalization,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
   if (phase == "phase7" && operation == "validate-atomic-ownership" && argc == 8)
     return run(Stage::kValidateAtomicOwnership,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
   if (phase == "phase7" && operation == "export-source-communication" && argc == 8)

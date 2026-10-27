@@ -20,6 +20,7 @@
 #include "emuflow_core/sqlite.hpp"
 #include "emuflow_core/source_launch_clocks.hpp"
 #include "emuflow_core/source_communication.hpp"
+#include "emuflow_core/mapped_normalization.hpp"
 
 #include <filesystem>
 #include <iostream>
@@ -33,6 +34,7 @@ const char* StageName(Stage stage) {
     case Stage::kExportPatronSourceProxy: return "phase3.export-source-proxy";
     case Stage::kExportSourceNetMap: return "phase2.export-net-map";
     case Stage::kMergePatronWitnessPaths: return "phase3.merge-witness-paths";
+    case Stage::kValidateMappedNormalization: return "phase1.validate-mapped-normalization";
     case Stage::kBuildSourceLaunchClocks: return "phase7.build-launch-clocks";
     case Stage::kRefinePartitionHops: return "phase3.refine-hops";
     case Stage::kValidateAtomicOwnership: return "phase7.validate-atomic-ownership";
@@ -74,6 +76,7 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
       return {"emuir-compact-v2","assignment-index-v4","tdm-schedule-store-v4","source-metric-request-v1"};
     case Stage::kExportPatronSourceProxy:
       return {"emuir-compact-v2","partition-cluster-columns-v2","patron-initial-columns-v1","patron-source-board-request-v1"};
+    case Stage::kValidateMappedNormalization: return {"emuir-compact-v2","emuir-compact-v2","yosys-source-document-v1","mapped-normalization-request-v1"};
     case Stage::kMergePatronWitnessPaths: {
       const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
       if(count<3 || count>11)throw core::StageError(core::ErrorCode::kInvalidRequest,"witness owner count differs");
@@ -281,6 +284,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kExportPatronSourceProxy: core::ExportPatronSourceProxy(inputs,output); break;
       case Stage::kExportSourceNetMap: core::ExportSourceNetMap(inputs,output); break;
       case Stage::kMergePatronWitnessPaths: core::MergePatronWitnessPaths(inputs,output); break;
+      case Stage::kValidateMappedNormalization: core::ValidateMappedNormalization(inputs,output); break;
       case Stage::kBuildSourceLaunchClocks: core::BuildSourceLaunchClocksFromRequest(inputs,output,request.cancelled); break;
       case Stage::kRefinePartitionHops:
         RefinePartitionHops(inputs,output,!request.summary_output); break;
@@ -328,6 +332,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kExportPatronSourceProxy: schema="patron-source-proxy-tsv-v1"; break;
       case Stage::kExportSourceNetMap: schema="source-net-map-tsv-v1"; break;
       case Stage::kMergePatronWitnessPaths: schema="patron-witness-paths-tsv-v1"; break;
+      case Stage::kValidateMappedNormalization: schema="mapped-normalization-proof-v1"; break;
       case Stage::kBuildSourceLaunchClocks: schema="source-launch-clock-store-v1"; break;
       case Stage::kRefinePartitionHops: schema = "hop-refiner-output-v1"; break;
       case Stage::kValidateAtomicOwnership: schema = "atomic-ownership-summary-v1"; break;

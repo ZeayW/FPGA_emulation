@@ -44,3 +44,4 @@ emuflow_core/cluster_catalog.cpp
 hop_partition_refiner.cpp
 emuflow_core/optimization_proofs.cpp
 emuflow_core/original_physical_captures.cpp
+emuflow_core/mapped_normalization.cpp

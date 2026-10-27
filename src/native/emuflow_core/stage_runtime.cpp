@@ -48,6 +48,8 @@ constexpr RegisteredSchema schemas[] = {
     {"patron-witness-merge-request-v1", ArtifactEncoding::kBinary, 0x31514d57544d5545ULL, 1},
     {"patron-witness-paths-tsv-v1", ArtifactEncoding::kText, 0, 1},
     {"source-net-map-tsv-v1", ArtifactEncoding::kText, 0, 1},
+    {"mapped-normalization-request-v1", ArtifactEncoding::kBinary, 0x31514e4d464d5545ULL, 1},
+    {"mapped-normalization-proof-v1", ArtifactEncoding::kText, 0, 1},
     {"source-net-map-request-v1", ArtifactEncoding::kBinary, 0x31514d4e534d5545ULL, 1},
     {"sta-path-selector-v1", ArtifactEncoding::kText, 0, 1},
     {"net-weight-store-v1", ArtifactEncoding::kSqlite, 0, 1, true,
