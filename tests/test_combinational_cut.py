@@ -1,3 +1,4 @@
+from tests.native_split_fixture import NativeSplitFixture
 from tests.native_route_fixture import route_system_native
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 import copy
@@ -43,11 +44,6 @@ from emuflow.emuir_compact import write_compact_emuir
 from emuflow.ir import EmuIR
 from emuflow.io import read_json, write_json
 from emuflow.partition_ir import load_partition_ir
-from emuflow.netlist import (
-    build_split_artifacts,
-    transport_to_systemverilog,
-    validate_split_artifacts,
-)
 from emuflow.partition import (
     CUT_MODE_STATIC_EXACT,
     build_clusters,
@@ -3391,19 +3387,8 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             readiness["n1"]["source_ready_slot"],
             readiness["n0"]["source_ready_slot"],
         )
-        split = build_split_artifacts(
-            self.ir, assignment, schedule, self.platform
-        )
-        self.assertEqual(
-            validate_split_artifacts(
-                self.ir,
-                assignment,
-                schedule,
-                self.platform,
-                split,
-            )["status"],
-            "pass",
-        )
+        with NativeSplitFixture(self.ir, assignment, schedule, self.platform) as produced:
+            self.assertEqual(produced.validate()['status'], 'pass')
         random_evidence = simulate_static_exact_partition_equivalence(
             self.ir, assignment, schedule, cycles=8, seed=23
         )
@@ -3622,19 +3607,8 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             ],
             ["n0", "n1", "n2"],
         )
-        split = build_split_artifacts(
-            self.ir, assignment, schedule, self.platform
-        )
-        self.assertEqual(
-            validate_split_artifacts(
-                self.ir,
-                assignment,
-                schedule,
-                self.platform,
-                split,
-            )["status"],
-            "pass",
-        )
+        with NativeSplitFixture(self.ir, assignment, schedule, self.platform) as produced:
+            self.assertEqual(produced.validate()['status'], 'pass')
         self.assertEqual(
             exhaustively_verify_static_exact_partition_equivalence(
                 self.ir, assignment, schedule
@@ -4438,52 +4412,30 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
 
     def test_phase6_materializes_preserved_exact_boundaries_without_bypass(self):
         _, assignment = self._exact_artifacts(dependent_return=True)
-        schedule = build_tdm_schedule(
-            self._exact_routes(assignment), self.platform
-        )
-        artifacts = build_split_artifacts(
-            self.ir, assignment, schedule, self.platform
-        )
-        validation = validate_split_artifacts(
-            self.ir,
-            assignment,
-            schedule,
-            self.platform,
-            artifacts,
-        )
-        self.assertEqual(validation["cut_mode"], "static-exact-combinational")
-        self.assertEqual(validation["hidden_cross_fpga_bypass_errors"], 0)
-        self.assertEqual(
-            validation["exact_boundary_identities"],
-            2 * len(schedule["entries"]),
-        )
-        boundaries = [
-            endpoint["boundary_identity"]
-            for transport in artifacts["transports"].values()
-            for endpoint in transport["endpoints"]
-        ]
-        self.assertEqual(len(boundaries), len(set(boundaries)))
-        for fpga_id, transport in artifacts["transports"].items():
-            rtl = transport_to_systemverilog(transport, self.platform)
-            self.assertIn('(* KEEP = "yes", DONT_TOUCH = "yes" *)', rtl)
-            self.assertIn(fpga_id, artifacts["netlists"])
-
-        tampered = copy.deepcopy(artifacts)
-        shadow = next(
-            segment
-            for netlist in tampered["netlists"].values()
-            for segment in netlist["nets"]
-            if segment["source_kind"] == "transport_shadow"
-        )
-        shadow["drivers"] = [_endpoint("l0", "O")]
-        with self.assertRaises(ValidationError):
-            validate_split_artifacts(
-                self.ir,
-                assignment,
-                schedule,
-                self.platform,
-                tampered,
-            )
+        schedule = build_tdm_schedule(self._exact_routes(assignment), self.platform)
+        with NativeSplitFixture(self.ir, assignment, schedule, self.platform) as produced:
+            artifacts = produced.artifacts()
+            validation = produced.validate()
+            self.assertEqual(artifacts['manifest']['cut_mode'], 'static-exact-combinational')
+            self.assertEqual(validation['shadow_driver_errors'], 0)
+            boundaries = [endpoint['boundary_identity'] for transport in artifacts['transports'].values() for endpoint in transport['endpoints']]
+            self.assertEqual(len(boundaries), 2 * len(schedule['entries']))
+            self.assertEqual(len(boundaries), len(set(boundaries)))
+            for fpga, transport in artifacts['transports'].items():
+                rtl = (produced.output / fpga / 'transport_schedule.sv').read_text()
+                self.assertIn('(* KEEP = "yes", DONT_TOUCH = "yes" *)', rtl)
+                self.assertIn(fpga, artifacts['netlists'])
+            shadows = [net for netlist in artifacts['netlists'].values() for net in netlist['nets'] if net['source_kind'] == 'transport_shadow']
+            self.assertTrue(shadows)
+            for net in shadows:
+                self.assertEqual(len(net['drivers']), 1)
+                self.assertTrue(net['drivers'][0]['instance'].startswith('__emuflow_rx_'))
+                self.assertEqual(net['drivers'][0]['port'], 'shadow_out')
+            with closing(sqlite3.connect(produced.split)) as db, db:
+                self.assertGreater(db.execute('SELECT count(*) FROM shadow_drivers').fetchone()[0], 0)
+                db.execute('DELETE FROM shadow_drivers WHERE schedule_entry_seq IN (SELECT schedule_entry_seq FROM shadow_drivers LIMIT 1)')
+            with self.assertRaises(ValidationError):
+                produced.validate_split()
 
     def test_phase6_run_and_independent_validate_use_exact_macro_model(self):
         _, assignment = self._exact_artifacts(dependent_return=True)

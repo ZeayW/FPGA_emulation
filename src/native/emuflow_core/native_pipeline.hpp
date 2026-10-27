@@ -6,9 +6,9 @@ namespace emuflow::native {
 enum class Stage {
   kInvalid, kImportPhysicalBoundary, kImportPhysicalLogic, kImportPhysicalLocal, kValidatePhysicalEvidence, kSealRoutes, kValidatePhysicalCells, kValidateAtomicOwnership,
   kAnalyzeExact, kFinalizeExact, kHashSemantics, kAuditPartitionDecision, kNormalizePartitionConfiguration,
-  kWriteExactSections, kValidateExactBinary, kRefinePatron, kRoute,
+  kWriteExactSections, kValidateExactBinary, kRoute,
   kAssignBanks, kGroupSignals, kRefinePositions, kRudy,
-  kCompilePhase5, kRunPhase5, kBuildSchedule, kValidateSchedule, kProjectScheduleTiming, kBindGlobalEvents, kIndexGlobalEvents, kExportGlobalEvents, kImportGlobalMeasurements, kAuditGlobalMeasurements, kPublishGlobalQor, kValidateGlobalQor, kExportBookshelf, kBuildPartitionClusters, kBuildCandidateIds, kRefinePatronFromPrimary, kReducePartitionLoads, kPublishAssignmentIndex, kPublishAssignmentDescriptor, kValidateAssignmentCuts, kPublishClusterCatalog, kBuildCaptures, kValidateCaptures, kExportRwroute, kImportVivadoLineage, kRefinePartitionHops, kExportVivado, kBuildRoutedSegments, kBuildRoutedEndpoints, kStageRoutedOpensta, kExportOpenstaInputs, kImportStaPaths, kValidateStaPaths, kBuildStaWeights, kValidateStaWeights
+  kCompilePhase5, kRunPhase5, kBuildSchedule, kValidateSchedule, kProjectScheduleTiming, kBindGlobalEvents, kIndexGlobalEvents, kExportGlobalEvents, kImportGlobalMeasurements, kAuditGlobalMeasurements, kPublishGlobalQor, kValidateGlobalQor, kExportBookshelf, kBuildPartitionClusters, kBuildCandidateIds, kRefinePatronFromPrimary, kReducePartitionLoads, kPublishAssignmentIndex, kPublishAssignmentDescriptor, kValidateAssignmentCuts, kPublishClusterCatalog, kBuildCaptures, kValidateCaptures, kExportRwroute, kImportVivadoLineage, kExportVivado, kBuildRoutedSegments, kBuildRoutedEndpoints, kStageRoutedOpensta, kExportOpenstaInputs, kImportStaPaths, kValidateStaPaths, kBuildStaWeights, kValidateStaWeights, kBuildPhysicalCoverage, kAuditPhysicalCoverage
 };
 struct StageRequest {
   Stage stage = Stage::kInvalid;
@@ -16,8 +16,6 @@ struct StageRequest {
   std::string output_path;
   bool indexed_input = false;
   bool typed_input = true;
-  bool typed_output = true;
-  bool summary_output = true;
   std::string expected_sha256;
   std::string report_path;
   // Native orchestration connects producer references directly, retaining

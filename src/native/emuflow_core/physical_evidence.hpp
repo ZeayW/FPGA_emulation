@@ -12,5 +12,7 @@ PhysicalEvidenceSeal SealPhysicalEvidence(SqliteDatabase& db,unsigned kind,
     const std::string& header,const std::string& source);
 void ImportPhysicalMeasurements(const std::vector<ArtifactRef>& inputs,unsigned kind,
     const std::string& output,const std::string& summary);
+// Direct typed-store readers use the same independent row/identity/digest audit.
+std::string AuditPhysicalEvidenceStore(SqliteDatabase& db,unsigned kind);
 void ValidatePhysicalEvidence(const std::vector<ArtifactRef>& inputs,const std::string& output);
 }

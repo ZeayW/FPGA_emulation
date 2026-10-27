@@ -1,8 +1,7 @@
-// Offline differential only: primary-store producer versus the independently
-// generated Python typed model. Production never builds both models or hashes
-// an entire graph again for this comparison.
+// Small native model facts and publication-order gates. No Python model producer.
 #include "emuflow_core/patron_ingress.hpp"
 #include "emuflow_core/hash.hpp"
+#include "emuflow_core/json_record.hpp"
 #include <iostream>
 #include <iomanip>
 #include <type_traits>
@@ -47,17 +46,38 @@ std::array<unsigned char,32> Signature(const Model& m) {
   }
   return hash.finish();
 }
+std::string Facts(const Model& m) {
+  using emuflow::core::JsonRecord;
+  using I=std::int64_t;using A=std::vector<JsonRecord>;using O=std::map<std::string,JsonRecord>;
+  A nets,paths,domains,routes,hard,balance,weights;
+  for(const auto& row:m.hard_capacity){A values;for(auto value:row)values.emplace_back(I(value));hard.emplace_back(values);}
+  for(const auto& row:m.balance_capacity){A values;for(auto value:row)values.emplace_back(value);balance.emplace_back(values);}
+  for(auto value:m.cluster_weights)weights.emplace_back(I(value));
+  for(const auto& net:m.net) {
+    A drivers,sinks;for(auto v:net.drivers)drivers.emplace_back(I(v));for(auto v:net.sinks)sinks.emplace_back(I(v));
+    nets.emplace_back(O{{"drivers",drivers},{"sinks",sinks}});
+  }
+  for(const auto& path:m.path) {
+    A members;for(auto v:path.nets)members.emplace_back(I(v));
+    paths.emplace_back(O{{"period_ns",path.period_ns},{"slack_ns",path.slack_ns},
+      {"start_cluster",I(path.start_cluster)},{"end_cluster",I(path.end_cluster)},{"nets",members}});
+  }
+  for(const auto& d:m.domain)domains.emplace_back(O{{"lanes",I(d.lanes)},
+    {"capacity_bits",I(d.capacity_bits)},{"opposite",I(d.opposite)},
+    {"banks",I(d.banks)},{"wires",I(d.wires)},{"ratio_delay_slope_ns",d.ratio_delay_slope_ns}});
+  for(const auto& row:m.route) {
+    A destinations;for(const auto& route:row) {
+      A arcs;for(const auto& arc:route.arcs)arcs.emplace_back(O{{"domain",I(arc.domain)},{"delay_ns",arc.delay_ns}});
+      destinations.emplace_back(O{{"reachable",route.reachable},{"arcs",arcs}});
+    }routes.emplace_back(destinations);
+  }
+  return JsonRecord(O{{"clusters",I(m.clusters)},{"dimensions",I(m.dimensions)},
+    {"nets",nets},{"paths",paths},{"domains",domains},{"routes",routes},
+    {"hard_capacity",hard},{"balance_capacity",balance},{"cluster_weights",weights}}).Encode();
+}
 }
 int main(int argc,char** argv) {
   try {
-    if(argc==4 && std::string(argv[1])=="--publish-order") {
-      auto model=emuflow::native::ReadTypedPatronModel(argv[2]);
-      model.max_moves=0;model.output_to_model.resize(model.clusters);
-      std::iota(model.output_to_model.begin(),model.output_to_model.end(),0U);
-      std::reverse(model.output_to_model.begin(),model.output_to_model.end());
-      emuflow::native::RefinePatronModel(model,argv[3],true,true,
-          {emuflow::core::ArtifactRef::Bind(argv[2],"patron-input-v1")});return 0;
-    }
     if (argc==2 && std::string(argv[1])=="--order") {
       auto order=emuflow::core::CanonicalPatronClusterOrder(1000013);
       if (order[99999]!=99999 || order[100000]!=100000 || order[100001]!=1000000 ||
@@ -66,7 +86,10 @@ int main(int argc,char** argv) {
       return 0;
     }
     const bool emit=argc>1 && std::string(argv[1])=="--signature";
-    const int first=emit?2:1, count=argc-first-(emit?0:1);
+    const bool facts=argc>1 && std::string(argv[1])=="--facts";
+    const bool publish=argc>1 && std::string(argv[1])=="--publish-order-from-primary";
+    if (!emit && !facts && !publish) return 2;
+    const int first=2, count=argc-first-(publish?1:0);
     if (count!=5) return 2;
     using emuflow::core::ArtifactRef;
     std::vector<ArtifactRef> refs{
@@ -77,14 +100,17 @@ int main(int argc,char** argv) {
     emuflow::core::PatronBuildContext context;
     auto actual=emuflow::core::BuildPatronModel(refs,context);
     const auto signature=Signature(actual);
+    if(facts){std::cout<<Facts(actual)<<'\n';return 0;}
+    if(publish){
+      actual.max_moves=0;actual.output_to_model.resize(actual.clusters);
+      std::iota(actual.output_to_model.begin(),actual.output_to_model.end(),0U);
+      std::reverse(actual.output_to_model.begin(),actual.output_to_model.end());
+      emuflow::native::RefinePatronModel(actual,argv[argc-1],true,true,refs);return 0;
+    }
     if (emit) {
       std::cout<<"MODEL_SIGNATURE ";
       for (auto byte:signature) std::cout<<std::hex<<std::setw(2)<<std::setfill('0')<<static_cast<unsigned>(byte);
       std::cout<<std::dec<<' '<<actual.clusters<<' '<<actual.nets<<' '<<actual.paths<<' '<<actual.dimensions<<' '<<actual.domains<<'\n';
-    } else {
-      auto expected=emuflow::native::ReadTypedPatronModel(argv[argc-1]);
-      if (signature!=Signature(expected)) throw std::runtime_error("native/Python model record signatures disagree");
-      std::cout<<"NATIVE_MODEL_RECORD_PARITY_PASS\n";
     }
     return 0;
   } catch (const std::exception& error) { std::cerr<<error.what()<<'\n'; return 1; }

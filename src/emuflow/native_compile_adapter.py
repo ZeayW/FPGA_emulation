@@ -19,7 +19,7 @@ from .io import write_json
 from .native_tools import native_file_generation
 
 
-STAGES = ("preflight", "frontend", "timing", "partition", "route-policy", "route",
+STAGES = ("preflight", "frontend", "timing-policy", "timing", "partition-policy", "partition", "route-policy", "route",
           "tdm", "split", "physical", "signoff", "finalize")
 _LIMIT = 8 * 1024 * 1024
 
@@ -84,6 +84,22 @@ def _unpack(value, depth=0):
             if native_file_generation(path) != expected:
                 raise EmuFlowError("native phase report generation changed")
             return _stage_summary("tdm", report)
+        if kind == "timing-report":
+            if (type(body) is not dict or set(body)!={"schema","path","generation"}
+                    or body.get("schema")!="phase2-report-v1" or type(body.get("path")) is not str
+                    or not Path(body["path"]).is_absolute() or type(body.get("generation")) is not list
+                    or len(body["generation"])!=7 or any(type(item) is not int for item in body["generation"])):
+                raise EmuFlowError("invalid native timing report reference")
+            path=Path(body['path']);generation=tuple(body['generation'])
+            if path.is_symlink() or native_file_generation(path)!=generation or path.stat().st_size>262144:
+                raise EmuFlowError('native timing report generation changed')
+            report=json.loads(path.read_text())
+            if (report.get('schema')!='emuflow.phase2-report/v1' or report.get('status')!='pass'
+                    or report.get('stage_implementation_id')!='native-phase2-v1'):
+                raise EmuFlowError('native timing report identity disagrees')
+            if native_file_generation(path)!=generation:
+                raise EmuFlowError('native timing report generation changed')
+            return report
         if kind == "partition-report":
             if (type(body) is not dict or set(body) != {"schema", "path", "generation"}
                     or body.get("schema") != "phase3-report-v1" or type(body.get("path")) is not str

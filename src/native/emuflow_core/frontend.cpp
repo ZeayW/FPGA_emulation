@@ -34,15 +34,6 @@ struct Workspace{
   explicit Workspace(const fs::path& parent){std::string name=(parent/".frontend-generation-XXXXXX").string();Check(mkdtemp(name.data())!=nullptr,"cannot create private generation");root=name;}
   ~Workspace(){std::error_code error;fs::remove_all(root,error);}
 };
-class RequestWriter{
- public:
-  RequestWriter(const fs::path& path,const std::vector<ArtifactRef>& sources):writer_(path.string(),sources){}
-  template<class T>void Put(T value){writer_.Write(value);UpdateCrc32(crc_,reinterpret_cast<const unsigned char*>(&value),sizeof(value));}
-  void Text(const std::string& value){Check(value.size()<=UINT32_MAX,"request text exceeds bound");Put<std::uint32_t>(value.size());writer_.WriteBytes(value.data(),value.size());UpdateCrc32(crc_,reinterpret_cast<const unsigned char*>(value.data()),value.size());}
-  void Generation(const FileGeneration& value){Put(value.device);Put(value.inode);Put(value.bytes);Put(value.modified_seconds);Put(value.modified_nanoseconds);Put(value.changed_seconds);Put(value.changed_nanoseconds);}
-  void Finish(){writer_.Write(crc_);writer_.Commit();}
- private:AtomicBinaryWriter writer_;std::uint32_t crc_=0;
-};
 std::vector<std::string> Catalog(CheckedRequestReader& reader){const auto count=reader.Read<std::uint32_t>();Check(count<=16384,"configuration catalog exceeds bound");std::vector<std::string> values;for(unsigned i=0;i<count;++i)values.push_back(reader.ReadString32(false,1024*1024));return values;}
 struct Configuration{
   std::string output,top,platform,synthesis,library;std::vector<std::string> clocks;ToolRequest tool;
@@ -131,7 +122,7 @@ StageResult RunFrontend(const ArtifactRef& request,const volatile std::sig_atomi
     auto& c=*configuration;Check(expected_output.empty() || fs::weakly_canonical(output)==fs::weakly_canonical(expected_output),"output escapes compiler ownership");const auto parent=fs::path(output).parent_path();fs::create_directories(parent);
     Check(!fs::exists(output) && !fs::is_symlink(output),"output directory must be absent");Workspace workspace(parent);
     const auto stage=workspace.root/"phase1";fs::create_directory(stage);
-    const auto import_path=workspace.root/"import.bin";RequestWriter writer(import_path,c.sources);
+    const auto import_path=workspace.root/"import.bin";CheckedRequestWriter writer(import_path.string(),c.sources);
     writer.Put<std::uint64_t>(0x31524959464d5545ULL);writer.Put<std::uint32_t>(1);writer.Put<std::uint32_t>(1);writer.Text(c.top);writer.Text("<yosys-stdout>");writer.Put<std::uint32_t>(c.clocks.size());for(const auto& clock:c.clocks)writer.Text(clock);writer.Generation(c.sources[1].generation());writer.Finish();
     const auto import_request=ArtifactRef::Bind(import_path.string(),"yosys-emuir-import-request-v1");
     StageResult imported;const auto import_summary=workspace.root/"import.json";

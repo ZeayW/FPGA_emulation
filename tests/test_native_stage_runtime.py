@@ -67,7 +67,6 @@ class NativeStageRuntimeTest(unittest.TestCase):
             output, report = root / "previous-result", root / "status.json"
             cases = [
                 ["phase3", "analyze", missing],
-                ["phase3", "refine-hops", missing],
                 ["phase3", "reduce-loads", missing, missing, missing],
                 ["phase3", "reduce-loads", missing, missing, missing, missing],
                 ["phase3", "reduce-loads", missing, missing, missing, missing, missing],
@@ -94,7 +93,7 @@ class NativeStageRuntimeTest(unittest.TestCase):
                 ],
                 ["phase3", "hash-semantics", missing, missing, missing],
                 ["phase3", "write-exact-sections", missing, missing, missing],
-                ["phase3", "refine-patron", "--typed-input", missing],
+                ["phase3", "refine-patron-from-primary", missing, missing, missing, missing, missing],
                 ["phase4", "route", "--typed-output", missing],
                 ["phase4", "seal-routes", missing, missing],
                 ["global-sta", "import-measurements", missing, missing, missing, missing],
@@ -141,6 +140,29 @@ class NativeStageRuntimeTest(unittest.TestCase):
                     if jsonschema is not None:
                         jsonschema.validate(status, schema)
             self.assertFalse(list(root.glob("*.tmp.*")))
+
+    def test_direct_primary_hop_entry_rejects_missing_sources_without_replacing_output(self):
+        # Direct library dispatch binds input before starting a stage. Its
+        # early source error is structured stderr, with no published report.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            missing, output, report = root/'missing-source', root/'output', root/'report'
+            for operation in ('refine-hops-from-primary', 'audit-hops-from-primary'):
+                with self.subTest(operation=operation):
+                    output.write_bytes(b'previous-result')
+                    result = subprocess.run([str(emuflow_native()), '--report', str(report),
+                        'phase3', operation, str(missing), str(missing), str(missing), str(output)],
+                        capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    status = json.loads(result.stderr.removeprefix('emuflow-native: '))
+                    self.assertEqual(status['stage'], 'native.request')
+                    self.assertEqual(status['status'], 'fail')
+                    self.assertEqual(status['error']['code'], 'missing-artifact')
+                    self.assertIn(str(missing), status['error']['message'])
+                    self.assertEqual(status['outputs'], [])
+                    self.assertFalse(report.exists())
+                    self.assertEqual(output.read_bytes(), b'previous-result')
+                    self.assertEqual(sorted(p.name for p in root.iterdir()), ['output'])
 
     def test_invalid_report_alias_and_bad_envelope_preserve_inputs(self):
         binary = emuflow_native()

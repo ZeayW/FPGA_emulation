@@ -2,6 +2,7 @@
 #include "emuflow_core/route_seal.hpp"
 #include "emuflow_core/physical_cells.hpp"
 #include "emuflow_core/physical_evidence.hpp"
+#include "emuflow_core/physical_coverage.hpp"
 #include "emuflow_core/atomic_ownership.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/native_stages.hpp"
@@ -45,7 +46,8 @@ const char* StageName(Stage stage) {
     case Stage::kImportPhysicalLogic: return "physical.import-logic-timing";
     case Stage::kImportPhysicalLocal: return "physical.import-local-timing";
     case Stage::kValidatePhysicalEvidence: return "physical.validate-evidence";
-    case Stage::kRefinePartitionHops: return "phase3.refine-hops";
+    case Stage::kBuildPhysicalCoverage: return "physical.build-coverage";
+    case Stage::kAuditPhysicalCoverage: return "physical.audit-coverage";
     case Stage::kValidateAtomicOwnership: return "phase7.validate-atomic-ownership";
     case Stage::kValidatePhysicalCells: return "phase7.validate-physical-cells";
     case Stage::kSealRoutes: return "phase4.seal-routes";
@@ -74,7 +76,6 @@ const char* StageName(Stage stage) {
     case Stage::kFinalizeExact: return "phase3.finalize-semantics";
     case Stage::kHashSemantics: return "phase3.hash-semantics";
     case Stage::kWriteExactSections: return "phase3.write-exact-sections";
-    case Stage::kRefinePatron: return "phase3.refine-patron";
     case Stage::kRoute: return "phase4.route";
     case Stage::kCompilePhase5: return "phase5.compile";
     case Stage::kRunPhase5: return "phase5.run";
@@ -103,11 +104,19 @@ namespace {
 std::vector<std::string> InputSchemas(const StageRequest& request) {
   switch (request.stage) {
     case Stage::kInvalid: break;
-    case Stage::kRefinePartitionHops: return {"hop-refiner-input-v1"};
     case Stage::kValidateAtomicOwnership: return {"xilinx-mapped-index-v2","openparf-atomic-source-store-v1","openparf-placement-certificate-v3","atomic-ownership-request-v1"};
     case Stage::kImportPhysicalBoundary: return {"boundary-identity-store-v1","physical-timing-measurements-v1","physical-measurement-import-request-v1"};
     case Stage::kImportPhysicalLogic: return {"logic-segment-identity-store-v1","physical-timing-measurements-v1","physical-measurement-import-request-v1"};
     case Stage::kImportPhysicalLocal: return {"local-path-timing-store-v1","physical-timing-measurements-v1","physical-measurement-import-request-v1"};
+    case Stage::kBuildPhysicalCoverage:
+    case Stage::kAuditPhysicalCoverage: {
+      const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
+      const auto minimum=request.stage==Stage::kBuildPhysicalCoverage?2u:3u;
+      if(count<minimum || count>2049)
+        throw core::StageError(core::ErrorCode::kInvalidRequest,"physical coverage source count is invalid");
+      const auto path=request.input_artifacts.empty()?request.input_paths.back():request.input_artifacts.back().path();
+      return core::PhysicalCoverageInputSchemas(path);
+    }
     case Stage::kValidatePhysicalEvidence: {
       const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
       if(count!=2)throw core::StageError(core::ErrorCode::kInvalidRequest,"physical evidence source coverage disagrees");
@@ -227,10 +236,6 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
       return {"exact-nodes-v2", "exact-captures-v1", "exact-hash-request-v1"};
     case Stage::kWriteExactSections:
       return {"exact-nodes-v2", "exact-captures-v1", "exact-section-request-v1"};
-    case Stage::kRefinePatron:
-      if (!request.typed_input)
-        throw core::StageError(core::ErrorCode::kInvalidRequest, "PATRON requires typed input");
-      return {"patron-input-v1"};
     case Stage::kRoute: return {"global-route-input-v1"};
     case Stage::kProjectScheduleTiming: {
       const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
@@ -351,11 +356,9 @@ core::StageResult ExecuteStage(const StageRequest& request) {
     } else if (request.stage!=Stage::kBuildRoutedSegments && (!request.auxiliary_output_path.empty() || !request.scratch_path.empty())) {
       throw core::StageError(core::ErrorCode::kInvalidRequest,"unexpected auxiliary stage destinations");
     }
-    if (request.stage == Stage::kRefinePatron && request.typed_output && !request.summary_output)
-      throw core::StageError(core::ErrorCode::kInvalidRequest, "typed PATRON output requires summary mode");
     const bool stream_stage = request.stage == Stage::kAssignBanks || request.stage == Stage::kGroupSignals ||
         request.stage == Stage::kRefinePositions || request.stage == Stage::kRudy;
-    const bool pipe_input = stream_stage || (request.stage == Stage::kRefinePatron && request.typed_input);
+    const bool pipe_input = stream_stage;
     if (request.output_path == "-" && !stream_stage)
       throw core::StageError(core::ErrorCode::kInvalidRequest, "native stage output requires a file");
     std::vector<core::ArtifactRef> inputs;
@@ -412,14 +415,14 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       return;
     }
     switch (request.stage) {
-      case Stage::kRefinePartitionHops:
-        RefinePartitionHops(inputs,output,!request.summary_output); break;
       case Stage::kValidateAtomicOwnership:
         core::ValidateAtomicOwnership(inputs,output); break;
       case Stage::kImportPhysicalBoundary: core::ImportPhysicalMeasurements(inputs,2,output,request.auxiliary_output_path); break;
       case Stage::kImportPhysicalLogic: core::ImportPhysicalMeasurements(inputs,3,output,request.auxiliary_output_path); break;
       case Stage::kImportPhysicalLocal: core::ImportPhysicalMeasurements(inputs,4,output,request.auxiliary_output_path); break;
       case Stage::kValidatePhysicalEvidence: core::ValidatePhysicalEvidence(inputs,output); break;
+      case Stage::kBuildPhysicalCoverage: core::BuildPhysicalCoverage(inputs,output); break;
+      case Stage::kAuditPhysicalCoverage: core::AuditPhysicalCoverage(inputs,output); break;
       case Stage::kValidatePhysicalCells:
         core::ValidatePhysicalCells(inputs[0],inputs[1],inputs[2],output); break;
       case Stage::kImportVivadoLineage:
@@ -462,7 +465,6 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kFinalizeExact: FinalizeStaticExact(inputs, output); break;
       case Stage::kHashSemantics: HashStaticExactSemantics(inputs, output); break;
       case Stage::kWriteExactSections: WriteStaticExactSections(inputs, output); break;
-      case Stage::kRefinePatron: RefinePatron(inputs, output, request.summary_output, request.typed_output); break;
       case Stage::kRoute: RouteTlr(inputs, output); break;
       case Stage::kSealRoutes: core::SealSystemRoutes(inputs,output); break;
       case Stage::kCompilePhase5: core::RunPhase5FromStores(inputs,output); break;
@@ -492,12 +494,13 @@ core::StageResult ExecuteStage(const StageRequest& request) {
   }, [&]() {
     const char* schema = nullptr;
     switch (request.stage) {
-      case Stage::kRefinePartitionHops: schema = "hop-refiner-output-v1"; break;
       case Stage::kValidateAtomicOwnership: schema = "atomic-ownership-summary-v1"; break;
       case Stage::kImportPhysicalBoundary: schema = "boundary-timing-store-v1"; break;
       case Stage::kImportPhysicalLogic: schema = "logic-segment-timing-store-v1"; break;
       case Stage::kImportPhysicalLocal: schema = "local-path-timing-store-v1"; break;
       case Stage::kValidatePhysicalEvidence: schema = "physical-evidence-validation-summary-v1"; break;
+      case Stage::kBuildPhysicalCoverage: schema = "physical-coverage-store-v1"; break;
+      case Stage::kAuditPhysicalCoverage: schema = "physical-coverage-summary-v1"; break;
       case Stage::kValidatePhysicalCells: schema = "physical-cell-check-summary-v1"; break;
       case Stage::kImportVivadoLineage: schema = "vivado-lineage-store-v2"; break;
       case Stage::kBuildRoutedSegments: schema = "routed-segment-summary-v1"; break;
@@ -524,7 +527,6 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kFinalizeExact: schema = "exact-nodes-v2"; break;
       case Stage::kHashSemantics: schema = "exact-sha256-text-v1"; break;
       case Stage::kWriteExactSections: schema = "exact-section-summary-v2"; break;
-      case Stage::kRefinePatron: schema = request.typed_output ? "patron-output-v1" : "patron-output-text"; break;
       case Stage::kRoute: schema = "tlr-output-v1"; break;
       case Stage::kSealRoutes: schema = "system-route-seal-summary-v1"; break;
       case Stage::kCompilePhase5:

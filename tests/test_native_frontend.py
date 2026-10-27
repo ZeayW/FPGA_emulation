@@ -164,7 +164,7 @@ def test_native_compile_executes_whole_frontend_without_starting_its_python_adap
     assert result.returncode!=0 and 'FRONTEND_BOUNDARY_OBSERVED' in result.stderr,result.stderr
     report=json.loads((tmp_path/'out/native-compile-result.json').read_text())
     assert next(row for row in report['stages'] if row['stage']=='frontend')['implementation_id']=='native-rtl-frontend-v1'
-    assert [row['stage'] for row in report['stages']]==['preflight','frontend','timing']
+    assert [row['stage'] for row in report['stages']]==['preflight','frontend','timing-policy','timing']
     assert 'frontend' not in (tmp_path/'out/calls').read_text().splitlines()
     assert not config.exists()
     assert (root/'phase1_report.json').is_file()

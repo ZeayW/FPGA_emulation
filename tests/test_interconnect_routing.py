@@ -14,23 +14,16 @@ from emuflow.partition import (
     build_partition_assignment,
     normalize_partition_constraints,
 )
-from emuflow.partition_pressure import (
-    _predicted_route_delay,
-    build_partition_pressure_model,
-    evaluate_partition_pressure,
-    run_partition_pressure_native,
-    validate_partition_pressure_native_bundle,
-)
 from emuflow.platform import Platform
 from emuflow.routing import (
     build_directed_graph,
     demands_from_assignment,
     normalize_route_constraints,
-    route_hop_delay_ns,
+    route_hop_delay_ns, route_link_delay_ns,
 )
 from emuflow.timing_routing import (GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, normalize_sta_paths, validate_native_system_routes)
 from tests.native_build import emuflow_native, tlr_router
-from tests import test_partition_pressure as pressure_fixture
+from tests import partition_pressure_fixture as pressure_fixture
 from tests.test_phase4 import _assignment, _link, _platform_value
 
 
@@ -89,47 +82,31 @@ def test_per_hop_ratio_delay_does_not_use_fabric_slot_period():
     assert route_hop_delay_ns(platform, "ab", "a", "b", constraints, 8) == 34.0
     with pytest.raises(ValidationError, match="supported ratio"):
         route_hop_delay_ns(platform, "ab", "a", "b", constraints, 1)
-    assert _predicted_route_delay(
-        platform, constraints, domain_by_arc, ratios, route,
-        include_tdm_wait=True,
-    ) == 72.0
-    assert _predicted_route_delay(
-        platform, constraints, domain_by_arc, ratios, route,
-        include_tdm_wait=False,
-    ) == 61.0
+    assert sum(route_hop_delay_ns(platform, arc['link'], arc['from'], arc['to'], constraints,
+        ratios[domain_by_arc[(arc['link'], arc['from'], arc['to'])]]) for arc in route) == 72.0
+    assert sum(route_link_delay_ns(platform, arc['link'], arc['from'], arc['to'], constraints)
+               for arc in route) == 61.0
 
 
-def test_partition_python_and_native_share_bank_delay_model():
-    fixture = pressure_fixture.PartitionPressureTest()
+def test_native_partition_uses_the_shared_bank_delay_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("EMUFLOW_NATIVE_ROOT", str(emuflow_native().parent.parent))
+    from tests.partition_pressure_fixture import prepare_native
+    from emuflow.partition import validate_partition_artifacts_online
+    fixture = pressure_fixture.PressureFixture()
     fixture.setUp()
     value = fixture.platform.to_dict()
-    value["links"] = [bank_link("ab", "a", "b")]
+    value['links'] = [bank_link('ab', 'a', 'b')]
     platform = Platform.from_dict(value)
-    fixture.route_constraints = normalize_route_constraints(
-        {"schema": "emuflow.system-route-constraints/v1", "frame_slots": 32},
-        platform,
-    )
-    model = build_partition_pressure_model(
-        fixture.ir, platform, fixture.clusters, fixture.constraints,
-        fixture.timing, fixture.route_constraints,
-    )
-    fixture.initial = build_partition_assignment(
-        fixture.ir, platform, fixture.clusters, fixture.constraints,
-        fixture.initial["cluster_assignment"], provider="fixture", seed=7,
-    )
-    initial = evaluate_partition_pressure(
-        fixture.ir, platform, fixture.clusters, fixture.constraints,
-        fixture.route_constraints, model, fixture.initial["cluster_assignment"],
-    )
-    assert all(row["transport_delay_ns"] == 34.0 for row in initial["paths"])
-    final, trace = run_partition_pressure_native(
-        fixture.ir, platform, fixture.clusters, fixture.constraints,
-        fixture.route_constraints, model, fixture.initial,
-        algorithm_version=14,
-        executable=str(emuflow_native()),
-    )
-    check = validate_partition_pressure_native_bundle(fixture.ir, platform, fixture.clusters, fixture.constraints, fixture.timing, fixture.route_constraints, model, fixture.initial, final, trace)
-    assert check["status"] == "pass"
+    routes = normalize_route_constraints({'schema': 'emuflow.system-route-constraints/v1',
+                                         'frame_slots': 32}, platform)
+    case = prepare_native(tmp_path, fixture.ir, platform, fixture.constraints, fixture.timing,
+                          routes, fixture.clusters, fixture.initial['cluster_assignment'])
+    final, trace = case.model.refine(case.initial, max_moves=0)
+    # Both original paths cross one ratio-eight link: 30 + 0.5*8 = 34 ns.
+    assert trace['initial_metrics']['maximum_predicted_tdm_ratio'] == 8
+    assert trace['initial_metrics']['worst_normalized_slack'] == pytest.approx(-3.1)
+    assert trace['initial_metrics']['total_negative_normalized_slack'] == pytest.approx(-3.8)
+    assert validate_partition_artifacts_online(platform, case.args[2], final)['status'] == 'pass'
 
 
 def test_native_router_preserves_direction_bank_pressure(tmp_path):
@@ -182,10 +159,11 @@ def test_native_router_rejects_fractional_direction_bank_capacity():
         route_system_native(assignment, platform, constraints, executable=str(tlr_router()))
 
 
-def test_partition_move_recomputes_opposite_direction_pressure():
+def test_partition_move_recomputes_opposite_direction_pressure(tmp_path, monkeypatch):
+    monkeypatch.setenv("EMUFLOW_NATIVE_ROOT", str(emuflow_native().parent.parent))
     # Removing the one forward net frees a bank for three reverse nets.  The
     # native incremental evaluator must update those other nets' path costs.
-    original = pressure_fixture.PartitionPressureTest()
+    original = pressure_fixture.PressureFixture()
     original.setUp()
     value = copy.deepcopy(original.ir.value)
     value["instances"] = [{"id": f"u{i}", "type": "LUT1", "resources": {"lut": 1}}
@@ -224,79 +202,14 @@ def test_partition_move_recomputes_opposite_direction_pressure():
         "slack_ns": 0.0 if i == 0 else 20.0, "fixed_delay_ns": 0.0,
         "path_nets": [f"n{i}"], "normalized_slack": 0.0 if i == 0 else 1.0,
     } for i in range(4)]
-    model = build_partition_pressure_model(ir, platform, clusters, constraints,
-                                          timing, route_constraints)
-    evaluation = evaluate_partition_pressure(ir, platform, clusters, constraints,
-                                             route_constraints, model, assignment)
-    assert sorted(d["predicted_tdm_ratio"] for d in evaluation["capacity_domains"]) == [1, 3]
-    final, trace = run_partition_pressure_native(
-        ir, platform, clusters, constraints, route_constraints, model, initial,
-        algorithm_version=14,
-        executable=str(emuflow_native()),
-    )
-    assert validate_partition_pressure_native_bundle(ir, platform, clusters, constraints, timing, route_constraints, model, initial, final, trace)["status"] == "pass"
-
-
-def test_v14_validator_merges_independently_constructed_batch_then_move():
-    """A tiny semantic oracle, not a partition-search or NVDLA qualification."""
-    import pytest
-    from emuflow.errors import ValidationError
-    from emuflow.partition_pressure import _canonical_digest, _ranked_key
-    fixture = pressure_fixture.PartitionPressureTest()
-    fixture.setUp()
-    model = build_partition_pressure_model(
-        fixture.ir, fixture.platform, fixture.clusters, fixture.constraints,
-        fixture.timing, fixture.route_constraints,
-    )
-    _, trace = run_partition_pressure_native(
-        fixture.ir, fixture.platform, fixture.clusters, fixture.constraints,
-        fixture.route_constraints, model, fixture.initial,
-        algorithm_version=14, max_moves=8, executable=str(emuflow_native()),
-    )
-    by_instance = {row["instances"][0]: row["id"] for row in fixture.clusters["clusters"]}
-    original = dict(fixture.initial["cluster_assignment"])
-    middle = {**original, by_instance["u0"]: "b"}
-    last = {**middle, by_instance["u3"]: "a"}
-    def facts(assignment):
-        return evaluate_partition_pressure(
-            fixture.ir, fixture.platform, fixture.clusters, fixture.constraints,
-            fixture.route_constraints, model, assignment, path_transition_objective=True,
-        )
-    first, second, third = (facts(assignment) for assignment in (original, middle, last))
-    assert _ranked_key(third) < _ranked_key(second) < _ranked_key(first)
-    final = build_partition_assignment(
-        fixture.ir, fixture.platform, fixture.clusters, fixture.constraints,
-        last, provider=trace["provider"], seed=7,
-    )
-    trace.update(
-        initial_metrics=first["metrics"], final_metrics=third["metrics"],
-        final_cluster_assignment_sha256=_canonical_digest(last),
-        move_count=1, batch_count=1, change_count=1,
-        batches=[{"index": 0, "changes": [{"cluster": by_instance["u0"], "source": "a", "target": "b"}],
-                  "before_objective_key": first["metrics"]["objective_key"],
-                  "after_objective_key": second["metrics"]["objective_key"],
-                  "ranked_objective_key": list(_ranked_key(second))}],
-        moves=[{"index": 0, "kind": "move", "phase": 0, "sweep": 0,
-                "cluster": by_instance["u3"], "source": "b", "target": "a",
-                "partner": None, "partner_source": None, "partner_target": None,
-                "before_objective_key": second["metrics"]["objective_key"],
-                "after_objective_key": third["metrics"]["objective_key"],
-                "ranked_objective_key": list(_ranked_key(third))}],
-    )
-    def check(evidence):
-        return validate_partition_pressure_native_bundle(
-            fixture.ir, fixture.platform, fixture.clusters, fixture.constraints,
-            fixture.timing, fixture.route_constraints, model, fixture.initial, final, evidence,
-        )
-    assert check(trace)["status"] == "pass"
-    for mutation in ("source", "rank", "before", "duplicate", "missing", "version", "index", "identity-type"):
-        changed = copy.deepcopy(trace)
-        if mutation == "source": changed["moves"][0]["source"] = "a"
-        elif mutation == "rank": changed["moves"][0]["ranked_objective_key"] = changed["batches"][0]["ranked_objective_key"]
-        elif mutation == "before": changed["moves"][0]["before_objective_key"][0] += 1
-        elif mutation == "duplicate": changed["batches"][0]["changes"] *= 2
-        elif mutation == "missing": changed["batches"] = []
-        elif mutation == "version": del changed["configuration"]["algorithm_version"]
-        elif mutation == "index": changed["moves"][0]["index"] = False
-        else: changed["batches"][0]["changes"][0]["cluster"] = []
-        with pytest.raises(ValidationError): check(changed)
+    from tests.partition_pressure_fixture import prepare_native
+    from emuflow.partition import validate_partition_artifacts_online
+    case = prepare_native(tmp_path, ir, platform, constraints, timing, route_constraints,
+                          clusters, assignment)
+    final, trace = case.model.refine(case.initial, max_moves=8)
+    assert trace['initial_metrics']['maximum_predicted_tdm_ratio'] == 3
+    assert trace['final_metrics']['maximum_predicted_tdm_ratio'] <= 3
+    # Independent moves are recorded separately from flow-batch changes.
+    assert trace['move_count'] + trace['change_count'] > 0
+    assert final['cluster_assignment'] != case.initial['cluster_assignment']
+    assert validate_partition_artifacts_online(platform, case.args[2], final)['status'] == 'pass'

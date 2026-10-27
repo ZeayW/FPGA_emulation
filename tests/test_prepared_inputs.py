@@ -141,7 +141,8 @@ def test_full_flow_continuation_reaches_phase3_without_synthesis_or_sta(tmp_path
     write_json(timing_model, {"schema": "emuflow.xilinx-preplacement-timing-db/v1"})
     with patch("emuflow.multi_fpga_flow.run_phase3", side_effect=ReachedPartition), \
          patch("emuflow.multi_fpga_flow.run_phase1", side_effect=AssertionError("synthesis")), \
-         patch("emuflow.multi_fpga_flow.run_opensta_path_database", side_effect=AssertionError("Phase 2")), \
+         patch("emuflow.phase2_native.run_native_phase2", side_effect=AssertionError("Phase 2")), \
+         patch("emuflow.opensta.run_opensta_path_database", side_effect=AssertionError("shared timing extraction")), \
          patch("emuflow.multi_fpga_flow.resolve_native_executable", return_value="/usr/bin/true"), \
          patch("emuflow.multi_fpga_flow.check_opensta_engine_version"):
         with pytest.raises(ReachedPartition):

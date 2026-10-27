@@ -302,8 +302,8 @@ class NativeToolsTest(unittest.TestCase):
             alias.symlink_to(unified)
             for explicit in (unified, alias):
                 self.assertEqual(
-                    resolve_native_stage_command("phase3", "refine-patron", str(explicit)),
-                    [str(unified.resolve()), "phase3", "refine-patron"],
+                    resolve_native_stage_command("phase3", "refine-patron-from-primary", str(explicit)),
+                    [str(unified.resolve()), "phase3", "refine-patron-from-primary"],
                 )
 
     def test_resolved_stage_preserves_explicit_comparison_tool(self) -> None:

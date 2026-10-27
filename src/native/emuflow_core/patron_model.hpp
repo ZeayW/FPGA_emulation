@@ -159,7 +159,6 @@ inline void BindMembers(Model& model) {
 }  // namespace emuflow::core::patron
 
 namespace emuflow::native {
-emuflow::core::patron::Model ReadTypedPatronModel(const std::string& input);
 void RefinePatronModel(const emuflow::core::patron::Model& model,
                        const std::string& output, bool summary_output, bool typed_output,
                        const std::vector<emuflow::core::ArtifactRef>& inputs);

@@ -15,13 +15,12 @@ from emuflow.io import read_json, write_json
 from emuflow.opensta import OPENSTA_PROVIDER
 from emuflow.partition import build_clusters, build_partition_assignment, CUT_MODE_STATIC_EXACT
 from emuflow.partition_ir import load_partition_ir
-from emuflow.partition_pressure import (build_partition_pressure_model, run_partition_pressure_native,
-    _write_patron_native_input, _NativeBinaryPipeWriter)
+from emuflow.phase3_pressure_native import build_native_pressure_model
 from emuflow.phase3_pressure_native import NativePressureModel
 from emuflow.native_tools import native_file_generation
 from emuflow.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
 from tests.native_build import emuflow_native, patron_ingress_oracle, hop_partition_refiner
-from tests import test_partition_pressure as reference_fixture
+from tests import partition_pressure_fixture as reference_fixture
 
 
 @pytest.fixture(params=['normal','reordered','duplicate-sinks','sparse','balanced'])
@@ -30,7 +29,7 @@ def inputs(tmp_path, monkeypatch,request):
     for name,binary in (("emuflow-native",emuflow_native()),):
         (native/"bin"/name).symlink_to(binary)
     monkeypatch.setenv("EMUFLOW_NATIVE_ROOT",str(native))
-    fixture=reference_fixture.PartitionPressureTest(); fixture.setUp()
+    fixture=reference_fixture.PressureFixture(); fixture.setUp()
     if request.param=='reordered':
         fixture.ir.value['instances'].reverse()
         fixture.ir.value['nets'].reverse()
@@ -63,9 +62,7 @@ def inputs(tmp_path, monkeypatch,request):
 
 
 def run(args,model,initial,max_moves=0):
-    return run_partition_pressure_native(*args[:4],args[5],model,initial,algorithm_version=14,
-        max_moves=max_moves,retain_trace_seals=False,stream_semantic_records=True,output_validation='caller',
-        _release_model_before_assignment=True,_defer_candidate_derived_records=True)
+    return model.refine(initial, max_moves=max_moves)
 
 
 def test_production_result_borrows_readonly_native_ownership_without_host_cluster_parsing(inputs):
@@ -75,8 +72,7 @@ def test_production_result_borrows_readonly_native_ownership_without_host_cluste
     args,initial,timing=inputs
     initial=dict(initial,cluster_assignment=_PackedClusterAssignment(('a','b'),
         (0 if initial['cluster_assignment'][f'c{i:06d}']=='a' else 1 for i in range(len(args[2]['clusters'])))))
-    model=build_partition_pressure_model(*args,independent_validation=False,
-        timing_database_path=timing,native_store_model=True)
+    model=build_native_pressure_model(*args,timing_database_path=timing)
     with (patch.object(_PackedClusterAssignment,'__init__',side_effect=AssertionError('host part array')),
             patch.object(_NativeClusterOrder,'__getitem__',side_effect=AssertionError('host cluster identity parsing'))):
         actual,trace=run(args,model,initial,max_moves=0)
@@ -96,8 +92,7 @@ def test_production_result_borrows_readonly_native_ownership_without_host_cluste
 
 def test_result_requires_the_original_producer_generation(inputs):
     args,initial,timing=inputs
-    model=build_partition_pressure_model(*args,independent_validation=False,
-        timing_database_path=timing,native_store_model=True)
+    model=build_native_pressure_model(*args,timing_database_path=timing)
     execute=NativePressureModel.execute
     def changed(self,root,output,*args,**kwargs):
         result=execute(self,root,output,*args,**kwargs)
@@ -109,18 +104,10 @@ def test_result_requires_the_original_producer_generation(inputs):
 
 
 @pytest.mark.parametrize('max_moves',[0,2])
-def test_primary_owner_direct_model_matches_every_record_and_search(inputs,tmp_path,max_moves):
+def test_primary_model_records_match_fixed_source_facts_and_borrow_primary(inputs,tmp_path,max_moves):
     args,initial,timing=inputs
-    ir,platform,_clusters,constraints,manifest,routes=args
-    clusters=build_clusters(ir,constraints,cut_mode=CUT_MODE_STATIC_EXACT,_native_compact_clusters=True)
-    direct_args=(ir,platform,clusters,constraints,manifest,routes)
-    reference=build_partition_pressure_model(*direct_args,independent_validation=False,timing_database_path=timing)
-    expected=tmp_path/'expected.bin'
-    _write_patron_native_input(None,platform,clusters,constraints,routes,reference,initial,max_moves,14,
-                              _writer=_NativeBinaryPipeWriter(expected.open('wb')))
-    expected_assignment,expected_trace=run(direct_args,reference,initial,max_moves)
-    model=build_partition_pressure_model(*direct_args,independent_validation=False,timing_database_path=timing,native_store_model=True)
-    assert model.implementation_id=='native-primary-store-model-v2'
+    ir,platform,clusters,constraints,manifest,routes=args
+    model=build_native_pressure_model(*args,timing_database_path=timing)
     protected=(clusters['clusters']._member_offsets,clusters['clusters'].source_cluster_indices,
                *clusters['clusters']._resource_columns)
     original=__import__('emuflow.phase3_pressure_native',fromlist=['_Writer'])._Writer.bytes
@@ -130,30 +117,42 @@ def test_primary_owner_direct_model_matches_every_record_and_search(inputs,tmp_p
     with patch('emuflow.phase3_pressure_native._Writer.bytes',bounded_write):
         columns,board=model.write_requests(tmp_path,initial,max_moves)
         assert columns.stat().st_size==40+4*len(clusters['clusters'])+8*len(clusters['clusters']._fixed_by_cluster)
-        result=subprocess.run([str(patron_ingress_oracle()),str(ir.path),str(model.timing_path),
-            str(model.primary_artifact),str(columns),str(board),str(expected)],capture_output=True,text=True)
+        result=subprocess.run([str(patron_ingress_oracle()),'--facts',str(ir.path),str(model.timing_path),
+            str(model.primary_artifact),str(columns),str(board)],capture_output=True,text=True)
         assert result.returncode==0,result.stderr
-        actual,trace=run(direct_args,model,initial,max_moves)
-    assert dict(actual['cluster_assignment'])==dict(expected_assignment['cluster_assignment'])
-    assert trace['initial_metrics']==expected_trace['initial_metrics']
-    assert trace['final_metrics']==expected_trace['final_metrics']
+        facts=json.loads(result.stdout)
+        actual,trace=run(args,model,initial,max_moves)
+    by_instance={member:index for index,cluster in enumerate(clusters['clusters']) for member in cluster['instances']}
+    assert facts['clusters']==4 and len(facts['nets'])==2 and len(facts['paths'])==2
+    expected={((by_instance['u0'],),(by_instance['u1'],)), ((by_instance['u2'],),(by_instance['u3'],))}
+    assert {(tuple(row['drivers']),tuple(row['sinks'])) for row in facts['nets']}==expected
+    assert sorted((path['period_ns'],path['slack_ns']) for path in facts['paths'])==[(10.0,3.0),(20.0,20.0)]
+    for path in facts['paths']:
+        assert len(path['nets'])==1
+        net=facts['nets'][path['nets'][0]]
+        assert net['drivers']==[path['start_cluster']]
+        assert path['end_cluster'] in net['sinks']
     assert trace['native_input_transport']=='native-primary-store-model-v2'
-    assert trace['change_count']==expected_trace['change_count']
+    assert trace['model_counts']=={'clusters':4,'nets':2,'paths':2,'capacity_domains':len(model.domains)}
+    from emuflow.phase3_decision_native import audit_assignment
+    assert audit_assignment(platform,clusters,actual).require(platform,actual)['clusters']==4
+
 
 
 def test_actual_patron_writer_applies_nonidentity_publication_coordinates(inputs,tmp_path):
     args,initial,timing=inputs
-    ir,platform,clusters,constraints,manifest,routes=args
-    reference=build_partition_pressure_model(*args,independent_validation=False,timing_database_path=timing)
-    source=tmp_path/'model.bin';output=tmp_path/'output.bin'
-    _write_patron_native_input(None,platform,clusters,constraints,routes,reference,initial,0,14,
-        _writer=_NativeBinaryPipeWriter(source.open('wb')))
-    result=subprocess.run([str(patron_ingress_oracle()),'--publish-order',str(source),str(output)],capture_output=True,text=True)
+    model=build_native_pressure_model(*args,timing_database_path=timing)
+    columns,board=model.write_requests(tmp_path,initial,0)
+    output=tmp_path/'output.bin'
+    result=subprocess.run([str(patron_ingress_oracle()),'--publish-order-from-primary',str(args[0].path),
+        str(model.timing_path),str(model.primary_artifact),str(columns),str(board),str(output)],capture_output=True,text=True)
     assert result.returncode==0,result.stderr
-    payload=output.read_bytes();assert zlib.crc32(payload[:-4])==struct.unpack('<I',payload[-4:])[0]
-    ids=sorted(cluster['id'] for cluster in clusters['clusters']);parts=sorted(constraints['active_fpgas'])
+    payload=output.read_bytes()
+    assert zlib.crc32(payload[:-4])==struct.unpack('<I',payload[-4:])[0]
+    ids=sorted(cluster['id'] for cluster in args[2]['clusters']);parts=sorted(args[3]['active_fpgas'])
     expected=[parts.index(initial['cluster_assignment'][identity]) for identity in reversed(ids)]
     assert list(struct.unpack('<'+str(len(ids))+'I',payload[-4-4*len(ids):-4]))==expected
+
 
 
 @pytest.mark.parametrize('corruption',['checksum','membership','owner','source','version','truncated','totals','source-counts'])
@@ -161,8 +160,7 @@ def test_primary_owner_rejects_corruption_before_publication(inputs,tmp_path,cor
     args,initial,timing=inputs
     clusters=build_clusters(args[0],args[3],cut_mode=CUT_MODE_STATIC_EXACT,_native_compact_clusters=True)
     direct_args=(*args[:2],clusters,*args[3:])
-    model=build_partition_pressure_model(*direct_args,independent_validation=False,
-                                       timing_database_path=timing,native_store_model=True)
+    model=build_native_pressure_model(*direct_args,timing_database_path=timing)
     copy=tmp_path/'untrusted-primary.bin'
     shutil.copyfile(model.primary_artifact,copy)
     data=bytearray(copy.read_bytes())
@@ -196,45 +194,38 @@ def test_selected_primary_owner_does_not_fall_back_when_reference_is_lost(inputs
     args,initial,timing=inputs
     clusters=build_clusters(args[0],args[3],cut_mode=CUT_MODE_STATIC_EXACT,_native_compact_clusters=True)
     direct_args=(*args[:2],clusters,*args[3:])
-    model=build_partition_pressure_model(*direct_args,independent_validation=False,
-                                       timing_database_path=timing,native_store_model=True)
+    model=build_native_pressure_model(*direct_args,timing_database_path=timing)
     model.primary_artifact=None
     with pytest.raises(ValidationError,match='selected direct primary ownership is unavailable'):
         run(direct_args,model,initial)
     clusters['clusters'].native_artifact=None
     with pytest.raises(ValidationError,match='native primary artifact reference is unavailable'):
-        build_partition_pressure_model(*direct_args,independent_validation=False,
-                                       timing_database_path=timing,native_store_model=True)
+        build_native_pressure_model(*direct_args,timing_database_path=timing)
 
 
 @pytest.mark.parametrize('max_moves',[0,2])
-def test_native_model_matches_reference_without_python_graph_or_protocol(inputs,max_moves):
+def test_native_model_is_deterministic_without_python_graph_or_protocol(inputs,max_moves):
     args,initial,timing=inputs
-    reference=build_partition_pressure_model(*args,independent_validation=False,timing_database_path=timing)
-    expected_counts={k:len(reference[v]) for k,v in [('clusters','clusters'),('nets','nets'),('paths','paths'),('capacity_domains','capacities')]}
-    expected,reference_trace=run(args,reference,initial,max_moves)
-    with (patch('emuflow.partition_pressure._compact_partition_pressure_graph',side_effect=AssertionError('Python graph')),
-         patch('emuflow.partition_pressure._write_patron_native_input',side_effect=AssertionError('Python native model writer')),
-         patch('emuflow.partition_pressure._native_dimensions',side_effect=AssertionError('Python cluster scan'))):
-        model=build_partition_pressure_model(*args,independent_validation=False,timing_database_path=timing,native_store_model=True)
-        assert isinstance(model,NativePressureModel)
-        actual,trace=run(args,model,initial,max_moves)
-    assert dict(actual['cluster_assignment'])==dict(expected['cluster_assignment'])
-    assert trace['initial_metrics']==reference_trace['initial_metrics']
-    assert trace['final_metrics']==reference_trace['final_metrics']
-    assert trace['model_counts']==expected_counts
-    assert trace['native_input_transport']=='native-primary-store-model-v2'
-    assert trace['change_count']==reference_trace['change_count']
+    a=build_native_pressure_model(*args,timing_database_path=timing)
+    b=build_native_pressure_model(*args,timing_database_path=timing)
+    with patch('emuflow.partition_ir._CompactPartitionInstances.__iter__',side_effect=AssertionError('host graph')):
+        actual,trace=run(args,a,initial,max_moves)
+        repeated,other=run(args,b,initial,max_moves)
+    assert dict(actual['cluster_assignment'])==dict(repeated['cluster_assignment'])
+    assert trace['initial_metrics']==other['initial_metrics']
+    assert trace['final_metrics']==other['final_metrics']
+    assert trace['model_counts']==other['model_counts']
+    assert trace['change_count']==other['change_count']
     for value in trace['native_model_metrics'].values():
-        assert value['wall_seconds']>0
-        assert value['rss_scope']=='self-lifetime-high-water'
+        assert value['wall_seconds']>0 and value['rss_scope']=='self-lifetime-high-water'
+
 
 
 def test_native_model_summary_schema(inputs,tmp_path):
     jsonschema=pytest.importorskip('jsonschema')
     from referencing import Registry,Resource
     args,initial,timing=inputs
-    model=build_partition_pressure_model(*args,independent_validation=False,timing_database_path=timing,native_store_model=True)
+    model=build_native_pressure_model(*args,timing_database_path=timing)
     columns,board=model.write_requests(tmp_path,initial,0)
     output=tmp_path/'result'
     result=subprocess.run([str(emuflow_native()),'phase3','refine-patron-from-primary',str(args[0].path),str(model.timing_path),str(model.primary_artifact),str(columns),str(board),str(output)],
@@ -257,8 +248,7 @@ def test_phase3_production_selects_native_model_and_keeps_independent_validation
     solution=tmp_path/'initial.part.2'
     solution.write_text('\n'.join('0' if initial['cluster_assignment'][c['id']]=='a' else '1'
                                    for c in args[2]['clusters'])+'\n')
-    with (patch('emuflow.partition_pressure._compact_partition_pressure_graph',side_effect=AssertionError('Python pressure graph')),
-          patch('emuflow.partition_pressure._write_patron_native_input',side_effect=AssertionError('Python model protocol')),
+    with (patch('emuflow.phase3_pressure_native.NativePressureModel.execute',side_effect=AssertionError('Python model execution')),
           patch('emuflow.partition.build_partition_assignment',side_effect=AssertionError('Python initializer')),
           patch('emuflow.phase3_storage.pack_phase3_assignment',side_effect=AssertionError('Python final assignment pack')),
           patch.object(NativePressureModel,'_write_initial_ownership',side_effect=AssertionError('Python initial ownership rewrite'))):
@@ -288,7 +278,7 @@ def test_phase3_production_selects_native_model_and_keeps_independent_validation
 @pytest.mark.parametrize('corruption',['checksum','owner','source','path-order'])
 def test_invalid_sources_are_rejected_without_publishing(inputs,tmp_path,corruption):
     args,initial,timing=inputs
-    model=build_partition_pressure_model(*args,independent_validation=False,timing_database_path=timing,native_store_model=True)
+    model=build_native_pressure_model(*args,timing_database_path=timing)
     columns,board=model.write_requests(tmp_path,initial,0)
     if corruption in ('checksum','owner'):
         data=bytearray(columns.read_bytes())
@@ -343,5 +333,33 @@ def test_native_pressure_rejects_reference_columns_instead_of_snapshot(inputs):
     args,_initial,timing=inputs
     reference=build_clusters(args[0],args[3],cut_mode=CUT_MODE_STATIC_EXACT)
     with pytest.raises(ValidationError,match='native primary artifact reference is unavailable'):
-        build_partition_pressure_model(*args[:2],reference,*args[3:],
-            independent_validation=False,timing_database_path=timing,native_store_model=True)
+        build_native_pressure_model(*args[:2],reference,*args[3:],
+            timing_database_path=timing)
+
+
+@pytest.mark.parametrize('damage', ['empty', 'truncated', 'version', 'checksum', 'part-domain'])
+def test_current_typed_result_rejects_resealed_malformed_payload(inputs, damage):
+    from emuflow.errors import ValidationError
+    from emuflow.store_publication import bind_store_source
+    args, initial, timing = inputs
+    model = build_native_pressure_model(*args, timing_database_path=timing)
+    execute = NativePressureModel.execute
+    def malformed(self, root, output, *arguments, **options):
+        indexes = execute(self, root, output, *arguments, **options)
+        data = bytearray(output.read_bytes())
+        if damage == 'empty':
+            data.clear()
+        elif damage == 'truncated':
+            del data[30:]
+        elif damage == 'version':
+            struct.pack_into('<I', data, 8, 99)
+        elif damage == 'checksum':
+            data[-1] ^= 1
+        else:
+            struct.pack_into('<I', data, len(data)-4-4*len(self.clusters), len(self.partition_fpgas))
+            struct.pack_into('<I', data, len(data)-4, zlib.crc32(data[:-4]))
+        output.write_bytes(data)
+        indexes['native_output_source'] = bind_store_source(output, 'patron-output-v1')
+        return indexes
+    with patch.object(NativePressureModel, 'execute', malformed), pytest.raises(ValidationError):
+        model.refine(initial, max_moves=0)

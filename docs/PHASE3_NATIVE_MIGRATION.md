@@ -425,15 +425,14 @@ capture adapters, mapped physical stores or the other remaining phase views.
 `emuflow_core/native_pipeline.hpp` defines the typed in-process operation
 interface; CLI parsing is a separate adapter. The library executes the native
 implementation directly, with no Python invocation or graph-sized FFI transfer.
-PATRON uses the unified entry, including when its path is supplied explicitly.
-The redundant in-tree standalone CLI and legacy text input parser are retired.
-`EMUFLOW_PATRON_INPUT_COPY` publishes the same CRC-checked typed binary stream
-as pipe input, with atomic replacement and rollback on publication failure.
-An explicit external comparison engine remains a separately supplied input. A present unified binary that
-rejects a request is an error, not permission to retry an older implementation.
-The new PATRON operation defaults to compact typed summary output; detailed
-text traces require explicit `--trace-output`. Existing Python qualification
-calls select that mode explicitly when retained trace evidence is requested.
+PATRON uses the unified `refine-patron-from-primary` entry, including when its
+path is supplied explicitly. It consumes compact EmuIR, indexed timing and
+primary cluster columns directly. The redundant standalone CLI, complete-model
+`refine-patron` and `refine-patron-from-store` entries, full typed/text model
+readers, pipe model protocol and `EMUFLOW_PATRON_INPUT_COPY` route are retired.
+The source-owned operation publishes typed summary output plus cluster order
+and bounded model-build/search evidence. A present unified binary that rejects
+a request is an error, not permission to retry an older implementation.
 
 `ArtifactRef` binds an explicit registered schema to a canonical path and a local
 file generation (device, inode, size, modification and change timestamps).

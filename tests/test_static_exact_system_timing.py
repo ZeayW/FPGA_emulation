@@ -8,10 +8,10 @@ from unittest import mock
 
 from emuflow.board_link_timing import build_board_link_timing_model
 from emuflow.cross_layer_timing import (
-    build_cross_layer_physical_binding,
     build_cross_layer_timing_contract,
 )
 from emuflow.errors import ValidationError
+from tests.physical_coverage_fixture import build_cross_layer_physical_binding, validate_cross_layer_physical_binding
 from emuflow.combinational_cut import semantic_contract_sha256
 from emuflow.phase5 import validate_phase5
 from emuflow.platform import Platform

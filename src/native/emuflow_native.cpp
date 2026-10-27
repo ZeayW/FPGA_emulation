@@ -11,6 +11,7 @@
 #include "emuflow_core/compile.hpp"
 #include "emuflow_core/yosys_hierarchy.hpp"
 #include "emuflow_core/frontend.hpp"
+#include "emuflow_core/phase2.hpp"
 #include "emuflow_core/partition_init.hpp"
 #include "emuflow_core/partition_hops.hpp"
 #include "emuflow_core/partition_semantics.hpp"
@@ -31,6 +32,7 @@ constexpr const char* kUsage =
     "  publish-store REQUEST OUTPUT\n"
     "  compile REQUEST_JSON\n"
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
+    "  phase2 run EMUIR POLICY OUTPUT_DIR\n"
     "  phase3 run REQUEST OUTPUT_DIR\n"
     "  phase6 split EMUIR ASSIGNMENT SCHEDULE OUTPUT\n"
     "  phase6 run EMUIR ASSIGNMENT SCHEDULE REQUEST OUTPUT_DIR\n"
@@ -50,15 +52,12 @@ constexpr const char* kUsage =
     "  phase1 import-yosys REQUEST EMUIR SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
     "  run-tool REQUEST RESULT_JSON\n"
     "  phase3 analyze INPUT OUTPUT\n"
-    "  phase3 refine-hops [--trace-output] INPUT OUTPUT\n"
     "  phase3 analyze --indexed-input EMUIR INPUT OUTPUT\n"
     "  phase3 finalize-semantics TOPOLOGY METADATA OUTPUT\n"
     "  phase3 build-captures EMUIR REQUEST TOPOLOGY PARTS OUTPUT\n"
     "  phase3 validate-captures EMUIR REQUEST TOPOLOGY PARTS CAPTURES OUTPUT\n"
     "  phase3 hash-semantics NODES CAPTURES HEADER OUTPUT\n"
     "  phase3 write-exact-sections NODES CAPTURES REQUEST OUTPUT\n"
-    "  phase3 refine-patron [--summary-output|--trace-output] [--typed-output] "
-        "--typed-input INPUT OUTPUT\n"
     "  phase3 refine-patron-from-primary EMUIR TIMING PRIMARY INITIAL REQUEST OUTPUT\n"
     "  phase3 build-candidate-ids EMUIR POLICY OUTPUT\n"
     "  phase3 build-clusters EMUIR REQUEST OUTPUT\n"
@@ -81,6 +80,8 @@ constexpr const char* kUsage =
     "  global-sta publish-qor PRIMARY INDEX STORE REQUEST QOR\n"
     "  global-sta validate-qor STORE REQUEST SUMMARY\n"
     "  global-sta bind-events ROUTES SCHEDULE BOARD [PHYSICAL_STORES...] REQUEST PRIMARY\n"
+    "  global-sta build-physical-coverage INPUTS... REQUEST STORE\n"
+    "  global-sta audit-physical-coverage INPUTS... REQUEST SUMMARY\n"
     "  physical import-boundary-timing IDENTITY TSV REQUEST STORE SUMMARY\n"
     "  physical import-logic-timing IDENTITY TSV REQUEST STORE SUMMARY\n"
     "  physical import-local-timing IDENTITY TSV REQUEST STORE SUMMARY\n"
@@ -259,6 +260,12 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     ToolSignals signals;
     return Finish(emuflow::core::RunFrontend(emuflow::core::ArtifactRef::Bind(argv[3],"frontend-request-v1"),&tool_cancelled,argc==5?argv[4]:""),report);
   }
+  if(argc==6 && std::string(argv[1])=="phase2" && std::string(argv[2])=="run") {
+    ToolSignals signals;
+    return Finish(emuflow::core::RunPhase2(
+      emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),
+      emuflow::core::ArtifactRef::Bind(argv[4],"phase2-policy-v1"),argv[5],&tool_cancelled),report);
+  }
   if ((argc == 6 || argc == 7) && std::string(argv[1]) == "phase1" && std::string(argv[2]) == "import-yosys") {
     std::ios::sync_with_stdio(false);std::cin.tie(nullptr);
     const auto request=emuflow::core::ArtifactRef::Bind(argv[3],"yosys-emuir-import-request-v1");
@@ -305,7 +312,6 @@ int Dispatch(int argc, char** argv, const std::string& report) {
                  bool indexed = false, const std::string& sha = "") {
     StageRequest request{stage, std::move(inputs), output};
     request.typed_input = typed; request.indexed_input = indexed;
-    request.typed_output = stage == Stage::kRoute;
     request.expected_sha256 = sha;
     return Execute(std::move(request), report);
   };
@@ -396,16 +402,6 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if (phase == "phase3" && operation == "build-clusters" && argc == 6)
     return run(Stage::kBuildPartitionClusters,{argv[3],argv[4]},argv[5]);
   if (phase == "phase3") {
-    if (operation == "refine-hops") {
-      int start = 3;
-      bool trace = argc > start && std::string(argv[start]) == "--trace-output";
-      if (trace) ++start;
-      if (argc == start + 2) {
-        StageRequest request{Stage::kRefinePartitionHops,{argv[start]},argv[start+1]};
-        request.summary_output = !trace;
-        return Execute(std::move(request),report);
-      }
-    }
     if (operation == "analyze" && argc == 5)
       return run(Stage::kAnalyzeExact, {argv[3]}, argv[4]);
     if (operation == "analyze" && argc == 7 && std::string(argv[3]) == "--indexed-input")
@@ -416,27 +412,7 @@ int Dispatch(int argc, char** argv, const std::string& report) {
       return run(Stage::kHashSemantics, {argv[3], argv[4], argv[5]}, argv[6]);
     if (operation == "write-exact-sections" && argc == 7)
       return run(Stage::kWriteExactSections, {argv[3], argv[4], argv[5]}, argv[6]);
-    if (operation == "refine-patron") {
-      StageRequest request{Stage::kRefinePatron, {}, ""};
-      request.typed_input = false;  // Require an explicit CLI format flag.
-      std::vector<std::string> positional;
-      bool invalid = false, trace = false, summary = false, typed_output = false;
-      for (int i = 3; i < argc; ++i) {
-        const std::string arg = argv[i];
-        if (arg == "--typed-input") request.typed_input = true;
-        else if (arg == "--typed-output") typed_output = true;
-        else if (arg == "--summary-output") summary = true;
-        else if (arg == "--trace-output") trace = true;
-        else if (arg.rfind("--", 0) == 0) invalid = true;
-        else positional.push_back(arg);
-      }
-      if (!invalid && !(trace && (summary || typed_output)) && positional.size() == 2 && request.typed_input) {
-        request.summary_output = !trace;
-        request.typed_output = !trace;
-        request.input_paths = {positional[0]}; request.output_path = positional[1];
-        return Execute(std::move(request), report);
-      }
-    }
+
   }
   if (phase == "phase4" && operation == "route" && argc == 6 && std::string(argv[3]) == "--typed-output")
     return run(Stage::kRoute, {argv[4]}, argv[5]);
@@ -457,6 +433,10 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if (phase == "global-sta" && operation == "bind-events" && argc>=8) {
     std::vector<std::string> inputs;for(int i=3;i<argc-1;++i)inputs.push_back(argv[i]);
     return run(Stage::kBindGlobalEvents,inputs,argv[argc-1]);
+  }
+  if(phase=="global-sta" && argc>=6 && (operation=="build-physical-coverage" || operation=="audit-physical-coverage")) {
+    std::vector<std::string> inputs;for(int i=3;i<argc-1;++i)inputs.push_back(argv[i]);
+    return run(operation=="build-physical-coverage"?Stage::kBuildPhysicalCoverage:Stage::kAuditPhysicalCoverage,inputs,argv[argc-1]);
   }
   if (phase == "global-sta" && operation == "index-events" && argc == 5)
     return Execute({Stage::kIndexGlobalEvents,{argv[3]},argv[4]},report);

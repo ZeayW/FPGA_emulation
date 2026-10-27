@@ -19,7 +19,7 @@ def run(ir, platform, clusters, constraints, assignment, routes, *, weights_path
         executable=None, audit_only=False):
     from .phase3_semantics_native import _ownership_sources
     from .partition import active_partition_fpgas, transported_cut_classes_for_clusters, validate_cluster_assignment_balance, _PackedClusterAssignment
-    from .partition_hops import _shortest_hop_distances
+    from .partition_topology import _shortest_hop_distances
     from .partition_limits import planning_resource_capacities
     from .sta import partition_net_weights_payload_path
     from .sta_weights_native import _selector
@@ -27,7 +27,7 @@ def run(ir, platform, clusters, constraints, assignment, routes, *, weights_path
     records = clusters['clusters']
     selected = _ownership_sources(ir, records, assignment['cluster_assignment'])
     if selected is None:
-        return None  # Only explicit reference owners use the numeric protocol.
+        raise ValidationError('hop operation requires current source-bound primary ownership')
     if assignment.get('replication') is not None:
         raise ValidationError('native primary hop refinement does not accept replicated ownership')
     kind, source, primary, owners = selected

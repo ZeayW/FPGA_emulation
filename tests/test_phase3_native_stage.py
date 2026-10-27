@@ -78,7 +78,7 @@ def test_public_compact_api_uses_complete_native_stage_without_python_phase_bodi
     from emuflow.phase3 import run_phase3 as public
     ir, board, config = options(inputs, tmp_path)
     with ExitStack() as guards:
-        for name in ('partition.build_clusters', 'partition_init_native.initialize', 'partition_pressure.run_partition_pressure_native',
+        for name in ('partition.build_clusters', 'partition_init_native.initialize', 'phase3_pressure_native.NativePressureModel.execute',
                      'partition.build_partition_assignment', 'partition.validate_partition_artifacts_online'):
             guards.enter_context(patch('emuflow.'+name, side_effect=AssertionError('Python phase body: '+name)))
         output = tmp_path/'public'

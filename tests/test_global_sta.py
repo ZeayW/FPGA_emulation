@@ -618,7 +618,15 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch, s
     from emuflow.phase7c import run_phase7c
     import emuflow.global_sta as sta
     f = Phase7CTest(); f.setUp()
+    # Current typed entries express the absolute event directly. This small
+    # orchestration fixture's former round label was always zero.
+    for entry in f.schedule['entries']:
+        assert entry.pop('transport_round') == 0
+        entry['capacity_key'] = f"{entry['link']}:{entry['from']}:{entry['to']}"
+
     monkeypatch.setattr("emuflow.phase7c.validate_phase5_generation", lambda _: {"status": "pass"})
+    from tests.physical_coverage_fixture import build_cross_layer_physical_binding
+    monkeypatch.setattr("emuflow.phase7c.build_cross_layer_physical_binding", build_cross_layer_physical_binding)
     for name, value in {"schedule": f.schedule, "platform": f.platform.to_dict(),
                         "physical": f._physical_summary(), "routes": f.routes, **f.reports}.items():
         write_json(tmp_path / f"{name}.json", value)

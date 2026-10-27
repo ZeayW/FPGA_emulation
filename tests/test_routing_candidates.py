@@ -1,5 +1,8 @@
-from tests.native_route_fixture import route_system_native
+from tests.native_route_fixture import route_system_native, write_assignment_cuts
+from contextlib import closing
 import copy
+import json
+import sqlite3
 import re
 import tempfile
 import unittest
@@ -8,10 +11,8 @@ from pathlib import Path
 from emuflow.errors import ValidationError
 from emuflow.platform import Platform
 from emuflow.routing import demands_from_assignment, normalize_route_constraints
-from emuflow.routing_batches import (
-    build_compact_route_refinement_batches,
-    build_route_refinement_batches,
-)
+from emuflow.phase4_native import run_native_phase4
+from emuflow.system_route_storage import read_system_routes
 from tests.routing_reference import exact_route_tree_selection
 from emuflow.timing_routing import (GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, normalize_sta_paths, validate_native_system_routes)
 from tests.native_build import tlr_router
@@ -201,79 +202,68 @@ class RouteCandidatePoolTest(unittest.TestCase):
             self.assertEqual(batching["batch_count"], 1)
             self.assertEqual(batching["maximum_parallel_batch"], 2)
             self.assertEqual(batching["batches"], [[0, 1]])
-
-    def test_large_conflict_batch_certificate_uses_linear_resource_cursor(
-        self,
-    ) -> None:
-        path_count = 10_000
-        platform = Platform.from_dict(
-            _platform_value(
-                "large_batches",
-                ["a", "b"],
-                [_link("ab", "a", "b", lanes=path_count)],
+            self.assertEqual(
+                sorted(index for batch in batching['batches'] for index in batch),
+                list(range(len(timing['paths']))),
             )
-        )
-        assignment = _assignment(
-            platform,
-            [(f"n{index}", "a", ["b"]) for index in range(path_count)],
-        )
-        demands = demands_from_assignment(assignment, platform)
-        candidate_pool = {
-            "constraints": normalize_route_constraints(
-                {
-                    "schema": "emuflow.system-route-constraints/v1",
-                    "frame_slots": 8,
-                },
-                platform,
-            ),
-            "candidates": [
-                {
-                    "generator": "shortest-path-tree",
-                    "demand_id": demand["id"],
-                    "tree_edges": [
-                        {"link": "ab", "from": "a", "to": "b"}
-                    ],
-                }
-                for demand in demands
-            ],
-        }
-        timing_paths = {
-            "normalization": {
-                "positive_slack_scale_ns": 1.0,
-                "negative_slack_scale_ns": 1.0,
-                "max_clock_period_ns": 1.0,
-            },
-            "paths": [
-                {
-                    "id": f"p{index}",
-                    "clock_period_ns": 1.0,
-                    "slack_ns": 1.0,
-                    "normalized_slack": 1.0,
-                    "cut_nets": [f"n{index}"],
-                }
-                for index in range(path_count)
-            ],
-        }
-        certificate = build_route_refinement_batches(
-            assignment, platform, candidate_pool, timing_paths
-        )
-        compact_certificate = build_compact_route_refinement_batches(
-            [
-                {
-                    "clock_period_ns": 1.0,
-                    "baseline_slack_ns": 1.0,
-                    "demands": [index],
-                }
-                for index in range(path_count)
-            ],
-            timing_paths["normalization"],
-            [1] * path_count,
-        )
-        self.assertEqual(compact_certificate, certificate)
-        self.assertEqual(certificate["batch_count"], path_count)
-        self.assertEqual(certificate["maximum_parallel_batch"], 1)
-        self.assertEqual(certificate["batches"][0], [0])
-        self.assertEqual(certificate["batches"][-1], [path_count - 1])
+            self.assertEqual(
+                validate_native_system_routes(assignment, platform, routes[0], timing)['status'],
+                'pass',
+            )
+
+    def test_large_native_conflict_batches_preserve_priority_and_path_coverage(self):
+        # A single capacity domain forces every path into a distinct batch.
+        # More than 4096 paths exercises the native linear-resource branch.
+        path_count = 4100
+        platform = Platform.from_dict(_platform_value('large_batches', ['a', 'b'],
+            [_link('ab', 'a', 'b', lanes=path_count)]))
+        assignment = _assignment(platform,
+            [(f'n{index:05d}', 'a', ['b']) for index in range(path_count)])
+        timing = {'schema': 'emuflow.sta-paths/v1', 'design': 'route_test',
+            'paths': [{'id': f'p{index:05d}', 'clock_domain': 'clk',
+                'clock_period_ns': 4.0, 'slack_ns': float(index % 3),
+                'fixed_delay_ns': 0.0, 'cut_nets': [f'n{index:05d}']}
+                for index in range(path_count)]}
+        timing = compress_sta_paths(normalize_sta_paths(
+            timing, demands_from_assignment(assignment, platform)))
+        # The normalized source explicitly owns its record order. Keep that
+        # order separate from slack priority to test both priority and ties.
+        timing['paths'].sort(key=lambda row: row['id'])
+        priority = sorted(range(path_count), key=lambda index: (index % 3, index))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = write_assignment_cuts(root/'assignment.sqlite', assignment, platform)
+            board = root/'board.json'; board.write_text(json.dumps(platform.to_dict()))
+            paths = root/'paths.json'; paths.write_text(json.dumps(timing))
+            constraints = root/'constraints.json'
+            constraints.write_text(json.dumps({'schema': 'emuflow.system-route-constraints/v1',
+                'frame_slots': 8, 'reroute_rounds': 0}))
+            output = root/'native'
+            report = run_native_phase4(source, board, output, timing_paths=paths,
+                constraints_path=constraints, executable=str(tlr_router()))
+            self.assertEqual(report['stage_implementation_id'], 'native-phase4-v1')
+            routes = read_system_routes(output/'routes.json')
+            batches = routes['joint_optimization']['refinement_batches']
+            self.assertEqual(batches['batch_count'], path_count)
+            self.assertEqual(batches['maximum_parallel_batch'], 1)
+            self.assertEqual(list(batches['batches']), [[index] for index in priority])
+            observed = [index for batch in batches['batches'] for index in batch]
+            self.assertEqual(sorted(observed), list(range(path_count)))
+            self.assertEqual(len(observed), len(set(observed)))
+            with closing(sqlite3.connect(routes.store_path)) as db, db:
+                self.assertEqual(db.execute('SELECT seq,path_id FROM timing_paths ORDER BY seq').fetchall(),
+                    [(index, f'p{index:05d}') for index in range(path_count)])
+                self.assertEqual(db.execute('SELECT batch_index,position,path_index FROM refinement_batch_paths ORDER BY seq').fetchall(),
+                    [(batch, 0, index) for batch, index in enumerate(priority)])
+                self.assertEqual(db.execute('SELECT count(*) FROM route_edges WHERE link_id=? AND source_fpga=? AND sink_fpga=?',
+                    ('ab', 'a', 'b')).fetchone()[0], path_count)
+                # Change an actual typed fact to an out-of-range path. The
+                # original sealed selector must reject the damaged generation.
+                changed = db.execute('UPDATE refinement_batch_paths SET path_index=? WHERE seq=0', (path_count,))
+                self.assertEqual(changed.rowcount, 1)
+                self.assertEqual(db.execute('SELECT path_index FROM refinement_batch_paths WHERE seq=0').fetchone()[0], path_count)
+            with self.assertRaises(ValidationError):
+                read_system_routes(output/'routes.json')
 
     def test_global_master_mixes_generators_across_demands(self) -> None:
         platform = Platform.from_dict(

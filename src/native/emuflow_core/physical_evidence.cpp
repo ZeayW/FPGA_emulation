@@ -204,16 +204,9 @@ Object LogicIdentity(SqliteDatabase& db,Sha256& segments,Sha256& unsupported,con
 }
 } // namespace
 
-void ValidatePhysicalEvidence(const std::vector<ArtifactRef>& inputs,const std::string& output) {
-  Require(inputs.size()==2,"input coverage disagrees");CheckedRequestReader request(inputs[1].path(),8*1024*1024);
-  Require(request.Read<std::uint64_t>()==0x31564550464d5545ULL && request.Read<std::uint32_t>()==1,"request version is invalid");
-  const auto kind=request.Read<std::uint32_t>();Require(kind>=1 && kind<=5,"kind is invalid");Generation(request,inputs[0]);
-  const auto header=request.ReadString32(false,4*1024*1024),counts=request.ReadString32(false,65536),source=request.ReadString32(false,65536),logical=request.ReadString32(false,64);request.RequireEnd();
-  Require(logical.size()==64 && logical.find_first_not_of("0123456789abcdef")==std::string::npos,"logical seal is invalid");
-  SqliteStore store(inputs[0]);auto& db=store.database();db.Execute("PRAGMA cache_size=-8192; PRAGMA temp_store=FILE; PRAGMA temp.cache_size=-8192");
-  const char* schemas[]={kBoundaryIdentityDDL,kBoundaryTimingDDL,kLogicSegmentTimingDDL,kLocalPathTimingDDL,kLogicSegmentIdentityDDL};RequireSqliteDDL(db,schemas[kind-1]);
-  std::map<std::string,std::string> metadata{{"header",header},{"counts",counts},{"logical_sha256",JsonQuote(logical)}};
-  if(kind==3 || kind==5)metadata.emplace("source",source);else Require(source=="null","unexpected source metadata");Metadata(db,metadata);
+namespace {
+std::string AuditPhysicalEvidenceRecords(SqliteDatabase& db,unsigned kind,
+    const std::string& header,const std::string& counts,const std::string& source,const std::string& logical) {
   Sha256 records,unsupported,unmeasured;Object actual,measurements;double maximum=0;
   if(kind==1)actual=BoundaryIdentity(db,records);
   else if(kind==2)actual=BoundaryTiming(db,records,&maximum);
@@ -229,9 +222,39 @@ void ValidatePhysicalEvidence(const std::vector<ArtifactRef>& inputs,const std::
       ",\"unmeasured_sha256\":"+JsonQuote(Digest(unmeasured))+",\"unsupported_sha256\":"+JsonQuote(Digest(unsupported));
   if(kind==5)payload+=",\"segment_sha256\":"+JsonQuote(Digest(records))+",\"source\":"+source+",\"unsupported_sha256\":"+JsonQuote(Digest(unsupported));
   payload+='}';Sha256 hash;Hash(hash,payload);const auto observed=Digest(hash);Require(observed==logical,"logical seal disagrees");
-  AtomicBinaryWriter writer(output,inputs);writer.stream()<<JsonRecord(Object{{"schema","emuflow.physical-evidence-validation/v1"},{"status","pass"},
+  return JsonRecord(Object{{"schema","emuflow.physical-evidence-validation/v1"},{"status","pass"},
       {"implementation_id","native-physical-evidence-validation-v1"},{"kind",kind},{"counts",std::move(actual)},{"logical_sha256",observed},
-      {"maximum_delay_ns",maximum},{"measurement_counts",std::move(measurements)}}).Encode()<<'\n';writer.Commit();
+      {"maximum_delay_ns",maximum},{"measurement_counts",std::move(measurements)}}).Encode();
+}
+} // namespace
+
+std::string AuditPhysicalEvidenceStore(SqliteDatabase& db,unsigned kind) {
+  Require(kind>=1 && kind<=5,"kind is invalid");
+  const char* schemas[]={kBoundaryIdentityDDL,kBoundaryTimingDDL,kLogicSegmentTimingDDL,kLocalPathTimingDDL,kLogicSegmentIdentityDDL};
+  RequireSqliteDDL(db,schemas[kind-1]);
+  std::map<std::string,std::string> values;
+  auto rows=db.Prepare("SELECT key,CASE WHEN length(value)<=8388608 THEN value END FROM metadata ORDER BY key");
+  while(rows.Step()){Require(!rows.IsNull(1),"metadata exceeds bound");values.emplace(Text(rows,0),rows.TypedText(1));}
+  const auto need=[&](const char* key)->std::string{const auto found=values.find(key);Require(found!=values.end(),"metadata field missing");return found->second;};
+  const auto header=need("header"),counts=need("counts"),logical=DecodeJsonString(need("logical_sha256"));
+  Require(logical.size()==64 && logical.find_first_not_of("0123456789abcdef")==std::string::npos,"logical seal is invalid");
+  const auto source=(kind==3 || kind==5)?need("source"):"null";
+  Require(values.size()==((kind==3 || kind==5)?4U:3U),"metadata fields are unexpected");
+  return AuditPhysicalEvidenceRecords(db,kind,header,counts,source,logical);
+}
+
+void ValidatePhysicalEvidence(const std::vector<ArtifactRef>& inputs,const std::string& output) {
+  Require(inputs.size()==2,"input coverage disagrees");CheckedRequestReader request(inputs[1].path(),8*1024*1024);
+  Require(request.Read<std::uint64_t>()==0x31564550464d5545ULL && request.Read<std::uint32_t>()==1,"request version is invalid");
+  const auto kind=request.Read<std::uint32_t>();Require(kind>=1 && kind<=5,"kind is invalid");Generation(request,inputs[0]);
+  const auto header=request.ReadString32(false,4*1024*1024),counts=request.ReadString32(false,65536),source=request.ReadString32(false,65536),logical=request.ReadString32(false,64);request.RequireEnd();
+  Require(logical.size()==64 && logical.find_first_not_of("0123456789abcdef")==std::string::npos,"logical seal is invalid");
+  SqliteStore store(inputs[0]);auto& db=store.database();db.Execute("PRAGMA cache_size=-8192; PRAGMA temp_store=FILE; PRAGMA temp.cache_size=-8192");
+  const char* schemas[]={kBoundaryIdentityDDL,kBoundaryTimingDDL,kLogicSegmentTimingDDL,kLocalPathTimingDDL,kLogicSegmentIdentityDDL};RequireSqliteDDL(db,schemas[kind-1]);
+  std::map<std::string,std::string> metadata{{"header",header},{"counts",counts},{"logical_sha256",JsonQuote(logical)}};
+  if(kind==3 || kind==5)metadata.emplace("source",source);else Require(source=="null","unexpected source metadata");Metadata(db,metadata);
+  const auto report=AuditPhysicalEvidenceRecords(db,kind,header,counts,source,logical);
+  AtomicBinaryWriter writer(output,inputs);writer.stream()<<report<<'\n';writer.Commit();
 }
 } // namespace emuflow::core
 

@@ -16,12 +16,12 @@ from emuflow.partition import build_clusters, CUT_MODE_STATIC_EXACT
 from emuflow.partition_init_native import initialize
 from tests.partition_init_reference import facts, cut_score
 from tests.test_phase3_clusters_native import source
-from tests import test_partition_pressure as fixture
+from tests import partition_pressure_fixture as fixture
 
 
 def prepare(source,**overrides):
     ir,constraints=source
-    f=fixture.PartitionPressureTest();f.setUp()
+    f=fixture.PressureFixture();f.setUp()
     constraints=dict(constraints,balance_tolerance=1.0)
     constraints.update(overrides)
     clusters=build_clusters(ir,constraints,cut_mode=CUT_MODE_STATIC_EXACT,_native_compact_clusters=True)
@@ -174,14 +174,14 @@ from tests.test_phase3_pressure_native import inputs as pressure_inputs
 
 def test_pressure_model_borrows_the_native_initial_owner_without_republishing_it(pressure_inputs,tmp_path):
     from emuflow.partition import build_partition_assignment
-    from emuflow.partition_pressure import build_partition_pressure_model
+    from emuflow.phase3_pressure_native import build_native_pressure_model
     from emuflow.phase3_pressure_native import NativePressureModel
     args,reference_initial,timing=pressure_inputs
     ir,platform,clusters,constraints,manifest,routes=args
     imported=solution(tmp_path,len(clusters['clusters']),(0,1))
     actual,summary=initialize(ir,platform,clusters,constraints,seed=0,executable=None,solution_input=imported)
     initial=build_partition_assignment(ir,platform,clusters,constraints,actual,'fixture',0,_include_semantic_contract=False,_stream_semantic_records=True,_defer_derived_records=True)
-    model=build_partition_pressure_model(*args,independent_validation=False,timing_database_path=timing,native_store_model=True)
+    model=build_native_pressure_model(*args,timing_database_path=timing)
     request_root=tmp_path/'requests';request_root.mkdir()
     with patch.object(NativePressureModel,'_write_initial_ownership',side_effect=AssertionError('initial ownership copied back through Python')):
         columns,board=model.write_requests(request_root,initial,0)
@@ -196,19 +196,19 @@ def test_pressure_model_borrows_the_native_initial_owner_without_republishing_it
 def test_borrowed_initializer_rejects_replaced_python_part_columns(pressure_inputs,tmp_path):
     from array import array
     from emuflow.partition import build_partition_assignment
-    from emuflow.partition_pressure import build_partition_pressure_model
+    from emuflow.phase3_pressure_native import build_native_pressure_model
     args,_,timing=pressure_inputs;ir,platform,clusters,constraints,_,_=args
     actual,_=initialize(ir,platform,clusters,constraints,seed=0,executable=None,solution_input=solution(tmp_path,len(clusters['clusters']),(0,1)))
     initial=build_partition_assignment(ir,platform,clusters,constraints,actual,'fixture',0,_include_semantic_contract=False,_stream_semantic_records=True,_defer_derived_records=True)
     actual.part_indices=array('I',actual.part_indices)
-    model=build_partition_pressure_model(*args,independent_validation=False,timing_database_path=timing,native_store_model=True)
+    model=build_native_pressure_model(*args,timing_database_path=timing)
     request_root=tmp_path/'requests';request_root.mkdir()
     with pytest.raises(Exception,match='another pressure model'):model.write_requests(request_root,initial,0)
 
 
 def test_native_initializer_runs_through_patron_without_host_ownership_rewrite(pressure_inputs,tmp_path):
     from emuflow.partition import build_partition_assignment, _PackedClusterAssignment
-    from emuflow.partition_pressure import build_partition_pressure_model
+    from emuflow.phase3_pressure_native import build_native_pressure_model
     from emuflow.phase3_pressure_native import NativePressureModel
     from tests.test_phase3_pressure_native import run
     args,_,timing=pressure_inputs
@@ -223,8 +223,7 @@ def test_native_initializer_runs_through_patron_without_host_ownership_rewrite(p
         return build_partition_assignment(ir,platform,clusters,constraints,column,'fixture',0,
             _include_semantic_contract=False,_stream_semantic_records=True,_defer_derived_records=True)
     def model():
-        return build_partition_pressure_model(*args,independent_validation=False,
-            timing_database_path=timing,native_store_model=True)
+        return build_native_pressure_model(*args,timing_database_path=timing)
     expected,expected_trace=run(args,model(),initial(copied),max_moves=2)
     with patch.object(NativePressureModel,'_write_initial_ownership',side_effect=AssertionError('native ownership rewritten in host')):
         actual,trace=run(args,model(),initial(owners),max_moves=2)

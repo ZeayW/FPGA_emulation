@@ -115,7 +115,7 @@ def run_phase7c(
         if physical_summary_path is not None
         else None
     )
-    checks = measurements = None
+    checks = measurements = physical_binding = None
     try:
         if physical_summary is not None and routes_path is None:
             raise ValidationError(
@@ -219,11 +219,13 @@ def run_phase7c(
                     and semantic_contract.get("indexed") is True
                     else None
                 ),
+                output_path=output_dir / "cross_layer_physical_binding.json",
             )
             physical_binding_validation = {
                 "status": physical_binding["status"],
                 **physical_binding["metrics"],
             }
+            physical_binding.close()
         sta_timing = None
         if (physical_summary is not None or global_sta_executable is not None
                 or global_sta_results_dir is not None):
@@ -279,11 +281,6 @@ def run_phase7c(
             qor_owner.close()
         else:
             write_json(output_dir / "qor_report.json", qor)
-        if physical_summary is not None:
-            write_json(
-                output_dir / "cross_layer_physical_binding.json",
-                physical_binding,
-            )
         (output_dir / "virtual_runtime_controller.sv").write_text(
             virtual_runtime_controller_to_systemverilog(runtime),
             encoding="utf-8",
@@ -401,5 +398,8 @@ def run_phase7c(
         close_checks = getattr(checks, "close", None)
         if callable(close_checks):
             close_checks()
+        close_binding = getattr(physical_binding, "close", None)
+        if callable(close_binding):
+            close_binding()
         if physical_summary is not None:
             physical_summary.close()

@@ -626,7 +626,7 @@ class Phase3Test(unittest.TestCase):
                 with (
                     patch("emuflow.partition_init_native.initialize") as tritonpart,
                     patch(
-                        "emuflow.partition_pressure.run_partition_pressure_native"
+                        "emuflow.phase3_pressure_native.NativePressureModel.execute"
                     ) as patron,
                 ):
                     report = run_phase3(

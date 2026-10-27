@@ -17,7 +17,7 @@
 namespace emuflow::core {
 namespace {
 namespace fs = std::filesystem;
-constexpr const char* stages[] = {"preflight","frontend","timing","partition","route-policy",
+constexpr const char* stages[] = {"preflight","frontend","timing-policy","timing","partition-policy","partition","route-policy",
     "route","tdm","split","physical","signoff","finalize"};
 void Require(bool condition, const std::string& message) {
   if (!condition) throw StageError(ErrorCode::kInvalidRequest,message);
@@ -55,6 +55,20 @@ class ControlJson {
   bool Has(const std::string& path) {
     auto row=db_.Prepare("SELECT json_type(?1,?2)");row.BindText(1,data_);row.BindText(2,path);
     return row.Step() && !row.IsNull(0) && row.Text(0)!="null";
+  }
+  bool Boolean(const std::string& path) {
+    auto row=db_.Prepare("SELECT json_type(?1,?2)");row.BindText(1,data_);row.BindText(2,path);
+    Require(row.Step() && (row.Text(0)=="true" || row.Text(0)=="false"),"native compiler requires boolean "+path);return row.Text(0)=="true";
+  }
+  ArtifactRef Phase2Policy() {
+    auto result=ArtifactRef::Bind(StatePath("native_phase2_policy"),"phase2-policy-v1");
+    const auto& g=result.generation();const std::string fields[]={std::to_string(g.device),std::to_string(g.inode),std::to_string(g.bytes),std::to_string(g.modified_seconds),std::to_string(g.modified_nanoseconds),std::to_string(g.changed_seconds),std::to_string(g.changed_nanoseconds)};
+    Require(String("$.state[1].native_phase2_generation[0]")=="tuple","native timing policy binding is invalid");
+    for(unsigned i=0;i<7;++i)Require(String("$.state[1].native_phase2_generation[1]["+std::to_string(i)+"]")==fields[i],"native timing policy generation changed");return result;
+  }
+  std::string TimingState(const std::string& reference) {
+    auto row=db_.Prepare("SELECT json_remove(json_set(?1,'$.stage','timing','$.state[1].timing_report',json(?2)),'$.state[1].native_phase2_policy','$.state[1].native_phase2_generation')");
+    row.BindText(1,data_);row.BindText(2,reference);Require(row.Step(),"cannot construct native timing compiler state");return row.TypedText(0);
   }
   ArtifactRef FrontendRequest() {
     auto result=ArtifactRef::Bind(StatePath("native_frontend_request"),"frontend-request-v1");
@@ -250,6 +264,10 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
         Require(!fs::is_symlink(private_configuration),"native partition configuration directory was replaced");
         std::error_code cleanup_error;fs::remove_all(private_configuration,cleanup_error);Require(!cleanup_error,"cannot retire native partition configuration");
       }
+      if(std::string(stage)=="partition-policy") {
+        const auto root=output/".native-phase2-request";Require(!fs::is_symlink(root),"native Phase 2 policy directory was replaced");
+        std::error_code error;fs::remove_all(root,error);Require(!error,"cannot retire native Phase 2 policy");
+      }
       if(std::string(stage)=="tdm") {
         const auto root=output/".native-phase4-request";Require(!fs::is_symlink(root),"native Phase 4 policy directory was replaced");
         std::error_code error;fs::remove_all(root,error);Require(!error,"cannot retire native Phase 4 policy");
@@ -266,6 +284,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
       const bool native_phase4=std::string(stage)=="route";
       const bool native_phase5=std::string(stage)=="tdm";
       const bool native_phase3=std::string(stage)=="partition";
+      const bool native_phase2=std::string(stage)=="timing" && ControlJson(previous.string()).Has("$.state[1].native_phase2_policy");
       const bool native_phase6=std::string(stage)=="split" && ControlJson(previous.string()).String("$.state[1].phase6_provider")=="baseline";
       const bool native_frontend=std::string(stage)=="frontend" && ControlJson(previous.string()).Has("$.state[1].native_frontend_request");
       if(std::string(stage)=="frontend") {
@@ -273,14 +292,25 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
         const bool raw_rtl=prior.Has("$.state[1].sources[1][0]") && !prior.Has("$.state[1].yosys_json") && !prior.Has("$.state[1].prepared_frontend");
         Require(!raw_rtl || native_frontend,"native RTL frontend request is missing; Python fallback is forbidden");
       }
-      std::string phase4_report,phase5_report,phase3_report,phase6_report,frontend_summary;
-      std::optional<ArtifactRef> frontend_request,partition_request,phase4_policy,phase6_policy;
+      if(std::string(stage)=="timing" && !native_phase2) {
+        ControlJson prior(previous.string());
+        Require(prior.Has("$.state[1].prepared_timing") || !prior.Boolean("$.state[1].internal_timing_database"),"native timing policy is missing; Python fallback is forbidden");
+      }
+      std::string phase4_report,phase5_report,phase3_report,phase6_report,phase2_report,frontend_summary;
+      std::optional<ArtifactRef> frontend_request,partition_request,phase2_policy,phase4_policy,phase6_policy;
       if(native_frontend) {
         ControlJson prior(previous.string());Require(prior.String("$.stage")=="preflight","invalid native frontend predecessor");
         frontend_request=prior.FrontendRequest();frontend_summary=(output/"frontend/phase1/frontend-summary.json").string();
         tool.argv={inputs[3].path(),"--report",(temporary/"native-result.json").string(),"phase1","run",frontend_request->path(),(output/"frontend/phase1").string()};
+      } else if(native_phase2) {
+        ControlJson prior(previous.string());Require(prior.String("$.stage")=="timing-policy","invalid native timing predecessor");
+        phase2_policy=prior.Phase2Policy();
+        Require(fs::path(phase2_policy->path())==output/".native-phase2-request/phase2-policy.json","native timing policy escapes compiler ownership");
+        Require(fs::weakly_canonical(prior.StatePath("timing_root"))==output/"timing","native timing output escapes compiler ownership");
+        phase2_report=(output/"timing/phase2_report.json").string();
+        tool.argv={inputs[3].path(),"--report",(temporary/"native-result.json").string(),"phase2","run",prior.StatePath("ir_path"),phase2_policy->path(),(output/"timing").string()};
       } else if(native_phase3) {
-        ControlJson prior(previous.string());Require(prior.String("$.stage")=="timing","invalid native partition predecessor");
+        ControlJson prior(previous.string());Require(prior.String("$.stage")=="partition-policy","invalid native partition predecessor");
         partition_request=prior.PartitionRequest();
         Require(fs::path(partition_request->path())==output/".native-phase3-request/phase3-request.json","native partition configuration escapes compiler ownership");
         Require(fs::weakly_canonical(prior.StatePath("phase3_root"))==output/"partition","native partition output escapes compiler ownership");
@@ -330,15 +360,27 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
       if (!previous.empty()) step_inputs.push_back(ArtifactRef::Bind(previous.string(),"native-compile-state-v1"));
       if(frontend_request)step_inputs.push_back(*frontend_request);
       if(partition_request)step_inputs.push_back(*partition_request);
+      if(phase2_policy)step_inputs.push_back(*phase2_policy);
       if(phase4_policy)step_inputs.push_back(*phase4_policy);
       if(phase6_policy)step_inputs.push_back(*phase6_policy);
       const auto step = RunExternalTool(tool,cancelled,step_inputs);
-      result.steps.push_back({stage,step.operation.ok(),native_phase6?"native-baseline-phase6-v1":native_phase4?"native-phase4-v1":native_phase5?"native-exact-phase5-v1":native_phase3?"native-phase3-v1":native_frontend?"native-rtl-frontend-v1":"isolated-python-adapter-v1",step.wall_seconds,step.user_cpu_seconds,
+      result.steps.push_back({stage,step.operation.ok(),native_phase6?"native-baseline-phase6-v1":native_phase4?"native-phase4-v1":native_phase5?"native-exact-phase5-v1":native_phase3?"native-phase3-v1":native_phase2?"native-phase2-v1":native_frontend?"native-rtl-frontend-v1":"isolated-python-adapter-v1",step.wall_seconds,step.user_cpu_seconds,
                              step.system_cpu_seconds,step.maximum_process_rss_kib});
       if (!step.operation.ok())
         throw StageError(ErrorCode::kExecutionFailed,"native compile " + std::string(stage) + ": " +
                          step.operation.message + "\n" + step.diagnostic_tail);
-      if(native_phase3) {
+      if(native_phase2) {
+        ControlJson producer((temporary/"native-result.json").string());auto summary=ArtifactRef::Bind(phase2_report,"phase2-report-v1");
+        Require(producer.String("$.schema")=="emuflow.native-stage-result/v1" && producer.String("$.stage")=="phase2.run" && producer.String("$.status")=="pass" && producer.OutputGeneration(summary),"native timing producer binding disagrees");
+        ControlJson report(phase2_report,262144);Require(report.String("$.status")=="pass" && report.String("$.stage_implementation_id")=="native-phase2-v1","native timing report identity disagrees");
+        const auto& g=summary.generation();std::vector<JsonRecord> generation{g.device,g.inode,g.bytes,g.modified_seconds,g.modified_nanoseconds,g.changed_seconds,g.changed_nanoseconds};
+        const auto reference=JsonRecord(std::vector<JsonRecord>{JsonRecord("timing-report"),JsonRecord(std::map<std::string,JsonRecord>{{"schema",summary.schema()},{"path",summary.path()},{"generation",generation}})}).Encode();
+        ControlJson prior(previous.string());auto bindings=step_inputs;bindings.push_back(summary);
+        const auto state=prior.TimingState(reference);PublishTextArtifact(next.string(),bindings,[&](std::ostream& stream){stream<<state<<'\n';});
+        const auto metrics=output/"stage-metrics/phase2.json";fs::create_directories(metrics.parent_path());
+        const auto text=JsonRecord(std::map<std::string,JsonRecord>{{"stage","phase2"},{"status","pass"},{"wall_seconds",step.wall_seconds},{"peak_process_tree_rss_kib",step.maximum_process_rss_kib},{"rss_measurement","wait4-native-owner-high-water"}}).Encode();
+        PublishTextArtifact(metrics.string(),bindings,[&](std::ostream& stream){stream<<text<<'\n';});
+      } else if(native_phase3) {
         ControlJson producer((temporary/"native-result.json").string());auto summary=ArtifactRef::Bind(phase3_report,"phase3-report-v1");
         Require(producer.String("$.schema")=="emuflow.native-stage-result/v1" && producer.String("$.stage")=="phase3.run" && producer.String("$.status")=="pass" && producer.OutputGeneration(summary),"native partition producer binding disagrees");
         ControlJson report(phase3_report);Require(report.String("$.stage_implementation_id")=="native-phase3-v1" && report.String("$.status")=="pass","native partition report identity disagrees");
@@ -435,7 +477,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
 std::string CompileResultJson(const CompileResult& result) {
   std::ostringstream out; out << std::setprecision(17);
   out << "{\"schema\":\"emuflow.native-compile-result/v2\",\"implementation_id\":\"native-orchestration-v1\","
-      << "\"phase_implementation\":\"native-rtl-frontend-phase3-phase4-phase5-baseline-phase6-and-isolated-python-adapters-v1\",\"native_data_plane_complete\":false,"
+      << "\"phase_implementation\":\"native-rtl-frontend-phase2-phase3-phase4-phase5-baseline-phase6-and-isolated-python-adapters-v1\",\"native_data_plane_complete\":false,"
       << "\"operation\":" << StageResultJson(result.operation) << ",\"output_directory\":" << JsonQuote(result.output_directory)
       << ",\"request_configuration\":" << (result.request_configuration.empty() ? "null" : result.request_configuration)
       << ",\"effective_configuration\":" << (result.effective_configuration.empty() ? "null" : result.effective_configuration)

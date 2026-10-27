@@ -68,6 +68,21 @@ void CheckedRequestReader::RequireEnd() {
   if (expected != crc_) throw StageError(ErrorCode::kInvalidArtifact,"native request checksum disagrees");
 }
 
+void CheckedRequestWriter::Bytes(const void* value,std::size_t size) {
+  writer_.WriteBytes(value,size);
+  UpdateCrc32(crc_,static_cast<const unsigned char*>(value),size);
+}
+void CheckedRequestWriter::Text(const std::string& value) {
+  if(value.size()>UINT32_MAX)throw StageError(ErrorCode::kInvalidRequest,"request text exceeds bound");
+  Put<std::uint32_t>(value.size());Bytes(value.data(),value.size());
+}
+void CheckedRequestWriter::Generation(const FileGeneration& value) {
+  Put(value.device);Put(value.inode);Put(value.bytes);
+  Put(value.modified_seconds);Put(value.modified_nanoseconds);
+  Put(value.changed_seconds);Put(value.changed_nanoseconds);
+}
+void CheckedRequestWriter::Finish(){writer_.Write(crc_);writer_.Commit();}
+
 void BinaryReader::Seek(std::size_t offset) {
   if (offset > size_) throw StageError(ErrorCode::kInvalidArtifact,"native input seek is out of bounds");
   stream_.clear();

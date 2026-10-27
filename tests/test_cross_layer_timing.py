@@ -1,7 +1,6 @@
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 import copy
 import json
-import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,14 +14,12 @@ from emuflow.cross_layer_timing import (
     LEGACY_CROSS_LAYER_TIMING_PROVIDER,
     REGISTERED_BOUNDARY,
     SAMPLED_VIRTUAL_WIRE,
-    build_cross_layer_physical_binding,
     build_cross_layer_timing_contract,
-    validate_cross_layer_physical_binding,
     validate_cross_layer_timing_contract,
 )
 from emuflow.errors import ValidationError
+from tests.physical_coverage_fixture import build_cross_layer_physical_binding, validate_cross_layer_physical_binding
 from emuflow.platform import Platform
-from tests.phase3_index_fixture import write_assignment_v3_fixture
 from emuflow.tdm_schedule_storage import (ScheduleRecordSequence, read_tdm_schedule)
 from emuflow.system_route_storage import (
     SystemRouteSequence,
@@ -322,53 +319,6 @@ class CrossLayerTimingContractTest(unittest.TestCase):
             "pass",
         )
 
-    def test_indexed_physical_binding_reads_exact_segments_from_sqlite(self):
-        semantic = {
-            "schema": "emuflow.static-exact-combinational-cut/v3",
-            "mode": "static-exact-combinational",
-            "qualification": "structural-partition-legality",
-            "indexed": True,
-        }
-        routes = _routes(exact=True, semantic_contract=semantic)
-        routes["semantic_contract_sha256"] = "a" * 64
-        schedule = _schedule(exact=True)
-        contract = build_cross_layer_timing_contract(
-            routes, schedule, semantic
-        )
-        segment = {
-            "id": "segment000000",
-            "kind": "launch_to_tx",
-            "fpga": "a",
-            "sink_cut_net": "n0",
-            "source_semantics": "configuration-stable-constant",
-        }
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            index = Path(temporary_directory) / "assignment.sqlite"
-            write_assignment_v3_fixture(
-                index, parts=("a", "b", "c"),
-                semantic={
-                    **semantic,
-                    "cut_nodes": [{"net": "n0", "source_segment_ids": [segment["id"]]}],
-                    "logic_segments": [segment],
-                    "capture_requirements": [],
-                },
-                metadata={"semantic_contract_sha256": "a" * 64},
-            )
-            binding = build_cross_layer_physical_binding(
-                contract,
-                schedule,
-                self._physical(schedule),
-                self._platform(),
-                index,
-            )
-            self.assertEqual(binding["status"], "pass")
-            self.assertEqual(binding["metrics"]["required_logic_segments"], 1)
-            self.assertEqual(binding["metrics"]["measured_logic_segments"], 1)
-            self.assertEqual(
-                binding["logic_segment_bindings"][0]["measurement"],
-                "structural-configuration-stable-constant",
-            )
-
     def _platform(self):
         return Platform.from_dict(
             {
@@ -606,12 +556,8 @@ class CrossLayerTimingContractTest(unittest.TestCase):
             "pass",
         )
         physical = self._physical(schedule)
-        self.assertEqual(
-            build_cross_layer_physical_binding(
-                legacy, schedule, physical, self._platform()
-            )["status"],
-            "pass",
-        )
+        with self.assertRaisesRegex(ValidationError, "retired/invalid timing contract"):
+            build_cross_layer_physical_binding(legacy,schedule,physical,self._platform())
         route_only = build_cross_layer_timing_contract(routes)
         route_only["schema"] = LEGACY_CROSS_LAYER_TIMING_CONTRACT_SCHEMA
         route_only["provider"] = LEGACY_CROSS_LAYER_TIMING_PROVIDER
@@ -693,8 +639,8 @@ class CrossLayerTimingContractTest(unittest.TestCase):
             contract, schedule, physical, self._platform()
         )
         self.assertEqual(binding["status"], "incomplete")
-        tampered = copy.deepcopy(binding)
-        tampered["missing"]["endpoints"] = []
+        tampered = dict(binding)
+        tampered["missing"] = {"endpoints":[],"logic_segments":[]}
         with self.assertRaisesRegex(ValidationError, "canonical inputs"):
             validate_cross_layer_physical_binding(
                 contract, schedule, physical, self._platform(), tampered

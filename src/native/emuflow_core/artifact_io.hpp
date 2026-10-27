@@ -146,6 +146,25 @@ class AtomicBinaryWriter {
   bool committed_ = false;
 };
 
+// Producer counterpart of CheckedRequestReader. Stage composition uses the
+// same source lease, CRC and atomic-publication contract as external callers.
+class CheckedRequestWriter {
+ public:
+  CheckedRequestWriter(const std::string& path,std::vector<ArtifactRef> sources={})
+      :writer_(path,std::move(sources)){}
+  template<class T>void Put(T value){
+    static_assert(std::is_trivially_copyable<T>::value,"request scalar must be trivial");
+    Bytes(&value,sizeof value);
+  }
+  void Text(const std::string& value);
+  void Generation(const FileGeneration& value);
+  void Finish();
+ private:
+  void Bytes(const void* value,std::size_t size);
+  AtomicBinaryWriter writer_;
+  std::uint32_t crc_=0;
+};
+
 // Stream a file artifact into the common writer and recheck source generations
 // before publication. Failure leaves a prior destination intact. Pipe output
 // remains the caller's explicitly uncommitted streaming protocol.

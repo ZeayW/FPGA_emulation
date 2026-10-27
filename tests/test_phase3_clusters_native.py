@@ -15,7 +15,7 @@ from emuflow.partition import build_clusters, CUT_MODE_STATIC_EXACT
 from emuflow.partition_ir import load_partition_ir
 from emuflow.phase3_clusters_native import build_native_clusters
 from tests.native_build import emuflow_native
-from tests import test_partition_pressure as reference_fixture
+from tests import partition_pressure_fixture as reference_fixture
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ def source(tmp_path,monkeypatch):
     native=tmp_path/'native'; (native/'bin').mkdir(parents=True)
     (native/'bin/emuflow-native').symlink_to(emuflow_native())
     monkeypatch.setenv('EMUFLOW_NATIVE_ROOT',str(native))
-    fixture=reference_fixture.PartitionPressureTest(); fixture.setUp()
+    fixture=reference_fixture.PressureFixture(); fixture.setUp()
     path=tmp_path/'source.sqlite'
     write_compact_emuir(path,fixture.ir.value)
     return load_partition_ir(path),fixture.constraints
@@ -134,7 +134,7 @@ def test_large_fanout_primary_union_matches_reference(tmp_path,monkeypatch):
     native=tmp_path/'native'; (native/'bin').mkdir(parents=True)
     (native/'bin/emuflow-native').symlink_to(emuflow_native())
     monkeypatch.setenv('EMUFLOW_NATIVE_ROOT',str(native))
-    fixture=reference_fixture.PartitionPressureTest(); fixture.setUp()
+    fixture=reference_fixture.PressureFixture(); fixture.setUp()
     value=fixture.ir.to_dict()
     import copy
     prototype=value['instances'][0]

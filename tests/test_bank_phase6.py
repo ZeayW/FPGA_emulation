@@ -2,7 +2,6 @@
 
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 import copy
-from types import SimpleNamespace
 
 import pytest
 
@@ -13,8 +12,6 @@ from emuflow.chimew_phase6 import (
 from emuflow.chimew_fixed_wiring import FIXED_WIRING_BINDING_SCHEMA, FixedWiringChannels
 from emuflow.default_platform import research_platform_path
 from emuflow.errors import ValidationError
-from emuflow.netlist import build_split_artifacts
-from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow.pin_planning import (
     CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA,
     SIGNAL_POSITION_HINTS_SCHEMA, _assignment_metrics, _baseline_assignment,
@@ -159,16 +156,6 @@ def test_bank_allocation_is_required_and_checked(mutation):
         schedule["entries"][1]["lane"] = 1
     with pytest.raises(ValidationError):
         validate_bank_pin_assignment(schedule, platform, {})
-
-
-def test_direct_netlist_builder_cannot_bypass_pin_plan_validation():
-    platform, schedule, _, plan = fixture()
-    plan["entries"][1]["physical_lane"] = 18
-    ir = SimpleNamespace(value={"design": {"name": "banks"}})
-    assignment = {"schema": PARTITION_ASSIGNMENT_SCHEMA,
-                  "design": "banks", "platform": platform.name}
-    with pytest.raises(ValidationError, match="allocated direction banks"):
-        build_split_artifacts(ir, assignment, schedule, platform, plan)
 
 
 def test_chimew_electrical_validator_rejects_bidirectional_bank_bundle():

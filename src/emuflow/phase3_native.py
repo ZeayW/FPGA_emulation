@@ -23,7 +23,7 @@ def write_request(directory, ir_path, platform_path, *, constraints_path=None,
     from .phase3_candidates_native import write_candidate_policy
     from .partition_config_native import _pattern_range_policy
     from .partition import LEGAL_CUT_CLASSES, REPLICATED_NET_CLASSES, HARD_MACRO_RESOURCES
-    from .partition_pressure import _shortest_routes, _capacity_key_by_arc
+    from .partition_topology import _shortest_routes, _capacity_key_by_arc
     from .routing import (load_route_constraints, build_directed_graph,
         route_link_delay_coefficients_ns, route_link_delay_ns)
     from .sta import sta_path_database_payload_path, partition_net_weights_payload_path
@@ -78,7 +78,7 @@ def write_request(directory, ir_path, platform_path, *, constraints_path=None,
     shortest = {a: {b: None if path is None else [[domain_index[arc_domain[(arc['link'], arc['from'], arc['to'])]],
         route_link_delay_ns(platform, arc['link'], arc['from'], arc['to'], routes)] for arc in path]
         for b, path in row.items()} for a, row in model['shortest_routes'].items()}
-    from .partition_hops import _shortest_hop_distances
+    from .partition_topology import _shortest_hop_distances
     configuration = {'schema': 'emuflow.phase3-stage/v1',
         'inputs': {name: {'path': str(item.path), 'schema': item.schema, 'generation': list(item.generation)}
                    for name, item in sources.items()},

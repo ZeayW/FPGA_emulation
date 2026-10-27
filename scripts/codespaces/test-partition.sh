@@ -27,7 +27,7 @@ case "${suite}" in
       tests.test_phase1
       tests.test_phase3
       tests.test_partition_pressure
-      tests.test_partition_hops
+      tests.test_partition_hops_native
     )
     ;;
   all)

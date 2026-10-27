@@ -39,7 +39,6 @@ from .multi_fpga_bsp_flow import (
 from .opensta import (
     DEFAULT_TIMING_MODEL,
     check_opensta_engine_version,
-    run_opensta_path_database,
 )
 from .openparf import validate_openparf_runtime
 from .phase1 import run_phase1
@@ -74,7 +73,6 @@ from .tdm_schedule_storage import read_tdm_schedule, tdm_schedule_store_path
 from .system_route_storage import read_system_routes, system_route_store_path
 from .timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from .sta import (
-    derive_partition_net_weights,
     partition_net_weights_payload_path,
     project_sta_path_database,
     sta_path_database_payload_path,
@@ -1588,54 +1586,49 @@ def _compile_frontend(ctx: _CompileContext):
         }
     ctx.ir_path = ctx.phase1_root / "design.emuir.sqlite"
 
-def _compile_timing(ctx: _CompileContext):
+def _timing_paths(ctx: _CompileContext):
     ctx.timing_root = ctx.output_dir / "timing"
     ctx.path_database_path = ctx.timing_root / "path-database.json"
     ctx.cut_segment_qualification_path = None
     ctx.net_weights_path = ctx.timing_root / "partition-net-weights.json"
     if ctx.prepared_timing is None:
         ctx.timing_report = None
-    if ctx.internal_timing_database and ctx.prepared_timing is None:
-        ctx.timing_root.mkdir(parents=True, exist_ok=True)
-        path_validation = []
-        sta_report = run_opensta_path_database(
-            ir_path=ctx.ir_path,
-            output_path=ctx.path_database_path,
-            clocks=ctx.clock_periods,
-            timing_io=ctx.timing_io,
+
+
+def _compile_timing_policy(ctx: _CompileContext):
+    _timing_paths(ctx)
+    if ctx._native_mode and ctx.internal_timing_database and ctx.prepared_timing is None:
+        from .phase2_native import prepare_policy
+        from .native_tools import native_file_generation
+        ctx.native_phase2_policy = prepare_policy(
+            ctx.output_dir / ".native-phase2-request", ctx.ir_path,
+            clocks=ctx.clock_periods, timing_io=ctx.timing_io,
             timing_model_path=ctx.timing_model,
             architecture_timing_db_path=ctx.architecture_timing_db,
-            executable=ctx.opensta,
-            max_paths=ctx.sta_max_paths,
-            log_path=ctx.timing_root / "opensta.log",
-            _capture_validation=path_validation.append,
-        )
-        timing_mode = "opensta-preplacement"
-        weights_report = None
-        if ctx.timing_driven:
-            if len(path_validation) != 1:
-                raise ValidationError("OpenSTA original path validation proof is missing")
-            weights_report = derive_partition_net_weights(
-                ctx.path_database_path,
-                ctx.ir_path,
-                ctx.net_weights_path,
-                criticality_scale=ctx.timing_criticality_scale,
-                criticality_exponent=ctx.timing_criticality_exponent,
-                _validation=path_validation[0],
-            )
-        ctx.timing_report = {
-            "status": "pass",
-            "mode": timing_mode,
-            "backend": "opensta",
-            "sta": sta_report,
-            "optimization_enabled": ctx.timing_driven,
-            **(
-                {"partition_weights": weights_report}
-                if weights_report is not None
-                else {}
-            ),
-        }
+            executable=ctx.opensta, max_paths=ctx.sta_max_paths,
+            optimization_enabled=ctx.timing_driven,
+            criticality_scale=ctx.timing_criticality_scale,
+            criticality_exponent=ctx.timing_criticality_exponent)
+        ctx.native_phase2_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase2_policy))
 
+
+def _compile_timing(ctx: _CompileContext):
+    if ctx.internal_timing_database and ctx.prepared_timing is None:
+        if ctx._native_mode:
+            raise EmuFlowError("native compiler timing is owned by the C++ Phase 2 stage")
+        from .phase2_native import run_native_phase2
+        ctx.timing_report = run_native_phase2(
+            ctx.ir_path, ctx.timing_root,
+            clocks=ctx.clock_periods, timing_io=ctx.timing_io,
+            timing_model_path=ctx.timing_model,
+            architecture_timing_db_path=ctx.architecture_timing_db,
+            executable=ctx.opensta, max_paths=ctx.sta_max_paths,
+            optimization_enabled=ctx.timing_driven,
+            criticality_scale=ctx.timing_criticality_scale,
+            criticality_exponent=ctx.timing_criticality_exponent)
+
+
+def _compile_partition_policy(ctx: _CompileContext):
     ctx.path_database_payload = (
         sta_path_database_payload_path(ctx.path_database_path)
         if ctx.internal_timing_database
@@ -2628,7 +2621,9 @@ def run_multi_fpga_flow(
     ctx = _CompileContext(locals())
     _compile_preflight(ctx)
     _compile_frontend(ctx)
+    _compile_timing_policy(ctx)
     _compile_timing(ctx)
+    _compile_partition_policy(ctx)
     _compile_partition(ctx)
     _compile_route_policy(ctx)
     _compile_routing_schedule(ctx)

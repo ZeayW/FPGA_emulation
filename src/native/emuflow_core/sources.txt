@@ -64,3 +64,5 @@ emuflow_core/transport.cpp
 emuflow_core/runtime_calendar.cpp
 emuflow_core/placement_lowering.cpp
 emuflow_core/phase4.cpp
+emuflow_core/phase2.cpp
+emuflow_core/physical_coverage.cpp

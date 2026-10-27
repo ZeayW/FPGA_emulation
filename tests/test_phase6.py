@@ -1,3 +1,4 @@
+from tests.native_split_fixture import NativeSplitFixture
 from tests.native_route_fixture import route_system_native
 from tests.transport_reference import write_transport_storage as reference_transport
 from tests.schedule_store_fixture import write_tdm_schedule_storage
@@ -28,10 +29,7 @@ from emuflow.emuir_compact import write_compact_emuir
 from emuflow.ir import EmuIR
 from emuflow.io import file_sha256, read_json, write_json
 from emuflow.netlist import (
-    build_split_artifacts,
-    transport_endpoint_port,
     transport_to_systemverilog,
-    validate_split_artifacts,
 )
 from emuflow.partition import (
     build_partition_assignment,
@@ -54,8 +52,6 @@ from emuflow.split_netlist_storage import (
     SplitNetlistView,
     _schedule_incoming_rows,
     build_streaming_split_metadata,
-    read_split_netlist_sqlite,
-    write_split_netlists_sqlite,
 )
 from emuflow.pin_planning import (
     CHIMEW_PIN_PLAN_PROVIDER,
@@ -521,125 +517,69 @@ class Phase6Test(unittest.TestCase):
                 legacy["lane_map"].materialize(),
             )
 
-    def test_split_exact_coverage_lane_agreement_and_equivalence(self) -> None:
-        artifacts = build_split_artifacts(
-            self.ir, self.assignment, self.schedule, self.platform
-        )
-        validation = validate_split_artifacts(
-            self.ir,
-            self.assignment,
-            self.schedule,
-            self.platform,
-            artifacts,
-        )
-        self.assertNotIn("semantic_contract", artifacts["manifest"])
-        equivalence = simulate_partition_equivalence(
-            self.ir, self.assignment, self.schedule, cycles=12
-        )
-        self.assertEqual(validation["status"], "pass")
-        self.assertEqual(validation["instances"], 8)
-        self.assertEqual(
-            validation["transport_endpoints"],
-            2 * validation["scheduled_hops"],
-        )
-        self.assertEqual(equivalence["status"], "pass")
-        self.assertEqual(equivalence["mismatches"], 0)
-        self.assertEqual(equivalence["cycles"], 12)
+    def test_split_exact_coverage_lane_agreement_and_equivalence(self):
+        with NativeSplitFixture(self.ir, self.assignment, self.schedule, self.platform) as produced:
+            artifacts = produced.artifacts()
+            validation = produced.validate()
+            self.assertNotIn('semantic_contract', artifacts['manifest'])
+            self.assertEqual(validation['status'], 'pass')
+            self.assertEqual(validation['instances'], 8)
+            self.assertEqual(validation['transport_endpoints'], 2 * validation['scheduled_hops'])
+        equivalence = simulate_partition_equivalence(self.ir, self.assignment, self.schedule, cycles=12)
+        self.assertEqual(equivalence['status'], 'pass')
+        self.assertEqual(equivalence['mismatches'], 0)
+        self.assertEqual(equivalence['cycles'], 12)
 
-    def test_split_manifest_carries_phase3_resource_reservation(self) -> None:
+    def test_split_manifest_carries_phase3_resource_reservation(self):
         assignment = copy.deepcopy(self.assignment)
-        reservations = {
-            "fpga0": {"ff": 2, "lut": 3},
-            "fpga1": {"ff": 4, "lut": 5},
-        }
-        assignment["constraints"][
-            "resource_reservations_by_fpga"
-        ] = reservations
-        artifacts = build_split_artifacts(
-            self.ir, assignment, self.schedule, self.platform
-        )
-        self.assertEqual(
-            artifacts["manifest"]["resource_reservations_by_fpga"],
-            reservations,
-        )
-        validate_split_artifacts(
-            self.ir,
-            assignment,
-            self.schedule,
-            self.platform,
-            artifacts,
-            reconstruct=False,
-        )
-        broken = copy.deepcopy(artifacts)
-        broken["manifest"]["resource_reservations_by_fpga"]["fpga0"][
-            "lut"
-        ] += 1
-        with self.assertRaisesRegex(
-            ValidationError, "resource reservations disagree"
-        ):
-            validate_split_artifacts(
-                self.ir,
-                assignment,
-                self.schedule,
-                self.platform,
-                broken,
-                reconstruct=False,
-            )
+        reservations = {'fpga0': {'ff': 2, 'lut': 3}, 'fpga1': {'ff': 4, 'lut': 5}}
+        assignment['constraints']['resource_reservations_by_fpga'] = reservations
+        with NativeSplitFixture(self.ir, assignment, self.schedule, self.platform) as produced:
+            self.assertEqual(produced.manifest['resource_reservations_by_fpga'], reservations)
+            self.assertEqual(produced.validate()['status'], 'pass')
+            broken = copy.deepcopy(produced.manifest)
+            broken['resource_reservations_by_fpga']['fpga0']['lut'] += 1
+            write_json(produced.manifest_path, broken)
+            with self.assertRaisesRegex(ValidationError, 'resource reservations disagree'):
+                produced.validate()
 
-    def test_sqlite_data_plane_matches_legacy_split_exactly(self) -> None:
-        old = build_split_artifacts(
-            self.ir, self.assignment, self.schedule, self.platform
-        )
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            ir_path = root / "design.emuir.sqlite"
-            assignment_path = root / "assignment.sqlite"
-            split_path = root / "split.sqlite"
-            write_compact_emuir(ir_path, self.ir.to_dict())
-            write_phase3_assignment_index(
-                assignment_path, self.ir, self.assignment
-            )
-            proof = write_split_netlists_sqlite(
-                split_path,
-                ir_path,
-                assignment_path,
-                _indexed_split_schedule(root,self.schedule),
-                expected_design=self.ir.value["design"]["name"],
-                expected_platform=self.platform.name,
-            )
-            control = build_streaming_split_metadata(
-                assignment_path,
-                self.schedule,
-                self.platform,
-                design=self.ir.value["design"],
-                clocks=self.ir.value["clocks"],
-            )
-            self.assertEqual(proof["status"], "pass")
-            with closing(sqlite3.connect(split_path)) as connection, connection:
-                self.assertEqual(
-                    connection.execute("PRAGMA user_version").fetchone()[0],
-                    3,
-                )
-                tables = {
-                    row[0]
-                    for row in connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
-                    )
-                }
-                self.assertEqual(tables,{'metadata','parts','net_segments','shadow_drivers','port_memberships','resources'})
-                self.assertNotIn('source_instances',tables)
-                self.assertNotIn('payloads',tables)
-                self.assertNotIn('endpoint_segments',tables)
-            self.assertEqual(control["lane_map"], old["lane_map"])
-            for fpga in ("fpga0", "fpga1"):
-                self.assertEqual(
-                    read_split_netlist_sqlite(split_path, fpga),
-                    old["netlists"][fpga],
-                )
-                self.assertEqual(
-                    control["transports"][fpga], old["transports"][fpga]
-                )
-                self.assertEqual(control["anchors"][fpga], old["anchors"][fpga])
+    def test_native_split_preserves_original_records_and_scheduled_boundaries(self):
+        with NativeSplitFixture(self.ir, self.assignment, self.schedule, self.platform) as produced:
+            artifacts = produced.artifacts()
+            proof = produced.validate()
+            self.assertEqual(proof['copy_coverage_errors'], 0)
+            self.assertEqual(proof['shadow_driver_errors'], 0)
+            with closing(sqlite3.connect(produced.split)) as db:
+                self.assertEqual(db.execute('PRAGMA user_version').fetchone()[0], 3)
+                tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                self.assertEqual(tables, {'metadata','parts','net_segments','shadow_drivers','port_memberships','resources'})
+            originals = {row['id']: row for row in self.ir.value['instances']}
+            observed = []
+            for fpga, netlist in artifacts['netlists'].items():
+                expected = {identity for identity, owner in self.assignment['instance_assignment'].items() if owner == fpga}
+                replicas = self.assignment.get('replication', {}).get('replica_instance_assignment', {})
+                expected.update(identity for identity, owner in replicas.items() if owner == fpga)
+                self.assertEqual({row['id'] for row in netlist['instances']}, expected)
+                for instance in netlist['instances']:
+                    observed.append(instance['id'])
+                    if instance['id'] in originals:
+                        for key, value in originals[instance['id']].items():
+                            self.assertEqual(instance[key], value)
+                for segment in netlist['nets']:
+                    if segment['source_kind'] != 'transport_shadow':
+                        continue
+                    incoming = [entry for entry in self.schedule['entries'] if entry['net'] == segment['original_net'] and entry['to'] == fpga]
+                    self.assertEqual(len(incoming), 1)
+                    self.assertEqual(segment['drivers'], [{'instance': '__emuflow_rx_' + incoming[0]['id'], 'port': 'shadow_out', 'bit': 0}])
+            self.assertEqual(len(observed), len(set(observed)))
+            endpoints = [endpoint for transport in artifacts['transports'].values() for endpoint in transport['endpoints']]
+            self.assertEqual({row['id'] for row in endpoints}, {'__emuflow_' + kind + '_' + entry['id'] for kind in ('tx','rx') for entry in self.schedule['entries']})
+            self.assertEqual(len(endpoints), 2 * len(self.schedule['entries']))
+            lanes = {row['schedule_entry']: row for row in artifacts['lane_map']['entries']}
+            for entry in self.schedule['entries']:
+                lane = lanes[entry['id']]
+                self.assertEqual((lane['link'],lane['from'],lane['to'],lane['slot'],lane['lane']), (entry['link'],entry['from'],entry['to'],entry['slot'],entry['lane']))
+            self.assertEqual(produced.audit_transport()['status'], 'pass')
 
     def test_large_sqlite_phase6_never_enters_python_graph_replay(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1133,38 +1073,54 @@ class Phase6Test(unittest.TestCase):
             )
             self.assertEqual(validation["status"], "pass")
 
-    def test_lane_map_corruption_is_rejected(self) -> None:
-        artifacts = build_split_artifacts(
-            self.ir, self.assignment, self.schedule, self.platform
-        )
-        broken = copy.deepcopy(artifacts)
-        broken["lane_map"]["entries"][0]["lane"] += 1
-        with self.assertRaisesRegex(ValidationError, "lane_map"):
-            validate_split_artifacts(
-                self.ir,
-                self.assignment,
-                self.schedule,
-                self.platform,
-                broken,
-            )
+    def test_transport_lane_endpoint_and_collision_corruption_are_rejected(self):
+        constraints = normalize_partition_constraints(None, self.ir, self.platform)
+        clusters = build_clusters(self.ir, constraints, cut_mode='sequential-only')
+        owners = {cluster['id']: ('fpga0' if any(identity in {'next_lut[0]', 'next_lut[2]', 'q_reg[0]', 'q_reg[2]'}
+                  for identity in cluster['instances']) else 'fpga1')
+                  for cluster in clusters['clusters']}
+        assignment = build_partition_assignment(self.ir, self.platform, clusters,
+            constraints, owners, provider='test-same-direction-collision', seed=0)
+        routes = route_system_native(assignment, self.platform,
+            normalize_route_constraints(None, self.platform, frame_slots=32),
+            executable=str(tlr_router()))
+        schedule = build_tdm_schedule(routes, self.platform)
+        routes_by_id = {route['id']: route for route in schedule['routes']}
+        for route in schedule['routes']:
+            route.pop('transport_round', None)
+        for completion in schedule['demand_completions']:
+            completion.pop('transport_round', None)
+            sinks = routes_by_id[completion['demand']]['sinks']
+            completion['sink_arrival_slots'] = {
+                entry['to']: entry['arrival_slot'] for entry in schedule['entries']
+                if entry['demand'] == completion['demand'] and entry['to'] in sinks}
+        for damage in ('lane', 'endpoint', 'collision'):
+            with self.subTest(damage=damage), NativeSplitFixture(self.ir, assignment, schedule, self.platform) as produced:
+                self.assertEqual(produced.audit_transport()['status'], 'pass')
+                with closing(sqlite3.connect(produced.transport)) as db, db:
+                    if damage == 'lane':
+                        changed = db.execute('UPDATE hops SET lane=lane+1 WHERE entry_id=(SELECT entry_id FROM hops ORDER BY entry_id LIMIT 1)')
+                    elif damage == 'endpoint':
+                        changed = db.execute("UPDATE hops SET net='foreign-logical-net' WHERE entry_id=(SELECT entry_id FROM hops ORDER BY entry_id LIMIT 1)")
+                    else:
+                        # This link has independent full-duplex directions; a
+                        # real collision must share direction as well as lane.
+                        collision_count = 'SELECT count(*) FROM (SELECT 1 FROM hops GROUP BY link_id,source_fpga,sink_fpga,slot,lane HAVING count(*)>1)'
+                        self.assertEqual(db.execute(collision_count).fetchone()[0], 0)
+                        first = db.execute('SELECT entry_id,link_id,source_fpga,sink_fpga,slot,lane,arrival_slot FROM hops ORDER BY entry_id LIMIT 1').fetchone()
+                        other = db.execute('SELECT entry_id,slot,lane,arrival_slot FROM hops WHERE entry_id!=? AND link_id=? AND source_fpga=? AND sink_fpga=? LIMIT 1', first[:4]).fetchone()
+                        self.assertIsNotNone(other)
+                        self.assertNotEqual(tuple(other[1:]), tuple(first[4:]))
+                        changed = db.execute('UPDATE hops SET slot=?,lane=?,arrival_slot=? WHERE entry_id=?', (*first[4:],other[0]))
+                        self.assertGreater(db.execute(collision_count).fetchone()[0], 0)
+                    self.assertEqual(changed.rowcount, 1)
+                with self.assertRaises(ValidationError):
+                    produced.audit_transport()
 
-    def test_producer_linear_validation_does_not_rebuild_split(self) -> None:
-        artifacts = build_split_artifacts(
-            self.ir, self.assignment, self.schedule, self.platform
-        )
-        with mock.patch(
-            "emuflow.netlist.build_split_artifacts",
-            side_effect=AssertionError("split reconstruction entered hot path"),
-        ):
-            validation = validate_split_artifacts(
-                self.ir,
-                self.assignment,
-                self.schedule,
-                self.platform,
-                artifacts,
-                reconstruct=False,
-            )
-        self.assertEqual(validation["status"], "pass")
+    def test_independent_split_validation_does_not_invoke_the_producer(self):
+        with NativeSplitFixture(self.ir, self.assignment, self.schedule, self.platform) as produced:
+            with mock.patch('emuflow.split_overlay.build_native_split', side_effect=AssertionError('split producer replayed')):
+                self.assertEqual(produced.validate_split()['status'], 'pass')
 
     def test_retired_round_barrier_register_input_route_is_rejected(self) -> None:
         constraints = normalize_partition_constraints(

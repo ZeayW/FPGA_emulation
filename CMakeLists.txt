@@ -243,6 +243,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/global_measurements.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/qor_report.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/global_events.sql"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/physical_coverage.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/boundary_identity.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/boundary_timing.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/logic_segment_timing.sql"
@@ -286,6 +287,11 @@ if(BUILD_TESTING)
   add_executable(emuflow_native_json_record_test "${CMAKE_SOURCE_DIR}/tests/native_json_record_test.cpp")
   target_link_libraries(emuflow_native_json_record_test PRIVATE emuflow_core)
   add_test(NAME emuflow_native_json_record COMMAND emuflow_native_json_record_test)
+  add_executable(emuflow_native_partition_hop_kernel_test
+    "${CMAKE_SOURCE_DIR}/tests/native_partition_hop_kernel_test.cpp")
+  target_link_libraries(emuflow_native_partition_hop_kernel_test PRIVATE emuflow_core)
+  add_test(NAME emuflow_native_partition_hop_kernel COMMAND emuflow_native_partition_hop_kernel_test)
+  set_tests_properties(emuflow_native_partition_hop_kernel PROPERTIES TIMEOUT 5)
   add_executable(emuflow_native_pipeline_api_test
     "${CMAKE_SOURCE_DIR}/tests/native_pipeline_api_test.cpp")
   target_link_libraries(emuflow_native_pipeline_api_test PRIVATE emuflow_core)
@@ -933,7 +939,7 @@ if(BUILD_TESTING)
     emuflow_python_tests
     PROPERTIES
       ENVIRONMENT
-        "PYTHONPATH=${CMAKE_SOURCE_DIR}/src:${CMAKE_SOURCE_DIR};EMUFLOW_NATIVE_ROOT=${EMUFLOW_INSTALL_ROOT}"
+        "PYTHONPATH=${CMAKE_SOURCE_DIR}/src:${CMAKE_SOURCE_DIR}:${CMAKE_SOURCE_DIR}/engines/openparf;EMUFLOW_NATIVE_ROOT=${EMUFLOW_INSTALL_ROOT}"
   )
 
   add_test(

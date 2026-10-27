@@ -11,16 +11,71 @@ from .emuir_storage import open_emuir_sqlite_read_only
 from .errors import ValidationError
 
 
-def _timing_instances(connection):
-    """Do not decode resources, attributes or LUT/RAM INIT data for STA."""
-    for row in connection.execute("""SELECT c.id,c.type,
+# Equality to one avoids integer casts: binary and decimal strings can equal
+# one only after optional zero padding. Keep the native stoll ASCII whitespace,
+# optional plus and decimal underscore rules; bools/reals are never parameters.
+_NEGATIVE_TIMING_CELLS = """
+WITH timing_parameters AS (
+    SELECT c.seq,c.type,json_type(p.value,'$.IS_C_INVERTED') AS kind,
+           json_extract(p.value,'$.IS_C_INVERTED') AS raw
+    FROM cell_records c LEFT JOIN payloads p ON p.seq=c.parameters_seq
+    WHERE c.type IN ('FDCE','FDPE','FDRE','FDSE')
+), timing_tokens AS (
+    SELECT *,trim(raw,char(9)||char(10)||char(11)||char(12)||char(13)||' ') AS token
+    FROM timing_parameters
+), timing_digits AS (
+    SELECT *,CASE WHEN substr(token,1,1)='+' THEN substr(token,2) ELSE token END AS digits
+    FROM timing_tokens
+), negative_timing_cells AS (
+    SELECT seq,type FROM timing_digits
+    WHERE (kind='integer' AND raw=1) OR
+          (kind='text' AND instr(raw,char(0))=0 AND digits<>''
+           AND digits NOT GLOB '*[^0-9_]*'
+           AND substr(digits,1,1)<>'_' AND substr(digits,-1,1)<>'_'
+           AND instr(digits,'__')=0 AND ltrim(replace(digits,'_',''),'0')='1')
+)
+"""
+
+
+def _timing_parameter_is_one(raw):
+    if type(raw) is int:
+        return raw == 1
+    if not isinstance(raw, str) or not raw or "\0" in raw:
+        return False
+    digits = raw.strip(" \t\n\v\f\r")
+    if digits.startswith("+"):
+        digits = digits[1:]
+    return bool(digits) and all(c in "0123456789_" for c in digits) and not (
+        digits.startswith("_") or digits.endswith("_") or "__" in digits
+    ) and digits.replace("_", "").lstrip("0") == "1"
+
+
+def _timing_rows(connection, *, representatives=False):
+    selected = ""
+    prefix = ""
+    if representatives:
+        prefix = _NEGATIVE_TIMING_CELLS + """, representatives AS (
+            SELECT min(seq) AS seq FROM cell_records GROUP BY type
+            UNION SELECT min(seq) FROM negative_timing_cells GROUP BY type
+        ) """
+        selected = "JOIN representatives chosen ON chosen.seq=c.seq"
+    return connection.execute(prefix + """SELECT c.seq,c.id,c.type,
         CASE WHEN c.type IN ('FDCE','FDPE','FDRE','FDSE') THEN p.value END AS parameters_json,
         k.value AS constants_json FROM cell_records c
         LEFT JOIN payloads p ON p.seq=c.parameters_seq
-        LEFT JOIN payloads k ON k.seq=c.constants_seq ORDER BY c.seq"""):
-        yield {"id": row["id"], "type": row["type"],
-               "parameters": {} if row["parameters_json"] is None else _decode(row["parameters_json"], "parameters"),
-               "constant_connections": _decode(row["constants_json"], "constants")}
+        LEFT JOIN payloads k ON k.seq=c.constants_seq """ + selected + " ORDER BY c.seq")
+
+
+def _timing_instance(row):
+    return {"id": row["id"], "type": row["type"],
+            "parameters": {} if row["parameters_json"] is None else _decode(row["parameters_json"], "parameters"),
+            "constant_connections": _decode(row["constants_json"], "constants")}
+
+
+def _timing_instances(connection):
+    """Do not decode resources, attributes or LUT/RAM INIT data for STA."""
+    for row in _timing_rows(connection):
+        yield _timing_instance(row)
 
 
 class _Rows:
@@ -120,9 +175,8 @@ class _TimingTypes(Mapping):
 
     @staticmethod
     def for_instance(instance):
-        from .opensta import _integer_parameter
         cell_type = instance["type"]
-        if cell_type in {"FDCE", "FDPE", "FDRE", "FDSE"} and _integer_parameter(instance, "IS_C_INVERTED", 0) == 1:
+        if cell_type in {"FDCE", "FDPE", "FDRE", "FDSE"} and _timing_parameter_is_one(instance.get("parameters", {}).get("IS_C_INVERTED")):
             return cell_type + "__NEG"
         return cell_type
 
@@ -142,7 +196,7 @@ class _TimingTypes(Mapping):
 
 
 class IndexedTimingView:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, include_ports=True):
         from .store_publication import bind_store_source, require_store_sources_unchanged
         self.source = bind_store_source(path, "emuir-compact-v2")
         self.connection = open_emuir_sqlite_read_only(path)
@@ -150,8 +204,16 @@ class IndexedTimingView:
             if self.connection.execute("PRAGMA user_version").fetchone()[0] != 2:
                 raise ValueError("indexed timing view requires compact EmuIR v2")
             self.connection.execute("PRAGMA cache_size=-65536")
-            self.value = compact_metadata(self.connection)
-            from .emuir_compact import _decode
+            if include_ports:
+                self.value = compact_metadata(self.connection)
+            else:
+                metadata = dict(self.connection.execute(
+                    "SELECT key,value FROM metadata WHERE key IN ('logical_schema','design_json')"))
+                self.value = {"schema": metadata["logical_schema"],
+                              "design": _decode(metadata["design_json"], "design metadata"),
+                              "ports": [], "warnings": [],
+                              "clocks": [_decode(row[0], "clock") for row in self.connection.execute(
+                                  "SELECT record_json FROM clocks ORDER BY seq")]}
             row = self.connection.execute("SELECT value FROM metadata WHERE key='record_counts_json'").fetchone()
             self.counts = _decode(row[0], "record counts") if row is not None else {}
             if set(self.counts) != {"cell_records", "net_records", "endpoint_records"} or any(
@@ -196,15 +258,8 @@ class IndexedTimingView:
     def representative_graph(self):
         # Match exactly the first-occurrence specialization used by the old
         # Xilinx adapter; additionally retain a negative-clock representative.
-        instances, types, negative = [], set(), set()
-        for seq, instance in enumerate(self.value["instances"]):
-            cell_type = instance["type"]
-            timing_type = _TimingTypes.for_instance(instance)
-            if cell_type not in types or (timing_type != cell_type and cell_type not in negative):
-                instances.append((seq, instance))
-                types.add(cell_type)
-                if timing_type != cell_type:
-                    negative.add(cell_type)
+        instances = [(row["seq"], _timing_instance(row))
+                     for row in _timing_rows(self.connection, representatives=True)]
         nets = []
         for seq, instance in instances:
             inputs, outputs = self.pins_for(seq)
@@ -220,8 +275,14 @@ class IndexedTimingView:
 
     def used_timing_types(self, timing_types):
         if timing_types is None:
-            return sorted({r[0] for r in self.connection.execute("SELECT DISTINCT type FROM cell_records")})
-        return sorted({timing_types.for_instance(i) for i in self.value["instances"]})
+            return [row[0] for row in self.connection.execute(
+                "SELECT DISTINCT type FROM cell_records ORDER BY type")]
+        if not isinstance(timing_types, _TimingTypes) or timing_types.view is not self:
+            raise ValidationError("timing-type policy belongs to another source")
+        return [row[0] for row in self.connection.execute(_NEGATIVE_TIMING_CELLS + """
+            SELECT DISTINCT CASE WHEN n.seq IS NULL THEN c.type ELSE c.type||'__NEG' END AS timing_type
+            FROM cell_records c LEFT JOIN negative_timing_cells n ON n.seq=c.seq
+            ORDER BY timing_type""")]
 
     def timing_connections(self):
         # Integer-owner index order allows a cursor merge; no global pin map.

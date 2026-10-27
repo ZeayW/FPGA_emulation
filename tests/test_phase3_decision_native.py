@@ -11,7 +11,7 @@ from emuflow.errors import ValidationError
 from emuflow.partition import (build_partition_assignment,
     validate_partition_artifacts_online, _cluster_assignment_summary)
 from emuflow.partition_init_native import initialize
-from emuflow.partition_pressure import build_partition_pressure_model
+from emuflow.phase3_pressure_native import build_native_pressure_model
 from tests.phase3_decision_reference import _select_patron_timing_assignment
 from emuflow.phase3_decision_native import select_assignment, audit_assignment
 from emuflow.store_publication import bind_store_source
@@ -31,8 +31,7 @@ def decision(inputs, tmp_path):
     initial = build_partition_assignment(ir, platform, clusters, constraints,
         owners, 'tritonpart', 0, _include_semantic_contract=False,
         _stream_semantic_records=True, _defer_derived_records=True)
-    model = build_partition_pressure_model(*args, independent_validation=False,
-        timing_database_path=timing, native_store_model=True)
+    model = build_native_pressure_model(*args, timing_database_path=timing)
     candidate, trace = run(args, model, initial, max_moves=12)
     return args, initial, candidate, trace
 
@@ -225,8 +224,7 @@ def test_original_nonlexical_part_coordinates_remain_a_borrowed_view(inputs, tmp
             _stream_semantic_records=True, _defer_derived_records=True)
     assert isinstance(initial['instance_assignment']._cluster_parts, _TranslatedPartColumn)
     args = (ir, platform, clusters, constraints, manifest, routes)
-    model = build_partition_pressure_model(*args, independent_validation=False,
-        timing_database_path=timing, native_store_model=True)
+    model = build_native_pressure_model(*args, timing_database_path=timing)
     candidate, trace = run(args, model, initial, max_moves=12)
     result = select_assignment(platform, clusters, initial, candidate)
     assert result['selection'] == _select_patron_timing_assignment(initial, candidate, trace)[1]

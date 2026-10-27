@@ -251,6 +251,33 @@ void ProjectExactBoundarySegments(const ArtifactRef& artifact,const std::string&
   db.Execute("DROP TABLE exact_cut_ordinals;DROP TABLE selected_exact_segments");artifact.RequireUnchanged();
 }
 
+void ProjectExactCoverageSegments(const ArtifactRef& artifact,const std::string& descriptor,
+                                  SqliteDatabase& db) {
+  auto manifest=Load(artifact,descriptor);
+  auto insert=db.Prepare("INSERT INTO expected_logic VALUES(?,?,?,?)");
+  U total=0;
+  for(unsigned part=0;part<manifest.parts.size();++part) {
+    const auto& section=manifest.sections.at("segments:"+std::to_string(part));Reader records(artifact,section);
+    for(U i=0;i<section.records;++i) {
+      const auto number=records.Read<std::uint32_t>();
+      const auto kind=records.Read<std::uint8_t>(),flags=records.Read<std::uint8_t>();
+      const auto source=records.Read<std::uint32_t>(),target=records.Read<std::uint32_t>();
+      Check(number<manifest.counts.segments && kind<=2 && !(flags&~1U),"coverage segment identity/flags disagree");
+      Check(kind==0?(source==kMissing && target<manifest.counts.nodes):
+          (!flags && source<manifest.counts.nodes && target<(kind==1?manifest.counts.nodes:manifest.counts.captures)),
+          "coverage segment coordinates disagree");
+      auto digits=std::to_string(number);
+      insert.BindText(1,"segment"+std::string(digits.size()<6?6-digits.size():0,'0')+digits);
+      insert.BindText(2,manifest.parts[part]);
+      insert.BindText(3,kind==0?"launch_to_tx":kind==1?"rx_to_tx":"rx_to_capture");
+      insert.BindInteger(4,flags);insert.Execute();++total;
+    }
+    records.Finish();
+  }
+  Check(total==manifest.counts.segments,"coverage segment population disagrees");
+  artifact.RequireUnchanged();
+}
+
 std::string ValidateExactBinaryArtifact(const ArtifactRef& artifact,const std::string& descriptor) {
   auto manifest=Load(artifact,descriptor);Validate(artifact,manifest);const auto& c=manifest.counts;
   std::map<std::string,JsonRecord> summary{{"status","pass"},{"schema",Schema(manifest.version)},

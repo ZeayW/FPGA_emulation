@@ -129,7 +129,6 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "examples/rtl/xilinx_hard_blocks_smoke.v",
     "src/native/tlr_router.cpp",
     "src/native/hop_partition_refiner.cpp",
-    "src/emuflow/partition_hops.py",
 
 
     "src/native/chimew_signal_grouper.cpp",

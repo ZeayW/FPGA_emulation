@@ -39,6 +39,27 @@ package and verifies its module/data inventory and default profile resources.
 It requires the Python install target to have been built, as in the normal
 root build. This check does not execute synthesis or physical implementation.
 
+## Native PATRON model and ownership
+
+PATRON v14 consumes the compact source, primary cluster columns and indexed
+TimingPathDB directly. Its Python graph reconstruction, packed pressure trees,
+text/pipe model writer, legacy output parser and full-trace replay flow are
+retired. Current typed model requests and read-only ownership borrowing remain
+in the narrow native host. Small native-model fact fixtures cover endpoint
+identity, multicast, duplex capacity, timing objectives and resource bounds;
+source-owned assignment validation separately checks membership and legality.
+
+## Native partition hop contracts
+
+Hop legality and repair consume compact EmuIR, the primary cluster store and
+source-bound ownership through the native stage. PATRON v14 and TritonPart
+retain independent original-endpoint, fixed-owner and resource audits. The
+Python numeric/text refiner, packed graph writer, result parser and standalone
+`phase3 refine-hops` command are retired. Board shortest routes and distances
+are bounded configuration helpers; they do not construct a circuit model.
+The retained C++ hop kernel has direct API tests for its large-instance repair
+guard, minimum-used-part repair and invalid sink rejection.
+
 ## Native system routing
 
 Phase 4 runs as `emuflow-native phase4 run ASSIGNMENT BOARD POLICY OUTPUT_DIR
@@ -69,10 +90,11 @@ Add `--compile-implementation native-control-v1` to the normal
 `emuflow multi-fpga compile` invocation to select the C++ one-shot controller.
 The CLI still resolves benchmark/BoardDB inputs, then sends bounded configuration
 to `emuflow-native compile REQUEST_JSON`. The controller chooses the phase order;
-it never calls the Python compile function. Ordinary RTL preparation, partitioning,
-system routing, exact scheduling and baseline splitting run in native phase
-processes. Timing preparation, Chimew and physical/signoff stage control retain
-isolated Python adapters while their complete stage ownership is migrated.
+it never calls the Python compile function. Ordinary RTL preparation, pre-placement timing, partitioning, system routing,
+exact scheduling and baseline splitting run in native phase processes. Bounded
+configuration preparation remains separate from those stage owners. Chimew and
+physical/signoff stage control retain isolated Python adapters while their complete
+stage ownership is migrated.
 The default remains `python-control-v1`, with the same provider, algorithm,
 seed and physical-policy defaults in both modes.
 
@@ -117,8 +139,8 @@ cache is not a phase publication.
 [native-compile-result.json](../schemas/native-compile-result-v2.schema.json)
 uses result v2 and records each stage implementation explicitly. TDM uses
 `native-exact-phase5-v1`; system routing uses `native-phase4-v1`; partitioning
-uses `native-phase3-v1`; the ordinary RTL
-frontend uses `native-rtl-frontend-v1`; baseline Phase 6 uses
+uses `native-phase3-v1`; pre-placement timing uses `native-phase2-v1`;
+the ordinary RTL frontend uses `native-rtl-frontend-v1`; baseline Phase 6 uses
 `native-baseline-phase6-v1`.
 Supplied JSON/prepared frontend modes, retained Chimew and remaining phases use
 `isolated-python-adapter-v1`. Native RTL preparation retains the current mapping
@@ -359,9 +381,10 @@ boundary semantics; `static-exact-combinational` requires the supported
 single-virtual-clock contract. Selecting `sequential-only` does not select an
 older PATRON version: v14 rejects that combination. Only v14 is supported;
 `--patron-algorithm-version` may explicitly seal 14 but cannot select a retired
-search. The `partition-pressure-reference` runner is removed; current independent
-model/objective and assignment validation remain. Old experiments use their
-matching Git revision. The
+search. The `partition-pressure-reference` runner is removed. Source-bound native
+assignment audits and small fixed model/objective fixtures remain; the retired
+full Python model replay is not a production proof of timing values. Old
+experiments use their matching Git revision. The
 redundant `--patron-flow-refinement` flag, Python argument and experiment-config
 key are retired; an explicit algorithm version determines its own refinement
 behavior. Published reports retain the derived field for validation and must
@@ -673,13 +696,14 @@ logs, and experiment records outside the public source tree. Consult CLI help
 for specialized diagnostics; do not treat an old run directory or a partial
 stage as a newly validated full flow.
 
-### PATRON input diagnostics
+### PATRON source-owned input
 
-PATRON runs through `emuflow-native phase3 refine-patron --typed-input INPUT OUTPUT`
-or the direct primary-store operation. The separate PATRON executable and text
-input format are retired. `EMUFLOW_PATRON_INPUT_COPY` explicitly requests an
-atomically published CRC-checked binary input copy for diagnosis; it is not an
-alternative text protocol. Detailed output traces require `--trace-output`.
+PATRON runs through `emuflow-native phase3 refine-patron-from-primary EMUIR TIMING PRIMARY INITIAL REQUEST OUTPUT`.
+The compact source, indexed timing and primary cluster ownership are consumed
+directly. The complete-model `refine-patron` and `refine-patron-from-store`
+commands, text/pipe model protocols and `EMUFLOW_PATRON_INPUT_COPY` diagnostic
+route are retired. Model-build and search summaries remain bounded; current
+output ownership is typed and source-bound.
 
 ### Retired partition providers
 

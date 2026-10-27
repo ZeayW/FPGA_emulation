@@ -11,7 +11,7 @@ from emuflow.native_compile import _request
 from emuflow.partition import (
     build_clusters, DEFAULT_PARTITION_CUT_MODE, DEFAULT_PATRON_ALGORITHM_VERSION,
 )
-from emuflow.partition_pressure import run_partition_pressure_native
+from emuflow.phase3_pressure_native import NativePressureModel
 from emuflow.phase3 import run_phase3
 
 
@@ -37,8 +37,8 @@ def test_api_and_native_request_share_the_same_defaults(tmp_path):
         assert parameters["patron_algorithm_version"].default == DEFAULT_PATRON_ALGORITHM_VERSION
         assert "patron_flow_refinement" not in parameters
     assert inspect.signature(build_clusters).parameters["cut_mode"].default == "static-exact-combinational"
-    assert inspect.signature(run_partition_pressure_native).parameters["algorithm_version"].default == 14
-    assert "flow_refinement" not in inspect.signature(run_partition_pressure_native).parameters
+    assert inspect.signature(NativePressureModel.refine).parameters["max_moves"].default is None
+    assert "flow_refinement" not in inspect.signature(NativePressureModel.refine).parameters
     value, _ = _request((), {"output_dir": tmp_path / "flow"})
     assert value["options"]["patron_algorithm_version"] == 14
     assert value["options"]["cut_mode"] == "static-exact-combinational"
@@ -56,5 +56,5 @@ def test_removed_python_switch_cannot_select_another_algorithm(tmp_path):
     with pytest.raises(TypeError, match="patron_flow_refinement"):
         run_phase3(tmp_path / "ir", tmp_path / "board", tmp_path / "phase3", patron_flow_refinement=True)
     with pytest.raises(TypeError, match="flow_refinement"):
-        run_partition_pressure_native(None, None, None, None, None, None, None, flow_refinement=True)
+        NativePressureModel.refine(None, None, flow_refinement=True)
     assert not (tmp_path / "phase3").exists()

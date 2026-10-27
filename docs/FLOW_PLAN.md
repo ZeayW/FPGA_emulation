@@ -117,42 +117,65 @@ ordered source-membership reducer independently checks every final weight.
 Neither operation transfers path or net-weight populations through Python.
 Derived weights retain their existing indexed schema and power-law parameters.
 
-The optional native one-shot controller runs TDM directly through an isolated
-native process, including BoardDB/route configuration preparation. Other phases
-retain isolated shared adapters. It exchanges bounded configuration, artifact paths
-and source-bound report references/projections; each phase releases its working state before the next
-process starts. The transitional Python data planes remain explicit. See
-[native compile control](USER_GUIDE.md#native-compile-control) for implementation
-selection and unsupported modes, and the [migration contract](PHASE3_NATIVE_MIGRATION.md)
-for the remaining native ownership requirements.
+The native one-shot controller runs the RTL frontend, pre-placement timing,
+partitioning, board routing, Static Exact TDM and baseline Phase 6 through native
+stage owners. Timing configuration carries a bounded primitive library, clock
+and benchmark I/O contract, and generation-bound source references. The native
+timing owner exports the circuit, qualifies and supervises OpenSTA, imports every
+original path, independently validates paths and weights, and atomically publishes
+one complete directory. It never calls the Python path extraction coordinator.
+Explicit prepared boundaries reuse their sealed indexed inputs; a missing native
+policy for new timing extraction is an error.
+
+Chimew, physical implementation and Phase 7C still have explicit stage adapters.
+Configuration preparation and detailed stage ownership are distinct: bounded
+Python configuration is not a circuit data plane, and isolated execution alone
+does not complete migration. The compiler continues to report
+`native_data_plane_complete=false` until those remaining owners and terminal
+qualification are complete. See [native compile control](USER_GUIDE.md#native-compile-control)
+and the [migration contract](PHASE3_NATIVE_MIGRATION.md).
+
+The remaining production boundaries are defined by execution responsibility,
+not language line counts or the presence of typed storage:
+
+| Boundary | Native responsibility | Remaining Python responsibility |
+| --- | --- | --- |
+| Phase 1–6 baseline | Complete frontend, pre-placement timing, partition, route, schedule and split stage owners | Bounded configuration, tool discovery, reports and explicit prepared-input control |
+| Phase 6 Chimew | Grouping/refinement/RUDY kernels and indexed baseline split | Lookahead and pin-planning orchestration, independent grouping/bank qualification and adapter generation |
+| Mapped physical inputs | Indexed Bookshelf pin/net writers and placement lowering | Mapped-index SQL projection, atomic/macro fact generation, geometry and window policy |
+| Placement and routing handoff | Typed certificate/handoff ownership checks and RWRoute exporter | Site/BEL/primitive checks, handoff record production and independent route connectivity/PIP validation |
+| Physical timing | Indexed evidence import, routed segment/endpoint construction and OpenSTA staging | Shared logic-segment/local-path query generation and Vivado descendant association |
+| Global timing | Full-assignment physical coverage, event binding, measurement import and original-path reduction | Runtime generation, engine supervision, complete signoff stage and final report assembly |
+
+Indexed atoms and ordinal safe names already avoid complete in-memory lists or
+name dictionaries. Local-path evidence already has a typed owner. These are not
+outstanding format migrations, although their query producers still require a
+native stage owner. Likewise, native global timing reduction does not imply that
+the complete signoff controller has migrated. The remaining closure sequence is
+shared physical query production, physical input/handoff and independent route
+validation, then complete physical/signoff control and retirement of their old
+production adapters. Chimew remains a maintained optional path with its own
+ownership and qualification requirement.
 
 ## Native route publication
 
-The current Phase 4 RouteStore v3 remains the canonical owner. After route,
-sink, edge, dependency, timing and candidate relations are inserted, the shared
-`phase4 seal-routes STORE REQUEST SUMMARY` operation reads the closed private
-store through ordered cursors. It returns only the existing logical SHA and
-five relation seals. No second database or full JSON document is produced.
-Python installs these bounded metadata values before the existing atomic
-selector publication and independent typed-store checks.
+The Phase 4 native stage reads the assignment index, constructs the current
+routing model, invokes the shared routing kernel, independently validates the
+result and publishes the current RouteStore v3 with its bounded selector/report.
+Its ordered sealer computes the existing logical identity and relation seals
+without constructing a graph JSON document. The explicit standalone seal operation
+uses that same core for independent audits; it is not another production route.
 
-The checked request is limited to 8 MiB, 65,536 header nodes and depth 64. It
-contains bounded header literals, document structure, and references/counts for
-large relations. It cannot carry route, demand, candidate or timing populations.
-The native consumer verifies the projected header against the store, actual
-ordered row coverage, child identities and source relation seals. Record JSON
-uses the shared serializer; already canonical literals use a streaming
-whitespace formatter that preserves string and number spellings. The resulting
-logical identity remains the existing sorted-key, indented JSON identity,
-independent of SQLite page layout. Timing and batch payloads remain in their
-owning relations; batches stream without a population-sized vector.
+## Physical evidence coverage
 
-The old Python seal cursor that reconstructed each route and selection solely
-for pretty JSON hashing is retired. Native failure rejects publication; there
-is no automatic Python fallback. The small explicit mapping/reference writer
-remains available for fixtures and supplied legacy data. This does not migrate
-all Phase 4 metadata preparation, route-output parsing or routing validation to
-C++; those remaining data-plane boundaries are separate from this seal.
+Phase 7C checks every scheduled TX/RX endpoint and every assignment semantic
+segment against the original typed physical owners. Configuration-stable constants
+retain their structural zero-delay evidence. The native owner uses ordered joins
+and independently audits its temporary relations, including actual ScheduleStore
+record seals. The permanent coverage certificate contains counts, logical seals
+and source references, rather than another endpoint, logic or board-hop database.
+Its temporary relations close before OpenSTA starts. A terminal audit or explicit
+diagnostic replay reconstructs them from the authoritative typed owners.
 
 ## Logical model
 

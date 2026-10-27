@@ -23,13 +23,13 @@ from emuflow.partition_ir import load_partition_ir
 from emuflow.platform import Platform, FpgaNode, BoardLink
 from emuflow.resources import RESOURCE_FIELDS
 from tests.native_build import emuflow_native
-from tests import test_partition_pressure as reference_fixture
+from tests import partition_pressure_fixture as reference_fixture
 
 
 @pytest.fixture(params=['normal', 'unicode', 'nul'])
 def configuration(request, tmp_path, monkeypatch):
     monkeypatch.setenv('EMUFLOW_NATIVE_ROOT', str(emuflow_native().parent.parent))
-    fixture = reference_fixture.PartitionPressureTest()
+    fixture = reference_fixture.PressureFixture()
     fixture.setUp()
     value = copy.deepcopy(fixture.ir.value)
     if request.param != 'normal':

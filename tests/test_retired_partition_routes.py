@@ -69,20 +69,20 @@ def test_retired_patron_version_is_rejected_before_any_frontend_or_graph_loading
     assert not (tmp_path / "flow").exists()
 
 
-@pytest.mark.parametrize("version,flags,message", [(6, 1, "flow version"), (7, 3, "flow version"), (8, 3, "flow version"), (9, 3, "flow version"), (10, 3, "flow version"), (11, 7, "flow version"), (14, 7, "flags")])
-def test_native_rejects_feedback_protocol_before_reading_a_graph(tmp_path, version, flags, message):
-    import struct
+@pytest.mark.parametrize("options", [[], ["--typed-input"],
+    ["--typed-input", "--summary-output", "--typed-output"], ["--trace-output"]])
+def test_retired_native_snapshot_command_rejects_all_formats_without_opening_input(tmp_path, options):
     import subprocess
     from tests.native_build import emuflow_native
-    source = tmp_path / "input.bin"
-    source.write_bytes(struct.pack("<8sIIII", b"EMPATRN1", 1, 0x01020304, version, flags))
     output = tmp_path / "published.bin"
     output.write_bytes(b"previous published result")
-    result = subprocess.run([str(emuflow_native()), "phase3", "refine-patron", "--summary-output",
-                             "--typed-output", "--typed-input", str(source), str(output)],
+    result = subprocess.run([str(emuflow_native()), "phase3", "refine-patron", *options,
+                             str(tmp_path / "missing-input"), str(output)],
                             text=True, capture_output=True, timeout=10)
-    assert result.returncode != 0 and message in result.stderr
+    assert result.returncode == 2
     assert output.read_bytes() == b"previous published result"
+    assert not Path(str(output) + ".order").exists()
+    assert not Path(str(output) + ".summary.json").exists()
 
 
 @pytest.mark.parametrize('option', ['retain_diagnostics', 'retain_patron_baseline',

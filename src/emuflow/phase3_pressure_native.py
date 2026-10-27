@@ -78,7 +78,8 @@ class NativePressureModel(dict):
     implementation_id = "native-primary-store-model-v2"
 
     def __init__(self, ir, platform, clusters, constraints, timing, routes, timing_path):
-        from . import partition_pressure as ref
+        from . import patron_policy as ref
+        from .partition_topology import _shortest_routes, _capacity_key_by_arc
         from .partition import active_partition_fpgas, transported_cut_classes_for_clusters
         from .partition_limits import planning_resource_capacities
         from .routing import build_directed_graph
@@ -97,6 +98,7 @@ class NativePressureModel(dict):
         self.platform = platform
         self.clusters = clusters["clusters"]
         self.constraints = constraints
+        self.cluster_artifact = clusters
         self.routes = routes
         self.timing_path = sta_path_database_payload_path(timing_path, timing)
         self.generations = (native_file_generation(ir.path), native_file_generation(self.timing_path))
@@ -118,7 +120,7 @@ class NativePressureModel(dict):
         links = {link.id: link for link in platform.links}
         self.domains = [dict(value, lanes=links[value["link"]].transport_bits_per_cycle_per_direction)
                         for _key, value in sorted(capacities.items())]
-        self.small_route_model = {"capacities": self.domains, "shortest_routes": ref._shortest_routes(platform, routes)}
+        self.small_route_model = {"capacities": self.domains, "shortest_routes": _shortest_routes(platform, routes)}
 
     def _write_initial_ownership(self, path, initial):
         from .partition import _PackedClusterAssignment
@@ -148,7 +150,8 @@ class NativePressureModel(dict):
         return current.part_ids
 
     def write_requests(self, root, initial, max_moves):
-        from . import partition_pressure as ref
+        from . import patron_policy as ref
+        from .partition_topology import _shortest_routes, _capacity_key_by_arc
         from .routing import route_link_delay_coefficients_ns, route_link_delay_ns
         if self.primary_artifact is None:
             raise ValidationError("selected direct primary ownership is unavailable")
@@ -174,7 +177,7 @@ class NativePressureModel(dict):
             initial_parts = self._write_initial_ownership(columns, initial)
         parts = [fpga.id for fpga in self.partition_fpgas]
         domain_index = {domain["key"]: i for i, domain in enumerate(self.domains)}
-        arc_domain = ref._capacity_key_by_arc(self.small_route_model)
+        arc_domain = _capacity_key_by_arc(self.small_route_model)
         links = {link.id: link for link in self.platform.links}
         writer = _Writer(board)
         try:
@@ -231,6 +234,8 @@ class NativePressureModel(dict):
         from .store_publication import StoreSource, require_store_sources_unchanged
         columns, board = self.write_requests(root, initial, max_moves)
         executable = resolve_native_executable("emuflow-native", executable)
+        if Path(executable).name != 'emuflow-native':
+            raise ValidationError('native PATRON requires the unified source-owned entry')
         proof_path = root / 'producer.json'
         command = [executable, "--report", str(proof_path), "phase3", "refine-patron-from-primary",
                    str(self.ir.path), str(self.timing_path), str(self.primary_artifact),
@@ -292,3 +297,136 @@ class NativePressureModel(dict):
                 'native_output_source': originals[0], 'native_order_source': originals[1],
                 'native_primary_source': StoreSource(Path(self.primary_artifact).resolve(),'partition-cluster-columns-v2',self.primary_generation),
                 'native_emuir_source': StoreSource(Path(self.ir.path).resolve(),'emuir-compact-v2',self.generations[0])}
+
+    def refine(self, initial, *, max_moves=None, timeout_seconds=3600, executable=None):
+        """Borrow current typed native ownership; no reference model or parser fallback."""
+        import os
+        from .native_columns import _ClusterScratch
+        from .partition import build_partition_assignment
+        limit = len(self.clusters) if max_moves is None else max_moves
+        if type(limit) is not int or limit < 0:
+            raise ValidationError('native PATRON max_moves is invalid')
+        if type(timeout_seconds) is not int or timeout_seconds <= 0:
+            raise ValidationError('native PATRON timeout is invalid')
+        workspace = _ClusterScratch(prefix='emuflow-patron-')
+        root = Path(workspace.name)
+        retained = False
+        indexes = None
+        try:
+            output = root / 'patron.out'
+            environment = {key: value for key, value in os.environ.items()
+                           if not key.startswith('EMUFLOW_PATRON_') or key == 'EMUFLOW_PATRON_CONTAINER_BINARY'}
+            indexes = self.execute(root, output, initial, limit, timeout_seconds, environment,
+                                   executable=executable)
+            owners, initial_metrics, final_metrics, summary = _borrow_result(output, indexes, workspace)
+            retained = True
+            for name in ('initial.bin', 'board.bin'):
+                (root / name).unlink(missing_ok=True)
+            final = build_partition_assignment(self.ir, self.platform,
+                self.cluster_artifact,
+                self.constraints, owners, provider='patron-predictive-timing-flow-native-v14',
+                seed=initial.get('seed', 0), _include_semantic_contract=False,
+                _stream_semantic_records=True, _defer_derived_records=True)
+            trace = {'schema': 'emuflow.partition-pressure-trace/v14',
+                     'provider': 'patron-predictive-timing-flow-native-v14',
+                     'mode': 'endpoint-exact-critical-flow-v14',
+                     'initial_metrics': initial_metrics, 'final_metrics': final_metrics,
+                     'move_count': summary['moves'], 'batch_count': summary['batches'],
+                     'change_count': summary['changes'], 'trace_storage': 'summary-only',
+                     'native_input_transport': self.native_input['transport'],
+                     'native_input_bytes': self.native_input['bytes'],
+                     'native_input_records': self.native_input['records'],
+                     'model_implementation_id': self.implementation_id,
+                     'model_counts': self.native_counts,
+                     'native_model_metrics': self.native_input['metrics']}
+            return final, trace
+        finally:
+            if indexes is not None:
+                indexes['clusters'].close()
+            if not retained:
+                workspace.cleanup()
+
+
+def build_native_pressure_model(ir, platform, clusters, constraints, timing, routes, *, timing_database_path):
+    """Construct only the current source-owned native model configuration."""
+    if getattr(clusters.get('clusters'), 'native_artifact', None) is None:
+        raise ValidationError('native primary artifact reference is unavailable')
+    if not supports_native_pressure_model(ir, clusters, timing):
+        raise ValidationError('native pressure requires current compact source, primary columns and indexed timing')
+    return NativePressureModel(ir, platform, clusters, constraints, timing, routes, timing_database_path)
+
+
+def _borrow_result(path, indexes, workspace):
+    """Read a fixed-size summary and lend the source-bound ownership column."""
+    import math
+    from .native_columns import _ColumnOwner, _MappedColumn
+    from .partition import _PackedClusterAssignment
+    from .store_publication import require_store_sources_unchanged
+    keys = ('native_output_source', 'native_order_source', 'native_primary_source', 'native_emuir_source')
+    sources = tuple(indexes[key] for key in keys)
+    require_store_sources_unchanged(sources)
+    parts = tuple(indexes['parts'])
+    if not parts or parts != tuple(sorted(set(parts))) or sources[0].path != path.resolve():
+        raise ValidationError('native PATRON mapped ownership binding disagrees')
+    try:
+        with path.open('rb') as stream:
+            data = mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ)
+    except (OSError, ValueError) as error:
+        raise ValidationError('native PATRON typed result is unreadable') from error
+    retained = False
+    try:
+        offset = 0
+        def take(fmt):
+            nonlocal offset
+            size = struct.calcsize(fmt)
+            if offset + size > len(data):
+                raise ValidationError('native PATRON typed result is truncated')
+            values = struct.unpack_from(fmt, data, offset)
+            offset += size
+            return values
+        magic, version, algorithm, length = take('<QIII')
+        if (magic, version, algorithm) != (0x3154554F54415045, 1, 14) or length > 256:
+            raise ValidationError('native PATRON typed result header is invalid')
+        if data[offset:offset+length] != b'endpoint-exact-critical-flow-v14':
+            raise ValidationError('native PATRON typed result mode is invalid')
+        offset += length
+        before, after = take('<8d'), take('<8d')
+        capacity, path_max = take('<4q'), take('<4q')
+        moves, batches, changes, detail = take('<3QI')
+        count = take('<Q')[0]
+        if (detail or count != len(indexes['clusters'])
+                or any(value < 0 for value in (*capacity, *path_max))
+                or len(data) != offset + 4 * count + 4):
+            raise ValidationError('native PATRON typed result summary is invalid')
+        checksum = 0
+        for begin in range(0, len(data)-4, 1024*1024):
+            checksum = zlib.crc32(data[begin:min(begin+1024*1024, len(data)-4)], checksum)
+        if checksum != struct.unpack_from('<I', data, len(data)-4)[0]:
+            raise ValidationError('native PATRON typed result checksum disagrees')
+        def metrics(values, selected):
+            if not all(math.isfinite(value) for value in values):
+                raise ValidationError('native PATRON objective is invalid')
+            result = dict(zip(('negative_paths', 'maximum_predicted_tdm_ratio',
+                'maximum_capacity_domain_load', 'total_path_partition_transitions',
+                'total_bit_hops', 'cut_bits'), (int(value) for value in values[2:])))
+            result.update(worst_normalized_slack=-values[0],
+                total_negative_normalized_slack=-values[1], objective_key=list(values),
+                transport_capacity_violations=capacity[2*selected],
+                transport_capacity_excess_bits=capacity[2*selected+1],
+                maximum_path_hops=path_max[2*selected], maximum_path_tdm_ratio_sum=path_max[2*selected+1])
+            return result
+        initial_metrics, final_metrics = metrics(before, 0), metrics(after, 1)
+        require_store_sources_unchanged(sources)
+        owner = _ColumnOwner(data, workspace)
+        result = object.__new__(_PackedClusterAssignment)
+        result.part_ids = parts
+        result.part_indices = _MappedColumn(owner, offset, count, 'I')
+        result.native_output_column = result.part_indices
+        result.native_output_parts = parts
+        for key in keys:
+            setattr(result, key, indexes[key])
+        retained = True
+        return result, initial_metrics, final_metrics, {'moves': moves, 'batches': batches, 'changes': changes}
+    finally:
+        if not retained:
+            data.close()

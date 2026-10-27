@@ -295,7 +295,7 @@ def test_real_chimew_kernels_survive_split_physical_signoff_control_boundaries(
 def test_native_cpp_controller_carries_real_device_state_across_processes(
     case, tmp_path, tamper
 ):
-    """The C++ owner, Phase 3/4/5 and real codec run; other phase bodies are doubles."""
+    """Native Phase 3/4/5 and real codec; timing is an explicit prepared-boundary double."""
     import subprocess
     from tests.native_build import emuflow_native
     from tests.test_native_compile import fixture_request

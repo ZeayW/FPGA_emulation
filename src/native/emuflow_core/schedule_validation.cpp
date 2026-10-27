@@ -1,4 +1,5 @@
 #include "emuflow_core/schedule_validation.hpp"
+#include "emuflow_core/bounded_json.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/hash.hpp"
 #include "emuflow_core/json_record.hpp"
@@ -189,6 +190,82 @@ std::vector<std::uint32_t> DependencyOrder(const std::vector<Route>& routes) {
   Check(result.size()==routes.size(),"cross-layer timing dependency graph is cyclic");return result;
 }
 }  // namespace
+
+void AuditScheduleStoreSeal(SqliteDatabase& db,const std::string& encoded_sections,
+    const std::string& logical,const std::string& pretty) {
+  auto metadata=db.Prepare("SELECT value FROM metadata WHERE key='header'");
+  Check(metadata.Step(),"schedule header metadata missing");BoundedJson parsed_header(metadata.TypedText(0));
+  auto header=parsed_header.Fields();
+  BoundedJson parsed_sections(encoded_sections,65536);
+  parsed_sections.Keys({"demand_completions","domain_schedules","entries","routes"});
+  std::map<std::string,Seal> sections;
+  for(const auto& field:parsed_sections.Fields()) {
+    BoundedJson row(field.second,1024);row.Keys({"records","sha256"});
+    const auto count=row.Integer("records");const auto hash=row.Text("sha256");
+    Check(count>=0 && hash.size()==64 && hash.find_first_not_of("0123456789abcdef")==std::string::npos,"invalid schedule section seal");
+    sections.emplace(field.first,Seal{static_cast<std::uint64_t>(count),hash});
+  }
+  for(const auto& digest:{logical,pretty})Check(digest.size()==64 && digest.find_first_not_of("0123456789abcdef")==std::string::npos,"invalid schedule logical seal");
+  auto declared=db.Prepare("SELECT json_extract(value,'$') FROM metadata WHERE key='logical_sha256'");
+  Check(declared.Step() && declared.TypedText(0)==logical,"schedule logical metadata disagrees");
+  LogicalSeals seals(header,sections);
+  seals.Begin("demand_completions");
+  {
+    auto rows=db.Prepare("SELECT seq,demand,net,source_ready_slot,completion_slot FROM schedule_completions ORDER BY seq");
+    auto children=db.Prepare("SELECT completion_seq,seq,sink_fpga,arrival_slot FROM schedule_completion_arrivals ORDER BY completion_seq,seq");
+    bool child=children.Step();std::uint64_t seq=0;
+    while(rows.Step()) {
+      Check(Number(rows,0)==seq,"schedule completion sequence disagrees");Object arrivals;std::uint64_t ordinal=0;
+      while(child && Number(children,0)==seq) {
+        Check(ordinal<4096 && Number(children,1)==ordinal++,"schedule completion child sequence exceeds board bound");
+        Check(arrivals.emplace(Text(children,2),Number(children,3)).second,"duplicate schedule completion sink");child=children.Step();
+      }
+      Check(!child || Number(children,0)>seq,"orphan schedule completion child");
+      seals.Record(JsonRecord(Object{{"demand",Text(rows,1)},{"net",Text(rows,2)},{"source_ready_slot",Number(rows,3)},
+          {"completion_slot",Number(rows,4)},{"sink_arrival_slots",std::move(arrivals)}}).Encode());++seq;
+    }
+    Check(!child,"orphan schedule completion child");
+  }seals.End();
+  seals.Begin("domain_schedules");
+  {
+    auto rows=db.Prepare("SELECT seq,record_json FROM records WHERE section='domain_schedules' ORDER BY seq");std::uint64_t seq=0;
+    while(rows.Step()){Check(Number(rows,0)==seq++,"schedule domain sequence disagrees");seals.Record(Text(rows,1));}
+    auto extra=db.Prepare("SELECT 1 FROM records WHERE section!='domain_schedules' LIMIT 1");Check(!extra.Step(),"unknown or duplicated schedule section");
+  }seals.End();
+  seals.Begin("entries");
+  {
+    auto rows=db.Prepare("SELECT seq,entry_id,demand,net,hop,link_id,source_fpga,sink_fpga,capacity_key,slot,lane,ready_slot,arrival_slot,tdm_ratio FROM schedule_entries ORDER BY seq");std::uint64_t seq=0;
+    while(rows.Step()) {
+      Check(Number(rows,0)==seq++,"schedule entry sequence disagrees");
+      Object record{{"id",Text(rows,1)},{"demand",Text(rows,2)},{"net",Text(rows,3)},{"hop",Number(rows,4)},
+          {"link",Text(rows,5)},{"from",Text(rows,6)},{"to",Text(rows,7)},{"capacity_key",Text(rows,8)},
+          {"slot",Number(rows,9)},{"lane",Number(rows,10)},{"ready_slot",Number(rows,11)},{"arrival_slot",Number(rows,12)}};
+      if(!rows.IsNull(13))record.emplace("tdm_ratio",Number(rows,13));seals.Record(JsonRecord(std::move(record)).Encode());
+    }
+  }seals.End();
+  seals.Begin("routes");
+  {
+    auto rows=db.Prepare("SELECT seq,demand,net,source_fpga FROM schedule_routes ORDER BY seq");
+    auto sinks=db.Prepare("SELECT route_seq,seq,sink_fpga FROM schedule_route_sinks ORDER BY route_seq,seq");
+    auto edges=db.Prepare("SELECT route_seq,seq,link_id,source_fpga,sink_fpga FROM schedule_route_edges ORDER BY route_seq,seq");
+    bool sink=sinks.Step(),edge=edges.Step();std::uint64_t seq=0;
+    while(rows.Step()) {
+      Check(Number(rows,0)==seq,"schedule route sequence disagrees");Array sink_records,edge_records;
+      while(sink && Number(sinks,0)==seq) {
+        Check(sink_records.size()<4096 && Number(sinks,1)==sink_records.size(),"schedule route sink sequence exceeds board bound");
+        sink_records.emplace_back(Text(sinks,2));sink=sinks.Step();
+      }
+      while(edge && Number(edges,0)==seq) {
+        Check(edge_records.size()<4096 && Number(edges,1)==edge_records.size(),"schedule route edge sequence exceeds board bound");
+        edge_records.emplace_back(Object{{"link",Text(edges,2)},{"from",Text(edges,3)},{"to",Text(edges,4)}});edge=edges.Step();
+      }
+      Check((!sink || Number(sinks,0)>seq) && (!edge || Number(edges,0)>seq),"orphan schedule route child");
+      seals.Record(JsonRecord(Object{{"id",Text(rows,1)},{"net",Text(rows,2)},{"source",Text(rows,3)},
+          {"sinks",std::move(sink_records)},{"tree_edges",std::move(edge_records)}}).Encode());++seq;
+    }
+    Check(!sink && !edge,"orphan schedule route child");
+  }seals.End();seals.Finish(logical,pretty);
+}
 
 void ValidateExactSchedule(const std::vector<ArtifactRef>& inputs,const std::string& summary) {
   Check(inputs.size()==4,"schedule validation input coverage disagrees");
