@@ -826,6 +826,7 @@ def prepare_local_path_query_inputs(
         assignment = read_phase3_assignment_view(
             assignment_path,
             include_instance_assignment=True,
+            include_semantic_contract=False,
         )
     database = database or read_json(path_database_path)
     if routes is None:
