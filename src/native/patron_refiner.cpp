@@ -230,12 +230,17 @@ class SparsePathMembership {
             "duplicate PATRON domain/path dependency");
   }
 
-  void append_to(std::vector<int>& output) const {
+  template <typename Callback>
+  void for_each(Callback callback) const {
     require(finalized_, "PATRON domain/path population is not finalized");
     for (int path : base_) {
-      if (!removed_.count(path)) output.push_back(path);
+      if (!removed_.count(path)) callback(path);
     }
-    output.insert(output.end(), added_.begin(), added_.end());
+    for (int path : added_) callback(path);
+  }
+
+  void append_to(std::vector<int>& output) const {
+    for_each([&](int path) { output.push_back(path); });
   }
 
  private:
@@ -243,6 +248,41 @@ class SparsePathMembership {
   std::vector<int> base_;
   std::set<int> added_;
   std::set<int> removed_;
+};
+
+// Several changed nets and ratio domains can reach the same timing path.
+// Keep that union bounded by the path population instead of sorting a list
+// containing one copy for every incidence. Reset only the previous union;
+// small candidates must not clear the entire timing population either.
+class AffectedPathSet {
+ public:
+  void begin(int paths) {
+    if (marked_.empty()) marked_.assign(paths, 0);
+    require(marked_.size() == static_cast<std::size_t>(paths),
+            "PATRON affected path population changed");
+    for (int path : paths_) marked_[path] = 0;
+    paths_.clear();
+  }
+
+  void add(int path) {
+    require(path >= 0 && static_cast<std::size_t>(path) < marked_.size(),
+            "invalid PATRON affected path identity");
+    if (!marked_[path]) {
+      marked_[path] = 1;
+      paths_.push_back(path);
+    }
+  }
+
+  const std::vector<int>& sorted() {
+    std::sort(paths_.begin(), paths_.end());
+    return paths_;
+  }
+
+  bool contains(int path) const { return marked_[path] != 0; }
+
+ private:
+  std::vector<unsigned char> marked_;
+  std::vector<int> paths_;
 };
 
 struct Transition {
@@ -453,6 +493,7 @@ struct ProxyState {
   std::vector<ProxyNetState> net;
   std::vector<ProxyPathState> path;
   std::vector<SparsePathMembership> domain_paths;
+  AffectedPathSet affected_paths;
   SparsePathOrder<std::pair<double, int>> slack_path_order;
   SparsePathOrder<std::pair<long long, int>> hop_path_order;
   SparsePathOrder<std::pair<long long, int>> ratio_sum_path_order;
@@ -1515,23 +1556,11 @@ std::vector<int> diagnose_flow_corridors(
   require(!opposite_side[edge_left] && opposite_side[edge_right],
           "flow corridor topology sides are inconsistent");
   const auto consider_dual_improving
-      = [&](const std::vector<int>& assignment, bool capacity_compatible) {
-          if (!capacity_compatible
-              || !proxy_transport_feasible(model, assignment)) {
-            return;
-          }
-          std::vector<int> counts(model.parts, 0);
-          for (int part : assignment) {
-            require(part >= 0 && part < model.parts,
-                    "flow candidate part is invalid");
-            ++counts[part];
-          }
-          if (std::count_if(counts.begin(), counts.end(),
-                            [](int count) { return count > 0; })
-              < model.min_used_parts) {
-            return;
-          }
-          ProxyState candidate = build_proxy_state(model, &assignment);
+      = [&](const ProxyState& candidate, bool capacity_compatible) {
+          // The caller has already checked transport/minimum-part legality
+          // and built this exact assignment for scoring. Reuse that state:
+          // rebuilding it scans every cluster, net and timing path again.
+          if (!capacity_compatible) return;
           if (!less_ranked(candidate.evaluation.ranked,
                            state.evaluation.ranked)) {
             return;
@@ -1551,6 +1580,84 @@ std::vector<int> diagnose_flow_corridors(
       = model.flow_max_legal_candidates;
   const int maximum_polish_moves
       = model.flow_max_polish_moves;
+  // Immutable corridor discovery is shared by all target parts and
+  // movement-cost passes; each candidate still gets its own flow/assignment.
+  std::set<int> boundary_set;
+  for (int net = 0; net < model.nets; ++net) {
+    if (state.net[net].payload.domain_count(cover_domain) == 0) {
+      continue;
+    }
+    for (int cluster : model.net[net].drivers) {
+      boundary_set.insert(cluster);
+    }
+    for (int cluster : model.net[net].sinks) {
+      boundary_set.insert(cluster);
+    }
+  }
+  std::vector<int> boundary(boundary_set.begin(), boundary_set.end());
+  std::sort(boundary.begin(), boundary.end(), [&](int left, int right) {
+    return std::tie(exposure[right], left)
+           < std::tie(exposure[left], right);
+  });
+
+  std::vector<int> distance(model.clusters, -1);
+  std::queue<int> work;
+  int corridor_count = 0;
+  const auto try_add = [&](int cluster, int candidate_distance) {
+    if (distance[cluster] >= 0
+        || corridor_count >= maximum_corridor_clusters
+        || model.cluster[cluster].fixed >= 0) {
+      return false;
+    }
+    distance[cluster] = candidate_distance;
+    work.push(cluster);
+    ++corridor_count;
+    return true;
+  };
+  for (int cluster : boundary) {
+    if (corridor_count >= maximum_corridor_clusters) {
+      break;
+    }
+    try_add(cluster, 0);
+  }
+  while (!work.empty()) {
+    const int cluster = work.front();
+    work.pop();
+    if (distance[cluster] >= corridor_distance) {
+      continue;
+    }
+    std::set<int> neighbor_set;
+    for (int net : cluster_nets[cluster]) {
+      neighbor_set.insert(model.net[net].drivers.begin(),
+                          model.net[net].drivers.end());
+      neighbor_set.insert(model.net[net].sinks.begin(),
+                          model.net[net].sinks.end());
+    }
+    std::vector<int> neighbors(neighbor_set.begin(), neighbor_set.end());
+    std::sort(neighbors.begin(), neighbors.end(), [&](int left, int right) {
+      return std::tie(exposure[right], left)
+             < std::tie(exposure[left], right);
+    });
+    for (int neighbor : neighbors) {
+      if (opposite_side[state.assignment[neighbor]]
+          == opposite_side[state.assignment[cluster]]) {
+        try_add(neighbor, distance[cluster] + 1);
+      }
+    }
+  }
+
+  std::vector<int> corridor;
+  for (int cluster = 0; cluster < model.clusters; ++cluster) {
+    if (distance[cluster] >= 0) {
+      corridor.push_back(cluster);
+    }
+  }
+  std::set<int> corridor_nets;
+  for (int cluster : corridor) {
+    corridor_nets.insert(cluster_nets[cluster].begin(),
+                         cluster_nets[cluster].end());
+  }
+
   // Keep the already resource-legal assignment as the deterministic
   // secondary objective.  A zero-cost side preference lets an otherwise
   // equivalent net cut move millions of clusters onto one topology side;
@@ -1565,85 +1672,10 @@ std::vector<int> diagnose_flow_corridors(
     if (!opposite_side[pair_target]) {
       continue;
     }
-    std::set<int> boundary_set;
-    for (int net = 0; net < model.nets; ++net) {
-      if (state.net[net].payload.domain_count(cover_domain) == 0) {
-        continue;
-      }
-      for (int cluster : model.net[net].drivers) {
-        boundary_set.insert(cluster);
-      }
-      for (int cluster : model.net[net].sinks) {
-        boundary_set.insert(cluster);
-      }
-    }
-    std::vector<int> boundary(boundary_set.begin(), boundary_set.end());
-    std::sort(boundary.begin(), boundary.end(), [&](int left, int right) {
-      return std::tie(exposure[right], left)
-             < std::tie(exposure[left], right);
-    });
-
-    std::vector<int> distance(model.clusters, -1);
-    std::queue<int> work;
-    int corridor_count = 0;
-    const auto try_add = [&](int cluster, int candidate_distance) {
-      if (distance[cluster] >= 0
-          || corridor_count >= maximum_corridor_clusters
-          || model.cluster[cluster].fixed >= 0) {
-        return false;
-      }
-      distance[cluster] = candidate_distance;
-      work.push(cluster);
-      ++corridor_count;
-      return true;
-    };
-    for (int cluster : boundary) {
-      if (corridor_count >= maximum_corridor_clusters) {
-        break;
-      }
-      try_add(cluster, 0);
-    }
-    while (!work.empty()) {
-      const int cluster = work.front();
-      work.pop();
-      if (distance[cluster] >= corridor_distance) {
-        continue;
-      }
-      std::set<int> neighbor_set;
-      for (int net : cluster_nets[cluster]) {
-        neighbor_set.insert(model.net[net].drivers.begin(),
-                            model.net[net].drivers.end());
-        neighbor_set.insert(model.net[net].sinks.begin(),
-                            model.net[net].sinks.end());
-      }
-      std::vector<int> neighbors(neighbor_set.begin(), neighbor_set.end());
-      std::sort(neighbors.begin(), neighbors.end(), [&](int left, int right) {
-        return std::tie(exposure[right], left)
-               < std::tie(exposure[left], right);
-      });
-      for (int neighbor : neighbors) {
-        if (opposite_side[state.assignment[neighbor]]
-            == opposite_side[state.assignment[cluster]]) {
-          try_add(neighbor, distance[cluster] + 1);
-        }
-      }
-    }
-
-    std::vector<int> corridor;
-    for (int cluster = 0; cluster < model.clusters; ++cluster) {
-      if (distance[cluster] >= 0) {
-        corridor.push_back(cluster);
-      }
-    }
     if (corridor.empty()) {
       std::cerr << "PATRON_FLOW_CORRIDOR pair=" << edge_left << ':'
                 << pair_target << " status=empty\n";
       continue;
-    }
-    std::set<int> corridor_nets;
-    for (int cluster : corridor) {
-      corridor_nets.insert(cluster_nets[cluster].begin(),
-                           cluster_nets[cluster].end());
     }
     const int source_node = 0;
     const int sink_node = 1;
@@ -1784,10 +1816,9 @@ std::vector<int> diagnose_flow_corridors(
       for (long long value : candidate.evaluation.ranked) {
         std::cerr << value << ',';
       }
+      consider_dual_improving(candidate, capacity_compatible);
     }
     std::cerr << '\n';
-    consider_dual_improving(
-        candidate_assignment, capacity_compatible && transport_compatible);
 
     if (!capacity_compatible) {
       struct SpillOption {
@@ -1949,7 +1980,7 @@ std::vector<int> diagnose_flow_corridors(
         for (long long value : legalized.evaluation.ranked) {
           std::cerr << value << ',';
         }
-        consider_dual_improving(candidate_assignment, true);
+        consider_dual_improving(legalized, true);
       }
       std::cerr << '\n';
 
@@ -2150,7 +2181,7 @@ std::vector<int> diagnose_flow_corridors(
                   for (long long value : legalized.evaluation.ranked) {
                     std::cerr << value << ',';
                   }
-                  consider_dual_improving(region_assignment, true);
+                  consider_dual_improving(legalized, true);
                 }
                 std::cerr << '\n';
               };
@@ -2393,7 +2424,7 @@ std::vector<int> diagnose_flow_corridors(
                   for (long long value : legalized.evaluation.ranked) {
                     std::cerr << value << ',';
                   }
-                  consider_dual_improving(region_assignment, true);
+                  consider_dual_improving(legalized, true);
                 }
                 std::cerr << '\n';
               };
@@ -2608,7 +2639,7 @@ std::vector<int> diagnose_flow_corridors(
                   for (long long value : incremental.evaluation.ranked) {
                     std::cerr << value << ',';
                   }
-                  consider_dual_improving(incremental_assignment, true);
+                  consider_dual_improving(incremental, true);
                 }
                 std::cerr << '\n';
               };
@@ -3457,19 +3488,15 @@ ProxyDelta evaluate_proxy_changes(
     if (projected_ratios[domain] != state.domain_ratio[domain])
       ratio_changed_domains.push_back(domain);
   }
-  std::vector<int> affected_paths;
+  state.affected_paths.begin(model.paths);
   for (const auto& item : delta.nets) {
-    affected_paths.insert(affected_paths.end(),
-                          net_paths[item.first].begin(),
-                          net_paths[item.first].end());
+    for (int path : net_paths[item.first]) state.affected_paths.add(path);
   }
   for (int domain : ratio_changed_domains) {
-    state.domain_paths[domain].append_to(affected_paths);
+    state.domain_paths[domain].for_each(
+        [&](int path) { state.affected_paths.add(path); });
   }
-  std::sort(affected_paths.begin(), affected_paths.end());
-  affected_paths.erase(
-      std::unique(affected_paths.begin(), affected_paths.end()),
-      affected_paths.end());
+  const auto& affected_paths = state.affected_paths.sorted();
   for (int path : affected_paths) {
     delta.paths.emplace(
         path,
@@ -3503,8 +3530,7 @@ ProxyDelta evaluate_proxy_changes(
     worst = std::min(worst, item.second.normalized_slack);
   }
   state.slack_path_order.for_each_ascending([&](const auto& item) {
-    if (!std::binary_search(
-            affected_paths.begin(), affected_paths.end(), item.second)) {
+    if (!state.affected_paths.contains(item.second)) {
       worst = std::min(worst, item.first);
       return false;
     }
@@ -3519,16 +3545,14 @@ ProxyDelta evaluate_proxy_changes(
         maximum_path_ratio_sum, item.second.ratio_sum);
   }
   state.hop_path_order.for_each_descending([&](const auto& item) {
-    if (!std::binary_search(
-            affected_paths.begin(), affected_paths.end(), item.second)) {
+    if (!state.affected_paths.contains(item.second)) {
       maximum_path_hops = std::max(maximum_path_hops, item.first);
       return false;
     }
     return true;
   });
   state.ratio_sum_path_order.for_each_descending([&](const auto& item) {
-    if (!std::binary_search(
-            affected_paths.begin(), affected_paths.end(), item.second)) {
+    if (!state.affected_paths.contains(item.second)) {
       maximum_path_ratio_sum = std::max(
           maximum_path_ratio_sum, item.first);
       return false;
