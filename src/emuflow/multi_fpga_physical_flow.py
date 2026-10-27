@@ -1763,6 +1763,19 @@ def _assemble_multi_fpga_physical_results(
     if set(by_fpga) != set(expected_fpgas):
         raise ValidationError("physical result FPGA coverage is incomplete")
     records = [by_fpga[fpga] for fpga in expected_fpgas]
+    if backend == "vivado":
+        incomplete = {record["fpga"]:record.get("stages", {}).get("vivado_implementation", {}).get("timing_coverage")
+            for record in records if record.get("stages", {}).get("vivado_implementation", {}).get(
+                "timing_coverage", {}).get("status") == "incomplete"}
+        if incomplete:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            write_json(output_dir/"physical-implementation-report.json", {
+                "schema":"emuflow.physical-implementation-observation/v1", "status":"pass",
+                "scope":"completed physical implementations; global timing unavailable",
+                "backend":backend_descriptor, "fpgas":records,
+                "timing_coverage":{"status":"incomplete", "fpgas":incomplete}}, compact=True)
+            raise ValidationError("global timing inputs are incomplete; physical implementations and "
+                "measured delays are retained in physical-implementation-report.json: "+", ".join(incomplete))
     requires_virtual_io = manifest.get("virtual_board_binding") is not None
     requires_word_phy = manifest.get('word_phy_plan') is not None
     word_timing_policy = None

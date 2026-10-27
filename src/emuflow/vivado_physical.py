@@ -26,7 +26,6 @@ from .resource_budget import validate_device_resource_usage
 from .store_publication import bind_store_source, require_store_sources_unchanged
 from .vivado_physical_top import write_vivado_physical_top
 from .vivado_lineage import LINEAGE_POLICY
-from .vivado_optimization import OptimizationProofView
 from .vivado_clocks import implementation_timing_contract, validate_dut_frequency_mhz
 from .sampling_cost import SAMPLING_COST_POLICY
 
@@ -151,6 +150,21 @@ def validate_synthesized_continuation(checkpoint: Path, expected_sha256: str, so
     return {"status":"pass","synthesized_checkpoint_sha256":expected_sha256,
             "source_report_sha256":file_sha256(source_report),"mapped_index_sha256":mapped_report["mapped_index"]["sha256"],
             "input_contracts":expected_files,"scope":"active-experiment synthesized-boundary continuation only"}
+
+
+def _import_routed_measurement(*, kind, output, identity, resolution, importer, export, **options):
+    """Keep partial observations separate from complete timing databases."""
+    measured = output/f"{kind}.tsv"
+    observation = {"path":str(measured), "sha256":file_sha256(measured), "bytes":measured.stat().st_size}
+    stage = {"status":resolution["status"], "resolution":resolution, "export":export,
+        "measurement":observation}
+    if resolution["status"] == "pass":
+        destination = output/("boundary-timing.json" if kind == "boundary_timing" else f"{kind}.json")
+        stage["import"] = importer(measured, identity, destination, **options)
+    else:
+        stage["import"] = {"status":"incomplete", "reason":"unassociated-source-endpoints",
+            "unresolved_queries":resolution["unresolved_query_rows"]}
+    return stage
 
 
 def run_indexed_vivado_partition(
@@ -305,9 +319,9 @@ def run_indexed_vivado_partition(
     preparation = read_json(output_dir/"routed-query-preparation.json")
     if preparation.get("status") != "pass":
         raise ValidationError("native routed query preparation did not pass")
-    coverage, proof_report = preparation["coverage"], preparation["optimization_proofs"]
+    coverage = preparation["coverage"]
+    timing_coverage = preparation["timing_coverage"]
     lineage_artifact, lineage_binding = _retained_lineage_artifact(output_dir, coverage)
-    proof_path = output_dir/"optimization-proofs.sqlite"
     if coverage["stages"]["routed"]["placed_objects"] != _integer(metrics, "routed_cells"):
         raise ValidationError("Vivado lineage placement coverage differs from physical mapped cells")
     aggregate = parse_timing_summary(output_dir / "timing_summary.rpt")
@@ -332,14 +346,13 @@ def run_indexed_vivado_partition(
     export = {"status":"pass","mode":"current-routed-native-session","log":implementation["log"],
               "timing_query_mode":query_mode}
     if boundary_identity_path is not None:
-        measured = output_dir/"boundary_timing.tsv"
-        with OptimizationProofView(proof_path, expected_fpga=fpga) as proof_reader:
-            imported = import_indexed_vivado_boundary(measured, boundary_identity_path, output_dir / "boundary-timing.json",
-                measurement_scope="native-word-registered-interface" if word_mode else("board-integrated-interface" if virtual_io_contract is not None else "partition-boundary"),
-                optimization_proofs=proof_reader, **cost_expectation)
-        measured.unlink()
-        stages["boundary_timing"] = {"status":"pass","query":boundary_query_report,
-            "resolution":preparation["resolutions"]["boundary_timing"],"export":export,"import":imported}
+        stages["boundary_timing"] = _import_routed_measurement(kind="boundary_timing", output=output_dir,
+            identity=boundary_identity_path, resolution=preparation["resolutions"]["boundary_timing"],
+            importer=import_indexed_vivado_boundary, export=export,
+            measurement_scope="native-word-registered-interface" if word_mode else
+                ("board-integrated-interface" if virtual_io_contract is not None else "partition-boundary"),
+            **cost_expectation)
+        stages["boundary_timing"]["query"] = boundary_query_report
     for kind, identity, query, importer in (
         ("logic_segment_timing", logic_identity_path, logic_query_path, import_vivado_logic_segment_timing),
         ("local_path_timing", local_identity_path, local_query_path, import_vivado_local_timing),
@@ -348,12 +361,8 @@ def run_indexed_vivado_partition(
             raise ValidationError(f"Vivado {kind} requires identity and query together")
         if identity is None:
             continue
-        measured = output_dir / f"{kind}.tsv"
-        resolution = preparation["resolutions"][kind]
-        with OptimizationProofView(proof_path, expected_fpga=fpga) as proof_reader:
-            imported = importer(measured, identity, output_dir / f"{kind}.json", optimization_proofs=proof_reader, **cost_expectation)
-        measured.unlink()
-        stages[kind] = {"status": "pass", "resolution": resolution, "export": export, "import": imported}
+        stages[kind] = _import_routed_measurement(kind=kind, output=output_dir, identity=identity,
+            resolution=preparation["resolutions"][kind], importer=importer, export=export, **cost_expectation)
     virtual_io = None
     if virtual_io_contract is not None:
         pairs = _integer(metrics, "virtual_io_pairs")
@@ -377,7 +386,7 @@ def run_indexed_vivado_partition(
     artifacts = {"cell-lineage.sqlite":lineage_artifact}
     for name in ("route_status.rpt", "drc.rpt", "timing_summary.rpt", "utilization.rpt", "implementation_metrics.tsv",
                  "native-session.json", "native-session.tcl", "clock-contract.tsv",
-                 "routed-query-preparation.json", "constant-frontier-validation.json"):
+                 "routed-query-preparation.json", "timing-exports.tsv"):
         path = output_dir / name
         if not path.is_file() or path.stat().st_size == 0:
             raise ValidationError(f"Vivado physical artifact is missing: {name}")
@@ -418,7 +427,7 @@ def run_indexed_vivado_partition(
         "resource_usage": usage, "hard_resources": counts, "artifacts": artifacts}
     validation = validate_physical_partition_result(result, backend="vivado", fpga=fpga, part=part, original_cells=original_cells, transport_cells=transport_cells)
     native_scripts=("native_session.tcl","source_inventory.tcl","resource_inventory.tcl","timing_contract.tcl",
-        "inspect_constant_frontiers.tcl","export_boundary_timing.tcl","export_logic_segment_timing.tcl")
+        "export_boundary_timing.tcl","export_logic_segment_timing.tcl")
     if word_mode:native_scripts+=("word_native_physical.tcl","selectio_ip.tcl")
     report = {"schema": "emuflow.vivado-partition-report/v1", "status": "pass", "provider": "indexed-phase6-vivado-word-physical-v3" if word_mode else "indexed-phase6-vivado-physical-v2",
         "tool": {"executable": executable, "version": metrics["vivado_version"], "threads": threads},
@@ -431,12 +440,13 @@ def run_indexed_vivado_partition(
         "native_session": {"mode":"current-design-stage-exports-v2","timing_query_mode":query_mode,
             "scripts_sha256": {name:file_sha256(_vivado_script(name)) for name in native_scripts},
             "planner_sha256":file_sha256(Path(__file__).with_name("vivado_session.py"))},
-        "cell_coverage": coverage, "optimization_proofs": proof_report, **stages,
+        "cell_coverage": coverage, "timing_coverage": timing_coverage, **stages,
         **({"virtual_io_implementation": virtual_io} if virtual_io is not None else {}),
         **({'word_phy_implementation':{'status':'pass','preparation':top_report,
             'sampling_cost_policy':SAMPLING_COST_POLICY,
             'infrastructure_timing':{'checks':word_checks,'wns_ns':word_wns,'fixed_clock_contract_met':True},
             'differential_pairs':pairs,'serial_pad_timing_scope':'fixed-link-model-external-to-local-STA; no board/SI signoff'}}if word_mode else{}),
-        "result": result, "validation": validation}
+        "result": result, "validation": validation,
+        "scope":"physical-implementation; whole-design timing requires complete timing coverage"}
     write_json(output_dir / "vivado-partition-report.json", report, compact=True)
     return report

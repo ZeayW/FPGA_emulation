@@ -10,7 +10,7 @@ import pytest
 from emuflow.errors import ValidationError
 from emuflow.io import file_sha256, read_json, write_json
 from emuflow.vivado_session import (
-    SCHEMA, prepare_frontiers, confirm_frontiers, prepare_timing, prepare_diagnostic_timing, prepare_manifest, _tcl_word,
+    SCHEMA, prepare_frontiers, confirm_frontiers, prepare_timing, prepare_checked_timing, prepare_diagnostic_timing, prepare_manifest, _tcl_word,
 )
 from emuflow.vivado_optimization import OptimizationProofView
 from emuflow.vivado_physical import validate_synthesized_continuation
@@ -150,7 +150,7 @@ def test_source_candidates_native_facts_and_routed_proof_are_one_checked_pipelin
     assert (out/"synthesized-lineage.sqlite").is_file()
     shutil.copyfile(facts, out/"constant-frontiers.tsv")
     assert confirm_frontiers(session)["confirmed_sources"] == result["constant_sources"]
-    assert prepare_timing(session)["query_classes"] == 1
+    assert prepare_checked_timing(session)["query_classes"] == 1
     preparation = read_json(out/"routed-query-preparation.json")
     owner = Path(preparation["coverage"]["output"])
     assert owner.is_file() and file_sha256(owner) == preparation["coverage"]["sha256"]
@@ -172,14 +172,15 @@ def test_unrequired_conditional_states_remain_unproved(tmp_path):
     out = Path(session["output"])
     assert prepare_frontiers(session)["constant_sources"] == 0
     assert confirm_frontiers(session)["confirmed_sources"] == 0
-    prepare_timing(session)
+    prepare_checked_timing(session)
     with OptimizationProofView(out/"optimization-proofs.sqlite", expected_fpga="fpga0") as proof:
         with pytest.raises(ValidationError):
             proof.require_eliminated_source(f"s{origins['conditional']}")
     assert "optimized-away" not in (out/"local_path_timing-resolved.tsv").read_text()
 
 
-def test_diagnostic_queries_preserve_missing_endpoints_without_inventing_removal(tmp_path):
+@pytest.mark.parametrize("diagnostic_mode", [False, True])
+def test_routed_queries_preserve_missing_endpoints_without_inventing_removal(tmp_path, diagnostic_mode):
     session, _, _ = session_fixture(tmp_path)
     out = Path(session["output"])
     source = Path(session["queries"]["local_path_timing"])
@@ -188,10 +189,15 @@ def test_diagnostic_queries_preserve_missing_endpoints_without_inventing_removal
             "pin", b"front/I1".hex(), "", ""])+"\n")
     parents = {path: file_sha256(path) for path in
         (source, out/"mapped_cells.tsv", out/"routed_mapped_cells.tsv", out/"synthesized.dcp")}
-    assert prepare_diagnostic_timing(session)["status"] == "diagnostic"
-    diagnostic = out/"timing-diagnostic"
-    preparation = read_json(diagnostic/"preparation.json")
-    assert preparation["qualified_physical_result"] is False
+    operation = prepare_diagnostic_timing if diagnostic_mode else prepare_timing
+    assert operation(session)["status"] == ("diagnostic" if diagnostic_mode else "pass")
+    diagnostic = out/"timing-diagnostic" if diagnostic_mode else out
+    preparation = read_json(diagnostic/("preparation.json" if diagnostic_mode else "routed-query-preparation.json"))
+    if diagnostic_mode:
+        assert preparation["qualified_physical_result"] is False
+    else:
+        assert preparation["timing_coverage"] == {"status":"incomplete", "requested_queries":2,
+            "measurable_queries":1, "unresolved_queries":1}
     counts = preparation["resolutions"]["local_path_timing"]
     assert (counts["queries"], counts["measurable_queries"], counts["unresolved_query_rows"]) == (2, 1, 1)
     assert Path(counts["output"]).is_file()
@@ -200,17 +206,57 @@ def test_diagnostic_queries_preserve_missing_endpoints_without_inventing_removal
     assert len(rows) == 1 and bytes.fromhex(rows[0]["endpoint_hex"]).decode() == "kept-path"
     missing = (diagnostic/"local_path_timing-unresolved.tsv").read_text()
     assert "unresolved-source" in missing and "optimized-away" not in missing
-    with sqlite3.connect(diagnostic/"local_path_timing-unassociated.sqlite") as db:
+    with sqlite3.connect(diagnostic/"local_path_timing-routed-unassociated.sqlite") as db:
         assert db.execute("SELECT role FROM unresolved_sources").fetchall() == [("end",)]
-    assert not (out/"timing-exports.tsv").exists()
+    assert (out/"timing-exports.tsv").exists() is (not diagnostic_mode)
     assert not (out/"optimization-proofs.sqlite").exists()
-    assert not (out/"routed-query-preparation.json").exists()
+    assert (out/"routed-query-preparation.json").exists() is (not diagnostic_mode)
     assert parents == {path: file_sha256(path) for path in parents}
-    with pytest.raises(FileExistsError):
-        prepare_diagnostic_timing(session)
+    if diagnostic_mode:
+        with pytest.raises(FileExistsError):
+            prepare_diagnostic_timing(session)
 
 
-def test_unassociated_nonconstant_endpoint_fails_before_placement(tmp_path):
+def test_lut_reduction_does_not_reject_routed_export_or_imply_elimination(tmp_path):
+    session, _, _ = session_fixture(tmp_path, require_constant=False)
+    out = Path(session["output"])
+    inventory = out/"routed_mapped_cells.tsv"
+    inventory.write_text(inventory.read_text().replace("p/front\tLUT2\t", "p/front\tLUT1\t"))
+    query = Path(session["queries"]["local_path_timing"])
+    with query.open("a") as stream:
+        stream.write("\t".join([b"retained".hex(), "local", "pin", b"kept/Q".hex(),
+            "pin", b"kept/D".hex(), "", ""])+"\n")
+    result = prepare_timing(session)
+    assert result["timing_coverage"]["measurable_queries"] == 1
+    assert result["timing_coverage"]["unresolved_queries"] == 1
+    preparation = read_json(out/"routed-query-preparation.json")
+    assert preparation["coverage"]["stages"]["routed"]["changed_type_objects"] == 1
+    assert "optimized-away" not in (out/"local_path_timing-unresolved.tsv").read_text()
+    assert not (out/"constant-frontier-plan.json").exists()
+    assert not (out/"optimization-proofs.sqlite").exists()
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_physical_measurements_survive_incomplete_source_coverage(tmp_path, complete):
+    from emuflow.vivado_physical import _import_routed_measurement
+    from unittest.mock import Mock
+    measured = tmp_path/"local_path_timing.tsv"
+    measured.write_text("actual vendor measurements\n")
+    importer = Mock(return_value={"status":"pass"})
+    result = _import_routed_measurement(kind="local_path_timing", output=tmp_path,
+        identity=tmp_path/"identity.sqlite", resolution={"status":"pass" if complete else "incomplete",
+            "unresolved_query_rows":0 if complete else 1}, importer=importer, export={"status":"pass"})
+    assert measured.is_file() and result["measurement"]["sha256"] == file_sha256(measured)
+    assert result["status"] == ("pass" if complete else "incomplete")
+    assert importer.call_count == int(complete)
+    if complete:
+        assert "optimization_proofs" not in importer.call_args.kwargs
+    else:
+        assert result["import"] == {"status":"incomplete", "reason":"unassociated-source-endpoints", "unresolved_queries":1}
+        assert not (tmp_path/"local_path_timing.json").exists()
+
+
+def test_optional_source_proof_rejects_unassociated_nonconstant_endpoint(tmp_path):
     session, _, _ = session_fixture(tmp_path)
     inventory = Path(session["output"])/"mapped_cells.tsv"
     inventory.write_text("\n".join(line for line in inventory.read_text().splitlines() if not line.startswith("p/kept\t"))+"\n")
@@ -231,7 +277,7 @@ def test_changed_checkpoint_or_native_driver_cannot_promote_constants(tmp_path):
     shutil.copyfile(facts,out/'constant-frontiers.tsv')
     set_native_constant(out/'constant-frontiers.tsv','I0',1)
     with pytest.raises(ValidationError, match="pin bindings"):
-        prepare_timing(session)
+        prepare_checked_timing(session)
     assert not (out/"optimization-proofs.sqlite").exists()
 
 
@@ -395,7 +441,7 @@ proc emuflow_session_source {script arguments} {
 @pytest.mark.skipif(TCL86 is None, reason="native stage bridge requires Tcl 8.6")
 @pytest.mark.parametrize("resume", [False, True])
 @pytest.mark.parametrize("proof_mode", ["pass", "fail", "pass-diagnostic", "fail-diagnostic", "empty-diagnostic"])
-def test_native_stage_bridge_keeps_proof_failures_fatal_after_optional_diagnostic_routing(tmp_path, resume, proof_mode):
+def test_native_stage_bridge_does_not_run_source_shape_checks(tmp_path, resume, proof_mode):
     session, _, _ = session_fixture(tmp_path, require_constant=False)
     out = Path(session["output"])
     template = tmp_path/"observed.tsv";shutil.copyfile(out/"mapped_cells.tsv", template)
@@ -501,26 +547,17 @@ set env(PYTHONPATH) /invalid-vendor-package
     assert ("synth" in trace) is (not resume)
     assert ("open" in trace) is resume
     assert "placed.dcp" not in trace
-    if proof_mode in {"pass", "pass-diagnostic"}:
-        assert completed.returncode == 0, completed.stdout+completed.stderr
-        assert read_json(out/"routed-query-preparation.json")["status"] == "pass"
-    else:
-        assert completed.returncode != 0, completed.stdout+completed.stderr
-        assert "EMUFLOW_INDEXED_VIVADO status=pass" not in completed.stdout
-        assert not (out/"routed-query-preparation.json").exists()
-        assert not (out/"optimization-proofs.sqlite").exists()
+    assert completed.returncode == 0, completed.stdout+completed.stderr
+    assert read_json(out/"routed-query-preparation.json")["status"] == "pass"
+    assert not (out/"optimization-proofs.sqlite").exists()
+    assert not (out/"source-proof-failure.txt").exists()
+    assert "EMUFLOW_SOURCE_PROOF" not in completed.stdout
+    assert "EMUFLOW_INDEXED_VIVADO status=pass" in completed.stdout
     if diagnostic:
         assert trace[trace.index("opt"):] == ["opt", "optimized.dcp", "place", "phys_opt", "route", "routed.dcp"]
         assert (out/"optimized.dcp").is_file() and (out/"routed.dcp").is_file()
-        if proof_mode != "pass-diagnostic":
-            assert "diagnostic only" in completed.stderr
-            assert (out/"source-proof-failure.txt").is_file()
-            assert "EMUFLOW_TIMING_DIAGNOSTIC status=exported acceptance=pending" in completed.stdout
-            assert read_json(out/"timing-diagnostic/preparation.json")["qualified_physical_result"] is False
-    elif proof_mode == "pass":
-        assert trace[-4:] == ["opt", "place", "phys_opt", "route"]
     else:
-        assert trace[-1] == "opt" and "place" not in trace and "route" not in trace
+        assert trace[-4:] == ["opt", "place", "phys_opt", "route"]
 
 
 @pytest.mark.skipif(shutil.which("tclsh") is None, reason="Tcl interpreter required")
@@ -564,7 +601,7 @@ def test_postopt_preflight_confirms_states_removed_only_after_synthesis(tmp_path
     shutil.copyfile(facts, out/"constant-frontiers.tsv")
     confirm_frontiers(session)
     assert read_json(out/"checked-constant-frontiers.json")["source_stage"] == "optimized"
-    prepare_timing(session)
+    prepare_checked_timing(session)
     with OptimizationProofView(out/"optimization-proofs.sqlite", expected_fpga="fpga0") as proof:
         assert proof.require_eliminated_source(f"s{origins['conditional']}")["initialization"] == "vendor-confirmed"
     assert not (out/"optimized_mapped_cells.tsv").exists()

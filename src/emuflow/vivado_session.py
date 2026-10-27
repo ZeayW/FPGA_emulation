@@ -230,8 +230,8 @@ def confirm_frontiers(session):
     return result
 
 
-def prepare_timing(session):
-    """Import the routed snapshot and provide only checked timing queries."""
+def prepare_checked_timing(session):
+    """Optional elimination-proof analysis, separate from implementation/export."""
     mapped, functions, out = _paths(session)
     checked, checkpoint_sha = _check_constants(session)
     lineage, proof_path = out/"cell-lineage.sqlite", out/"optimization-proofs.sqlite"
@@ -261,30 +261,23 @@ def prepare_timing(session):
     return {"status": "pass", "query_classes": len(resolutions)}
 
 
-def prepare_diagnostic_timing(session):
-    """Save measurable routed queries without certifying missing endpoints.
-
-    A failed source check must not prevent observing the implemented design.
-    These exports have their own directory and retain every unresolved request;
-    they cannot replace the complete, qualified physical result.
-    """
+def _prepare_measurable_timing(session, destination):
+    """Resolve available native endpoints and retain every unassociated request."""
     mapped, functions, out = _paths(session)
-    diagnostic = out/"timing-diagnostic"
-    diagnostic.mkdir()
-    lineage = diagnostic/"cell-lineage.sqlite"
+    lineage = destination/"cell-lineage.sqlite"
     coverage = import_cell_lineage(mapped, functions, {"routed": out/"routed_mapped_cells.tsv"},
         lineage, mapped_sha256=session["mapped_index_sha256"], retain_stage="routed")
     resolutions = {}
-    with (diagnostic/"timing-exports.tsv").open("w") as plan:
+    with (destination/"timing-exports.tsv").open("w") as plan:
         exports = csv.writer(plan, delimiter="\t", lineterminator="\n")
         exports.writerow(["kind", "query_hex", "output_hex"])
         for kind, source in session["queries"].items():
-            raw = diagnostic/(kind+"-all.tsv")
+            raw = destination/(kind+"-all.tsv")
             result = resolve_timing_query(mapped, functions, lineage, Path(source), raw,
                 boundary=kind == "boundary_timing", stage="routed",
-                diagnostic_unresolved_path=diagnostic/(kind+"-unassociated.sqlite"))
-            query = diagnostic/(kind+"-resolved.tsv")
-            unresolved = diagnostic/(kind+"-unresolved.tsv")
+                diagnostic_unresolved_path=destination/(kind+"-routed-unassociated.sqlite"))
+            query = destination/(kind+"-resolved.tsv")
+            unresolved = destination/(kind+"-unresolved.tsv")
             counts = [0, 0]
             with raw.open(newline="") as incoming, query.open("w", newline="") as ready, unresolved.open("w", newline="") as missing:
                 reader = csv.reader(incoming, delimiter="\t")
@@ -298,16 +291,40 @@ def prepare_diagnostic_timing(session):
                     writers[index].writerow(row)
                     counts[index] += 1
             if sum(counts) != result["queries"] or counts[1] != result["unresolved_query_rows"]:
-                raise ValidationError("diagnostic timing query coverage differs")
+                raise ValidationError("routed timing query coverage differs")
             raw.unlink()
             result.update(output=str(query), measurable_queries=counts[0], unresolved_queries=str(unresolved))
             resolutions[kind] = result
-            exports.writerow([kind, str(query).encode().hex(), str(diagnostic/(kind+".tsv")).encode().hex()])
-    result = {"status": "diagnostic", "qualified_physical_result": False,
-        "coverage": coverage, "resolutions": resolutions}
+            exports.writerow([kind, str(query).encode().hex(), str(destination/(kind+".tsv")).encode().hex()])
+    requested = sum(item["queries"] for item in resolutions.values())
+    measurable = sum(item["measurable_queries"] for item in resolutions.values())
+    return {"status": "pass", "coverage": coverage, "resolutions": resolutions,
+        "timing_coverage": {"status": "complete" if requested == measurable else "incomplete",
+            "requested_queries": requested, "measurable_queries": measurable,
+            "unresolved_queries": requested - measurable}}
+
+
+def prepare_timing(session):
+    """Export routed measurements independently of source elimination proofs.
+
+    Missing source associations affect timing coverage, never the validity of
+    the vendor implementation. They are neither zero delays nor removal facts.
+    """
+    out = Path(session["output"])
+    result = _prepare_measurable_timing(session, out)
+    write_json(out/"routed-query-preparation.json", result, compact=True)
+    return {"status": "pass", "query_classes": len(result["resolutions"]),
+        "timing_coverage": result["timing_coverage"]}
+
+
+def prepare_diagnostic_timing(session):
+    """Compatibility export into a separate observation directory."""
+    diagnostic = Path(session["output"])/"timing-diagnostic"
+    diagnostic.mkdir()
+    result = _prepare_measurable_timing(session, diagnostic)
+    result.update(status="diagnostic", qualified_physical_result=False)
     write_json(diagnostic/"preparation.json", result, compact=True)
-    # Keep the original tool inventories and checkpoints for complete recovery.
-    return {"status": "diagnostic", "query_classes": len(resolutions)}
+    return {"status": "diagnostic", "query_classes": len(result["resolutions"])}
 
 
 def main():

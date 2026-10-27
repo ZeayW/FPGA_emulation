@@ -702,6 +702,25 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     _assemble_multi_fpga_physical_results(records=records, **common)
                 self.assertFalse((root / "out/physical-summary.json").exists())
 
+    def test_incomplete_timing_keeps_physical_results_without_publishing_global_inputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            platform = Platform.load(PLATFORM)
+            coverage = {"status":"incomplete", "requested_queries":2,
+                "measurable_queries":1, "unresolved_queries":1}
+            records = [{"fpga":fpga.id, "status":"pass", "physical_result":{"status":"pass"},
+                "stages":{"vivado_implementation":{"timing_coverage":coverage}}} for fpga in platform.fpgas]
+            with self.assertRaisesRegex(ValidationError, "physical implementations.*retained"):
+                _assemble_multi_fpga_physical_results(records=records, manifest={},
+                    manifest_path=root/"manifest.json", platform=platform, runtime={}, split_root=root,
+                    output_dir=root, backend_descriptor=physical_backend_descriptor("vivado"),
+                    architecture_source={}, execution={}, include_logic_timing=True)
+            saved = read_json(root/"physical-implementation-report.json")
+            self.assertEqual(saved["status"], "pass")
+            self.assertEqual(saved["fpgas"], records)
+            self.assertEqual(saved["timing_coverage"]["status"], "incomplete")
+            self.assertFalse((root/"physical-summary.json").exists())
+
     def test_completed_resource_budget_cannot_be_omitted_or_reused_from_looser_platform(self):
         from emuflow.resource_budget import validate_device_resource_usage
         with tempfile.TemporaryDirectory() as temporary:
