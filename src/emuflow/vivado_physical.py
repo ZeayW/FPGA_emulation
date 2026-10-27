@@ -30,6 +30,27 @@ from .vivado_clocks import implementation_timing_contract, validate_dut_frequenc
 from .sampling_cost import SAMPLING_COST_POLICY
 
 _ROOT = Path(__file__).resolve().parents[2]
+WORD_CONTROL_TIMING_SCOPE = "registered-control-paths-excluding-rx-shadow-launches-v1"
+
+
+def _word_infrastructure_timing(metrics, *, active_banks):
+    from .vivado_backend import _integer, _number
+    if metrics.get("native_word_infrastructure_scope") != WORD_CONTROL_TIMING_SCOPE:
+        raise ValidationError("native word control timing lacks its routed source classification")
+    checks = _integer(metrics, "native_word_infrastructure_checks")
+    wns = _number(metrics, "native_word_infrastructure_wns_ns") if checks else None
+    whs = _number(metrics, "native_word_infrastructure_whs_ns") if checks else None
+    complete = _integer(metrics, "native_word_rx_scope_complete")
+    if complete not in (0, 1):
+        raise ValidationError("native word RX scope completeness is invalid")
+    if complete and ((active_banks and checks != 2) or
+                     (wns is not None and (wns < 0 or whs < 0))):
+        raise ValidationError("native word registered controls lack passing fixed-clock timing evidence")
+    return {"status":"complete" if complete else "incomplete", "scope":WORD_CONTROL_TIMING_SCOPE,
+        "checks":checks, "wns_ns":wns, "whs_ns":whs, "rx_scope_complete":bool(complete),
+        "excluded_rx_clock_pins":_integer(metrics, "native_word_rx_clock_pins_excluded"),
+        "control_clock_pins":_integer(metrics, "native_word_control_clock_pins"),
+        "fixed_clock_contract_met":True if complete else None}
 
 
 def _vivado_script(name: str) -> Path:
@@ -377,10 +398,7 @@ def run_indexed_vivado_partition(
         pairs=_integer(metrics,'virtual_io_pairs')
         if pairs!=top_report['data_pairs']+top_report['forwarded_clock_pairs']:
             raise ValidationError('native word fixed pair count differs from its data/clock bank plan')
-        word_checks=_integer(metrics,'native_word_infrastructure_checks')
-        word_wns=_number(metrics,'native_word_infrastructure_wns_ns')if word_checks else None
-        if (top_report['active_banks']and not word_checks)or(word_wns is not None and word_wns<0):
-            raise ValidationError('native word infrastructure lacks passing fixed-clock timing evidence')
+        word_timing = _word_infrastructure_timing(metrics, active_banks=top_report['active_banks'])
         require_store_sources_unchanged(word_sources)
     require_store_sources_unchanged((lineage_binding,))
     artifacts = {"cell-lineage.sqlite":lineage_artifact}
@@ -392,7 +410,7 @@ def run_indexed_vivado_partition(
             raise ValidationError(f"Vivado physical artifact is missing: {name}")
         artifacts[name] = {"path": str(path), "sha256": file_sha256(path), "bytes": path.stat().st_size}
     if word_mode:
-        for name in ('native-word-preparation.json','native-word-clock-census.tsv'):
+        for name in ('native-word-preparation.json','native-word-clock-census.tsv','native-word-rx-sources.tsv'):
             path=output_dir/name
             artifacts[name]={'path':str(path),'sha256':file_sha256(path),'bytes':path.stat().st_size}
     if retain_routed_checkpoint:
@@ -429,7 +447,7 @@ def run_indexed_vivado_partition(
     native_scripts=("native_session.tcl","source_inventory.tcl","resource_inventory.tcl","timing_contract.tcl",
         "export_boundary_timing.tcl","export_logic_segment_timing.tcl")
     if word_mode:native_scripts+=("word_native_physical.tcl","selectio_ip.tcl")
-    report = {"schema": "emuflow.vivado-partition-report/v1", "status": "pass", "provider": "indexed-phase6-vivado-word-physical-v3" if word_mode else "indexed-phase6-vivado-physical-v2",
+    report = {"schema": "emuflow.vivado-partition-report/v1", "status": "pass", "provider": "indexed-phase6-vivado-word-physical-v4" if word_mode else "indexed-phase6-vivado-physical-v2",
         "tool": {"executable": executable, "version": metrics["vivado_version"], "threads": threads},
         "implementation": implementation, "continuation": continuation_validation, "input_identity": input_identity,
         "implementation_timing": implementation_timing,
@@ -444,7 +462,7 @@ def run_indexed_vivado_partition(
         **({"virtual_io_implementation": virtual_io} if virtual_io is not None else {}),
         **({'word_phy_implementation':{'status':'pass','preparation':top_report,
             'sampling_cost_policy':SAMPLING_COST_POLICY,
-            'infrastructure_timing':{'checks':word_checks,'wns_ns':word_wns,'fixed_clock_contract_met':True},
+            'infrastructure_timing':word_timing,
             'differential_pairs':pairs,'serial_pad_timing_scope':'fixed-link-model-external-to-local-STA; no board/SI signoff'}}if word_mode else{}),
         "result": result, "validation": validation,
         "scope":"physical-implementation; whole-design timing requires complete timing coverage"}

@@ -42,17 +42,17 @@ proc emuflow_session_preplacement {directory out retain route_after_failure} {
   if {$route_after_failure} {write_checkpoint -force "$out/optimized.dcp"}
 }
 
-proc emuflow_session_timings {directory prefix fixed_io_map {diagnostic false}} {
+proc emuflow_session_timings {directory prefix fixed_io_map {diagnostic false} {prepared false}} {
   global emuflow_session_out emuflow_timing_query_mode
   if {$emuflow_timing_query_mode ni {datapath-only clock-aware-reference}} {
     error "unsupported native timing query mode"
   }
   set plan_directory $emuflow_session_out
   if {$diagnostic} {
-    emuflow_session_child prepare-timing-diagnostic
+    if {!$prepared} {emuflow_session_child prepare-timing-diagnostic}
     set plan_directory "$emuflow_session_out/timing-diagnostic"
   } else {
-    emuflow_session_child prepare-timing
+    if {!$prepared} {emuflow_session_child prepare-timing}
   }
   set ::emuflow_native_export_stage routed
   set stream [open "$plan_directory/timing-exports.tsv" r]

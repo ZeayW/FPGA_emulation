@@ -136,25 +136,33 @@ def test_word_physical_preflight_consumes_phase6_without_global_sta(tmp_path,mon
 
 def test_word_physical_evidence_cannot_mix_sources_or_drop_fixed_clocks():
     from emuflow.multi_fpga_physical_flow import _require_native_word_evidence
+    from emuflow.vivado_physical import WORD_CONTROL_TIMING_SCOPE
+    from emuflow.sampling_cost import SAMPLING_COST_POLICY
     hashes={'word_phy_plan':'a'*64,'word_wiring':'b'*64}
-    evidence={'status':'pass','infrastructure_timing':{'fixed_clock_contract_met':True},
+    evidence={'status':'pass','infrastructure_timing':{'fixed_clock_contract_met':True,
+        'scope':WORD_CONTROL_TIMING_SCOPE,'rx_scope_complete':True},
+        'sampling_cost_policy':SAMPLING_COST_POLICY,
         'differential_pairs':42,'preparation':{'fpga':'fpga0','part':'part','data_pairs':40,'forwarded_clock_pairs':2}}
     record={'fpga':'fpga0','part':'part','active':True,'stages':{'word_phy_implementation':evidence,
         'vivado_implementation':{'word_phy_implementation':copy.deepcopy(evidence),
-            'provider':'indexed-phase6-vivado-physical-v2',
+            'provider':'indexed-phase6-vivado-word-physical-v4',
+            'native_session':{'timing_query_mode':'clock-aware-reference'},
             'input_identity':{key:{'sha256':value}for key,value in hashes.items()}}}}
-    _require_native_word_evidence(record,hashes)
+    assert _require_native_word_evidence(record,hashes)==SAMPLING_COST_POLICY
     changed=copy.deepcopy(record);changed['stages']['vivado_implementation']['input_identity']['word_phy_plan']['sha256']='c'*64
     with pytest.raises(ValidationError,match='different Phase6'):_require_native_word_evidence(changed,hashes)
     changed=copy.deepcopy(record);changed['stages']['word_phy_implementation']['infrastructure_timing']['fixed_clock_contract_met']=False
     with pytest.raises(ValidationError,match='evidence.*missing'):_require_native_word_evidence(changed,hashes)
-    from emuflow.sampling_cost import SAMPLING_COST_POLICY
+    for field in ['scope','rx_scope_complete']:
+        changed=copy.deepcopy(record)
+        changed['stages']['word_phy_implementation']['infrastructure_timing'].pop(field)
+        changed['stages']['vivado_implementation']['word_phy_implementation']=copy.deepcopy(changed['stages']['word_phy_implementation'])
+        with pytest.raises(ValidationError,match='evidence.*missing'):_require_native_word_evidence(changed,hashes)
+    for provider in ['indexed-phase6-vivado-physical-v2','indexed-phase6-vivado-word-physical-v3']:
+        changed=copy.deepcopy(record);changed['stages']['vivado_implementation']['provider']=provider
+        with pytest.raises(ValidationError,match='provider version is unsupported'):_require_native_word_evidence(changed,hashes)
     updated=copy.deepcopy(record)
     native=updated['stages']['vivado_implementation']
-    native['provider']='indexed-phase6-vivado-word-physical-v3'
-    native['native_session']={'timing_query_mode':'clock-aware-reference'}
-    native['word_phy_implementation']['sampling_cost_policy']=SAMPLING_COST_POLICY
-    updated['stages']['word_phy_implementation']=copy.deepcopy(native['word_phy_implementation'])
     native['local_path_timing']={'import':{'sampling_cost_policy':SAMPLING_COST_POLICY}}
     assert _require_native_word_evidence(updated,hashes)==SAMPLING_COST_POLICY
     native['local_path_timing']['import'].clear()

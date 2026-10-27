@@ -151,11 +151,14 @@ def _require_native_word_evidence(record, source_hashes):
     stages = record.get('stages', {})
     native = stages.get('vivado_implementation', {})
     provider = native.get('provider')
-    if provider not in {'indexed-phase6-vivado-physical-v2','indexed-phase6-vivado-word-physical-v3'}:
+    if provider != 'indexed-phase6-vivado-word-physical-v4':
         raise ValidationError('completed native word PHY provider version is unsupported')
     evidence = stages.get('word_phy_implementation')
+    from .vivado_physical import WORD_CONTROL_TIMING_SCOPE
     if (not isinstance(evidence, Mapping) or evidence.get('status') != 'pass' or
             evidence != native.get('word_phy_implementation') or
+            evidence.get('infrastructure_timing', {}).get('scope') != WORD_CONTROL_TIMING_SCOPE or
+            evidence.get('infrastructure_timing', {}).get('rx_scope_complete') is not True or
             evidence.get('infrastructure_timing', {}).get('fixed_clock_contract_met') is not True):
         raise ValidationError(f"completed native word PHY evidence for {record['fpga']} is missing")
     identity = native.get('input_identity', {})
@@ -165,18 +168,14 @@ def _require_native_word_evidence(record, source_hashes):
     if (preparation.get('fpga') != record['fpga'] or preparation.get('part') != record['part'] or
             evidence.get('differential_pairs') != preparation.get('data_pairs', -1) + preparation.get('forwarded_clock_pairs', -1)):
         raise ValidationError('completed native word PHY device or fixed-pair evidence differs')
-    if provider == 'indexed-phase6-vivado-word-physical-v3':
-        from .sampling_cost import SAMPLING_COST_POLICY
-        if (native.get('native_session', {}).get('timing_query_mode') != 'clock-aware-reference'
-                or evidence.get('sampling_cost_policy') != SAMPLING_COST_POLICY):
-            raise ValidationError('completed word PHY lacks its sampling cost measurement policy')
-        for kind in ('logic_segment_timing','local_path_timing','boundary_timing'):
-            if kind in native and native[kind].get('import', {}).get('sampling_cost_policy') != SAMPLING_COST_POLICY:
-                raise ValidationError('completed word PHY imported a different sampling cost policy')
-        return SAMPLING_COST_POLICY
-    if 'sampling_cost_policy' in evidence:
-        raise ValidationError('legacy word PHY provider cannot claim a sampling cost policy')
-    return 'legacy-data-only-v1'
+    from .sampling_cost import SAMPLING_COST_POLICY
+    if (native.get('native_session', {}).get('timing_query_mode') != 'clock-aware-reference'
+            or evidence.get('sampling_cost_policy') != SAMPLING_COST_POLICY):
+        raise ValidationError('completed word PHY lacks its sampling cost measurement policy')
+    for kind in ('logic_segment_timing','local_path_timing','boundary_timing'):
+        if kind in native and native[kind].get('import', {}).get('sampling_cost_policy') != SAMPLING_COST_POLICY:
+            raise ValidationError('completed word PHY imported a different sampling cost policy')
+    return SAMPLING_COST_POLICY
 
 
 def _word_physical_calendar_policy(record):

@@ -331,6 +331,7 @@ def _prepare_measurable_timing(session, destination):
     coverage = import_cell_lineage(mapped, functions, {"routed": out/"routed_mapped_cells.tsv"},
         lineage, mapped_sha256=session["mapped_index_sha256"], retain_stage="routed")
     resolutions = {}
+    rx_scope = None
     with (destination/"timing-exports.tsv").open("w") as plan:
         exports = csv.writer(plan, delimiter="\t", lineterminator="\n")
         exports.writerow(["kind", "query_hex", "output_hex"])
@@ -342,6 +343,8 @@ def _prepare_measurable_timing(session, destination):
             query = destination/(kind+"-resolved.tsv")
             unresolved = destination/(kind+"-unresolved.tsv")
             counts = [0, 0]
+            rx_cells = set()
+            rx_requested = rx_unresolved = 0
             with raw.open(newline="") as incoming, query.open("w", newline="") as ready, unresolved.open("w", newline="") as missing:
                 reader = csv.reader(incoming, delimiter="\t")
                 writers = [csv.writer(stream, delimiter="\t", lineterminator="\n") for stream in (ready, missing)]
@@ -353,15 +356,33 @@ def _prepare_measurable_timing(session, destination):
                     index = int("unresolved-source" in row[-hints:])
                     writers[index].writerow(row)
                     counts[index] += 1
+                    if kind == "boundary_timing" and row[1] == "rx":
+                        rx_requested += 1
+                        rx_unresolved += index
+                        if not index:
+                            for candidate in row[-1].split(","):
+                                rx_cells.add(bytes.fromhex(candidate).decode("utf-8"))
             if sum(counts) != result["queries"] or counts[1] != result["unresolved_query_rows"]:
                 raise ValidationError("routed timing query coverage differs")
             raw.unlink()
             result.update(output=str(query), measurable_queries=counts[0], unresolved_queries=str(unresolved))
             resolutions[kind] = result
             exports.writerow([kind, str(query).encode().hex(), str(destination/(kind+".tsv")).encode().hex()])
+            if kind == "boundary_timing":
+                scope_path = destination/"native-word-rx-sources.tsv"
+                status = "incomplete" if rx_unresolved else "complete"
+                with scope_path.open("w") as scope:
+                    scope.write("status\trx_queries\tunresolved_rx_queries\tnative_cells\n")
+                    scope.write(f"{status}\t{rx_requested}\t{rx_unresolved}\t{len(rx_cells)}\ncell_hex\n")
+                    for cell in sorted(rx_cells):
+                        scope.write(cell.encode("utf-8").hex()+"\n")
+                rx_scope = {"status":status, "requested_queries":rx_requested,
+                    "unresolved_queries":rx_unresolved, "native_cells":len(rx_cells),
+                    "path":str(scope_path), "sha256":file_sha256(scope_path)}
     requested = sum(item["queries"] for item in resolutions.values())
     measurable = sum(item["measurable_queries"] for item in resolutions.values())
     return {"status": "pass", "coverage": coverage, "resolutions": resolutions,
+        **({"rx_shadow_scope":rx_scope} if rx_scope is not None else {}),
         "timing_coverage": {"status": "complete" if requested == measurable else "incomplete",
             "requested_queries": requested, "measurable_queries": measurable,
             "unresolved_queries": requested - measurable}}

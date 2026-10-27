@@ -137,7 +137,8 @@ if {[catch {
   set word_checks {0 {}}
   if {$emuflow_word_phy_directory ne ""} {
     emuflow_validate_clock_contract $emuflow_clock_contract true
-    set word_checks [emuflow_word_routed_checks $out]
+    emuflow_session_child prepare-timing
+    set word_checks [emuflow_word_routed_checks $out "$out/native-word-rx-sources.tsv"]
   }
   set metrics [open "$out/implementation_metrics.tsv" w]
   puts $metrics "metric\tvalue"
@@ -158,9 +159,15 @@ if {[catch {
   if {$emuflow_word_phy_directory ne ""} {
     puts $metrics "native_word_infrastructure_checks\t[lindex $word_checks 0]"
     puts $metrics "native_word_infrastructure_wns_ns\t[lindex $word_checks 1]"
+    puts $metrics "native_word_infrastructure_whs_ns\t[lindex $word_checks 5]"
+    puts $metrics "native_word_rx_clock_pins_excluded\t[lindex $word_checks 2]"
+    puts $metrics "native_word_control_clock_pins\t[lindex $word_checks 3]"
+    puts $metrics "native_word_rx_scope_complete\t[lindex $word_checks 4]"
+    puts $metrics "native_word_infrastructure_scope\tregistered-control-paths-excluding-rx-shadow-launches-v1"
   }
   close $metrics
-  emuflow_session_timings $emuflow_script_directory $prefix $emuflow_io_timing_map
+  emuflow_session_timings $emuflow_script_directory $prefix $emuflow_io_timing_map false \
+      [expr {$emuflow_word_phy_directory ne ""}]
   puts "EMUFLOW_INDEXED_VIVADO status=pass part=$part fixed_pairs=$pairs"
 } message options]} {
   puts stderr "EMUFLOW_INDEXED_VIVADO status=fail message=$message"

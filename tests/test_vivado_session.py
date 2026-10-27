@@ -403,7 +403,8 @@ def test_native_word_session_selects_sampling_costs_and_rejects_downgrades(tmp_p
 @pytest.mark.parametrize("mode", ["datapath-only", "clock-aware-reference"])
 @pytest.mark.parametrize("fixed_map", ["", "fixed map.tsv"])
 @pytest.mark.parametrize("diagnostic", [False, True])
-def test_native_timing_bridge_forwards_measurement_policy_for_all_query_classes(tmp_path, mode, fixed_map, diagnostic):
+@pytest.mark.parametrize("prepared", [False, True])
+def test_native_timing_bridge_forwards_measurement_policy_for_all_query_classes(tmp_path, mode, fixed_map, diagnostic, prepared):
     kinds = ("boundary_timing", "logic_segment_timing", "local_path_timing")
     output = tmp_path/"timing-diagnostic" if diagnostic else tmp_path
     output.mkdir(exist_ok=True)
@@ -416,8 +417,10 @@ def test_native_timing_bridge_forwards_measurement_policy_for_all_query_classes(
     script = f"source {_tcl_word(ROOT/'scripts/vivado/native_session.tcl')}\n"
     script += f"set emuflow_session_out {_tcl_word(tmp_path)}\nset emuflow_timing_query_mode {_tcl_word(mode)}\n"
     script += "set expected_stage "+("prepare-timing-diagnostic" if diagnostic else "prepare-timing")+"\n"
+    script += f"set already_prepared {str(prepared).lower()}\n"
     script += r'''
 proc emuflow_session_child {stage} {
+ if {$::already_prepared} {error "repeated query preparation"}
  if {$stage ne $::expected_stage} {error "unexpected stage"}
 }
 proc emuflow_session_source {script arguments} {
@@ -425,7 +428,7 @@ proc emuflow_session_source {script arguments} {
  puts [join [linsert $arguments 0 [file tail $script]] "\t"]
 }
 '''
-    script += f"emuflow_session_timings scripts partition {_tcl_word(fixed_map)} {str(diagnostic).lower()}\n"
+    script += f"emuflow_session_timings scripts partition {_tcl_word(fixed_map)} {str(diagnostic).lower()} {str(prepared).lower()}\n"
     result = subprocess.run([TCL86], input=script, text=True, capture_output=True, check=True)
     assert not result.stderr
     observed = [row.split("\t") for row in result.stdout.splitlines()]
