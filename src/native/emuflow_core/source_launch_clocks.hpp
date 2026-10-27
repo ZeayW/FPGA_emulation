@@ -4,8 +4,8 @@
 #include <map>
 
 namespace emuflow::core {
-struct SourceLaunchPoint {
-  // -1 names an original top-level input; all other coordinates name cells.
+struct SourceClockPoint {
+  // -1 names an original top-level port; all other coordinates name cells.
   std::int64_t cell;
   std::uint64_t port, bit;
   // Original source endpoint in OpenSTA's SDC spelling, not Verilog text.
@@ -13,17 +13,28 @@ struct SourceLaunchPoint {
 };
 
 // Resolves the producer's logical Vivado spelling by checking its exact
-// forward recipe against original driver endpoints. Never uses an optimized
-// actual_start_object as an architectural identity.
-class SourceLaunchResolver {
+// forward recipe against original endpoints of the specified direction.
+// Optimized physical object names never replace architectural identities.
+class SourceEndpointResolver {
  public:
-  explicit SourceLaunchResolver(const ArtifactRef& source);
-  SourceLaunchPoint Resolve(const std::string& physical_pin,
+  SourceEndpointResolver(const ArtifactRef& source, EndpointRole role);
+  SourceClockPoint Resolve(const std::string& physical_pin,
                             const std::string& object_kind = {});
   void RequireUnchanged() const;
   const ArtifactRef& artifact() const { return source_.artifact(); }
  private:
   SqliteStore source_;
+  EndpointRole role_;
+};
+class SourceLaunchResolver : public SourceEndpointResolver {
+ public:
+  explicit SourceLaunchResolver(const ArtifactRef& source)
+      :SourceEndpointResolver(source,EndpointRole::kDriver) {}
+};
+class SourceCaptureResolver : public SourceEndpointResolver {
+ public:
+  explicit SourceCaptureResolver(const ArtifactRef& source)
+      :SourceEndpointResolver(source,EndpointRole::kSink) {}
 };
 
 struct SourceLaunchIdentity {
@@ -50,6 +61,15 @@ struct SourceLaunchFact {
   ArtifactId<LaunchClockTag> clock;
   double engine_period_ns, engine_phase_ns, launch_ns;
 };
+struct CaptureSourceTag {};
+struct CaptureClockTag {};
+struct SourceCaptureFact {
+  ArtifactId<CaptureSourceTag> source;
+  ArtifactId<CaptureClockTag> clock;
+  // capture_ns is the capture family's phase at the target period, not a
+  // numerical data deadline or a substitute for setup/clock exceptions.
+  double engine_period_ns, engine_phase_ns, capture_ns;
+};
 struct SourceClockReference { double declared_period_ns, engine_period_ns; };
 using SourceClockReferences = std::map<std::string,SourceClockReference>;
 
@@ -64,21 +84,22 @@ ArtifactRef BuildSourceLaunchClocks(const ArtifactRef& source,
 std::vector<std::string> SourceLaunchInputSchemas(const std::string& request);
 void BuildSourceLaunchClocksFromRequest(const std::vector<ArtifactRef>& inputs,
     const std::string& output,const volatile std::sig_atomic_t* cancelled = nullptr);
+// Complete-contract state captures and implemented original local endpoints.
+// Top-level output coordinates are retained separately: their deadlines come
+// from the explicit I/O timing model, never from a fictitious state clock.
+ArtifactRef BuildSourceCaptureClocks(const ArtifactRef& source,
+    const std::vector<ArtifactRef>& logic_costs,
+    const std::vector<ArtifactRef>& local_costs,
+    const SourceLaunchContext& context,const std::string& output);
+std::vector<std::string> SourceCaptureInputSchemas(const std::string& request);
+void BuildSourceCaptureClocksFromRequest(const std::vector<ArtifactRef>& inputs,
+    const std::string& output,const volatile std::sig_atomic_t* cancelled = nullptr);
 
-class SourceLaunchClockView {
+class SourceEndpointClockView {
  public:
   // The caller supplies the original IR's validated parent seal. File
   // generations are retained; this view does not rehash the original graph.
-  SourceLaunchClockView(const ArtifactRef& clocks, const ArtifactRef& source,
-                        const std::string& original_ir_sha256);
-  std::vector<double> LaunchTimes(const std::string& physical_pin,
-      const std::string& object_kind,
-      const std::map<std::string,double>& target_periods_ns);
-  std::vector<SourceLaunchFact> Facts(const std::string& physical_pin,
-      const std::string& object_kind,
-      const std::map<std::string,double>& target_periods_ns);
   void RequireSourceIdentity(const SourceLaunchIdentity& identity);
-  void RequireOwner(const SourceLaunchFact& fact) const;
   // Original engine periods, including clocks with no requested launch tags.
   // A missing raw period is never replaced by the displayed/declared period.
   SourceClockReferences ClockReferences();
@@ -87,8 +108,28 @@ class SourceLaunchClockView {
   const ArtifactRef& artifact() const { return clocks_.artifact(); }
   const ArtifactRef& original_artifact() const { return source_.artifact(); }
   void RequireUnchanged() const;
- private:
+ protected:
+  SourceEndpointClockView(const ArtifactRef& clocks,const ArtifactRef& source,
+      const std::string& original_ir_sha256,bool capture);
   SqliteStore clocks_;
-  SourceLaunchResolver source_;
+  SourceEndpointResolver source_;
+};
+class SourceLaunchClockView : public SourceEndpointClockView {
+ public:
+  SourceLaunchClockView(const ArtifactRef& clocks,const ArtifactRef& source,const std::string& seal)
+      :SourceEndpointClockView(clocks,source,seal,false) {}
+  std::vector<double> LaunchTimes(const std::string& physical_pin,const std::string& object_kind,
+      const std::map<std::string,double>& target_periods_ns);
+  std::vector<SourceLaunchFact> Facts(const std::string& physical_pin,const std::string& object_kind,
+      const std::map<std::string,double>& target_periods_ns);
+  void RequireOwner(const SourceLaunchFact& fact) const;
+};
+class SourceCaptureClockView : public SourceEndpointClockView {
+ public:
+  SourceCaptureClockView(const ArtifactRef& clocks,const ArtifactRef& source,const std::string& seal)
+      :SourceEndpointClockView(clocks,source,seal,true) {}
+  std::vector<SourceCaptureFact> Facts(const std::string& physical_pin,const std::string& object_kind,
+      const std::map<std::string,double>& target_periods_ns);
+  void RequireOwner(const SourceCaptureFact& fact) const;
 };
 }  // namespace emuflow::core

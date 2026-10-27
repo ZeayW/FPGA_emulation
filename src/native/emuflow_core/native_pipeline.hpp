@@ -5,7 +5,7 @@
 
 namespace emuflow::native {
 enum class Stage {
-  kInvalid, kExportSourceCommunication, kBuildSourceLaunchClocks, kSealRoutes, kValidatePhysicalCells, kValidateAtomicOwnership,
+  kInvalid, kExportSourceCommunication, kBuildSourceLaunchClocks, kBuildSourceCaptureClocks, kSealRoutes, kValidatePhysicalCells, kValidateAtomicOwnership,
   kAnalyzeExact, kFinalizeExact, kHashSemantics,
   kWriteExactSections, kRefinePatron, kRoute,
   kAssignBanks, kGroupSignals, kRefinePositions, kRudy,

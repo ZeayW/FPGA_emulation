@@ -38,6 +38,7 @@ const char* StageName(Stage stage) {
     case Stage::kValidateMappedNormalization: return "phase1.validate-mapped-normalization";
     case Stage::kBuildSourceLutModels: return "phase2.build-lut-models";
     case Stage::kBuildSourceLaunchClocks: return "phase7.build-launch-clocks";
+    case Stage::kBuildSourceCaptureClocks: return "phase7.build-capture-clocks";
     case Stage::kRefinePartitionHops: return "phase3.refine-hops";
     case Stage::kValidateAtomicOwnership: return "phase7.validate-atomic-ownership";
     case Stage::kValidatePhysicalCells: return "phase7.validate-physical-cells";
@@ -92,14 +93,17 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
       if(count==3)return {"emuir-compact-v2","sta-source-document-v1","source-net-map-request-v1"};
       throw core::StageError(core::ErrorCode::kInvalidRequest,"source net-map parent coverage differs");
     }
-    case Stage::kBuildSourceLaunchClocks: {
+    case Stage::kBuildSourceLaunchClocks:
+    case Stage::kBuildSourceCaptureClocks: {
+      const bool capture=request.stage==Stage::kBuildSourceCaptureClocks;
+      const std::string schema=capture?"source-capture-build-request-v1":"source-launch-build-request-v1";
       const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
       if(count<3)throw core::StageError(core::ErrorCode::kInvalidRequest,"source launch inputs are missing");
-      const auto control=request.input_artifacts.empty()?core::ArtifactRef::Bind(request.input_paths[1],"source-launch-build-request-v1"):
+      const auto control=request.input_artifacts.empty()?core::ArtifactRef::Bind(request.input_paths[1],schema):
           request.input_artifacts[1];
-      if(control.schema()!="source-launch-build-request-v1")
+      if(control.schema()!=schema)
         throw core::StageError(core::ErrorCode::kInvalidArtifact,"source launch control schema differs");
-      control.RequireUnchanged();return core::SourceLaunchInputSchemas(control.path());
+      control.RequireUnchanged();return capture?core::SourceCaptureInputSchemas(control.path()):core::SourceLaunchInputSchemas(control.path());
     }
     case Stage::kRefinePartitionHops: return {"hop-refiner-input-v1"};
     case Stage::kValidateAtomicOwnership: return {"xilinx-mapped-index-v2","openparf-atomic-source-store-v1","openparf-placement-certificate-v3","atomic-ownership-request-v1"};
@@ -290,6 +294,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kValidateMappedNormalization: core::ValidateMappedNormalization(inputs,output); break;
       case Stage::kBuildSourceLutModels: core::BuildSourceLutModels(inputs,output); break;
       case Stage::kBuildSourceLaunchClocks: core::BuildSourceLaunchClocksFromRequest(inputs,output,request.cancelled); break;
+      case Stage::kBuildSourceCaptureClocks: core::BuildSourceCaptureClocksFromRequest(inputs,output,request.cancelled); break;
       case Stage::kRefinePartitionHops:
         RefinePartitionHops(inputs,output,!request.summary_output); break;
       case Stage::kValidateAtomicOwnership:
@@ -339,6 +344,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kValidateMappedNormalization: schema="mapped-normalization-proof-v1"; break;
       case Stage::kBuildSourceLutModels: schema="source-lut-model-store-v1"; break;
       case Stage::kBuildSourceLaunchClocks: schema="source-launch-clock-store-v1"; break;
+      case Stage::kBuildSourceCaptureClocks: schema="source-capture-clock-store-v1"; break;
       case Stage::kRefinePartitionHops: schema = "hop-refiner-output-v1"; break;
       case Stage::kValidateAtomicOwnership: schema = "atomic-ownership-summary-v1"; break;
       case Stage::kValidatePhysicalCells: schema = "physical-cell-check-summary-v1"; break;

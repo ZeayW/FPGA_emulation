@@ -271,9 +271,10 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     request.auxiliary_output_path = argv[6]; request.scratch_path = argv[7];
     return Execute(std::move(request),report);
   }
-  if (phase == "phase7" && operation == "build-launch-clocks" && argc >= 7) {
+  if (phase == "phase7" && (operation == "build-launch-clocks" || operation == "build-capture-clocks") && argc >= 7) {
     ToolSignals signals;
-    StageRequest request{Stage::kBuildSourceLaunchClocks,std::vector<std::string>(argv+3,argv+argc-1),argv[argc-1]};
+    StageRequest request{operation=="build-capture-clocks"?Stage::kBuildSourceCaptureClocks:Stage::kBuildSourceLaunchClocks,
+        std::vector<std::string>(argv+3,argv+argc-1),argv[argc-1]};
     request.cancelled=&tool_cancelled;return Execute(std::move(request),report);
   }
   emuflow::core::StageResult result;
