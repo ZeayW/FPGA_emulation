@@ -1,8 +1,10 @@
 #include "emuflow_core/word_physical_binding.hpp"
+#include "emuflow_core/original_physical_captures.hpp"
 #include "emuflow_core/json_record.hpp"
 #include <fstream>
 #include <iostream>
 #include <iomanip>
+#include <sstream>
 
 int main(int argc,char** argv) {
   try {
@@ -76,6 +78,24 @@ int main(int argc,char** argv) {
     const bool summary=argc==3 && std::string(argv[2])=="summary";
     std::uint64_t check_count=0;
     VisitPhysicalWordSupportChecks(result,selected,[&](const auto& check){++check_count;if(!summary)checks.push_back(check);});
+    if(argc==3 && std::string(argv[2]).rfind("captures",0)==0) {
+      auto capture_source=source;
+      if(std::string(argv[2])=="captures-mix-source")capture_source=ArtifactRef::Bind(text("$.other_source"),"emuir-compact-v2");
+      std::ostringstream output;output<<std::setprecision(17)<<"[";bool first=true;
+      const auto coverage=VisitSemanticPhysicalCaptures(capture_source,result,parts,[&](const auto& endpoint,const auto& capture){
+        if(!first)output<<",";first=false;
+        output<<"["<<endpoint.capture<<","<<endpoint.segment<<","<<endpoint.part<<","<<*capture.transfer<<",";
+        if(capture.cost)output<<capture.cost->data_delay_ns<<","<<capture.cost->sampling_cost_ns;
+        else output<<"null,null";
+        output<<"]";
+        if(std::string(argv[2])=="captures-mutate") {
+          std::ofstream changed(text("$.partitions[0].logic"),std::ios::app|std::ios::binary);changed.put('\0');
+        }
+      });
+      coverage.RequireUnchanged();output<<"]";
+      std::cout<<"{\"records\":"<<output.str()<<",\"captures\":"<<coverage.cross_capture_endpoints
+          <<",\"measured\":"<<coverage.measured<<",\"eliminated\":"<<coverage.optimized_away<<"}\n";return 0;
+    }
     if(argc==3) {
       if(std::string(argv[2])=="mutate") {std::ofstream changed(text("$.clocks"),std::ios::app|std::ios::binary);changed.put('\0');}
       else if(std::string(argv[2])=="mutate-proof") {

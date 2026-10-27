@@ -36,4 +36,18 @@ OriginalCaptureCoverage VisitOriginalPhysicalCaptures(OriginalTimingView& origin
     const ArtifactRef& original_source,const BoundPhysicalWordModel& words,
     const std::string& assignment_sha256,const std::vector<OriginalPhysicalPartition>& partitions,
     const std::function<void(const OriginalTimingPath&,const OriginalPhysicalCapture&)>& visitor);
+
+struct SemanticCaptureCoverage {
+  std::uint64_t cross_capture_endpoints=0,measured=0,optimized_away=0;
+  std::vector<ArtifactRef> inputs;
+  void RequireUnchanged() const;
+};
+// Stream the complete Phase6 cross-capture population, independently of the
+// selected original timing paths. Each endpoint owns its routed D/E costs and
+// the final canonical RX event, or an explicit checked removal. This is the
+// physical input to the global timer, not an engine result or a local-path
+// coverage certificate. No new path selection or partitioning is performed.
+SemanticCaptureCoverage VisitSemanticPhysicalCaptures(const ArtifactRef& source,
+    const BoundPhysicalWordModel& words,const std::vector<WordPhysicalPartition>& partitions,
+    const std::function<void(const ExactCaptureEndpoint&,const OriginalPhysicalCapture&)>& visitor);
 }  // namespace emuflow::core

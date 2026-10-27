@@ -59,12 +59,12 @@ struct Reader {
       boundary(input.boundary_identity),proof(input.optimization),part(index) {}
 };
 void Disposition(SqliteStatement& row,int measurement,int proof,int data,int sampling,
-    Reader& owner,const std::vector<std::string>& endpoints,OriginalPhysicalCapture& capture,bool local) {
+    NativeOptimizationProofView* optimization,const std::vector<std::string>& endpoints,OriginalPhysicalCapture& capture,bool local) {
   const auto kind=row.TypedText(measurement);
   if(kind=="optimized-away") {
-    Check(owner.proof && row.IsNull(data) && row.IsNull(sampling) && !row.IsNull(proof),
+    Check(optimization && row.IsNull(data) && row.IsNull(sampling) && !row.IsNull(proof),
           "original capture elimination lacks its checked proof or has numerical costs");
-    capture.eliminated=owner.proof->Require(row.TypedText(proof),endpoints);owner.proof->RequireOwner(*capture.eliminated);
+    capture.eliminated=optimization->Require(row.TypedText(proof),endpoints);optimization->RequireOwner(*capture.eliminated);
   } else {
     const bool supported=local?(kind=="explicit-routed-path-chain" || kind=="endpoint-longest-path-fallback"):
         (kind=="endpoint-exact" || kind=="cut-net-cone-upper-bound" || kind=="optimized-endpoint-collection-upper-bound");
@@ -161,7 +161,7 @@ OriginalCaptureCoverage VisitOriginalPhysicalCaptures(OriginalTimingView& origin
               local.TypedText(3)==start_pin && local.TypedText(4)==end_pin,"original local cost belongs to another endpoint or clock");
         OriginalPhysicalCapture capture{owner.part,false,{},owner.local.Id<LocalCaptureCostTag>(Index(local.TypedInteger(0))),{}, {}};
         std::vector<std::string> cells;if(path.start.instance)cells.push_back(*path.start.instance);if(path.end.instance)cells.push_back(*path.end.instance);
-        Disposition(local,5,6,7,8,owner,cells,capture,true);Check(!local.Step(),"original local capture identity repeats");
+        Disposition(local,5,6,7,8,owner.proof,cells,capture,true);Check(!local.Step(),"original local capture identity repeats");
         found=std::move(capture);++owner.consumed_local;
       }
       auto& db=owner.logic.database();auto cross=db.Prepare("SELECT s.seq,s.static_exact_segment_id,s.start_pin,s.end_pin,s.start_object_kind,s.end_object_kind,"
@@ -180,7 +180,7 @@ OriginalCaptureCoverage VisitOriginalPhysicalCaptures(OriginalTimingView& origin
         const auto cell=shadow.TypedText(0);Check(!shadow.Step() && cross.TypedText(2)==Escaped(cell)+"/Q","original cross capture starts at another RX shadow");
         OriginalPhysicalCapture capture{owner.part,true,arrival->second,owner.logic.Id<WordLogicCostTag>(Index(cross.TypedInteger(0))),{}, {}};
         std::vector<std::string> cells{cell};if(path.end.instance)cells.push_back(*path.end.instance);
-        Disposition(cross,6,7,8,9,owner,cells,capture,false);Check(!cross.Step(),"original cross capture member repeats");
+        Disposition(cross,6,7,8,9,owner.proof,cells,capture,false);Check(!cross.Step(),"original cross capture member repeats");
         found=std::move(capture);++owner.consumed_cross;
       }
     }
@@ -196,5 +196,115 @@ OriginalCaptureCoverage VisitOriginalPhysicalCaptures(OriginalTimingView& origin
   }
   Check(coverage.original==original.count(),"original physical capture coverage differs");
   original.RequireUnchanged();exact.RequireUnchanged();words.RequireUnchanged();coverage.RequireUnchanged();return coverage;
+}
+
+void SemanticCaptureCoverage::RequireUnchanged() const {for(const auto& ref:inputs)ref.RequireUnchanged();}
+
+SemanticCaptureCoverage VisitSemanticPhysicalCaptures(const ArtifactRef& source,const BoundPhysicalWordModel& words,
+    const std::vector<WordPhysicalPartition>& partitions,
+    const std::function<void(const ExactCaptureEndpoint&,const OriginalPhysicalCapture&)>& visitor) {
+  Check(words.semantics && source.schema()=="emuir-compact-v2","semantic captures require their original source and complete word binding");
+  words.RequireUnchanged();const auto& exact=*words.semantics;
+  auto paired=[&](const ArtifactRef& ref) {
+    bool found=false;
+    for(const auto& input:words.inputs)if(input.path()==ref.path() && input.schema()==ref.schema()) {
+      ArtifactScope(input).RequireOwner(ref);found=true;
+    }
+    Check(found,"semantic capture input is not owned by its word physical binding");
+  };
+  paired(source);SqliteStore original(source);
+  std::optional<ArtifactRef> calendar;
+  for(const auto& ref:words.inputs)if(ref.schema()=="tdm-schedule-store-v4") {
+    Check(!calendar,"semantic capture calendar repeats");calendar=ref;
+  }
+  Check(calendar.has_value(),"semantic capture calendar is missing");
+  struct CaptureReader {
+    SqliteStore logic;
+    NativeOptimizationProofView* proof;
+    SqliteStatement captures,shadow;
+    std::uint64_t consumed=0;
+    CaptureReader(const WordPhysicalPartition& input,const ArtifactRef& calendar)
+        :logic(input.logic_costs),proof(input.optimization) {
+      auto& db=logic.database();Attach(db,input.boundary_identity,"boundary");Attach(db,calendar,"calendar");
+      captures=db.Prepare("SELECT seq,start_pin,end_pin,start_object_kind,end_object_kind,fpga,replace_tx_endpoint,"
+          "static_exact_segment_id,measurement,optimization_source,delay_ns,sampling_cost_ns "
+          "FROM segments WHERE kind='capture' AND system_path=? ORDER BY seq");
+      shadow=db.Prepare("SELECT b.id,r.instance,r.ordinal FROM boundary.endpoints b JOIN boundary.boundary_registers r "
+          "ON r.endpoint_id=b.id JOIN calendar.schedule_entries e ON e.entry_id=b.schedule_entry "
+          "WHERE b.kind='rx' AND e.seq=? ORDER BY r.ordinal");
+    }
+  };
+  Check(partitions.size()==exact.parts().size(),"semantic capture partition coverage differs");
+  std::vector<std::unique_ptr<CaptureReader>> readers(exact.parts().size());
+  SemanticCaptureCoverage coverage;coverage.inputs=words.inputs;
+  for(const auto& input:partitions) {
+    paired(input.logic_costs);paired(input.boundary_identity);
+    Check(input.logic_costs.schema()=="logic-segment-timing-store-v3" && input.boundary_identity.schema()=="boundary-identity-store-v1",
+          "semantic captures require current physical owners");
+    auto reader=std::make_unique<CaptureReader>(input,*calendar);
+    const auto name=Header(reader->logic.database(),"fpga");
+    const auto part=std::lower_bound(exact.parts().begin(),exact.parts().end(),name);
+    Check(part!=exact.parts().end() && *part==name,"semantic capture partition is unknown");
+    const auto index=part-exact.parts().begin();Check(!readers[index],"semantic capture partition repeats");
+    if(reader->proof) {
+      Check(reader->proof->fpga()==name,"semantic capture removal belongs to another partition");
+      for(const auto& ref:reader->proof->artifacts())paired(ref);
+      reader->proof->RequireUnchanged();
+    }
+    readers[index]=std::move(reader);
+  }
+  std::map<std::pair<std::uint32_t,std::uint32_t>,std::uint32_t> incoming;
+  Check(words.transfers.size()==words.model.transfers.size(),"semantic capture transfer population differs");
+  for(std::uint32_t i=0;i<words.transfers.size();++i) {
+    const auto& transfer=words.transfers[i];
+    ArtifactScope(*calendar).RequireOwner(transfer.entry);
+    Check(incoming.emplace(std::make_pair(transfer.cut,transfer.to),i).second,"semantic capture route repeats an arrival");
+  }
+  exact.VisitCaptures([&](const ExactCaptureEndpoint& endpoint) {
+    auto& reader=*readers.at(endpoint.part);auto& row=reader.captures;
+    const auto incoming_event=incoming.find({endpoint.cut,endpoint.part});
+    Check(incoming_event!=incoming.end(),"semantic capture has no routed RX event");
+    const auto& transfer=words.transfers[incoming_event->second];
+    auto& shadow=reader.shadow;shadow.Reset();shadow.BindInteger(1,transfer.entry.sequence());
+    Check(shadow.Step() && shadow.TypedInteger(2)==0,"semantic capture RX shadow is missing");
+    const auto shadow_cell=shadow.TypedText(1);Check(!shadow.Step(),"semantic capture RX shadow is ambiguous");
+    OriginalEndpoint sink;
+    if(endpoint.kind) {
+      Check(!endpoint.bit.empty() && endpoint.bit.size()<=8,"semantic capture bit exceeds physical source coordinates");
+      std::uint64_t bit=0;for(auto byte:endpoint.bit)bit=(bit<<8)|byte;
+      sink.instance=endpoint.endpoint;sink.port=endpoint.port;sink.bit=bit;
+    } else {
+      const auto bracket=endpoint.endpoint.rfind('[');
+      Check(endpoint.endpoint.rfind("top:",0)==0 && bracket>4 && bracket!=std::string::npos && endpoint.endpoint.back()==']',
+            "semantic top-output capture spelling differs");
+      const auto bit=endpoint.endpoint.substr(bracket+1,endpoint.endpoint.size()-bracket-2);
+      Check(!bit.empty() && bit.find_first_not_of("0123456789")==std::string::npos && (bit=="0" || bit.front()!='0'),
+            "semantic top-output capture bit is invalid");
+      sink.port=endpoint.endpoint.substr(4,bracket-4);sink.bit=std::stoull(bit);
+    }
+    const auto expected_pin=OriginalPin(original.database(),sink,false);
+    std::ostringstream group;group<<"segment"<<std::setw(6)<<std::setfill('0')<<endpoint.segment;
+    row.Reset();row.BindText(1,"static-exact-contract:"+group.str());
+    Check(row.Step(),"complete semantic capture lacks a physical timing row");
+    Check(row.TypedText(1)==Escaped(shadow_cell)+"/Q" && row.TypedText(2)==expected_pin &&
+          row.TypedText(3)=="pin" && row.TypedText(4)==(endpoint.kind?"pin":"port") &&
+          row.TypedText(5)==exact.parts()[endpoint.part] && row.IsNull(6) && row.TypedText(7)==group.str(),
+          "semantic capture cost differs from its original endpoint or final RX");
+    OriginalPhysicalCapture capture{endpoint.part,true,incoming_event->second,
+        reader.logic.Id<WordLogicCostTag>(Index(row.TypedInteger(0))),{}, {}};
+    std::vector<std::string> cells{shadow_cell};if(sink.instance)cells.push_back(*sink.instance);
+    Disposition(row,8,9,10,11,reader.proof,cells,capture,false);
+    Check(!row.Step(),"semantic capture has more than one physical timing row");
+    ++reader.consumed;++coverage.cross_capture_endpoints;
+    if(capture.eliminated)++coverage.optimized_away;else ++coverage.measured;
+    visitor(endpoint,capture);
+  });
+  for(auto& reader:readers) {
+    auto count=reader->logic.database().Prepare("SELECT count(*) FROM segments WHERE kind='capture' AND system_path GLOB 'static-exact-contract:*'");
+    Check(count.Step() && count.TypedInteger(0)==static_cast<std::int64_t>(reader->consumed),
+          "physical semantic capture owner contains extra endpoints");
+    if(reader->proof)reader->proof->RequireUnchanged();
+  }
+  exact.RequireUnchanged();original.RequireUnchanged();words.RequireUnchanged();coverage.RequireUnchanged();return coverage;
 }
 }  // namespace emuflow::core
