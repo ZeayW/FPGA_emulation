@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
 
 import pytest
 
@@ -64,6 +65,98 @@ def test_context_has_exact_sealed_dependencies_and_no_second_graph_or_path_enume
     assert {p for p in value.timing_inputs}=={b.path for b in value.source_bindings if b.path!=source.resolve()}
     assert all(hashlib.sha256(p.read_bytes()).hexdigest()==seal for p,seal in value.timing_inputs.items())
     value.require_unchanged()
+
+
+def test_capture_context_reuses_source_bytes_and_seals_its_own_export_entry(context,prepared,monkeypatch,tmp_path):
+    source,config,_=prepared
+    monkeypatch.setattr('emuflow.ir.EmuIR.load',lambda *_:pytest.fail('whole graph loaded'))
+    monkeypatch.setattr('emuflow.opensta._run_opensta_path_database',lambda *_a,**_k:pytest.fail('paths extracted again'))
+    monkeypatch.setattr('emuflow.opensta_source_context._prepare_opensta_source_model',
+        lambda *_a,**_k:pytest.fail('source graph emitted again'))
+    value=context.for_clock_query('state-capture')
+    assert Path(value.command[-1]).name=='export_capture_clock_edges.tcl'
+    for key in ('LIBERTY','VERILOG','CLOCKS','TIMING_IO'):
+        assert value.environment['EMUFLOW_STA_'+key]==context.environment['EMUFLOW_STA_'+key]
+    names={p.name for p in value.timing_inputs}
+    assert {'export_capture_clock_edges.tcl','capture_clock_edges.tcl','design_context.tcl'}<=names
+    assert not {'export_launch_clock_edges.tcl','launch_clock_edges.tcl'}&names
+    assert value.reference_clocks_ns==context.reference_clocks_ns
+    assert value.timing_io==context.timing_io
+    value.require_unchanged()
+    restored=value.for_clock_query('launch')
+    assert restored.command==context.command and restored.timing_inputs==context.timing_inputs
+    assert {binding.path:binding for binding in restored.source_bindings}=={binding.path:binding for binding in context.source_bindings}
+
+
+def test_unknown_clock_query_kind_is_rejected_before_creating_a_context(prepared,context,tmp_path):
+    source,config,_=prepared;output=tmp_path/'unknown-query'
+    with pytest.raises(ValidationError,match='query kind'):
+        emit_opensta_source_context(bind_store_source(source,'emuir-compact-v2'),output,
+            clocks={'clk':10.},timing_io=IO,executable=config['engine'],query_kind='guess')
+    assert not output.exists()
+    with pytest.raises(ValidationError,match='query kind'):
+        context.for_clock_query('guess')
+
+
+def test_derived_capture_context_retains_the_new_script_generation_lease(context,tmp_path,monkeypatch):
+    from emuflow import opensta_source_context as module
+    original=module._clock_query_scripts
+    scripts=original(Path(context.command[-1]).parent,'state-capture')
+    copied=[]
+    for path in scripts:
+        target=tmp_path/path.name;shutil.copyfile(path,target);copied.append(target)
+    monkeypatch.setattr(module,'_clock_query_scripts',lambda root,kind:
+        tuple(copied) if kind=='state-capture' else original(root,kind))
+    derived=context.for_clock_query('state-capture');derived.require_unchanged()
+    os.utime(copied[-1],None)
+    with pytest.raises(ValidationError,match='generation changed'):derived.require_unchanged()
+
+
+@pytest.mark.skipif(not os.environ.get('EMUFLOW_TEST_OPENSTA'),reason='real OpenSTA not configured')
+@pytest.mark.parametrize('damage',[None,'sequence','hex','absent','noncapture','top-port','header'])
+@pytest.mark.parametrize('derive',[False,True])
+def test_real_capture_export_uses_source_context_and_has_no_success_after_incomplete_requests(prepared,tmp_path,damage,derive):
+    source,_,_=prepared
+    value=emit_opensta_source_context(bind_store_source(source,'emuir-compact-v2'),tmp_path/'real-captures',
+        clocks={'clk':10.},timing_io=IO,executable=os.environ['EMUFLOW_TEST_OPENSTA'],
+        query_kind='launch' if derive else 'state-capture')
+    if derive:value=value.for_clock_query('state-capture')
+    root=tmp_path/'export';root.mkdir()
+    # These original pins are requested directly, without any timing-path
+    # selector. The escaped Unicode name exercises the production transport.
+    names=['positive/D','negative\\\\雪/hier/D']
+    rows=[[str(i),pin.encode().hex()]for i,pin in enumerate(names)]
+    header='capture_seq\tpin_hex'
+    if damage=='sequence':rows[1][0]='2'
+    if damage=='hex':rows[1][1]='zz'
+    if damage=='absent':rows[1][1]='absent/D'.encode().hex()
+    if damage=='noncapture':rows[1][1]='positive/Q'.encode().hex()
+    if damage=='top-port':rows[1][1]='rst'.encode().hex()
+    if damage=='header':header='source_seq\tpin_hex'
+    requests=root/'requests.tsv';requests.write_text(header+'\n'+''.join('\t'.join(row)+'\n'for row in rows))
+    output=root/'facts.tsv';catalog=root/'clocks.tsv'
+    environment={**os.environ,**value.environment,'EMUFLOW_STA_TOP':'counter',
+        'EMUFLOW_CAPTURE_REQUESTS':str(requests),'EMUFLOW_CAPTURE_OUTPUT':str(output),
+        'EMUFLOW_CAPTURE_CLOCK_CATALOG':str(catalog)}
+    value.require_unchanged()
+    result=subprocess.run(value.command,env=environment,cwd=root,stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+    value.require_unchanged()
+    marker='EMUFLOW_CAPTURE_CLOCK_EXPORT status=pass'
+    if damage:
+        assert result.returncode!=0 and marker not in result.stdout,result.stdout
+    else:
+        assert result.returncode==0 and result.stdout.count(marker)==1,result.stdout
+        assert marker+' captures=2 facts=2 clocks=1' in result.stdout
+        lines=[line.split('\t')for line in output.read_text().splitlines()]
+        assert lines[0]==['capture_seq','clock_hex','period_ns','phase_ns']
+        assert [(row[0],bytes.fromhex(row[1]).decode())for row in lines[1:]]==[('0','clk'),('1','clk')]
+        assert [float(row[3])/float(row[2])for row in lines[1:]]==pytest.approx([0.,.5])
+        assert all(float(row[2])==pytest.approx(10.)for row in lines[1:])
+        catalog_rows=[line.split('\t')for line in catalog.read_text().splitlines()]
+        assert catalog_rows[0]==['clock_seq','clock_hex','period_ns']
+        assert len(catalog_rows)==2 and catalog_rows[1][:2]==['0','clk'.encode().hex()]
+        assert float(catalog_rows[1][2])==pytest.approx(10.)
 
 
 @pytest.mark.parametrize('change',['source','mapped','clock','model'])
