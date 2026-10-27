@@ -4522,7 +4522,8 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 sorted(indexed_captures, key=lambda item: item["id"]),
                 assignment["semantic_contract"]["capture_requirements"],
             )
-            legacy_transport = write_transport_storage(
+            from tests.transport_reference import write_transport_storage as reference_transport
+            legacy_transport = reference_transport(
                 root / "legacy-transport",
                 root / "assignment.sqlite",
                 schedule,

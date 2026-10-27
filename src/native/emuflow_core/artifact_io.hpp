@@ -90,7 +90,8 @@ void PublishTemporaryFile(const std::string& temporary, const std::string& targe
                           const std::vector<ArtifactRef>& inputs = {});
 
 // Publish a new complete stage directory with one rename. Every member is a
-// closed regular file; existing destinations and symlink members are rejected.
+// closed regular file or directory; existing destinations, source aliases and
+// symlink members are rejected at every depth.
 // Sources remain bound through directory synchronization and rollback.
 void PublishNewDirectory(const std::string& temporary,const std::string& target,
                          const std::vector<ArtifactRef>& inputs);

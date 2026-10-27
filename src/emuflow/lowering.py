@@ -1116,7 +1116,7 @@ def _run_placement_ir_lowering_from_split_indexed(
             boundary_identity_header(transport),
             iter_boundary_identity_records(transport, result, transport_ir),
             source_bindings=bind_view_sources(
-                (transport, "transport-store-v1"),
+                (transport, getattr(transport,"store_schema","transport-store-v2")),
                 (transport_ir, "emuir-compact-v2"),
                 (result, "emuir-compact-v2"),
             ),

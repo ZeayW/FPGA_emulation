@@ -241,6 +241,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase6_split_overlay.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase6_split_projection.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase6_split_build.sql"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase6_transport.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase5_schedule.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase5_schedule_indexes.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/global_measurements.sql"

@@ -206,7 +206,7 @@ int main() {
       {
         auto& db=writer.database();
         const std::string query=schema.sqlite_schema_query;
-        if (std::string(schema.name)=="transport-store-v1") {
+        if ((std::string(schema.name)=="transport-store-v1" || std::string(schema.name)=="transport-store-v2")) {
           db.Execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);"
                      "INSERT INTO metadata VALUES ('platform','\"board\"'),('design','\"design\"'),('frame_slots','4')");
         } else if (query.find("FROM manifest")!=std::string::npos) {
@@ -239,7 +239,7 @@ int main() {
         "openparf-name-map-store-v1",
         "chimew-bank-input-store-v1",
         "position-hints-store-v1", "chimew-bank-report-store-v1",
-        "transport-store-v1", "chimew-binding-store-v1", "pin-plan-store-v1",
+        "transport-store-v1", "transport-store-v2", "chimew-binding-store-v1", "pin-plan-store-v1",
         "openparf-atomic-source-store-v1", "openparf-placement-certificate-v3",
         "xilinx-physical-handoff-v1", "vivado-lineage-store-v2",
         "vivado-source-functions-v1", "emuir-compact-v2", "emuir-indexed-v1",
@@ -468,6 +468,26 @@ int main() {
       if (!rejected || read(destination)!="accepted")
         throw std::runtime_error("direct publication replaced an artifact from a changed source");
       std::filesystem::remove(staged);
+    }
+    // Whole physical stages contain per-FPGA trees. Reject aliases/symlinks
+    // at depth, while preserving the complete private tree on rejection.
+    for(int mutation=0;mutation<4;++mutation) {
+      const auto staging=root/("tree-private-"+std::to_string(mutation));
+      const auto target=root/("tree-public-"+std::to_string(mutation));
+      const auto original=root/("tree-source-"+std::to_string(mutation));
+      {std::ofstream file(original);file<<"source";}
+      std::filesystem::create_directories(staging/"fpga0/nested");
+      {std::ofstream file(staging/"fpga0/nested/data");file<<"stage";}
+      if(mutation==1)std::filesystem::create_symlink(original,staging/"fpga0/alias");
+      if(mutation==2)std::filesystem::create_hard_link(original,staging/"fpga0/alias");
+      const auto input=ArtifactRef::Bind(original.string(),"chimew-rudy-input-v1");
+      if(mutation==3){std::ofstream file(original,std::ios::app);file<<"changed";}
+      bool rejected=false;
+      try{emuflow::core::PublishNewDirectory(staging.string(),target.string(),{input});}
+      catch(const emuflow::core::StageError&){rejected=true;}
+      if(mutation==0) {
+        if(rejected || std::filesystem::exists(staging) || !std::filesystem::is_regular_file(target/"fpga0/nested/data"))throw std::runtime_error("nested stage was not published");
+      } else if(!rejected || std::filesystem::exists(target) || !std::filesystem::is_regular_file(staging/"fpga0/nested/data"))throw std::runtime_error("rejected stage tree changed its generation");
     }
     const auto sqlite_artifact = (root / "source-artifact.sqlite").string();
     {

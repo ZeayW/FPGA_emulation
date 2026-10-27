@@ -40,6 +40,7 @@ PUBLICATION_MODULES = (
     "split_netlist_storage",
     "split_overlay",
     "transport_storage",
+    "transport_native",
     "position_hints_storage",
     "pin_plan_storage",
     "chimew_binding_storage",
@@ -543,7 +544,7 @@ def qualify(request_path: Path, result_path: Path):
         str(path.relative_to(output)): file_sha256(path) for path in text_files
     }
     if {entry["schema"] for entry in publications} != {
-        "transport-store-v1",
+        "transport-store-v2",
         "split-netlists-v3",
     }:
         raise ValidationError(

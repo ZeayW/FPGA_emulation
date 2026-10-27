@@ -245,12 +245,15 @@ void PublishNewDirectory(const std::string& temporary,const std::string& target,
       fs::weakly_canonical(source.parent_path())!=fs::weakly_canonical(destination.parent_path()))
     throw StageError(ErrorCode::kPublicationFailed,"invalid new stage directory publication");
   for(const auto& input:inputs)input.RequireUnchanged();
-  for(const auto& member:fs::directory_iterator(source)) {
-    if(member.is_symlink() || !member.is_regular_file())throw StageError(ErrorCode::kPublicationFailed,"stage directory contains a non-file member");
+  std::vector<fs::path> directories{source};
+  for(const auto& member:fs::recursive_directory_iterator(source)) {
+    if(member.is_symlink())throw StageError(ErrorCode::kPublicationFailed,"stage directory contains a symlink");
+    if(member.is_directory()){directories.push_back(member.path());continue;}
+    if(!member.is_regular_file())throw StageError(ErrorCode::kPublicationFailed,"stage directory contains a non-file member");
     for(const auto& input:inputs)if(fs::equivalent(member.path(),input.path()))throw StageError(ErrorCode::kPublicationFailed,"stage directory member aliases source");
     SyncFile(member.path().string());
   }
-  SyncDirectory(source);
+  for(auto directory=directories.rbegin();directory!=directories.rend();++directory)SyncDirectory(*directory);
   for(const auto& input:inputs)input.RequireUnchanged();
   fs::rename(source,destination);
   try {SyncDirectory(destination.parent_path());for(const auto& input:inputs)input.RequireUnchanged();}

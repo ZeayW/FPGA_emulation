@@ -22,7 +22,6 @@ from .managed_json_storage import pack_managed_json
 from .ir import EmuIR
 from .netlist import (
     SPLIT_MANIFEST_SCHEMA,
-    anchors_to_xdc_template,
 )
 from .platform import Platform
 from .pin_plan_storage import read_pin_plan, write_pin_plan_storage
@@ -39,7 +38,6 @@ from .ppro_calibrated_platform import (
 )
 from .runtime import (
     build_virtual_runtime,
-    virtual_runtime_controller_to_systemverilog,
 )
 from .split_netlist_storage import (
     read_compact_emuir_control_metadata,
@@ -52,7 +50,6 @@ from .transport_storage import (
     read_lane_map,
     read_transport,
     read_virtual_binding,
-    write_transport_systemverilog,
     write_transport_storage,
 )
 
@@ -227,6 +224,7 @@ def run_phase6(
     source = read_compact_emuir_control_metadata(ir_path)
     require_native_schema("sqlite-publication-request-v1")
     require_native_schema("split-netlists-v3")
+    require_native_schema("transport-stage-request-v1")
     design_name = source["design"]["name"]
     declared_clocks = [item["id"] for item in source.get("clocks", [])]
     if clock_periods is None:
@@ -387,6 +385,7 @@ def run_phase6(
         from .virtual_board import build_virtual_board
 
         virtual_board = build_virtual_board(platform)
+    runtime = build_virtual_runtime(schedule, platform, clock_periods)
     transport_artifacts = write_transport_storage(
         output_dir,
         assignment_index_path,
@@ -396,8 +395,9 @@ def run_phase6(
         clocks=source["clocks"],
         pin_plan=pin_plan,
         virtual_board=virtual_board,
+        runtime=runtime,
+        emit_rtl=True,
     )
-    runtime = build_virtual_runtime(schedule, platform, clock_periods)
     exact_digest = schedule.get("semantic_contract_sha256")
     exact_storage = None
     for transport in transport_artifacts["transports"].values():
@@ -631,36 +631,6 @@ def run_phase6(
             )
     if transport_cost is not None:
         write_json(output_dir / "transport-cost.json", transport_cost, compact=True)
-    (output_dir / "virtual_runtime_controller.sv").write_text(
-        virtual_runtime_controller_to_systemverilog(runtime),
-        encoding="utf-8",
-    )
-    for item in artifacts["manifest"]["fpgas"]:
-        fpga_id = item["fpga"]
-        fpga_root = output_dir / fpga_id
-        write_transport_systemverilog(
-            fpga_root / "transport_schedule.sv",
-            artifacts["transports"][fpga_id],
-            platform,
-        )
-        (fpga_root / "virtual_anchors.xdc.template").write_text(
-            anchors_to_xdc_template(artifacts["anchors"][fpga_id]),
-            encoding="utf-8",
-        )
-        if virtual_binding is not None:
-            from .virtual_board import (
-                write_virtual_binding_systemverilog,
-                write_virtual_binding_xdc,
-            )
-
-            write_virtual_binding_xdc(
-                fpga_root / "virtual_data_pins.xdc", virtual_binding, fpga_id
-            )
-            write_virtual_binding_systemverilog(
-                fpga_root / "virtual_differential_io.sv",
-                virtual_binding,
-                fpga_id,
-            )
     report = {
         "schema": PHASE6_REPORT_SCHEMA,
         "phase": 6,

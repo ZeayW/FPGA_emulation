@@ -1790,6 +1790,17 @@ class TDMScheduleView(Mapping[str, Any]):
         require_store_sources_unchanged(self._source_bindings)
         return self._source_bindings
 
+    def maximum_arrival_slot(self):
+        """Reduce current typed arrivals without a Python hop traversal."""
+        from .sqlite_artifacts import immutable_sqlite_uri
+        sources=self.bound_store_sources()
+        with closing(sqlite3.connect(immutable_sqlite_uri(self.store_path),uri=True)) as connection:
+            value=connection.execute('SELECT coalesce(max(arrival_slot),0) FROM schedule_entries').fetchone()[0]
+        require_store_sources_unchanged(sources)
+        if type(value) is not int or value<0:
+            raise ValidationError('typed schedule has an invalid maximum arrival')
+        return value
+
     def native_validation_header(self):
         """Bounded header projection; record sections remain in the store."""
         require_store_sources_unchanged(self._source_bindings)

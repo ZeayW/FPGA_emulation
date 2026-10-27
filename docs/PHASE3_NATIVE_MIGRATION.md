@@ -566,7 +566,7 @@ there is no silent implementation or provider fallback.
 | Phase 3 | Complete shared-core stage owns source-backed configuration, candidate/primary clustering, TritonPart initialization, v14 search, independent decision/hop audits, selected semantics and final-directory publication; native compiler executes it directly | Qualify whole-stage NVDLA equivalence and wall/process-tree RSS/I/O; retire replaced reference production scopes after acceptance |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
-| Phase 6 | Native source-bound split memberships; indexed transport/binding owner; streamed RTL/XDC | Complete native transport/binding and RTL/XDC producers, complete-stage ownership and real-design qualification while preserving electrical contracts |
+| Phase 6 | Native source-bound split memberships; native typed-hop transport/binding owner, source audit and streamed RTL/XDC | Complete-stage configuration, Chimew qualification/report ownership and real-design acceptance remain; the bounded clock-calendar host is still Python |
 | Phase 7 | Indexed lowering; typed physical handoff and native Bookshelf pin export | Complete remaining backend/export/validation ownership and full physical qualification |
 | Global STA | Native typed physical-to-event binding, event validation/model export, measurement import, full-original-path reduction and typed QoR publication | Migrate remaining physical producers and orchestration; qualify complete real-design physical/global timing |
 
@@ -593,6 +593,37 @@ ownership coverage and shadow/net/endpoint invariants through those sources.
 The v2 producer is retained only as a differential test oracle; v2 reading
 remains for identified published inputs. This closes repeated DUT storage at
 the split boundary, not the complete Phase 6 data plane or NVDLA qualification.
+
+### Native transport and fixed-I/O generation
+
+`phase6 build-transport ASSIGNMENT SCHEDULE REQUEST OUTPUT_DIR [PIN_PLAN]`
+consumes current typed source stores and bounded board/clock configuration.
+Storage v2 owns one typed record per scheduled hop. Endpoint, lane and binding
+compatibility relations are SQLite views; there are no persisted endpoint,
+lane or per-hop binding JSON populations. Fixed physical pin facts and their
+membership summaries are bounded by the device inventory. Original assignment,
+ScheduleStore and optional Chimew pin-plan generations remain bound through
+physical consumption; selectors retain their explicit underlying store version.
+The v1 reader remains for identified published artifacts and the independent
+test oracle, rather than a second selectable production writer.
+
+The shared native stage emits transport RTL, the runtime controller, anchor
+templates and fixed-pin RTL/XDC directly from typed cursors. It publishes its
+complete per-FPGA tree with one directory rename. Nested directory publication
+retains source checks and rejects symlinks and source aliases at every depth.
+The current Python stage adapter adopts those outputs and still owns the
+enclosing Phase 6 configuration and report lifecycle. This is not a declaration
+that complete Phase 6 or W7 has been qualified.
+
+`phase6 audit-transport STORE SUMMARY` independently merges stored hop facts
+against the original schedule and pin-plan owners in identity order, then
+checks physical pins against the original bounded wiring configuration. It
+recomputes physical-port membership without trusting the producer's cached
+counts or digests. Current physical consumers use this native audit and only
+decode the bounded physical-port summary; altering a compact pin record and
+its compatibility binding view together still fails original-wiring validation.
+Real NVDLA record equivalence, runtime/RSS/disk measurements and both physical
+backends remain required acceptance evidence.
 
 ## Complete native partition stage
 

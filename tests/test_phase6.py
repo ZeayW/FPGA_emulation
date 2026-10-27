@@ -1,3 +1,4 @@
+from tests.transport_reference import write_transport_storage as reference_transport
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 from tests.pin_plan_fixture import make_pin_plan_fixture
 from contextlib import closing
@@ -259,12 +260,14 @@ class Phase6Test(unittest.TestCase):
                 "platform": self.platform.name,
                 "provider": "transport-store-test",
                 "transport_semantics": "registered-boundary",
-                "metrics": {"frame_slots": 8_192},
+                "metrics": {"frame_slots": 8_192,"completion_slot":count},
+                "domain_schedules":[],
+                "demand_completions":[{"demand":f"demand_{i:06d}","net":f"net_{i:06d}","source_ready_slot":0,"completion_slot":i+1,"sink_arrival_slots":{sink:i+1}} for i in range(count)],
                 "routes": [
                     {
                         "id": f"demand_{index:06d}",
                         "net": f"net_{index:06d}",
-                        "source": source,
+                        "source": source,"sinks":[sink],"tree_edges":[{"link":link.id,"from":source,"to":sink}],
                     }
                     for index in range(count)
                 ],
@@ -278,11 +281,12 @@ class Phase6Test(unittest.TestCase):
                         "to": sink,
                         "slot": index,
                         "arrival_slot": index + 1,
-                        "lane": 0,
+                        "lane": 0,"hop":0,"capacity_key":"fixture-domain","ready_slot":0,
                     }
                     for index in range(count)
                 ],
             }
+            schedule=_indexed_split_schedule(root,schedule)
             summaries = []
             writer_uri_modes = []
             original_connect = sqlite3.connect
@@ -327,7 +331,7 @@ class Phase6Test(unittest.TestCase):
                         (output / "fpga0/transport.json").stat().st_size,
                         4096,
                     )
-            self.assertEqual(writer_uri_modes, [True, True])
+            self.assertEqual(writer_uri_modes, [])  # The host opens no SQLite writer.
             self.assertEqual(summaries[0]["sha256"], summaries[1]["sha256"])
 
     def test_transport_store_consumes_typed_schedule_cursor(self) -> None:
@@ -340,7 +344,7 @@ class Phase6Test(unittest.TestCase):
             )
             write_tdm_schedule_storage(schedule_path, self.schedule)
 
-            legacy = write_transport_storage(
+            legacy = reference_transport(
                 root / "legacy",
                 assignment_path,
                 self.schedule,
@@ -498,7 +502,7 @@ class Phase6Test(unittest.TestCase):
                 },
             )
 
-            legacy = write_transport_storage(
+            legacy = reference_transport(
                 root / "legacy-pin",
                 assignment_path,
                 schedule,
@@ -676,7 +680,7 @@ class Phase6Test(unittest.TestCase):
             typed_transport_path = write_transport_storage(
                 root / "typed-transport",
                 assignment_path,
-                self.schedule,
+                read_tdm_schedule(root/"split-schedule.json"),
                 self.platform,
                 design=self.ir.value["design"],
                 clocks=self.ir.value["clocks"],

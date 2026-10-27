@@ -262,12 +262,9 @@ def build_virtual_runtime(
         raise ValidationError(
             "schedule must complete before the runtime barrier release slot"
         )
-    expected_completion = max(
-        (
-            entry.get("arrival_slot", -1)
-            for entry in schedule.get("entries", [])
-        ),
-        default=0,
+    maximum=getattr(schedule,'maximum_arrival_slot',None)
+    expected_completion = maximum() if callable(maximum) else max(
+        (entry.get('arrival_slot',-1) for entry in schedule.get('entries',[])),default=0,
     )
     if completion_slot != expected_completion:
         raise ValidationError(

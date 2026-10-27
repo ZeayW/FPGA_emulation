@@ -86,6 +86,13 @@ constexpr RegisteredSchema schemas[] = {
      "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'", "emuflow.signal-position-hints/v1"},
     {"chimew-bank-report-store-v1", ArtifactEncoding::kSqlite, 0x454d5552, 1, false,
      "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'", "emuflow.chimew-bank-channel-report/v1"},
+    {"transport-stage-request-v1", ArtifactEncoding::kText, 0, 1},
+    {"transport-audit-summary-v1", ArtifactEncoding::kText, 0, 1},
+    {"transport-stage-summary-v1", ArtifactEncoding::kText, 0, 1},
+    {"transport-store-v2", ArtifactEncoding::kSqlite, 0x454d5558, 2, false,
+     "SELECT 'emuflow.transport-storage/v2' FROM metadata WHERE key='platform' AND json_type(value)='text' "
+     "AND (SELECT json_type(value) FROM metadata WHERE key='design')='text' "
+     "AND (SELECT json_type(value) FROM metadata WHERE key='frame_slots')='integer'", "emuflow.transport-storage/v2"},
     {"transport-store-v1", ArtifactEncoding::kSqlite, 0x454d5558, 1, false,
      "SELECT 'emuflow.transport-storage/v1' FROM metadata WHERE key='platform' AND json_type(value)='text' "
      "AND (SELECT json_type(value) FROM metadata WHERE key='design')='text' "
