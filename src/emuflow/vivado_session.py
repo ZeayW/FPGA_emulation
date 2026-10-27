@@ -29,6 +29,20 @@ def _tcl_word(value):
     return '"'+str(value).replace('\\','\\\\').replace('"','\\"').replace('$','\\$').replace('[','\\[').replace(']','\\]').replace('\n','\\n').replace('\r','\\r')+'"'
 
 
+def _child_command(output):
+    # Vivado modifies library/Python variables. A child receives the original
+    # Python runtime and the exact installed package, rather than vendor Python.
+    environment = {"PATH":str(Path(sys.executable).parent)+os.pathsep+"/usr/bin:/bin",
+        "PYTHONPATH":str(Path(__file__).resolve().parents[1]), "PYTHONDONTWRITEBYTECODE":"1",
+        "TMPDIR":str(output/".tmp"), "SQLITE_TMPDIR":str(output/".tmp")}
+    if os.environ.get("EMUFLOW_NATIVE_ROOT"):
+        environment["EMUFLOW_NATIVE_ROOT"] = str(Path(os.environ["EMUFLOW_NATIVE_ROOT"]).expanduser().resolve())
+    if "LD_LIBRARY_PATH" in os.environ:
+        environment["LD_LIBRARY_PATH"] = os.environ["LD_LIBRARY_PATH"]
+    return ["/usr/bin/env","-i",*(f"{key}={value}" for key,value in environment.items()),
+               sys.executable,"-m","emuflow.vivado_session"]
+
+
 def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mapped_sha256,
                      queries, runtime, ports, synthesized_checkpoint=None, synthesized_checkpoint_sha256=None,
                      dut_frequency_mhz=None,word_phy_directory=None,retain_routed_checkpoint=False,
@@ -75,17 +89,7 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
             if not isinstance(period,(int,float)) or isinstance(period,bool) or not math.isfinite(period) or period<=0:
                 raise ValidationError("native clock contract requires finite positive periods")
             stream.write(f"{name.encode().hex()}\t{port.encode().hex()}\t{period:.17g}\n")
-    # Vivado modifies library/Python variables. A child receives the original
-    # Python runtime and the exact installed package, rather than vendor Python.
-    environment = {"PATH":str(Path(sys.executable).parent)+os.pathsep+"/usr/bin:/bin",
-        "PYTHONPATH":str(Path(__file__).resolve().parents[1]), "PYTHONDONTWRITEBYTECODE":"1",
-        "TMPDIR":str(output/".tmp"), "SQLITE_TMPDIR":str(output/".tmp")}
-    if os.environ.get("EMUFLOW_NATIVE_ROOT"):
-        environment["EMUFLOW_NATIVE_ROOT"] = str(Path(os.environ["EMUFLOW_NATIVE_ROOT"]).expanduser().resolve())
-    if "LD_LIBRARY_PATH" in os.environ:
-        environment["LD_LIBRARY_PATH"] = os.environ["LD_LIBRARY_PATH"]
-    command = ["/usr/bin/env","-i",*(f"{key}={value}" for key,value in environment.items()),
-               sys.executable,"-m","emuflow.vivado_session"]
+    command = _child_command(output)
     settings = {"emuflow_session_out":str(output),"emuflow_session_manifest":str(output/"native-session.json"),
         "emuflow_word_phy_directory":str(Path(word_phy_directory).resolve())if word_phy_directory is not None else "",
         "emuflow_timing_query_mode":manifest["timing_query_mode"],
@@ -123,6 +127,51 @@ def load_session(path: Path):
     if (not legacy and 'source_hierarchy_prefix'not in value) or (value.get('word_phy_directory')is not None and (legacy or not prefix)):
         raise ValidationError('native word/source hierarchy requires a current explicit session manifest')
     return value
+
+
+def prepare_routed_timing_export(manifest_path: Path, output: Path):
+    """Prepare read-only timing extraction from a session's retained DCP.
+
+    Keep recovery outputs apart from the original implementation. The original
+    constraints stay in the DCP; this operation never regenerates clocks or RTL.
+    """
+    import shutil
+    manifest_path = manifest_path.resolve()
+    session = load_session(manifest_path)
+    prior = Path(session["output"]).resolve()
+    checkpoint = prior/"routed.dcp"
+    if not checkpoint.is_file():
+        raise ValidationError("routed timing extraction requires the retained routed.dcp")
+    output = output.resolve()
+    if output == prior:
+        raise ValidationError("routed timing extraction requires a fresh output directory")
+    checkpoint_sha = file_sha256(checkpoint)
+    output.mkdir(parents=True)
+    (output/".tmp").mkdir()
+    for name in ("clock-contract.tsv", "fixed-io-timing-map.tsv"):
+        source = prior/name
+        if source.is_file():
+            shutil.copyfile(source, output/name)
+        elif name == "clock-contract.tsv":
+            raise ValidationError("routed timing extraction lacks its original clock contract")
+    session.update(output=str(output), routed_export={"checkpoint":str(checkpoint),
+        "checkpoint_sha256":checkpoint_sha, "source_manifest":str(manifest_path),
+        "source_manifest_sha256":file_sha256(manifest_path)})
+    if session.get("word_phy_directory") is not None:
+        session["word_phy_directory"] = str(output)
+    write_json(output/"native-session.json", session, compact=True)
+    settings = {"emuflow_session_out":str(output), "emuflow_session_manifest":str(output/"native-session.json"),
+        "emuflow_timing_query_mode":session["timing_query_mode"],
+        "emuflow_routed_checkpoint":str(checkpoint), "emuflow_expected_part":session["part"],
+        "emuflow_source_prefix":session.get("source_hierarchy_prefix", ""),
+        "emuflow_clock_contract":str(output/"clock-contract.tsv"),
+        "emuflow_allow_generated_clocks":"true" if session.get("word_phy_directory") else "false",
+        "emuflow_io_timing_map":str(output/"fixed-io-timing-map.tsv") if (output/"fixed-io-timing-map.tsv").is_file() else ""}
+    lines = [f"set {key} {_tcl_word(value)}" for key,value in settings.items()]
+    lines.append("set emuflow_child_command [list "+" ".join(_tcl_word(value) for value in _child_command(output))+"]")
+    config = output/"native-session.tcl"
+    config.write_text("\n".join(lines)+"\n")
+    return config
 
 
 def _paths(session):
@@ -311,6 +360,9 @@ def prepare_timing(session):
     the vendor implementation. They are neither zero delays nor removal facts.
     """
     out = Path(session["output"])
+    recovery = session.get("routed_export")
+    if recovery and file_sha256(Path(recovery["checkpoint"])) != recovery["checkpoint_sha256"]:
+        raise ValidationError("retained routed checkpoint changed before timing extraction")
     result = _prepare_measurable_timing(session, out)
     write_json(out/"routed-query-preparation.json", result, compact=True)
     return {"status": "pass", "query_classes": len(result["resolutions"]),

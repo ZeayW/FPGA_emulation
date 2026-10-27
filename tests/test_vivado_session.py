@@ -631,3 +631,82 @@ def test_native_child_preserves_explicit_runtime_installation(tmp_path, monkeypa
     result = subprocess.run([shutil.which("tclsh")], input=code, text=True, capture_output=True, check=True)
     assert not result.stderr
     assert result.stdout.strip() == 'EMUFLOW_NATIVE_ROOT='+str(selected)
+
+
+@pytest.mark.skipif(TCL86 is None, reason="Tcl 8.6 required")
+@pytest.mark.parametrize("condition", ["routed", "wrong-part", "incomplete-route"])
+def test_retained_checkpoint_exports_without_reimplementation(tmp_path, condition):
+    from emuflow.vivado_session import prepare_routed_timing_export
+    session, _, _ = session_fixture(tmp_path, require_constant=False)
+    prior = Path(session["output"])
+    session.update(source_hierarchy_prefix="", queries={}, implementation_timing={"dut_clock_periods_ns":{"clk":100}})
+    write_json(prior/"native-session.json", session)
+    (prior/"routed.dcp").write_bytes(b"retained routed physical design")
+    (prior/"clock-contract.tsv").write_text("clock_hex\tport_hex\tperiod_ns\n"+b"core_clk".hex()+"\t"+b"clk".hex()+"\t100\n")
+    (prior/"fixed-io-timing-map.tsv").write_text("logical_hex\tkind\tphysical_hex\tanchor_hex\n")
+    parents = {path:file_sha256(path) for path in prior.iterdir() if path.is_file()}
+    out = tmp_path/"export"
+    config = prepare_routed_timing_export(prior/"native-session.json", out)
+    recovered = read_json(out/"native-session.json")
+    assert recovered["routed_export"]["checkpoint_sha256"] == file_sha256(prior/"routed.dcp")
+    assert recovered["implementation_timing"] == session["implementation_timing"]
+    assert (out/"clock-contract.tsv").read_bytes() == (prior/"clock-contract.tsv").read_bytes()
+    program = "set argv [list "+_tcl_word(config)+"]\nset argc 1\n"
+    program += "set template "+_tcl_word(prior/"routed_mapped_cells.tsv")+"\n"
+    program += "set condition "+_tcl_word(condition)+"\n"
+    program += "set expected_part "+_tcl_word(session["part"])+"\n"
+    program += r'''
+rename source original_source
+proc source {path} {
+  if {[file tail $path] eq "source_inventory.tcl"} {
+    proc emuflow_inventory {path prefix placed} {file copy $::template $path}
+  } else {uplevel 1 [list original_source $path]}
+}
+proc set_param {args} {}
+proc open_checkpoint {path} {puts "opened [file tail $path]"}
+proc current_design {} {return dut}
+proc get_property {property object} {
+  switch $property {
+    PART {return [expr {$::condition eq "wrong-part" ? "another-part" : $::expected_part}]}
+    NAME {return core_clk}
+    PERIOD {return 100}
+  }
+  error "unexpected property $property"
+}
+proc get_ports {args} {return clk}
+proc get_clocks {args} {return core_clk}
+proc get_nets {args} {return [expr {$::condition eq "incomplete-route" ? "unrouted" : ""}]}
+foreach command {report_route_status report_drc report_timing_summary report_clocks} {
+  proc $command {args} {set f [open [lindex $args end] w];puts $f "retained report";close $f}
+}
+'''
+    program += "source "+_tcl_word(ROOT/"scripts/vivado/export_routed_session.tcl")+"\n"
+    completed = subprocess.run([TCL86], input=program, text=True, capture_output=True)
+    assert (completed.returncode == 0) is (condition == "routed"), completed.stdout+completed.stderr
+    assert "opened routed.dcp" in completed.stdout
+    assert parents == {path:file_sha256(path) for path in parents}
+    if condition == "routed":
+        assert "EMUFLOW_ROUTED_TIMING status=exported" in completed.stdout
+        assert read_json(out/"routed-query-preparation.json")["timing_coverage"]["status"] == "complete"
+        assert not (out/"constant-frontier-plan.json").exists()
+        assert not (out/"optimization-proofs.sqlite").exists()
+        with pytest.raises(FileExistsError):
+            prepare_routed_timing_export(prior/"native-session.json", out)
+    else:
+        assert not (out/"routed-query-preparation.json").exists()
+
+
+def test_routed_export_rejects_a_changed_retained_checkpoint(tmp_path):
+    from emuflow.vivado_session import prepare_routed_timing_export, load_session
+    session, _, _ = session_fixture(tmp_path, require_constant=False)
+    prior = Path(session["output"])
+    session["source_hierarchy_prefix"] = ""
+    write_json(prior/"native-session.json", session)
+    (prior/"clock-contract.tsv").write_text("clock_hex\tport_hex\tperiod_ns\n")
+    with pytest.raises(ValidationError, match="retained routed.dcp"):
+        prepare_routed_timing_export(prior/"native-session.json", tmp_path/"absent")
+    (prior/"routed.dcp").write_bytes(b"retained")
+    config = prepare_routed_timing_export(prior/"native-session.json", tmp_path/"export")
+    (prior/"routed.dcp").write_bytes(b"changed")
+    with pytest.raises(ValidationError, match="checkpoint changed"):
+        prepare_timing(load_session(config.with_suffix(".json")))
