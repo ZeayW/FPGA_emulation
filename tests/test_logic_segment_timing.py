@@ -13,21 +13,18 @@ from emuflow.io import read_json, write_json
 from emuflow.ir import EmuIR
 from emuflow.errors import ValidationError
 from emuflow.logic_segment_timing import (
-    LogicSegmentQueryInputs,
-    _architectural_launch_endpoints,
-    _index_exact_logic_segments,
-    _incoming_transported_cut_nets,
-    _normalize_xilinx_logical_endpoint,
-    _route_timing_paths,
-    _vivado_object,
     import_vivado_logic_segment_timing as _native_import_vivado_logic_segment_timing,
     prepare_logic_segment_query_inputs,
+)
+from tests.physical_query_reference import (
+    _architectural_launch_endpoints, _index_exact_logic_segments,
+    _incoming_transported_cut_nets, _normalize_xilinx_logical_endpoint,
+    _route_timing_paths, _vivado_object,
 )
 from emuflow.logic_segment_timing_storage import (
     read_logic_segment_timing_storage,
 )
 from emuflow.logic_segment_identity_storage import (
-    LogicSegmentIdentitySpool,
     read_logic_segment_identity_storage,
     write_logic_segment_identity_storage,
 )
@@ -35,7 +32,6 @@ import emuflow.logic_segment_identity_storage as identity_storage
 import emuflow.logic_segment_timing as logic_segment_timing
 from emuflow.local_path_timing import (
     LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION,
-    _resolve_local_path_fpga,
     local_path_timing_header,
     path_id_set_sha256,
     prepare_local_path_query_inputs,
@@ -109,228 +105,27 @@ class LogicSegmentTimingTest(unittest.TestCase):
             2,
         )
 
+    def _native_local_case(self, function):
+        from tests.native_build import emuflow_native
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(
+                os.environ, {'EMUFLOW_NATIVE_ROOT': str(emuflow_native().parent.parent)}):
+            function(Path(temporary))
+
     def test_compact_local_path_preparation_never_loads_whole_graph(self):
-        value = {
-            "schema": "emuflow.emuir/v1",
-            "design": {"name": "dut", "top": "dut", "source_format": "test"},
-            "ports": [],
-            "instances": [
-                {
-                    "id": name,
-                    "name": name,
-                    "type": "FDRE" if name != "logic" else "LUT1",
-                    "resources": {"ff": 1} if name != "logic" else {"lut": 1},
-                    "parameters": {},
-                    "attributes": {},
-                    "constant_connections": [],
-                }
-                for name in ("launch", "logic", "capture")
-            ],
-            "nets": [
-                {
-                    "id": "n0", "name": "n0", "fanout": 1,
-                    "cut_class": "register_output",
-                    "drivers": [{"instance": "launch", "port": "Q", "bit": 0}],
-                    "sinks": [{"instance": "logic", "port": "I0", "bit": 0}],
-                },
-                {
-                    "id": "n1", "name": "n1", "fanout": 1,
-                    "cut_class": "combinational",
-                    "drivers": [{"instance": "logic", "port": "O", "bit": 0}],
-                    "sinks": [{"instance": "capture", "port": "D", "bit": 0}],
-                },
-            ],
-            "clocks": [],
-            "warnings": [],
-        }
-        database = {
-            "schema": "emuflow.sta-path-database/v1",
-            "design": "dut",
-            "source": {"provider": "opensta-fpga-path-database-v1", "input": "test"},
-            "normalization": {
-                "positive_slack_scale_ns": 10.0,
-                "negative_slack_scale_ns": 1.0,
-                "max_clock_period_ns": 10.0,
-            },
-            "paths": [{
-                "id": "p0",
-                "startpoint": {"object": "launch/Q", "instance": "launch", "port": "Q", "bit": 0},
-                "endpoint": {"object": "capture/D", "instance": "capture", "port": "D", "bit": 0},
-                "clock_domain": "clk",
-                "clock_period_ns": 10.0,
-                "slack_ns": 1.0,
-                "fixed_delay_ns": 9.0,
-                "path_nets": ["n0", "n1"],
-                "normalized_slack": 0.1,
-            }],
-        }
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            ir_path = root / "dut.emuir.sqlite"
-            EmuIR(value).save(ir_path)
-            assignment = root / "assignment.json"
-            write_json(assignment, {
-                "schema": "emuflow.partition-assignment/v1",
-                "design": "dut",
-                "instance_assignment": {
-                    "launch": "fpga0", "logic": "fpga0", "capture": "fpga0"
-                },
-            })
-            paths = root / "paths.json"
-            write_json(paths, database)
-            routes = root / "routes.json"
-            write_json(routes, {"schema": SYSTEM_ROUTES_SCHEMA, "routes": []})
-            with mock.patch(
-                "emuflow.local_path_timing.EmuIR.load",
-                side_effect=AssertionError("whole-graph loading forbidden"),
-            ):
-                prepared = prepare_local_path_query_inputs(
-                    ir_path, assignment, paths, routes
-                )
-            schedule = root / "schedule.json"
-            write_json(schedule, {
-                "schema": "emuflow.tdm-schedule/v1",
-                "design": "dut",
-                "platform": "test-platform",
-                "entries": [],
-            })
-            platform = Platform.from_dict({
-                "schema": "emuflow.boarddb/v1",
-                "platform": {
-                    "name": "test-platform", "kind": "virtual", "description": "test"
-                },
-                "fpgas": [{
-                    "id": "fpga0", "part": "test", "utilization_limit": 0.75,
-                    "capacity": {"lut": 10, "ff": 10},
-                }],
-                "links": [],
-            })
-            with mock.patch(
-                "emuflow.logic_segment_timing.EmuIR.load",
-                side_effect=AssertionError("whole-graph loading forbidden"),
-            ):
-                logic = prepare_logic_segment_query_inputs(
-                    ir_path, assignment, paths, routes, schedule, platform,
-                    allow_legacy_schedule=True,
-                )
-            value["design"]["name"] = "dut__fpga0"
-            merged = root / "merged.emuir.sqlite"
-            EmuIR(value).save(merged)
-            query = root / "local-path-query.tsv"
-            identity_path = root / "local-path-identity.json"
-            query_report = write_xilinx_local_path_query(
-                ir_path,
-                assignment,
-                paths,
-                routes,
-                merged,
-                "fpga0",
-                query,
-                identity_path,
-                prepared_inputs=prepared,
-            )
-            self.assertEqual(query_report["local_paths"], 1)
-            selector = read_json(identity_path)
-            self.assertEqual(selector["schema"], LOCAL_PATH_TIMING_STORAGE_SCHEMA)
-            self.assertNotIn("paths", selector)
-            with read_local_path_identity(identity_path) as identity:
-                self.assertEqual(
-                    validate_local_path_identity(identity)["local_paths"], 1
-                )
-                self.assertEqual(identity["paths"][0]["id"], "p0")
-            self.assertEqual(
-                query.read_text(encoding="utf-8").splitlines()[0],
-                "endpoint\tkind\tstart_pin\tend_pin\tpath_pins",
-            )
-        self.assertIsNone(prepared.original_ir)
-        self.assertNotIsInstance(prepared.local_paths_by_fpga, dict)
-        self.assertNotIsInstance(prepared.cross_path_ids, (set, frozenset))
-        self.assertFalse(hasattr(prepared, "original_nets"))
-        self.assertEqual(
-            prepared.source_manifest["original_path_ids_sha256"],
-            path_id_set_sha256(["p0"]),
-        )
-        self.assertEqual(prepared.path_endpoints["p0"][0]["instance"], "launch")
-        self.assertIsNone(logic.original_ir)
-        self.assertEqual(set(logic.original_nets), {"n0", "n1"})
+        from tests.test_local_path_query_native import test_prepare_and_query_do_not_construct_python_source_graph
+        self._native_local_case(test_prepare_and_query_do_not_construct_python_source_graph)
 
     def test_local_path_owner_uses_selected_drivers_for_top_level_ports(self):
-        nets = {
-            "input": {
-                "drivers": [
-                    {"instance": None, "port": "address", "bit": 0}
-                ],
-                "sinks": [
-                    {"instance": "logic", "port": "A", "bit": 0},
-                    {"instance": "unrelated", "port": "A", "bit": 0},
-                ],
-            },
-            "output": {
-                "drivers": [
-                    {"instance": "logic", "port": "Y", "bit": 0}
-                ],
-                "sinks": [
-                    {"instance": None, "port": "read_data", "bit": 0}
-                ],
-            },
-        }
-        self.assertEqual(
-            _resolve_local_path_fpga(
-                {"id": "port-to-port", "path_nets": ["input", "output"]},
-                {"instance": None, "port": "address", "bit": 0},
-                {"instance": None, "port": "read_data", "bit": 0},
-                nets,
-                {"logic": "fpga0", "unrelated": "fpga1"},
-            ),
-            "fpga0",
-        )
+        from tests.test_local_path_query_native import test_selected_driver_ownership_ignores_unrelated_remote_fanout
+        self._native_local_case(test_selected_driver_ownership_ignores_unrelated_remote_fanout)
 
     def test_local_path_owner_rejects_unreported_cross_partition_path(self):
-        nets = {
-            "n0": {
-                "drivers": [
-                    {"instance": "launch", "port": "Q", "bit": 0}
-                ],
-                "sinks": [],
-            },
-            "n1": {
-                "drivers": [
-                    {"instance": "logic", "port": "Y", "bit": 0}
-                ],
-                "sinks": [],
-            },
-        }
-        with self.assertRaisesRegex(
-            ValidationError,
-            "cross-partition but absent from the Phase 4 timing population",
-        ):
-            _resolve_local_path_fpga(
-                {"id": "missing-cross", "path_nets": ["n0", "n1"]},
-                {"instance": "launch", "port": "Q", "bit": 0},
-                {"instance": None, "port": "result", "bit": 0},
-                nets,
-                {"launch": "fpga0", "logic": "fpga1"},
-            )
+        from tests.test_local_path_query_native import test_unreported_cross_partition_path_fails_in_full_owner
+        self._native_local_case(test_unreported_cross_partition_path_fails_in_full_owner)
 
     def test_local_path_owner_keeps_pure_port_passthrough_unresolved(self):
-        self.assertIsNone(
-            _resolve_local_path_fpga(
-                {"id": "passthrough", "path_nets": ["n0"]},
-                {"instance": None, "port": "a", "bit": 0},
-                {"instance": None, "port": "y", "bit": 0},
-                {
-                    "n0": {
-                        "drivers": [
-                            {"instance": None, "port": "a", "bit": 0}
-                        ],
-                        "sinks": [
-                            {"instance": None, "port": "y", "bit": 0}
-                        ],
-                    }
-                },
-                {},
-            )
-        )
+        from tests.test_local_path_query_native import test_pure_primary_port_passthrough_does_not_invent_an_fpga
+        self._native_local_case(test_pure_primary_port_passthrough_does_not_invent_an_fpga)
 
     def test_zero_route_flow_has_no_logic_segment_route_timing(self):
         empty_routes = {"schema": SYSTEM_ROUTES_SCHEMA, "routes": []}
@@ -1169,217 +964,6 @@ class LogicSegmentTimingTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "schema objects"):
                 read_logic_segment_identity_storage(identity)
 
-    def test_query_spool_is_removed_on_every_early_failure(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            paths = [root / f"p{index}" for index in range(10)]
-            with mock.patch.object(
-                logic_segment_timing,
-                "_write_logic_segment_query_impl",
-                side_effect=ValidationError("injected early failure"),
-            ):
-                with self.assertRaisesRegex(ValidationError, "injected"):
-                    logic_segment_timing._write_logic_segment_query(
-                        *paths[:5], None, paths[5], paths[6], "fpga0", paths[7],
-                        paths[8], object_provider="xilinx",
-                    )
-            self.assertEqual(
-                list(root.glob(".logic-segment-identity.*.spool.sqlite")), []
-            )
-
-    @staticmethod
-    def _empty_query_inputs():
-        return LogicSegmentQueryInputs(
-            original_ir=None,
-            assignment={"design": "dut", "instance_assignment": {}},
-            path_database={},
-            routes={},
-            schedule={},
-            object_index=None,
-            path_endpoints={},
-            database_paths={},
-            route_timing={},
-            route_by_net={},
-            timing_records=[],
-            original_nets={},
-            original_instances={},
-            incoming_nets_by_instance={},
-            exact_contract=None,
-            exact_contract_sha256=None,
-            exact_segment_by_key={},
-            exact_captures={},
-            exact_launches={},
-            exact_index_path=None,
-        )
-
-    def test_indexed_query_reader_closes_on_merged_design_failure(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            boundary = root / "boundary.json"
-            write_json(boundary, {
-                "schema": "emuflow.boundary-identity/v1",
-                "endpoints": [],
-            })
-
-            class FakeIndexedPhysicalIR:
-                def __init__(self, _path):
-                    self.value = {"design": {"name": "wrong"}}
-                    self.closed = False
-                    FakeIndexedPhysicalIR.last = self
-
-                def close(self):
-                    self.closed = True
-
-            with (
-                mock.patch.object(
-                    logic_segment_timing, "IndexedPhysicalIR",
-                    FakeIndexedPhysicalIR,
-                ),
-                mock.patch.object(
-                    logic_segment_timing, "is_emuir_sqlite", return_value=True,
-                ),
-                mock.patch.object(
-                    logic_segment_timing, "is_compact_emuir", return_value=True,
-                ),
-                self.assertRaisesRegex(ValidationError, "merged IR target"),
-            ):
-                logic_segment_timing._write_logic_segment_query(
-                    root / "original.sqlite",
-                    root / "assignment.json",
-                    root / "paths.json",
-                    root / "routes.json",
-                    root / "schedule.json",
-                    SimpleNamespace(name="board"),
-                    root / "merged.sqlite",
-                    boundary,
-                    "fpga0",
-                    root / "query.tsv",
-                    root / "identity.json",
-                    object_provider="xilinx",
-                    prepared_inputs=self._empty_query_inputs(),
-                )
-            self.assertTrue(FakeIndexedPhysicalIR.last.closed)
-            self.assertEqual(
-                list(root.glob(".logic-segment-identity.*.spool.sqlite")), []
-            )
-            self.assertEqual(list(root.glob(".query.tsv.*.publish.tmp")), [])
-
-    def test_indexed_query_reader_closes_on_publication_failure(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            boundary = root / "boundary.json"
-            write_json(boundary, {
-                "schema": "emuflow.boundary-identity/v1",
-                "endpoints": [],
-            })
-
-            class FakeIndexedPhysicalIR:
-                def __init__(self, _path):
-                    self.value = {"design": {"name": "dut__fpga0"}}
-                    self.instance_indices = {}
-                    self.instances = {}
-                    self.net_indices = {}
-                    self.pins = {}
-                    self.closed = False
-                    FakeIndexedPhysicalIR.last = self
-
-                def close(self):
-                    self.closed = True
-
-            with (
-                mock.patch.object(
-                    logic_segment_timing, "IndexedPhysicalIR",
-                    FakeIndexedPhysicalIR,
-                ),
-                mock.patch.object(
-                    logic_segment_timing, "is_emuir_sqlite", return_value=True,
-                ),
-                mock.patch.object(
-                    logic_segment_timing, "is_compact_emuir", return_value=True,
-                ),
-                mock.patch.object(
-                    logic_segment_timing,
-                    "pretty_system_routes_sha256",
-                    return_value="a" * 64,
-                ),
-                mock.patch.object(
-                    logic_segment_timing,
-                    "canonical_tdm_schedule_sha256",
-                    return_value="b" * 64,
-                ),
-                mock.patch.object(
-                    identity_storage,
-                    "write_logic_segment_identity_storage",
-                    side_effect=OSError("injected publication failure"),
-                ),
-                self.assertRaisesRegex(OSError, "publication failure"),
-            ):
-                logic_segment_timing._write_logic_segment_query(
-                    root / "original.sqlite",
-                    root / "assignment.json",
-                    root / "paths.json",
-                    root / "routes.json",
-                    root / "schedule.json",
-                    SimpleNamespace(name="board"),
-                    root / "merged.sqlite",
-                    boundary,
-                    "fpga0",
-                    root / "query.tsv",
-                    root / "identity.json",
-                    object_provider="xilinx",
-                    prepared_inputs=self._empty_query_inputs(),
-                )
-            self.assertTrue(FakeIndexedPhysicalIR.last.closed)
-            self.assertEqual(
-                list(root.glob(".logic-segment-identity.*.spool.sqlite")), []
-            )
-            self.assertEqual(list(root.glob(".query.tsv.*.publish.tmp")), [])
-            self.assertFalse((root / "query.tsv").exists())
-            self.assertFalse((root / "identity.json").exists())
-
-    def test_identity_and_query_publication_roll_back_together(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            identity, header = self._typed_identity(root, 1)
-            query = root / "query.tsv"
-            query.write_text("old-query\n", encoding="utf-8")
-            old_selector = identity.read_bytes()
-            descriptor, name = tempfile.mkstemp(
-                prefix=".query.tsv.", suffix=".publish.tmp", dir=root
-            )
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                stream.write("new-query\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            sidecar = Path(name)
-            real_replace = os.replace
-
-            def fail_selector(source, target):
-                if Path(target) == identity and str(source).endswith(".tmp"):
-                    raise OSError("injected selector failure")
-                return real_replace(source, target)
-
-            with mock.patch.object(identity_storage.os, "replace", side_effect=fail_selector):
-                with self.assertRaisesRegex(OSError, "injected selector"):
-                    view = write_logic_segment_identity_storage(
-                        identity,
-                        header=header,
-                        segments=({
-                            "id": "logic00000000", "kind": "launch",
-                            "system_path": "path00000000",
-                            "member_path": "member00000000", "cut_index": 0,
-                            "fpga": "fpga0", "replace_tx_endpoint": "tx00000000",
-                            "start_pin": "start00000000", "end_pin": "end00000000",
-                            "static_exact_segment_id": "segment00000000",
-                        },),
-                        sidecar_publication=(sidecar, query),
-                    )
-                    view.close()
-            self.assertEqual(identity.read_bytes(), old_selector)
-            self.assertEqual(query.read_text(encoding="utf-8"), "old-query\n")
-            self.assertFalse(sidecar.exists())
-            self.assertEqual(list(root.glob(".*.rollback.tmp")), [])
-
     def test_measurement_import_uses_set_join_without_per_row_lookup(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1401,7 +985,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 return connection
 
             with mock.patch.object(
-                logic_segment_timing.sqlite3, "connect", side_effect=traced_connect
+                identity_storage.sqlite3, "connect", side_effect=traced_connect
             ):
                 report = _import_fixture_logic_measurements(
                     raw, identity, root / "timing-output.json"
@@ -1415,56 +999,6 @@ class LogicSegmentTimingTest(unittest.TestCase):
             self.assertFalse(any("insertintomeasurements" in statement for statement in normalized))
             # The native importer owns its measurement spool and set joins.
             self.assertFalse(any("fromidentity.segments" in statement for statement in normalized))
-
-    def test_spool_indexes_schedule_and_exact_candidates_without_graph_maps(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            trace = []
-            with LogicSegmentIdentitySpool(root) as spool:
-                spool.connection.set_trace_callback(trace.append)
-                count = spool.index_schedule_entries(
-                    {
-                        "id": f"entry{index:08d}", "net": f"net{index // 2:08d}",
-                        "from": "fpga0", "to": "fpga1",
-                    }
-                    for index in range(100_000)
-                )
-                self.assertEqual(count, 100_000)
-                self.assertEqual(
-                    [item["id"] for item in spool.schedule_from("net00000000", "fpga0")],
-                    ["entry00000000", "entry00000001"],
-                )
-                record = {
-                    "id": "exact0", "kind": "launch", "system_path": "p",
-                    "member_path": "m", "cut_index": 0, "fpga": "fpga0",
-                    "replace_tx_endpoint": "tx0", "start_pin": "s",
-                    "end_pin": "e", "static_exact_segment_id": "seg0",
-                }
-                self.assertTrue(spool.append_if_new_exact(record))
-                self.assertFalse(spool.append_if_new_exact({**record, "id": "exact1"}))
-                spool.index_exact_contract(
-                    ({
-                        "id": "capture0", "cut_net": "net0", "fpga": "fpga0",
-                        "kind": "architectural-state", "endpoint": "reg0",
-                        "port": "D", "bit": 0,
-                    },),
-                    ({
-                        "id": "segment0", "kind": "rx_to_capture",
-                        "fpga": "fpga0", "source_cut_net": "net0",
-                        "capture_requirement": "capture0",
-                    },),
-                )
-                self.assertEqual(
-                    spool.exact_segment_id(
-                        ("capture", "net0", None, "fpga0", ("reg0", "D", 0))
-                    ),
-                    "segment0",
-                )
-                self.assertEqual(spool.exact_capture("capture0")["bit"], 0)
-            self.assertFalse(any(
-                statement.lstrip().upper().startswith("SELECT 1 FROM SEGMENTS")
-                for statement in trace
-            ))
 
     def test_vivado_five_column_timing_requires_explicit_compatibility(self):
         with tempfile.TemporaryDirectory() as temporary:

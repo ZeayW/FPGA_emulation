@@ -144,17 +144,17 @@ not language line counts or the presence of typed storage:
 | Phase 6 Chimew | Grouping/refinement/RUDY kernels and indexed baseline split | Lookahead and pin-planning orchestration, independent grouping/bank qualification and adapter generation |
 | Mapped physical inputs | Indexed Bookshelf pin/net writers and placement lowering | Mapped-index SQL projection, atomic/macro fact generation, geometry and window policy |
 | Placement and routing handoff | Typed certificate/handoff ownership checks and RWRoute exporter | Site/BEL/primitive checks, handoff record production and independent route connectivity/PIP validation |
-| Physical timing | Indexed evidence import, routed segment/endpoint construction and OpenSTA staging | Shared logic-segment/local-path query generation and Vivado descendant association |
+| Physical timing | Complete local-path and logic-segment query generation, shared physical object resolution, Vivado boundary/descendant association, indexed evidence import and OpenSTA staging | Bounded backend configuration and tool supervision |
 | Global timing | Full-assignment physical coverage, event binding, measurement import and original-path reduction | Runtime generation, engine supervision, complete signoff stage and final report assembly |
 
 Indexed atoms and ordinal safe names already avoid complete in-memory lists or
 name dictionaries. Local-path evidence already has a typed owner. These are not
-outstanding format migrations, although their query producers still require a
-native stage owner. Likewise, native global timing reduction does not imply that
-the complete signoff controller has migrated. The remaining closure sequence is
-shared physical query production, physical input/handoff and independent route
-validation, then complete physical/signoff control and retirement of their old
-production adapters. Chimew remains a maintained optional path with its own
+outstanding format migrations. Both physical timing query producers now publish
+through shared native stage owners; their replaced Python production loops are
+retired. Native global timing reduction does not imply that the complete signoff
+controller has migrated. The remaining closure sequence is physical input/handoff
+and independent route validation, then complete physical/signoff control and
+retirement of their old production adapters. Chimew remains a maintained optional path with its own
 ownership and qualification requirement.
 
 ## Native route publication

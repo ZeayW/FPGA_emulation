@@ -260,3 +260,19 @@ def test_assignment_generation_is_bound_before_reading_its_exact_descriptor(tmp_
             build_physical_coverage(contract, schedule, physical, f.platform, assignment,
                                     output_path=tmp_path / 'coverage.json')
     assert not (tmp_path / 'coverage.json').exists()
+
+
+def test_failed_view_construction_closes_database_before_scratch_cleanup(tmp_path, monkeypatch):
+    f, contract, schedule, physical, assignment, _, _ = case(tmp_path)
+    with build_physical_coverage(contract, schedule, physical, f.platform, assignment,
+                                 output_path=tmp_path/'coverage.json') as view:
+        retained = []
+        def reject(self):
+            retained.append(self)
+            raise ValidationError('rejected source generation')
+        monkeypatch.setattr(PhysicalCoverageView, 'require', reject)
+        with pytest.raises(ValidationError, match='rejected source generation'):
+            PhysicalCoverageView(view.path, store_path=view.store_path, temporary=None)
+        assert len(retained) == 1 and retained[0].closed
+        with pytest.raises(sqlite3.ProgrammingError, match='closed database'):
+            retained[0].connection.execute('SELECT 1')

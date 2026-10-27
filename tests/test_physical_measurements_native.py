@@ -151,16 +151,19 @@ def test_source_mutation_after_native_import_cannot_publish(tmp_path,kind):
     assert output.read_bytes()==prior
 
 
-def test_typed_vivado_query_uses_shared_local_owner_and_rejects_retired_private_schema(tmp_path):
+def test_typed_vivado_query_uses_shared_local_owner_and_rejects_retired_private_schema(tmp_path, monkeypatch):
     from emuflow.local_path_timing import read_local_path_identity
     from emuflow.vivado_physical_timing import write_vivado_local_query
-    from tests.test_vivado_indexed_physical import fixture
-    from types import SimpleNamespace
-    ir=fixture(tmp_path);source={k:'0'*64 for k in ['path_database_sha256','original_ir_sha256','assignment_sha256','routes_sha256','original_path_ids_sha256']};source['original_paths']=1
-    prepared=SimpleNamespace(assignment={'design':'dut'},source_manifest=source,local_paths_by_fpga={'fpga0':[{'id':'p','clock_domain':'clk','clock_period_ns':20,'fixed_delay_ns':1,'slack_ns':19,'startpoint':{'instance':'launch','port':'Q','bit':0},'endpoint':{'instance':'capture','port':'D','bit':0}}]})
-    identity=tmp_path/'identity.json';write_vivado_local_query(ir,'fpga0',tmp_path/'query.tsv',identity,prepared)
+    from tests.local_path_query_fixture import sources, prepare
+    from tests.native_build import emuflow_native
+    monkeypatch.setenv('EMUFLOW_NATIVE_ROOT',str(emuflow_native().parent.parent))
+    case=sources(tmp_path/'sources')
+    report=write_vivado_local_query(case.merged['fpga0'],'fpga0',tmp_path/'query.tsv',
+        tmp_path/'identity.json',prepare(case))
+    identity=Path(report['identity'])
     assert read_json(identity)['schema']=='emuflow.local-path-timing-storage/v1'
-    with read_local_path_identity(identity) as view:assert view.validate_identity()['local_paths']==1
+    with read_local_path_identity(identity) as view:
+        assert view.validate_identity()['local_paths']==1
 
 
 @pytest.mark.parametrize('count,missing',[(17,False),(17,True),(0,False)])

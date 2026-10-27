@@ -400,9 +400,21 @@ physical-lookahead run.
 
 ## Physical implementation
 
-The current Vivado provider publishes local query identity as
-`vivado-local-identity.json`, a bounded selector for the shared typed local-path
-owner. Its measurement importers require current typed identities and produce
+Both physical backends use the complete native original-path query owner.
+`physical prepare-local-paths` partitions the original TimingPathDB against the
+compact source, assignment v4 and current route store; its shared scratch index
+contains only path ordinals, local/cross scope and FPGA ownership.
+`physical query-local-paths` joins those original records directly to the merged
+physical source and publishes `query.tsv`, the current typed local identity and
+a bounded report as one immutable generation. Callers consume the returned
+query/identity references, without copying large payloads to old basenames.
+The Python preparation, path-record spool and both query-producing loops are
+retired. Primary-port paths use selected-net drivers for ownership, so unrelated
+remote fanout cannot turn a local path into a crossing. Missing owners, unknown
+selected nets, unresolved endpoints and unreported crossings are rejected.
+Current local queries preserve endpoint-longest-path fallback qualification;
+they do not claim an explicit routed pin chain. Measurement importers require
+current typed identities and produce
 current typed timing selectors directly through `emuflow-native`. Private
 `vivado-local-identity.sqlite` JSON-row inputs, boundary-JSON import and the logic
 importer's legacy-identity switch are retired; historical reruns use their matching Git revision. Native import

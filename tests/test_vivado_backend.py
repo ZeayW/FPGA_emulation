@@ -164,7 +164,7 @@ class VivadoBackendTest(unittest.TestCase):
     def test_vivado_boundary_timing_uses_stable_endpoint_identities(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            ir_path = root / "ir.json"
+            ir_path = root / "ir.sqlite"
             identity_path = root / "identity.json"
             query_path = root / "query.tsv"
             timing_path = root / "timing.tsv"
@@ -188,7 +188,8 @@ class VivadoBackendTest(unittest.TestCase):
                 }
             )
             value["nets"][0]["fanout"] = 2
-            write_json(ir_path, value)
+            from emuflow.emuir_compact import write_compact_emuir
+            write_compact_emuir(ir_path, value)
             identity = {
                 "schema": "emuflow.boundary-identity/v1",
                 "status": "pass",
@@ -226,7 +227,7 @@ class VivadoBackendTest(unittest.TestCase):
             query = write_vivado_boundary_timing_query(
                 ir_path, identity_path, query_path
             )
-            query_text = query_path.read_text(encoding="utf-8")
+            query_text = Path(query["output"]).read_text(encoding="utf-8")
             timing_path.write_text(
                 "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\t"
                 "end_object_hex\n"
@@ -249,6 +250,79 @@ class VivadoBackendTest(unittest.TestCase):
         self.assertEqual(query["endpoints"], 1)
         self.assertIn("__emuflow_net_0".encode().hex(), query_text)
         self.assertEqual(imported["maximum_delay_ns"], 1.75)
+
+
+    def test_native_boundary_query_validates_typed_owner_and_replays_rows(self):
+        import copy
+        import csv
+        import json
+        import sqlite3
+        from contextlib import closing
+        from emuflow.emuir_compact import write_compact_emuir
+        from emuflow.boundary_identity_storage import write_boundary_identity_storage
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ir_path, selector, requested = root/"merged.sqlite", root/"boundary.json", root/"query.tsv"
+            value = _ir().to_dict()
+            value["design"]["name"] = "partition__fpga0"
+            value["ports"].append(dict(id="rx", name="rx", direction="input", width=1, clock=False))
+            register = "capture\\路径"
+            value["instances"].append(dict(id=register, name=register, type="FDRE", resources={"ff": 1},
+                parameters={}, attributes={}, constant_connections=[]))
+            value["nets"].append(dict(id="rxnet", name="rxnet", aliases=[], bus_index=0,
+                cut_class="combinational", drivers=[dict(instance=None,port="rx",bit=0)],
+                sinks=[dict(instance=register,port="D",bit=0)], fanout=1))
+            write_compact_emuir(ir_path, value)
+            # Row count is distinct from the compact owner's actual net key.
+            with closing(sqlite3.connect(ir_path)) as db, db:
+                original = db.execute("SELECT seq FROM net_records WHERE id='n0'").fetchone()[0]
+                db.execute("UPDATE endpoint_records SET net_seq=1048576 WHERE net_seq=?", (original,))
+                db.execute("UPDATE alias_records SET net_seq=1048576 WHERE net_seq=?", (original,))
+                db.execute("UPDATE net_records SET seq=1048576 WHERE id='n0'")
+            header = dict(schema="emuflow.boundary-identity/v1",status="pass",design="partition",
+                platform="board",fpga="fpga0",provider="test",coverage={})
+            record = dict(id="receive",kind="rx",schedule_entry="s0",demand="d0",logical_net="n0",
+                link="link",peer="fpga1",lane=0,logical_lane=0,internal_signal="net:n0",source_class="dut-net",
+                merged_ir=dict(external_port="rx",external_port_bit=0,external_net="rxnet",
+                    logical_net="n0",boundary_register_instances=[register]))
+            def publish(item, current_header=header):
+                with write_boundary_identity_storage(selector, current_header, [item]):
+                    pass
+            publish(record)
+            requested.write_text("prior query\n")
+            with patch("emuflow.boundary_identity_storage._iter_records", side_effect=AssertionError("Python endpoint expansion")), patch(
+                    "emuflow.indexed_physical_ir.IndexedPhysicalIR", side_effect=AssertionError("Python graph view")):
+                result = write_vivado_boundary_timing_query(ir_path, selector, requested)
+            self.assertEqual(requested.read_text(), "prior query\n")
+            with Path(result["output"]).open() as stream:
+                rows = list(csv.reader(stream, delimiter="\t"))
+            self.assertEqual(result["endpoints"], 1)
+            self.assertEqual(bytes.fromhex(rows[1][5]).decode(), register.replace("\\", "\\\\"))
+            self.assertEqual(bytes.fromhex(rows[1][4]).decode(), "__emuflow_net_1048576")
+            for mutate in (
+                lambda item: item["merged_ir"].update(boundary_register_instances=[]),
+                lambda item: item["merged_ir"].update(boundary_register_instances=["missing"]),
+                lambda item: item["merged_ir"].update(external_port_bit=1),
+                lambda item: item["merged_ir"].update(external_net="missing"),
+                lambda item: item.update(kind="tx",merged_ir={**item["merged_ir"],"logical_net":"missing", "boundary_register_instances": []}),
+            ):
+                broken = copy.deepcopy(record)
+                mutate(broken)
+                publish(broken)
+                with self.assertRaises(ValidationError):
+                    write_vivado_boundary_timing_query(ir_path, selector, requested)
+            publish(record, {**header, "design":"other"})
+            with self.assertRaisesRegex(ValidationError,"namespace"):
+                write_vivado_boundary_timing_query(ir_path, selector, requested)
+            publish(record)
+            raw = json.loads(selector.read_text())
+            raw["store_sha256"] = "0"*64
+            selector.write_text(json.dumps(raw))
+            with self.assertRaises(ValidationError):
+                write_vivado_boundary_timing_query(ir_path, selector, requested)
+            self.assertEqual(requested.read_text(), "prior query\n")
+            self.assertEqual(len(list(root.glob("query.tsv.generation.*"))), 1)
 
 
     def test_vivado_critical_warning_is_a_hard_failure(self):
@@ -325,9 +399,3 @@ class VivadoBackendTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-def test_mapped_name_preserves_vivado_backslash_identity():
-    from emuflow.vivado_backend import _vivado_mapped_name
-    assert _vivado_mapped_name("$flatten\\cpu") == "$flatten\\\\cpu"
-    assert _vivado_mapped_name("dut/路径[0]") == "dut/路径[0]"

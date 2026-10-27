@@ -1,3 +1,4 @@
+import os
 from contextlib import closing
 import json
 import shutil
@@ -172,7 +173,7 @@ puts pass
             validator.validate(result)
 
     def test_native_sequential_controls_and_bram_physical_aliases(self):
-        from emuflow.logic_segment_timing import _vivado_object
+        from tests.physical_query_reference import _vivado_object
 
         ir = SimpleNamespace(value={})
         for kind, control in (("FDRE", "R"), ("FDSE", "S"), ("FDCE", "CLR"), ("FDPE", "PRE")):
@@ -270,7 +271,7 @@ puts pass
         self.assertIn("pass", completed.stdout)
 
     def test_native_dual_output_lut_preserves_output_pin_identity(self):
-        from emuflow.logic_segment_timing import _vivado_object
+        from tests.physical_query_reference import _vivado_object
 
         ir = SimpleNamespace(value={})
         instances = {"carry_lut": {"type": "LUT6_2"}}
@@ -310,23 +311,23 @@ puts pass
                 parse_timing_summary(path)
 
     def test_complete_local_paths_use_indexed_queries_and_reject_corruption(self):
-        with tempfile.TemporaryDirectory() as directory:
+        from tests.native_build import emuflow_native
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+                os.environ, {"EMUFLOW_NATIVE_ROOT": str(emuflow_native().parent.parent)}):
             root = Path(directory)
-            ir = fixture(root)
-            source = {name: "0" * 64 for name in ("path_database_sha256", "original_ir_sha256", "assignment_sha256", "routes_sha256", "original_path_ids_sha256")}
-            source["original_paths"] = 1
-            prepared = SimpleNamespace(assignment={"design": "dut"}, source_manifest=source,
-                local_paths_by_fpga={"fpga0": ({"id": "path0", "clock_domain": "clk", "clock_period_ns": 20.0,
-                    "fixed_delay_ns": 2.0, "slack_ns": 18.0,
-                    "startpoint": {"instance": "launch", "port": "Q", "bit": 0},
-                    "endpoint": {"instance": "capture", "port": "D", "bit": 0}},)})
-            identity = root / "identity.sqlite"
-            query = root / "query.tsv"
-            with patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("whole graph")):
-                write_vivado_local_query(ir, "fpga0", query, identity, prepared)
+            from tests.local_path_query_fixture import sources, prepare
+            from tests.native_build import emuflow_native
+            with patch.dict(os.environ, {'EMUFLOW_NATIVE_ROOT': str(emuflow_native().parent.parent)}):
+                case = sources(root/'sources', paths=[
+                    ('launch/Q->capture/D#00000000','clk',20.0,18.0,2.0,['n0','n1'])])
+                prepared = prepare(case)
+                with patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("whole graph")):
+                    query_report = write_vivado_local_query(case.merged['fpga0'], "fpga0",
+                        root/'query.tsv', root/'identity.json', prepared)
+            identity = Path(query_report['identity'])
             header = "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex\tmeasurement\tactual_start_object_hex\tactual_end_object_hex\n"
             h = lambda text: text.encode().hex()
-            row = "\t".join((h("path0"), "local", "2.5", h("launch/Q"), h("capture/D"), "endpoint-exact", h("launch/Q"), h("capture/D"))) + "\n"
+            row = "\t".join((h("launch/Q->capture/D#00000000"), "local", "2.5", h("launch/Q"), h("capture/D"), "endpoint-exact", h("launch/Q"), h("capture/D"))) + "\n"
             measured = root / "measured.tsv"
             measured.write_text(header + row)
             report = import_vivado_local_timing(measured, identity, root / "timing.json")

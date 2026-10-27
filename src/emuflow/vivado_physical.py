@@ -196,8 +196,10 @@ def run_indexed_vivado_partition(
     if boundary_identity_path is not None:
         query = output_dir / "boundary-query.tsv"
         query_report = write_vivado_boundary_timing_query(ir_path, boundary_identity_path, query)
+        query = Path(query_report["output"])
         resolved = output_dir / "boundary-query-resolved.tsv"
         resolution = resolve_timing_query(index_path, functions_path, lineage_path, query, resolved, boundary=True)
+        resolved = Path(resolution["output"])
         measured = output_dir / "boundary-timing.tsv"
         export = execute_vivado(executable, _vivado_script("export_boundary_timing.tcl"),
                                 [str(output_dir / "routed.dcp"), str(resolved), str(measured), *timing_arguments], output_dir, "boundary-export.log")
@@ -215,6 +217,7 @@ def run_indexed_vivado_partition(
         measured = output_dir / f"{kind}.tsv"
         resolved = output_dir / f"{kind}-resolved.tsv"
         resolution = resolve_timing_query(index_path, functions_path, lineage_path, query, resolved)
+        resolved = Path(resolution["output"])
         export = execute_vivado(executable, _vivado_script("export_logic_segment_timing.tcl"),
                                 [str(output_dir / "routed.dcp"), str(resolved), str(measured), *timing_arguments], output_dir, f"{kind}-export.log")
         imported = importer(measured, identity, output_dir / f"{kind}.json")

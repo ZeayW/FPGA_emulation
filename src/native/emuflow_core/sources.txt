@@ -66,3 +66,7 @@ emuflow_core/placement_lowering.cpp
 emuflow_core/phase4.cpp
 emuflow_core/phase2.cpp
 emuflow_core/physical_coverage.cpp
+emuflow_core/physical_query_objects.cpp
+emuflow_core/logic_segment_query.cpp
+emuflow_core/local_path_query.cpp
+emuflow_core/vivado_timing_queries.cpp

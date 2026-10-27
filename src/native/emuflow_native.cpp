@@ -12,6 +12,9 @@
 #include "emuflow_core/yosys_hierarchy.hpp"
 #include "emuflow_core/frontend.hpp"
 #include "emuflow_core/phase2.hpp"
+#include "emuflow_core/logic_segment_query.hpp"
+#include "emuflow_core/local_path_query.hpp"
+#include "emuflow_core/vivado_timing_queries.hpp"
 #include "emuflow_core/partition_init.hpp"
 #include "emuflow_core/partition_hops.hpp"
 #include "emuflow_core/partition_semantics.hpp"
@@ -86,6 +89,11 @@ constexpr const char* kUsage =
     "  physical import-logic-timing IDENTITY TSV REQUEST STORE SUMMARY\n"
     "  physical import-local-timing IDENTITY TSV REQUEST STORE SUMMARY\n"
     "  physical validate-evidence STORE REQUEST SUMMARY\n"
+    "  physical prepare-local-paths EMUIR ASSIGNMENT PATHS ROUTES ASSIGNMENT_SOURCE PATH_SELECTOR ROUTE_SELECTOR REQUEST OUTPUT_DIR\n"
+    "  physical query-local-paths EMUIR ASSIGNMENT PATHS ROUTES ASSIGNMENT_SOURCE PATH_SELECTOR ROUTE_SELECTOR OWNERSHIP MERGED PRIMITIVES REQUEST OUTPUT_DIR\n"
+    "  physical query-logic-segments EMUIR ASSIGNMENT EXACT ROUTES SCHEDULE PATHS MERGED BOUNDARY BOARD PRIMITIVES REQUEST OUTPUT_DIR\n"
+    "  physical query-vivado-boundary MERGED BOUNDARY IDENTITY_SELECTOR REQUEST OUTPUT_DIR\n"
+    "  physical resolve-vivado-timing-query MAPPED FUNCTIONS LINEAGE QUERY REQUEST OUTPUT_DIR\n"
     "  global-sta index-events PRIMARY INDEX\n"
     "  global-sta export-events PRIMARY INDEX REQUEST SUMMARY\n"
     "  phase6 assign-banks --typed-input INPUT OUTPUT\n"
@@ -265,6 +273,51 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     return Finish(emuflow::core::RunPhase2(
       emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),
       emuflow::core::ArtifactRef::Bind(argv[4],"phase2-policy-v1"),argv[5],&tool_cancelled),report);
+  }
+  if(argc==12 && std::string(argv[1])=="physical" && std::string(argv[2])=="prepare-local-paths") {
+    const char* schemas[]={"emuir-compact-v2","assignment-index-v4","timing-path-store-v1",
+      "system-route-store-v3","physical-input-document-v1","sta-path-selector-v1",
+      "system-route-selector-v1","local-path-prepare-request-v1"};
+    std::vector<emuflow::core::ArtifactRef> inputs;
+    for(unsigned i=0;i<8;++i)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[3+i],schemas[i]));
+    ToolSignals signals;
+    return Finish(emuflow::core::PrepareLocalPathQueries(inputs,argv[11],&tool_cancelled),report);
+  }
+  if(argc==15 && std::string(argv[1])=="physical" && std::string(argv[2])=="query-local-paths") {
+    const char* schemas[]={"emuir-compact-v2","assignment-index-v4","timing-path-store-v1",
+      "system-route-store-v3","physical-input-document-v1","sta-path-selector-v1",
+      "system-route-selector-v1","local-path-partition-store-v1","emuir-compact-v2",
+      "xilinx-primitive-library-v1","local-path-query-request-v1"};
+    std::vector<emuflow::core::ArtifactRef> inputs;
+    for(unsigned i=0;i<11;++i)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[3+i],schemas[i]));
+    ToolSignals signals;
+    return Finish(emuflow::core::WriteLocalPathQueries(inputs,argv[14],&tool_cancelled),report);
+  }
+  if(argc==15 && std::string(argv[1])=="physical" && std::string(argv[2])=="query-logic-segments") {
+    const char* schemas[]={"emuir-compact-v2","assignment-index-v4","phase3-exact-data-v2",
+      "system-route-store-v3","tdm-schedule-store-v4","timing-path-store-v1",
+      "emuir-compact-v2","boundary-identity-store-v1","exact-schedule-board-request-v1",
+      "xilinx-primitive-library-v1","logic-segment-query-request-v1"};
+    std::vector<emuflow::core::ArtifactRef> inputs;
+    for(unsigned i=0;i<11;++i)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[3+i],schemas[i]));
+    ToolSignals signals;
+    return Finish(emuflow::core::RunLogicSegmentQuery(inputs,argv[14],&tool_cancelled),report);
+  }
+  if(argc==8 && std::string(argv[1])=="physical" && std::string(argv[2])=="query-vivado-boundary") {
+    const char* schemas[]={"emuir-compact-v2","boundary-identity-store-v1",
+      "boundary-identity-selector-v1","vivado-boundary-query-request-v1"};
+    std::vector<emuflow::core::ArtifactRef> inputs;
+    for(unsigned i=0;i<4;++i)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[3+i],schemas[i]));
+    ToolSignals signals;
+    return Finish(emuflow::core::WriteVivadoBoundaryQuery(inputs,argv[7],&tool_cancelled),report);
+  }
+  if(argc==9 && std::string(argv[1])=="physical" && std::string(argv[2])=="resolve-vivado-timing-query") {
+    const char* schemas[]={"xilinx-mapped-index-v2","vivado-source-functions-v1",
+      "vivado-lineage-store-v2","vivado-timing-query-tsv-v1","vivado-resolve-query-request-v1"};
+    std::vector<emuflow::core::ArtifactRef> inputs;
+    for(unsigned i=0;i<5;++i)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[3+i],schemas[i]));
+    ToolSignals signals;
+    return Finish(emuflow::core::ResolveVivadoTimingQuery(inputs,argv[8],&tool_cancelled),report);
   }
   if ((argc == 6 || argc == 7) && std::string(argv[1]) == "phase1" && std::string(argv[2]) == "import-yosys") {
     std::ios::sync_with_stdio(false);std::cin.tie(nullptr);

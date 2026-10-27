@@ -292,6 +292,15 @@ if(BUILD_TESTING)
   target_link_libraries(emuflow_native_partition_hop_kernel_test PRIVATE emuflow_core)
   add_test(NAME emuflow_native_partition_hop_kernel COMMAND emuflow_native_partition_hop_kernel_test)
   set_tests_properties(emuflow_native_partition_hop_kernel PROPERTIES TIMEOUT 5)
+  add_executable(emuflow_native_physical_query_objects_test
+    "${CMAKE_SOURCE_DIR}/tests/native_physical_query_objects_test.cpp")
+  target_link_libraries(emuflow_native_physical_query_objects_test PRIVATE emuflow_core)
+  target_include_directories(emuflow_native_physical_query_objects_test
+    PRIVATE "${CMAKE_BINARY_DIR}/generated")
+  add_test(NAME emuflow_native_physical_query_objects
+    COMMAND emuflow_native_physical_query_objects_test
+      "${CMAKE_SOURCE_DIR}/src/emuflow/data/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json")
+  set_tests_properties(emuflow_native_physical_query_objects PROPERTIES TIMEOUT 10)
   add_executable(emuflow_native_pipeline_api_test
     "${CMAKE_SOURCE_DIR}/tests/native_pipeline_api_test.cpp")
   target_link_libraries(emuflow_native_pipeline_api_test PRIVATE emuflow_core)

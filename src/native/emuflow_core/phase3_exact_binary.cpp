@@ -278,6 +278,36 @@ void ProjectExactCoverageSegments(const ArtifactRef& artifact,const std::string&
   artifact.RequireUnchanged();
 }
 
+void ProjectExactQueryRecords(const ArtifactRef& artifact,const std::string& descriptor,
+    const std::string& fpga,SqliteDatabase& db,const volatile std::sig_atomic_t* cancelled) {
+  const auto stop=[&]{if(cancelled && *cancelled)throw StageError(ErrorCode::kExecutionFailed,"physical query semantic projection cancelled");};
+  auto m=Load(artifact,descriptor);const auto part=std::find(m.parts.begin(),m.parts.end(),fpga);
+  Check(part!=m.parts.end(),"query partition is missing");
+  db.Execute("CREATE TEMP TABLE exact_query_nodes(number INTEGER PRIMARY KEY,net TEXT UNIQUE NOT NULL);"
+      "CREATE TEMP TABLE exact_query_segments(number INTEGER PRIMARY KEY,kind INTEGER,source INTEGER,target INTEGER,constant INTEGER);"
+      "CREATE TEMP TABLE exact_query_captures(number INTEGER PRIMARY KEY,net INTEGER,kind INTEGER,endpoint TEXT,port TEXT,bit INTEGER);");
+  {
+    Reader reader(artifact,m.sections.at("nets"));auto put=db.Prepare("INSERT INTO exact_query_nodes VALUES(?,?)");std::string previous;
+    for(U i=0;i<m.counts.nodes;++i){stop();const auto net=reader.String();Check(!i || previous<net,"query cut order is invalid");previous=net;put.BindInteger(1,i);put.BindText(2,net);put.Execute();}reader.Finish();
+  }
+  {
+    const auto& section=m.sections.at("segments:"+std::to_string(part-m.parts.begin()));Reader reader(artifact,section);auto put=db.Prepare("INSERT INTO exact_query_segments VALUES(?,?,?,?,?)");
+    for(U i=0;i<section.records;++i){stop();const auto number=reader.Read<std::uint32_t>();const auto kind=reader.Read<std::uint8_t>(),flags=reader.Read<std::uint8_t>();const auto source=reader.Read<std::uint32_t>(),target=reader.Read<std::uint32_t>();
+      Check(number<m.counts.segments && kind<=2 && !(flags&~1U),"query segment identity/flags disagree");
+      Check(kind==0?(source==kMissing && target<m.counts.nodes):(!flags && source<m.counts.nodes && target<(kind==1?m.counts.nodes:m.counts.captures)),"query segment coordinates disagree");
+      put.BindInteger(1,number);put.BindInteger(2,kind);if(kind==0)put.BindNull(3);else put.BindInteger(3,source);put.BindInteger(4,target);put.BindInteger(5,flags);put.Execute();
+    }reader.Finish();
+  }
+  {
+    const auto& section=m.sections.at("captures:"+std::to_string(part-m.parts.begin()));Reader reader(artifact,section);auto put=db.Prepare("INSERT INTO exact_query_captures VALUES(?,?,?,?,?,?)");
+    for(U i=0;i<section.records;++i){stop();const auto number=reader.Read<std::uint32_t>(),net=reader.Read<std::uint32_t>();const auto kind=reader.Read<std::uint8_t>();Check(number<m.counts.captures && net<m.counts.nodes && kind<=1,"query capture identity disagrees");
+      const auto endpoint=reader.String();put.BindInteger(1,number);put.BindInteger(2,net);put.BindInteger(3,kind);put.BindText(4,endpoint);
+      if(kind){const auto port=reader.String();std::uint64_t bit=0;if(m.version==1)bit=reader.Read<std::uint32_t>();else{const auto bytes=reader.Read<std::uint32_t>();Check(bytes>0 && bytes<=8,"physical capture bit exceeds supported endpoint coordinate");for(unsigned n=0;n<bytes;++n){const auto value=reader.Read<unsigned char>();Check(n || bytes==1 || value,"capture bit is not canonical");bit=(bit<<8)|value;}}Check(bit<=INT64_MAX,"physical capture bit exceeds supported endpoint coordinate");put.BindText(5,port);put.BindInteger(6,bit);}else{put.BindNull(5);put.BindNull(6);}put.Execute();
+    }reader.Finish();
+  }
+  auto missing=db.Prepare("SELECT 1 FROM exact_query_segments s LEFT JOIN exact_query_captures c ON c.number=s.target WHERE s.kind=2 AND (c.number IS NULL OR c.net!=s.source) LIMIT 1");Check(!missing.Step(),"query capture consumer ownership disagrees");artifact.RequireUnchanged();
+}
+
 std::string ValidateExactBinaryArtifact(const ArtifactRef& artifact,const std::string& descriptor) {
   auto manifest=Load(artifact,descriptor);Validate(artifact,manifest);const auto& c=manifest.counts;
   std::map<std::string,JsonRecord> summary{{"status","pass"},{"schema",Schema(manifest.version)},

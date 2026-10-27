@@ -14,10 +14,13 @@ from .errors import ValidationError
 # Equality to one avoids integer casts: binary and decimal strings can equal
 # one only after optional zero padding. Keep the native stoll ASCII whitespace,
 # optional plus and decimal underscore rules; bools/reals are never parameters.
+# Older SQLite truncates scalar JSON strings at NUL. The array form preserves
+# its escaped spelling, so reject NUL before interpreting the extracted scalar.
 _NEGATIVE_TIMING_CELLS = """
 WITH timing_parameters AS (
     SELECT c.seq,c.type,json_type(p.value,'$.IS_C_INVERTED') AS kind,
-           json_extract(p.value,'$.IS_C_INVERTED') AS raw
+           json_extract(p.value,'$.IS_C_INVERTED') AS raw,
+           json_extract(p.value,'$.IS_C_INVERTED','$.IS_C_INVERTED') AS encoded
     FROM cell_records c LEFT JOIN payloads p ON p.seq=c.parameters_seq
     WHERE c.type IN ('FDCE','FDPE','FDRE','FDSE')
 ), timing_tokens AS (
@@ -29,7 +32,7 @@ WITH timing_parameters AS (
 ), negative_timing_cells AS (
     SELECT seq,type FROM timing_digits
     WHERE (kind='integer' AND raw=1) OR
-          (kind='text' AND instr(raw,char(0))=0 AND digits<>''
+          (kind='text' AND instr(encoded,'\\u0000')=0 AND instr(raw,char(0))=0 AND digits<>''
            AND digits NOT GLOB '*[^0-9_]*'
            AND substr(digits,1,1)<>'_' AND substr(digits,-1,1)<>'_'
            AND instr(digits,'__')=0 AND ltrim(replace(digits,'_',''),'0')='1')

@@ -210,7 +210,13 @@ class PhysicalCoverageView(Mapping):
         self.connection=sqlite3.connect(immutable_sqlite_uri(self.store_path),uri=True)
         self._temporary=temporary
         self.closed=False
-        self.require()
+        try:
+            self.require()
+        except BaseException:
+            # A traceback retains the partially constructed view. Close before
+            # its scratch owner unlinks the database, including on NFS.
+            self.close()
+            raise
     def require(self):
         if self.closed:raise ValidationError('physical coverage owner is closed; replay original sources for record queries')
         require_store_sources_unchanged(self.sources)

@@ -843,15 +843,6 @@ def run_multi_fpga_physical_flow(
                 assignment_path,
                 path_database_path,
                 routes_path,
-                original_ir=prepared_logic_inputs.original_ir,
-                assignment=prepared_logic_inputs.assignment,
-                database=(
-                    prepared_logic_inputs.path_database
-                    if path_database_path.resolve()
-                    == effective_logic_path_database_path.resolve()
-                    else None
-                ),
-                routes=prepared_logic_inputs.routes,
             )
     manifest_fpgas = [item.get("fpga") for item in manifest.get("fpgas", [])]
     if set(manifest_fpgas) != set(expected_fpgas):
@@ -1113,6 +1104,8 @@ def run_multi_fpga_physical_flow(
                     logic_identity_path,
                     prepared_inputs=prepared_logic_inputs,
                 )
+                logic_identity_path = Path(logic_query_report["identity"])
+                logic_query_path = Path(logic_query_report["query"])
                 logic_timing_path = fpga_root / "logic-segment-timing.json"
                 logic_import_report = _write_inactive_logic_timing(
                     logic_identity_path, logic_timing_path
@@ -1146,6 +1139,8 @@ def run_multi_fpga_physical_flow(
                         local_identity_path,
                         prepared_inputs=prepared_local_inputs,
                     )
+                    local_identity_path = Path(local_query_report["identity"])
+                    local_query_path = Path(local_query_report["query"])
                     local_timing_path = fpga_root / "local-path-timing.json"
                     local_import_report = _write_inactive_local_timing(
                         local_identity_path, local_timing_path
@@ -1351,6 +1346,7 @@ def run_multi_fpga_physical_flow(
                     logic_identity_path,
                     prepared_inputs=prepared_logic_inputs,
                 )
+                logic_identity_path = Path(logic_query_report["identity"])
                 local_identity_path = fpga_root / "local-path-identity.json"
                 local_query_report = write_xilinx_local_path_query(
                     original_ir_path,
@@ -1363,6 +1359,7 @@ def run_multi_fpga_physical_flow(
                     local_identity_path,
                     prepared_inputs=prepared_local_inputs,
                 )
+                local_identity_path = Path(local_query_report["identity"])
             assert rapidwright_jar is not None
             assert rapidwright_java is not None
             assert rapidwright_classes is not None
@@ -1449,6 +1446,8 @@ def run_multi_fpga_physical_flow(
                     logic_identity_path,
                     prepared_inputs=prepared_logic_inputs,
                 )
+                logic_identity_path = Path(logic_query_report["identity"])
+                logic_query_path = Path(logic_query_report["query"])
                 from .vivado_physical_timing import write_vivado_local_query
 
                 local_identity_path = fpga_root / "vivado-local-identity.json"
@@ -1457,6 +1456,8 @@ def run_multi_fpga_physical_flow(
                     merged_ir, fpga_id, local_query_path, local_identity_path,
                     prepared_local_inputs,
                 )
+                local_identity_path = Path(local_query_report["identity"])
+                local_query_path = Path(local_query_report["query"])
             vivado_report = run_indexed_vivado_partition(
                 fpga=fpga_id,
                 part=fpga_part,
@@ -1542,33 +1543,41 @@ def run_multi_fpga_physical_flow(
         return record
 
     effective_workers = min(workers, len(ordered_items))
-    if effective_workers == 1:
-        partition_results = [run_and_record(item) for item in ordered_items]
-    else:
-        results_by_fpga: Dict[str, Dict[str, Any]] = {}
-        failures = []
-        with ThreadPoolExecutor(max_workers=effective_workers) as executor:
-            future_to_fpga = {
-                executor.submit(run_and_record, item): item["fpga"]
-                for item in ordered_items
-            }
-            for future in as_completed(future_to_fpga):
-                fpga_id = future_to_fpga[future]
-                try:
-                    results_by_fpga[fpga_id] = future.result()
-                except Exception as error:  # Preserve all partition failures.
-                    failures.append((fpga_id, error))
-        if failures:
-            details = "; ".join(
-                f"{fpga_id}: {error}"
-                for fpga_id, error in sorted(failures, key=lambda item: item[0])
-            )
-            raise EmuFlowError(
-                f"parallel multi-FPGA physical flow failed: {details}"
-            ) from failures[0][1]
-        partition_results = [
-            results_by_fpga[fpga_id] for fpga_id in selected_fpgas
-        ]
+    try:
+        if effective_workers == 1:
+            partition_results = [run_and_record(item) for item in ordered_items]
+        else:
+            results_by_fpga: Dict[str, Dict[str, Any]] = {}
+            failures = []
+            with ThreadPoolExecutor(max_workers=effective_workers) as executor:
+                future_to_fpga = {
+                    executor.submit(run_and_record, item): item["fpga"]
+                    for item in ordered_items
+                }
+                for future in as_completed(future_to_fpga):
+                    fpga_id = future_to_fpga[future]
+                    try:
+                        results_by_fpga[fpga_id] = future.result()
+                    except Exception as error:  # Preserve all partition failures.
+                        failures.append((fpga_id, error))
+            if failures:
+                details = "; ".join(
+                    f"{fpga_id}: {error}"
+                    for fpga_id, error in sorted(failures, key=lambda item: item[0])
+                )
+                raise EmuFlowError(
+                    f"parallel multi-FPGA physical flow failed: {details}"
+                ) from failures[0][1]
+            partition_results = [
+                results_by_fpga[fpga_id] for fpga_id in selected_fpgas
+            ]
+    finally:
+        # Query preparation is shared scratch. Every physical worker has
+        # finished (including exceptional executor shutdown) before it closes.
+        # Published timing identities reference original owners, not this index.
+        for prepared in (prepared_local_inputs, prepared_logic_inputs):
+            if prepared is not None:
+                prepared.close()
     execution = {
         "seed": seed,
         "requested_workers": workers,

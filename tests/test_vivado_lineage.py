@@ -31,7 +31,7 @@ class VivadoLineageTests(unittest.TestCase):
                     writer.writerow([f"partition/long_repeated_source_name/replica_{index:06d}","FDRE",f"s{origin}","", "", "", "", "", ""])
             output = root/"lineage.sqlite"
             with patch.object(Path,"read_text",side_effect=AssertionError("whole inventory read")), patch(
-                "emuflow.vivado_lineage.csv.reader", side_effect=AssertionError("Python census parser called")
+                "csv.reader", side_effect=AssertionError("Python census parser called")
             ):
                 summary = import_cell_lineage(mapped,functions,{"synthesized":before,"routed":inventory},output,
                                               mapped_sha256=report["mapped_index"]["sha256"])
@@ -181,8 +181,9 @@ proc get_timing_paths {args} {
             header = "endpoint_hex\tkind\tstart_kind\tstart_object_hex\tend_kind\tend_object_hex\tcone_anchor_kind\tcone_anchor_object_hex"
             query.write_text(header+"\n"+"\t".join(["70","local","pin","launch/Q".encode().hex(),"pin","alias/D".encode().hex(),"",""])+"\n")
             output = root/"resolved.tsv"
-            self.assertEqual(resolve_timing_query(mapped,functions,lineage,query,output)["queries"],1)
-            with output.open() as stream:
+            resolution = resolve_timing_query(mapped,functions,lineage,query,output)
+            self.assertEqual(resolution["queries"],1)
+            with Path(resolution["output"]).open() as stream:
                 rows = list(csv.reader(stream,delimiter="\t"))
             self.assertEqual(rows[1][5], "alias/D".encode().hex())
             self.assertEqual(bytes.fromhex(rows[1][8]).decode(), "partition/renamed_launch/Q")
@@ -214,8 +215,8 @@ proc get_timing_paths {args} {
             query = root/"query.tsv"
             query.write_text("endpoint_hex\tkind\texternal_port_hex\tbit\tlogical_net_hex\tboundary_cell_hex\n70\trx\t71\t0\t6e\t"+"alias".encode().hex()+"\n")
             output = root/"resolved.tsv"
-            resolve_timing_query(mapped,functions,lineage,query,output,boundary=True)
-            with output.open() as stream:
+            resolution = resolve_timing_query(mapped,functions,lineage,query,output,boundary=True)
+            with Path(resolution["output"]).open() as stream:
                 rows = list(csv.reader(stream,delimiter="\t"))
             self.assertEqual(bytes.fromhex(rows[1][-1]).decode(),"partition/alias")
 
@@ -233,8 +234,9 @@ proc get_timing_paths {args} {
             query, output = root / "query.tsv", root / "resolved.tsv"
             with query.open("w") as stream:
                 csv.writer(stream, delimiter="\t", lineterminator="\n").writerows([header, row])
-            self.assertEqual(resolve_timing_query(mapped, functions, lineage, query, output)["queries"], 1)
-            with output.open() as stream:
+            resolution = resolve_timing_query(mapped, functions, lineage, query, output)
+            self.assertEqual(resolution["queries"], 1)
+            with Path(resolution["output"]).open() as stream:
                 resolved = list(csv.reader(stream, delimiter="\t"))
             self.assertEqual(resolved[1][:8], row)
             self.assertTrue(resolved[1][8])
@@ -286,3 +288,62 @@ proc get_timing_paths {args} {
             query = root/"query.tsv"
             query.write_text("endpoint_hex\tkind\texternal_port_hex\tbit\tlogical_net_hex\tboundary_cell_hex\n70\trx\t71\t0\t6e\t"+"escaped\\\\alias".encode().hex()+"\n")
             self.assertEqual(resolve_timing_query(mapped,functions,lineage,query,root/"resolved.tsv",boundary=True)["queries"],1)
+
+    def test_native_resolution_preserves_all_sorted_descendants_and_port_kinds(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, mapped, functions, inventory = self.prepare(root, prefix="escaped\\路径/")
+            lineage = root/"lineage.sqlite"
+            import_cell_lineage(mapped, functions, {"routed": inventory}, lineage,
+                                mapped_sha256=report["mapped_index"]["sha256"])
+            query, requested = root/"query.tsv", root/"resolved.tsv"
+            header = ["endpoint_hex", "kind", "start_kind", "start_object_hex", "end_kind",
+                      "end_object_hex", "cone_anchor_kind", "cone_anchor_object_hex"]
+            name = "escaped\\\\路径/alias/D"
+            rows = [["70", "local", "port", "d".encode().hex(), "pin", name.encode().hex(), "", ""]]
+            with query.open("w") as stream:
+                csv.writer(stream, delimiter="\t", lineterminator="\n").writerows([header, *rows])
+            requested.write_text("prior generation\n")
+            with patch("csv.reader", side_effect=AssertionError("Python query row parser called")), patch(
+                    "sqlite3.connect", side_effect=AssertionError("Python descendant query called")):
+                resolution = resolve_timing_query(mapped, functions, lineage, query, requested)
+            self.assertEqual(requested.read_text(), "prior generation\n")
+            with Path(resolution["output"]).open() as stream:
+                actual = list(csv.reader(stream, delimiter="\t"))
+            self.assertEqual(actual[1][:8], rows[0])
+            self.assertEqual(actual[1][8], "")  # A top port never becomes a descendant cell.
+            self.assertEqual([bytes.fromhex(value).decode() for value in actual[1][9].split(",")],
+                             ["partition/renamed_capture/D", "partition/replica/D"])
+            query.write_text("\t".join(header)+"\n"+"\t".join(rows[0][:-1])+"\n")
+            with self.assertRaises(ValidationError):
+                resolve_timing_query(mapped, functions, lineage, query, requested)
+            self.assertEqual(requested.read_text(), "prior generation\n")
+            with query.open("w") as stream:
+                csv.writer(stream, delimiter="\t", lineterminator="\n").writerows([header, rows[0], rows[0]])
+            with self.assertRaises(ValidationError):
+                resolve_timing_query(mapped, functions, lineage, query, requested)
+            with self.assertRaisesRegex(ValidationError, "aliases"):
+                resolve_timing_query(mapped, functions, lineage, query, functions)
+            self.assertEqual(len(list(root.glob("resolved.tsv.generation.*"))), 1)
+
+    def test_native_resolution_rejects_mixed_owner_and_nonrouted_inventory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report, mapped, functions, inventory = self.prepare(root)
+            lineage = root/"lineage.sqlite"
+            import_cell_lineage(mapped, functions, {"routed": inventory}, lineage,
+                                mapped_sha256=report["mapped_index"]["sha256"])
+            query, requested = root/"query.tsv", root/"resolved.tsv"
+            query.write_text("endpoint_hex\tkind\texternal_port_hex\tbit\tlogical_net_hex\tboundary_cell_hex\n70\trx\t71\t0\t6e\t"+"alias".encode().hex()+"\n")
+            with closing(sqlite3.connect(functions)) as db, db:
+                db.execute("UPDATE metadata SET value=? WHERE key='mapped_index_sha256'", ("0"*64,))
+            with self.assertRaisesRegex(ValidationError, "different mapped input"):
+                resolve_timing_query(mapped, functions, lineage, query, requested, boundary=True)
+            with closing(sqlite3.connect(functions)) as db, db:
+                db.execute("UPDATE metadata SET value=? WHERE key='mapped_index_sha256'", (report["mapped_index"]["sha256"],))
+            with closing(sqlite3.connect(lineage)) as db, db:
+                db.execute("UPDATE metadata SET value='placed' WHERE key='retained_stage'")
+            with self.assertRaisesRegex(ValidationError, "routed stage"):
+                resolve_timing_query(mapped, functions, lineage, query, requested, boundary=True)
+            self.assertFalse(requested.exists())
+            self.assertEqual(list(root.glob("resolved.tsv.generation.*")), [])

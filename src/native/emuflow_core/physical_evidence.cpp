@@ -260,16 +260,17 @@ void ValidatePhysicalEvidence(const std::vector<ArtifactRef>& inputs,const std::
 
 namespace emuflow::core {
 PhysicalEvidenceSeal SealPhysicalEvidence(SqliteDatabase& db,unsigned kind,const std::string& header,const std::string& source) {
-  Require(kind>=1 && kind<=4,"producer kind is invalid");
+  Require(kind>=1 && kind<=5,"producer kind is invalid");
   Sha256 records,unsupported,unmeasured;Object counts,measurements;double maximum=0;
   if(kind==1)counts=BoundaryIdentity(db,records);
   else if(kind==2)counts=BoundaryTiming(db,records,&maximum);
   else if(kind==3)counts=LogicTiming(db,records,unsupported,unmeasured,header,"{\"endpoint_collection_bound_segments\":0}",maximum);
+  else if(kind==5)counts=LogicIdentity(db,records,unsupported,header);
   else {auto result=LocalTiming(db,records,header);counts=std::move(result.counts);measurements=std::move(result.measurements);maximum=result.maximum;}
   Object output;
   for(const char* field:{"schema","status","design","fpga","provider"})
     output.emplace(field,JsonText(db,header,(std::string("$.")+field).c_str()));
-  if(kind!=1)output.emplace("qualification",JsonText(db,header,"$.qualification"));
+  if(kind!=1 && kind!=5)output.emplace("qualification",JsonText(db,header,"$.qualification"));
   Require(JsonText(db,header,"$.status")=="pass","producer status is invalid");
   Object coverage;auto old=db.Prepare("SELECT key,value FROM json_each(?,'$.coverage') ORDER BY key");old.BindText(1,header);
   while(old.Step())coverage.emplace(Text(old,0),Count(old,1));
@@ -280,13 +281,14 @@ PhysicalEvidenceSeal SealPhysicalEvidence(SqliteDatabase& db,unsigned kind,const
     Require(JsonText(db,header,"$.schema")=="emuflow.boundary-timing/v1","producer schema is invalid");
     output.emplace("platform",JsonText(db,header,"$.platform"));output.emplace("measurement_scope",JsonText(db,header,"$.measurement_scope"));
     coverage=counts;
-  } else if(kind==3) {
-    Require(JsonText(db,header,"$.schema")=="emuflow.logic-segment-timing/v1","producer schema is invalid");
+  } else if(kind==3 || kind==5) {
+    Require(JsonText(db,header,"$.schema")== (kind==3?"emuflow.logic-segment-timing/v1":"emuflow.logic-segment-identity/v1"),"producer schema is invalid");
     for(const char* field:{"platform","system_routes_sha256","tdm_schedule_sha256"})output.emplace(field,JsonText(db,header,(std::string("$.")+field).c_str()));
     const auto semantic=JsonText(db,header,"$.semantic_contract_sha256",true);
     auto declared=db.Prepare("SELECT json_type(?,'$.semantic_contract_sha256')");declared.BindText(1,header);Require(declared.Step(),"semantic header is missing");
     if(!declared.IsNull(0))output.emplace("semantic_contract_sha256",semantic.empty()?JsonRecord():JsonRecord(semantic));
-    for(const char* key:{"segments","system_paths","member_paths","unsupported_member_paths","endpoint_exact_segments","cone_bound_segments","endpoint_collection_bound_segments"})coverage[key]=counts.at(key);
+    if(kind==5)coverage=counts;
+    else for(const char* key:{"segments","system_paths","member_paths","unsupported_member_paths","endpoint_exact_segments","cone_bound_segments","endpoint_collection_bound_segments"})coverage[key]=counts.at(key);
   } else {
     Require(JsonText(db,header,"$.schema")=="emuflow.local-path-timing/v1","producer schema is invalid");
     output.emplace("identity_schema",JsonText(db,header,"$.identity_schema"));Object original;
@@ -306,10 +308,11 @@ PhysicalEvidenceSeal SealPhysicalEvidence(SqliteDatabase& db,unsigned kind,const
   if(kind==4)payload+=",\"path_sha256\":"+JsonQuote(Digest(records));
   if(kind==3)payload+=",\"segment_sha256\":"+JsonQuote(Digest(records))+",\"source\":"+source+
       ",\"unmeasured_sha256\":"+JsonQuote(Digest(unmeasured))+",\"unsupported_sha256\":"+JsonQuote(Digest(unsupported));
+  if(kind==5)payload+=",\"segment_sha256\":"+JsonQuote(Digest(records))+",\"source\":"+source+",\"unsupported_sha256\":"+JsonQuote(Digest(unsupported));
   payload+='}';Sha256 hash;Hash(hash,payload);result.logical_sha256=Digest(hash);
   auto put=db.Prepare("INSERT INTO metadata VALUES(?,?)");
   std::map<std::string,std::string> metadata{{"header",result.header},{"counts",result.counts},{"logical_sha256",JsonQuote(result.logical_sha256)}};
-  if(kind==3)metadata.emplace("source",source);
+  if(kind==3 || kind==5)metadata.emplace("source",source);
   for(const auto& value:metadata){put.BindText(1,value.first);put.BindText(2,value.second);put.Execute();}
   return result;
 }

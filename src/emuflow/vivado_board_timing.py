@@ -348,6 +348,7 @@ def run_vivado_board_timing(
             boundary_query_report = write_vivado_boundary_timing_query(
                 merged_ir, identity_path, boundary_query
             )
+            boundary_query = Path(boundary_query_report["output"])
             boundary_tsv = fpga_out / "boundary-timing.tsv"
             boundary_export = execute_vivado(
                 vivado_executable,
@@ -383,6 +384,8 @@ def run_vivado_board_timing(
                 logic_query,
                 logic_identity,
             )
+            logic_query = Path(logic_query_report["query"])
+            logic_identity = Path(logic_query_report["identity"])
             logic_tsv = fpga_out / "logic-segment-timing.tsv"
             logic_export = execute_vivado(
                 vivado_executable,

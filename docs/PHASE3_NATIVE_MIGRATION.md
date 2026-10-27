@@ -1198,3 +1198,48 @@ Python still builds hop/group inputs and timing weights, and the shared core
 and full native production data plane are not complete. VTR/open execution
 entries, standalone artifact adapters and engine/build dependencies are retired.
 This scope reduction does not establish full NVDLA acceptance.
+
+
+### Complete original local-path query owner
+
+The source-owned native preparation covers the complete original TimingPathDB,
+expands the current route store's compressed crossing members in SQL, and
+independently checks local/cross coverage and original selected-driver ownership.
+Its shared run-scoped index stores path ordinal, scope and FPGA only. No Python
+path/endpoint/net population or row spool is retained. Query generation joins
+that index to the original path owner and merged compact EmuIR; both backends
+use the shared physical object resolver. The Vivado primitive catalog remains
+an explicit source-bound input. Mapped/lineage artifacts do not yet exist at
+this point in the physical flow and are not fabricated dependencies.
+
+Query TSV and current typed zero-delay identity records are reopened and
+independently compared with original paths and resolved physical objects before
+one atomic directory publication. The identity retains original source hashes
+and complete original-ID population evidence, and has no lifetime dependency
+on the shared preparation index. Current measurement qualification remains
+endpoint-longest-path fallback, with no explicit path chain. Small fixtures and
+component regression are intermediate gates; the registered NVDLA physical and
+global timing runs remain the terminal acceptance requirement.
+
+### Shared physical timing query production
+
+`physical query-logic-segments` reads the original compact source, assignment
+v4/exact v2, RouteStore v3, ScheduleStore v4, TimingPathDB, merged placement IR
+and boundary identities directly. A bounded board contract and primitive catalog
+complete the inputs. Original compressed members and the complete assignment
+semantic population are checked separately: a missing timing representative does
+not remove a required segment, and a configuration-stable constant does not
+invent a physical launch measurement. Query TSV, typed identity and summary are
+published together after source rejoin and final-record validation.
+
+Both query producers share physical object resolution for ports, primitive pins,
+constant controls and backend names. Vivado boundary query production and routed
+descendant association also run in the shared core. Descendant resolution checks
+the mapped/source-function/lineage owners and rejects unsupported sequential
+transformations rather than substituting an unrelated routed cell. The replaced
+Python production loops and private logic-identity spool are retired; Python
+retains bounded configuration and generation-bound artifact references.
+
+These owners do not complete physical implementation or signoff control. Mapped
+physical fact generation, remaining handoff and route validators, Chimew stage
+control and full NVDLA Phase 1–7/7C qualification remain separate closure gates.
