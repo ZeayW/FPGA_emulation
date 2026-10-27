@@ -9,9 +9,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from emuflow_tools.benchmark import timing_io_sha256
-from emuflow.errors import ValidationError
-from emuflow.ir import EmuIR
-from emuflow.platform import Platform
+from emuflow.common.errors import ValidationError
+from emuflow.ir.ir import EmuIR
+from emuflow.platform.platform import Platform
 from emuflow_tools.ppro_blackbox_application import benchmark_rtl_identity
 from emuflow_tools.ppro_calibration_cli import main
 from emuflow_tools.ppro_holdout_validation import (

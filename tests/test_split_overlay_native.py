@@ -7,12 +7,12 @@ import sqlite3
 import subprocess
 import pytest
 
-from emuflow.emuir_compact import write_compact_emuir
-from emuflow.native_tools import native_file_generation
-from emuflow.phase5_native import run_native_phase5
-from emuflow.split_netlist_storage import SplitNetlistView,validate_split_netlists_sqlite
-from emuflow.split_overlay import build_native_split,bind_split_sources
-from emuflow.tdm_schedule_storage import read_tdm_schedule
+from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow.common.native_tools import native_file_generation
+from emuflow.scheduling.phase5_native import run_native_phase5
+from emuflow.transport.split_netlist_storage import SplitNetlistView,validate_split_netlists_sqlite
+from emuflow.transport.split_overlay import build_native_split,bind_split_sources
+from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from tests.test_phase5_from_stores import native_inputs
 from tests.split_reference import write_split_netlists_sqlite
 
@@ -69,8 +69,8 @@ def test_source_overlay_matches_complete_split_without_copying_original_populati
 
 @pytest.mark.parametrize('damage',['source','generation','missing','platform','shadow','membership'])
 def test_split_source_and_overlay_damage_is_rejected_independently(owners,tmp_path,damage):
-    from emuflow.errors import ValidationError
-    from emuflow.split_netlist_storage import open_split_netlists_sqlite
+    from emuflow.common.errors import ValidationError
+    from emuflow.transport.split_netlist_storage import open_split_netlists_sqlite
     case,source,assignment,schedule=owners;output=tmp_path/'split.sqlite'
     build_native_split(output,source,assignment,schedule,expected_design=case.ir.value['design']['name'],expected_platform=case.platform.name)
     if damage=='source':source.chmod(source.stat().st_mode ^ 0o100)

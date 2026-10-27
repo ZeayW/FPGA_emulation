@@ -9,17 +9,17 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
-from emuflow.xilinx_netlist import emit_xilinx_mapped_index, IndexedXilinxMappedNetlist
-from emuflow.xilinx_segment_timing import build_xilinx_segment_timing_bundle
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
+from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index, IndexedXilinxMappedNetlist
+from emuflow.timing.xilinx_segment_timing import build_xilinx_segment_timing_bundle
 from tests.xilinx_segment_timing_reference import (_TimingGraph,
     build_xilinx_boundary_timing, build_xilinx_logic_segment_timing, build_xilinx_local_path_timing)
-from emuflow.yosys import import_yosys_json
-from emuflow.boundary_identity_storage import write_boundary_identity_storage
+from emuflow.frontend.yosys import import_yosys_json
+from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
 from tests.logic_identity_fixture import identity_facts
 from tests.timing_facts import local_timing_facts
-from emuflow.local_path_timing import LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION
+from emuflow.timing.local_path_timing import LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION
 
 
 @pytest.fixture(autouse=True)
@@ -114,11 +114,11 @@ def test_complete_typed_records_and_logical_seals_match_independent_graph(tmp_pa
     for name, builder in references.items():
         builder(c[name], c["mapped"], c["timing_path"], tmp_path / (name + "-reference.json"), _timing_graph=reference_graph)
     with patch("tests.xilinx_segment_timing_reference._graph", side_effect=AssertionError("Python routed graph")), \
-         patch("emuflow.xilinx_netlist._IndexedCells.items", side_effect=AssertionError("Python cells")), \
-         patch("emuflow.xilinx_netlist._IndexedCells.values", side_effect=AssertionError("Python cells")):
+         patch("emuflow.physical.xilinx_netlist._IndexedCells.items", side_effect=AssertionError("Python cells")), \
+         patch("emuflow.physical.xilinx_netlist._IndexedCells.values", side_effect=AssertionError("Python cells")):
         report = run(c, logic=logic, local=local)
     for name in references:
-        module = importlib.import_module("emuflow." + {"boundary": "boundary_timing", "logic": "logic_segment_timing", "local": "local_path_timing"}[name] + "_storage")
+        module = importlib.import_module("emuflow.timing." + {"boundary": "boundary_timing", "logic": "logic_segment_timing", "local": "local_path_timing"}[name] + "_storage")
         opener = getattr(module, "read_" + {"boundary": "boundary_timing", "logic": "logic_segment_timing", "local": "local_path_timing"}[name] + "_storage")
         with opener(tmp_path / (name + ".json")) as actual, opener(tmp_path / (name + "-reference.json")) as expected:
             assert actual.selector["logical_sha256"] == expected.selector["logical_sha256"]
@@ -151,7 +151,7 @@ def test_primitive_offsets_barriers_clock_gates_and_tie_origins_match_reference(
         c["timing"]["payloads"]["endpoints"]["sha256"] = hashlib.sha256(payload).hexdigest()
     if feature == "clock-gate":
         c["timing"]["clock_gates"] = [{"logical_cell": "rx_lut"}]
-        from emuflow.boundary_identity_storage import read_boundary_identity_storage
+        from emuflow.timing.boundary_identity_storage import read_boundary_identity_storage
         with read_boundary_identity_storage(c["boundary"]) as view:
             header = dict(view.selector["header"])
             tx = [row for row in view["endpoints"] if row["kind"] == "tx"]
@@ -198,7 +198,7 @@ def test_invalid_graph_or_request_preserves_all_previous_projections(tmp_path, d
         with sqlite3.connect(tmp_path / value["artifact"]) as db:
             db.execute("UPDATE segments SET end_pin='unreachable'")
     from contextlib import ExitStack
-    from emuflow import routed_segments_native as native
+    from emuflow.physical.rapidwright import routed_segments_native as native
     with ExitStack() as stack:
         if damage == "crc":
             finish = native.CheckedRequestWriter.finish
@@ -260,7 +260,7 @@ def test_many_distinct_start_cones_do_not_initialize_or_scan_the_whole_graph_per
 
 
 def test_identity_selector_mutation_and_output_alias_are_rejected_before_publication(tmp_path):
-    from emuflow import routed_segments_native as native
+    from emuflow.physical.rapidwright import routed_segments_native as native
     c = case(tmp_path)
     run(c)
     prior = (tmp_path / "boundary.json").read_bytes()
@@ -317,14 +317,14 @@ def test_explicit_floating_input_stays_disconnected_without_becoming_a_source(tm
 
 
 def test_native_routed_graph_capability_is_required_before_synthesis(tmp_path):
-    from emuflow.errors import EmuFlowError
-    from emuflow.multi_fpga_flow import run_multi_fpga_flow
+    from emuflow.common.errors import EmuFlowError
+    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
     def capability(schema):
         if schema == "routed-segment-request-v1":
             raise EmuFlowError("missing native routed graph")
-    with patch("emuflow.multi_fpga_flow._validate_mapping_timing_contract"), patch(
-        "emuflow.native_tools.require_native_schema", side_effect=capability
-    ), patch("emuflow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend started")), \
+    with patch("emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract"), patch(
+        "emuflow.common.native_tools.require_native_schema", side_effect=capability
+    ), patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend started")), \
          pytest.raises(EmuFlowError, match="missing native routed graph"):
         run_multi_fpga_flow(sources=[tmp_path / "missing.v"], top="dut", clocks=["clk"], clock_periods={"clk": 10.0},
                            physical=True, physical_backend="rapidwright", output_dir=tmp_path / "flow")
@@ -333,7 +333,7 @@ def test_native_routed_graph_capability_is_required_before_synthesis(tmp_path):
 
 @pytest.mark.parametrize("field,value", [("design", "other-design"), ("fpga", "fpga1")])
 def test_mixed_projection_namespace_cannot_publish(tmp_path, field, value):
-    from emuflow.local_path_timing_storage import read_local_path_timing_storage
+    from emuflow.timing.local_path_timing_storage import read_local_path_timing_storage
     c = case(tmp_path)
     run(c)
     previous = {name: (tmp_path / (name + ".json")).read_bytes() for name in ("boundary", "logic", "local")}

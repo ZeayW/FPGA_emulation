@@ -9,9 +9,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.errors import ValidationError
-from emuflow.io import file_sha256, read_json
-from emuflow.xilinx_openparf_name_map_storage import (
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import file_sha256, read_json
+from emuflow.physical.openparf.xilinx_openparf_name_map_storage import (
     OPENPARF_ATOMIC_NAME_MAP_SCHEMA,
     OPENPARF_ATOMIC_NAME_MAP_STORAGE_SCHEMA,
     read_xilinx_openparf_atomic_name_map,
@@ -192,7 +192,7 @@ class XilinxOpenparfNameMapStorageTest(unittest.TestCase):
             path.write_text(json.dumps(selector), encoding="utf-8")
             # Keep the rejected reader's traceback alive: cleanup must not wait
             # for exception frames or SQLite objects to be garbage-collected.
-            from emuflow import xilinx_openparf_name_map_storage as storage
+            from emuflow.physical.openparf import xilinx_openparf_name_map_storage as storage
             connections = []
             leases = []
             connect = storage._connect
@@ -243,7 +243,7 @@ class XilinxOpenparfNameMapStorageTest(unittest.TestCase):
                 return real_replace(source, destination)
 
             with mock.patch(
-                "emuflow.xilinx_openparf_name_map_storage.os.replace",
+                "emuflow.physical.openparf.xilinx_openparf_name_map_storage.os.replace",
                 side_effect=fail_selector,
             ):
                 with self.assertRaisesRegex(OSError, "injected selector failure"):
@@ -362,7 +362,7 @@ class XilinxOpenparfNameMapStorageTest(unittest.TestCase):
 
     def test_old_whole_map_json_has_no_compatibility_opt_in(self):
         import inspect
-        from emuflow import xilinx_openparf_name_map_storage as module
+        from emuflow.physical.openparf import xilinx_openparf_name_map_storage as module
         self.assertNotIn('allow_legacy', inspect.signature(read_xilinx_openparf_atomic_name_map).parameters)
         self.assertFalse(hasattr(module, 'materialize_xilinx_openparf_atomic_name_map'))
         with tempfile.TemporaryDirectory() as temporary:
@@ -473,7 +473,7 @@ class XilinxOpenparfNameMapStorageTest(unittest.TestCase):
                 return real_mkstemp(*args, **kwargs)
 
             with mock.patch(
-                "emuflow.xilinx_openparf_name_map_storage.tempfile.mkstemp",
+                "emuflow.physical.openparf.xilinx_openparf_name_map_storage.tempfile.mkstemp",
                 side_effect=fail_second_mkstemp,
             ):
                 with self.assertRaisesRegex(OSError, "injected mkstemp failure"):

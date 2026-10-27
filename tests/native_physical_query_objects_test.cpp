@@ -1,7 +1,7 @@
-#include "emuflow_core/physical_query_objects.hpp"
-#include "emuflow_core/emuir_compact_schema.hpp"
-#include "emuflow_core/json_record.hpp"
-#include "emuflow_core/sqlite.hpp"
+#include "physical/physical_query_objects.hpp"
+#include "storage/schema/emuir_compact_schema.hpp"
+#include "common/json_record.hpp"
+#include "storage/sqlite.hpp"
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -80,7 +80,7 @@ int main(int argc,char** argv) {
   try {
     Scratch scratch;
     const auto path=scratch.root/"merged.sqlite",library_path=scratch.root/"primitives.json";
-    const auto authoritative=argc==2?fs::path(argv[1]):fs::path(__FILE__).parent_path().parent_path()/"src/emuflow/data/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json";
+    const auto authoritative=argc==2?fs::path(argv[1]):fs::path(__FILE__).parent_path().parent_path()/"src/python/emuflow/data/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json";
     fs::copy_file(authoritative,library_path);
     Fixture fixture(path);
     const auto lut=fixture.Cell("lut","$lut","{\"lut\":1}","{\"WIDTH\":\"10\",\"LUT\":\"1000\"}");

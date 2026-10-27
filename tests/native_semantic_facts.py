@@ -10,9 +10,9 @@ import subprocess
 import tempfile
 from types import SimpleNamespace
 
-from emuflow.errors import ValidationError
-from emuflow.native_tools import native_file_generation, resolve_native_executable
-from emuflow.store_publication import require_store_sources_unchanged
+from emuflow.common.errors import ValidationError
+from emuflow.common.native_tools import native_file_generation, resolve_native_executable
+from emuflow.storage.store_publication import require_store_sources_unchanged
 
 LIMIT = 65536
 _ARRAYS = {'cut_nodes', 'dependency_edges', 'logic_segments', 'capture_requirements'}

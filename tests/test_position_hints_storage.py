@@ -4,9 +4,9 @@ import shutil
 
 import pytest
 
-import emuflow.position_hints_storage as position_storage
-from emuflow.errors import ValidationError
-from emuflow.position_hints_storage import (
+import emuflow.transport.position_hints_storage as position_storage
+from emuflow.common.errors import ValidationError
+from emuflow.transport.position_hints_storage import (
     POSITION_HINTS_STORAGE_SCHEMA,
     PositionHintsView,
     read_position_hints,
@@ -129,7 +129,7 @@ def test_position_hints_selector_failure_preserves_previous_generation(
     def fail_selector(*_args, **_kwargs):
         raise OSError("injected selector failure")
 
-    monkeypatch.setattr("emuflow.store_publication.write_json", fail_selector)
+    monkeypatch.setattr("emuflow.storage.store_publication.write_json", fail_selector)
     updated = copy.deepcopy(expected)
     updated["design"] = "updated"
     with pytest.raises(OSError, match="injected"):

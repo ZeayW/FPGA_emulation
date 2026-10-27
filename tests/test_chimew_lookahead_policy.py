@@ -3,10 +3,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-from emuflow.chimew_lookahead import _coalesce_timing_guard_lanes, _timing_weights
-from emuflow.io import write_json
-from emuflow.errors import ValidationError
-from emuflow.multi_fpga_flow import PHASE6_AB_COMPARISON_SCHEMA, validate_phase6_ab_comparison
+from emuflow.transport.chimew.chimew_lookahead import _coalesce_timing_guard_lanes, _timing_weights
+from emuflow.common.io import write_json
+from emuflow.common.errors import ValidationError
+from emuflow.flow.multi_fpga_flow import PHASE6_AB_COMPARISON_SCHEMA, validate_phase6_ab_comparison
 
 class ChimewLookaheadPolicyTests(unittest.TestCase):
     def test_timing_guard_coalesces_the_entire_frozen_lane(self) -> None:
@@ -291,7 +291,7 @@ class ChimewLookaheadPolicyTests(unittest.TestCase):
             "pin_plan_metrics": {"signals": 2},
         }
         with patch(
-            "emuflow.multi_fpga_flow.validate_multi_fpga_physical_report",
+            "emuflow.flow.multi_fpga_flow.validate_multi_fpga_physical_report",
             return_value={"status": "pass"},
         ):
             self.assertEqual(

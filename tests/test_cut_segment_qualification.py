@@ -9,22 +9,22 @@ import tempfile
 import unittest
 from unittest import mock
 
-from emuflow.combinational_cut import semantic_contract_sha256
-from emuflow.cut_segment_qualification import (
+from emuflow.partition.combinational_cut import semantic_contract_sha256
+from emuflow.validation.cut_segment_qualification import (
     CUT_SEGMENT_INDEXED_QUALIFICATION_SCHEMA,
     CUT_SEGMENT_QUALIFICATION_SCHEMA,
     build_cut_segment_qualification,
     build_cut_segment_qualification_value,
     validate_cut_segment_qualification,
 )
-from emuflow.emuir_compact import write_compact_emuir
-from emuflow.io import write_json
-from emuflow.opensta import (
+from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow.common.io import write_json
+from emuflow.timing.opensta import (
     DEFAULT_TIMING_MODEL,
     classify_through_net_timing_endpoints,
     load_timing_model,
 )
-from emuflow.yosys import import_yosys_json
+from emuflow.frontend.yosys import import_yosys_json
 from tests.phase3_store_fixture import write_current_assignment_fixture
 
 
@@ -116,7 +116,7 @@ class CutSegmentQualificationTest(unittest.TestCase):
         self.assertEqual(record["source_segment_ids"], ["segment000000"])
         self.assertEqual(record["capture_segment_ids"], ["segment000001"])
 
-    @mock.patch("emuflow.cut_segment_qualification.validate_sta_path_database_path_value",
+    @mock.patch("emuflow.validation.cut_segment_qualification.validate_sta_path_database_path_value",
                 return_value={"status": "pass", "paths": 1})
     def test_independent_rebuild_rejects_tampering(self, _validate):
         with tempfile.TemporaryDirectory() as temporary:
@@ -147,7 +147,7 @@ class CutSegmentQualificationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             paths, ir, assignment, database, structural = self._fixture(Path(temporary))
             reference = build_cut_segment_qualification_value(ir, assignment, database)
-            with mock.patch("emuflow.cut_segment_qualification.EmuIR.load",
+            with mock.patch("emuflow.validation.cut_segment_qualification.EmuIR.load",
                             side_effect=AssertionError("whole-graph loading forbidden")):
                 compact = build_cut_segment_qualification(*paths, input_already_validated=True)
             self.assertEqual(compact["summary"], reference["summary"])

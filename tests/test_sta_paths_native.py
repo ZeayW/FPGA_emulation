@@ -10,13 +10,13 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.indexed_timing import IndexedTimingView
-from emuflow.io import file_sha256
-from emuflow.opensta import OPENSTA_PROVIDER, run_opensta_path_database
-from emuflow.sta import (STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming,
+from emuflow.common.errors import ValidationError
+from emuflow.timing.indexed_timing import IndexedTimingView
+from emuflow.common.io import file_sha256
+from emuflow.timing.opensta import OPENSTA_PROVIDER, run_opensta_path_database
+from emuflow.timing.sta import (STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming,
                          iter_sta_path_database_paths, validate_sta_path_database)
-from emuflow.yosys import import_yosys_json
+from emuflow.frontend.yosys import import_yosys_json
 from tests.sta_path_reference import endpoint_facts
 from tests.sta_path_reference import path_facts
 
@@ -57,26 +57,26 @@ def test_final_records_and_exact_reduction_match_independent_producer(tmp_path):
     ir, source, measured, _records = fixture(tmp_path)
     new = tmp_path/"new.json"
     expected = path_facts(measured, ir)
-    from emuflow import sta
+    from emuflow.timing import sta
     assert not hasattr(sta, "_parse_sta_path_database_tsv_record")
     assert not hasattr(sta, "sta_object_index")
     with closing(IndexedTimingView(source)) as view, \
-         patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("Python graph")):
+         patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("Python graph")):
         result = produce(measured, source, new, view)
     actual = json.loads(new.read_text())
     assert actual["normalization"] == expected["normalization"]
     assert actual["summary"] == expected["summary"]
     assert list(iter_sta_path_database_paths(new, actual)) == expected["paths"]
     assert result["implementation_id"] == "native-sta-path-import-v1"
-    with patch("emuflow.sta.iter_sta_path_database_paths", side_effect=AssertionError("Python path validation")):
+    with patch("emuflow.timing.sta.iter_sta_path_database_paths", side_effect=AssertionError("Python path validation")):
         checked = validate_sta_path_database(new, source)
     assert checked["path_qor"] == actual["summary"]["qor"]
 
 
 def test_normal_consumer_reuses_native_proof_without_rescanning_rows(tmp_path):
     _ir, source, _measured, _records = fixture(tmp_path)
-    with patch("emuflow.sta_paths_native.validate_paths", side_effect=AssertionError("redundant native scan")), \
-         patch("emuflow.sta._validate_sta_path_database_stream", side_effect=AssertionError("Python validator")):
+    with patch("emuflow.timing.sta_paths_native.validate_paths", side_effect=AssertionError("redundant native scan")), \
+         patch("emuflow.timing.sta._validate_sta_path_database_stream", side_effect=AssertionError("Python validator")):
         report = run_opensta_path_database(source, tmp_path/"engine.json", clocks={"clk": 10},
             executable=str(ROOT/"tests/fixtures/fake_opensta_paths.py"))
     assert report["checker"]["status"] == "pass"
@@ -121,7 +121,7 @@ def test_rejected_source_keeps_previous_selector_and_payload(tmp_path, damage):
     elif damage == "negative-delay":records[0][4] = "-1"
     elif damage == "empty":records.clear()
     write(measured, records)
-    from emuflow import sta_paths_native as native
+    from emuflow.timing import sta_paths_native as native
     finish = native.CheckedRequestWriter.finish
     def corrupt(writer):
         path = Path(writer.stream.name);finish(writer)
@@ -180,7 +180,7 @@ def test_validation_lease_rejects_changed_owner_and_in_memory_metadata(tmp_path)
 
 
 def test_many_distinct_paths_and_nets_do_not_grow_python_populations(tmp_path):
-    from emuflow.ir import EmuIR
+    from emuflow.ir.ir import EmuIR
     value = {"schema": "emuflow.emuir/v1", "design": {"name": "scale", "top": "scale", "source_format": "test"},
              "instances": [], "nets": [], "ports": [], "clocks": [], "warnings": []}
     count = 30000
@@ -204,7 +204,7 @@ def test_many_distinct_paths_and_nets_do_not_grow_python_populations(tmp_path):
 
 
 def test_unreached_wide_top_port_does_not_expand_for_internal_endpoint_queries(tmp_path):
-    from emuflow.tool_runtime import NativeToolProcess
+    from emuflow.common.tool_runtime import NativeToolProcess
 
     ir = import_yosys_json(ROOT/"examples/yosys/counter.json", top="counter", clocks=["clk"])
     objects = sorted(name for name in endpoint_facts(ir) if "/" in name)
@@ -217,6 +217,6 @@ def test_unreached_wide_top_port_does_not_expand_for_internal_endpoint_queries(t
     def bounded_process(*args, **kwargs):
         return NativeToolProcess(*args, **kwargs, timeout_ms=15000)
 
-    with patch("emuflow.sta_paths_native.NativeToolProcess", side_effect=bounded_process):
+    with patch("emuflow.timing.sta_paths_native.NativeToolProcess", side_effect=bounded_process):
         report = produce(measured, source, tmp_path/"paths.json")
     assert report["structured_endpoint_paths"] == 1

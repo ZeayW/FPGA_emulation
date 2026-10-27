@@ -12,11 +12,11 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.native_tools import native_file_generation
-from emuflow.tdm import build_native_exact_schedule_request
+from emuflow.common.errors import ValidationError
+from emuflow.common.native_tools import native_file_generation
+from emuflow.scheduling.tdm import build_native_exact_schedule_request
 from tests.schedule_reference import build_tdm_schedule
-from emuflow.tdm_schedule_storage import (read_tdm_schedule)
+from emuflow.scheduling.tdm_schedule_storage import (read_tdm_schedule)
 from tests.native_build import emuflow_native
 from tests.native_schedule_case import _case
 from tests.test_native_schedule_generation import install_runtime
@@ -80,7 +80,7 @@ def test_producer_rejects_source_and_report_aliases_before_writing(tmp_path, mon
     case, routes = _case(tmp_path, False, False)
     install_runtime(tmp_path, monkeypatch)
     producer = build_native_exact_schedule_request(routes, case.platform)
-    from emuflow.phase5_native import _write_inputs
+    from emuflow.scheduling.phase5_native import _write_inputs
     request_root = tmp_path / 'request'
     request_root.mkdir()
     inputs = _write_inputs(producer, request_root)

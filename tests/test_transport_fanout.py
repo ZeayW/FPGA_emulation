@@ -2,12 +2,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.errors import ValidationError
-from emuflow.ir import EmuIR
-from emuflow.transport_fanout import (
+from emuflow.common.errors import ValidationError
+from emuflow.ir.ir import EmuIR
+from emuflow.transport.transport_fanout import (
     buffer_transport_high_fanout_records,
 )
-from emuflow.xilinx_netlist import (
+from emuflow.physical.xilinx_netlist import (
     emit_xilinx_mapped_index,
     open_xilinx_mapped_index,
 )
@@ -70,7 +70,7 @@ def _transport_ir(fanout: int, *, cut_class: str = "combinational") -> EmuIR:
 
 def _buffer_current(ir, *, max_fanout):
     # Exercise the writer-owned path used by the physical flow.
-    from emuflow.emuir_storage import write_emuir_sqlite
+    from emuflow.ir.emuir_storage import write_emuir_sqlite
     with tempfile.TemporaryDirectory() as temporary:
         path = Path(temporary)/'transport.emuir.sqlite'
         reports = []

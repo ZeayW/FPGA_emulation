@@ -1,13 +1,13 @@
 import unittest
 from types import SimpleNamespace
 
-from emuflow.errors import ValidationError
-from emuflow.partition import summarize_balance_observation
+from emuflow.common.errors import ValidationError
+from emuflow.partition.partition import summarize_balance_observation
 from tests.partition_balance_fixture import validate_cluster_assignment_balance
-from emuflow.platform import FpgaNode
-from emuflow.partition_limits import strict_balance_limits
+from emuflow.platform.platform import FpgaNode
+from emuflow.partition.partition_limits import strict_balance_limits
 from tests.partition_indivisible_oracle import validate_indivisible_limits
-from emuflow.resource_budget import validate_device_resource_usage, validate_materialized_resource_counts
+from emuflow.ir.resource_budget import validate_device_resource_usage, validate_materialized_resource_counts
 
 
 class StrictPartitionLimitsTest(unittest.TestCase):

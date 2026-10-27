@@ -8,15 +8,15 @@ import subprocess
 
 import pytest
 
-from emuflow.errors import ImportError
-from emuflow.native_protocol import CheckedRequestWriter
-from emuflow.yosys_hierarchy_native import stage_hierarchy
+from emuflow.common.errors import ImportError
+from emuflow.common.native_protocol import CheckedRequestWriter
+from emuflow.frontend.yosys_hierarchy_native import stage_hierarchy
 from tests.native_build import emuflow_native
 from tests.yosys_hierarchy_reference import (
     _stream_yosys_hierarchy_to_staging, _expand_staged_yosys_hierarchy,
 )
 
-DDL = (Path(__file__).resolve().parents[1]/"src/emuflow/data/schema/yosys_hierarchy.sql").read_text()
+DDL = (Path(__file__).resolve().parents[1]/"src/python/emuflow/data/schema/yosys_hierarchy.sql").read_text()
 
 
 @pytest.fixture(scope="module")
@@ -44,7 +44,7 @@ def reference(root, text):
     db.executescript(DDL[DDL.index("CREATE TABLE staging_instances"):])
     creator = _stream_yosys_hierarchy_to_staging(Path("<stream>"), "top", db, source_stream=io.StringIO(text))
     def cell(name, value):
-        from emuflow.resources import classify_primitive_resources
+        from emuflow.ir.resources import classify_primitive_resources
         resource = classify_primitive_resources(value["type"])
         if value["type"] != "$scopeinfo":
             db.execute("INSERT INTO staging_instances VALUES (?,?,?,?,?)", (name,value["type"],resource.ff,resource.bram,json.dumps(value)))
@@ -108,8 +108,8 @@ def test_rejections_do_not_publish(native,tmp_path,text,reason):
 
 
 def test_host_only_pumps_bytes_and_imports_indexed_rows(native,tmp_path,monkeypatch):
-    monkeypatch.setattr("emuflow.yosys_hierarchy_native.resolve_native_executable",lambda _:native)
-    monkeypatch.setattr("emuflow.yosys_hierarchy_native.require_native_schema",lambda _:None)
+    monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.resolve_native_executable",lambda _:native)
+    monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.require_native_schema",lambda _:None)
     store = tmp_path/"host.sqlite"
     class Source(io.StringIO):
         def read(self,size=-1):
@@ -163,8 +163,8 @@ def test_stage_rejects_reused_or_aliased_destinations(native,tmp_path):
 
 def test_large_host_has_bounded_python_population(native,tmp_path,monkeypatch):
     import tracemalloc
-    monkeypatch.setattr("emuflow.yosys_hierarchy_native.resolve_native_executable",lambda _:native)
-    monkeypatch.setattr("emuflow.yosys_hierarchy_native.require_native_schema",lambda _:None)
+    monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.resolve_native_executable",lambda _:native)
+    monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.require_native_schema",lambda _:None)
     source = tmp_path/"source.json"
     with source.open("w") as out:
         out.write('{"modules":{"top":{"cells":{')
@@ -187,8 +187,8 @@ def test_large_host_has_bounded_python_population(native,tmp_path,monkeypatch):
 
 
 def test_failed_producer_cancels_consumer_and_retires_private_writes(native,tmp_path,monkeypatch):
-    monkeypatch.setattr("emuflow.yosys_hierarchy_native.resolve_native_executable",lambda _:native)
-    monkeypatch.setattr("emuflow.yosys_hierarchy_native.require_native_schema",lambda _:None)
+    monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.resolve_native_executable",lambda _:native)
+    monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.require_native_schema",lambda _:None)
     class Source:
         calls = 0
         def read(self,size):
@@ -212,8 +212,8 @@ def test_electrical_hierarchy_conflicts_reject(native,tmp_path,value,reason):
 
 
 def test_native_staging_reader_is_closed_before_adoption(native,tmp_path,monkeypatch):
-    monkeypatch.setattr("emuflow.yosys_hierarchy_native.resolve_native_executable",lambda _:native)
-    monkeypatch.setattr("emuflow.yosys_hierarchy_native.require_native_schema",lambda _:None)
+    monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.resolve_native_executable",lambda _:native)
+    monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.require_native_schema",lambda _:None)
     import os
     connect,replace = sqlite3.connect,os.replace
     readers = []
@@ -227,6 +227,6 @@ def test_native_staging_reader_is_closed_before_adoption(native,tmp_path,monkeyp
             with pytest.raises(sqlite3.ProgrammingError,match="closed"):
                 reader.execute("SELECT 1")
         return replace(source,destination)
-    monkeypatch.setattr("emuflow.yosys_hierarchy_native.sqlite3.connect",open_reader)
-    monkeypatch.setattr("emuflow.yosys_hierarchy_native.os.replace",adopt)
+    monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.sqlite3.connect",open_reader)
+    monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.os.replace",adopt)
     stage_hierarchy(Path("<stream>"),tmp_path/"staging.sqlite","top",source_stream=io.StringIO(json.dumps(circuit(0))))

@@ -4,19 +4,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.io import read_json, write_json
-from emuflow.errors import ValidationError
-from emuflow.architecture import ArchitectureDB
+from emuflow.common.io import read_json, write_json
+from emuflow.common.errors import ValidationError
+from emuflow.platform.architecture import ArchitectureDB
 from unittest import mock
-from emuflow.xilinx_openparf_atomic import (
+from emuflow.physical.openparf.xilinx_openparf_atomic import (
     _native_carry_y_axis_order,
     build_xilinx_openparf_atomic_source,
     read_xilinx_openparf_atomic_source,
     read_xilinx_openparf_atomic_name_map,
     validate_xilinx_openparf_atomic_placement,
 )
-from emuflow.xilinx_packing import validate_xilinx_packing
-from emuflow.xilinx_placement import validate_xilinx_placement
+from emuflow.physical.xilinx_packing import validate_xilinx_packing
+from emuflow.physical.xilinx_placement import validate_xilinx_placement
 from tests.xilinx_carry_fixture import _write_fixture
 
 

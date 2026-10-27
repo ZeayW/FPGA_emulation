@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.errors import ValidationError
-from emuflow.ir import EmuIR
-from emuflow.xilinx_primitives import (
+from emuflow.common.errors import ValidationError
+from emuflow.ir.ir import EmuIR
+from emuflow.physical.xilinx_primitives import (
     XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
     audit_xilinx_mapped_json,
     load_xilinx_primitive_library,
@@ -16,8 +16,8 @@ from emuflow.xilinx_primitives import (
     normalize_xilinx_mapped_json,
     _IndexedCellMapping,
 )
-from emuflow.resources import ResourceVector, classify_primitive_resources
-from emuflow.yosys import import_yosys_json_indexed
+from emuflow.ir.resources import ResourceVector, classify_primitive_resources
+from emuflow.frontend.yosys import import_yosys_json_indexed
 
 
 def _cell(cell_type: str) -> dict:

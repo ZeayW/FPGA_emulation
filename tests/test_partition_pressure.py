@@ -12,16 +12,16 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.ir import EmuIR
-from emuflow.partition import (CUT_MODE_STATIC_EXACT)
+from emuflow.common.errors import ValidationError
+from emuflow.ir.ir import EmuIR
+from emuflow.partition.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (compute_cut_nets, validate_partition_artifacts_online, build_clusters, build_partition_assignment, normalize_partition_constraints)
-from emuflow.phase3 import run_phase3
-from emuflow.phase3_storage import read_phase3_assignment_view
+from emuflow.partition.phase3 import run_phase3
+from emuflow.partition.phase3_storage import read_phase3_assignment_view
 from tests.phase3_exact_fixture import indexed_exact_manifest
-from emuflow.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
-from emuflow.opensta import OPENSTA_PROVIDER
-from emuflow.io import read_json, write_json
+from emuflow.partition.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+from emuflow.timing.opensta import OPENSTA_PROVIDER
+from emuflow.common.io import read_json, write_json
 from tests.phase3_decision_reference import (PATRON_PATH_OBJECTIVE_SELECTION_PROVIDER,
                                             _select_patron_timing_assignment)
 from tests.partition_pressure_fixture import _endpoint, _ir, PressureFixture, prepare_native
@@ -227,11 +227,11 @@ class SmallPartitionFactsTest(unittest.TestCase):
             constraints_path = root / "constraints.json"
             timing_path = root / "timing.json"
             route_path = root / "routes.json"
-            from emuflow.emuir_compact import write_compact_emuir
+            from emuflow.ir.emuir_compact import write_compact_emuir
             write_compact_emuir(ir_path, ir.value)
             write_json(platform_path, self.platform.to_dict())
             write_json(constraints_path, constraints)
-            from emuflow.sta import import_sta_path_database_tsv_streaming, STA_PATH_DATABASE_TSV_HEADER
+            from emuflow.timing.sta import import_sta_path_database_tsv_streaming, STA_PATH_DATABASE_TSV_HEADER
             rows = [STA_PATH_DATABASE_TSV_HEADER]
             for i, path in enumerate(self.timing['paths']):
                 identity = f"{path['startpoint']['instance']}/O->{path['endpoint']['instance']}/I#{i:08d}"
@@ -347,11 +347,11 @@ class SmallPartitionFactsTest(unittest.TestCase):
             timing_path = root / "timing.json"
             route_path = root / "routes.json"
             solution_path = root / "static-exact.part.2"
-            from emuflow.emuir_compact import write_compact_emuir
+            from emuflow.ir.emuir_compact import write_compact_emuir
             write_compact_emuir(ir_path, ir.value)
             write_json(platform_path, self.platform.to_dict())
             write_json(constraints_path, constraints)
-            from emuflow.sta import import_sta_path_database_tsv_streaming, STA_PATH_DATABASE_TSV_HEADER
+            from emuflow.timing.sta import import_sta_path_database_tsv_streaming, STA_PATH_DATABASE_TSV_HEADER
             rows = [STA_PATH_DATABASE_TSV_HEADER]
             for i, path in enumerate(self.timing['paths']):
                 identity = f"{path['startpoint']['instance']}/O->{path['endpoint']['instance']}/I#{i:08d}"
@@ -540,7 +540,7 @@ def test_v14_keeps_maximum_path_hops_ahead_of_scalar_predictive_slack(tmp_path):
 
 @pytest.mark.parametrize('argument', [0, -1, True, 0.5])
 def test_current_native_stage_rejects_invalid_timeout_without_publication(tmp_path, argument):
-    from emuflow.phase3_native import run as run_stage
+    from emuflow.partition.phase3_native import run as run_stage
     value = case(tmp_path/'facts')
     ir, platform, clusters, constraints, _, routes = value.args
     for name, document in (('board', platform.to_dict()), ('constraints', constraints), ('routes', routes)):
@@ -562,7 +562,7 @@ def test_current_native_stage_rejects_invalid_timeout_without_publication(tmp_pa
 ])
 def test_opposite_unicast_paths_obey_full_and_half_duplex_capacity(
         tmp_path, direction, expected_domains, expected_ratio):
-    from emuflow.platform import Platform
+    from emuflow.platform.platform import Platform
     source = PressureFixture()
     source.setUp()
     value = source.platform.to_dict()

@@ -13,9 +13,9 @@ from unittest.mock import patch
 
 from tests.native_build import emuflow_native
 
-from emuflow.combinational_cut import semantic_contract_sha256
-from emuflow.errors import ValidationError
-from emuflow.phase3_exact_binary import (iter_phase3_exact_captures, validate_phase3_exact_binary)
+from emuflow.partition.combinational_cut import semantic_contract_sha256
+from emuflow.common.errors import ValidationError
+from emuflow.partition.phase3_exact_binary import (iter_phase3_exact_captures, validate_phase3_exact_binary)
 from tests.phase3_exact_fixture import validate_static_exact_capture_bit
 from tests.native_semantic_facts import (
     read_nodes as read_native_static_exact_cut_node_stream,
@@ -451,7 +451,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                         def native_command(phase, operation):
                             return [str(executable), phase, operation]
 
-                        with patch('emuflow.native_tools.resolve_native_stage_command', side_effect=native_command):
+                        with patch('emuflow.common.native_tools.resolve_native_stage_command', side_effect=native_command):
                             actual_descriptor = write_exact_fixture(
                                 actual_path,
                                 streamed,
@@ -469,7 +469,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                                 _format_version=1,
                             )
                             with patch(
-                                "emuflow.native_tools.resolve_native_stage_command",
+                                "emuflow.common.native_tools.resolve_native_stage_command",
                                 side_effect=native_command,
                             ):
                                 write_exact_fixture(
@@ -486,7 +486,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                             actual_path.write_bytes(b"previous-generation")
                             with (
                                 patch(
-                                    "emuflow.native_tools.resolve_native_stage_command",
+                                    "emuflow.common.native_tools.resolve_native_stage_command",
                                     side_effect=native_command,
                                 ),
                                 self.assertRaises(ValidationError),

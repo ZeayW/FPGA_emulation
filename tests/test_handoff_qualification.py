@@ -3,11 +3,11 @@ import sys
 import pytest
 from pathlib import Path
 
-from emuflow.emuir_storage import _write_emuir_sqlite_v1
+from emuflow.ir.emuir_storage import _write_emuir_sqlite_v1
 from scripts.validation.qualify_handoffs import main
-from emuflow.ir import EmuIR
-from emuflow.yosys import import_yosys_json
-from emuflow.errors import ValidationError
+from emuflow.ir.ir import EmuIR
+from emuflow.frontend.yosys import import_yosys_json
+from emuflow.common.errors import ValidationError
 
 ROOT = Path(__file__).resolve().parents[1]
 

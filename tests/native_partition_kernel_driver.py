@@ -11,12 +11,12 @@ from pathlib import Path
 import struct
 import tempfile
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from tests.native_column_fixture import _ClusterScratch, _ColumnOwner, _MappedColumn
-from emuflow.native_protocol import CheckedRequestWriter
-from emuflow.native_tools import resolve_native_executable
-from emuflow.store_publication import StoreSource, bind_store_source, require_store_sources_unchanged
-from emuflow.tool_runtime import NativeToolProcess
+from emuflow.common.native_protocol import CheckedRequestWriter
+from emuflow.common.native_tools import resolve_native_executable
+from emuflow.storage.store_publication import StoreSource, bind_store_source, require_store_sources_unchanged
+from emuflow.common.tool_runtime import NativeToolProcess
 
 
 def _invoke(stage, root, sources, request, output, *, executable=None):
@@ -58,8 +58,8 @@ def _owner(path, records, parts, source, primary, scratch):
 def _weights(sources, path):
     if path is None:
         return
-    from emuflow.sta import partition_net_weights_payload_path
-    from emuflow.sta_weights_native import _selector
+    from emuflow.timing.sta import partition_net_weights_payload_path
+    from emuflow.timing.sta_weights_native import _selector
     selector, source = _selector(Path(path).resolve(), 'net-weight-selector-v2')
     payload = partition_net_weights_payload_path(Path(path).resolve(), selector)
     if selector.get('schema') != 'emuflow.partition-net-weights/v2' or payload is None:
@@ -73,8 +73,8 @@ def initialize(ir, platform, clusters_artifact, constraints, *, seed, executable
                repair_min_used_fpgas=True, run_unweighted_baseline=False):
     from tests.partition_balance_fixture import active_partition_fpgas
     from tests.partition_balance_fixture import transported_cut_classes_for_clusters
-    from emuflow.partition_limits import planning_resource_capacities
-    from emuflow.resources import RESOURCE_FIELDS
+    from emuflow.partition.partition_limits import planning_resource_capacities
+    from emuflow.ir.resources import RESOURCE_FIELDS
     records = clusters_artifact['clusters']
     if len(records) > 65536:
         raise ValidationError('kernel fixture exceeds cluster bound')
@@ -125,8 +125,8 @@ def run_hops(ir, platform, clusters, constraints, assignment, routes, *, weights
     from tests.partition_balance_fixture import active_partition_fpgas
     from tests.partition_balance_fixture import transported_cut_classes_for_clusters
     from tests.partition_balance_fixture import validate_cluster_assignment_balance
-    from emuflow.partition_limits import planning_resource_capacities
-    from emuflow.partition_topology import _shortest_hop_distances
+    from emuflow.partition.partition_limits import planning_resource_capacities
+    from emuflow.partition.partition_topology import _shortest_hop_distances
     records = clusters['clusters']
     if len(records) > 65536:
         raise ValidationError('kernel fixture exceeds cluster bound')

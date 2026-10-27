@@ -8,10 +8,10 @@ import time
 
 import pytest
 
-from emuflow.errors import EmuFlowError
-from emuflow.process_output import run_with_bounded_output
-from emuflow.synthesis import _run_yosys_json_consumer
-from emuflow.tool_runtime import NativeToolProcess, _request_bytes, native_tool_runner
+from emuflow.common.errors import EmuFlowError
+from emuflow.common.process_output import run_with_bounded_output
+from emuflow.frontend.synthesis import _run_yosys_json_consumer
+from emuflow.common.tool_runtime import NativeToolProcess, _request_bytes, native_tool_runner
 from tests.native_build import emuflow_native
 
 
@@ -29,7 +29,7 @@ def test_versioned_runtime_sibling_wins_over_symlinked_engine_base(tmp_path, mon
         path.chmod(0o755)
     engine = current / "yosys"
     engine.symlink_to(base / "yosys")
-    monkeypatch.setattr("emuflow.tool_runtime.native_install_roots", lambda: ())
+    monkeypatch.setattr("emuflow.common.tool_runtime.native_install_roots", lambda: ())
     assert native_tool_runner(str(engine)) == str(current / "emuflow-native")
 
 
@@ -112,7 +112,7 @@ def test_combined_binary_tail_and_nonzero_exit(runner, tmp_path):
 
 
 def test_public_bounded_runner_selects_native_without_python_retry(runner, monkeypatch):
-    monkeypatch.setattr("emuflow.process_output.native_tool_runner", lambda _: runner)
+    monkeypatch.setattr("emuflow.common.process_output.native_tool_runner", lambda _: runner)
     calls = []
     original = subprocess.Popen
 
@@ -125,7 +125,7 @@ def test_public_bounded_runner_selects_native_without_python_retry(runner, monke
     assert completed.stdout == "native\n"
     assert len(calls) == 1 and calls[0][:2] == [runner, "run-tool"]
     with pytest.raises(EmuFlowError, match="supervisor failed"):
-        monkeypatch.setattr("emuflow.process_output.native_tool_runner", lambda _: "/does/not/exist")
+        monkeypatch.setattr("emuflow.common.process_output.native_tool_runner", lambda _: "/does/not/exist")
         run_with_bounded_output([sys.executable, "-c", "print('must not retry')"])
 
 
@@ -170,7 +170,7 @@ def test_engine_exit_reaps_pipe_holding_descendant(runner, tmp_path):
 
 
 def test_streamed_yosys_stdout_preserves_document_and_bounded_diagnostics(runner, tmp_path, monkeypatch):
-    monkeypatch.setattr("emuflow.synthesis.native_tool_runner", lambda _: runner)
+    monkeypatch.setattr("emuflow.frontend.synthesis.native_tool_runner", lambda _: runner)
     command = [sys.executable, "-c", "import os; os.write(2,b'x'*3000000+b'END'); os.write(1,b'{\"design\":\"stream\"}')"]
     log = tmp_path / "yosys.log"
     value = _run_yosys_json_consumer(command, json.load, tmp_path, log, "Yosys")
@@ -181,7 +181,7 @@ def test_streamed_yosys_stdout_preserves_document_and_bounded_diagnostics(runner
 
 
 def test_stream_consumer_failure_cancels_engine(runner, tmp_path, monkeypatch):
-    monkeypatch.setattr("emuflow.synthesis.native_tool_runner", lambda _: runner)
+    monkeypatch.setattr("emuflow.frontend.synthesis.native_tool_runner", lambda _: runner)
     pid_path = tmp_path / "pid"
     command = [sys.executable, "-c", "import os,sys,time; open(sys.argv[1],'w').write(str(os.getpid())); print('diagnostic',file=sys.stderr,flush=True); print('start',flush=True); time.sleep(60)", str(pid_path)]
 
@@ -197,7 +197,7 @@ def test_stream_consumer_failure_cancels_engine(runner, tmp_path, monkeypatch):
 
 
 def test_failed_engine_retains_error_precedence_over_truncated_document(runner, tmp_path, monkeypatch):
-    monkeypatch.setattr("emuflow.synthesis.native_tool_runner", lambda _: runner)
+    monkeypatch.setattr("emuflow.frontend.synthesis.native_tool_runner", lambda _: runner)
     command = [sys.executable, "-c", "import sys; print('{'); print('engine failure',file=sys.stderr); raise SystemExit(7)"]
     with pytest.raises(EmuFlowError, match="Yosys failed with exit code 7"):
         _run_yosys_json_consumer(command, json.load, tmp_path, tmp_path / "yosys.log", "Yosys")

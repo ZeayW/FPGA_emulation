@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from emuflow_tools.ppro_blackbox_runner import (
     RuntimeBinding,
     execute_blackbox_case,
@@ -384,7 +384,7 @@ class PProBlackboxRunnerTest(unittest.TestCase):
                 timeout_seconds=base.timeout_seconds,
                 cleanup_paths=(scratch,),
             )
-            from emuflow.io import write_json as real_write_json
+            from emuflow.common.io import write_json as real_write_json
 
             calls = 0
 

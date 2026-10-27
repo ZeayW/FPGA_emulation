@@ -10,12 +10,12 @@ from pathlib import Path
 import sys
 import tempfile
 
-from emuflow.errors import ValidationError
-from emuflow.native_tools import native_file_generation, resolve_native_executable
-from emuflow.native_protocol import CheckedRequestWriter
-from emuflow.store_publication import (StoreSource, bind_store_source,
+from emuflow.common.errors import ValidationError
+from emuflow.common.native_tools import native_file_generation, resolve_native_executable
+from emuflow.common.native_protocol import CheckedRequestWriter
+from emuflow.storage.store_publication import (StoreSource, bind_store_source,
     require_store_sources_unchanged, validate_store_destination)
-from emuflow.tool_runtime import NativeToolProcess
+from emuflow.common.tool_runtime import NativeToolProcess
 
 
 @dataclass(frozen=True)
@@ -70,7 +70,7 @@ def native_assignment_cut_source(assignment):
 
 
 def publish_native_assignment_index(path,ir,assignment,part_ids,metadata):
-    from emuflow.phase3_assignment_index import _json, _normalized_cut_record
+    from emuflow.partition.phase3_assignment_index import _json, _normalized_cut_record
     instance=assignment['instance_assignment'];source=Path(instance.path)
     if len(instance)>65536:raise AssertionError('assignment publication fixture exceeds bound')
     if instance._native_primary_artifact is None:raise ValidationError('native assignment primary ownership is missing')
@@ -123,7 +123,7 @@ def publish_native_assignment_index(path,ir,assignment,part_ids,metadata):
 
 
 def publish_native_assignment_descriptor(path,ir,assignment,clusters,index_summary):
-    from emuflow.phase3_assignment_index import _json
+    from emuflow.partition.phase3_assignment_index import _json
     instance=assignment['instance_assignment']
     if len(instance)>65536:raise AssertionError('descriptor fixture exceeds bound')
     refs=validate_store_destination(Path(path),(StoreSource(Path(instance.path).resolve(),'emuir-compact-v2',instance._native_source_generation),

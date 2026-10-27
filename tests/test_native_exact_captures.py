@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.emuir_compact import write_compact_emuir
+from emuflow.ir.emuir_compact import write_compact_emuir
 from tests.native_semantic_facts import read_captures as read_native_static_exact_capture_stream
 from tests import test_combinational_cut as reference
 from tests.native_build import emuflow_native

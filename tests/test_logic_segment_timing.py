@@ -9,10 +9,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from emuflow.io import read_json, write_json
-from emuflow.ir import EmuIR
-from emuflow.errors import ValidationError
-from emuflow.logic_segment_timing import (
+from emuflow.common.io import read_json, write_json
+from emuflow.ir.ir import EmuIR
+from emuflow.common.errors import ValidationError
+from emuflow.timing.logic_segment_timing import (
     import_vivado_logic_segment_timing as _native_import_vivado_logic_segment_timing,
     prepare_logic_segment_query_inputs,
 )
@@ -21,16 +21,16 @@ from tests.physical_query_reference import (
     _incoming_transported_cut_nets, _normalize_xilinx_logical_endpoint,
     _route_timing_paths, _vivado_object,
 )
-from emuflow.logic_segment_timing_storage import (
+from emuflow.timing.logic_segment_timing_storage import (
     read_logic_segment_timing_storage,
 )
-from emuflow.logic_segment_identity_storage import (
+from emuflow.timing.logic_segment_identity_storage import (
     read_logic_segment_identity_storage,
 )
 from tests.logic_identity_fixture import identity_facts
-import emuflow.logic_segment_identity_storage as identity_storage
-import emuflow.logic_segment_timing as logic_segment_timing
-from emuflow.local_path_timing import (
+import emuflow.timing.logic_segment_identity_storage as identity_storage
+import emuflow.timing.logic_segment_timing as logic_segment_timing
+from emuflow.timing.local_path_timing import (
     LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION,
     local_path_timing_header,
     path_id_set_sha256,
@@ -40,10 +40,10 @@ from emuflow.local_path_timing import (
     validate_local_path_timing,
     write_xilinx_local_path_query,
 )
-from emuflow.local_path_timing_storage import (LOCAL_PATH_TIMING_STORAGE_SCHEMA, read_local_path_timing_storage)
+from emuflow.timing.local_path_timing_storage import (LOCAL_PATH_TIMING_STORAGE_SCHEMA, read_local_path_timing_storage)
 from tests.timing_facts import local_timing_facts
-from emuflow.routing import SYSTEM_ROUTES_SCHEMA, system_route_timing_paths
-from emuflow.platform import Platform
+from emuflow.routing.routing import SYSTEM_ROUTES_SCHEMA, system_route_timing_paths
+from emuflow.platform.platform import Platform
 
 
 import_vivado_logic_segment_timing = _native_import_vivado_logic_segment_timing
@@ -60,7 +60,7 @@ def _identity_document_facts(path, document):
 
 def _import_fixture_logic_measurements(raw, identity, output, **kwargs):
     """Encode small test rows using the maintained eight-column vendor protocol."""
-    from emuflow.logic_segment_timing import VIVADO_LOGIC_SEGMENT_TIMING_HEADER
+    from emuflow.timing.logic_segment_timing import VIVADO_LOGIC_SEGMENT_TIMING_HEADER
     with tempfile.TemporaryDirectory(dir=raw.parent) as temporary:
         native = Path(temporary) / "measurements.tsv"
         with raw.open() as source, native.open("w") as target:

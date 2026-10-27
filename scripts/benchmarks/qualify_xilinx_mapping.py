@@ -9,13 +9,13 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from emuflow_tools.benchmark import BenchmarkRun
-from emuflow.errors import EmuFlowError
-from emuflow.io import write_json
-from emuflow.synthesis import (
+from emuflow.common.errors import EmuFlowError
+from emuflow.common.io import write_json
+from emuflow.frontend.synthesis import (
     VALID_XILINX_MAPPING_STRATEGIES,
     run_xilinx_mapping_statistics,
 )
-from emuflow.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 
 
 def _top_statistics(statistics: Mapping[str, Any], top: str) -> Mapping[str, Any]:

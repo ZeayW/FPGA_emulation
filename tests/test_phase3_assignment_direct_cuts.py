@@ -9,11 +9,11 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from tests.partition_views import SelectedCuts as _StaticExactCutNetRecords
 from tests.partition_views import ClusterOwners as _PackedClusterAssignment
 from tests.native_partition_facts import (build_partition_assignment)
-from emuflow.phase3_exact_binary import EXACT_BINARY_ARTIFACT
+from emuflow.partition.phase3_exact_binary import EXACT_BINARY_ARTIFACT
 from tests.native_assignment_publication_fixture import native_assignment_cut_source
 from tests.test_phase3_assignment_native import prepare, _published_rows
 from tests.test_phase3_clusters_native import source
@@ -84,7 +84,7 @@ def test_native_cut_publication_matches_reference_without_host_records(
                 side_effect=AssertionError("host cut record"),
             ):
                 with patch(
-                    "emuflow.phase3_assignment_index._normalized_cut_record",
+                    "emuflow.partition.phase3_assignment_index._normalized_cut_record",
                     side_effect=AssertionError("host normalization"),
                 ):
                     return publish(*args, **kwargs)
@@ -172,7 +172,7 @@ def test_native_request_rejection_is_atomic_and_never_imports_host_cuts(
 ):
     import zlib
     import tests.native_assignment_publication_fixture as producer
-    from emuflow.tool_runtime import NativeToolProcess
+    from emuflow.common.tool_runtime import NativeToolProcess
 
     with _assignment(source) as (ir, assignment, typed):
         assert len(assignment["cut_nets"])
@@ -204,7 +204,7 @@ def test_native_request_rejection_is_atomic_and_never_imports_host_cuts(
                 # V3 borrows the native count owner, so corrupt that source
                 # and explicitly bind its new generation in this malformed
                 # request. This reaches the independent count validator.
-                from emuflow.native_tools import native_file_generation
+                from emuflow.common.native_tools import native_file_generation
                 counts=typed.endpoint_counts.native_source.path
                 raw=bytearray(counts.read_bytes());struct.pack_into('<Q',raw,20,0)
                 struct.pack_into('<I',raw,len(raw)-4,zlib.crc32(raw[:-4]));counts.write_bytes(raw)
@@ -244,8 +244,8 @@ def test_native_request_rejection_is_atomic_and_never_imports_host_cuts(
 def test_native_node_decoder_rejects_bound_malformed_records(source, tmp_path, kind):
     import zlib
     import tests.native_assignment_publication_fixture as producer
-    from emuflow.native_tools import native_file_generation
-    from emuflow.tool_runtime import NativeToolProcess
+    from emuflow.common.native_tools import native_file_generation
+    from emuflow.common.tool_runtime import NativeToolProcess
 
     with _assignment(source) as (ir, assignment, typed):
         original = typed.paths[0].read_bytes()
@@ -325,7 +325,7 @@ def test_native_node_decoder_rejects_bound_malformed_records(source, tmp_path, k
 def test_original_semantic_bindings_survive_independent_index_validation(
     source, tmp_path, changed_source
 ):
-    import emuflow.phase3_assignment_index as index_module
+    import emuflow.partition.phase3_assignment_index as index_module
 
     with _assignment(source) as (ir, assignment, typed):
         index = tmp_path / "index.sqlite"

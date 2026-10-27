@@ -7,13 +7,13 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
-from emuflow.phase3_storage import read_phase3_assignment_view
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
+from emuflow.partition.phase3_storage import read_phase3_assignment_view
 from tests.phase3_store_fixture import write_cluster_fixture, cluster_column_facts
 from tests.native_partition_facts import materialize_facts
 from tests.native_partition_kernel_driver import publish_partition as publish
-from emuflow.phase3_assignment_index import validate_phase3_assignment_index_against_emuir
+from emuflow.partition.phase3_assignment_index import validate_phase3_assignment_index_against_emuir
 from tests.native_partition_facts import close_published_semantics
 from tests.test_phase3_semantics_native import selected, build
 

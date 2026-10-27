@@ -10,12 +10,12 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.io import file_sha256
-from emuflow.indexed_timing import IndexedTimingView
-from emuflow.opensta import validate_timing_model_coverage
-from emuflow.routed_opensta_native import RoutedTimingModel
-from emuflow.xilinx_opensta import build_xilinx_routed_opensta_indexed_inputs
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import file_sha256
+from emuflow.timing.indexed_timing import IndexedTimingView
+from emuflow.timing.opensta import validate_timing_model_coverage
+from emuflow.timing.routed_opensta_native import RoutedTimingModel
+from emuflow.timing.xilinx_opensta import build_xilinx_routed_opensta_indexed_inputs
 from tests.test_xilinx_opensta import _indexed_routed_fixture
 
 
@@ -49,9 +49,9 @@ def stage(mapped, timing, output):
 
 def test_native_stages_without_python_endpoints_cells_or_complete_model(tmp_path):
     mapped, timing, output = fixture(tmp_path)
-    with patch("emuflow.xilinx_timing.iter_xilinx_routed_timing_endpoints", side_effect=AssertionError("Python endpoint population")), \
-         patch("emuflow.yosys.import_yosys_json_indexed", side_effect=AssertionError("Python staging graph")), \
-         patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("Python graph materialization")):
+    with patch("emuflow.timing.xilinx_timing.iter_xilinx_routed_timing_endpoints", side_effect=AssertionError("Python endpoint population")), \
+         patch("emuflow.frontend.yosys.import_yosys_json_indexed", side_effect=AssertionError("Python staging graph")), \
+         patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("Python graph materialization")):
         model, report = stage(mapped, timing, output)
     assert isinstance(model, RoutedTimingModel)
     assert not isinstance(model["cells"], dict)
@@ -78,7 +78,7 @@ def test_empty_endpoint_population_is_an_explicit_zero_delay_model(tmp_path):
 
 
 def test_indexed_runner_keeps_native_coverage_bounded_in_its_final_report(tmp_path):
-    from emuflow.opensta import run_opensta_path_database
+    from emuflow.timing.opensta import run_opensta_path_database
     mapped, timing, output = fixture(tmp_path)
     model, _ = stage(mapped, timing, output)
 
@@ -90,10 +90,10 @@ def test_indexed_runner_keeps_native_coverage_bounded_in_its_final_report(tmp_pa
         Path(environment["EMUFLOW_STA_OUTPUT"]).write_text("\t".join(fields)+"\n"+"\t".join(row)+"\n")
         return subprocess.CompletedProcess(argv, 0, stdout="test engine")
 
-    with patch("emuflow.opensta.resolve_native_executable", return_value="test-sta"), \
-         patch("emuflow.opensta.require_opensta_engine", return_value={"version": "test"}), \
-         patch("emuflow.opensta.run_with_bounded_output", side_effect=engine), \
-         patch("emuflow.opensta._sealed_string_set_summary", side_effect=AssertionError("expanded model summary")), \
+    with patch("emuflow.timing.opensta.resolve_native_executable", return_value="test-sta"), \
+         patch("emuflow.timing.opensta.require_opensta_engine", return_value={"version": "test"}), \
+         patch("emuflow.timing.opensta.run_with_bounded_output", side_effect=engine), \
+         patch("emuflow.timing.opensta._sealed_string_set_summary", side_effect=AssertionError("expanded model summary")), \
          patch.object(type(model["cells"]), "items", side_effect=AssertionError("expanded model")):
         report = run_opensta_path_database(output, tmp_path/"paths.json", clocks={"clk": 10},
                                           _timing_model=model)
@@ -110,7 +110,7 @@ def test_indexed_runner_keeps_native_coverage_bounded_in_its_final_report(tmp_pa
 
 @pytest.mark.parametrize("damage", ["duplicate-id", "duplicate-sink", "wrong-bit", "output-pin", "constant-pin", "negative", "nonfinite", "bad-coefficient", "io-duplicate", "io-measurement", "truncated", "crc"])
 def test_rejected_inputs_preserve_both_previous_outputs(tmp_path, damage):
-    from emuflow import routed_opensta_native as native
+    from emuflow.timing import routed_opensta_native as native
     mapped, timing, output = fixture(tmp_path)
     stage(mapped, timing, output)
     library = output.with_name(output.name+".route-delays.lib")
@@ -170,7 +170,7 @@ def test_typed_pin_and_record_contracts_are_checked_during_the_native_scan(tmp_p
 
 @pytest.mark.parametrize("after", [False, True])
 def test_group_publication_restores_old_graph_and_library(tmp_path, after):
-    from emuflow import store_publication
+    from emuflow.storage import store_publication
     mapped, timing, output = fixture(tmp_path)
     model, _ = stage(mapped, timing, output)
     library = model.library.path
@@ -204,24 +204,24 @@ def test_borrowed_model_rejects_replacement_and_wrong_graph(tmp_path):
 
 
 def test_bound_model_cannot_fall_back_to_inline_graph_loading(tmp_path):
-    from emuflow.opensta import run_opensta_path_database
+    from emuflow.timing.opensta import run_opensta_path_database
     mapped, timing, output = fixture(tmp_path)
     model, _ = stage(mapped, timing, output)
-    from emuflow.ir import EmuIR
-    from emuflow.emuir_storage import _write_emuir_sqlite_v1
+    from emuflow.ir.ir import EmuIR
+    from emuflow.ir.emuir_storage import _write_emuir_sqlite_v1
     legacy = tmp_path/"legacy.emuir.sqlite"
     _write_emuir_sqlite_v1(legacy, EmuIR.load(output).value)
-    with patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("whole graph fallback")), \
+    with patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("whole graph fallback")), \
          pytest.raises(ValidationError, match="indexed streaming"):
         run_opensta_path_database(legacy, tmp_path / "paths.json", _timing_model=model)
 
 
 def test_current_opensta_cli_uses_the_typed_source(tmp_path):
-    from emuflow.cli import main
+    from emuflow.flow.cli import main
     args = ["arch", "run-xilinx-opensta", "--mapped-index", str(tmp_path / "mapped.sqlite"),
             "--routed-timing", str(tmp_path / "timing.json"), "--output", str(tmp_path / "paths.json"),
             "--summary", str(tmp_path / "summary.json"), "--clock-period", "clk=10"]
-    with patch("emuflow.cli.run_xilinx_routed_opensta", return_value={"status": "pass"}) as run:
+    with patch("emuflow.flow.cli.run_xilinx_routed_opensta", return_value={"status": "pass"}) as run:
         assert main(args) == 0
     assert run.call_args.args[:2] == (tmp_path / "mapped.sqlite", tmp_path / "timing.json")
     with pytest.raises(SystemExit):
@@ -229,14 +229,14 @@ def test_current_opensta_cli_uses_the_typed_source(tmp_path):
 
 
 def test_missing_staging_capability_fails_before_synthesis(tmp_path):
-    from emuflow.errors import EmuFlowError
-    from emuflow.multi_fpga_flow import run_multi_fpga_flow
+    from emuflow.common.errors import EmuFlowError
+    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
     def require(schema):
         if schema == "routed-opensta-request-v1":
             raise EmuFlowError("missing native routed staging")
-    with patch("emuflow.multi_fpga_flow._validate_mapping_timing_contract"), \
-         patch("emuflow.native_tools.require_native_schema", side_effect=require), \
-         patch("emuflow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("synthesis started")), \
+    with patch("emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract"), \
+         patch("emuflow.common.native_tools.require_native_schema", side_effect=require), \
+         patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("synthesis started")), \
          pytest.raises(EmuFlowError, match="missing native routed staging"):
         run_multi_fpga_flow(sources=[tmp_path / "absent.v"], top="dut", clocks=["clk"], clock_periods={"clk": 10.0},
                            physical=True, physical_backend="rapidwright", output_dir=tmp_path / "flow")
@@ -264,7 +264,7 @@ def test_direct_twenty_thousand_unique_delays_keep_python_bounded(tmp_path):
     timing.write_text(json.dumps(value));del value
     tracemalloc.start()
     try:
-        with patch("emuflow.xilinx_timing.iter_xilinx_routed_timing_endpoints", side_effect=AssertionError("Python endpoint population")):
+        with patch("emuflow.timing.xilinx_timing.iter_xilinx_routed_timing_endpoints", side_effect=AssertionError("Python endpoint population")):
             model, report = stage(mapped, timing, output)
         _current, peak = tracemalloc.get_traced_memory()
     finally:

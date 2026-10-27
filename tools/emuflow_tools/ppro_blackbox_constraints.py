@@ -10,8 +10,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
 
 
 _INSTANCE = re.compile(r"^[A-Za-z_][A-Za-z0-9_./\[\]-]*$")

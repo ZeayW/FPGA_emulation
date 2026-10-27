@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from emuflow.cli import _build_parser
+from emuflow.flow.cli import _build_parser
 from emuflow_tools.cli import _build_parser as tools_parser
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,16 +21,16 @@ def test_runtime_imports_without_optional_tools_on_search_path(tmp_path):
     code = """import importlib.util, sys
 sys.path.insert(0, sys.argv[1])
 assert importlib.util.find_spec('emuflow_tools') is None
-import emuflow.cli, emuflow.phase6, emuflow.phase6_native, emuflow.opensta
+import emuflow.flow.cli, emuflow.transport.phase6, emuflow.transport.phase6_native, emuflow.timing.opensta
 assert 'emuflow_tools' not in sys.modules
 """
-    result = subprocess.run([sys.executable, "-I", "-c", code, str(ROOT / "src")],
+    result = subprocess.run([sys.executable, "-I", "-c", code, str(ROOT / "src/python")],
                             cwd=tmp_path, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
 
 def test_core_has_no_tool_package_imports():
-    for source in (ROOT / "src/emuflow").glob("*.py"):
+    for source in (ROOT / "src/python/emuflow").rglob("*.py"):
         for node in ast.walk(ast.parse(source.read_text())):
             if isinstance(node, ast.ImportFrom):
                 assert not (node.module or "").startswith("emuflow_tools"), source

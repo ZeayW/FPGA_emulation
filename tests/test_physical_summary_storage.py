@@ -9,10 +9,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.errors import ValidationError
-from emuflow.io import read_json, write_json
-import emuflow.physical_summary_storage as physical_summary_storage
-from emuflow.physical_summary_storage import (
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json, write_json
+import emuflow.physical.physical_summary_storage as physical_summary_storage
+from emuflow.physical.physical_summary_storage import (
     PHYSICAL_EVIDENCE_REFERENCE_SCHEMA,
     PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA,
     canonical_physical_summary_sha256,
@@ -20,7 +20,7 @@ from emuflow.physical_summary_storage import (
     publish_logic_segment_timing_store,
     read_physical_summary,
 )
-from emuflow.logic_segment_timing import validate_logic_segment_timing
+from emuflow.timing.logic_segment_timing import validate_logic_segment_timing
 
 
 class PhysicalSummaryStorageTest(unittest.TestCase):
@@ -231,7 +231,7 @@ class PhysicalSummaryStorageTest(unittest.TestCase):
 
     @staticmethod
     def _write_logic_store(root, fpga, count, *, platform="board", semantic=None):
-        from emuflow.logic_segment_timing_storage import (logic_segment_timing_reference)
+        from emuflow.timing.logic_segment_timing_storage import (logic_segment_timing_reference)
         from tests.timing_facts import logic_timing_facts
 
         document = PhysicalSummaryStorageTest._logic_timing(
@@ -336,7 +336,7 @@ class PhysicalSummaryStorageTest(unittest.TestCase):
                 )["logic_segment_timing"]["fpga0"]
 
     def test_logic_segment_store_rejects_manifest_envelope_and_truncation_attacks(self) -> None:
-        from emuflow.logic_segment_timing_storage import (
+        from emuflow.timing.logic_segment_timing_storage import (
             LOGIC_SEGMENT_TIMING_APPLICATION_ID,
             read_logic_segment_timing_storage,
         )
@@ -400,7 +400,7 @@ class PhysicalSummaryStorageTest(unittest.TestCase):
                 read_logic_segment_timing_storage(selector_path)
 
     def test_logic_segment_store_reader_close_is_deterministic(self) -> None:
-        import emuflow.logic_segment_timing_storage as storage
+        import emuflow.timing.logic_segment_timing_storage as storage
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -413,7 +413,7 @@ class PhysicalSummaryStorageTest(unittest.TestCase):
 
 
     def test_logic_segment_store_large_validation_has_bounded_memory(self) -> None:
-        from emuflow.logic_segment_timing_storage import read_logic_segment_timing_storage
+        from emuflow.timing.logic_segment_timing_storage import read_logic_segment_timing_storage
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -434,7 +434,7 @@ class PhysicalSummaryStorageTest(unittest.TestCase):
 
 
     def test_logic_store_gc_is_isolated_by_selector_owner(self) -> None:
-        from emuflow.logic_segment_timing_storage import (read_logic_segment_timing_storage)
+        from emuflow.timing.logic_segment_timing_storage import (read_logic_segment_timing_storage)
         from tests.timing_facts import logic_timing_facts
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -524,14 +524,14 @@ class PhysicalSummaryStorageTest(unittest.TestCase):
                 "store_bytes": replacement.stat().st_size,
             })
             write_json(selector_path, selector, compact=True)
-            from emuflow.logic_segment_timing_storage import (
+            from emuflow.timing.logic_segment_timing_storage import (
                 read_logic_segment_timing_storage,
             )
             with self.assertRaisesRegex(ValidationError, "measured and unmeasured"):
                 read_logic_segment_timing_storage(selector_path)
 
     def test_lazy_summary_supports_twelve_fpgas_and_closes_owned_leases(self) -> None:
-        from emuflow.logic_segment_timing_storage import (logic_segment_timing_reference)
+        from emuflow.timing.logic_segment_timing_storage import (logic_segment_timing_reference)
         from tests.timing_facts import logic_timing_facts
 
         with tempfile.TemporaryDirectory() as temporary:

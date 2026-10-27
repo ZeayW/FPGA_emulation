@@ -5,22 +5,22 @@ import copy
 
 import pytest
 
-from emuflow.chimew_phase6 import (
+from emuflow.transport.chimew.chimew_phase6 import (
     CHIMEW_PHASE6_BINDING_PROVIDER,
     _canonical_sha256, validate_chimew_phase6_binding,
 )
-from emuflow.chimew_fixed_wiring import FIXED_WIRING_BINDING_SCHEMA, FixedWiringChannels
-from emuflow.default_platform import research_platform_path
-from emuflow.errors import ValidationError
-from emuflow.pin_planning import (
+from emuflow.transport.chimew.chimew_fixed_wiring import FIXED_WIRING_BINDING_SCHEMA, FixedWiringChannels
+from emuflow.platform.default_platform import research_platform_path
+from emuflow.common.errors import ValidationError
+from emuflow.transport.pin_planning import (
     CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA,
     SIGNAL_POSITION_HINTS_SCHEMA, _assignment_metrics, _baseline_assignment,
     validate_bank_pin_assignment, validate_pin_plan,
 )
-from emuflow.pin_plan_storage import write_pin_plan_storage
-from emuflow.platform import Platform
-from emuflow.tdm import TDM_SCHEDULE_SCHEMA
-from emuflow.tdm_schedule_storage import (canonical_tdm_schedule_sha256, read_tdm_schedule)
+from emuflow.transport.pin_plan_storage import write_pin_plan_storage
+from emuflow.platform.platform import Platform
+from emuflow.scheduling.tdm import TDM_SCHEDULE_SCHEMA
+from emuflow.scheduling.tdm_schedule_storage import (canonical_tdm_schedule_sha256, read_tdm_schedule)
 
 
 def fixture():

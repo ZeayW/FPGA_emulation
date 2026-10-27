@@ -3,10 +3,10 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from emuflow.io import read_json, write_json
-from emuflow.errors import ImportError
-from emuflow.ir import EmuIR
-from emuflow.yosys import import_yosys_json, import_yosys_json_indexed
+from emuflow.common.io import read_json, write_json
+from emuflow.common.errors import ImportError
+from emuflow.ir.ir import EmuIR
+from emuflow.frontend.yosys import import_yosys_json, import_yosys_json_indexed
 
 
 ROOT = Path(__file__).resolve().parents[1]

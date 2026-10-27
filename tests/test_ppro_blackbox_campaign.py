@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from emuflow_tools.ppro_blackbox_campaign import (
     PProCampaignRuntime,
     discover_generated_bundles,

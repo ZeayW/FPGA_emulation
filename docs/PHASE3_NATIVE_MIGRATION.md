@@ -409,7 +409,7 @@ semantics. They do not run SQLite `quick_check` or `integrity_check`. Strong
 hashing belongs to publication/import and explicit terminal verification,
 not repeated routine reads of already validated immutable artifacts.
 
-`emuflow_core/emuir_view.hpp` supplies the compact EmuIR v2 read-only view used
+`src/core/ir/emuir_view.hpp` supplies the compact EmuIR v2 read-only view used
 by the production Phase 3 analyzer. Its cell-state and connectivity visitors
 consume ordered records and check sequence, ownership and declared coverage in
 that same scan. Construction reads bounded metadata; it does not preload or
@@ -422,7 +422,7 @@ capture adapters, mapped physical stores or the other remaining phase views.
 
 ### Native operation API
 
-`emuflow_core/native_pipeline.hpp` defines the typed in-process operation
+`src/core/flow/native_pipeline.hpp` defines the typed in-process operation
 interface; CLI parsing is a separate adapter. The library executes the native
 implementation directly, with no Python invocation or graph-sized FFI transfer.
 PATRON uses the unified `refine-patron-from-primary` entry, including when its

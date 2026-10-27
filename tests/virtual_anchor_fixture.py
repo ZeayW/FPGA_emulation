@@ -31,7 +31,7 @@ def anchor_facts(fpga, platform, endpoints):
 
 
 def expected_anchor_xdc(anchors):
-    from emuflow.netlist import _sv_name
+    from emuflow.transport.netlist import _sv_name
     records = anchors['anchors']
     if len(records) > 4096:
         raise ValueError('anchor fixture exceeds endpoint bound')

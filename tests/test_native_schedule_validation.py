@@ -10,9 +10,9 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.tdm import validate_tdm_schedule, build_native_exact_schedule_request
-from emuflow.tdm_schedule_storage import read_tdm_schedule
+from emuflow.common.errors import ValidationError
+from emuflow.scheduling.tdm import validate_tdm_schedule, build_native_exact_schedule_request
+from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 from tests.native_schedule_case import _case
 from tests.schedule_reference import build_tdm_schedule
@@ -74,7 +74,7 @@ def test_native_independent_validation_matches_host_oracle_without_host_records(
             )
         patches.enter_context(
             patch(
-                "emuflow.tdm._exact_dependency_order",
+                "emuflow.scheduling.tdm._exact_dependency_order",
                 side_effect=AssertionError("Python dependency graph"),
             )
         )
@@ -226,7 +226,7 @@ def test_native_logical_seals_and_child_coverage_reject_corruption(
                 db.execute(
                     "INSERT INTO schedule_route_edges VALUES(999,0,'link_0_1','fpga0','fpga1')"
                 )
-        from emuflow.store_publication import bind_store_source
+        from emuflow.storage.store_publication import bind_store_source
 
         schedule._source_bindings = (
             bind_store_source(schedule.store_path, "tdm-schedule-store-v4"),
@@ -258,7 +258,7 @@ def test_native_failure_never_retries_host_validator(tmp_path, monkeypatch):
     path = tmp_path / "schedule.json"
     write_fixture(path, build_tdm_schedule(routes, case.platform))
     install_runtime(tmp_path, monkeypatch)
-    from emuflow.tool_runtime import NativeToolProcess
+    from emuflow.common.tool_runtime import NativeToolProcess
 
     original = NativeToolProcess.finish
 
@@ -269,7 +269,7 @@ def test_native_failure_never_retries_host_validator(tmp_path, monkeypatch):
     with (
         patch.object(NativeToolProcess, "finish", fail),
         patch(
-            "emuflow.tdm._exact_dependency_order",
+            "emuflow.scheduling.tdm._exact_dependency_order",
             side_effect=AssertionError("host fallback"),
         ),
     ):
@@ -280,8 +280,8 @@ def test_native_failure_never_retries_host_validator(tmp_path, monkeypatch):
 def test_empty_typed_schedule_is_validated_without_a_host_special_case(
     tmp_path, monkeypatch
 ):
-    from emuflow.io import read_json
-    from emuflow.system_route_storage import read_system_routes
+    from emuflow.common.io import read_json
+    from emuflow.routing.system_route_storage import read_system_routes
     from tests.native_route_seal_fixture import write_route_store_fixture
 
     case, _routes = _case(tmp_path, False, False)
@@ -311,7 +311,7 @@ def test_empty_typed_schedule_is_validated_without_a_host_special_case(
 def test_native_protocol_source_and_atomic_summary_contract(
     tmp_path, monkeypatch, corruption
 ):
-    from emuflow.tool_runtime import NativeToolProcess
+    from emuflow.common.tool_runtime import NativeToolProcess
 
     case, routes = _case(tmp_path, False, False)
     path = tmp_path / "schedule.json"

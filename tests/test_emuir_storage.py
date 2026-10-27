@@ -10,9 +10,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.emuir_storage import is_emuir_sqlite, read_emuir_sqlite, write_emuir_sqlite, _write_emuir_sqlite_v1
-from emuflow.ir import EmuIR
-from emuflow.yosys import import_yosys_json, import_yosys_json_indexed
+from emuflow.ir.emuir_storage import is_emuir_sqlite, read_emuir_sqlite, write_emuir_sqlite, _write_emuir_sqlite_v1
+from emuflow.ir.ir import EmuIR
+from emuflow.frontend.yosys import import_yosys_json, import_yosys_json_indexed
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,7 +56,7 @@ class EmuIRStorageTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             artifact = Path(temporary_directory) / "design.emuir.sqlite"
-            with patch("emuflow.emuir_storage.sqlite3.connect", without_audits):
+            with patch("emuflow.ir.emuir_storage.sqlite3.connect", without_audits):
                 self.ir.save(artifact)
                 self.assertEqual(EmuIR.load(artifact).to_dict(), self.ir.to_dict())
             # An explicit offline engine audit remains possible, but is not

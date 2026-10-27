@@ -6,8 +6,8 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-from emuflow.errors import ValidationError
-from emuflow.native_protocol import CheckedRequestWriter
+from emuflow.common.errors import ValidationError
+from emuflow.common.native_protocol import CheckedRequestWriter
 from tests.native_build import emuflow_native
 
 _RELATIONS = {
@@ -116,7 +116,7 @@ def write_route_store_fixture(selector, logical):
     with tempfile.TemporaryDirectory(prefix='route-facts-', dir=selector.parent) as temporary:
         store = Path(temporary)/'facts.sqlite'
         with sqlite3.connect(store) as db:
-            ddl = Path(__file__).parents[1]/'src/emuflow/data/schema/phase4_routes.sql'
+            ddl = Path(__file__).parents[1]/'src/python/emuflow/data/schema/phase4_routes.sql'
             db.executescript(ddl.read_text())
             db.execute('PRAGMA application_id=1162696018')
             db.execute('PRAGMA user_version=3')

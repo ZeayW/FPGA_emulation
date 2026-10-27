@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.architecture import ArchitectureDB, compatible_cells_for_bel
-from emuflow.openparf import (
+from emuflow.platform.architecture import ArchitectureDB, compatible_cells_for_bel
+from emuflow.physical.openparf.openparf import (
     _openparf_environment,
     resolve_openparf_install,
     run_openparf,
@@ -113,7 +113,7 @@ class OpenparfRuntimeAndArchitectureTest(unittest.TestCase):
 
             def fake_run(command, **_kwargs):
                 self.assertEqual(
-                    command[1:3], ["-m", "emuflow.openparf_native_driver"]
+                    command[1:3], ["-m", "emuflow.physical.openparf.openparf_native_driver"]
                 )
                 result_dir.mkdir(parents=True)
                 (result_dir / "runner.pl").write_text(
@@ -155,7 +155,7 @@ class OpenparfRuntimeAndArchitectureTest(unittest.TestCase):
                 return mock.Mock(returncode=0)
 
             with mock.patch(
-                "emuflow.openparf.subprocess.run", side_effect=fake_run
+                "emuflow.physical.openparf.openparf.subprocess.run", side_effect=fake_run
             ):
                 placement = run_openparf(
                     config,
@@ -175,7 +175,7 @@ class OpenparfRuntimeAndArchitectureTest(unittest.TestCase):
                 config.write_text(json.dumps({"benchmark_name":"runner",
                     "result_dir":str(root / "results"),
                     "emuflow_continuous_global_guidance":flag}))
-                with mock.patch("emuflow.openparf.subprocess.run") as launch:
+                with mock.patch("emuflow.physical.openparf.openparf.subprocess.run") as launch:
                     with self.assertRaisesRegex(Exception, "continuous guidance placement is retired"):
                         run_openparf(config, install_root=installation,
                             python_executable=Path(sys.executable))

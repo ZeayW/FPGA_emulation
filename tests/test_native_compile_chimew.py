@@ -8,17 +8,17 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import EmuFlowError, ValidationError
-from emuflow.io import write_json
-from emuflow.native_compile_adapter import (
+from emuflow.common.errors import EmuFlowError, ValidationError
+from emuflow.common.io import write_json
+from emuflow.flow.native_compile_adapter import (
     _control_snapshot,
     _pack,
     _restore_control_state,
     _unpack,
     execute,
 )
-from emuflow.native_tools import native_file_generation
-from emuflow.xilinx_chimew_geometry import XilinxPackageGeometry
+from emuflow.common.native_tools import native_file_generation
+from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
 from tests.test_xilinx_chimew_lookahead import case, fixed_case
 
 
@@ -31,7 +31,7 @@ def test_device_control_roundtrip_does_not_rescan_the_architecture(case):
     original = XilinxPackageGeometry.open(architecture, platform.fpgas[0].part)
     state = _roundtrip(original.control_snapshot())
     with patch(
-        "emuflow.xilinx_chimew_geometry.read_xilinx_package_geometry",
+        "emuflow.transport.chimew.xilinx_chimew_geometry.read_xilinx_package_geometry",
         side_effect=AssertionError("ArchitectureDB was rescanned"),
     ):
         restored = XilinxPackageGeometry.from_control_snapshot(state)
@@ -71,11 +71,11 @@ def test_device_control_rejects_changed_source_and_invalid_device_facts(case, mu
 def test_native_preflight_reaches_the_same_chimew_checks_for_both_backends(
     case, tmp_path
 ):
-    import emuflow.multi_fpga_flow as flow
-    from emuflow.native_compile_adapter import _initial_context
+    import emuflow.flow.multi_fpga_flow as flow
+    from emuflow.flow.native_compile_adapter import _initial_context
 
     platform, _source, architecture, *_ = case
-    from emuflow.default_platform import research_platform_path
+    from emuflow.platform.default_platform import research_platform_path
 
     class Reached(Exception):
         pass
@@ -105,7 +105,7 @@ def test_native_preflight_reaches_the_same_chimew_checks_for_both_backends(
 
 
 def test_baseline_reports_have_one_control_owner_and_restore_aliases(tmp_path):
-    import emuflow.multi_fpga_flow as flow
+    import emuflow.flow.multi_fpga_flow as flow
 
     physical, runtime = {"schema": "physical", "status": "pass"}, {"status": "pass"}
     comparison = {"baseline": {"physical": physical, "runtime": runtime}}
@@ -143,8 +143,8 @@ def test_real_chimew_kernels_survive_split_physical_signoff_control_boundaries(
     case, tmp_path
 ):
     """Real lookahead/typed Chimew pipeline; physical/STA engines are test doubles."""
-    import emuflow.multi_fpga_flow as flow
-    from emuflow.default_platform import research_platform_path
+    import emuflow.flow.multi_fpga_flow as flow
+    from emuflow.platform.default_platform import research_platform_path
 
     platform, source, architecture, placed, schedule, routes = case
     backend = (
@@ -299,18 +299,19 @@ def test_native_cpp_controller_carries_real_device_state_across_processes(
     import subprocess
     from tests.native_build import emuflow_native
     from tests.test_native_compile import fixture_request
-    from emuflow.native_compile_adapter import STAGES
+    from emuflow.flow.native_compile_adapter import STAGES
 
     platform, _source, architecture, *_ = case
     root = tmp_path / "process"
     root.mkdir()
     request = fixture_request(root)
     source = root / "source/emuflow"
-    real_source = Path(__file__).parents[1] / "src/emuflow"
+    real_source = Path(__file__).parents[1] / "src/python/emuflow"
     (source / "__init__.py").write_text(
         "__path__.append(" + repr(str(real_source)) + ")\n"
     )
-    adapter = source / "native_compile_adapter.py"
+    (source / "flow/__init__.py").write_text("__path__.append(" + repr(str(real_source / "flow")) + ")\n")
+    adapter = source / "flow/native_compile_adapter.py"
     text = adapter.read_text()
     marker = "pathlib.Path(a.output).write_text(json.dumps(value))"
     assert marker in text
@@ -319,9 +320,9 @@ def test_native_cpp_controller_carries_real_device_state_across_processes(
 import importlib.util
 spec=importlib.util.spec_from_file_location('emuflow.real_compile_codec',REAL_CODEC)
 codec=importlib.util.module_from_spec(spec);spec.loader.exec_module(codec)
-from emuflow.multi_fpga_flow import _CompileContext
-from emuflow import multi_fpga_flow as flow
-from emuflow.xilinx_chimew_geometry import XilinxPackageGeometry
+from emuflow.flow.multi_fpga_flow import _CompileContext
+from emuflow.flow import multi_fpga_flow as flow
+from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
 from types import SimpleNamespace
 if a.stage=='preflight':
  state=codec._unpack(value['state'])
@@ -341,7 +342,7 @@ if a.stage==TAMPER:
  target=pathlib.Path(ARCHITECTURE);target.write_text(target.read_text()+'\\n')
 value['state']=codec._pack(codec._control_snapshot(_CompileContext(state,native_mode=True),a.stage,flow))
 """.replace(
-            "REAL_CODEC", repr(str(real_source / "native_compile_adapter.py"))
+            "REAL_CODEC", repr(str(real_source / "flow/native_compile_adapter.py"))
         )
         .replace("ARCHITECTURE", repr(str(architecture)))
         .replace("PART", repr(platform.fpgas[0].part))

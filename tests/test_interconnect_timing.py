@@ -2,17 +2,17 @@
 import copy
 import pytest
 
-from emuflow.board_link_timing import (
+from emuflow.platform.board_link_timing import (
     build_board_link_timing_model,
     directed_route_link_delays,
     validate_board_link_timing,
 )
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from tests.global_sta_fixture import bind_physical_checks
-from emuflow.platform import Platform
+from emuflow.platform.platform import Platform
 from tests.system_timing_oracle import _fixed_slot_transport_path_delay
-from emuflow.routing import normalize_route_constraints
-from emuflow.default_platform import research_platform_path
+from emuflow.routing.routing import normalize_route_constraints
+from emuflow.platform.default_platform import research_platform_path
 
 
 def test_bank_endpoint_inventory_and_dimensions_are_enforced():
@@ -133,7 +133,7 @@ def test_physical_path_keeps_local_delays_and_separate_readiness_gate(monkeypatc
         physical['logic_segment_timing'][fpga.id]={**common,'schema':'emuflow.logic-segment-timing/v1','qualification':'fixture',
             'coverage':{'segments':len(logic),'system_paths':int(bool(logic)),'member_paths':int(bool(logic)),'unsupported_member_paths':0},
             'unsupported_member_paths':[],'segments':logic}
-    import emuflow.tdm as tdm
+    import emuflow.scheduling.tdm as tdm
     assert not hasattr(tdm, 'open_tdm_schedule_timing_path_stream')
     def bind():
         return bind_physical_checks(

@@ -10,16 +10,16 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.boundary_identity_storage import write_boundary_identity_storage
-from emuflow.chimew_fixed_wiring import FixedWiringChannels, FIXED_WIRING_MAP_SCHEMA
-from emuflow.chimew_lookahead import materialize_xilinx_chimew_inputs, _fixed_channels
-from emuflow.chimew_pipeline import run_chimew_phase6_pipeline
-from emuflow.default_platform import research_platform_path
-from emuflow.errors import ValidationError
-from emuflow.io import read_json, write_json, file_sha256
+from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
+from emuflow.transport.chimew.chimew_fixed_wiring import FixedWiringChannels, FIXED_WIRING_MAP_SCHEMA
+from emuflow.transport.chimew.chimew_lookahead import materialize_xilinx_chimew_inputs, _fixed_channels
+from emuflow.transport.chimew.chimew_pipeline import run_chimew_phase6_pipeline
+from emuflow.platform.default_platform import research_platform_path
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json, write_json, file_sha256
 
-from emuflow.vivado_lineage import import_cell_lineage, PLACEMENT_COORDINATE_SYSTEM
-from emuflow.xilinx_chimew_geometry import XilinxChimewGeometry, read_xilinx_package_geometry
+from emuflow.physical.vivado.vivado_lineage import import_cell_lineage, PLACEMENT_COORDINATE_SYSTEM
+from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxChimewGeometry, read_xilinx_package_geometry
 from tests.test_chimew_fixed_wiring import fixed_case
 
 
@@ -66,8 +66,8 @@ def case(tmp_path, fixed_case, request):
         if request.param == 'vivado':
             stages.update(mapped_verilog=report, vivado_implementation={'cell_coverage':coverage})
         else:
-            from emuflow.xilinx_physical_handoff import XilinxPhysicalHandoffBuilder
-            from emuflow.xilinx_openparf_atomic import _write_site_database
+            from emuflow.physical.xilinx_physical_handoff import XilinxPhysicalHandoffBuilder
+            from emuflow.physical.openparf.xilinx_openparf_atomic import _write_site_database
             handoff, sites = root/'handoff.sqlite', root/'site-map.sqlite3'
             with XilinxPhysicalHandoffBuilder(handoff) as builder:
                 builder.append_bridge_cluster({'id':'c0','kind':'slice','site_templates':['SLICEL'],
@@ -85,7 +85,7 @@ def case(tmp_path, fixed_case, request):
                     'dense_x':0,'dense_y':0,'physical_x':3+index*10,'physical_y':4+index*10,
                     'placement_x':9999,'placement_y':8888,'site':'S0',
                     'resources':{'FF':16},'physical_sites':{'FF':['S0']}}]})
-            from emuflow.native_tools import native_file_generation
+            from emuflow.common.native_tools import native_file_generation
             stages['rapidwright_implementation']={
                 'placement':{'site_database':{'schema':'emuflow.openparf-atomic-site-database/v1',
                     'path':str(sites),'generation':list(native_file_generation(sites)),'sha256':file_sha256(sites)}},
@@ -178,9 +178,9 @@ def test_wrong_mapped_generation_seal_is_rejected(case):
 
 
 def test_timing_guard_has_one_owner_without_cloning_the_hop_store(case, tmp_path):
-    from emuflow.chimew_grouping import build_chimew_initial_groups
-    from emuflow.chimew_refinement import refine_chimew_groups
-    from emuflow.tdm_schedule_storage import read_tdm_schedule
+    from emuflow.transport.chimew.chimew_grouping import build_chimew_initial_groups
+    from emuflow.transport.chimew.chimew_refinement import refine_chimew_groups
+    from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
     platform, source, architecture, report, schedule, routes = case
     original = file_sha256(schedule)
     timing = tmp_path/'critical.json'
@@ -203,7 +203,7 @@ def test_timing_guard_has_one_owner_without_cloning_the_hop_store(case, tmp_path
 def test_prepass_and_final_share_the_selected_backend_options(tmp_path):
     import inspect
     from types import SimpleNamespace
-    import emuflow.multi_fpga_flow as flow
+    import emuflow.flow.multi_fpga_flow as flow
     defaults={k:p.default for k,p in inspect.signature(flow.run_multi_fpga_flow).parameters.items()
               if p.default is not inspect.Parameter.empty}
     for backend in ('vivado','rapidwright'):
@@ -224,12 +224,12 @@ def test_prepass_and_final_share_the_selected_backend_options(tmp_path):
 
 
 def test_chimew_preflight_accepts_both_xilinx_backends_before_frontend(case, tmp_path):
-    from emuflow.multi_fpga_flow import run_multi_fpga_flow
+    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
     platform,source,architecture,report,*_=case
     class PreflightReached(Exception): pass
     for backend in ('rapidwright','vivado'):
         out=tmp_path/f'preflight-{backend}'
-        with patch('emuflow.multi_fpga_flow._validate_mapping_timing_contract',side_effect=PreflightReached):
+        with patch('emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract',side_effect=PreflightReached):
             with pytest.raises(PreflightReached):
                 run_multi_fpga_flow(platform_path=research_platform_path(2),output_dir=out,
                     phase6_provider='chimew',physical=True,physical_backend=backend,
@@ -286,10 +286,10 @@ def test_forwarded_hop_uses_complete_source_bound_register_geometry(case, regist
 
 
 def test_preflight_catalog_is_reused_without_rescanning_the_device_graph(case):
-    from emuflow.xilinx_chimew_geometry import XilinxPackageGeometry
+    from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
     platform,source,architecture,report,*_=case
     catalog=XilinxPackageGeometry.open(architecture,platform.fpgas[0].part)
-    with patch('emuflow.xilinx_chimew_geometry.read_xilinx_package_geometry',side_effect=AssertionError('device graph reread')):
+    with patch('emuflow.transport.chimew.xilinx_chimew_geometry.read_xilinx_package_geometry',side_effect=AssertionError('device graph reread')):
         with XilinxChimewGeometry(source,platform,report,architecture,package_geometry=catalog) as geometry:
             geometry.point(platform.fpgas[0].id,'n5','s0','tx')
 
@@ -297,15 +297,15 @@ def test_preflight_catalog_is_reused_without_rescanning_the_device_graph(case):
 @pytest.mark.parametrize("case",["rapidwright"],indirect=True)
 def test_shared_site_map_seal_is_published_once_and_survives_later_hardlinks(case, tmp_path):
     import os
-    from emuflow.native_tools import native_file_generation
-    from emuflow.xilinx_openparf_atomic import _materialize_site_database
+    from emuflow.common.native_tools import native_file_generation
+    from emuflow.physical.openparf.xilinx_openparf_atomic import _materialize_site_database
     platform,source,architecture,report,*_=case
     device={'coordinate_system':{'coordinate_system':PLACEMENT_COORDINATE_SYSTEM,
         'architecture_sha256':file_sha256(architecture),'sites':[
             {'dense_x':index,'dense_y':0,'physical_x':3+index*10,'physical_y':4+index*10,
              'placement_x':9999,'placement_y':8888,'site':f'S{index}',
              'resources':{'FF':16},'physical_sites':{'FF':[f'S{index}']}} for index in range(2)]}}
-    with patch('emuflow.xilinx_openparf_atomic._sha256',wraps=file_sha256) as producer_hash:
+    with patch('emuflow.physical.openparf.xilinx_openparf_atomic._sha256',wraps=file_sha256) as producer_hash:
         for index,record in enumerate(report['fpgas']):
             stage=record['stages']['rapidwright_implementation']
             ref=stage['placement']['site_database']; path=Path(ref['path'])
@@ -323,7 +323,7 @@ def test_shared_site_map_seal_is_published_once_and_survives_later_hardlinks(cas
     def checked_hash(path):
         if Path(path).samefile(first): reads.append(path)
         return file_sha256(path)
-    with patch('emuflow.xilinx_chimew_geometry.file_sha256',side_effect=checked_hash):
+    with patch('emuflow.transport.chimew.xilinx_chimew_geometry.file_sha256',side_effect=checked_hash):
         with XilinxChimewGeometry(source,platform,report,architecture) as geometry:
             assert geometry.point(platform.fpgas[0].id,'n5','s0','tx')[:2]==(3,4)
             assert geometry.point(platform.fpgas[1].id,'n5','s0','rx')[:2]==(13,14)
@@ -346,8 +346,8 @@ def test_site_map_edit_cannot_hide_behind_restored_mtime(case):
 @pytest.mark.parametrize('case',['rapidwright'],indirect=True)
 def test_site_map_publisher_rejects_a_changed_shared_generation(case, tmp_path):
     import os
-    from emuflow.xilinx_openparf_atomic import _materialize_site_database
-    from emuflow.native_tools import native_file_generation
+    from emuflow.physical.openparf.xilinx_openparf_atomic import _materialize_site_database
+    from emuflow.common.native_tools import native_file_generation
     platform,source,architecture,report,*_=case
     path=Path(report['fpgas'][0]['stages']['rapidwright_implementation']['placement']['site_database']['path'])
     device={'site_database':path,'site_count':1,'site_database_sha256':file_sha256(path),

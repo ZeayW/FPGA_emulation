@@ -3,10 +3,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from emuflow.io import write_json
-from emuflow.errors import ValidationError
-from emuflow.verilog import emit_mapped_verilog, mapped_verilog, write_mapped_verilog
-from emuflow.yosys import import_yosys_json
+from emuflow.common.io import write_json
+from emuflow.common.errors import ValidationError
+from emuflow.frontend.verilog import emit_mapped_verilog, mapped_verilog, write_mapped_verilog
+from emuflow.frontend.yosys import import_yosys_json
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,7 +41,7 @@ class MappedVerilogTest(unittest.TestCase):
                 expected = mapped_verilog(ir, **options).encode()
                 output = Path(temp) / "mapped.v"
                 with patch(
-                    "emuflow.verilog.mapped_verilog",
+                    "emuflow.frontend.verilog.mapped_verilog",
                     side_effect=AssertionError("whole-document string emission"),
                 ):
                     write_mapped_verilog(ir, output, **options)

@@ -23,7 +23,7 @@ export TMPDIR="$runtime_dir/tmp"
 
 # The login environment on the validation farm still exposes GCC 7 as `c++`.
 # That compiler accepts -std=c++17 but does not provide <filesystem>, which is
-# required by emuflow_core/artifact_io.cpp.  The farm's system libstdc++ is also
+# required by src/core/common/artifact_io.cpp.  The farm's system libstdc++ is also
 # older than the GCC 14 compiler installation.  Select a compiler by capability
 # instead of trusting PATH or a version string, and link the small native tools
 # with their compiler's C++ runtime so they do not inherit that ABI mismatch.
@@ -111,29 +111,29 @@ core_seen=" "
 while IFS= read -r source || test -n "$source"; do
   case "$source" in ''|\#*) continue ;; esac
   case "$source" in /*|*..*|*[!a-zA-Z0-9_/.-]*) echo "invalid shared native source: $source" >&2; exit 2 ;; esac
-  test -f "$source_dir/src/native/$source"
+  test -f "$source_dir/src/core/$source"
   # Bash 3/4 can treat an empty array as unset under `set -u`.
   case "$core_seen" in *" $source "*) echo "repeated shared native source: $source" >&2; exit 2 ;; esac
   core_seen="$core_seen$source "
   core_sources+=("$source")
-done < "$source_dir/src/native/emuflow_core/sources.txt"
+done < "$source_dir/src/core/sources.txt"
 test "$core_seen" != " " || { echo "empty shared native source manifest" >&2; exit 2; }
 objects=()
 generated_dir="$object_dir/generated"
 python3 "$source_dir/scripts/generate_store_schema_headers.py" \
-  "$generated_dir/emuflow_core"
+  "$generated_dir/storage/schema"
 for source in "${core_sources[@]}"; do
   object="$object_dir/${source//\//_}.o"
   "$selected_cxx" -std=c++17 -O3 -pthread -DEMUFLOW_NATIVE_STAGE_LIBRARY=1 \
-    ${sqlite_flags[@]+"${sqlite_flags[@]}"} -I"$source_dir/src/native" \
-    -I"$generated_dir" -c "$source_dir/src/native/$source" -o "$object"
+    ${sqlite_flags[@]+"${sqlite_flags[@]}"} -I"$source_dir/src/core" \
+    -I"$generated_dir" -c "$source_dir/src/core/$source" -o "$object"
   objects+=("$object")
 done
 archive="$runtime_dir/lib/libemuflow_core.a"
 "$("$selected_cxx" -print-prog-name=ar)" rcs "$archive" "${objects[@]}"
 "$selected_cxx" -std=c++17 -O3 -pthread -static-libstdc++ -static-libgcc \
-  ${sqlite_flags[@]+"${sqlite_flags[@]}"} -I"$source_dir/src/native" \
-  "$source_dir/src/native/emuflow_native.cpp" "$archive" -lsqlite3 -lz -o "$unified"
+  ${sqlite_flags[@]+"${sqlite_flags[@]}"} -I"$source_dir/src/core" \
+  "$source_dir/src/cli/main.cpp" "$archive" -lsqlite3 -lz -o "$unified"
 rm -rf "$object_dir"
 # Do not publish a runtime whose unified core cannot even
 # load its linked dependencies in the deployment environment. The run launcher
@@ -142,5 +142,5 @@ rm -rf "$object_dir"
 "$unified" --help >/dev/null
 printf '%s\n' "$expected_commit" > "$runtime_dir/SOURCE_COMMIT"
 printf '%s\n' "$native_base" > "$runtime_dir/NATIVE_BASE_INSTALL"
-printf '%s\n' "$source_dir/src" > "$runtime_dir/PYTHON_SOURCE_PATH"
+printf '%s\n' "$source_dir/src/python" > "$runtime_dir/PYTHON_SOURCE_PATH"
 echo RUNTIME_DEPLOYED

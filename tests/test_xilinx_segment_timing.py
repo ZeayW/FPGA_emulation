@@ -4,8 +4,8 @@ import tempfile
 from pathlib import Path
 import pytest
 
-from emuflow.boundary_timing_storage import read_boundary_timing_storage
-from emuflow.errors import ValidationError
+from emuflow.timing.boundary_timing_storage import read_boundary_timing_storage
+from emuflow.common.errors import ValidationError
 
 import tests.xilinx_segment_timing_reference as xilinx_segment_timing
 from tests.xilinx_segment_timing_reference import (
@@ -13,13 +13,13 @@ from tests.xilinx_segment_timing_reference import (
     build_xilinx_local_path_timing,
     build_xilinx_segment_timing_bundle,
 )
-from emuflow.local_path_timing import (
+from emuflow.timing.local_path_timing import (
     LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION,
     local_path_timing_header,
 )
-from emuflow.local_path_timing_storage import (read_local_path_timing_storage)
+from emuflow.timing.local_path_timing_storage import (read_local_path_timing_storage)
 from tests.timing_facts import local_timing_facts
-from emuflow.xilinx_timing import (
+from emuflow.timing.xilinx_timing import (
     XILINX_ROUTED_TIMING_PAYLOAD_FORMAT,
     XILINX_ROUTED_TIMING_STREAM_SCHEMA,
 )
@@ -59,8 +59,8 @@ def test_source_declared_undriven_inputs_remain_disconnected_and_queried_paths_f
 
 
 def test_undriven_declaration_reader_streams_completed_sqlite_source(tmp_path):
-    from emuflow.yosys import import_yosys_json
-    from emuflow.ir import EmuIR
+    from emuflow.frontend.yosys import import_yosys_json
+    from emuflow.ir.ir import EmuIR
     value = import_yosys_json(
         Path(__file__).resolve().parents[1] / "examples/yosys/counter.json",
         top="counter", clocks=["clk"],
@@ -184,7 +184,7 @@ def test_boundary_timing_covers_rx_and_tx_with_routed_delays():
         timing_path = root / "timing.json"
         timing_path.write_text(json.dumps(timing), encoding="utf-8")
         identity_path = root / "identity.json"
-        from emuflow.boundary_identity_storage import write_boundary_identity_storage
+        from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
         from tests.test_boundary_identity_storage import _record
         records=[]
         for i, fact in enumerate(identity['endpoints']):

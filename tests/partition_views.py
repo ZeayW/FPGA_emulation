@@ -10,8 +10,8 @@ import hashlib
 import json
 from pathlib import Path
 
-from emuflow.errors import ValidationError
-from emuflow.resources import RESOURCE_FIELDS
+from emuflow.common.errors import ValidationError
+from emuflow.ir.resources import RESOURCE_FIELDS
 
 
 LIMIT = 65536
@@ -129,14 +129,14 @@ class InstanceOwners(Mapping):
         self._original_cluster_assignment=assignment;self._original_cluster_parts=self._cluster_parts;self._original_part_ids=self.part_ids
     def __len__(self):return len(self._source_clusters)
     def iter_source_assignments(self,*,order_by_id=False):
-        from emuflow.emuir_storage import open_emuir_sqlite_read_only
+        from emuflow.ir.emuir_storage import open_emuir_sqlite_read_only
         db=open_emuir_sqlite_read_only(self.path)
         try:
             for seq,name in db.execute('SELECT seq,id FROM cell_records ORDER BY '+('id' if order_by_id else 'seq')):yield seq,name,self.part_for_source_seq(seq)
         finally:db.close()
     def __iter__(self):return (name for _,name,_ in self.iter_source_assignments(order_by_id=True))
     def __getitem__(self,key):
-        from emuflow.emuir_storage import open_emuir_sqlite_read_only
+        from emuflow.ir.emuir_storage import open_emuir_sqlite_read_only
         db=open_emuir_sqlite_read_only(self.path)
         try:row=db.execute('SELECT seq FROM cell_records WHERE id=?',(key,)).fetchone()
         finally:db.close()

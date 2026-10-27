@@ -4,11 +4,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.fpga_interchange import (
+from emuflow.platform.fpga_interchange import (
     architecture_from_fpga_interchange_extract,
 )
-from emuflow.io import read_json, write_json
-from emuflow.physical_regions import (
+from emuflow.common.io import read_json, write_json
+from emuflow.physical.physical_regions import (
     merge_physical_regions,
     run_physical_region_merge,
     run_physical_region_rebind,

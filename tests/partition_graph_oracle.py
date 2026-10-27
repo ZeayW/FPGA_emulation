@@ -3,7 +3,7 @@
 Transitive reachability intentionally replaces the production SCC algorithm;
 this cubic oracle is capped at 256 cells and cannot run a production design.
 """
-from emuflow.resources import RESOURCE_FIELDS
+from emuflow.ir.resources import RESOURCE_FIELDS
 
 
 def candidate_ids(ir):

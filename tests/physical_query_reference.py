@@ -7,13 +7,13 @@ import re
 from collections import defaultdict
 from functools import lru_cache
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
-from emuflow.errors import ValidationError
-from emuflow.ir import EmuIR
-from emuflow.indexed_physical_ir import IndexedPhysicalIR
-from emuflow.equivalence import _lut_definition
+from emuflow.common.errors import ValidationError
+from emuflow.ir.ir import EmuIR
+from emuflow.ir.indexed_physical_ir import IndexedPhysicalIR
+from emuflow.validation.equivalence import _lut_definition
 def _vivado_mapped_name(value):
     return value.replace("\\", "\\\\")
-from emuflow.routing import system_route_timing_paths
+from emuflow.routing.routing import system_route_timing_paths
 _FF_TYPES = {"FDCE", "FDPE", "FDRE", "FDSE"}
 _VIVADO_FF_CONTROLS = {"FDRE": {"CE", "R"}, "FDSE": {"CE", "S"},
                        "FDCE": {"CE", "CLR"}, "FDPE": {"CE", "PRE"}}
@@ -150,7 +150,7 @@ def _scalar_pin(port: str, bit: int, pins: set[tuple[str, int]]) -> str:
 
 @lru_cache(maxsize=1)
 def _vivado_native_cell_types() -> frozenset[str]:
-    from emuflow.xilinx_primitives import load_xilinx_primitive_library
+    from emuflow.physical.xilinx_primitives import load_xilinx_primitive_library
 
     _library, contract = load_xilinx_primitive_library()
     return frozenset(contract["cells"])

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from emuflow_tools.benchmark import BenchmarkRun
-from emuflow.errors import EmuFlowError, ValidationError
+from emuflow.common.errors import EmuFlowError, ValidationError
 
 
 ROOT = Path(__file__).resolve().parents[1]

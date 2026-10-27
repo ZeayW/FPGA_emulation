@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.errors import ValidationError
-from emuflow.opensta import (
+from emuflow.common.errors import ValidationError
+from emuflow.timing.opensta import (
     DEFAULT_TIMING_MODEL,
     FPGA_TIMING_MODEL_SCHEMA,
     FPGA_TIMING_MODEL_SCHEMA_V2,
@@ -22,14 +22,14 @@ from emuflow.opensta import (
     run_opensta_path_database,
     validate_timing_model_coverage,
 )
-from emuflow.sta import (
+from emuflow.timing.sta import (
     import_sta_path_database_tsv_streaming,
     iter_sta_path_database_paths,
     sta_path_database_qor,
     validate_sta_path_database,
 )
-from emuflow.verilog import mapped_verilog
-from emuflow.yosys import import_yosys_json
+from emuflow.frontend.verilog import mapped_verilog
+from emuflow.frontend.yosys import import_yosys_json
 from tests.sta_path_reference import endpoint_facts
 
 
@@ -253,8 +253,8 @@ class OpenStaProviderTest(unittest.TestCase):
             installed_alias.write_bytes(launcher.read_bytes())
             binary.write_bytes(b"engine-revision-a")
             binary.chmod(0o755)
-            with mock.patch("emuflow.opensta.check_opensta_engine_version",return_value="3.1.0"), \
-                 mock.patch("emuflow.opensta._runtime_data_path",return_value=launcher), \
+            with mock.patch("emuflow.timing.opensta.check_opensta_engine_version",return_value="3.1.0"), \
+                 mock.patch("emuflow.timing.opensta._runtime_data_path",return_value=launcher), \
                  mock.patch.dict("os.environ", {"EMUFLOW_OPENSTA_CONTAINER_BINARY":str(binary)}):
                 first = require_opensta_engine(str(launcher))
                 binary.write_bytes(b"engine-revision-b")

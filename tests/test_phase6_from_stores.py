@@ -12,10 +12,10 @@ from pathlib import Path
 
 import pytest
 
-from emuflow.phase6_native import prepare_compile_policy
-from emuflow.runtime import build_virtual_runtime
-from emuflow.errors import ValidationError
-from emuflow.native_tools import native_file_generation
+from emuflow.transport.phase6_native import prepare_compile_policy
+from emuflow.transport.runtime import build_virtual_runtime
+from emuflow.common.errors import ValidationError
+from emuflow.common.native_tools import native_file_generation
 from tests.native_build import emuflow_native,native_pipeline_api_test
 from tests.test_split_overlay_native import owners
 from tests.phase3_store_fixture import write_current_assignment_fixture
@@ -78,7 +78,8 @@ def test_native_compile_constructs_runtime_and_preserves_independent_behavioral_
 
 
 def oracle_source(root,text):
-    package=root/'emuflow';package.mkdir(parents=True)
+    package=root/'emuflow/transport';package.mkdir(parents=True)
+    (package.parent/'__init__.py').write_text('')
     (package/'__init__.py').write_text('')
     source=package/'phase6_oracle.py';source.write_text(text)
     return {'path':str(source),'schema':'phase6-oracle-source-v1',
@@ -138,5 +139,5 @@ def test_native_compile_cancels_and_reaps_its_independent_oracle(owners,tmp_path
         assert process.returncode!=0 and 'cancel' in stderr.lower()
     pid=int(marker.read_text())
     observed=subprocess.run(['ps','-p',str(pid),'-o','command='],capture_output=True,text=True)
-    assert 'emuflow.phase6_oracle' not in observed.stdout
+    assert 'emuflow.transport.phase6_oracle' not in observed.stdout
     assert not output.exists() and not list(tmp_path.glob('.transport-stage-*'))

@@ -9,9 +9,9 @@ import subprocess
 from unittest.mock import patch
 
 import pytest
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from tests.native_route_seal_fixture import seal_native_system_routes, write_route_seal_request
-from emuflow.system_route_storage import _demand_from_route
+from emuflow.routing.system_route_storage import _demand_from_route
 from tests.native_route_seal_fixture import write_route_store_fixture
 from tests.native_build import emuflow_native
 from tests.test_phase4 import _storage_routes

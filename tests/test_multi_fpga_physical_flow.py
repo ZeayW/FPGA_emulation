@@ -9,15 +9,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.errors import ValidationError
-from emuflow.tdm_schedule_storage import TDM_SCHEDULE_LOGICAL_SCHEMA
-from emuflow.chimew_binding_storage import (
+from emuflow.common.errors import ValidationError
+from emuflow.scheduling.tdm_schedule_storage import TDM_SCHEDULE_LOGICAL_SCHEMA
+from emuflow.transport.chimew.chimew_binding_storage import (
     ChimewBindingEntrySequence,
     write_chimew_binding_storage,
 )
-from emuflow.io import read_json, write_json
-from emuflow.ir import EmuIR
-from emuflow.multi_fpga_physical_flow import (
+from emuflow.common.io import read_json, write_json
+from emuflow.ir.ir import EmuIR
+from emuflow.flow.multi_fpga_physical_flow import (
     MULTI_FPGA_PHYSICAL_SCHEMA,
     _assemble_multi_fpga_physical_results,
     _implementation_stage,
@@ -30,13 +30,13 @@ from emuflow.multi_fpga_physical_flow import (
     run_multi_fpga_physical_flow,
     validate_multi_fpga_physical_report,
 )
-from emuflow.physical_summary_storage import (
+from emuflow.physical.physical_summary_storage import (
     PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA,
     read_physical_summary,
 )
-from emuflow.physical_backend import physical_backend_descriptor
-from emuflow.platform import Platform
-from emuflow.position_hints_storage import write_position_hints_storage
+from emuflow.physical.physical_backend import physical_backend_descriptor
+from emuflow.platform.platform import Platform
+from emuflow.transport.position_hints_storage import write_position_hints_storage
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,7 +91,7 @@ def _merged_ir(fpga):
 
 class MultiFpgaPhysicalFlowTest(unittest.TestCase):
     def test_mapped_owner_remains_consumable_after_placement_input_retirement(self):
-        from emuflow.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
+        from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -285,7 +285,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             "physical_summary_ref": "physical-summary.json",
         }
         with patch(
-            "emuflow.multi_fpga_physical_flow."
+            "emuflow.flow.multi_fpga_physical_flow."
             "validate_physical_partition_result"
         ):
             validation = validate_multi_fpga_physical_report(report)
@@ -296,7 +296,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
         with self.assertRaisesRegex(
             ValidationError, "RapidWright physical stages"
         ), patch(
-            "emuflow.multi_fpga_physical_flow."
+            "emuflow.flow.multi_fpga_physical_flow."
             "validate_physical_partition_result"
         ):
             validate_multi_fpga_physical_report(report)
@@ -368,7 +368,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             "physical_summary_ref": "physical-summary.json",
         }
         with patch(
-            "emuflow.multi_fpga_physical_flow."
+            "emuflow.flow.multi_fpga_physical_flow."
             "validate_physical_partition_result"
         ):
             validation = validate_multi_fpga_physical_report(report)
@@ -379,7 +379,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             "status": "pass"
         }
         with self.assertRaisesRegex(ValidationError, "inactive physical"), patch(
-            "emuflow.multi_fpga_physical_flow."
+            "emuflow.flow.multi_fpga_physical_flow."
             "validate_physical_partition_result"
         ):
             validate_multi_fpga_physical_report(report)
@@ -490,7 +490,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 return consumer(io.StringIO(""))
 
             def fake_indexed_import(_source, output, **kwargs):
-                from emuflow.emuir_storage import write_emuir_sqlite
+                from emuflow.ir.emuir_storage import write_emuir_sqlite
 
                 write_emuir_sqlite(
                     output,
@@ -531,7 +531,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     },
                     "endpoints": [],
                 }
-                from emuflow.boundary_identity_storage import (
+                from emuflow.timing.boundary_identity_storage import (
                     write_boundary_identity_storage,
                 )
 
@@ -570,10 +570,10 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 return {"status": "pass", "output": str(output)}
 
             def fake_vivado(**kwargs):
-                from emuflow.boundary_identity_storage import read_boundary_identity_storage
-                from emuflow.boundary_timing import boundary_timing_header
+                from emuflow.timing.boundary_identity_storage import read_boundary_identity_storage
+                from emuflow.timing.boundary_timing import boundary_timing_header
                 from tests.timing_facts import boundary_timing_facts
-                from emuflow.resource_budget import validate_device_resource_usage
+                from emuflow.ir.resource_budget import validate_device_resource_usage
                 self.assertFalse(kwargs["ir_path"].with_name("transport.emuir.sqlite").exists())
                 self.assertTrue(kwargs["ir_path"].is_file())
                 self.assertTrue(kwargs["mapped_verilog_path"].is_file())
@@ -603,29 +603,29 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     "boundary_timing": {"status": "pass", "import": {"output": str(timing_path)}}}
 
             with (
-                patch("emuflow.multi_fpga_physical_flow.SplitNetlistView", SplitCounts),
-                patch("emuflow.multi_fpga_physical_flow.emit_vivado_mapped_verilog", side_effect=fake_mapped_verilog),
+                patch("emuflow.flow.multi_fpga_physical_flow.SplitNetlistView", SplitCounts),
+                patch("emuflow.flow.multi_fpga_physical_flow.emit_vivado_mapped_verilog", side_effect=fake_mapped_verilog),
                 patch(
-                    "emuflow.multi_fpga_physical_flow.build_virtual_runtime",
+                    "emuflow.flow.multi_fpga_physical_flow.build_virtual_runtime",
                     return_value=runtime,
                 ),
                 patch(
-                    "emuflow.multi_fpga_physical_flow."
+                    "emuflow.flow.multi_fpga_physical_flow."
                     "run_generic_yosys_stream",
                     side_effect=fake_yosys,
                 ),
                 patch(
-                    "emuflow.multi_fpga_physical_flow."
+                    "emuflow.flow.multi_fpga_physical_flow."
                     "import_yosys_json_indexed",
                     side_effect=fake_indexed_import,
                 ),
                 patch(
-                    "emuflow.multi_fpga_physical_flow."
+                    "emuflow.flow.multi_fpga_physical_flow."
                     "run_placement_ir_lowering_from_split",
                     side_effect=fake_lower,
                 ),
                 patch(
-                    "emuflow.multi_fpga_physical_flow.run_indexed_vivado_partition",
+                    "emuflow.flow.multi_fpga_physical_flow.run_indexed_vivado_partition",
                     side_effect=fake_vivado,
                 ),
             ):
@@ -679,11 +679,11 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     execution=report["execution"], include_logic_timing=False,
                 )
                 with patch(
-                    "emuflow.multi_fpga_physical_flow."
+                    "emuflow.flow.multi_fpga_physical_flow."
                     "run_generic_yosys_stream",
                     side_effect=AssertionError("synthesis rerun forbidden"),
                 ), patch(
-                    "emuflow.multi_fpga_physical_flow.run_indexed_vivado_partition",
+                    "emuflow.flow.multi_fpga_physical_flow.run_indexed_vivado_partition",
                     side_effect=AssertionError("routing rerun forbidden"),
                 ):
                     assembled = _assemble_multi_fpga_physical_results(
@@ -695,7 +695,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     physical_summary,
                 )
                 with patch(
-                    "emuflow.multi_fpga_physical_flow.validate_multi_fpga_physical_report",
+                    "emuflow.flow.multi_fpga_physical_flow.validate_multi_fpga_physical_report",
                     side_effect=ValidationError("terminal report rejected"),
                 ), self.assertRaisesRegex(ValidationError, "terminal report rejected"):
                     _assemble_multi_fpga_physical_results(
@@ -729,7 +729,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 # diagnosis; neither another worker nor the shared split is retired.
                 worker_barrier = threading.Barrier(1, timeout=5.0)
                 with patch(
-                    "emuflow.multi_fpga_physical_flow.run_indexed_vivado_partition",
+                    "emuflow.flow.multi_fpga_physical_flow.run_indexed_vivado_partition",
                     side_effect=ValidationError("physical implementation rejected"),
                 ), self.assertRaisesRegex(ValidationError, "physical implementation rejected"):
                     run_multi_fpga_physical_flow(
@@ -740,7 +740,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 self.assertTrue((root / "failed-physical/fpga0/partition.v").is_file())
                 self.assertFalse((root / "failed-physical/fpga0/partition-record.json").exists())
                 with patch(
-                    "emuflow.multi_fpga_physical_flow.run_placement_ir_lowering_from_split",
+                    "emuflow.flow.multi_fpga_physical_flow.run_placement_ir_lowering_from_split",
                     side_effect=ValidationError("lowering rejected"),
                 ), self.assertRaisesRegex(ValidationError, "lowering rejected"):
                     run_multi_fpga_physical_flow(
@@ -787,14 +787,14 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 [{"fpga": "fpga0", "status": "failed"}],
             ):
                 with self.subTest(records=records), self.assertRaises(ValidationError), patch(
-                    "emuflow.multi_fpga_physical_flow.read_json",
+                    "emuflow.flow.multi_fpga_physical_flow.read_json",
                     side_effect=AssertionError("partial result must fail before artifact reads"),
                 ):
                     _assemble_multi_fpga_physical_results(records=records, **common)
                 self.assertFalse((root / "out/physical-summary.json").exists())
 
     def test_completed_resource_budget_cannot_be_omitted_or_reused_from_looser_platform(self):
-        from emuflow.resource_budget import validate_device_resource_usage
+        from emuflow.ir.resource_budget import validate_device_resource_usage
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             old_platform = Platform.load(PLATFORM)
@@ -839,7 +839,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 with self.subTest(backend=backend), self.assertRaisesRegex(
                     ValidationError, "fixed differential I/O"
                 ), patch(
-                    "emuflow.multi_fpga_physical_flow.read_json",
+                    "emuflow.flow.multi_fpga_physical_flow.read_json",
                     side_effect=AssertionError("missing I/O must fail before artifact reads"),
                 ):
                     _assemble_multi_fpga_physical_results(
@@ -886,7 +886,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 write_json(root / "manifest.json", {
                     "schema": "emuflow.split-manifest/v1", "fpgas": [item],
                 })
-                with patch("emuflow.multi_fpga_physical_flow.Platform.load",
+                with patch("emuflow.flow.multi_fpga_physical_flow.Platform.load",
                            side_effect=AssertionError("old split must fail before tool/config loading")), \
                      self.assertRaisesRegex(ValidationError, "JSON netlists are retired"):
                     run_multi_fpga_physical_flow(root, PLATFORM, root / "schedule.json",
@@ -922,7 +922,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
     def test_retired_arch_producers_are_not_cli_commands(self):
         from contextlib import redirect_stderr
         from io import StringIO
-        from emuflow.cli import _build_parser
+        from emuflow.flow.cli import _build_parser
 
         parser = _build_parser()
         for command in ("pack-xilinx", "place-xilinx", "guide-xilinx-openparf",
@@ -934,7 +934,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 self.assertIn("invalid choice", error.getvalue())
 
     def test_retired_rapidwright_placer_is_not_a_cli_option(self):
-        from emuflow.cli import _build_parser
+        from emuflow.flow.cli import _build_parser
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1061,7 +1061,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             }
             with (
                 patch(
-                    "emuflow.multi_fpga_physical_flow.build_virtual_runtime",
+                    "emuflow.flow.multi_fpga_physical_flow.build_virtual_runtime",
                     return_value=runtime,
                 ),
                 self.assertRaisesRegex(

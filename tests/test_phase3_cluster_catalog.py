@@ -12,11 +12,11 @@ import zlib
 
 import pytest
 
-from emuflow import phase3_storage as storage, store_publication
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
-from emuflow.native_tools import native_file_generation
-from emuflow.partition import (CUT_MODE_STATIC_EXACT)
+from emuflow.partition import phase3_storage as storage; from emuflow.storage import store_publication
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
+from emuflow.common.native_tools import native_file_generation
+from emuflow.partition.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (build_clusters)
 from tests.test_phase3_clusters_native import source
 
@@ -25,8 +25,8 @@ def catalogs(source, mode="static"):
     ir, constraints = source
     if mode in {"positive", "inline-bitmap"}:
         from tests.test_combinational_cut import _chain_ir
-        from emuflow.emuir_compact import write_compact_emuir
-        from emuflow.partition_ir import load_partition_ir
+        from emuflow.ir.emuir_compact import write_compact_emuir
+        from emuflow.partition.partition_ir import load_partition_ir
 
         value = _chain_ir().to_dict()
         for net in value["nets"]:
@@ -202,7 +202,7 @@ def test_missing_or_foreign_native_owners_cannot_retry_reference(
     source, tmp_path, kind
 ):
     from tests.native_partition_core_fixture import build_native_candidate_ids
-    from emuflow.partition_ir import load_partition_ir
+    from emuflow.partition.partition_ir import load_partition_ir
     import shutil
 
     actual, _expected = catalogs(source, "positive")
@@ -344,7 +344,7 @@ def test_bad_native_catalog_requests_leave_previous_commit(source, tmp_path, kin
 
 @pytest.mark.parametrize("kind", ["payload", "source"])
 def test_selector_role_aliases_never_overwrite_source_or_payload(tmp_path, kind):
-    from emuflow.store_publication import bind_store_source
+    from emuflow.storage.store_publication import bind_store_source
 
     output = tmp_path / "source.txt"
     output.write_bytes(b"source")

@@ -8,12 +8,12 @@ import subprocess
 
 import pytest
 
-from emuflow.native_protocol import CheckedRequestWriter
-from emuflow.store_publication import bind_store_source
-from emuflow.xilinx_primitives import DEFAULT_XILINX_PRIMITIVE_LIBRARY, normalize_xilinx_mapped_json, normalize_xilinx_indexed_staging
-from emuflow.yosys import import_yosys_json_indexed
-from emuflow.yosys_hierarchy_native import stage_hierarchy
-from emuflow.ir import EmuIR
+from emuflow.common.native_protocol import CheckedRequestWriter
+from emuflow.storage.store_publication import bind_store_source
+from emuflow.physical.xilinx_primitives import DEFAULT_XILINX_PRIMITIVE_LIBRARY, normalize_xilinx_mapped_json, normalize_xilinx_indexed_staging
+from emuflow.frontend.yosys import import_yosys_json_indexed
+from emuflow.frontend.yosys_hierarchy_native import stage_hierarchy
+from emuflow.ir.ir import EmuIR
 from tests.native_build import emuflow_native
 
 
@@ -72,8 +72,8 @@ def rows(path):
 
 @pytest.mark.parametrize("mode",range(12))
 def test_complete_normalized_records_and_audit_match_independent_reference(native,tmp_path,monkeypatch,mode):
-    monkeypatch.setattr("emuflow.yosys_hierarchy_native.resolve_native_executable",lambda _:native)
-    monkeypatch.setattr("emuflow.yosys_hierarchy_native.require_native_schema",lambda _:None)
+    monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.resolve_native_executable",lambda _:native)
+    monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.require_native_schema",lambda _:None)
     value=source(mode)
     _,_,_,normalization=stage_hierarchy(Path("<stream>"),tmp_path/"raw.sqlite","top",source_stream=io.StringIO(json.dumps(value)))
     assert normalization is None
@@ -92,9 +92,9 @@ def test_complete_normalized_records_and_audit_match_independent_reference(nativ
 
 
 def test_production_hierarchical_import_bypasses_python_normalizer(native,tmp_path,monkeypatch):
-    monkeypatch.setattr("emuflow.yosys_hierarchy_native.resolve_native_executable",lambda _:native)
-    monkeypatch.setattr("emuflow.yosys_hierarchy_native.require_native_schema",lambda _:None)
-    monkeypatch.setattr("emuflow.xilinx_primitives.normalize_xilinx_mapped_json",lambda *a,**k:pytest.fail("production rebuilt a Python primitive population"))
+    monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.resolve_native_executable",lambda _:native)
+    monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.require_native_schema",lambda _:None)
+    monkeypatch.setattr("emuflow.physical.xilinx_primitives.normalize_xilinx_mapped_json",lambda *a,**k:pytest.fail("production rebuilt a Python primitive population"))
     report=import_yosys_json_indexed(Path("<stream>"),tmp_path/"design.emuir.sqlite",top="top",_source_stream=io.StringIO(json.dumps(source(0))),_expand_hierarchy=True,staging_transform=normalize_xilinx_indexed_staging)
     assert report["carry8_paired_cells"]==1
     assert report["negedge_ff_normalized_cells"]==4
@@ -133,8 +133,8 @@ def test_library_resource_contract_is_independently_checked(native,tmp_path):
 
 def test_large_negedge_population_uses_bounded_python_host(native,tmp_path,monkeypatch):
     import tracemalloc
-    monkeypatch.setattr("emuflow.yosys_hierarchy_native.resolve_native_executable",lambda _:native)
-    monkeypatch.setattr("emuflow.yosys_hierarchy_native.require_native_schema",lambda _:None)
+    monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.resolve_native_executable",lambda _:native)
+    monkeypatch.setattr("emuflow.frontend.yosys_hierarchy_native.require_native_schema",lambda _:None)
     input_path=tmp_path/"large.json"
     with input_path.open("w") as out:
         out.write('{"modules":{"top":{"ports":{"clk":{"direction":"input","bits":[2]}},"cells":{')

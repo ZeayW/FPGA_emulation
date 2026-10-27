@@ -24,13 +24,13 @@ import tempfile
 import threading
 from unittest.mock import patch
 
-from emuflow.errors import ValidationError
-from emuflow.io import file_sha256, read_json, write_json
-from emuflow.sqlite_artifacts import immutable_sqlite_uri
-from emuflow.native_tools import native_file_generation, resolve_native_executable
-from emuflow.phase6 import run_phase6
-from emuflow.split_netlist_storage import open_split_netlists_sqlite
-from emuflow.stage_metrics import _tree_rss_kib
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import file_sha256, read_json, write_json
+from emuflow.storage.sqlite_artifacts import immutable_sqlite_uri
+from emuflow.common.native_tools import native_file_generation, resolve_native_executable
+from emuflow.transport.phase6 import run_phase6
+from emuflow.transport.split_netlist_storage import open_split_netlists_sqlite
+from emuflow.common.stage_metrics import _tree_rss_kib
 
 
 def workspace_bytes(workspace):
@@ -436,7 +436,7 @@ def qualify(request_path: Path, result_path: Path):
             )
         )
         stack.enter_context(patch.object(tempfile, "tempdir", str(scratch)))
-        from emuflow import phase6_native
+        from emuflow.transport import phase6_native
         original_stage=phase6_native.run_native_phase6
 
         def capture_stage(*args, **kwargs):
@@ -470,8 +470,8 @@ def qualify(request_path: Path, result_path: Path):
                     clock_periods=clocks,
                 )
             else:
-                from emuflow.phase6_native import prepare_compile_policy
-                from emuflow.tool_runtime import NativeToolProcess
+                from emuflow.transport.phase6_native import prepare_compile_policy
+                from emuflow.common.tool_runtime import NativeToolProcess
 
                 with tempfile.TemporaryDirectory(prefix="native-compile-", dir=scratch) as temporary:
                     policy = prepare_compile_policy(Path(temporary) / "policy",

@@ -3,10 +3,10 @@ import unittest
 from pathlib import Path
 
 from emuflow_tools.contest_iccad2019 import evaluate_iccad2019_solution, import_iccad2019_instance, materialize_iccad2019_rtl_boarddb
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
-from emuflow.phase4 import run_phase4
-from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
+from emuflow.routing.phase4 import run_phase4
+from emuflow.scheduling.timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from tests.native_build import tlr_router
 
 

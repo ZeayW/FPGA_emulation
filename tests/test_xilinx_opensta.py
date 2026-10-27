@@ -8,19 +8,19 @@ from pathlib import Path
 
 import pytest
 
-import emuflow.xilinx_opensta as xilinx_opensta
-import emuflow.xilinx_timing as xilinx_timing
-from emuflow.errors import ValidationError
-from emuflow.opensta import render_opensta_liberty
-from emuflow.xilinx_opensta import (
+import emuflow.timing.xilinx_opensta as xilinx_opensta
+import emuflow.timing.xilinx_timing as xilinx_timing
+from emuflow.common.errors import ValidationError
+from emuflow.timing.opensta import render_opensta_liberty
+from emuflow.timing.xilinx_opensta import (
     build_xilinx_routed_opensta_indexed_inputs,
     run_xilinx_routed_opensta,
     validate_xilinx_routed_opensta_summary,
 )
 from tests.xilinx_opensta_reference import build_xilinx_routed_opensta_inputs
-from emuflow.ir import EmuIR
-from emuflow.xilinx_netlist import emit_xilinx_mapped_index
-from emuflow.yosys import import_yosys_json
+from emuflow.ir.ir import EmuIR
+from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index
+from emuflow.frontend.yosys import import_yosys_json
 
 
 def _sha(path: Path) -> str:
@@ -411,7 +411,7 @@ def test_routed_opensta_stages_directly_from_mapped_sqlite(tmp_path):
 
 
 def test_typed_routed_connectivity_matches_independent_graph_oracle(tmp_path):
-    from emuflow.xilinx_netlist import IndexedXilinxMappedNetlist
+    from emuflow.physical.xilinx_netlist import IndexedXilinxMappedNetlist
     mapped, timing = _indexed_routed_fixture(tmp_path)
     routed = tmp_path / "routed.emuir.sqlite"
     model, _metadata = build_xilinx_routed_opensta_indexed_inputs(mapped, timing, routed, clocks={"clk": 10.0})
@@ -457,7 +457,7 @@ def test_real_opensta_accounts_for_each_inserted_route_delay(tmp_path, inverted)
         original["summary"]["maximum_route_delay_ns"] = delay
         timing.write_text(json.dumps(original))
         summary = tmp_path / f"summary-{index}.json"
-        with patch("emuflow.routed_opensta_native._TimingCells.items", side_effect=AssertionError("Python delay model expansion")):
+        with patch("emuflow.timing.routed_opensta_native._TimingCells.items", side_effect=AssertionError("Python delay model expansion")):
             run_xilinx_routed_opensta(mapped, timing, tmp_path / f"paths-{index}.json", summary,
                                      clocks={"clk": 0.1}, executable=os.environ["EMUFLOW_TEST_OPENSTA"])
         results.append(json.loads(summary.read_text())["qor"])
@@ -465,7 +465,7 @@ def test_real_opensta_accounts_for_each_inserted_route_delay(tmp_path, inverted)
 
 
 def test_typed_staging_transform_owns_pin_roles_bits_and_constants(tmp_path):
-    from emuflow.yosys import import_yosys_json_indexed
+    from emuflow.frontend.yosys import import_yosys_json_indexed
     mapped, _timing = _indexed_routed_fixture(tmp_path)
     output = tmp_path / "transformed.emuir.sqlite"
     def transform(connection, *_):

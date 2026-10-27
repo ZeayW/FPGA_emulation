@@ -1,9 +1,9 @@
 """Bounded independent resource arithmetic for native partition qualification."""
 import math
-from emuflow.errors import ValidationError
-from emuflow.partition import TRANSPORTED_CUT_CLASSES, summarize_balance_observation
-from emuflow.partition_limits import planning_resource_capacities, strict_balance_limits
-from emuflow.resources import RESOURCE_FIELDS
+from emuflow.common.errors import ValidationError
+from emuflow.partition.partition import TRANSPORTED_CUT_CLASSES, summarize_balance_observation
+from emuflow.partition.partition_limits import planning_resource_capacities, strict_balance_limits
+from emuflow.ir.resources import RESOURCE_FIELDS
 from tests.partition_views import ClusterColumns
 
 

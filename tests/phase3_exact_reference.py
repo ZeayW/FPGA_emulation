@@ -2,9 +2,9 @@
 from array import array
 from pathlib import Path
 from typing import Mapping, Any
-from emuflow.errors import ValidationError
-from emuflow.phase3_exact_limits import STATIC_EXACT_CAPTURE_BIT_MAX_BITS
-from emuflow.phase3_exact_binary import (_load_manifest, _read_nets, _SectionReader, _section, _U32,
+from emuflow.common.errors import ValidationError
+from emuflow.partition.phase3_exact_limits import STATIC_EXACT_CAPTURE_BIT_MAX_BITS
+from emuflow.partition.phase3_exact_binary import (_load_manifest, _read_nets, _SectionReader, _section, _U32,
     _iter_captures, _iter_segments, _number, _MISSING, iter_phase3_exact_node_sources)
 
 

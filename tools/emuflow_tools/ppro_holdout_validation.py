@@ -10,13 +10,13 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
 from .benchmark import timing_io_sha256
-from emuflow.emuir_compact import is_compact_emuir, source_metadata
-from emuflow.emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
-from emuflow.ir import EmuIR
-from emuflow.multi_fpga_flow import validate_multi_fpga_flow_bundle
-from emuflow.platform import Platform
+from emuflow.ir.emuir_compact import is_compact_emuir, source_metadata
+from emuflow.ir.emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
+from emuflow.ir.ir import EmuIR
+from emuflow.flow.multi_fpga_flow import validate_multi_fpga_flow_bundle
+from emuflow.platform.platform import Platform
 from .ppro_blackbox_application import (
     APPLICATION_HOLDOUT_GENERATOR_ID,
     benchmark_rtl_identity,

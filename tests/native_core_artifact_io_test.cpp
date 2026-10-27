@@ -12,13 +12,13 @@
 #include <unistd.h>
 #endif
 
-#include "emuflow_core/artifact_io.hpp"
-#include "emuflow_core/hash.hpp"
-#include "emuflow_core/sqlite.hpp"
-#include "emuflow_core/store.hpp"
-#include "emuflow_core/json_record.hpp"
+#include "common/artifact_io.hpp"
+#include "common/hash.hpp"
+#include "storage/sqlite.hpp"
+#include "storage/store.hpp"
+#include "common/json_record.hpp"
 #include <set>
-#include "emuflow_core/stage_runtime.hpp"
+#include "common/stage_runtime.hpp"
 
 namespace {
 struct CellTag {};

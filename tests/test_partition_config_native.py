@@ -15,13 +15,13 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.emuir_compact import write_compact_emuir
-from emuflow.errors import ValidationError
-from emuflow.ir import EmuIR
+from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow.common.errors import ValidationError
+from emuflow.ir.ir import EmuIR
 from tests.native_partition_facts import (normalize_partition_constraints)
-from emuflow.partition_ir import load_partition_ir
-from emuflow.platform import Platform, FpgaNode, BoardLink
-from emuflow.resources import RESOURCE_FIELDS
+from emuflow.partition.partition_ir import load_partition_ir
+from emuflow.platform.platform import Platform, FpgaNode, BoardLink
+from emuflow.ir.resources import RESOURCE_FIELDS
 from tests.native_build import emuflow_native
 from tests import partition_pressure_fixture as reference_fixture
 

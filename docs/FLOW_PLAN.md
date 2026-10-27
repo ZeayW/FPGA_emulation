@@ -251,7 +251,7 @@ SQLite handles and circuit-sized Python containers do not cross it.
 
 | Contract | Shared owner | Required behavior |
 | --- | --- | --- |
-| Build closure | `libemuflow_core`, `emuflow_core/sources.txt` | CMake, native fixtures and thin runtime deployment consume one checked source manifest; migrated kernels have one executable and implementation owner. |
+| Build closure | `libemuflow_core`, `src/core/sources.txt` | CMake, native fixtures and thin runtime deployment consume one checked source manifest; migrated kernels have one executable and implementation owner. |
 | Schema and source binding | `SchemaRegistry`, `ArtifactRef`, `SqliteStore` | Explicit versions, registered logical envelopes, immutable generations and mixed-source rejection; bounded metadata checks rather than integrity scans or recounts. |
 | Identity and order | `ArtifactScope`, `ArtifactId`, typed views | Cell/net/path/endpoint/FPGA/link identities retain their artifact namespace. Route source sequence and canonical net order are distinct coordinates. |
 | Storage and publication | SQLite connection/statement leases, `SqliteArtifactWriter`, `AtomicBinaryWriter` | Last borrowers retain connections and private staging. Close connections before retirement; reject active transactions/statements, input aliases and changed sources before atomic publication. |
@@ -325,7 +325,7 @@ paired source artifact; equal integers never prove a cross-store identity.
 publication facilities. ScheduleStore has one installed storage contract, v4;
 older storage readers, Python snapshot publication and native version aliases
 are retired. Cluster catalog, Assignment and ScheduleStore DDL each have one canonical SQL owner
-under `src/emuflow/data/schema`; native headers are generated from those files,
+under `src/python/emuflow/data/schema`; native headers are generated from those files,
 and bounded test snapshots use the same SQL. Logical and child-relation version
 numbers remain independent of the storage envelope. Candidate construction, primary clustering and PATRON
 joins borrow the existing `EmuirView` store, sharing its source connection/cache

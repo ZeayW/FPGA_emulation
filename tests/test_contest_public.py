@@ -19,8 +19,8 @@ from emuflow_tools.contest_public import (
 )
 from emuflow_tools.contest_validation_matrix import canonical_matrix_sha256
 from emuflow_tools.cli import main
-from emuflow.errors import ValidationError
-from emuflow.io import read_json, write_json
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json, write_json
 
 
 class PublicContestFetchTest(unittest.TestCase):

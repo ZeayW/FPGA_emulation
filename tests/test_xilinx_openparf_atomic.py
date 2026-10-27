@@ -15,11 +15,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
-from emuflow.architecture import ArchitectureDB
-from emuflow.errors import ImportError, ValidationError
-import emuflow.xilinx_openparf_atomic as atomic_adapter
-from emuflow.yosys import import_yosys_json
-from emuflow.xilinx_openparf_atomic import (
+from emuflow.platform.architecture import ArchitectureDB
+from emuflow.common.errors import ImportError, ValidationError
+import emuflow.physical.openparf.xilinx_openparf_atomic as atomic_adapter
+from emuflow.frontend.yosys import import_yosys_json
+from emuflow.physical.openparf.xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_MANIFEST_SCHEMA,
     OPENPARF_ATOMIC_PLACEMENT_DATABASE_SCHEMA,
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
@@ -35,12 +35,12 @@ from emuflow.xilinx_openparf_atomic import (
     materialize_xilinx_openparf_atomic_source,
     read_xilinx_openparf_atomic_name_map,
 )
-from emuflow.xilinx_openparf_source_storage import (
+from emuflow.physical.openparf.xilinx_openparf_source_storage import (
     OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA,
 )
-from emuflow.xilinx_packing import validate_xilinx_packing
+from emuflow.physical.xilinx_packing import validate_xilinx_packing
 from tests.xilinx_site_reference import pack_xilinx_sites
-from emuflow.xilinx_placement import validate_xilinx_placement
+from emuflow.physical.xilinx_placement import validate_xilinx_placement
 from tests.openparf_runtime_fixture import (
     write_openparf_hardblock_cascade_fixture,
     write_openparf_ramb18_fixture,
@@ -1548,7 +1548,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 return real_replace(source, destination)
 
             with mock.patch(
-                "emuflow.xilinx_openparf_atomic.os.replace",
+                "emuflow.physical.openparf.xilinx_openparf_atomic.os.replace",
                 side_effect=fail_selector,
             ):
                 with self.assertRaisesRegex(OSError, "injected"):
@@ -2210,10 +2210,10 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             }}
             output = root / "output"
             with mock.patch(
-                "emuflow.xilinx_openparf_atomic.load_xilinx_native_device_constraints",
+                "emuflow.physical.openparf.xilinx_openparf_atomic.load_xilinx_native_device_constraints",
                 return_value=(native, {"status": "pass"}),
             ), mock.patch(
-                "emuflow.xilinx_openparf_atomic.require_xilinx_native_constraint_capability"
+                "emuflow.physical.openparf.xilinx_openparf_atomic.require_xilinx_native_constraint_capability"
             ):
                 manifest = export_xilinx_openparf_atomic(
                     mapped, packed, architecture, output,
@@ -2288,10 +2288,10 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             placement = output / "ramb18.pl"
             placement.write_text("\n".join(rows) + "\n", encoding="utf-8")
             with mock.patch(
-                "emuflow.xilinx_openparf_atomic.load_xilinx_native_device_constraints",
+                "emuflow.physical.openparf.xilinx_openparf_atomic.load_xilinx_native_device_constraints",
                 return_value=(native, {"status": "pass"}),
             ), mock.patch(
-                "emuflow.xilinx_openparf_atomic.require_xilinx_native_constraint_capability"
+                "emuflow.physical.openparf.xilinx_openparf_atomic.require_xilinx_native_constraint_capability"
             ):
                 certificate = validate_xilinx_openparf_atomic_placement(
                     placement, output / "name_map.json", mapped, architecture,
@@ -2424,7 +2424,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             ]) + "\n", encoding="utf-8")
             mapped_value = json.loads(mapped.read_text(encoding="utf-8"))
             with mock.patch(
-                "emuflow.xilinx_openparf_atomic.build_xilinx_physical_macro_contract",
+                "emuflow.physical.openparf.xilinx_openparf_atomic.build_xilinx_physical_macro_contract",
                 wraps=atomic_adapter.build_xilinx_physical_macro_contract,
             ) as build_macro_contract:
                 certificate = validate_xilinx_openparf_atomic_placement(
@@ -2630,13 +2630,13 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 return placement
 
             with mock.patch(
-                "emuflow.xilinx_openparf_atomic.validate_openparf_runtime",
+                "emuflow.physical.openparf.xilinx_openparf_atomic.validate_openparf_runtime",
                 return_value={
                     "status": "pass", "installation": "contract-fixture",
                     "python": "contract-fixture",
                 },
             ), mock.patch(
-                "emuflow.xilinx_openparf_atomic.run_openparf",
+                "emuflow.physical.openparf.xilinx_openparf_atomic.run_openparf",
                 side_effect=fake_run,
             ) as run_openparf:
                 report = run_xilinx_openparf_atomic_qualification(
@@ -2696,7 +2696,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 encoding="utf-8",
             )
             with mock.patch(
-                "emuflow.xilinx_openparf_name_map_storage."
+                "emuflow.physical.openparf.xilinx_openparf_name_map_storage."
                 "_AtomSequence.__iter__",
                 side_effect=AssertionError("atom sequence was materialized"),
             ):
@@ -2757,10 +2757,10 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                 return descriptor, path
 
             with mock.patch(
-                "emuflow.xilinx_openparf_atomic.tempfile.mkstemp",
+                "emuflow.physical.openparf.xilinx_openparf_atomic.tempfile.mkstemp",
                 side_effect=tracked_mkstemp,
             ), mock.patch(
-                "emuflow.xilinx_openparf_atomic."
+                "emuflow.physical.openparf.xilinx_openparf_atomic."
                 "load_xilinx_openparf_atomic_sites",
                 side_effect=ValidationError("injected site failure"),
             ):
@@ -2930,10 +2930,10 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             }}
             output = root / "output"
             with mock.patch(
-                "emuflow.xilinx_openparf_atomic.load_xilinx_native_device_constraints",
+                "emuflow.physical.openparf.xilinx_openparf_atomic.load_xilinx_native_device_constraints",
                 return_value=(native, {"status": "pass"}),
             ), mock.patch(
-                "emuflow.xilinx_openparf_atomic.require_xilinx_native_constraint_capability"
+                "emuflow.physical.openparf.xilinx_openparf_atomic.require_xilinx_native_constraint_capability"
             ):
                 report = export_xilinx_openparf_atomic(
                     mapped, packed, architecture, output,

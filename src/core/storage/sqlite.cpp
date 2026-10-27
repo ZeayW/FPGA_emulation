@@ -1,0 +1,278 @@
+#include "storage/sqlite.hpp"
+#include "common/stage_runtime.hpp"
+
+#include <filesystem>
+#include <limits>
+#include <stdexcept>
+#include <utility>
+#include <vector>
+
+#include <sqlite3.h>
+
+namespace emuflow::core {
+struct SqliteConnection {
+  sqlite3* database = nullptr;
+  std::vector<std::shared_ptr<void>> owners;
+  ~SqliteConnection() { if (database) sqlite3_close_v2(database); }
+};
+namespace {
+
+[[noreturn]] void ThrowSqlite(sqlite3* database, const std::string& context,
+                              int code) {
+  const char* detail = database == nullptr ? sqlite3_errstr(code)
+                                            : sqlite3_errmsg(database);
+  const auto base=code&255;
+  const auto error=(base==SQLITE_FULL || base==SQLITE_IOERR || base==SQLITE_READONLY || base==SQLITE_BUSY)
+      ? ErrorCode::kPublicationFailed : base==SQLITE_NOMEM ? ErrorCode::kExecutionFailed : ErrorCode::kInvalidArtifact;
+  throw StageError(error,context+": "+detail);
+}
+
+void RequireOk(sqlite3* database, int code, const std::string& context) {
+  if (code != SQLITE_OK) ThrowSqlite(database, context, code);
+}
+
+}  // namespace
+
+SqliteStatement::SqliteStatement(sqlite3_stmt* statement,std::shared_ptr<SqliteConnection> connection)
+    : statement_(statement),connection_(std::move(connection)) {}
+
+SqliteStatement::~SqliteStatement() {
+  if (statement_ != nullptr) sqlite3_finalize(statement_);
+}
+
+SqliteStatement::SqliteStatement(SqliteStatement&& other) noexcept
+    : statement_(std::exchange(other.statement_, nullptr)),connection_(std::move(other.connection_)) {}
+
+SqliteStatement& SqliteStatement::operator=(SqliteStatement&& other) noexcept {
+  if (this == &other) return *this;
+  if (statement_ != nullptr) sqlite3_finalize(statement_);
+  statement_ = std::exchange(other.statement_, nullptr);
+  connection_ = std::move(other.connection_);
+  return *this;
+}
+
+void SqliteStatement::BindInteger(int index, std::int64_t value) {
+  const int code = sqlite3_bind_int64(statement_, index, value);
+  if (code != SQLITE_OK) ThrowSqlite(sqlite3_db_handle(statement_),
+                                    "cannot bind SQLite integer", code);
+}
+
+void SqliteStatement::BindReal(int index, double value) {
+  const int code = sqlite3_bind_double(statement_, index, value);
+  if (code != SQLITE_OK) ThrowSqlite(sqlite3_db_handle(statement_),
+                                    "cannot bind SQLite real", code);
+}
+
+void SqliteStatement::BindText(int index, const std::string& value) {
+  if (value.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+    throw StageError(ErrorCode::kInvalidRequest,"SQLite text binding is too large");
+  }
+  const int code = sqlite3_bind_text(statement_, index, value.data(),
+                                     static_cast<int>(value.size()),
+                                     SQLITE_TRANSIENT);
+  if (code != SQLITE_OK) ThrowSqlite(sqlite3_db_handle(statement_),
+                                    "cannot bind SQLite text", code);
+}
+
+void SqliteStatement::BindBlob(int index, const void* data, std::size_t size) {
+  if (size > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+    throw StageError(ErrorCode::kInvalidRequest,"SQLite blob binding is too large");
+  }
+  static const unsigned char empty = 0;
+  const void* payload = size == 0 ? static_cast<const void*>(&empty) : data;
+  const int code = sqlite3_bind_blob(statement_, index, payload,
+                                     static_cast<int>(size), SQLITE_TRANSIENT);
+  if (code != SQLITE_OK) ThrowSqlite(sqlite3_db_handle(statement_),
+                                    "cannot bind SQLite blob", code);
+}
+
+void SqliteStatement::BindNull(int index) {
+  const int code = sqlite3_bind_null(statement_, index);
+  if (code != SQLITE_OK) ThrowSqlite(sqlite3_db_handle(statement_),
+                                    "cannot bind SQLite null", code);
+}
+
+void SqliteStatement::Execute() {
+  const int code = sqlite3_step(statement_);
+  if (code != SQLITE_DONE) ThrowSqlite(sqlite3_db_handle(statement_),
+                                      "cannot execute SQLite statement", code);
+  Reset();
+}
+
+bool SqliteStatement::Step() {
+  const int code = sqlite3_step(statement_);
+  if (code == SQLITE_ROW) return true;
+  if (code == SQLITE_DONE) return false;
+  ThrowSqlite(sqlite3_db_handle(statement_), "cannot step SQLite statement",
+              code);
+}
+
+void SqliteStatement::Reset() {
+  sqlite3* database = sqlite3_db_handle(statement_);
+  RequireOk(database, sqlite3_reset(statement_), "cannot reset SQLite statement");
+  RequireOk(database, sqlite3_clear_bindings(statement_),
+            "cannot clear SQLite bindings");
+}
+
+std::int64_t SqliteStatement::Integer(int column) const {
+  return sqlite3_column_int64(statement_, column);
+}
+
+std::int64_t SqliteStatement::TypedInteger(int column) const {
+  if (sqlite3_column_type(statement_, column) != SQLITE_INTEGER)
+    throw StageError(ErrorCode::kInvalidArtifact,"SQLite record has invalid integer");
+  return Integer(column);
+}
+
+std::string SqliteStatement::TypedText(int column) const {
+  if (sqlite3_column_type(statement_, column) != SQLITE_TEXT)
+    throw StageError(ErrorCode::kInvalidArtifact,"SQLite record has invalid text");
+  return Text(column);
+}
+
+bool SqliteStatement::IsNull(int column) const {
+  return sqlite3_column_type(statement_, column) == SQLITE_NULL;
+}
+
+double SqliteStatement::TypedReal(int column) const {
+  const auto type=sqlite3_column_type(statement_,column);
+  if(type!=SQLITE_INTEGER && type!=SQLITE_FLOAT)
+    throw StageError(ErrorCode::kInvalidArtifact,"SQLite record has invalid real number");
+  return Real(column);
+}
+
+double SqliteStatement::Real(int column) const {
+  return sqlite3_column_double(statement_, column);
+}
+
+std::string SqliteStatement::Blob(int column) const {
+  const void* value = sqlite3_column_blob(statement_, column);
+  const int size = sqlite3_column_bytes(statement_, column);
+  return value == nullptr ? std::string()
+                          : std::string(static_cast<const char*>(value), size);
+}
+
+std::string SqliteStatement::Text(int column) const {
+  const unsigned char* value = sqlite3_column_text(statement_, column);
+  const int size = sqlite3_column_bytes(statement_, column);
+  return value == nullptr ? std::string()
+                          : std::string(reinterpret_cast<const char*>(value),
+                                        static_cast<std::size_t>(size));
+}
+
+std::string SqliteFilePath(const std::string& path_or_uri) {
+  if (path_or_uri.compare(0, 5, "file:") != 0) return path_or_uri;
+  sqlite3* database = nullptr;
+  const int code = sqlite3_open_v2(path_or_uri.c_str(), &database,
+                                 SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nullptr);
+  const char* name = database ? sqlite3_db_filename(database, "main") : nullptr;
+  const std::string result = name ? name : "";
+  const std::string detail = database ? sqlite3_errmsg(database) : sqlite3_errstr(code);
+  if (database) sqlite3_close(database);
+  if (code != SQLITE_OK || result.empty())
+    throw StageError(ErrorCode::kInvalidRequest,"cannot resolve SQLite file URI: " + detail);
+  return result;
+}
+
+std::string SqliteImmutableUri(const std::string& path) {
+  std::string filename = "file:";
+  for (unsigned char c : std::filesystem::absolute(path).string()) {
+    if (c == '%' || c == '?' || c == '#') {
+      filename += '%'; filename += "0123456789ABCDEF"[c >> 4];
+      filename += "0123456789ABCDEF"[c & 15];
+    } else filename += static_cast<char>(c);
+  }
+  return filename + "?mode=ro&immutable=1";
+}
+
+SqliteDatabase::SqliteDatabase(const std::string& path, Mode mode) {
+  if (mode == Mode::kCreateExclusive && path.rfind("file:",0)==0)
+    throw StageError(ErrorCode::kInvalidRequest,"SQLite create targets require filesystem paths, not URIs");
+  if (mode == Mode::kCreateExclusive && std::filesystem::exists(path)) {
+    throw StageError(ErrorCode::kPublicationFailed,"refusing to replace an existing SQLite artifact");
+  }
+  int flags = mode == Mode::kCreateExclusive
+                        ? SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE |
+                              SQLITE_OPEN_NOMUTEX
+                        : SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX;
+  // ATTACH URI handling is a connection property, including on write stores.
+  // Never depend on the SQLite build's process-wide URI default.
+  flags |= SQLITE_OPEN_URI;
+  std::string filename = path;
+  if (mode == Mode::kImmutableReadOnly) {
+    filename = SqliteImmutableUri(path);
+    flags |= SQLITE_OPEN_URI;
+  }
+  const int code = sqlite3_open_v2(filename.c_str(), &database_, flags, nullptr);
+  if (code != SQLITE_OK) {
+    sqlite3* failed = database_;
+    database_ = nullptr;
+    std::string detail = failed == nullptr ? sqlite3_errstr(code)
+                                            : sqlite3_errmsg(failed);
+    if (failed != nullptr) sqlite3_close(failed);
+    throw StageError(ErrorCode::kMissingArtifact,"cannot open SQLite artifact: " + detail);
+  }
+  sqlite3_extended_result_codes(database_, 1);
+  connection_=std::make_shared<SqliteConnection>();
+  connection_->database=database_;
+}
+
+SqliteDatabase::~SqliteDatabase() = default;
+
+void SqliteDatabase::Execute(const std::string& sql) {
+  if (!database_) throw StageError(ErrorCode::kInvalidRequest,"SQLite artifact is closed");
+  char* detail = nullptr;
+  const int code = sqlite3_exec(database_, sql.c_str(), nullptr, nullptr, &detail);
+  if (code == SQLITE_OK) return;
+  const std::string message = detail == nullptr ? sqlite3_errmsg(database_) : detail;
+  sqlite3_free(detail);
+  throw StageError((code&255)==SQLITE_FULL || (code&255)==SQLITE_IOERR ? ErrorCode::kPublicationFailed : ErrorCode::kInvalidArtifact,"cannot execute SQLite SQL: " + message);
+}
+
+SqliteStatement SqliteDatabase::Prepare(const std::string& sql) {
+  if (!database_) throw StageError(ErrorCode::kInvalidRequest,"SQLite artifact is closed");
+  sqlite3_stmt* statement = nullptr;
+  const int code = sqlite3_prepare_v2(database_, sql.c_str(),
+                                      static_cast<int>(sql.size()), &statement,
+                                      nullptr);
+  if (code != SQLITE_OK) ThrowSqlite(database_, "cannot prepare SQLite SQL", code);
+  return SqliteStatement(statement,connection_);
+}
+
+void SqliteDatabase::Close() {
+  if (database_ == nullptr) return;
+  const int code = sqlite3_close(database_);
+  if (code != SQLITE_OK) ThrowSqlite(database_, "cannot close SQLite artifact", code);
+  connection_->database=nullptr;
+  database_ = nullptr;
+}
+void SqliteDatabase::KeepAlive(std::shared_ptr<void> owner) {
+  if (!database_) throw StageError(ErrorCode::kInvalidRequest,"SQLite artifact is closed");
+  connection_->owners.push_back(std::move(owner));
+}
+bool SqliteDatabase::InTransaction() const {
+  if (!database_) throw StageError(ErrorCode::kInvalidRequest,"SQLite artifact is closed");
+  return sqlite3_get_autocommit(database_)==0;
+}
+
+SqliteTransaction::SqliteTransaction(SqliteDatabase& database, Mode mode)
+    : database_(&database) {
+  database_->Execute(mode==Mode::kDeferred?"BEGIN":"BEGIN IMMEDIATE");
+}
+
+SqliteTransaction::~SqliteTransaction() {
+  if (!committed_ && database_ != nullptr) {
+    try {
+      database_->Execute("ROLLBACK");
+    } catch (...) {
+    }
+  }
+}
+
+void SqliteTransaction::Commit() {
+  if (committed_) throw StageError(ErrorCode::kInvalidRequest,"SQLite transaction already committed");
+  database_->Execute("COMMIT");
+  committed_ = true;
+}
+
+}  // namespace emuflow::core

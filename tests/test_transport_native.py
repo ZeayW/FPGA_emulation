@@ -8,10 +8,10 @@ import shutil
 import subprocess
 import pytest
 
-from emuflow.transport_storage import write_transport_storage
+from emuflow.transport.transport_storage import write_transport_storage
 from tests.virtual_anchor_fixture import expected_anchor_xdc
-from emuflow.runtime import build_virtual_runtime,virtual_runtime_controller_to_systemverilog
-from emuflow.virtual_board import build_virtual_board
+from emuflow.transport.runtime import build_virtual_runtime,virtual_runtime_controller_to_systemverilog
+from emuflow.transport.virtual_board import build_virtual_board
 from tests.virtual_binding_fixture import binding_text
 from tests.transport_reference import write_transport_storage as reference,write_transport_systemverilog
 from tests.test_split_overlay_native import owners
@@ -55,7 +55,7 @@ def test_native_hop_owner_matches_every_record_and_streamed_rtl(owners,tmp_path)
 
 
 def test_native_transport_joins_the_original_chimew_lane_owner(owners,tmp_path):
-    from emuflow.pin_plan_storage import write_pin_plan_storage
+    from emuflow.transport.pin_plan_storage import write_pin_plan_storage
     case,source,assignment,schedule=owners
     widths={link.id:link.transport_bits_per_cycle_per_direction for link in case.platform.links}
     budgets={(r['link'],r['from'],r['to']):r for r in schedule.get('bank_allocations',[])}
@@ -79,10 +79,10 @@ def test_native_transport_joins_the_original_chimew_lane_owner(owners,tmp_path):
 
 @pytest.mark.parametrize('boundary',['producer','independent-audit'])
 def test_transport_preserves_phase5_direction_banks_after_pin_remapping(owners,tmp_path,boundary):
-    from emuflow.errors import ValidationError
-    from emuflow.native_tools import native_file_generation
-    from emuflow.pin_plan_storage import write_pin_plan_storage
-    from emuflow.pin_planning import validate_bank_pin_assignment
+    from emuflow.common.errors import ValidationError
+    from emuflow.common.native_tools import native_file_generation
+    from emuflow.transport.pin_plan_storage import write_pin_plan_storage
+    from emuflow.transport.pin_planning import validate_bank_pin_assignment
 
     case,source,assignment,schedule=owners
     if not any(link.bank_count is not None for link in case.platform.links):
@@ -134,10 +134,10 @@ def test_transport_preserves_phase5_direction_banks_after_pin_remapping(owners,t
 from tests.test_phase6_virtual_board import inputs as board_inputs
 
 def test_native_fixed_pin_binding_and_all_engine_inputs_match(board_inputs,tmp_path):
-    from emuflow.ir import EmuIR
-    from emuflow.platform import Platform
+    from emuflow.ir.ir import EmuIR
+    from emuflow.platform.platform import Platform
     from tests.schedule_store_fixture import write_tdm_schedule_storage
-    from emuflow.tdm_schedule_storage import read_tdm_schedule
+    from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
     value,board,assignment,schedule=board_inputs
     platform=Platform.from_dict(board)
     path=tmp_path/'assignment.sqlite';write_assignment_index_fixture(path,EmuIR(value),assignment)

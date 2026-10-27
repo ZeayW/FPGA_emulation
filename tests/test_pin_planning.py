@@ -8,21 +8,21 @@ from pathlib import Path
 from unittest import mock
 
 
-from emuflow.errors import EmuFlowError, ValidationError
-from emuflow.pin_plan_storage import (
+from emuflow.common.errors import EmuFlowError, ValidationError
+from emuflow.transport.pin_plan_storage import (
     PinPlanEntrySequence,
     write_pin_plan_storage,
 )
-from emuflow.position_hints_storage import (
+from emuflow.transport.position_hints_storage import (
     PositionHintEntrySequence,
     write_position_hints_storage,
 )
-from emuflow.pin_planning import (
+from emuflow.transport.pin_planning import (
     SIGNAL_POSITION_HINTS_SCHEMA,
     validate_pin_plan,
 )
-from emuflow.platform import Platform
-from emuflow.tdm_schedule_storage import (
+from emuflow.platform.platform import Platform
+from emuflow.scheduling.tdm_schedule_storage import (
     ScheduleRecordSequence,
     TDM_SCHEDULE_STORAGE_SCHEMA,
     TypedScheduleEntrySequence,
@@ -107,7 +107,7 @@ class ChimewPinContractTest(unittest.TestCase):
 
 
     def test_retired_planner_entrypoints_are_rejected_before_loading_inputs(self):
-        from emuflow.cli import _build_parser
+        from emuflow.flow.cli import _build_parser
         parser = _build_parser()
         with self.assertRaises(SystemExit):
             parser.parse_args(["pin-plan", "build"])

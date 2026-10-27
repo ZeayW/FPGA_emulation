@@ -4,13 +4,13 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.cli import _build_parser
-from emuflow.errors import ValidationError
-from emuflow.multi_fpga_flow import run_multi_fpga_flow
-from emuflow.native_compile import _request
-from emuflow.partition import (DEFAULT_PARTITION_CUT_MODE, DEFAULT_PATRON_ALGORITHM_VERSION)
-from emuflow.phase3 import run_phase3
-from emuflow.phase3_native import write_request
+from emuflow.flow.cli import _build_parser
+from emuflow.common.errors import ValidationError
+from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
+from emuflow.flow.native_compile import _request
+from emuflow.partition.partition import (DEFAULT_PARTITION_CUT_MODE, DEFAULT_PATRON_ALGORITHM_VERSION)
+from emuflow.partition.phase3 import run_phase3
+from emuflow.partition.phase3_native import write_request
 
 
 @pytest.mark.parametrize("command", [
@@ -34,7 +34,7 @@ def test_api_and_native_request_share_the_same_defaults(tmp_path):
         assert parameters["cut_mode"].default == DEFAULT_PARTITION_CUT_MODE
         assert parameters["patron_algorithm_version"].default == DEFAULT_PATRON_ALGORITHM_VERSION
         assert "patron_flow_refinement" not in parameters
-    import emuflow.partition as retired_host
+    import emuflow.partition.partition as retired_host
     assert not hasattr(retired_host, "build_clusters")
     assert inspect.signature(write_request).parameters["patron_max_moves"].default is None
     assert "flow_refinement" not in inspect.signature(write_request).parameters
@@ -45,7 +45,7 @@ def test_api_and_native_request_share_the_same_defaults(tmp_path):
 
 
 def test_old_cut_without_an_explicit_version_does_not_downgrade(tmp_path):
-    with patch("emuflow.partition_ir.load_partition_ir", side_effect=AssertionError("graph loaded")):
+    with patch("emuflow.partition.partition_ir.load_partition_ir", side_effect=AssertionError("graph loaded")):
         with pytest.raises(ValidationError, match="v14 requires generalized Static Exact"):
             run_phase3(tmp_path / "ir", tmp_path / "board", tmp_path / "phase3", cut_mode="sequential-only")
     assert not (tmp_path / "phase3/assignment.json").exists()

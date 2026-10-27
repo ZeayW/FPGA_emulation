@@ -8,13 +8,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow import chimew_refinement as refinement_module
-from emuflow.chimew_grouping import (
+from emuflow.transport.chimew import chimew_refinement as refinement_module
+from emuflow.transport.chimew.chimew_grouping import (
     CHIMEW_CROSSING_PROVIDER,
     CHIMEW_CROSSING_SCHEMA,
     build_chimew_initial_groups,
 )
-from emuflow.chimew_refinement import (
+from emuflow.transport.chimew.chimew_refinement import (
     CHIMEW_POSITION_PROVIDER,
     CHIMEW_POSITION_SCHEMA,
     CHIMEW_REFINEMENT_PROVIDER,
@@ -22,7 +22,7 @@ from emuflow.chimew_refinement import (
     refine_chimew_groups,
     validate_chimew_positions,
 )
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from tests.native_build import emuflow_native
 
 

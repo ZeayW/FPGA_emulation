@@ -1,3 +1,5 @@
+
+from emuflow.common.paths import DATA_ROOT
 """Small explicit Phase 3 store facts for reader and native-kernel tests.
 
 No selector transaction, rollback, legacy flow, graph construction or search is
@@ -13,10 +15,10 @@ import sqlite3
 import tempfile
 import zlib
 
-from emuflow.errors import ValidationError
-from emuflow.io import file_sha256, write_json
-from emuflow import phase3_assignment_index as index
-from emuflow.store_publication import StoreSource, require_store_sources_unchanged
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import file_sha256, write_json
+from emuflow.partition import phase3_assignment_index as index
+from emuflow.storage.store_publication import StoreSource, require_store_sources_unchanged
 
 
 def _json(value):
@@ -56,7 +58,7 @@ def assignment_selector_fixture(value, clusters_artifact, *, cut_nets_index=None
 
 def write_cluster_fixture(path, value, **_options):
     from tests.native_cluster_catalog_fixture import catalog_sources, build_native_cluster_catalog
-    from emuflow import phase3_storage as storage
+    from emuflow.partition import phase3_storage as storage
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
     rows, policy = value['clusters'], value['policy']
     if len(rows) > 65536: raise ValueError('cluster fixture exceeds bound')
@@ -83,7 +85,7 @@ def write_cluster_fixture(path, value, **_options):
             columns['eligible_nets'] = list(eligible); columns['document'] = [_json(document)]
             counts = {'clusters':len(rows),'instances':len(columns['member_names']),'eligible_nets':len(eligible)}
             with sqlite3.connect(store) as db:
-                db.executescript(f'PRAGMA application_id={storage.CLUSTERS_SQLITE_APPLICATION_ID};PRAGMA user_version=1;'+(Path(storage.__file__).parent/'data/schema/phase3_clusters.sql').read_text())
+                db.executescript(f'PRAGMA application_id={storage.CLUSTERS_SQLITE_APPLICATION_ID};PRAGMA user_version=1;'+(DATA_ROOT / 'schema/phase3_clusters.sql').read_text())
                 for name, items in sorted(columns.items()):
                     integers = name in {'member_counts','resource_counts','fixed_indices','group_counts'}
                     raw = b''.join(item.to_bytes(4,'little') if integers else len(item.encode()).to_bytes(4,'little')+item.encode() for item in items)
@@ -101,8 +103,8 @@ def write_cluster_fixture(path, value, **_options):
 
 
 def write_assignment_index_fixture(path, ir, assignment):
-    from emuflow.phase3_exact_binary import (EXACT_BINARY_ARTIFACT)
-    from emuflow.routing import static_exact_contract_from_assignment
+    from emuflow.partition.phase3_exact_binary import (EXACT_BINARY_ARTIFACT)
+    from emuflow.routing.routing import static_exact_contract_from_assignment
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
     owners = assignment['instance_assignment']
     if len(owners) > 65536: raise ValidationError('assignment fixture exceeds instance bound')
@@ -180,7 +182,7 @@ def write_current_assignment_fixture(path, ir, assignment):
 
 def cluster_column_facts(path):
     """Bounded logical column bytes for full catalog publication assertions."""
-    from emuflow.io import read_json
+    from emuflow.common.io import read_json
     path = Path(path)
     selector = read_json(path)
     with sqlite3.connect(path.with_name(selector['artifact'])) as db:

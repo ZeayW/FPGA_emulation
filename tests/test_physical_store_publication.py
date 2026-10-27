@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from tests.test_split_overlay_native import owners
 from tests.logic_identity_fixture import identity_facts
 
@@ -28,7 +28,7 @@ PYTHON_WRITER_KINDS = ("boundary_identity",)
 def producer(
     kind, path, *, generation=0, source_bindings=(), before_records=None, **options
 ):
-    module = importlib.import_module("emuflow." + kind + "_storage")
+    module = importlib.import_module("emuflow.timing." + kind + "_storage")
     if kind.startswith("boundary_"):
         fixture = importlib.import_module("tests.test_" + kind + "_storage")
         header = fixture._header()
@@ -107,7 +107,7 @@ def test_changed_input_during_record_generation_keeps_prior_publication(
         old_store_path = prior.store_path
     bindings = source.bound_store_sources()
     changed_path = source.selector_path if changed == "selector" else source.store_path
-    module = importlib.import_module("emuflow." + kind + "_storage")
+    module = importlib.import_module("emuflow.timing." + kind + "_storage")
     try:
         with patch.object(module, "publish_sqlite_store") as native:
             with pytest.raises(ValidationError, match="generation changed"):
@@ -135,7 +135,7 @@ def test_native_rejection_has_no_reference_fallback(tmp_path, kind):
     with producer(kind, output) as prior:
         old_selector, old_store = output.read_bytes(), prior.store_path.read_bytes()
         old_store_path = prior.store_path
-    module = importlib.import_module("emuflow." + kind + "_storage")
+    module = importlib.import_module("emuflow.timing." + kind + "_storage")
     with patch.object(
         module, "publish_sqlite_store", side_effect=ValidationError("native rejected")
     ):
@@ -191,7 +191,7 @@ def test_same_selector_and_hardlink_alias_rejected_before_writer_lease(tmp_path,
 def test_relocation_refuses_input_replacement_and_keeps_prior_generation(
     tmp_path, kind, when
 ):
-    module = importlib.import_module("emuflow." + kind + "_storage")
+    module = importlib.import_module("emuflow.timing." + kind + "_storage")
     output = tmp_path / "destination" / "result.json"
     with producer(kind, output) as prior:
         old_selector, old_store_path = output.read_bytes(), prior.store_path
@@ -235,13 +235,13 @@ def test_relocation_refuses_input_replacement_and_keeps_prior_generation(
 def test_atomic_source_binds_mapped_input_and_source_seal_before_consumption(
     tmp_path, when
 ):
-    from emuflow import xilinx_openparf_source_storage as source_module
-    from emuflow.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source
-    from emuflow.xilinx_netlist import (
+    from emuflow.physical.openparf import xilinx_openparf_source_storage as source_module
+    from emuflow.physical.openparf.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source
+    from emuflow.physical.xilinx_netlist import (
         emit_xilinx_mapped_index,
         open_xilinx_mapped_index,
     )
-    from emuflow.yosys import import_yosys_json
+    from emuflow.frontend.yosys import import_yosys_json
     from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 
     mapped_json, _, _ = write_openparf_runtime_fixture(tmp_path, include_hard=True)
@@ -301,10 +301,10 @@ def test_atomic_source_binds_mapped_input_and_source_seal_before_consumption(
 
 @pytest.mark.parametrize("changed", ["split-netlists-v3", "emuir-compact-v2"])
 def test_full_placement_lowering_refuses_changed_original_sources(changed, owners, tmp_path):
-    from emuflow import placement_lowering_native
-    from emuflow.split_overlay import bind_split_sources
+    from emuflow.physical import placement_lowering_native
+    from emuflow.transport.split_overlay import bind_split_sources
     from tests.test_placement_lowering_native import prepare
-    from emuflow.lowering import run_placement_ir_lowering_from_split
+    from emuflow.physical.lowering import run_placement_ir_lowering_from_split
 
     case, split, fpga, transport, logical, ir, source = prepare(owners, tmp_path)
     output = tmp_path / "native/placement.emuir.sqlite"

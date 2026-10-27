@@ -13,16 +13,16 @@ import struct
 import tempfile
 from types import SimpleNamespace
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from tests.native_column_fixture import _ClusterScratch, _ColumnOwner, _MappedColumn
-from emuflow.native_protocol import CheckedRequestWriter
-from emuflow.native_tools import native_file_generation, resolve_native_executable
-from emuflow.store_publication import StoreSource, require_store_sources_unchanged
-from emuflow.tool_runtime import NativeToolProcess
+from emuflow.common.native_protocol import CheckedRequestWriter
+from emuflow.common.native_tools import native_file_generation, resolve_native_executable
+from emuflow.storage.store_publication import StoreSource, require_store_sources_unchanged
+from emuflow.common.tool_runtime import NativeToolProcess
 
 
 def pressure_kernel_inputs(ir, platform, clusters, constraints, timing, routes, *, timing_database_path):
-    from emuflow.phase3_native import write_request
+    from emuflow.partition.phase3_native import write_request
     records = clusters['clusters']
     if getattr(records, 'native_artifact', None) is None:
         raise ValidationError('native primary artifact reference is unavailable')
@@ -46,9 +46,9 @@ def pressure_kernel_inputs(ir, platform, clusters, constraints, timing, routes, 
 
 
 def write_pressure_requests(value, root, initial, max_moves):
-    from emuflow.partition_limits import planning_resource_capacities
+    from emuflow.partition.partition_limits import planning_resource_capacities
     from tests.native_partition_core_fixture import _ownership_sources
-    from emuflow.resources import RESOURCE_FIELDS
+    from emuflow.ir.resources import RESOURCE_FIELDS
     root = Path(root)
     if value.primary_artifact is None:
         raise ValidationError('selected direct primary ownership is unavailable')

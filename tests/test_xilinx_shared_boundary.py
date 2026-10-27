@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from tests import xilinx_segment_timing_reference as timing
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 
 
 def graph():

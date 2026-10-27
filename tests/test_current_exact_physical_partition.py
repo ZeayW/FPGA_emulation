@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from tests.logic_segment_query_fixture import sources, prepare
 from tests.native_build import emuflow_native
 

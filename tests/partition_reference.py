@@ -3,14 +3,14 @@ from __future__ import annotations
 import hashlib
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
-from emuflow.errors import ValidationError
-from emuflow.ir import EmuIR
-from emuflow.platform import Platform
+from emuflow.common.errors import ValidationError
+from emuflow.ir.ir import EmuIR
+from emuflow.platform.platform import Platform
 from tests.partition_balance_fixture import active_partition_fpgas
 from tests.partition_balance_fixture import transported_cut_classes_for_clusters
 from tests.native_partition_facts import (build_partition_assignment)
-from emuflow.partition_limits import planning_resource_capacities, strict_balance_limits
-from emuflow.resources import RESOURCE_FIELDS, ResourceVector
+from emuflow.partition.partition_limits import planning_resource_capacities, strict_balance_limits
+from emuflow.ir.resources import RESOURCE_FIELDS, ResourceVector
 
 
 def _cluster_adjacency(
@@ -93,7 +93,7 @@ def _partition_hop_distances(
 ) -> Dict[str, Dict[str, Optional[int]]]:
     # Import locally because routing owns the canonical directed BoardDB graph
     # and imports the partition artifact schema at module initialization.
-    from emuflow.routing import (
+    from emuflow.routing.routing import (
         SYSTEM_ROUTE_CONSTRAINTS_SCHEMA,
         build_directed_graph,
         normalize_route_constraints,

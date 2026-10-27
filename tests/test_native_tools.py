@@ -6,8 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.errors import EmuFlowError
-from emuflow.native_tools import (
+from emuflow.common.errors import EmuFlowError
+from emuflow.common.native_tools import (
     resolve_native_executable,
     resolve_native_stage_command,
 )
@@ -131,7 +131,7 @@ class NativeToolsTest(unittest.TestCase):
                 },
                 clear=False,
             ), patch(
-                "emuflow.native_tools.REPO_ROOT", root / "empty-repo"
+                "emuflow.common.native_tools.REPO_ROOT", root / "empty-repo"
             ):
                 with self.assertRaisesRegex(
                     EmuFlowError, "in-tree emuflow-native build product"
@@ -153,21 +153,21 @@ class NativeToolsTest(unittest.TestCase):
             'unified="$runtime_dir/bin/emuflow-native"', script
         )
         self.assertIn("-DEMUFLOW_NATIVE_STAGE_LIBRARY=1", script)
-        manifest = (Path(__file__).resolve().parents[1] / "src/native/emuflow_core/sources.txt").read_text()
-        self.assertIn('emuflow_core/sources.txt', script)
+        manifest = (Path(__file__).resolve().parents[1] / "src/core/sources.txt").read_text()
+        self.assertIn('src/core/sources.txt', script)
         for source in (
-            "static_exact_analyzer.cpp",
-            "tlr_router.cpp",
-            "tdm_exact_scheduler.cpp",
-            "chimew_bank_channel_assigner.cpp",
-            "chimew_rudy.cpp",
-            "chimew_signal_grouper.cpp",
-            "chimew_position_refiner.cpp",
-            "emuflow_core/artifact_io.cpp",
-            "emuflow_core/sqlite.cpp",
+            "partition/static_exact_analyzer.cpp",
+            "routing/global_router.cpp",
+            "scheduling/exact_scheduler.cpp",
+            "transport/chimew/bank_channel_assigner.cpp",
+            "transport/chimew/rudy.cpp",
+            "transport/chimew/signal_grouper.cpp",
+            "transport/chimew/position_refiner.cpp",
+            "common/artifact_io.cpp",
+            "storage/sqlite.cpp",
         ):
             self.assertIn(source, manifest)
-        self.assertIn('emuflow_native.cpp', script)
+        self.assertIn('src/cli/main.cpp', script)
         self.assertIn('"$archive"', script)
         # Retired analyzer/Chimew shells have no main; deployment must not
         # compile a second executable from those shared kernel sources.
@@ -232,9 +232,9 @@ class NativeToolsTest(unittest.TestCase):
     def test_shared_core_build_owners_use_one_complete_manifest(self) -> None:
         from tests.native_build import _NATIVE_STAGE_SOURCES
         root = Path(__file__).resolve().parents[1]
-        expected = {str(path.relative_to(root / "src/native"))
-                    for path in (root / "src/native/emuflow_core").glob("*.cpp")}
-        self.assertTrue(expected.issubset(set(_NATIVE_STAGE_SOURCES)))
+        expected = {str(path.relative_to(root / "src/core"))
+                    for path in (root / "src/core").rglob("*.cpp")}
+        self.assertEqual(expected, set(_NATIVE_STAGE_SOURCES))
         self.assertEqual(len(_NATIVE_STAGE_SOURCES), len(set(_NATIVE_STAGE_SOURCES)))
         cmake = (root / "CMakeLists.txt").read_text()
         self.assertIn('file(STRINGS "${EMUFLOW_CORE_MANIFEST}" EMUFLOW_CORE_SOURCE_NAMES)', cmake)
@@ -252,8 +252,8 @@ class NativeToolsTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), list(_NATIVE_STAGE_SOURCES))
         with tempfile.TemporaryDirectory() as temp:
-            source = Path(temp); manifest = source / 'src/native/emuflow_core/sources.txt'
-            manifest.parent.mkdir(parents=True); (source / 'src/native/demo.cpp').write_text('')
+            source = Path(temp); manifest = source / 'src/core/sources.txt'
+            manifest.parent.mkdir(parents=True); (source / 'src/core/demo.cpp').write_text('')
             for invalid in ('demo.cpp\ndemo.cpp\n', '../escape.cpp\n', 'missing.cpp\n', '# no sources\n'):
                 with self.subTest(manifest=invalid):
                     manifest.write_text(invalid)
@@ -285,7 +285,7 @@ class NativeToolsTest(unittest.TestCase):
             unified.chmod(unified.stat().st_mode | stat.S_IXUSR)
             with patch.dict(
                 "os.environ", {"EMUFLOW_NATIVE_ROOT": str(root)}, clear=True
-            ), patch("emuflow.native_tools.REPO_ROOT", root / "missing"):
+            ), patch("emuflow.common.native_tools.REPO_ROOT", root / "missing"):
                 self.assertEqual(
                     resolve_native_stage_command(
                         "phase6", "assign-banks"
@@ -340,7 +340,7 @@ class NativeToolsTest(unittest.TestCase):
             other.write_text("#!/bin/sh\n", encoding="utf-8")
             other.chmod(other.stat().st_mode | stat.S_IXUSR)
             with patch.dict(os.environ, {"EMUFLOW_NATIVE_ROOT": str(root / "incomplete")}, clear=True), \
-                    patch("emuflow.native_tools.REPO_ROOT", root / "other"):
+                    patch("emuflow.common.native_tools.REPO_ROOT", root / "other"):
                 with self.assertRaisesRegex(EmuFlowError, "in-tree emuflow-native build product"):
                     resolve_native_stage_command("phase5", "run")
 

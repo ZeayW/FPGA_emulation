@@ -9,11 +9,11 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Mapping, Optional
 
-from emuflow.errors import ValidationError
-from emuflow.local_path_timing import (
+from emuflow.common.errors import ValidationError
+from emuflow.timing.local_path_timing import (
     path_id_set_sha256,
 )
-from emuflow.platform import Platform
+from emuflow.platform.platform import Platform
 from tests.static_exact_deadline_oracle import (
     build_static_exact_segment_deadlines,
     validate_static_exact_segment_deadlines,
@@ -21,7 +21,7 @@ from tests.static_exact_deadline_oracle import (
 from tests.tdm_timing_oracle import timing_paths as reconstruct_tdm_schedule_timing_paths
 
 
-from emuflow.physical_timing_inputs import _board_link_delay_database
+from emuflow.timing.physical_timing_inputs import _board_link_delay_database
 
 
 def _finite_number(value, context):
@@ -542,7 +542,7 @@ def build_system_timing(
         physical_summary, platform
     )
     exact_deadlines = None
-    from emuflow.tdm import (
+    from emuflow.scheduling.tdm import (
         is_fixed_slot_transport_schedule,
         is_sampled_virtual_wire_schedule,
     )

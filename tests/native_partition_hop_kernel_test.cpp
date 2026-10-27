@@ -1,5 +1,5 @@
 // Current in-process hop kernel contracts, independent of retired text ingress.
-#include "emuflow_core/partition_hops.hpp"
+#include "partition/partition_hops.hpp"
 #include <iostream>
 #include <set>
 #include <stdexcept>

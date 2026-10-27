@@ -14,13 +14,13 @@ import sys
 import time
 from pathlib import Path
 
-from emuflow.emuir_compact import source_metadata, source_instances, compact_nets, write_compact_emuir
-from emuflow.emuir_storage import _json, open_emuir_sqlite_read_only, _write_emuir_sqlite_v1
-from emuflow.indexed_timing import IndexedTimingView
-from emuflow.ir import EmuIR
-from emuflow.opensta import build_architecture_opensta_timing_model, load_timing_model, DEFAULT_TIMING_MODEL, render_opensta_liberty, run_opensta_path_database
-from emuflow.sta import write_emuir_net_map, iter_sta_path_database_paths
-from emuflow.verilog import write_mapped_verilog
+from emuflow.ir.emuir_compact import source_metadata, source_instances, compact_nets, write_compact_emuir
+from emuflow.ir.emuir_storage import _json, open_emuir_sqlite_read_only, _write_emuir_sqlite_v1
+from emuflow.timing.indexed_timing import IndexedTimingView
+from emuflow.ir.ir import EmuIR
+from emuflow.timing.opensta import build_architecture_opensta_timing_model, load_timing_model, DEFAULT_TIMING_MODEL, render_opensta_liberty, run_opensta_path_database
+from emuflow.timing.sta import write_emuir_net_map, iter_sta_path_database_paths
+from emuflow.frontend.verilog import write_mapped_verilog
 
 
 def _io():

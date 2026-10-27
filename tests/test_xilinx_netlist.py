@@ -6,13 +6,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.errors import ValidationError
-from emuflow.xilinx_netlist import (
+from emuflow.common.errors import ValidationError
+from emuflow.physical.xilinx_netlist import (
     emit_xilinx_mapped_index,
     is_xilinx_mapped_index,
     open_xilinx_mapped_index,
 )
-from emuflow.yosys import import_yosys_json
+from emuflow.frontend.yosys import import_yosys_json
 
 
 class XilinxMappedNetlistTests(unittest.TestCase):

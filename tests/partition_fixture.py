@@ -16,7 +16,7 @@ def write_fixture_solution(ir, platform_path, path, *, cut_mode="sequential-only
                            static_exact_candidate_policy="assignment-derived-acyclic-v2"):
     from tests.native_partition_facts import (build_clusters, load_partition_constraints)
     from tests.partition_reference import assign_clusters
-    from emuflow.platform import Platform
+    from emuflow.platform.platform import Platform
     if len(ir.value["instances"]) > 256:
         raise AssertionError("partition contract fixture exceeds its small-design bound")
     platform = Platform.load(platform_path)
@@ -34,8 +34,8 @@ def write_fixture_solution(ir, platform_path, path, *, cut_mode="sequential-only
 
 def run_phase3_fixture(*args, **kwargs):
     import inspect
-    from emuflow.phase3 import run_phase3
-    from emuflow.partition_ir import load_partition_ir
+    from emuflow.partition.phase3 import run_phase3
+    from emuflow.partition.partition_ir import load_partition_ir
     bound = inspect.signature(run_phase3).bind(*args, **kwargs)
     bound.apply_defaults()
     options = bound.arguments
@@ -61,13 +61,13 @@ def _fixture_initializer(target):
 
 
 def run_multi_fpga_flow_fixture(*args, **kwargs):
-    from emuflow.multi_fpga_flow import run_multi_fpga_flow
+    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
     assert kwargs["partition_provider"] == "tritonpart"
     # The .part file is generated at the phase boundary from the actual
     # frontend artifact. This unit fixture never starts OpenROAD.
     from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract
-    with tempfile.TemporaryDirectory(prefix="mock-xilinx-timing-") as timing_root, _fixture_initializer("emuflow.multi_fpga_flow"), patch(
-        "emuflow.multi_fpga_flow._resolve_partition_openroad", return_value=None
+    with tempfile.TemporaryDirectory(prefix="mock-xilinx-timing-") as timing_root, _fixture_initializer("emuflow.flow.multi_fpga_flow"), patch(
+        "emuflow.flow.multi_fpga_flow._resolve_partition_openroad", return_value=None
     ):
         if kwargs.get("architecture_timing_db") is None:
             kwargs["architecture_timing_db"] = write_mock_xilinx_timing_contract(

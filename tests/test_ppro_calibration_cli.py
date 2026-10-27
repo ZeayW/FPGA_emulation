@@ -7,7 +7,7 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from emuflow_tools.ppro_calibration_cli import _campaign_status, _parser, main
 from emuflow_tools.ppro_blackbox_provenance import runner_source_bundle
 

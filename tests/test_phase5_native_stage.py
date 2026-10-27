@@ -5,19 +5,19 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.phase5 import validate_phase5_generation
-from emuflow.phase5_native import run_native_phase5
-from emuflow.tdm import build_native_exact_schedule_request
-from emuflow.tdm_schedule_storage import read_tdm_schedule
+from emuflow.common.errors import ValidationError
+from emuflow.scheduling.phase5 import validate_phase5_generation
+from emuflow.scheduling.phase5_native import run_native_phase5
+from emuflow.scheduling.tdm import build_native_exact_schedule_request
+from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from tests.native_schedule_case import _case
 from tests.schedule_reference import build_tdm_schedule
 from tests.test_native_schedule_generation import install_runtime
 
 
 def current_case(tmp_path, affine=False, repeated=False):
-    from emuflow.io import read_json
-    from emuflow.system_route_storage import read_system_routes
+    from emuflow.common.io import read_json
+    from emuflow.routing.system_route_storage import read_system_routes
     from tests.native_route_seal_fixture import write_route_store_fixture
 
     case, legacy = _case(tmp_path, affine, repeated)
@@ -40,8 +40,8 @@ def test_whole_native_stage_matches_reference_and_has_one_production_owner(tmp_p
     expected = build_tdm_schedule(routes, case.platform)
     install_runtime(tmp_path, monkeypatch)
     output = tmp_path / "phase5"
-    with patch("emuflow.tdm_schedule_validation.validate_native_exact_schedule", side_effect=AssertionError("Python validation lifecycle")), \
-         patch("emuflow.phase5_timing_native.project_native_schedule_timing", side_effect=AssertionError("Python timing lifecycle")):
+    with patch("emuflow.scheduling.tdm_schedule_validation.validate_native_exact_schedule", side_effect=AssertionError("Python validation lifecycle")), \
+         patch("emuflow.scheduling.phase5_timing_native.project_native_schedule_timing", side_effect=AssertionError("Python timing lifecycle")):
         report = run_native_phase5(producer, output)
     assert report["phase_implementation"] == "native-exact-phase5-v1"
     assert read_tdm_schedule(output / "schedule.json", materialize=True) == expected
@@ -54,8 +54,8 @@ def test_whole_native_stage_matches_reference_and_has_one_production_owner(tmp_p
 
 @pytest.mark.parametrize("damage", ["crc", "version", "truncated", "trailing", "missing-route", "replaced-source"])
 def test_stage_request_rejection_keeps_prior_complete_generation(tmp_path, monkeypatch, damage):
-    from emuflow import phase5_native
-    from emuflow.native_protocol import CheckedRequestWriter
+    from emuflow.scheduling import phase5_native
+    from emuflow.common.native_protocol import CheckedRequestWriter
 
     case, routes, producer = current_case(tmp_path)
     install_runtime(tmp_path, monkeypatch)
@@ -109,7 +109,7 @@ def test_stage_report_preserves_unicode_and_boolean_configuration(tmp_path, monk
 
 
 def test_repeated_stage_keeps_the_published_immutable_store_generation(tmp_path, monkeypatch):
-    from emuflow.native_tools import native_file_generation
+    from emuflow.common.native_tools import native_file_generation
 
     case, routes, producer = current_case(tmp_path)
     install_runtime(tmp_path, monkeypatch)

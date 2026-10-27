@@ -9,13 +9,13 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.indexed_timing import IndexedTimingView, _TimingTypes
-from emuflow.ir import EmuIR
-from emuflow.opensta_export_native import export_opensta_inputs
-from emuflow.sta import write_emuir_net_map
-from emuflow.verilog import mapped_verilog, write_mapped_verilog
-from emuflow.yosys import import_yosys_json
+from emuflow.common.errors import ValidationError
+from emuflow.timing.indexed_timing import IndexedTimingView, _TimingTypes
+from emuflow.ir.ir import EmuIR
+from emuflow.timing.opensta_export_native import export_opensta_inputs
+from emuflow.timing.sta import write_emuir_net_map
+from emuflow.frontend.verilog import mapped_verilog, write_mapped_verilog
+from emuflow.frontend.yosys import import_yosys_json
 
 ROOT = Path(__file__).parents[1]
 
@@ -40,8 +40,8 @@ def test_combined_producer_does_not_iterate_python_graph_or_endpoints(tmp_path):
     write_emuir_net_map(path, tmp_path/"reference.tsv", _ir=ir)
     with closing(IndexedTimingView(path)) as view, \
          patch.object(IndexedTimingView, "timing_connections", side_effect=AssertionError("Python endpoints")), \
-         patch("emuflow.indexed_timing._timing_instances", side_effect=AssertionError("Python cells")), \
-         patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("Python graph")):
+         patch("emuflow.timing.indexed_timing._timing_instances", side_effect=AssertionError("Python cells")), \
+         patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("Python graph")):
         report = export_opensta_inputs(view, verilog=tmp_path/"actual.v", net_map=tmp_path/"actual.tsv")
     assert report["implementation_id"] == "native-opensta-export-v1"
     assert report["cells"] == len(ir.value["instances"])
@@ -88,7 +88,7 @@ def test_corruption_restores_previous_text_outputs(tmp_path, damage):
     }
     if damage in sql:
         with sqlite3.connect(path) as db:db.execute(sql[damage])
-    from emuflow import opensta_export_native as native
+    from emuflow.timing import opensta_export_native as native
     finish = native.CheckedRequestWriter.finish
     def corrupt(writer):
         p = Path(writer.stream.name);finish(writer);data = bytearray(p.read_bytes());data[-1] ^= 1;p.write_bytes(data)
@@ -104,7 +104,7 @@ def test_corruption_restores_previous_text_outputs(tmp_path, damage):
 
 @pytest.mark.parametrize("after", [False, True])
 def test_group_replacement_restores_both_outputs(tmp_path, after):
-    from emuflow import store_publication
+    from emuflow.storage import store_publication
     _ir, path = counter(tmp_path)
     rtl, nets = tmp_path/"timing.v", tmp_path/"nets.tsv"
     rtl.write_text("old rtl");nets.write_text("old map")
@@ -135,20 +135,20 @@ def test_direct_writers_use_one_requested_output_and_reject_foreign_policy(tmp_p
             export_opensta_inputs(view, verilog=tmp_path/"same", net_map=tmp_path/"same")
         with pytest.raises(ValidationError, match="another EmuIR"):
             write_emuir_net_map(tmp_path/"foreign.emuir.sqlite", tmp_path/"bad-map", _ir=view)
-    with patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("standalone graph load")):
+    with patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("standalone graph load")):
         write_emuir_net_map(path, tmp_path/"standalone.tsv")
     assert (tmp_path/"standalone.tsv").read_bytes() == (tmp_path/"single.tsv").read_bytes()
 
 
 def test_missing_native_export_is_rejected_before_frontend_work(tmp_path):
-    from emuflow.errors import EmuFlowError
-    from emuflow.multi_fpga_flow import run_multi_fpga_flow
+    from emuflow.common.errors import EmuFlowError
+    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
     def require(schema):
         if schema == "opensta-input-export-request-v1":
             raise EmuFlowError("missing native timing export")
-    with patch("emuflow.multi_fpga_flow._validate_mapping_timing_contract"), \
-         patch("emuflow.native_tools.require_native_schema", side_effect=require), \
-         patch("emuflow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("synthesis started")), \
+    with patch("emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract"), \
+         patch("emuflow.common.native_tools.require_native_schema", side_effect=require), \
+         patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("synthesis started")), \
          pytest.raises(EmuFlowError, match="missing native timing export"):
         run_multi_fpga_flow(sources=[tmp_path/"absent.v"], top="dut", clocks=["clk"],
                            clock_periods={"clk": 10.0}, output_dir=tmp_path/"flow")

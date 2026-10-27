@@ -7,15 +7,15 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow import chimew_rudy as rudy_module
-from emuflow.chimew_rudy import (
+from emuflow.transport.chimew import chimew_rudy as rudy_module
+from emuflow.transport.chimew.chimew_rudy import (
     CHIMEW_RUDY_INPUT_PROVIDER,
     CHIMEW_RUDY_INPUT_SCHEMA,
     CHIMEW_RUDY_PROVIDER,
     evaluate_chimew_rudy,
     validate_chimew_rudy_input,
 )
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from tests.native_build import emuflow_native
 
 

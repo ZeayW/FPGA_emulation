@@ -13,12 +13,12 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
-from emuflow.tdm import build_native_exact_schedule_request
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
+from emuflow.scheduling.tdm import build_native_exact_schedule_request
 from tests.schedule_reference import build_tdm_schedule
-from emuflow.tdm_schedule_storage import (read_tdm_schedule)
-from emuflow.system_route_storage import read_system_routes
+from emuflow.scheduling.tdm_schedule_storage import (read_tdm_schedule)
+from emuflow.routing.system_route_storage import read_system_routes
 from tests.native_route_seal_fixture import write_route_store_fixture
 from tests.native_build import emuflow_native, native_json_record
 from tests.native_schedule_case import _case
@@ -61,7 +61,7 @@ def test_complete_native_producer_matches_reference_records_certificates_and_has
     expected_manifest = write_tdm_schedule_storage(tmp_path / "reference/schedule.json", reference)
     install_runtime(tmp_path, monkeypatch)
     calls = []
-    from emuflow.tool_runtime import NativeToolProcess
+    from emuflow.common.tool_runtime import NativeToolProcess
 
     def record(executable, command, **kwargs):
         calls.append(command)
@@ -71,10 +71,10 @@ def test_complete_native_producer_matches_reference_records_certificates_and_has
 
     with patch.object(type(routes["routes"]), "iter_native_exact_metadata", side_effect=AssertionError("Python R metadata")), \
          patch.object(type(routes["routes"]), "iter_native_exact_records", side_effect=AssertionError("Python H metadata")), \
-         patch("emuflow.tdm._indexed_certificate", side_effect=AssertionError("Python readiness certificate")), \
-         patch("emuflow.tdm._baseline_ratio_hops", side_effect=AssertionError("Python wire map")), \
+         patch("emuflow.scheduling.tdm._indexed_certificate", side_effect=AssertionError("Python readiness certificate")), \
+         patch("emuflow.scheduling.tdm._baseline_ratio_hops", side_effect=AssertionError("Python wire map")), \
          patch("tests.schedule_store_fixture._publish_fixture_records", side_effect=AssertionError("Python record publisher")), \
-         patch("emuflow.phase5_native.NativeToolProcess", side_effect=record):
+         patch("emuflow.scheduling.phase5_native.NativeToolProcess", side_effect=record):
         request = build_native_exact_schedule_request(routes, case.platform)
         assert request is not None
         native_manifest = write_tdm_schedule_storage(tmp_path / "native/schedule.json", request)

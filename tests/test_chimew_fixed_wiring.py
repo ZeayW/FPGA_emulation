@@ -7,23 +7,23 @@ import copy
 
 import pytest
 
-from emuflow.chimew_fixed_wiring import (
+from emuflow.transport.chimew.chimew_fixed_wiring import (
     FIXED_WIRING_BINDING_SCHEMA, FixedWiringChannels,
     build_fixed_wiring_chimew_electrical_map,
 )
-from emuflow.chimew_phase6 import (
+from emuflow.transport.chimew.chimew_phase6 import (
     build_chimew_phase6_pin_plan, run_chimew_phase6_adapter,
     validate_chimew_electrical_map, validate_chimew_phase6_binding,
     validate_chimew_adapter_generation, chimew_adapter_report_generation_path,
 )
-from emuflow.chimew_bank_channel import validate_chimew_bank_channel_input
-from emuflow.chimew_bank_channel_storage import write_chimew_bank_channel_storage
-from emuflow.chimew_binding_storage import read_chimew_binding, write_chimew_binding_storage
-from emuflow.default_platform import research_platform_path
-from emuflow.errors import ValidationError
-from emuflow.io import file_sha256, write_json
-from emuflow.pin_plan_storage import read_pin_plan
-from emuflow.platform import Platform
+from emuflow.transport.chimew.chimew_bank_channel import validate_chimew_bank_channel_input
+from emuflow.transport.chimew.chimew_bank_channel_storage import write_chimew_bank_channel_storage
+from emuflow.transport.chimew.chimew_binding_storage import read_chimew_binding, write_chimew_binding_storage
+from emuflow.platform.default_platform import research_platform_path
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import file_sha256, write_json
+from emuflow.transport.pin_plan_storage import read_pin_plan
+from emuflow.platform.platform import Platform
 from tests.native_build import chimew_bank_channel_assigner
 
 
@@ -140,7 +140,7 @@ def test_report_committed_adapter_accepts_fixed_differential_map(fixed_case, tmp
 
 
 def test_selected_channels_reach_the_existing_phase7_lvds_contract(fixed_case, tmp_path):
-    from emuflow.virtual_board import (
+    from emuflow.transport.virtual_board import (
         build_virtual_board, build_virtual_io_physical_contract,
         write_virtual_binding_systemverilog, write_virtual_binding_xdc,
     )

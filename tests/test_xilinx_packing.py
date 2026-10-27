@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.errors import ValidationError
-from emuflow.xilinx_packing import legalize_xilinx_slice_site_pins, validate_xilinx_packing
+from emuflow.common.errors import ValidationError
+from emuflow.physical.xilinx_packing import legalize_xilinx_slice_site_pins, validate_xilinx_packing
 from tests.xilinx_site_reference import exhaustive_minimum_slice_count, pack_xilinx_sites
 
 
@@ -88,7 +88,7 @@ class XilinxPackingTest(unittest.TestCase):
             value = self._mapped()
             mapped.write_text(json.dumps(value), encoding="utf-8")
             with mock.patch(
-                "emuflow.xilinx_packing.read_json",
+                "emuflow.physical.xilinx_packing.read_json",
                 side_effect=AssertionError("mapped netlist was reparsed"),
             ):
                 report = pack_xilinx_sites(

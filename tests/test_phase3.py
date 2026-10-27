@@ -11,21 +11,21 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.errors import ValidationError
-from emuflow.emuir_compact import write_compact_emuir
-from emuflow.io import read_json
-from emuflow.ir import EmuIR
+from emuflow.common.errors import ValidationError
+from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow.common.io import read_json
+from emuflow.ir.ir import EmuIR
 from tests.partition_balance_fixture import validate_cluster_assignment_balance
 from tests.native_partition_facts import (build_partition_assignment, build_clusters, normalize_partition_constraints, validate_partition_artifacts, validate_partition_artifacts_online)
 from tests.partition_reference import assign_clusters
-from emuflow.partition_ir import load_partition_ir
-from emuflow.phase3 import run_phase3, validate_phase3_indexed
-from emuflow.phase3_assignment_index import (validate_phase3_assignment_index)
-from emuflow.phase3_storage import read_phase3_assignment_view
+from emuflow.partition.partition_ir import load_partition_ir
+from emuflow.partition.phase3 import run_phase3, validate_phase3_indexed
+from emuflow.partition.phase3_assignment_index import (validate_phase3_assignment_index)
+from emuflow.partition.phase3_storage import read_phase3_assignment_view
 from tests.phase3_exact_fixture import indexed_exact_manifest
-from emuflow.platform import BoardLink, FpgaNode, Platform
-from emuflow.resources import RESOURCE_FIELDS, ResourceVector
-from emuflow.yosys import import_yosys_json
+from emuflow.platform.platform import BoardLink, FpgaNode, Platform
+from emuflow.ir.resources import RESOURCE_FIELDS, ResourceVector
+from emuflow.frontend.yosys import import_yosys_json
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -82,10 +82,10 @@ class Phase3Test(unittest.TestCase):
             write_compact_emuir(ir_path, self.ir.to_dict())
             compact_ir = load_partition_ir(ir_path)
             with patch(
-                "emuflow.partition_ir._CompactPartitionInstances.__iter__",
+                "emuflow.partition.partition_ir._CompactPartitionInstances.__iter__",
                 side_effect=AssertionError("cell dictionaries were decoded"),
             ), patch(
-                "emuflow.partition_ir._CompactPartitionNets.__iter__",
+                "emuflow.partition.partition_ir._CompactPartitionNets.__iter__",
                 side_effect=AssertionError("net dictionaries were decoded"),
             ):
                 actual = build_clusters(compact_ir, constraints, cut_mode="sequential-only")
@@ -174,7 +174,7 @@ class Phase3Test(unittest.TestCase):
             self.assertLess(unique_payloads, cell_count)
             compact_ir = load_partition_ir(ir_path)
             with patch(
-                "emuflow.resources.ResourceVector.from_mapping",
+                "emuflow.ir.resources.ResourceVector.from_mapping",
                 wraps=ResourceVector.from_mapping,
             ) as decode:
                 actual = build_clusters(compact_ir, constraints, cut_mode="sequential-only")
@@ -187,7 +187,7 @@ class Phase3Test(unittest.TestCase):
             write_compact_emuir(ir_path, self.ir.to_dict())
             compact_ir = load_partition_ir(ir_path)
             with patch(
-                "emuflow.partition_ir._CompactPartitionInstances.__iter__",
+                "emuflow.partition.partition_ir._CompactPartitionInstances.__iter__",
                 side_effect=AssertionError(
                     "default constraints must not scan every instance"
                 ),
@@ -279,7 +279,7 @@ class Phase3Test(unittest.TestCase):
             output = root / "phase3"
             write_compact_emuir(ir_path, self.ir.to_dict())
             with patch(
-                "emuflow.partition_ir.EmuIR.load",
+                "emuflow.partition.partition_ir.EmuIR.load",
                 side_effect=AssertionError(
                     "Static Exact Phase 3 must stream compact EmuIR"
                 ),

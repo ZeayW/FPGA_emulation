@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .contest_boarddb import materialize_homogeneous_boarddb
-from emuflow.errors import ValidationError
-from emuflow.io import write_json
-from emuflow.routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import write_json
+from emuflow.routing.routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
 
 
 EDA2024_EVALUATION_SCHEMA = "emuflow.contest-eda2024-evaluation/v1"

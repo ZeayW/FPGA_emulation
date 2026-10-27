@@ -7,22 +7,22 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.emuir_compact import write_compact_emuir
-from emuflow.emuir_storage import _write_emuir_sqlite_v1
-from emuflow.errors import ValidationError
-from emuflow.indexed_timing import IndexedTimingView
-from emuflow.ir import EmuIR
-from emuflow.opensta import run_opensta_path_database
-from emuflow.resources import ResourceVector
-from emuflow.sta import (
+from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow.ir.emuir_storage import _write_emuir_sqlite_v1
+from emuflow.common.errors import ValidationError
+from emuflow.timing.indexed_timing import IndexedTimingView
+from emuflow.ir.ir import EmuIR
+from emuflow.timing.opensta import run_opensta_path_database
+from emuflow.ir.resources import ResourceVector
+from emuflow.timing.sta import (
     derive_partition_net_weights,
     iter_sta_path_database_paths,
     validate_partition_net_weights,
     validate_sta_path_database,
     write_emuir_net_map,
 )
-from emuflow.verilog import mapped_verilog, write_mapped_verilog
-from emuflow.yosys import import_yosys_json
+from emuflow.frontend.verilog import mapped_verilog, write_mapped_verilog
+from emuflow.frontend.yosys import import_yosys_json
 from tests.sta_path_reference import endpoint_facts
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,13 +32,13 @@ def test_compact_stream_preserves_exact_timing_netlist_and_endpoint_identity(tmp
     ir = import_yosys_json(ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"])
     source, compact = tmp_path / "old.emuir.sqlite", tmp_path / "new.emuir.sqlite"
     _write_emuir_sqlite_v1(source, ir.value)
-    with patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("whole-graph loading forbidden")):
+    with patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("whole-graph loading forbidden")):
         write_compact_emuir(compact, ir.value)
     assert EmuIR.load(source).value == EmuIR.load(compact).value
     view = IndexedTimingView(compact)
     try:
         out = tmp_path / "timing.v"
-        with patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("whole-graph loading forbidden")):
+        with patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("whole-graph loading forbidden")):
             write_mapped_verilog(view, out, timing_only=True)
             write_emuir_net_map(compact, tmp_path / "stream.tsv", _ir=view)
         assert out.read_text() == mapped_verilog(ir, timing_only=True)
@@ -55,7 +55,7 @@ def test_compact_stream_uses_real_provider_protocol_without_ir_reload(tmp_path):
     path = tmp_path / "design.emuir.sqlite"
     ir.save(path)
     out = tmp_path / "paths.json"
-    with patch("emuflow.opensta.EmuIR.load", side_effect=AssertionError("whole-graph loading forbidden")):
+    with patch("emuflow.timing.opensta.EmuIR.load", side_effect=AssertionError("whole-graph loading forbidden")):
         report = run_opensta_path_database(
             path, out, clocks={"clk": 10},
             executable=str(ROOT / "tests/fixtures/fake_opensta_paths.py"),
@@ -94,7 +94,7 @@ def test_compact_timing_validators_do_not_reload_the_whole_graph(tmp_path):
     )
     weights = tmp_path / "weights.json"
     with patch(
-        "emuflow.sta.EmuIR.load",
+        "emuflow.timing.sta.EmuIR.load",
         side_effect=AssertionError("whole-graph loading forbidden"),
     ):
         assert validate_sta_path_database(database, path)["status"] == "pass"

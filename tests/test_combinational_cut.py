@@ -20,38 +20,38 @@ from contextlib import closing, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.cli import main
-from emuflow.combinational_cut import (STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2, STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA, semantic_contract_sha256)
+from emuflow.flow.cli import main
+from emuflow.partition.combinational_cut import (STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2, STATIC_EXACT_STRUCTURAL_CONTRACT_SCHEMA, semantic_contract_sha256)
 from tests.native_partition_facts import semantic_contract_facts as build_static_exact_semantic_contract, candidate_index_facts as _build_combinational_cut_candidate_index
-from emuflow.errors import ValidationError
-from emuflow.equivalence import (
+from emuflow.common.errors import ValidationError
+from emuflow.validation.equivalence import (
     _MappedModel,
     exhaustively_verify_static_exact_partition_equivalence,
     simulate_static_exact_partition_equivalence,
 )
-from emuflow.emuir_compact import write_compact_emuir
-from emuflow.ir import EmuIR
-from emuflow.io import read_json, write_json
-from emuflow.partition_ir import load_partition_ir
-from emuflow.partition import (CUT_MODE_STATIC_EXACT)
+from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow.ir.ir import EmuIR
+from emuflow.common.io import read_json, write_json
+from emuflow.partition.partition_ir import load_partition_ir
+from emuflow.partition.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (build_clusters, build_partition_assignment, normalize_partition_constraints, validate_partition_artifacts)
 from tests.partition_reference import assign_clusters
-from emuflow.platform import Platform
-from emuflow.phase6 import run_phase6, validate_phase6
-from emuflow.split_netlist_storage import SplitNetlistView
-from emuflow.phase3_assignment_index import (ASSIGNMENT_INDEX_APPLICATION_ID, open_phase3_assignment_index, phase3_exact_semantic_counts, phase3_exact_relation_counts, read_phase3_exact_split_relations, validate_phase3_assignment_index)
+from emuflow.platform.platform import Platform
+from emuflow.transport.phase6 import run_phase6, validate_phase6
+from emuflow.transport.split_netlist_storage import SplitNetlistView
+from emuflow.partition.phase3_assignment_index import (ASSIGNMENT_INDEX_APPLICATION_ID, open_phase3_assignment_index, phase3_exact_semantic_counts, phase3_exact_relation_counts, read_phase3_exact_split_relations, validate_phase3_assignment_index)
 from tests.native_semantic_facts import read_nodes as read_native_static_exact_cut_node_stream
-from emuflow.phase3_exact_binary import (validate_phase3_exact_binary)
+from emuflow.partition.phase3_exact_binary import (validate_phase3_exact_binary)
 from tests.phase3_exact_fixture import indexed_exact_facts
-from emuflow.phase3_storage import (PACKED_ASSIGNMENT_SCHEMA, read_phase3_assignment_view)
-from emuflow.routing import (
+from emuflow.partition.phase3_storage import (PACKED_ASSIGNMENT_SCHEMA, read_phase3_assignment_view)
+from emuflow.routing.routing import (
     build_directed_graph,
     demands_from_assignment,
     normalize_route_constraints,
     validate_system_routes,
 )
-from emuflow.resources import ResourceVector
-from emuflow.tdm import (
+from emuflow.ir.resources import ResourceVector
+from emuflow.scheduling.tdm import (
     TDM_EXACT_DEPENDENCY_PROVIDER,
     SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
     validate_tdm_schedule,
@@ -60,9 +60,9 @@ from tests.schedule_reference import (
     REFERENCE_TDM_PROVIDER as TDM_BASELINE_PROVIDER,
     build_tdm_schedule,
 )
-from emuflow.tdm_schedule_storage import (read_tdm_schedule)
-from emuflow.transport_storage import write_transport_storage
-from emuflow.system_route_storage import SystemRoutesView, read_system_routes
+from emuflow.scheduling.tdm_schedule_storage import (read_tdm_schedule)
+from emuflow.transport.transport_storage import write_transport_storage
+from emuflow.routing.system_route_storage import SystemRoutesView, read_system_routes
 from tests.native_route_seal_fixture import write_route_store_fixture
 from tests.native_build import emuflow_native, static_exact_analyzer, tlr_router
 
@@ -352,7 +352,7 @@ class CombinationalCutCharacterizationTest(unittest.TestCase):
             )
         ).hexdigest()
         with patch(
-            "emuflow.combinational_cut.json.dumps",
+            "emuflow.partition.combinational_cut.json.dumps",
             side_effect=AssertionError("canonical hashing must stream"),
         ):
             self.assertEqual(semantic_contract_sha256(value), expected)
@@ -1014,11 +1014,11 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             self.assertEqual(list(index.parent.iterdir()), [])
 
     def test_retired_assignment_versions_rejected_by_all_readers(self):
-        from emuflow.phase3_storage import (
+        from emuflow.partition.phase3_storage import (
             IndexedInstanceAssignment,
             read_phase3_cut_timing_view,
         )
-        from emuflow import phase3_assignment_index
+        from emuflow.partition import phase3_assignment_index
 
         self.assertFalse(hasattr(phase3_assignment_index, "migrate_phase3_assignment_index"))
         with tempfile.TemporaryDirectory() as temporary:
@@ -1240,7 +1240,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             "indexed": True,
         }
         from tests.native_build import emuflow_native
-        from emuflow.tdm import build_native_exact_schedule_request
+        from emuflow.scheduling.tdm import build_native_exact_schedule_request
 
         def compare(candidate):
             reference = build_tdm_schedule(candidate, self.platform)
@@ -1258,8 +1258,8 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 write_tdm_schedule_storage(path, request)
                 self.assertEqual(read_tdm_schedule(path, materialize=True), reference)
                 with read_tdm_schedule(path) as schedule, patch(
-                    "emuflow.tdm._indexed_exact_nodes", side_effect=AssertionError("R-sized node map")), patch(
-                    "emuflow.tdm._exact_dependency_order", side_effect=AssertionError("R-sized order")):
+                    "emuflow.scheduling.tdm._indexed_exact_nodes", side_effect=AssertionError("R-sized node map")), patch(
+                    "emuflow.scheduling.tdm._exact_dependency_order", side_effect=AssertionError("R-sized order")):
                     self.assertEqual(validate_tdm_schedule(native_routes, self.platform, schedule)["status"], "pass")
 
         compare(routes)
@@ -2728,7 +2728,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     self.assertNotIn("source_logic_segment_ids", endpoint)
                     self.assertNotIn("consumer_logic_segment_ids", endpoint)
             with patch(
-                "emuflow.split_netlist_storage._exact_relation_maps",
+                "emuflow.transport.split_netlist_storage._exact_relation_maps",
                 side_effect=AssertionError(
                     "bounded split metadata must not expand exact relations"
                 ),
@@ -2762,7 +2762,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 validation["static_exact_equivalence"]["status"], "pass"
             )
             with patch(
-                "emuflow.phase6._static_exact_equivalence_evidence",
+                "emuflow.transport.phase6._static_exact_equivalence_evidence",
                 side_effect=AssertionError("equivalence replay was not reusable"),
             ):
                 structural_validation = validate_phase6(

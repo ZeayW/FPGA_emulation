@@ -8,15 +8,15 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.emuir_compact import write_compact_emuir
-from emuflow.errors import ValidationError
-from emuflow.partition import (CUT_MODE_STATIC_EXACT)
+from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow.common.errors import ValidationError
+from emuflow.partition.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (build_clusters, build_partition_assignment, normalize_partition_constraints)
-from emuflow.partition_ir import load_partition_ir
+from emuflow.partition.partition_ir import load_partition_ir
 from tests.native_partition_kernel_driver import initialize
 from tests.phase3_store_fixture import write_assignment_index_fixture
 from tests.native_assignment_publication_fixture import publish_native_assignment_descriptor
-from emuflow.platform import Platform
+from emuflow.platform.platform import Platform
 from tests.native_build import emuflow_native
 from tests.test_combinational_cut import _chain_ir,_reconvergent_ir,_wide_fanout_ir,PLATFORM_PATH
 
@@ -75,7 +75,7 @@ def build(selected):
 
 def test_complete_selected_semantic_generation_and_publication_match_explicit_projection(selected,tmp_path):
     from tests.partition_views import InstanceOwners as _CompactInstanceAssignment
-    import emuflow.combinational_cut as retired_semantics
+    import emuflow.partition.combinational_cut as retired_semantics
     assert not hasattr(retired_semantics,'build_static_exact_semantic_contract')
     with (patch('tests.native_partition_facts.compute_cut_nets',side_effect=AssertionError('host endpoint projection')),
           patch.object(_CompactInstanceAssignment,'canonical_sha256',side_effect=AssertionError('host instance hash'))):
@@ -89,13 +89,13 @@ def test_complete_selected_semantic_generation_and_publication_match_explicit_pr
     assert actual['semantic_contract_sha256']==expected['semantic_contract_sha256']
     old=tmp_path/'reference/assignment.sqlite';new=tmp_path/'native/assignment.sqlite'
     write_assignment_index_fixture(old,ir,expected)
-    from emuflow.native_protocol import CheckedRequestWriter
+    from emuflow.common.native_protocol import CheckedRequestWriter
     original_bytes=CheckedRequestWriter.bytes
     def bounded_bytes(writer,value):
         if value is actual['instance_assignment']._cluster_parts or value is actual['cut_nets']._cuts._sink_endpoints:
             raise AssertionError('host column serialization')
         return original_bytes(writer,value)
-    with (patch('emuflow.phase3_assignment_index._normalized_cut_record',side_effect=AssertionError('host cut serialization')),
+    with (patch('emuflow.partition.phase3_assignment_index._normalized_cut_record',side_effect=AssertionError('host cut serialization')),
           patch.object(CheckedRequestWriter,'bytes',bounded_bytes)):
         summary=write_assignment_index_fixture(new,ir,actual)
     assert summary['native_writer_metrics']['host_ownership_records']==0
@@ -106,7 +106,7 @@ def test_complete_selected_semantic_generation_and_publication_match_explicit_pr
             order=','.join(str(index+1) for index in range(columns))
             assert a.execute('SELECT * FROM '+table+' ORDER BY '+order).fetchall()==b.execute('SELECT * FROM '+table+' ORDER BY '+order).fetchall()
     from tests.phase3_store_fixture import assignment_selector_fixture
-    from emuflow.io import write_json
+    from emuflow.common.io import write_json
     expected_selector=assignment_selector_fixture(expected,selected[2],cut_nets_index={
         'artifact':'assignment.sqlite','schema':'emuflow.phase3-cut-records/v1',
         'records':summary['cut_records'],'sha256':summary['cut_records_sha256']})

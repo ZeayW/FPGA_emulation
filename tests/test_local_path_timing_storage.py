@@ -5,17 +5,17 @@ from pathlib import Path
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.local_path_timing import (
+from emuflow.common.errors import ValidationError
+from emuflow.timing.local_path_timing import (
     LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION,
     path_id_set_sha256,
     read_local_path_identity,
     validate_local_path_identity,
     validate_local_path_timing,
 )
-from emuflow.local_path_timing_storage import (LOCAL_PATH_TIMING_SCHEMA, LOCAL_PATH_TIMING_STORAGE_SCHEMA, LocalPathTimingView, publish_local_path_timing_selector, read_local_path_timing_storage)
+from emuflow.timing.local_path_timing_storage import (LOCAL_PATH_TIMING_SCHEMA, LOCAL_PATH_TIMING_STORAGE_SCHEMA, LocalPathTimingView, publish_local_path_timing_selector, read_local_path_timing_storage)
 from tests.timing_facts import local_timing_facts
-from emuflow.physical_summary_storage import LazyPhysicalEvidenceMap
+from emuflow.physical.physical_summary_storage import LazyPhysicalEvidenceMap
 
 
 def _header() -> dict[str, object]:

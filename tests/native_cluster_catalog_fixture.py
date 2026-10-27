@@ -12,11 +12,11 @@ from pathlib import Path
 import sys
 import tempfile
 
-from emuflow.errors import ValidationError
-from emuflow.native_protocol import CheckedRequestWriter
-from emuflow.native_tools import resolve_native_executable
-from emuflow.store_publication import StoreSource, require_store_sources_unchanged
-from emuflow.tool_runtime import NativeToolProcess
+from emuflow.common.errors import ValidationError
+from emuflow.common.native_protocol import CheckedRequestWriter
+from emuflow.common.native_tools import resolve_native_executable
+from emuflow.storage.store_publication import StoreSource, require_store_sources_unchanged
+from emuflow.common.tool_runtime import NativeToolProcess
 
 
 def catalog_sources(clusters, eligible):

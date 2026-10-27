@@ -7,22 +7,22 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.errors import ValidationError
-from emuflow.io import file_sha256, write_json
-from emuflow.xilinx_openparf_atomic import (
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import file_sha256, write_json
+from emuflow.physical.openparf.xilinx_openparf_atomic import (
     build_xilinx_openparf_atomic_source,
     materialize_xilinx_openparf_atomic_source,
     read_xilinx_openparf_atomic_source,
 )
-from emuflow.xilinx_netlist import (
+from emuflow.physical.xilinx_netlist import (
     emit_xilinx_mapped_index,
     open_xilinx_mapped_index,
 )
-from emuflow.xilinx_openparf_source_storage import (
+from emuflow.physical.openparf.xilinx_openparf_source_storage import (
     OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA,
     write_xilinx_openparf_atomic_source_storage,
 )
-from emuflow.yosys import import_yosys_json
+from emuflow.frontend.yosys import import_yosys_json
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 
 
@@ -267,7 +267,7 @@ class XilinxOpenparfSourceStorageTest(unittest.TestCase):
                 return real_replace(source, destination)
 
             with mock.patch(
-                "emuflow.xilinx_openparf_source_storage.os.replace",
+                "emuflow.physical.openparf.xilinx_openparf_source_storage.os.replace",
                 side_effect=replace_with_commit_failure,
             ), self.assertRaisesRegex(OSError, "injected selector commit"):
                 build_xilinx_openparf_atomic_source(

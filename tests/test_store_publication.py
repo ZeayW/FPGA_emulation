@@ -12,13 +12,13 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow import store_publication
-from emuflow.errors import ValidationError
-from emuflow.native_protocol import CheckedRequestWriter
-from emuflow.native_tools import native_file_generation
-from emuflow.pin_plan_storage import write_pin_plan_storage
-from emuflow.chimew_binding_storage import write_chimew_binding_storage
-from emuflow.transport_storage import DDL
+from emuflow.storage import store_publication
+from emuflow.common.errors import ValidationError
+from emuflow.common.native_protocol import CheckedRequestWriter
+from emuflow.common.native_tools import native_file_generation
+from emuflow.transport.pin_plan_storage import write_pin_plan_storage
+from emuflow.transport.chimew.chimew_binding_storage import write_chimew_binding_storage
+from emuflow.transport.transport_storage import DDL
 from tests.native_build import emuflow_native
 from tests.test_pin_plan_storage import _plan
 
@@ -40,14 +40,14 @@ def private_store(root, schema="pin-plan-store-v1"):
                 },
             ).store_path
         elif schema == "position-hints-store-v1":
-            from emuflow.position_hints_storage import write_position_hints_storage
+            from emuflow.transport.position_hints_storage import write_position_hints_storage
             from tests.test_position_hints_storage import _positions
 
             source = write_position_hints_storage(
                 root / "positions.json", _positions()
             ).store_path
         elif schema == "chimew-bank-input-store-v1":
-            from emuflow.chimew_bank_channel_storage import (
+            from emuflow.transport.chimew.chimew_bank_channel_storage import (
                 write_chimew_bank_channel_storage,
             )
             from tests.test_chimew_bank_channel import ChimewBankChannelTest
@@ -59,7 +59,7 @@ def private_store(root, schema="pin-plan-store-v1"):
             ) as view:
                 source = view.store_path
         elif schema == "chimew-bank-report-store-v1":
-            from emuflow.chimew_bank_channel import (
+            from emuflow.transport.chimew.chimew_bank_channel import (
                 evaluate_chimew_bank_channel_assignment,
             )
             from tests.test_chimew_bank_channel import ChimewBankChannelTest
@@ -356,7 +356,7 @@ def test_indexed_views_bind_original_generations_instead_of_taking_a_new_snapsho
             )
             schema = "chimew-binding-store-v1"
         elif kind == "position":
-            from emuflow.position_hints_storage import write_position_hints_storage
+            from emuflow.transport.position_hints_storage import write_position_hints_storage
             from tests.test_position_hints_storage import _positions
 
             view = write_position_hints_storage(
@@ -364,7 +364,7 @@ def test_indexed_views_bind_original_generations_instead_of_taking_a_new_snapsho
             )
             schema = "position-hints-store-v1"
         elif kind == "bank_input":
-            from emuflow.chimew_bank_channel_storage import (
+            from emuflow.transport.chimew.chimew_bank_channel_storage import (
                 write_chimew_bank_channel_storage,
             )
             from tests.test_chimew_bank_channel import ChimewBankChannelTest
@@ -376,7 +376,7 @@ def test_indexed_views_bind_original_generations_instead_of_taking_a_new_snapsho
             )
             schema = "chimew-bank-input-store-v1"
         elif kind == "bank_report":
-            from emuflow.chimew_bank_channel import (
+            from emuflow.transport.chimew.chimew_bank_channel import (
                 evaluate_chimew_bank_channel_assignment,
             )
             from tests.test_chimew_bank_channel import ChimewBankChannelTest
@@ -390,7 +390,7 @@ def test_indexed_views_bind_original_generations_instead_of_taking_a_new_snapsho
             )
             schema = "chimew-bank-report-store-v1"
         else:
-            from emuflow.tdm_schedule_storage import read_tdm_schedule
+            from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
             from tests.schedule_store_fixture import write_tdm_schedule_storage
             from tests.test_phase6 import Phase6Test
 
@@ -411,7 +411,7 @@ def test_indexed_views_bind_original_generations_instead_of_taking_a_new_snapsho
 def test_existing_identical_store_does_not_bypass_source_checks_or_leak_staging(
     tmp_path, kind
 ):
-    from emuflow import pin_plan_storage, chimew_binding_storage
+    from emuflow.transport import pin_plan_storage; from emuflow.transport.chimew import chimew_binding_storage
 
     source, _temporary = private_store(tmp_path)
     bound = store_publication.bind_store_source(source, "pin-plan-store-v1")
@@ -450,7 +450,7 @@ def test_existing_identical_store_does_not_bypass_source_checks_or_leak_staging(
 def test_indexed_bank_input_republication_streams_without_materializing_or_waiting_on_itself(
     tmp_path,
 ):
-    from emuflow.chimew_bank_channel_storage import (
+    from emuflow.transport.chimew.chimew_bank_channel_storage import (
         BankChannelInputView,
         write_chimew_bank_channel_storage,
     )

@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 def write_mock_xilinx_timing_contract(path: Path) -> Path:
-    from emuflow.xilinx_preplacement_timing import (
+    from emuflow.timing.xilinx_preplacement_timing import (
         XILINX_PREPLACEMENT_TIMING_SCHEMA, _REQUIRED_DELAYS,
         RAPIDWRIGHT_TIMING_DATA_REVISION, RAPIDWRIGHT_TIMING_DATA_SHA256,
     )

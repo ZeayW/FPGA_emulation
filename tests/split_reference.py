@@ -2,13 +2,13 @@
 import json,os,shutil,sqlite3,uuid
 from pathlib import Path
 from typing import Any,Mapping
-from emuflow.errors import ValidationError
-from emuflow.platform import Platform
-from emuflow.native_tools import native_file_generation
-from emuflow.phase3_assignment_index import ASSIGNMENT_INDEX_SCHEMA,open_phase3_assignment_index
-from emuflow.phase3_exact_binary import phase3_exact_binary_counts
-from emuflow.store_publication import (StoreSource,bind_store_source,bind_view_sources,publish_sqlite_store,require_store_sources_unchanged)
-from emuflow.split_netlist_storage import (DDL,SPLIT_NETLIST_APPLICATION_ID,
+from emuflow.common.errors import ValidationError
+from emuflow.platform.platform import Platform
+from emuflow.common.native_tools import native_file_generation
+from emuflow.partition.phase3_assignment_index import ASSIGNMENT_INDEX_SCHEMA,open_phase3_assignment_index
+from emuflow.partition.phase3_exact_binary import phase3_exact_binary_counts
+from emuflow.storage.store_publication import (StoreSource,bind_store_source,bind_view_sources,publish_sqlite_store,require_store_sources_unchanged)
+from emuflow.transport.split_netlist_storage import (DDL,SPLIT_NETLIST_APPLICATION_ID,
     PREVIOUS_SPLIT_NETLIST_USER_VERSION as SPLIT_NETLIST_USER_VERSION,
     PREVIOUS_SPLIT_NETLIST_STORAGE_SCHEMA as SPLIT_NETLIST_STORAGE_SCHEMA,
     _binary_artifact_path,_sqlite_uri,_json,read_compact_emuir_control_metadata,validate_split_netlists_sqlite)

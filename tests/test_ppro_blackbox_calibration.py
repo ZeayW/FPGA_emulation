@@ -5,7 +5,7 @@ import json
 import unittest
 from pathlib import Path
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from emuflow_tools.ppro_blackbox_calibration import (
     validate_blackbox_observation,
     validate_public_platform_prior,

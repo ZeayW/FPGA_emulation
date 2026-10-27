@@ -14,11 +14,11 @@ import zlib
 from contextlib import closing
 from unittest import mock
 
-from emuflow import rwroute_native
-from emuflow.errors import ValidationError
-from emuflow.xilinx_netlist import open_xilinx_mapped_index
-from emuflow.xilinx_physical_handoff import open_xilinx_physical_handoff
-from emuflow.xilinx_rwroute import export_rwroute_input
+from emuflow.physical.rapidwright import rwroute_native
+from emuflow.common.errors import ValidationError
+from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index
+from emuflow.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
+from emuflow.physical.rapidwright.xilinx_rwroute import export_rwroute_input
 from tests.rwroute_reference import export_rwroute_reference
 from tests.native_build import emuflow_native
 
@@ -111,9 +111,9 @@ def native(root, values, *, contract=True):
     mapped, packed, placement, io, mapped_path, handoff = values
     with mock.patch.object(
             rwroute_native, 'resolve_native_executable', return_value=str(emuflow_native())), \
-            mock.patch('emuflow.xilinx_rwroute.read_json', side_effect=AssertionError('Python JSON loader')), \
-            mock.patch('emuflow.xilinx_netlist.IndexedXilinxMappedNetlist.__init__', side_effect=AssertionError('Python mapped view')), \
-            mock.patch('emuflow.xilinx_physical_handoff.open_xilinx_physical_handoff', side_effect=AssertionError('Python physical views')):
+            mock.patch('emuflow.physical.rapidwright.xilinx_rwroute.read_json', side_effect=AssertionError('Python JSON loader')), \
+            mock.patch('emuflow.physical.xilinx_netlist.IndexedXilinxMappedNetlist.__init__', side_effect=AssertionError('Python mapped view')), \
+            mock.patch('emuflow.physical.xilinx_physical_handoff.open_xilinx_physical_handoff', side_effect=AssertionError('Python physical views')):
         return export_rwroute_input(
             mapped_path, handoff, root/'native.tsv',
             source_sha256=DIGESTS, virtual_io_contract=io if contract else None,
@@ -155,7 +155,7 @@ class NativeRwrouteTests(unittest.TestCase):
                 self.assertIn(str((1<<80)-1),text)
 
     def test_json_inputs_are_rejected_before_hash_or_native_execution(self):
-        from emuflow import xilinx_rwroute as adapter
+        from emuflow.physical.rapidwright import xilinx_rwroute as adapter
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             values = fixture(root)
@@ -172,8 +172,8 @@ class NativeRwrouteTests(unittest.TestCase):
                     self.assertEqual(output.read_text(), 'prior publication')
 
     def test_standalone_export_hashes_the_single_physical_owner_once(self):
-        from emuflow import xilinx_rwroute as adapter
-        from emuflow.io import file_sha256
+        from emuflow.physical.rapidwright import xilinx_rwroute as adapter
+        from emuflow.common.io import file_sha256
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             values = fixture(root)
@@ -188,7 +188,7 @@ class NativeRwrouteTests(unittest.TestCase):
             self.assertIn('META\tplacement_sha256\t'+file_sha256(physical), text)
 
     def test_current_cli_accepts_one_handoff_and_rejects_old_export_options(self):
-        from emuflow.cli import _build_parser
+        from emuflow.flow.cli import _build_parser
         import contextlib, io
         parser = _build_parser()
         args = parser.parse_args(['arch', 'export-xilinx-rwroute-input', '--mapped-index', 'm.sqlite',
@@ -340,7 +340,7 @@ class NativeRwrouteTests(unittest.TestCase):
                     expected_top='top',virtual_io_contract=io,resource_limits=None,
                     minimum_logical_cells=minimum,source_commit=None)
                 with mock.patch.dict(os.environ,{'EMUFLOW_NATIVE_ROOT':str(install),
-                        'PYTHONPATH':str(Path(__file__).parents[1]/'src')}):
+                        'PYTHONPATH':str(Path(__file__).parents[1]/'src/python')}):
                     if minimum==1:
                         result=qualification.qualify(args)
                         self.assertEqual(result['status'],'pass')

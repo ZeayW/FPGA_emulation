@@ -10,9 +10,9 @@ from pathlib import Path
 import struct
 import tempfile
 
-from emuflow.combinational_cut import semantic_contract_sha256
-from emuflow.errors import ValidationError
-from emuflow.phase3_exact_limits import STATIC_EXACT_CAPTURE_BIT_MAX_BITS, STATIC_EXACT_CAPTURE_BIT_ERROR
+from emuflow.partition.combinational_cut import semantic_contract_sha256
+from emuflow.common.errors import ValidationError
+from emuflow.partition.phase3_exact_limits import STATIC_EXACT_CAPTURE_BIT_MAX_BITS, STATIC_EXACT_CAPTURE_BIT_ERROR
 
 
 def validate_static_exact_capture_bit(value):
@@ -93,9 +93,9 @@ def write_exact_records_fixture(path, contract, parts, *, semantic_digest=None, 
 
 
 def publish_exact_native_fixture(path, contract, parts, *, semantic_digest=None, _format_version=2):
-    from emuflow.native_protocol import CheckedRequestWriter
-    from emuflow.store_publication import StoreSource, require_store_sources_unchanged
-    from emuflow.phase3_exact_native import _run
+    from emuflow.common.native_protocol import CheckedRequestWriter
+    from emuflow.storage.store_publication import StoreSource, require_store_sources_unchanged
+    from emuflow.partition.phase3_exact_native import _run
     nodes, captures = contract['cut_nodes'],contract['capture_requirements']
     source = nodes.direct_binary_source
     if (source is None or source.cut_nodes is not nodes or source.captures is not captures or
@@ -132,7 +132,7 @@ def write_exact_fixture(path, contract, parts, **options):
 
 
 def exact_partition_facts(path, descriptor, fpga):
-    from emuflow.phase3_exact_binary import iter_phase3_exact_segments, iter_phase3_exact_captures
+    from emuflow.partition.phase3_exact_binary import iter_phase3_exact_segments, iter_phase3_exact_captures
     return {'sha256':descriptor['semantic_contract_sha256'],
         'logic_segments':list(iter_phase3_exact_segments(path, descriptor, fpga)),
         'capture_requirements':list(iter_phase3_exact_captures(path, descriptor, fpga))}
@@ -140,7 +140,7 @@ def exact_partition_facts(path, descriptor, fpga):
 
 def exact_contract_facts(path, descriptor, assignment):
     """Small independent record projection for canonical round-trip assertions."""
-    from emuflow.phase3_exact_binary import (_load_manifest, iter_phase3_exact_node_sources,
+    from emuflow.partition.phase3_exact_binary import (_load_manifest, iter_phase3_exact_node_sources,
         iter_phase3_exact_segments, iter_phase3_exact_captures)
     manifest = _load_manifest(path, descriptor)
     if max(manifest['counts'].values()) > 65536:
@@ -164,7 +164,7 @@ def exact_contract_facts(path, descriptor, assignment):
 
 
 def indexed_exact_facts(path, assignment=None, fpga=None):
-    from emuflow.phase3_assignment_index import open_phase3_assignment_index, _exact_binary_reference
+    from emuflow.partition.phase3_assignment_index import open_phase3_assignment_index, _exact_binary_reference
     connection = open_phase3_assignment_index(path)
     try:
         binary, descriptor = _exact_binary_reference(connection, path)
@@ -177,8 +177,8 @@ def indexed_exact_facts(path, assignment=None, fpga=None):
 
 def indexed_exact_manifest(path):
     """Read only the sealed exact-file header/counts for qualification checks."""
-    from emuflow.phase3_assignment_index import open_phase3_assignment_index, _exact_binary_reference
-    from emuflow.phase3_exact_binary import _load_manifest
+    from emuflow.partition.phase3_assignment_index import open_phase3_assignment_index, _exact_binary_reference
+    from emuflow.partition.phase3_exact_binary import _load_manifest
     connection = open_phase3_assignment_index(path)
     try:
         binary, descriptor = _exact_binary_reference(connection, path)

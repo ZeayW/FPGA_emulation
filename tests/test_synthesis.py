@@ -6,10 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.cli import _build_parser, main
-from emuflow.errors import EmuFlowError
-from emuflow.io import read_json
-from emuflow.synthesis import (
+from emuflow.flow.cli import _build_parser, main
+from emuflow.common.errors import EmuFlowError
+from emuflow.common.io import read_json
+from emuflow.frontend.synthesis import (
     DEFAULT_XILINX_MAPPING_STRATEGY,
     build_xilinx_mapping_statistics_script,
     _build_generic_yosys_stream_script,
@@ -19,7 +19,7 @@ from emuflow.synthesis import (
     run_xilinx_ultrascaleplus_yosys_stream,
     run_xilinx_mapping_statistics,
 )
-from emuflow.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 
 
 class SynthesisTest(unittest.TestCase):
@@ -78,8 +78,8 @@ class SynthesisTest(unittest.TestCase):
                 output.write_text('{"modules":{"design":{}}}')
                 return subprocess.CompletedProcess(command, 0, stdout=footer)
 
-            with patch("emuflow.synthesis.resolve_native_executable", return_value="yosys"), patch(
-                "emuflow.synthesis.run_with_bounded_output", side_effect=complete
+            with patch("emuflow.frontend.synthesis.resolve_native_executable", return_value="yosys"), patch(
+                "emuflow.frontend.synthesis.run_with_bounded_output", side_effect=complete
             ):
                 report = run_xilinx_mapping_statistics(
                     [source], "design", output, profile_passes=True
@@ -262,10 +262,10 @@ class SynthesisTest(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, stdout="")
 
             with patch(
-                "emuflow.synthesis.resolve_native_executable",
+                "emuflow.frontend.synthesis.resolve_native_executable",
                 return_value="yosys",
             ), patch(
-                "emuflow.synthesis.run_with_bounded_output",
+                "emuflow.frontend.synthesis.run_with_bounded_output",
                 side_effect=complete,
             ):
                 run_yosys([source], "design", root / "mapped.json")
@@ -298,7 +298,7 @@ class SynthesisTest(unittest.TestCase):
         self.assertEqual(args.define, ["SYNTHESIS"])
 
     def test_cli_mapping_profile_runs_normalizing_wrapper(self) -> None:
-        with patch("emuflow.cli.run_xilinx_ultrascaleplus_yosys") as run:
+        with patch("emuflow.flow.cli.run_xilinx_ultrascaleplus_yosys") as run:
             run.return_value = {
                 "status": "pass",
                 "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,

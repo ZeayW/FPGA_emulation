@@ -4,9 +4,9 @@ import unittest
 from pathlib import Path
 
 from emuflow_tools.contest_eda2023 import _timing_weight_for_fpga_diameter, evaluate_eda2023_solution, import_eda2023_case, materialize_eda2023_rtl_boarddb
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
-from emuflow.phase4 import run_phase4
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
+from emuflow.routing.phase4 import run_phase4
 from tests.native_build import tlr_router
 
 

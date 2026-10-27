@@ -8,15 +8,15 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.global_sta import bind_physical_checks
+from emuflow.common.errors import ValidationError
+from emuflow.timing.global_sta import bind_physical_checks
 from tests.global_sta_fixture import bind_physical_checks as fixture_bind
-from emuflow.boundary_identity_storage import write_boundary_identity_storage
+from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
 from tests.timing_facts import boundary_timing_facts
 from tests.timing_facts import logic_timing_facts
-from emuflow.system_route_storage import read_system_routes, pretty_system_routes_sha256
+from emuflow.routing.system_route_storage import read_system_routes, pretty_system_routes_sha256
 from tests.native_route_seal_fixture import write_route_store_fixture
-from emuflow.tdm_schedule_storage import read_tdm_schedule
+from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 from tests import test_static_exact_system_timing as fixture_module
 
@@ -84,9 +84,9 @@ def test_native_complete_event_namespace_matches_reference(tmp_path,members,regi
     f,runtime,routes,schedule,physical,ir,ischedule,ip=physical_case(tmp_path,members=members,registered=registered)
     expected_meta={}; actual_meta={}
     expected=fixture_bind(runtime,routes,schedule,physical,f.platform,metadata=expected_meta)
-    import emuflow.tdm as tdm
+    import emuflow.scheduling.tdm as tdm
     assert not hasattr(tdm, 'open_tdm_schedule_timing_path_stream')
-    import emuflow.physical_timing_inputs as physical_inputs
+    import emuflow.timing.physical_timing_inputs as physical_inputs
     assert not hasattr(physical_inputs, '_endpoint_delay_database')
     actual=bind_physical_checks(runtime,ir,ischedule,ip,f.platform,metadata=actual_meta)
     try:
@@ -109,7 +109,7 @@ def test_selected_native_physical_facts_never_fallback_to_inline(tmp_path):
 
 def add_local_paths(tmp_path, f, routes, physical, indexed, *, version=2, pure=False):
     from tests.timing_facts import local_timing_facts
-    from emuflow.local_path_timing import path_id_set_sha256
+    from emuflow.timing.local_path_timing import path_id_set_sha256
     from tests.test_local_path_timing_storage import _header, _record
     if pure:
         for key in ['boundary_timing','boundary_identities','logic_segment_timing']:
@@ -195,8 +195,8 @@ def test_native_rejects_wrong_full_original_source_coverage(tmp_path):
 def test_native_multicast_relay_and_affine_physical_chains(tmp_path,monkeypatch,kind):
     from tests.test_phase5_timing_native import _timed_case
     from tests.tdm_timing_oracle import path_facts
-    from emuflow.runtime import build_virtual_runtime
-    from emuflow.board_link_timing import build_board_link_timing_model
+    from emuflow.transport.runtime import build_virtual_runtime
+    from emuflow.platform.board_link_timing import build_board_link_timing_model
     with patch('tests.test_phase5_timing_native.install_runtime'):
         case,routes,semantic,ir,ischedule,schedule=_timed_case(tmp_path,monkeypatch,kind,count=9)
     platform=case.platform
@@ -262,7 +262,7 @@ def test_native_multicast_relay_and_affine_physical_chains(tmp_path,monkeypatch,
 
 
 def test_native_rejects_crc_and_retires_invocation_even_with_held_traceback(tmp_path):
-    from emuflow import global_binding_native as binding
+    from emuflow.timing import global_binding_native as binding
     f,runtime,routes,schedule,physical,ir,ischedule,ip=physical_case(tmp_path)
     invoke=binding._native;roots=[]
     def corrupt(arguments,root):
@@ -277,9 +277,9 @@ def test_native_rejects_crc_and_retires_invocation_even_with_held_traceback(tmp_
 
 
 def test_native_binding_rejoins_saved_measurements_and_publishes_qor_without_python_population(tmp_path):
-    from emuflow.global_measurements import import_measurements, read_native_measurements, NativeTimingPaths, NativeMeasurements
-    from emuflow.global_sta import build_opensta_timing
-    from emuflow.qor_storage import write_qor_report, read_qor_report
+    from emuflow.timing.global_measurements import import_measurements, read_native_measurements, NativeTimingPaths, NativeMeasurements
+    from emuflow.timing.global_sta import build_opensta_timing
+    from emuflow.timing.qor_storage import write_qor_report, read_qor_report
     from tests.test_global_measurements import _tsv
     f,runtime,routes,schedule,physical,ir,ischedule,ip=physical_case(tmp_path,members=7)
     reference_meta={};native_meta={}

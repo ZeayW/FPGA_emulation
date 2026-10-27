@@ -8,13 +8,13 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow import emuir_compact, xilinx_opensta
-from emuflow.emuir_storage import write_emuir_sqlite
-from emuflow.errors import ValidationError
-from emuflow.ir import EmuIR
-from emuflow.store_publication import bind_store_source
-from emuflow.transport_fanout import buffer_transport_high_fanout_records
-from emuflow.xilinx_timing import XILINX_ROUTED_TIMING_PAYLOAD_FORMAT
+from emuflow.ir import emuir_compact; from emuflow.timing import xilinx_opensta
+from emuflow.ir.emuir_storage import write_emuir_sqlite
+from emuflow.common.errors import ValidationError
+from emuflow.ir.ir import EmuIR
+from emuflow.storage.store_publication import bind_store_source
+from emuflow.transport.transport_fanout import buffer_transport_high_fanout_records
+from emuflow.timing.xilinx_timing import XILINX_ROUTED_TIMING_PAYLOAD_FORMAT
 from tests.test_transport_fanout import _transport_ir
 from tests.test_xilinx_opensta import _indexed_routed_fixture
 
@@ -87,7 +87,7 @@ def test_fanout_finishes_before_the_only_publication(tmp_path, failure):
 
 @pytest.mark.parametrize("failure", ["native", "mapped", "timing", "payload"])
 def test_routed_normalization_rejects_changes_without_mutating_previous_owner(tmp_path, failure):
-    from emuflow.routed_opensta_native import NativeToolProcess
+    from emuflow.timing.routed_opensta_native import NativeToolProcess
     mapped, timing = _indexed_routed_fixture(tmp_path)
     output = tmp_path / "routed.emuir.sqlite"
     xilinx_opensta.build_xilinx_routed_opensta_indexed_inputs(mapped, timing, output, clocks={"clk": 10.0})
@@ -117,8 +117,8 @@ def test_routed_normalization_rejects_changes_without_mutating_previous_owner(tm
 def test_chimew_relocation_uses_original_input_bindings_and_preserves_previous_commit(
     tmp_path, failure
 ):
-    from emuflow import chimew_bank_channel_storage as storage
-    from emuflow import store_publication as publication
+    from emuflow.transport.chimew import chimew_bank_channel_storage as storage
+    from emuflow.storage import store_publication as publication
     from tests.test_chimew_bank_channel import ChimewBankChannelTest
 
     case = ChimewBankChannelTest()

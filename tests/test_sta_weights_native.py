@@ -10,9 +10,9 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.io import file_sha256
-from emuflow.sta import (derive_partition_net_weights, validate_partition_net_weights,
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import file_sha256
+from emuflow.timing.sta import (derive_partition_net_weights, validate_partition_net_weights,
                          import_sta_path_database_tsv_streaming, iter_partition_net_weight_records)
 from tests.sta_weight_reference import derive_partition_net_weights as reference_build
 from tests.sta_weight_reference import validate_partition_net_weights as reference_validate
@@ -43,9 +43,9 @@ def test_complete_records_policy_and_summary_match_independent_oracle(tmp_path, 
     old, new = tmp_path/"old.json", tmp_path/"new.json"
     options = {"criticality_scale": scale, "criticality_exponent": exponent}
     reference_build(paths, source, old, **options)
-    with patch("emuflow.sta.iter_sta_path_database_paths", side_effect=AssertionError("Python path replay")), \
-         patch("emuflow.sta.iter_partition_net_weight_records", side_effect=AssertionError("Python weight population")), \
-         patch("emuflow.sta.EmuIR.load", side_effect=AssertionError("Python graph")):
+    with patch("emuflow.timing.sta.iter_sta_path_database_paths", side_effect=AssertionError("Python path replay")), \
+         patch("emuflow.timing.sta.iter_partition_net_weight_records", side_effect=AssertionError("Python weight population")), \
+         patch("emuflow.timing.sta.EmuIR.load", side_effect=AssertionError("Python graph")):
         report = derive_partition_net_weights(paths, source, new, **options)
         checked = validate_partition_net_weights(new, paths, source)
     expected, actual = json.loads(old.read_text()), json.loads(new.read_text())
@@ -57,7 +57,7 @@ def test_complete_records_policy_and_summary_match_independent_oracle(tmp_path, 
 
 @pytest.mark.parametrize("damage", ["scale-zero", "scale-bool", "exponent-negative", "exponent-inf", "crc", "version", "generation", "overflow"])
 def test_failed_producer_preserves_prior_generation(tmp_path, damage):
-    from emuflow.sta_paths_native import CheckedRequestWriter
+    from emuflow.timing.sta_paths_native import CheckedRequestWriter
 
     source, paths, proof = inputs(tmp_path, "fractional" if damage == "overflow" else False)
     target = tmp_path/"weights.json";derive_partition_net_weights(paths, source, target)
@@ -113,20 +113,20 @@ def test_changed_path_owner_is_not_rebound_as_prevalidated(tmp_path):
 def test_original_proof_reuse_does_not_repeat_full_path_validation(tmp_path):
     source, paths, proof = inputs(tmp_path)
     target = tmp_path/"weights.json"
-    with patch("emuflow.sta_paths_native.validate_paths", side_effect=AssertionError("redundant path audit")):
+    with patch("emuflow.timing.sta_paths_native.validate_paths", side_effect=AssertionError("redundant path audit")):
         assert derive_partition_net_weights(paths, source, target, _validation=proof)["status"] == "pass"
     with pytest.raises(ValidationError, match="original typed path validation proof"):
         derive_partition_net_weights(paths, source, tmp_path/"invalid.json", _validation=True)
 
 
 def test_default_cli_extraction_and_weight_chain_never_selects_inline_production(tmp_path):
-    from emuflow.cli import main
+    from emuflow.flow.cli import main
     from tests.test_sta_paths_native import ROOT
 
     _ir, source, _measured, _records = path_fixture(tmp_path)
     paths, weights = tmp_path/"engine-paths.json", tmp_path/"engine-weights.json"
-    with patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("whole-graph fallback")), \
-         patch("emuflow.sta.iter_sta_path_database_paths", side_effect=AssertionError("Python path replay")):
+    with patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("whole-graph fallback")), \
+         patch("emuflow.timing.sta.iter_sta_path_database_paths", side_effect=AssertionError("Python path replay")):
         assert main(["sta", "run-opensta", "--ir", str(source), "--output", str(paths),
                      "--opensta", str(ROOT/"tests/fixtures/fake_opensta_paths.py"), "--clock-period", "clk=10"]) == 0
         assert main(["sta", "derive-partition-net-weights", "--ir", str(source),
@@ -136,18 +136,18 @@ def test_default_cli_extraction_and_weight_chain_never_selects_inline_production
 
 
 def test_legacy_ir_is_rejected_before_starting_opensta(tmp_path):
-    from emuflow.opensta import run_opensta_path_database
+    from emuflow.timing.opensta import run_opensta_path_database
 
     ir, _source, _measured, _records = path_fixture(tmp_path)
     legacy = tmp_path/"legacy.json";legacy.write_text(json.dumps(ir.value))
-    with patch("emuflow.opensta.require_opensta_engine", side_effect=AssertionError("engine started")), \
+    with patch("emuflow.timing.opensta.require_opensta_engine", side_effect=AssertionError("engine started")), \
          pytest.raises(ValidationError, match="compact EmuIR v2"):
         run_opensta_path_database(legacy, tmp_path/"paths.json")
 
 
 def test_distinct_paths_and_nets_do_not_create_python_weight_populations(tmp_path):
-    from emuflow.ir import EmuIR
-    from emuflow.sta import STA_PATH_DATABASE_TSV_HEADER
+    from emuflow.ir.ir import EmuIR
+    from emuflow.timing.sta import STA_PATH_DATABASE_TSV_HEADER
 
     count = 30000
     source = tmp_path/"large.emuir.sqlite"

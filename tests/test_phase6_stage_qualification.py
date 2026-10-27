@@ -13,8 +13,8 @@ from contextlib import closing
 
 import pytest
 
-from emuflow.emuir_compact import write_compact_emuir
-from emuflow.errors import ValidationError
+from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow.common.errors import ValidationError
 from tests.native_build import emuflow_native
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 
@@ -321,7 +321,7 @@ def test_workspace_measurement_deduplicates_aliases_and_excludes_borrowed_symlin
 
 
 def test_native_stage_failure_never_selects_an_adapter_fallback(tmp_path, monkeypatch):
-    from emuflow import phase6_native
+    from emuflow.transport import phase6_native
 
     request = prepare(tmp_path, monkeypatch)
     path = tmp_path / "request.json"

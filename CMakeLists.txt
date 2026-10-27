@@ -203,7 +203,7 @@ if(NOT TARGET SQLite3::SQLite3)
   # CMake 3.x exposes the older imported-target spelling.
   add_library(SQLite3::SQLite3 ALIAS SQLite::SQLite3)
 endif()
-set(EMUFLOW_CORE_MANIFEST "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/sources.txt")
+set(EMUFLOW_CORE_MANIFEST "${CMAKE_SOURCE_DIR}/src/core/sources.txt")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${EMUFLOW_CORE_MANIFEST}")
 file(STRINGS "${EMUFLOW_CORE_MANIFEST}" EMUFLOW_CORE_SOURCE_NAMES)
 set(EMUFLOW_CORE_SOURCE_FILES)
@@ -212,46 +212,46 @@ foreach(source IN LISTS EMUFLOW_CORE_SOURCE_NAMES)
     continue()
   endif()
   if(NOT source MATCHES "^([A-Za-z0-9_]+/)*[A-Za-z0-9_]+\\.cpp$" OR
-      NOT EXISTS "${CMAKE_SOURCE_DIR}/src/native/${source}")
+      NOT EXISTS "${CMAKE_SOURCE_DIR}/src/core/${source}")
     message(FATAL_ERROR "Invalid shared native source: ${source}")
   endif()
-  list(FIND EMUFLOW_CORE_SOURCE_FILES "${CMAKE_SOURCE_DIR}/src/native/${source}" duplicate)
+  list(FIND EMUFLOW_CORE_SOURCE_FILES "${CMAKE_SOURCE_DIR}/src/core/${source}" duplicate)
   if(NOT duplicate EQUAL -1)
     message(FATAL_ERROR "Repeated shared native source: ${source}")
   endif()
-  list(APPEND EMUFLOW_CORE_SOURCE_FILES "${CMAKE_SOURCE_DIR}/src/native/${source}")
+  list(APPEND EMUFLOW_CORE_SOURCE_FILES "${CMAKE_SOURCE_DIR}/src/core/${source}")
 endforeach()
 set(EMUFLOW_STORE_SCHEMA_GENERATOR "${CMAKE_SOURCE_DIR}/scripts/generate_store_schema_headers.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${EMUFLOW_STORE_SCHEMA_GENERATOR}"
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_core/assignment_schema.hpp.in"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_clusters.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/emuir_compact.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/sta_paths.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/yosys_hierarchy.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/sta_net_weights.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_assignment_core.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase3_assignment_cuts.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase6_split_overlay.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase6_split_projection.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase6_split_build.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase6_transport.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase4_routes.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase5_schedule.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase5_schedule_indexes.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/global_measurements.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/qor_report.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/global_events.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/physical_coverage.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/boundary_identity.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/boundary_timing.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/logic_segment_timing.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/local_path_timing.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/logic_segment_identity.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/global_event_index.sql"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/global_event_analyze.tcl")
+  "${CMAKE_SOURCE_DIR}/src/core/storage/schema/assignment_schema.hpp.in"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/phase3_clusters.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/emuir_compact.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/sta_paths.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/yosys_hierarchy.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/sta_net_weights.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/phase3_assignment_core.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/phase3_assignment_cuts.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/phase6_split_overlay.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/phase6_split_projection.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/phase6_split_build.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/phase6_transport.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/phase4_routes.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/phase5_schedule.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/phase5_schedule_indexes.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/global_measurements.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/qor_report.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/global_events.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/physical_coverage.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/boundary_identity.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/boundary_timing.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/logic_segment_timing.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/local_path_timing.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/logic_segment_identity.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/global_event_index.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/global_event_analyze.tcl")
 execute_process(COMMAND "${Python3_EXECUTABLE}" "${EMUFLOW_STORE_SCHEMA_GENERATOR}"
-  "${CMAKE_BINARY_DIR}/generated/emuflow_core"
+  "${CMAKE_BINARY_DIR}/generated/storage/schema"
   RESULT_VARIABLE EMUFLOW_STORE_SCHEMA_STATUS)
 if(NOT EMUFLOW_STORE_SCHEMA_STATUS EQUAL 0)
   message(FATAL_ERROR "Could not generate shared store schemas")
@@ -260,7 +260,7 @@ add_library(emuflow_core STATIC ${EMUFLOW_CORE_SOURCE_FILES})
 target_compile_features(emuflow_core PUBLIC cxx_std_17)
 target_compile_options(emuflow_core PRIVATE -O3)
 target_include_directories(
-  emuflow_core PUBLIC "${CMAKE_SOURCE_DIR}/src/native"
+  emuflow_core PUBLIC "${CMAKE_SOURCE_DIR}/src/core"
   PRIVATE "${CMAKE_BINARY_DIR}/generated"
 )
 target_link_libraries(emuflow_core PUBLIC SQLite3::SQLite3 ZLIB::ZLIB)
@@ -298,7 +298,7 @@ if(BUILD_TESTING)
     PRIVATE "${CMAKE_BINARY_DIR}/generated")
   add_test(NAME emuflow_native_physical_query_objects
     COMMAND emuflow_native_physical_query_objects_test
-      "${CMAKE_SOURCE_DIR}/src/emuflow/data/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json")
+      "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json")
   set_tests_properties(emuflow_native_physical_query_objects PROPERTIES TIMEOUT 10)
   add_executable(emuflow_native_pipeline_api_test
     "${CMAKE_SOURCE_DIR}/tests/native_pipeline_api_test.cpp")
@@ -316,7 +316,7 @@ endif()
 
 add_executable(
   emuflow_native
-  "${CMAKE_SOURCE_DIR}/src/native/emuflow_native.cpp"
+  "${CMAKE_SOURCE_DIR}/src/cli/main.cpp"
 )
 set_target_properties(
   emuflow_native
@@ -367,16 +367,17 @@ string(REPLACE ";" "|" EMUFLOW_RUNTIME_RPATH_ARG "${EMUFLOW_RUNTIME_RPATH}")
 file(
   GLOB_RECURSE EMUFLOW_PYTHON_SOURCES
   CONFIGURE_DEPENDS
-  "${CMAKE_SOURCE_DIR}/src/emuflow/*.py"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/*.py"
 )
 file(
   GLOB_RECURSE EMUFLOW_RUNTIME_DATA
   CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/resources/timing/*"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/platforms/*.json"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/io/*.json"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/rapidwright/*.json"
-  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/*.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/platforms/*.json"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/io/*.json"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/rapidwright/*.json"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/*.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/*.tcl"
   "${CMAKE_SOURCE_DIR}/platforms/virtual/*.wires.csv"
   "${CMAKE_SOURCE_DIR}/scripts/opensta/*"
   "${CMAKE_SOURCE_DIR}/scripts/yosys/*"
@@ -405,24 +406,25 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E make_directory
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow"
   COMMAND
-    "${CMAKE_COMMAND}" -E copy
-    ${EMUFLOW_PYTHON_SOURCES}
+    "${Python3_EXECUTABLE}"
+    "${CMAKE_SOURCE_DIR}/scripts/install_python_runtime.py"
+    "${CMAKE_SOURCE_DIR}/src/python/emuflow"
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
-    "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema"
+    "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema"
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/schema"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
-    "${CMAKE_SOURCE_DIR}/src/emuflow/data/platforms"
+    "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/platforms"
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/platforms"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
-    "${CMAKE_SOURCE_DIR}/src/emuflow/data/io"
+    "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/io"
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/io"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
-    "${CMAKE_SOURCE_DIR}/src/emuflow/data/rapidwright"
+    "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/rapidwright"
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/rapidwright"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
@@ -499,6 +501,7 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E touch
     "${CMAKE_BINARY_DIR}/emuflow-python.stamp"
   DEPENDS
+    "${CMAKE_SOURCE_DIR}/scripts/install_python_runtime.py"
     ${EMUFLOW_PYTHON_SOURCES}
     ${EMUFLOW_RUNTIME_DATA}
   COMMENT "Installing the in-tree EmuFlow Python control plane"
@@ -542,7 +545,7 @@ if(EMUFLOW_BUILD_FPGA_INTERCHANGE)
   find_package(ZLIB REQUIRED)
   add_executable(
     emuflow_fpgaif_arch_importer
-    "${CMAKE_SOURCE_DIR}/src/native/fpga_interchange_arch_importer.cpp"
+    "${CMAKE_SOURCE_DIR}/src/cli/import_architecture.cpp"
     ${EMUFLOW_DEVICE_RESOURCE_SOURCES}
     ${EMUFLOW_DEVICE_RESOURCE_HEADERS}
   )
@@ -896,7 +899,7 @@ if(BUILD_TESTING)
     emuflow_python_tests
     PROPERTIES
       ENVIRONMENT
-        "PYTHONPATH=${CMAKE_SOURCE_DIR}/src:${CMAKE_SOURCE_DIR}:${CMAKE_SOURCE_DIR}/engines/openparf;EMUFLOW_NATIVE_ROOT=${EMUFLOW_INSTALL_ROOT}"
+        "PYTHONPATH=${CMAKE_SOURCE_DIR}/src/python:${CMAKE_SOURCE_DIR}:${CMAKE_SOURCE_DIR}/engines/openparf:${CMAKE_SOURCE_DIR}/tools;EMUFLOW_NATIVE_ROOT=${EMUFLOW_INSTALL_ROOT};EMUFLOW_TEST_BUILD_ROOT=${CMAKE_BINARY_DIR}"
   )
 
   add_test(
@@ -956,7 +959,7 @@ if(BUILD_TESTING)
       NAME openparf_numerics
       COMMAND
         "${CMAKE_COMMAND}" -E env
-        "PYTHONPATH=${CMAKE_SOURCE_DIR}/src:${CMAKE_SOURCE_DIR}"
+        "PYTHONPATH=${CMAKE_SOURCE_DIR}/src/python:${CMAKE_SOURCE_DIR}"
         "${EMUFLOW_OPENPARF_PYTHON}"
         "${CMAKE_SOURCE_DIR}/tests/test_openparf_numerics.py"
     )

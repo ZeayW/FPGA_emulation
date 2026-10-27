@@ -10,15 +10,15 @@ from pathlib import Path
 from unittest.mock import patch
 import pytest
 
-from emuflow.emuir_compact import write_compact_emuir
-from emuflow.io import read_json, write_json
-from emuflow.opensta import OPENSTA_PROVIDER
-from emuflow.partition import (CUT_MODE_STATIC_EXACT)
+from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow.common.io import read_json, write_json
+from emuflow.timing.opensta import OPENSTA_PROVIDER
+from emuflow.partition.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (build_clusters, build_partition_assignment)
-from emuflow.partition_ir import load_partition_ir
+from emuflow.partition.partition_ir import load_partition_ir
 from tests.patron_kernel_fixture import pressure_kernel_inputs, write_pressure_requests, run_pressure_kernel
-from emuflow.native_tools import native_file_generation
-from emuflow.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
+from emuflow.common.native_tools import native_file_generation
+from emuflow.timing.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
 from tests.native_build import emuflow_native, patron_ingress_oracle, hop_partition_refiner
 from tests import partition_pressure_fixture as reference_fixture
 
@@ -106,11 +106,11 @@ def test_primary_model_records_match_fixed_source_facts_and_borrow_primary(input
     model=pressure_kernel_inputs(*args,timing_database_path=timing)
     protected=(clusters['clusters']._member_offsets,clusters['clusters'].source_cluster_indices,
                *clusters['clusters']._resource_columns)
-    original=__import__('emuflow.native_protocol',fromlist=['CheckedRequestWriter']).CheckedRequestWriter.bytes
+    original=__import__('emuflow.common.native_protocol',fromlist=['CheckedRequestWriter']).CheckedRequestWriter.bytes
     def bounded_write(writer,value):
         assert all(value is not column for column in protected),'duplicated primary column'
         return original(writer,value)
-    with patch('emuflow.native_protocol.CheckedRequestWriter.bytes',bounded_write):
+    with patch('emuflow.common.native_protocol.CheckedRequestWriter.bytes',bounded_write):
         columns,board=write_pressure_requests(model,tmp_path,initial,max_moves)
         assert columns.stat().st_size==40+4*len(clusters['clusters'])+8*len(clusters['clusters']._fixed_by_cluster)
         result=subprocess.run([str(patron_ingress_oracle()),'--facts',str(ir.path),str(model.timing_path),
@@ -190,7 +190,7 @@ def test_primary_owner_rejects_corruption_before_publication(inputs,tmp_path,cor
 
 
 def test_selected_primary_owner_does_not_fall_back_when_reference_is_lost(inputs,tmp_path):
-    from emuflow.errors import ValidationError
+    from emuflow.common.errors import ValidationError
     args,initial,timing=inputs
     clusters=build_clusters(args[0],args[3],cut_mode=CUT_MODE_STATIC_EXACT,_native_compact_clusters=True)
     direct_args=(*args[:2],clusters,*args[3:])
@@ -208,7 +208,7 @@ def test_native_model_is_deterministic_without_python_graph_or_protocol(inputs,m
     args,initial,timing=inputs
     a=pressure_kernel_inputs(*args,timing_database_path=timing)
     b=pressure_kernel_inputs(*args,timing_database_path=timing)
-    with patch('emuflow.partition_ir._CompactPartitionInstances.__iter__',side_effect=AssertionError('host graph')):
+    with patch('emuflow.partition.partition_ir._CompactPartitionInstances.__iter__',side_effect=AssertionError('host graph')):
         actual,trace=run(args,a,initial,max_moves)
         repeated,other=run(args,b,initial,max_moves)
     assert dict(actual['cluster_assignment'])==dict(repeated['cluster_assignment'])
@@ -241,7 +241,7 @@ def test_native_model_summary_schema(inputs,tmp_path):
 
 @pytest.mark.parametrize("explicit_unified", [False, True])
 def test_phase3_production_selects_native_model_and_keeps_independent_validation(inputs,tmp_path,explicit_unified):
-    from emuflow.phase3 import run_phase3
+    from emuflow.partition.phase3 import run_phase3
     args,initial,timing=inputs
     platform=tmp_path/'platform.json'; write_json(platform,args[1].to_dict())
     routes=tmp_path/'routes.json'; write_json(routes,args[5])
@@ -287,7 +287,7 @@ def test_invalid_sources_are_rejected_without_publishing(inputs,tmp_path,corrupt
         columns.write_bytes(data)
         # Rebind only the columns generation in the private board request so
         # the malformed payload, rather than stale-reference check, is tested.
-        from emuflow.native_tools import native_file_generation
+        from emuflow.common.native_tools import native_file_generation
         request=bytearray(board.read_bytes())
         struct.pack_into('<3Q4q',request,12+3*56,*native_file_generation(columns))
         struct.pack_into('<I',request,len(request)-4,zlib.crc32(request[:-4]))
@@ -298,7 +298,7 @@ def test_invalid_sources_are_rejected_without_publishing(inputs,tmp_path,corrupt
     else:
         with closing(sqlite3.connect(model.timing_path)) as db,db:
             db.execute('UPDATE path_nets SET net_ordinal=7 WHERE path_ordinal=0')
-        from emuflow.native_tools import native_file_generation
+        from emuflow.common.native_tools import native_file_generation
         request=bytearray(board.read_bytes())
         struct.pack_into('<3Q4q',request,12+56,*native_file_generation(model.timing_path))
         struct.pack_into('<I',request,len(request)-4,zlib.crc32(request[:-4]))
@@ -326,7 +326,7 @@ def test_retired_snapshot_command_is_rejected_before_opening_inputs(tmp_path):
 
 
 def test_native_pressure_rejects_reference_columns_instead_of_snapshot(inputs):
-    from emuflow.errors import ValidationError
+    from emuflow.common.errors import ValidationError
     args,_initial,timing=inputs
     # Plain explicit facts carry no native primary owner; no retired builder
     # is needed to exercise this required rejection.
@@ -338,8 +338,8 @@ def test_native_pressure_rejects_reference_columns_instead_of_snapshot(inputs):
 
 @pytest.mark.parametrize('damage', ['empty', 'truncated', 'version', 'checksum', 'part-domain'])
 def test_current_typed_result_rejects_resealed_malformed_payload(inputs, damage):
-    from emuflow.errors import ValidationError
-    from emuflow.store_publication import bind_store_source
+    from emuflow.common.errors import ValidationError
+    from emuflow.storage.store_publication import bind_store_source
     from tests.native_partition_core_fixture import audit_assignment
     args, initial, timing = inputs
     model = pressure_kernel_inputs(*args, timing_database_path=timing)

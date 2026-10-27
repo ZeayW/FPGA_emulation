@@ -6,30 +6,30 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.board_link_timing import build_board_link_timing_model
+from emuflow.platform.board_link_timing import build_board_link_timing_model
 from tests.cross_layer_facts import coverage_contract_facts as build_cross_layer_timing_contract
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from tests.physical_coverage_fixture import build_cross_layer_physical_binding, validate_cross_layer_physical_binding
-from emuflow.combinational_cut import semantic_contract_sha256
-from emuflow.phase5 import validate_phase5
-from emuflow.phase5_timing_native import project_native_schedule_timing
-from emuflow.platform import Platform
-from emuflow.routing import normalize_route_constraints
+from emuflow.partition.combinational_cut import semantic_contract_sha256
+from emuflow.scheduling.phase5 import validate_phase5
+from emuflow.scheduling.phase5_timing_native import project_native_schedule_timing
+from emuflow.platform.platform import Platform
+from emuflow.routing.routing import normalize_route_constraints
 from tests.static_exact_deadline_oracle import (
     build_static_exact_segment_deadlines,
     validate_static_exact_segment_deadlines,
 )
-from emuflow.runtime import build_virtual_runtime
+from emuflow.transport.runtime import build_virtual_runtime
 from tests.system_timing_oracle import (
     _fixed_slot_transport_path_delay,
     build_system_timing,
 )
-from emuflow.system_route_storage import read_system_routes
+from emuflow.routing.system_route_storage import read_system_routes
 from tests.native_route_seal_fixture import write_route_store_fixture
-from emuflow.tdm import validate_tdm_schedule
+from emuflow.scheduling.tdm import validate_tdm_schedule
 from tests.tdm_timing_oracle import timing_summary as reconstruct_tdm_schedule_timing
 from tests.schedule_reference import build_tdm_schedule
-from emuflow.tdm_schedule_storage import (
+from emuflow.scheduling.tdm_schedule_storage import (
     ScheduleRecordSequence,
     read_tdm_schedule,
 )
@@ -343,15 +343,15 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             platform_path.write_text(
                 json.dumps(fixture.platform.to_dict()), encoding="utf-8"
             )
-            from emuflow.phase5_native import run_native_phase5
-            from emuflow.tdm import build_native_exact_schedule_request
+            from emuflow.scheduling.phase5_native import run_native_phase5
+            from emuflow.scheduling.tdm import build_native_exact_schedule_request
             from tests.native_build import emuflow_native
             producer = build_native_exact_schedule_request(indexed_routes, fixture.platform)
-            with mock.patch("emuflow.phase5_native.resolve_native_executable", return_value=str(emuflow_native())):
+            with mock.patch("emuflow.scheduling.phase5_native.resolve_native_executable", return_value=str(emuflow_native())):
                 run_native_phase5(producer, root)
             with (
                 mock.patch(
-                    "emuflow.phase5._load_phase3_semantics",
+                    "emuflow.scheduling.phase5._load_phase3_semantics",
                     return_value=(indexed_routes, routes["semantic_contract"]),
                 ),
                 mock.patch.object(

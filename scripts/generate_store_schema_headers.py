@@ -6,12 +6,12 @@ from pathlib import Path
 
 def generate(directory):
     root = Path(__file__).resolve().parents[1]
-    text = (root / "src/native/emuflow_core/assignment_schema.hpp.in").read_text(
+    text = (root / "src/core/storage/schema/assignment_schema.hpp.in").read_text(
         encoding="utf-8"
     )
     for name in ("core", "cuts"):
         ddl = (
-            root / ("src/emuflow/data/schema/phase3_assignment_" + name + ".sql")
+            root / ("src/python/emuflow/data/schema/phase3_assignment_" + name + ".sql")
         ).read_text(encoding="utf-8")
         if ')EMUFLOW_SQL"' in ddl:
             raise ValueError("SQL schema contains the native raw-string delimiter")
@@ -28,7 +28,7 @@ def generate(directory):
         ("kScheduleStoreDDL", "phase5_schedule.sql"),
         ("kScheduleStoreIndexDDL", "phase5_schedule_indexes.sql"),
     ):
-        ddl = (root / "src/emuflow/data/schema" / filename).read_text(encoding="utf-8")
+        ddl = (root / "src/python/emuflow/data/schema" / filename).read_text(encoding="utf-8")
         if ')EMUFLOW_SQL"' in ddl:
             raise ValueError("SQL schema contains the native raw-string delimiter")
         schedule += f'inline constexpr const char* {symbol} = R"EMUFLOW_SQL({ddl})EMUFLOW_SQL";\n'
@@ -37,7 +37,7 @@ def generate(directory):
     if not output.exists() or output.read_text(encoding="utf-8") != schedule:
         output.write_text(schedule, encoding="utf-8")
 
-    ddl = (root / "src/emuflow/data/schema/phase3_clusters.sql").read_text(
+    ddl = (root / "src/python/emuflow/data/schema/phase3_clusters.sql").read_text(
         encoding="utf-8"
     )
     if ')EMUFLOW_SQL"' in ddl:
@@ -51,7 +51,7 @@ def generate(directory):
     if not output.exists() or output.read_text(encoding="utf-8") != catalog:
         output.write_text(catalog, encoding="utf-8")
 
-    ddl = (root / "src/emuflow/data/schema/phase4_routes.sql").read_text(encoding="utf-8")
+    ddl = (root / "src/python/emuflow/data/schema/phase4_routes.sql").read_text(encoding="utf-8")
     if ')EMUFLOW_SQL"' in ddl:
         raise ValueError("SQL schema contains the native raw-string delimiter")
     routes = '#pragma once\nnamespace emuflow::core {\ninline constexpr const char* kSystemRouteDDL = R"EMUFLOW_SQL(' + ddl + ')EMUFLOW_SQL";\n}\n'
@@ -59,7 +59,7 @@ def generate(directory):
     if not output.exists() or output.read_text(encoding="utf-8") != routes:
         output.write_text(routes, encoding="utf-8")
 
-    ddl = (root / "src/emuflow/data/schema/physical_coverage.sql").read_text(encoding="utf-8")
+    ddl = (root / "src/python/emuflow/data/schema/physical_coverage.sql").read_text(encoding="utf-8")
     if ')EMUFLOW_SQL"' in ddl:
         raise ValueError("SQL schema contains the native raw-string delimiter")
     coverage = '#pragma once\nnamespace emuflow::core {\ninline constexpr const char* kPhysicalCoverageDDL = R"EMUFLOW_SQL(' + ddl + ')EMUFLOW_SQL";\n}\n'
@@ -67,7 +67,7 @@ def generate(directory):
     if not output.exists() or output.read_text(encoding="utf-8") != coverage:
         output.write_text(coverage, encoding="utf-8")
 
-    ddl = (root / "src/emuflow/data/schema/emuir_compact.sql").read_text(encoding="utf-8")
+    ddl = (root / "src/python/emuflow/data/schema/emuir_compact.sql").read_text(encoding="utf-8")
     if ')EMUFLOW_SQL"' in ddl:
         raise ValueError("SQL schema contains the native raw-string delimiter")
     compact = '#pragma once\nnamespace emuflow::core {\ninline constexpr const char* kEmuirCompactDDL = R"EMUFLOW_SQL(' + ddl + ')EMUFLOW_SQL";\n}\n'
@@ -75,7 +75,7 @@ def generate(directory):
     if not output.exists() or output.read_text(encoding="utf-8") != compact:
         output.write_text(compact, encoding="utf-8")
 
-    ddl = (root / "src/emuflow/data/schema/sta_paths.sql").read_text(encoding="utf-8")
+    ddl = (root / "src/python/emuflow/data/schema/sta_paths.sql").read_text(encoding="utf-8")
     if ')EMUFLOW_SQL"' in ddl:
         raise ValueError("SQL schema contains the native raw-string delimiter")
     paths = '#pragma once\nnamespace emuflow::core {\ninline constexpr const char* kStaPathStoreDDL = R"EMUFLOW_SQL(' + ddl + ')EMUFLOW_SQL";\n}\n'
@@ -83,7 +83,7 @@ def generate(directory):
     if not output.exists() or output.read_text(encoding="utf-8") != paths:
         output.write_text(paths, encoding="utf-8")
 
-    ddl = (root / "src/emuflow/data/schema/sta_net_weights.sql").read_text(encoding="utf-8")
+    ddl = (root / "src/python/emuflow/data/schema/sta_net_weights.sql").read_text(encoding="utf-8")
     if ')EMUFLOW_SQL"' in ddl:
         raise ValueError("SQL schema contains the native raw-string delimiter")
     weights = '#pragma once\nnamespace emuflow::core {\ninline constexpr const char* kStaNetWeightStoreDDL = R"EMUFLOW_SQL(' + ddl + ')EMUFLOW_SQL";\n}\n'
@@ -91,13 +91,13 @@ def generate(directory):
     if not output.exists() or output.read_text(encoding="utf-8") != weights:
         output.write_text(weights, encoding="utf-8")
 
-    ddl = (root / "src/emuflow/data/schema/yosys_hierarchy.sql").read_text(encoding="utf-8")
+    ddl = (root / "src/python/emuflow/data/schema/yosys_hierarchy.sql").read_text(encoding="utf-8")
     hierarchy = '#pragma once\nnamespace emuflow::core {\ninline constexpr const char* kYosysHierarchyDDL = R"EMUFLOW_SQL(' + ddl + ')EMUFLOW_SQL";\n}\n'
     output = Path(directory) / "yosys_hierarchy_schema.hpp"
     if not output.exists() or output.read_text(encoding="utf-8") != hierarchy:
         output.write_text(hierarchy, encoding="utf-8")
 
-    ddl = (root / "src/emuflow/data/schema/phase6_transport.sql").read_text(encoding="utf-8")
+    ddl = (root / "src/python/emuflow/data/schema/phase6_transport.sql").read_text(encoding="utf-8")
     if ')EMUFLOW_SQL"' in ddl:
         raise ValueError("SQL schema contains the native raw-string delimiter")
     transport = '#pragma once\nnamespace emuflow::core {\ninline constexpr const char* kTransportDDL = R"EMUFLOW_SQL(' + ddl + ')EMUFLOW_SQL";\n}\n'
@@ -111,7 +111,7 @@ def generate(directory):
         ("kSplitProjectionDDL", "phase6_split_projection.sql"),
         ("kSplitOverlayBuildSQL", "phase6_split_build.sql"),
     ):
-        ddl = (root / "src/emuflow/data/schema" / filename).read_text(encoding="utf-8")
+        ddl = (root / "src/python/emuflow/data/schema" / filename).read_text(encoding="utf-8")
         if ')EMUFLOW_SQL"' in ddl:
             raise ValueError("SQL schema contains the native raw-string delimiter")
         split += f'inline constexpr const char* {symbol} = R"EMUFLOW_SQL({ddl})EMUFLOW_SQL";\n'
@@ -132,11 +132,11 @@ def generate(directory):
         ("kLocalPathTimingDDL", "local_path_timing.sql"),
         ("kLogicSegmentIdentityDDL", "logic_segment_identity.sql"),
     ):
-        ddl = (root / "src/emuflow/data/schema" / filename).read_text(encoding="utf-8")
+        ddl = (root / "src/python/emuflow/data/schema" / filename).read_text(encoding="utf-8")
         if ')EMUFLOW_SQL"' in ddl:
             raise ValueError("SQL schema contains the native raw-string delimiter")
         events += f'inline constexpr const char* {symbol} = R"EMUFLOW_SQL({ddl})EMUFLOW_SQL";\n'
-    tcl = (root / "src/emuflow/data/schema/global_event_analyze.tcl").read_text(encoding="utf-8")
+    tcl = (root / "src/python/emuflow/data/schema/global_event_analyze.tcl").read_text(encoding="utf-8")
     if ')EMUFLOW_SQL"' in tcl:
         raise ValueError("Tcl template contains the native raw-string delimiter")
     events += 'inline constexpr const char* kGlobalEventAnalyzeTcl = R"EMUFLOW_SQL(' + tcl + ')EMUFLOW_SQL";\n'

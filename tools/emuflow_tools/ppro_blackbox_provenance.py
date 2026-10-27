@@ -8,8 +8,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict
 
-from emuflow.errors import ValidationError
-from emuflow import io as core_io
+from emuflow.common.errors import ValidationError
+from emuflow.common import io as core_io
 
 
 RUNNER_SOURCE_BUNDLE_SCHEMA = "emuflow.ppro-runner-source-bundle/v1"

@@ -16,15 +16,15 @@ import tempfile
 from types import SimpleNamespace
 import zlib
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from tests.native_column_fixture import _ClusterScratch, _ColumnOwner, _MappedColumn, _MappedNames
-from emuflow.native_tools import native_file_generation, resolve_native_executable, require_native_schema
-from emuflow.native_protocol import CheckedRequestWriter
-from emuflow.native_protocol import CheckedRequestWriter as _Writer
-from emuflow.resources import RESOURCE_FIELDS
-from emuflow.store_publication import StoreSource, bind_store_source, require_store_sources_unchanged
-from emuflow.tool_runtime import NativeToolProcess
-from emuflow.phase3_policy import write_candidate_policy, _pattern_range_policy
+from emuflow.common.native_tools import native_file_generation, resolve_native_executable, require_native_schema
+from emuflow.common.native_protocol import CheckedRequestWriter
+from emuflow.common.native_protocol import CheckedRequestWriter as _Writer
+from emuflow.ir.resources import RESOURCE_FIELDS
+from emuflow.storage.store_publication import StoreSource, bind_store_source, require_store_sources_unchanged
+from emuflow.common.tool_runtime import NativeToolProcess
+from emuflow.partition.phase3_policy import write_candidate_policy, _pattern_range_policy
 from tests.partition_views import ClusterColumns, ClusterOwners, CandidateColumns, require_coverage
 
 
@@ -161,7 +161,7 @@ def _load_columns(output, scratch, expected_cells, fixed, groups, generation):
 
 def build_native_clusters(ir, constraints, eligible):
     if len(ir.value['instances'])>LIMIT or len(ir.value['nets'])>LIMIT:raise AssertionError('cluster fixture exceeds bound')
-    from emuflow.emuir_storage import open_emuir_sqlite_read_only
+    from emuflow.ir.emuir_storage import open_emuir_sqlite_read_only
     if sys.byteorder != 'little':
         raise ValidationError('native primary clusters require little-endian storage')
     cells, nets = len(ir.value['instances']), len(ir.value['nets'])
@@ -299,8 +299,8 @@ def _run(platform, clusters, assignments):
     sources = [first[1], first[2], *(item for owner in owners for item in owner[3])]
     kind = 3 if len(owners) == 2 else first[0]
     require_native_schema('partition-decision-request-v1')
-    from emuflow.partition_limits import planning_resource_capacities
-    from emuflow.resources import RESOURCE_FIELDS
+    from emuflow.partition.partition_limits import planning_resource_capacities
+    from emuflow.ir.resources import RESOURCE_FIELDS
     parts = tuple(fpga.id for fpga in platform.fpgas)
     planning = planning_resource_capacities(platform.fpgas, constraints.get('resource_reservations_by_fpga', {}))
     dimensions = ('cells', *RESOURCE_FIELDS)
@@ -451,7 +451,7 @@ def reduce_native_partition_loads(clusters, assignment, fpga_ids, *, metrics=Non
             raise ValidationError('native partition load reduction failed: '+completed.stdout)
         if tuple(native_file_generation(path) for path in (source, primary)) != generations:
             raise ValidationError('native partition load source generation changed')
-        from emuflow.store_publication import require_store_sources_unchanged
+        from emuflow.storage.store_publication import require_store_sources_unchanged
         require_store_sources_unchanged(owner_sources)
         if output.stat().st_size > 4096+len(parts)*512:
             raise ValidationError('native partition load summary exceeds bound')

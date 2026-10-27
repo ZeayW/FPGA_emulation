@@ -10,12 +10,12 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.native_tools import native_file_generation
-from emuflow.platform import RatioDelayModel
-from emuflow.system_route_storage import read_system_routes, _demand_from_route
+from emuflow.common.errors import ValidationError
+from emuflow.common.native_tools import native_file_generation
+from emuflow.platform.platform import RatioDelayModel
+from emuflow.routing.system_route_storage import read_system_routes, _demand_from_route
 from tests.native_route_seal_fixture import write_route_store_fixture
-from emuflow.tdm import _write_native_schedule_board_request
+from emuflow.scheduling.tdm import _write_native_schedule_board_request
 from tests.schedule_reference import build_tdm_schedule
 from tests.native_build import emuflow_native
 
@@ -33,7 +33,7 @@ def _case(tmp_path, affine, repeated):
     routes=case._exact_routes(assignment,frame_slots=256 if repeated else 16)
     routes["semantic_contract"]={**routes["semantic_contract"],"indexed":True}
     if affine == "tree":
-        from emuflow.routing import normalize_route_constraints
+        from emuflow.routing.routing import normalize_route_constraints
         link=case.platform.links[0]
         case.platform=replace(case.platform,
             fpgas=(*case.platform.fpgas,replace(case.platform.fpgas[0],id="fpga2"),replace(case.platform.fpgas[0],id="fpga3")),

@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.io import read_json, write_json
-from emuflow.phase3_storage import (CLUSTERS_SQLITE_APPLICATION_ID, INDEXED_CLUSTERS_SCHEMA, read_phase3_assignment_view, read_phase3_cut_timing_view)
+from emuflow.common.io import read_json, write_json
+from emuflow.partition.phase3_storage import (CLUSTERS_SQLITE_APPLICATION_ID, INDEXED_CLUSTERS_SCHEMA, read_phase3_assignment_view, read_phase3_cut_timing_view)
 
 
 def _large_artifacts(count: int = 1000):
@@ -161,7 +161,7 @@ class Phase3StorageTest(unittest.TestCase):
     def test_current_lazy_ownership_never_needs_sibling_clusters(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);path,selector,assignment=self._current_assignment(root)
-            with mock.patch('emuflow.ir.EmuIR.load',side_effect=AssertionError('graph load')):
+            with mock.patch('emuflow.ir.ir.EmuIR.load',side_effect=AssertionError('graph load')):
                 view=read_phase3_assignment_view(path,include_instance_assignment=True)
             self.assertNotIn('cluster_assignment',view)
             self.assertNotIn('semantic_contract',view)

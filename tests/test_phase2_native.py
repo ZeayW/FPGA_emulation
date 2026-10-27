@@ -5,12 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.indexed_timing import (
+from emuflow.common.errors import ValidationError
+from emuflow.timing.indexed_timing import (
     IndexedTimingView, _NEGATIVE_TIMING_CELLS, _TimingTypes,
     _timing_parameter_is_one,
 )
-from emuflow.phase2_native import _POLICY_LIMIT, _encode_policy, prepare_policy
+from emuflow.timing.phase2_native import _POLICY_LIMIT, _encode_policy, prepare_policy
 
 
 PARAMETERS = [
@@ -87,9 +87,9 @@ def test_phase2_policy_bound_includes_the_final_newline():
 @pytest.mark.parametrize('architecture,expected_mode', [(False, 0), (True, 1)])
 def test_bounded_policy_preserves_default_and_architecture_modes(tmp_path, monkeypatch,
                                                                 architecture, expected_mode):
-    import emuflow.phase2_native as native
-    from emuflow.io import file_sha256
-    from emuflow.store_publication import bind_store_source
+    import emuflow.timing.phase2_native as native
+    from emuflow.common.io import file_sha256
+    from emuflow.storage.store_publication import bind_store_source
     source = tmp_path / 'source.sqlite'
     source.write_bytes(b'source generation')
     executable = tmp_path / 'sta'
@@ -140,7 +140,7 @@ def phase2_runtime(tmp_path, monkeypatch):
 def _counter_stage_input(root):
     from pathlib import Path
     from tests.sta_path_reference import endpoint_facts
-    from emuflow.yosys import import_yosys_json
+    from emuflow.frontend.yosys import import_yosys_json
     repository = Path(__file__).resolve().parents[1]
     ir = import_yosys_json(repository / 'examples/yosys/counter.json',
                            top='counter', clocks=['clk'])
@@ -160,10 +160,10 @@ def _counter_stage_input(root):
 
 
 def _architecture_stage_contract(root):
-    from emuflow.xilinx_preplacement_timing import (
+    from emuflow.timing.xilinx_preplacement_timing import (
         XILINX_PREPLACEMENT_TIMING_SCHEMA, _REQUIRED_DELAYS,
     )
-    from emuflow.xilinx_rwroute import (
+    from emuflow.physical.rapidwright.xilinx_rwroute import (
         RAPIDWRIGHT_TIMING_DATA_REVISION, RAPIDWRIGHT_TIMING_DATA_SHA256,
     )
     # Consumer-contract fixture: positive synthetic values and the required
@@ -238,7 +238,7 @@ print('FIXED_OPENSTA extracted records={len(records)}')
 
 def _stage_command(source, policy, output):
     import subprocess
-    from emuflow.native_tools import resolve_native_executable
+    from emuflow.common.native_tools import resolve_native_executable
     executable = resolve_native_executable('emuflow-native')
     operation = output.parent / (output.name + '-operation.json')
     result = subprocess.run([executable, '--report', str(operation), 'phase2', 'run',
@@ -283,9 +283,9 @@ def _assert_published_tool_evidence(output, engine):
 @pytest.mark.parametrize('optimization_enabled', [False, True])
 def test_complete_native_stage_matches_retained_provider_and_typed_weights(
         tmp_path, phase2_runtime, architecture, optimization_enabled):
-    from emuflow.opensta import run_opensta_path_database
-    from emuflow.phase2_native import run_native_phase2
-    from emuflow.sta import (derive_partition_net_weights,
+    from emuflow.timing.opensta import run_opensta_path_database
+    from emuflow.timing.phase2_native import run_native_phase2
+    from emuflow.timing.sta import (derive_partition_net_weights,
                              iter_partition_net_weight_records,
                              iter_sta_path_database_paths, validate_partition_net_weights,
                              validate_sta_path_database)
@@ -297,9 +297,9 @@ def test_complete_native_stage_matches_retained_provider_and_typed_weights(
                'max_paths': 1000}
     output = tmp_path / 'native'
     from unittest.mock import patch
-    with patch('emuflow.opensta.run_opensta_path_database',
+    with patch('emuflow.timing.opensta.run_opensta_path_database',
                side_effect=AssertionError('old Python timing stage was invoked')), \
-         patch('emuflow.ir.EmuIR.load', side_effect=AssertionError('whole Python graph was loaded')):
+         patch('emuflow.ir.ir.EmuIR.load', side_effect=AssertionError('whole Python graph was loaded')):
         report = run_native_phase2(source, output, optimization_enabled=optimization_enabled,
                                    criticality_scale=7.5, criticality_exponent=1.25, **options)
     reference = tmp_path / 'reference-paths.json'
@@ -346,7 +346,7 @@ def test_complete_native_stage_matches_retained_provider_and_typed_weights(
                                   'export-script', 'runtime-check-script', 'architecture-timing-db'])
 def test_native_stage_rejects_replaced_original_source_generation(tmp_path, phase2_runtime, role):
     from pathlib import Path
-    from emuflow.native_tools import native_file_generation
+    from emuflow.common.native_tools import native_file_generation
     source, records = _counter_stage_input(tmp_path)
     engine, _trace = _fixed_opensta(tmp_path, records)
     architecture = _architecture_stage_contract(tmp_path)
@@ -385,7 +385,7 @@ def test_native_stage_rejects_failed_or_invalid_engine_output(tmp_path, phase2_r
                                     'io-direction', 'optimization-string', 'optimization-int',
                                     'max-paths-bool'])
 def test_native_stage_independently_rejects_invalid_policy_semantics(tmp_path, phase2_runtime, damage):
-    from emuflow.timing_io import timing_io_sha256
+    from emuflow.timing.timing_io import timing_io_sha256
     source, records = _counter_stage_input(tmp_path)
     engine, _trace = _fixed_opensta(tmp_path, records)
     policy = prepare_policy(tmp_path / 'policy', source, clocks={'clk': 10}, executable=str(engine))
@@ -418,7 +418,7 @@ def test_native_stage_discards_outputs_if_source_changes_inside_engine(tmp_path,
 
 
 def test_native_stage_and_host_never_replace_existing_public_directory(tmp_path, phase2_runtime):
-    from emuflow.phase2_native import run_native_phase2
+    from emuflow.timing.phase2_native import run_native_phase2
     source, records = _counter_stage_input(tmp_path)
     engine, _trace = _fixed_opensta(tmp_path, records)
     policy = prepare_policy(tmp_path / 'policy', source, clocks={'clk': 10}, executable=str(engine))
@@ -437,11 +437,11 @@ def test_native_stage_and_host_never_replace_existing_public_directory(tmp_path,
 def test_real_opensta_stage_matches_retained_provider_when_installed(tmp_path, phase2_runtime):
     import os
     from pathlib import Path
-    from emuflow.native_tools import resolve_native_executable
-    from emuflow.opensta import run_opensta_path_database
-    from emuflow.phase2_native import run_native_phase2
-    from emuflow.sta import iter_sta_path_database_paths
-    from emuflow.errors import EmuFlowError
+    from emuflow.common.native_tools import resolve_native_executable
+    from emuflow.timing.opensta import run_opensta_path_database
+    from emuflow.timing.phase2_native import run_native_phase2
+    from emuflow.timing.sta import iter_sta_path_database_paths
+    from emuflow.common.errors import EmuFlowError
     try:
         engine = Path(resolve_native_executable('sta'))
     except EmuFlowError:

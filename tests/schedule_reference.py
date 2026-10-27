@@ -2,11 +2,11 @@
 from __future__ import annotations
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
-from emuflow import tdm as _tdm
+from emuflow.scheduling import tdm as _tdm
 REFERENCE_TDM_PROVIDER = "deterministic-round-barrier-earliest-slot-v2"
-from emuflow.errors import TDMScheduleInfeasibleError, ValidationError
-from emuflow.platform import Platform
-from emuflow.routing import (
+from emuflow.common.errors import TDMScheduleInfeasibleError, ValidationError
+from emuflow.platform.platform import Platform
+from emuflow.routing.routing import (
     RUNTIME_BARRIER_SLOTS, SYSTEM_ROUTES_SCHEMA, build_directed_graph,
     normalize_route_constraints, route_link_delay_coefficients_ns,
 )

@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from emuflow.xilinx_physical_backend import (
+from emuflow.physical.xilinx_physical_backend import (
     _compact_openparf_qualification,
     _finish_rapidwright_routed_backend,
     _physical_clock_periods,
@@ -42,7 +42,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             kw["route_value_sink"].update(route_header)
             return route_check
 
-        module = "emuflow.xilinx_physical_backend."
+        module = "emuflow.physical.xilinx_physical_backend."
         with mock.patch(module + "_sha256", return_value="b" * 64), \
              mock.patch(module + "export_rwroute_input", return_value=input_report) as export, \
              mock.patch(module + "run_rwroute", side_effect=route) as router, \
@@ -63,7 +63,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
 
     def test_completed_route_timing_never_invokes_export_or_router(self):
         root = Path("fixture")
-        module = "emuflow.xilinx_physical_backend."
+        module = "emuflow.physical.xilinx_physical_backend."
         route_check = {"status": "pass", "route_sha256": "a" * 64}
         route_header = {"fixture": "bounded-header"}
         source = {"mapped_sha256": "b" * 64}
@@ -88,7 +88,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
         self.assertEqual(timing.call_args.kwargs["route_validation"], route_check)
 
     def test_resume_revalidates_before_timing_without_launching_router(self):
-        from emuflow.errors import ValidationError
+        from emuflow.common.errors import ValidationError
 
         for valid in (True, False):
             with self.subTest(valid=valid), tempfile.TemporaryDirectory() as temporary:
@@ -114,16 +114,16 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 ):
                     arguments[name] = root / name
                 with (
-                    mock.patch("emuflow.xilinx_physical_backend._sha256", return_value="0" * 64),
-                    mock.patch("emuflow.xilinx_physical_backend.export_rwroute_input") as export,
+                    mock.patch("emuflow.physical.xilinx_physical_backend._sha256", return_value="0" * 64),
+                    mock.patch("emuflow.physical.xilinx_physical_backend.export_rwroute_input") as export,
                     mock.patch(
-                        "emuflow.xilinx_physical_backend.validate_xilinx_route_db",
+                        "emuflow.physical.xilinx_physical_backend.validate_xilinx_route_db",
                         return_value={"status": "pass"},
                         side_effect=None if valid else ValidationError("input mismatch"),
                     ) as validate,
-                    mock.patch("emuflow.xilinx_physical_backend.run_rwroute") as route,
+                    mock.patch("emuflow.physical.xilinx_physical_backend.run_rwroute") as route,
                     mock.patch(
-                        "emuflow.xilinx_physical_backend.build_xilinx_routed_timing",
+                        "emuflow.physical.xilinx_physical_backend.build_xilinx_routed_timing",
                         side_effect=RuntimeError("timing-boundary-reached"),
                     ) as timing,
                 ):
@@ -261,14 +261,14 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 )
                 certificate_path.parent.mkdir(parents=True, exist_ok=True)
                 certificate_path.write_text("{}\n", encoding="utf-8")
-                from emuflow.xilinx_openparf_atomic import _write_site_database
+                from emuflow.physical.openparf.xilinx_openparf_atomic import _write_site_database
                 _write_site_database(certificate_path.with_name("site-map.sqlite3"), {
                     "coordinate_system":"native-device-tile-column-row-v1",
                     "architecture_sha256":"0"*64,
                     "sites":[{"dense_x":0,"dense_y":0,"physical_x":0,"physical_y":0,
                         "placement_x":0.5,"placement_y":0.5,"site":"S0",
                         "resources":{"FF":16},"physical_sites":{"FF":["S0"]}}]})
-                from emuflow.io import file_sha256
+                from emuflow.common.io import file_sha256
                 return {
                     "status": "pass",
                     "manifest":{"site_database":{"sha256":file_sha256(
@@ -286,48 +286,48 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
 
             with (
                 mock.patch(
-                    "emuflow.xilinx_physical_backend.ArchitectureDB.load",
+                    "emuflow.physical.xilinx_physical_backend.ArchitectureDB.load",
                     return_value=architecture_object,
                 ),
                 mock.patch(
-                    "emuflow.xilinx_physical_backend.emit_xilinx_mapped_index",
+                    "emuflow.physical.xilinx_physical_backend.emit_xilinx_mapped_index",
                     return_value={"top": "top", "output_sha256": "0" * 64},
                 ),
                 mock.patch(
-                    "emuflow.xilinx_physical_backend.open_xilinx_mapped_index",
+                    "emuflow.physical.xilinx_physical_backend.open_xilinx_mapped_index",
                     return_value=mapped_value,
                 ),
-                mock.patch("emuflow.xilinx_physical_backend.read_json") as read,
+                mock.patch("emuflow.physical.xilinx_physical_backend.read_json") as read,
                 mock.patch(
-                    "emuflow.xilinx_physical_backend.build_xilinx_openparf_atomic_source",
+                    "emuflow.physical.xilinx_physical_backend.build_xilinx_openparf_atomic_source",
                     side_effect=publish_atomic_source,
                 ) as build_source,
                 mock.patch(
-                    "emuflow.xilinx_physical_backend._select_xilinx_slr_window",
+                    "emuflow.physical.xilinx_physical_backend._select_xilinx_slr_window",
                     return_value=("SLR1",),
                 ),
                 mock.patch(
-                    "emuflow.xilinx_physical_backend.run_xilinx_openparf_atomic_qualification",
+                    "emuflow.physical.xilinx_physical_backend.run_xilinx_openparf_atomic_qualification",
                     side_effect=qualify,
                 ) as qualify,
                 mock.patch(
-                    "emuflow.xilinx_physical_backend.materialize_xilinx_openparf_atomic_contract",
+                    "emuflow.physical.xilinx_physical_backend.materialize_xilinx_openparf_atomic_contract",
                     side_effect=materialize,
                 ) as bridge,
                 mock.patch(
-                    "emuflow.xilinx_physical_backend.validate_xilinx_packing",
+                    "emuflow.physical.xilinx_physical_backend.validate_xilinx_packing",
                     return_value={"status": "pass"},
                 ) as validate_packing,
                 mock.patch(
-                    "emuflow.xilinx_physical_backend.validate_xilinx_placement",
+                    "emuflow.physical.xilinx_physical_backend.validate_xilinx_placement",
                     return_value={"status": "pass"},
                 ) as validate_placement,
                 mock.patch(
-                    "emuflow.xilinx_physical_backend.export_rwroute_input",
+                    "emuflow.physical.xilinx_physical_backend.export_rwroute_input",
                     side_effect=stop_at_export,
                 ) as export,
                 mock.patch(
-                    "emuflow.xilinx_physical_backend._sha256",
+                    "emuflow.physical.xilinx_physical_backend._sha256",
                     return_value="0" * 64,
                 ) as digest,
             ):

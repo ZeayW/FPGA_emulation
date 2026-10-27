@@ -11,9 +11,9 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import EmuFlowError
-from emuflow.native_compile_adapter import STAGES, _control_snapshot, _initial_context, _pack, _unpack, execute
-from emuflow.native_compile import _request, run_native_multi_fpga_flow
+from emuflow.common.errors import EmuFlowError
+from emuflow.flow.native_compile_adapter import STAGES, _control_snapshot, _initial_context, _pack, _unpack, execute
+from emuflow.flow.native_compile import _request, run_native_multi_fpga_flow
 from tests.native_build import emuflow_native, tlr_router
 
 
@@ -39,7 +39,7 @@ def test_control_state_rejects_graph_views_without_traversal():
 
 
 def test_controller_transfers_report_projection_without_graph_diagnostics():
-    from emuflow import multi_fpga_flow as flow
+    from emuflow.flow import multi_fpga_flow as flow
     class GraphView(dict):
         def __iter__(self):
             raise AssertionError("diagnostic graph expanded")
@@ -54,7 +54,7 @@ def test_controller_transfers_report_projection_without_graph_diagnostics():
 
 
 def test_adapter_uses_actual_compile_defaults_and_rejects_relative_bindings(tmp_path):
-    from emuflow.multi_fpga_flow import run_multi_fpga_flow
+    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
     context = _initial_context({"options": {"output_dir": str(tmp_path / "out")}})
     defaults = inspect.signature(run_multi_fpga_flow).parameters
     for key in ("partition_provider", "seed", "cut_mode", "physical_seed"):
@@ -70,13 +70,13 @@ def test_adapter_rejects_mixed_state_before_calling_phase(tmp_path):
     request.write_text(json.dumps({"options": {"output_dir": str(tmp_path / "out")}}))
     previous = tmp_path / "previous.json"
     previous.write_text(json.dumps({"schema": "emuflow.native-compile-state/v1", "run_id": "other"}))
-    with patch("emuflow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("phase started")):
+    with patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("phase started")):
         with pytest.raises(EmuFlowError, match="mixed or out-of-order"):
             execute("frontend", request, previous, tmp_path / "next", "this-run")
 
 
 def test_shared_preflight_publishes_effective_configuration_and_restores_next_context(tmp_path):
-    from emuflow.multi_fpga_flow import run_multi_fpga_flow
+    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
     request = tmp_path / "request.json"
     options = {"output_dir": str(tmp_path / "out"), "mapping_profile": "xilinx-ultrascaleplus-open-v1",
                "partition_provider": "tritonpart", "clock_periods": {"clk": 10.0}, "opensta": sys.executable,
@@ -85,7 +85,7 @@ def test_shared_preflight_publishes_effective_configuration_and_restores_next_co
     options["architecture_timing_db"] = str(write_mock_xilinx_timing_contract(tmp_path / "mock-timing.json"))
     request.write_text(json.dumps({"options": options}))
     previous = tmp_path / "preflight.json"
-    with patch("emuflow.multi_fpga_flow.check_opensta_engine_version"):
+    with patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"):
         execute("preflight", request, None, previous, "run")
     value = json.loads(previous.read_text())
     assert set(value["effective_options"]) == set(inspect.signature(run_multi_fpga_flow).parameters)
@@ -93,7 +93,7 @@ def test_shared_preflight_publishes_effective_configuration_and_restores_next_co
     observed = []
     def frontend(ctx):
         observed.append((ctx.output_dir, ctx.clocks, ctx.seed, ctx.opensta))
-    with patch("emuflow.multi_fpga_flow._compile_frontend", side_effect=frontend):
+    with patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=frontend):
         execute("frontend", request, previous, tmp_path / "frontend.json", "run")
     assert observed == [(tmp_path / "out", (), 0, str(Path(sys.executable).resolve()))]
 
@@ -112,12 +112,12 @@ def test_bridge_preserves_invocation_directory_defaults_and_path_bindings(tmp_pa
 
 
 def test_cli_selects_native_control_without_calling_python_compiler():
-    from emuflow.cli import _build_parser, _dispatch
+    from emuflow.flow.cli import _build_parser, _dispatch
     args = _build_parser().parse_args(["multi-fpga", "compile", "--out", "unused",
                                       "--compile-implementation", "native-control-v1"])
-    with (patch("emuflow.native_compile.run_native_multi_fpga_flow", return_value={"status": "pass"}) as native,
-          patch("emuflow.cli.run_multi_fpga_flow", side_effect=AssertionError("Python compiler called")),
-          patch("emuflow.cli._print_json")):
+    with (patch("emuflow.flow.native_compile.run_native_multi_fpga_flow", return_value={"status": "pass"}) as native,
+          patch("emuflow.flow.cli.run_multi_fpga_flow", side_effect=AssertionError("Python compiler called")),
+          patch("emuflow.flow.cli._print_json")):
         assert _dispatch(args) == 0
     assert "slot_refinement_iterations" not in native.call_args.kwargs
     assert native.call_args.kwargs["partition_provider"] == "patron"
@@ -129,10 +129,10 @@ def fixture_request(tmp_path, *, fail=None, corrupt=None, waiting=False, tempora
     native_root = tmp_path / "native-inputs"
     native_root.mkdir()
     case, _, _, _ = native_inputs(native_root)
-    from emuflow.emuir_compact import write_compact_emuir
+    from emuflow.ir.emuir_compact import write_compact_emuir
     from tests.native_partition_facts import (build_clusters)
-    from emuflow.partition_ir import load_partition_ir
-    from emuflow.phase3_native import write_request
+    from emuflow.partition.partition_ir import load_partition_ir
+    from emuflow.partition.phase3_native import write_request
     source_ir = native_root / "source.emuir.sqlite"
     write_compact_emuir(source_ir, case.ir.value)
     limits = dict(case._phase5_assignment['constraints'], balance_dimensions=[], balance_tolerance=1.0)
@@ -146,10 +146,10 @@ def fixture_request(tmp_path, *, fail=None, corrupt=None, waiting=False, tempora
     partition_request = write_request(native_root/'partition-request', source_ir, native_root/'platform.normalized.json',
         provider='tritonpart', constraints_path=constraint_path, tritonpart_solution=solution,
         max_cross_fpga_dependency_depth=depth)
-    from emuflow.phase6_native import prepare_compile_policy
+    from emuflow.transport.phase6_native import prepare_compile_policy
     phase6_policy=prepare_compile_policy(native_root/'phase6-policy',source_ir,
         native_root/'platform.normalized.json',clock_periods={clock['id']:1.0 for clock in case.ir.value['clocks']})
-    from emuflow.phase4_native import prepare_policy
+    from emuflow.routing.phase4_native import prepare_policy
     phase4_policy=prepare_policy(native_root/'phase4-policy',native_root/'assignment.sqlite',
         native_root/'platform.normalized.json',frame_slots=16,max_iterations=3,timing_driven=False)
     state_fields = {
@@ -168,8 +168,10 @@ def fixture_request(tmp_path, *, fail=None, corrupt=None, waiting=False, tempora
     }
     source = tmp_path / "source/emuflow"
     source.mkdir(parents=True)
+    (source / "flow").mkdir()
+    (source / "flow/__init__.py").write_text("")
     (source / "__init__.py").write_text("")
-    (source / "native_compile_adapter.py").write_text('''
+    (source / "flow/native_compile_adapter.py").write_text('''
 import argparse,json,os,pathlib,signal,time
 p=argparse.ArgumentParser()
 for name in ('stage','request','previous','output','run-id'):p.add_argument('--'+name)
@@ -284,26 +286,26 @@ def test_native_phase_report_reference_rejects_changed_generation_and_unknown_sc
 
 
 def test_python_tdm_adapter_entry_is_retired_before_execution(tmp_path):
-    with patch("emuflow.multi_fpga_flow._compile_schedule", side_effect=AssertionError("Python schedule started")):
+    with patch("emuflow.flow.multi_fpga_flow._compile_schedule", side_effect=AssertionError("Python schedule started")):
         with pytest.raises(EmuFlowError, match=r"owned by the C\+\+ Phase 5 stage"):
             execute("tdm", tmp_path / "missing", None, tmp_path / "unused", "run")
 
 
 def test_baseline_split_never_executes_a_python_phase_adapter(tmp_path):
-    from emuflow.native_tools import native_file_generation
+    from emuflow.common.native_tools import native_file_generation
     request=tmp_path/'request.json';request.write_text('{}')
     prior=tmp_path/'prior.json'
     prior.write_text(json.dumps({'schema':'emuflow.native-compile-state/v1','run_id':'run',
         'stage':'tdm','status':'pass','request_generation':[str(value) for value in native_file_generation(request)],
         'state':_pack({'phase6_provider':'baseline'})}))
-    with patch('emuflow.multi_fpga_flow._compile_split',side_effect=AssertionError('Python split started')):
+    with patch('emuflow.flow.multi_fpga_flow._compile_split',side_effect=AssertionError('Python split started')):
         with pytest.raises(EmuFlowError,match=r'owned by the C\+\+ stage'):
             execute('split',request,prior,tmp_path/'unused','run')
 
 
 def test_native_controller_retires_each_phase_temporary_directory_before_next_phase(tmp_path):
     request = fixture_request(tmp_path)
-    source = tmp_path / "source/emuflow/native_compile_adapter.py"
+    source = tmp_path / "source/emuflow/flow/native_compile_adapter.py"
     text = source.read_text().replace(
         "temporary=pathlib.Path(os.environ['TMPDIR'])",
         """previous=out/'temporary-paths'
@@ -350,8 +352,8 @@ def test_native_controller_result_matches_registered_schema(tmp_path):
 def test_bridge_runs_native_controller_and_removes_only_request_scratch(tmp_path, monkeypatch):
     request = fixture_request(tmp_path)
     value = json.loads(request.read_text())
-    monkeypatch.setattr("emuflow.native_compile._request", lambda *_: (value, json.dumps(value)))
-    monkeypatch.setattr("emuflow.native_compile.resolve_native_executable", lambda _: str(emuflow_native()))
+    monkeypatch.setattr("emuflow.flow.native_compile._request", lambda *_: (value, json.dumps(value)))
+    monkeypatch.setattr("emuflow.flow.native_compile.resolve_native_executable", lambda _: str(emuflow_native()))
     assert run_native_multi_fpga_flow()["status"] == "pass"
     assert (tmp_path / "out/native-compile-result.json").is_file()
     assert not list(tmp_path.glob(".emuflow-compile-*"))
@@ -369,9 +371,9 @@ def test_controller_rejects_ambiguous_request_before_starting_any_phase(tmp_path
 
 def test_actual_shared_phase_adapters_complete_existing_nonphysical_contract_fixture(tmp_path, monkeypatch):
     """Adapter integration only; the required large-design acceptance is NVDLA."""
-    from emuflow.multi_fpga_flow import validate_multi_fpga_flow_bundle
+    from emuflow.flow.multi_fpga_flow import validate_multi_fpga_flow_bundle
     root = Path(__file__).resolve().parents[1]
-    monkeypatch.setattr("emuflow.native_compile.resolve_native_executable", lambda _: str(emuflow_native()))
+    monkeypatch.setattr("emuflow.flow.native_compile.resolve_native_executable", lambda _: str(emuflow_native()))
     output = tmp_path / "flow"
     native_root = tmp_path / "native"
     (native_root / "bin").mkdir(parents=True)
@@ -381,7 +383,7 @@ def test_actual_shared_phase_adapters_complete_existing_nonphysical_contract_fix
     # native timing stage forwards its environment through the tool protocol.
     monkeypatch.setenv("EMUFLOW_COMPILE_EMPTY_ENV", "")
     from tests.partition_fixture import write_fixture_solution
-    from emuflow.yosys import import_yosys_json
+    from emuflow.frontend.yosys import import_yosys_json
     solution = tmp_path / "initial.part"
     write_fixture_solution(
         import_yosys_json(root / "examples/yosys/static_exact_chain.json", top="static_exact_chain", clocks=["clk"]),
@@ -475,7 +477,7 @@ def test_bridge_sigterm_waits_for_native_cleanup_before_removing_request(tmp_pat
     request = fixture_request(tmp_path, waiting=True)
     command = f'''
 import json
-from emuflow import native_compile as bridge
+from emuflow.flow import native_compile as bridge
 value=json.loads(open({str(request)!r}).read())
 bridge._request=lambda *args:(value,json.dumps(value))
 bridge.resolve_native_executable=lambda name:{str(emuflow_native())!r}
@@ -506,18 +508,19 @@ bridge.run_native_multi_fpga_flow()
 def test_actual_adapter_cancellation_unwinds_nested_native_engine_owner(tmp_path):
     request = fixture_request(tmp_path)
     source = tmp_path / "source/emuflow"
-    package = Path(__file__).resolve().parents[1] / "src/emuflow"
+    package = Path(__file__).resolve().parents[1] / "src/python/emuflow"
     (source / "__init__.py").write_text(f"__path__.append({str(package)!r})\n")
-    (source / "native_compile_adapter.py").write_text(f'''
+    (source / "flow/__init__.py").write_text(f"__path__.append({str(package / 'flow')!r})\n")
+    (source / "flow/native_compile_adapter.py").write_text(f'''
 import importlib.util
-s=importlib.util.spec_from_file_location('emuflow.actual_adapter',{str(package / 'native_compile_adapter.py')!r})
+s=importlib.util.spec_from_file_location('emuflow.actual_adapter',{str(package / 'flow/native_compile_adapter.py')!r})
 m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
 raise SystemExit(m.main())
 ''')
-    (source / "multi_fpga_flow.py").write_text(f'''
+    (source / "flow/multi_fpga_flow.py").write_text(f'''
 from pathlib import Path
 import os,sys
-from emuflow.tool_runtime import NativeToolProcess
+from emuflow.common.tool_runtime import NativeToolProcess
 class _CompileContext:
  def __init__(self,values,**kw):self.__dict__.update(values)
 def run_multi_fpga_flow(output_dir: Path=None, prepared_timing: Path=None):pass
@@ -564,7 +567,7 @@ def test_native_partition_report_reference_rejects_changes_and_python_partition_
     path = Path(reference[1]['path']);path.write_text(path.read_text()+'\n')
     with pytest.raises(EmuFlowError, match='partition report generation changed'):
         _unpack(reference)
-    with patch('emuflow.multi_fpga_flow._compile_partition', side_effect=AssertionError('Python partition started')):
+    with patch('emuflow.flow.multi_fpga_flow._compile_partition', side_effect=AssertionError('Python partition started')):
         with pytest.raises(EmuFlowError, match=r'owned by the C\+\+ Phase 3 stage'):
             execute('partition', tmp_path/'missing', None, tmp_path/'unused', 'run')
     control = json.loads((tmp_path/'out/native-compile-result.json').read_text())

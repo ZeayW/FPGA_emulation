@@ -9,9 +9,9 @@ from __future__ import annotations
 from collections import defaultdict
 import math
 
-from emuflow.combinational_cut import semantic_contract_sha256
-from emuflow.errors import ValidationError
-from emuflow.tdm import sampled_virtual_wire_timing_constraints
+from emuflow.partition.combinational_cut import semantic_contract_sha256
+from emuflow.common.errors import ValidationError
+from emuflow.scheduling.tdm import sampled_virtual_wire_timing_constraints
 
 _LIMIT = 4096
 _SCHEMA = "emuflow.static-exact-segment-deadlines/v2"

@@ -1,9 +1,9 @@
 import unittest
 from pathlib import Path
 
-from emuflow.errors import ValidationError
-from emuflow.platform import Platform
-from emuflow.routing import build_directed_graph, normalize_route_constraints
+from emuflow.common.errors import ValidationError
+from emuflow.platform.platform import Platform
+from emuflow.routing.routing import build_directed_graph, normalize_route_constraints
 
 
 ROOT = Path(__file__).resolve().parents[1]

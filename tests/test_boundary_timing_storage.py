@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from emuflow.boundary_timing_storage import (BOUNDARY_TIMING_SCHEMA, BOUNDARY_TIMING_STORAGE_SCHEMA, BoundaryTimingView, publish_boundary_timing_selector, read_boundary_timing_storage)
+from emuflow.timing.boundary_timing_storage import (BOUNDARY_TIMING_SCHEMA, BOUNDARY_TIMING_STORAGE_SCHEMA, BoundaryTimingView, publish_boundary_timing_selector, read_boundary_timing_storage)
 from tests.timing_facts import boundary_timing_facts
-from emuflow.errors import ValidationError
-from emuflow.physical_summary_storage import LazyPhysicalEvidenceMap
+from emuflow.common.errors import ValidationError
+from emuflow.physical.physical_summary_storage import LazyPhysicalEvidenceMap
 
 
 def _header() -> dict[str, object]:

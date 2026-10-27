@@ -9,8 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.store_publication import bind_store_source
+from emuflow.common.errors import ValidationError
+from emuflow.storage.store_publication import bind_store_source
 
 ROOT = Path(__file__).resolve().parents[1]
 KINDS = ("emuir", "paths", "weights", "qor", "functions", "sites")
@@ -36,8 +36,8 @@ def coordinates(generation=0):
 
 
 def setup_case(kind, root):
-    from emuflow.yosys import import_yosys_json
-    from emuflow import sta
+    from emuflow.frontend.yosys import import_yosys_json
+    from emuflow.timing import sta
 
     ir = import_yosys_json(
         ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"]
@@ -49,15 +49,15 @@ def setup_case(kind, root):
     sources = (bind_store_source(input_text, "sta-source-document-v1"),)
     output = root / ("result.emuir.sqlite" if kind == "emuir" else "result.json")
     module_name = {
-        "emuir": "emuir_compact",
-        "routes": "system_route_storage",
-        "paths": "sta",
-        "weights": "sta",
-        "qor": "qor_storage",
-        "functions": "vivado_indexed_netlist",
-        "sites": "xilinx_openparf_atomic",
+        "emuir": "emuflow.ir.emuir_compact",
+        "routes": "emuflow.routing.system_route_storage",
+        "paths": "emuflow.timing.sta",
+        "weights": "emuflow.timing.sta",
+        "qor": "emuflow.timing.qor_storage",
+        "functions": "emuflow.physical.vivado.vivado_indexed_netlist",
+        "sites": "emuflow.physical.openparf.xilinx_openparf_atomic",
     }[kind]
-    module = importlib.import_module("emuflow." + module_name)
+    module = importlib.import_module(module_name)
     measured = root / "paths.tsv"
 
     def write_measurement(generation=0):
@@ -195,7 +195,7 @@ def test_sta_selector_failure_preserves_old_payload_and_retires_uncommitted_gene
     module, output, produce = setup_case(kind, tmp_path)
     previous = produce()
     old = (output.read_bytes(), previous.read_bytes())
-    from emuflow import store_publication
+    from emuflow.storage import store_publication
 
     write = store_publication.write_json
 
@@ -217,9 +217,9 @@ def test_sta_selector_failure_preserves_old_payload_and_retires_uncommitted_gene
 
 
 def test_site_alias_failure_keeps_prior_target_and_shares_successful_bytes(tmp_path):
-    from emuflow import xilinx_openparf_atomic as sites
-    from emuflow.io import file_sha256
-    from emuflow.native_tools import native_file_generation
+    from emuflow.physical.openparf import xilinx_openparf_atomic as sites
+    from emuflow.common.io import file_sha256
+    from emuflow.common.native_tools import native_file_generation
 
     source, target = tmp_path / "source.sqlite", tmp_path / "alias.sqlite"
     sites._write_site_database(source, coordinates())
@@ -260,7 +260,7 @@ def test_incomplete_selector_backup_never_replaces_a_valid_previous_selector(
         Path(target).write_bytes(b"partial backup")
         raise OSError("backup rejected")
 
-    from emuflow import store_publication
+    from emuflow.storage import store_publication
 
     with patch.object(store_publication.shutil, "copyfile", fail_copy):
         with pytest.raises(OSError, match="backup rejected"):
@@ -299,7 +299,7 @@ def test_route_and_qor_readers_preserve_the_generation_they_validated(
 def test_schedule_cannot_recapture_a_changed_validated_route_owner(
     tmp_path, monkeypatch
 ):
-    from emuflow.tdm import build_native_exact_schedule_request
+    from emuflow.scheduling.tdm import build_native_exact_schedule_request
     from tests.native_schedule_case import _case
     from tests.test_native_schedule_generation import install_runtime
 

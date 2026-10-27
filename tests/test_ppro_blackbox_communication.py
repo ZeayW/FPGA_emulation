@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
 from emuflow_tools.ppro_blackbox_communication import (
     generate_communication_matrix,
     generate_communication_probe_bundle,

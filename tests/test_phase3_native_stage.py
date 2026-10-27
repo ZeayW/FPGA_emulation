@@ -6,11 +6,11 @@ from pathlib import Path
 from unittest.mock import patch
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
-from emuflow.phase3 import run_phase3, validate_phase3_indexed
-from emuflow.phase3_native import run as native_run
-from emuflow.phase3_storage import read_phase3_assignment_view
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
+from emuflow.partition.phase3 import run_phase3, validate_phase3_indexed
+from emuflow.partition.phase3_native import run as native_run
+from emuflow.partition.phase3_storage import read_phase3_assignment_view
 from tests.test_phase3_pressure_native import inputs
 
 
@@ -45,16 +45,16 @@ def options(inputs, tmp_path):
 def test_native_phase3_runs_complete_stage_with_independent_record_validation(inputs, tmp_path):
     ir, board, config = options(inputs, tmp_path)
     actual = tmp_path/'native-stage'
-    import emuflow.partition as partition
+    import emuflow.partition.partition as partition
     assert not hasattr(partition, 'build_clusters')
-    with patch('emuflow.ir.EmuIR.load', side_effect=AssertionError('Python graph import')):
+    with patch('emuflow.ir.ir.EmuIR.load', side_effect=AssertionError('Python graph import')):
         report = native_run(actual, ir.path, board, **config)
     assert report['stage_implementation_id'] == 'native-phase3-v1'
     assert report['algorithm_validation']['native_input_transport'] == 'native-primary-store-model-v2'
     # These validators reconstruct legality from source IR and final records,
     # independently of the producer's cluster selection and timing decision.
     assert validate_phase3_indexed(ir.path, board, actual/'phase3_report.json', actual/'assignment.sqlite')['status'] == 'pass'
-    from emuflow.cli import main
+    from emuflow.flow.cli import main
     assert main(['partition', 'validate', str(actual/'assignment.sqlite'),
                  '--phase3-report', str(actual/'phase3_report.json'),
                  '--ir', str(ir.path), '--platform', str(board)]) == 0
@@ -65,8 +65,8 @@ def test_native_phase3_runs_complete_stage_with_independent_record_validation(in
 @pytest.mark.parametrize('damage', ['version', 'generation', 'capacity', 'timing-seal', 'solution', 'existing'])
 def test_complete_stage_rejects_invalid_sources_without_publishing(inputs, tmp_path, damage):
     import subprocess
-    from emuflow.phase3_native import write_request
-    from emuflow.native_tools import native_file_generation, resolve_native_executable
+    from emuflow.partition.phase3_native import write_request
+    from emuflow.common.native_tools import native_file_generation, resolve_native_executable
     ir, board, config = options(inputs, tmp_path)
     request = write_request(tmp_path/'configuration', ir.path, board, **config)
     value = json.loads(request.read_text())
@@ -97,12 +97,12 @@ def test_complete_stage_rejects_invalid_sources_without_publishing(inputs, tmp_p
 
 
 def test_public_compact_api_uses_complete_native_stage_without_python_phase_bodies(inputs, tmp_path):
-    from emuflow.phase3 import run_phase3 as public
+    from emuflow.partition.phase3 import run_phase3 as public
     ir, board, config = options(inputs, tmp_path)
-    import emuflow.partition as partition
+    import emuflow.partition.partition as partition
     for name in ('build_clusters', 'build_partition_assignment', 'validate_partition_artifacts_online'):
         assert not hasattr(partition, name)
-    with patch('emuflow.ir.EmuIR.load', side_effect=AssertionError('Python graph import')):
+    with patch('emuflow.ir.ir.EmuIR.load', side_effect=AssertionError('Python graph import')):
         output = tmp_path/'public'
         report = public(ir.path, board, output, **config)
     assert report['stage_implementation_id'] == 'native-phase3-v1'
@@ -154,8 +154,8 @@ def test_complete_stage_keeps_search_deadline_and_reaps_native_child(inputs, tmp
     import os
     import subprocess
     import sys
-    from emuflow.phase3_native import write_request
-    from emuflow.native_tools import native_file_generation, resolve_native_executable
+    from emuflow.partition.phase3_native import write_request
+    from emuflow.common.native_tools import native_file_generation, resolve_native_executable
     ir, board, config = options(inputs, tmp_path)
     pid_file = tmp_path/'native-child.pid'
     child = tmp_path/'stalled-native'

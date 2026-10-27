@@ -14,7 +14,7 @@ from emuflow_tools.contest_validation_matrix import (
     validate_contest_validation_matrix,
 )
 from emuflow_tools.cli import main
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]

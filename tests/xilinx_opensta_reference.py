@@ -11,36 +11,36 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
-from emuflow.errors import ValidationError
-from emuflow.store_publication import (
+from emuflow.common.errors import ValidationError
+from emuflow.storage.store_publication import (
     StoreSource,
     bind_store_source,
     require_store_sources_unchanged,
 )
-from emuflow.io import file_sha256, read_json, write_json
-from emuflow.ir import EmuIR
-from emuflow.opensta import (
+from emuflow.common.io import file_sha256, read_json, write_json
+from emuflow.ir.ir import EmuIR
+from emuflow.timing.opensta import (
     DEFAULT_TIMING_MODEL,
     load_timing_model,
     require_opensta_engine,
     run_opensta_path_database,
 )
-from emuflow.native_tools import resolve_native_executable
-from emuflow.resources import ResourceVector
-from emuflow.sta import (
+from emuflow.common.native_tools import resolve_native_executable
+from emuflow.ir.resources import ResourceVector
+from emuflow.timing.sta import (
     STA_PATH_DATABASE_SCHEMA,
     STA_PATH_DATABASE_STREAM_SCHEMA,
     STA_PATH_DATABASE_INDEX_SCHEMA,
     sta_path_database_qor,
 )
-from emuflow.xilinx_timing import (
+from emuflow.timing.xilinx_timing import (
     XILINX_ROUTED_TIMING_SCHEMA,
     XILINX_ROUTED_TIMING_STREAM_SCHEMA,
     iter_xilinx_routed_timing_endpoints,
     validate_xilinx_routed_timing,
 )
-from emuflow.xilinx_netlist import is_xilinx_mapped_index
-from emuflow.yosys import import_yosys_json, import_yosys_json_indexed
+from emuflow.physical.xilinx_netlist import is_xilinx_mapped_index
+from emuflow.frontend.yosys import import_yosys_json, import_yosys_json_indexed
 
 
 XILINX_ROUTED_OPENSTA_SCHEMA = "emuflow.xilinx-routed-opensta-summary/v1"

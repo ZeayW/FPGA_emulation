@@ -4,23 +4,23 @@ import hashlib,json,os,re,sqlite3,uuid
 from pathlib import Path
 from collections.abc import Iterator,Mapping,Sequence
 from typing import Any
-from emuflow.transport_storage import (
+from emuflow.transport.transport_storage import (
     _canonical,_manifest,_record_section,_signal_section,_anchor_relation_section,
     _canonical_document_digest,TransportView,LaneMapView,AnchorView,VirtualBindingView,
     TRANSPORT_STORAGE_SCHEMA,LANE_MAP_STORAGE_SCHEMA,ANCHOR_STORAGE_SCHEMA,
     VIRTUAL_BINDING_STORAGE_SCHEMA,VIRTUAL_BINDING_LOGICAL_SCHEMA,TRANSPORT_STORE_NAME,
 )
-from emuflow.netlist import (LOGICAL_LANE_MAP_SCHEMA,TRANSPORT_ENDPOINTS_SCHEMA,VIRTUAL_IO_ANCHORS_SCHEMA,
+from emuflow.transport.netlist import (LOGICAL_LANE_MAP_SCHEMA,TRANSPORT_ENDPOINTS_SCHEMA,VIRTUAL_IO_ANCHORS_SCHEMA,
     _sv_name,transport_endpoint_port)
-from emuflow.errors import ValidationError
-from emuflow.io import write_json
-from emuflow.phase3_assignment_index import open_phase3_assignment_index
-from emuflow.platform import Platform
-from emuflow.tdm import TDM_SCHEDULE_SCHEMA,is_sampled_virtual_wire_schedule
-from emuflow.tdm_schedule_storage import canonical_tdm_schedule_sha256
-from emuflow.sqlite_artifacts import immutable_sqlite_uri
-from emuflow.store_publication import (StoreSource,VerifiedStoreFile,bind_view_sources,publish_sqlite_store)
-from emuflow.native_tools import native_file_generation
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import write_json
+from emuflow.partition.phase3_assignment_index import open_phase3_assignment_index
+from emuflow.platform.platform import Platform
+from emuflow.scheduling.tdm import TDM_SCHEDULE_SCHEMA,is_sampled_virtual_wire_schedule
+from emuflow.scheduling.tdm_schedule_storage import canonical_tdm_schedule_sha256
+from emuflow.storage.sqlite_artifacts import immutable_sqlite_uri
+from emuflow.storage.store_publication import (StoreSource,VerifiedStoreFile,bind_view_sources,publish_sqlite_store)
+from emuflow.common.native_tools import native_file_generation
 TRANSPORT_APPLICATION_ID=0x454D5558
 TRANSPORT_USER_VERSION=1
 DDL="CREATE TABLE metadata(\n  key TEXT PRIMARY KEY,\n  value TEXT NOT NULL\n) WITHOUT ROWID;\nCREATE TABLE parts(\n  part_index INTEGER PRIMARY KEY,\n  fpga TEXT NOT NULL UNIQUE\n);\nCREATE TABLE endpoints(\n  id TEXT PRIMARY KEY,\n  fpga TEXT NOT NULL,\n  kind TEXT NOT NULL CHECK(kind IN ('tx','rx')),\n  peer TEXT NOT NULL,\n  signal TEXT NOT NULL,\n  schedule_entry TEXT NOT NULL,\n  demand TEXT NOT NULL,\n  net TEXT NOT NULL,\n  link TEXT NOT NULL,\n  slot INTEGER NOT NULL,\n  arrival_slot INTEGER NOT NULL,\n  lane INTEGER NOT NULL,\n  logical_lane INTEGER NOT NULL,\n  record_json TEXT NOT NULL\n) WITHOUT ROWID;\nCREATE INDEX endpoints_fpga_identity ON endpoints(fpga,id);\nCREATE INDEX endpoints_fpga_kind_signal\n  ON endpoints(fpga,kind,signal);\nCREATE INDEX endpoints_anchor\n  ON endpoints(fpga,link,peer,kind,lane,id);\nCREATE TABLE signals(\n  fpga TEXT NOT NULL,\n  kind TEXT NOT NULL CHECK(kind IN ('source','shadow')),\n  seq INTEGER NOT NULL,\n  signal TEXT NOT NULL,\n  PRIMARY KEY(fpga,kind,seq),\n  UNIQUE(fpga,kind,signal)\n) WITHOUT ROWID;\nCREATE TABLE lanes(\n  id TEXT PRIMARY KEY,\n  schedule_entry TEXT NOT NULL UNIQUE,\n  demand TEXT NOT NULL,\n  net TEXT NOT NULL,\n  link TEXT NOT NULL,\n  source_fpga TEXT NOT NULL,\n  sink_fpga TEXT NOT NULL,\n  slot INTEGER NOT NULL,\n  lane INTEGER NOT NULL,\n  logical_lane INTEGER NOT NULL,\n  tx_endpoint TEXT NOT NULL UNIQUE,\n  rx_endpoint TEXT NOT NULL UNIQUE,\n  record_json TEXT NOT NULL\n) WITHOUT ROWID;\nCREATE INDEX lanes_link_slot ON lanes(link,slot,lane);\nCREATE TABLE anchors(\n  id TEXT PRIMARY KEY,\n  fpga TEXT NOT NULL,\n  link TEXT NOT NULL,\n  peer TEXT NOT NULL,\n  kind TEXT NOT NULL,\n  lane INTEGER NOT NULL,\n  record_json TEXT NOT NULL,\n  UNIQUE(fpga,link,peer,kind,lane)\n) WITHOUT ROWID;\nCREATE INDEX anchors_fpga_identity ON anchors(fpga,id);\nCREATE TABLE binding_entries(\n  schedule_entry TEXT PRIMARY KEY,\n  link TEXT NOT NULL,\n  slot INTEGER NOT NULL,\n  wire INTEGER NOT NULL,\n  source_fpga TEXT NOT NULL,\n  sink_fpga TEXT NOT NULL,\n  record_json TEXT NOT NULL,\n  UNIQUE(link,slot,wire)\n) WITHOUT ROWID;\nCREATE INDEX binding_source ON binding_entries(source_fpga,schedule_entry);\nCREATE INDEX binding_sink ON binding_entries(sink_fpga,schedule_entry);\nCREATE TABLE binding_adapter_ports(\n  fpga TEXT NOT NULL,\n  p_port TEXT NOT NULL,\n  n_port TEXT NOT NULL,\n  role TEXT NOT NULL CHECK(role IN ('source','sink')),\n  logical_port TEXT NOT NULL,\n  logical_port_width INTEGER NOT NULL,\n  package_pin_p TEXT NOT NULL,\n  package_pin_n TEXT NOT NULL,\n  iostandard TEXT NOT NULL,\n  PRIMARY KEY(fpga,p_port),\n  UNIQUE(fpga,n_port)\n) WITHOUT ROWID;\nCREATE TABLE binding_physical_ports(\n  fpga TEXT NOT NULL,\n  p_port TEXT NOT NULL,\n  record_json TEXT NOT NULL,\n  schedule_entry_count INTEGER NOT NULL,\n  schedule_entries_sha256 TEXT NOT NULL,\n  PRIMARY KEY(fpga,p_port)\n) WITHOUT ROWID;\n"
@@ -883,7 +883,7 @@ def write_transport_systemverilog(
     rtl_rows = getattr(transport, "iter_rtl_endpoints", None)
     endpoint_groups = getattr(transport, "endpoint_groups", None)
     if rtl_rows is None or endpoint_groups is None:
-        from emuflow.netlist import transport_to_systemverilog
+        from emuflow.transport.netlist import transport_to_systemverilog
 
         value = transport_to_systemverilog(transport, platform)
         path.parent.mkdir(parents=True, exist_ok=True)

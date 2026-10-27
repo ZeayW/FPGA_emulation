@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -16,10 +17,10 @@ def digest(path: Path) -> str:
 
 
 def main(source_root: Path, install_root: Path) -> None:
-    source = source_root / "src/emuflow"
+    source = source_root / "src/python/emuflow"
     package = install_root / "lib/emuflow"
-    expected = {p.name for p in source.glob("*.py")}
-    actual = {p.name for p in package.glob("*.py")}
+    expected = {p.relative_to(source) for p in source.rglob("*.py")}
+    actual = {p.relative_to(package) for p in package.rglob("*.py")}
     if not expected or actual != expected:
         raise AssertionError(f"installed module inventory differs: missing={sorted(expected-actual)}, stale={sorted(actual-expected)}")
     for name in sorted(expected):
@@ -29,15 +30,17 @@ def main(source_root: Path, install_root: Path) -> None:
     # inherits a developer PYTHONPATH or the repository has an editable install.
     sys.path.insert(0, str(install_root / "lib"))
     import emuflow
-    from emuflow.default_platform import DEFAULT_PLATFORM_PATH
-    from emuflow.platform import Platform
-    from emuflow.xilinx_primitives import (
+    from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH
+    from emuflow.platform.platform import Platform
+    from emuflow.physical.xilinx_primitives import (
         DEFAULT_XILINX_PRIMITIVE_LIBRARY, load_xilinx_primitive_library,
     )
-    from emuflow.opensta import OPENSTA_RUNTIME_CHECK_SCRIPT
-    from emuflow.vivado_physical import _vivado_script
+    from emuflow.timing.opensta import OPENSTA_RUNTIME_CHECK_SCRIPT
+    from emuflow.physical.vivado.vivado_physical import _vivado_script
     assert Path(emuflow.__file__).resolve().parent == package.resolve()
-    data = [p for p in (source / "data").rglob("*") if p.suffix in {".json", ".sql"}]
+    for retired in ("cli", "phase3", "native_compile_adapter", "xilinx_rwroute"):
+        assert importlib.util.find_spec("emuflow." + retired) is None, retired
+    data = [p for p in (source / "data").rglob("*") if p.suffix in {".json", ".sql", ".tcl"}]
     for path in data:
         installed = package / path.relative_to(source)
         assert installed.is_file(), f"installed runtime data missing: {installed}"

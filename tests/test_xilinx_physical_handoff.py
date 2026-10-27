@@ -5,16 +5,16 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.errors import ValidationError
-from emuflow.io import file_sha256
-from emuflow.xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
-from emuflow.xilinx_physical_handoff import (
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import file_sha256
+from emuflow.physical.xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
+from emuflow.physical.xilinx_physical_handoff import (
     XilinxPhysicalHandoffBuilder,
     open_xilinx_physical_handoff,
     validate_xilinx_physical_handoff,
     validate_xilinx_physical_handoff_pair,
 )
-from emuflow.xilinx_placement import XILINX_PLACEMENT_SCHEMA
+from emuflow.physical.xilinx_placement import XILINX_PLACEMENT_SCHEMA
 
 
 def _contracts(identity: str = "cell0"):
@@ -100,7 +100,7 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
             digest = file_sha256(path)
 
             with mock.patch(
-                "emuflow.xilinx_physical_handoff.file_sha256",
+                "emuflow.physical.xilinx_physical_handoff.file_sha256",
                 side_effect=AssertionError("unexpected duplicate digest"),
             ):
                 packed, placement = open_xilinx_physical_handoff(
@@ -237,7 +237,7 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
             root = Path(temporary)
             path = root / "physical-handoff.sqlite"
             with mock.patch(
-                "emuflow.xilinx_physical_handoff._BUILDER_COMMIT_ROWS", 1
+                "emuflow.physical.xilinx_physical_handoff._BUILDER_COMMIT_ROWS", 1
             ):
                 with self.assertRaisesRegex(
                     ValidationError, "failed to append"

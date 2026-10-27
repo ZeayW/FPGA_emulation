@@ -1,13 +1,13 @@
 import copy
 import unittest
 
-from emuflow.board_link_timing import (
+from emuflow.platform.board_link_timing import (
     build_board_link_timing_model,
     directed_route_link_delays,
     validate_board_link_timing,
 )
-from emuflow.errors import ValidationError
-from emuflow.platform import Platform
+from emuflow.common.errors import ValidationError
+from emuflow.platform.platform import Platform
 
 
 class BoardLinkTimingTest(unittest.TestCase):

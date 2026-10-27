@@ -6,10 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.cli import _build_parser, _dispatch
-from emuflow.errors import EmuFlowError, ValidationError
-from emuflow.multi_fpga_flow import run_multi_fpga_flow
-from emuflow.multi_fpga_physical_flow import run_multi_fpga_physical_flow
+from emuflow.flow.cli import _build_parser, _dispatch
+from emuflow.common.errors import EmuFlowError, ValidationError
+from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
+from emuflow.flow.multi_fpga_physical_flow import run_multi_fpga_physical_flow
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,8 +33,8 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
         ]
         for command, target, expected in cases:
             with self.subTest(command=command[:2]), patch(
-                "emuflow.cli." + target, return_value={"status": "pass", "summary": {"status": "pass"}}
-            ) as run, patch("emuflow.cli._print_json"):
+                "emuflow.flow.cli." + target, return_value={"status": "pass", "summary": {"status": "pass"}}
+            ) as run, patch("emuflow.flow.cli._print_json"):
                 args = _build_parser().parse_args(command)
                 self.assertEqual(_dispatch(args), 0)
                 for name, value in expected.items():
@@ -52,8 +52,8 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
             with self.subTest(command=command), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 _build_parser().parse_args(command)
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.multi_fpga_flow.run_phase1"
-        ) as frontend, patch("emuflow.multi_fpga_flow.resolve_native_executable") as tool:
+            "emuflow.flow.multi_fpga_flow.run_phase1"
+        ) as frontend, patch("emuflow.flow.multi_fpga_flow.resolve_native_executable") as tool:
             out = Path(temporary) / "flow"
             with self.assertRaisesRegex(EmuFlowError, "unsupported multi-FPGA mapping profile"):
                 run_multi_fpga_flow(output_dir=out, mapping_profile="vtr-hard-blocks")
@@ -77,10 +77,10 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
             with self.subTest(command=command), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 _build_parser().parse_args(command)
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.multi_fpga_flow.resolve_native_executable",
+            "emuflow.flow.multi_fpga_flow.resolve_native_executable",
             side_effect=AssertionError("tool resolution before backend rejection"),
         ), patch(
-            "emuflow.multi_fpga_physical_flow.read_json",
+            "emuflow.flow.multi_fpga_physical_flow.read_json",
             side_effect=AssertionError("artifact read before backend rejection"),
         ):
             root = Path(temporary)
@@ -94,7 +94,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
                     root / "physical", vpr="retired")
             self.assertEqual(list(root.iterdir()), [])
         import json
-        from emuflow.physical_backend import PHYSICAL_BACKENDS
+        from emuflow.physical.physical_backend import PHYSICAL_BACKENDS
         descriptor = json.loads((ROOT / "schemas/physical-backend-v1.schema.json").read_text())
         result = json.loads((ROOT / "schemas/physical-partition-result-v1.schema.json").read_text())
         self.assertEqual(set(descriptor["properties"]["id"]["enum"]), set(PHYSICAL_BACKENDS))
@@ -107,8 +107,8 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
             "--fpga", "fpga2", "--fpga", "fpga1",
         ])
         with patch(
-            "emuflow.cli.run_multi_fpga_physical_flow", return_value={"summary": {}}
-        ) as run, patch("emuflow.cli._print_json"):
+            "emuflow.flow.cli.run_multi_fpga_physical_flow", return_value={"summary": {}}
+        ) as run, patch("emuflow.flow.cli._print_json"):
             self.assertEqual(_dispatch(args), 0)
         self.assertEqual(run.call_args.kwargs["fpga_ids"], ["fpga2", "fpga1"])
 
@@ -123,9 +123,9 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
 
     def test_compile_uses_xilinx_synthesis_without_profile_override(self):
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream",
+            "emuflow.flow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream",
             side_effect=EmuFlowError("selected Xilinx synthesis"),
-        ) as xilinx, patch("emuflow.multi_fpga_flow._validate_mapping_timing_contract"), patch("emuflow.multi_fpga_flow.check_opensta_engine_version"), patch("emuflow.multi_fpga_flow.resolve_native_executable", return_value="/usr/bin/true"):
+        ) as xilinx, patch("emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract"), patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"), patch("emuflow.flow.multi_fpga_flow.resolve_native_executable", return_value="/usr/bin/true"):
             with self.assertRaisesRegex(EmuFlowError, "selected Xilinx synthesis"):
                 run_multi_fpga_flow(
                     ROOT / "platforms/virtual/academic_vtr_2fpga_p2p.json",
@@ -140,7 +140,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
         from contextlib import redirect_stderr
         import io
         import json
-        from emuflow.benchmark_inputs import BenchmarkRun
+        from emuflow.flow.benchmark_inputs import BenchmarkRun
 
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             _build_parser().parse_args([
@@ -148,9 +148,9 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
                 "--mapping-profile", "generic-soft",
             ])
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.multi_fpga_flow.run_phase1"
+            "emuflow.flow.multi_fpga_flow.run_phase1"
         ) as frontend, patch(
-            "emuflow.multi_fpga_flow.resolve_native_executable"
+            "emuflow.flow.multi_fpga_flow.resolve_native_executable"
         ) as tool:
             out = Path(temporary) / "flow"
             with self.assertRaisesRegex(EmuFlowError, "unsupported multi-FPGA mapping profile"):
@@ -167,7 +167,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
 
     def test_default_physical_requires_rapidwright_inputs_without_fallback(self):
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.multi_fpga_physical_flow.run_indexed_vivado_partition"
+            "emuflow.flow.multi_fpga_physical_flow.run_indexed_vivado_partition"
         ) as vpr:
             root = Path(temporary)
             with self.assertRaisesRegex(ValidationError, "openparf-native requires source-sealed"):

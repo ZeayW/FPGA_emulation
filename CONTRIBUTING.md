@@ -29,7 +29,7 @@ ctest --preset release
 For Python regression tests, use the same supported environment as the flow:
 
 ```bash
-PYTHONPATH=src:engines/openparf python3 -m pytest -q
+PYTHONPATH=src/python:engines/openparf python3 -m pytest -q
 ```
 
 The source audit checks that implementation sources and provenance are present:

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from emuflow_tools.ppro_blackbox_constraints import (
     parse_logical_targets,
     render_ppro_prepartition_constraints,

@@ -6,25 +6,25 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.store_publication import bind_store_source
+from emuflow.common.errors import ValidationError
+from emuflow.storage.store_publication import bind_store_source
 
 KINDS = ("mapped", "name_map", "certificate", "handoff")
 MODULES = {
-    "mapped": "xilinx_netlist",
-    "name_map": "xilinx_openparf_name_map_storage",
-    "certificate": "xilinx_openparf_atomic",
-    "handoff": "xilinx_physical_handoff",
+    "mapped": "emuflow.physical.xilinx_netlist",
+    "name_map": "emuflow.physical.openparf.xilinx_openparf_name_map_storage",
+    "certificate": "emuflow.physical.openparf.xilinx_openparf_atomic",
+    "handoff": "emuflow.physical.xilinx_physical_handoff",
 }
 
 
 def produce(kind, output, generation=0):
-    from emuflow.io import write_json
-    from emuflow.store_publication import bind_store_source
+    from emuflow.common.io import write_json
+    from emuflow.storage.store_publication import bind_store_source
 
-    module = importlib.import_module("emuflow." + MODULES[kind])
+    module = importlib.import_module(MODULES[kind])
     if kind == "mapped":
-        from emuflow.yosys import import_yosys_json
+        from emuflow.frontend.yosys import import_yosys_json
         from tests.test_xilinx_netlist import XilinxMappedNetlistTests
 
         value = XilinxMappedNetlistTests._fixture()
@@ -105,7 +105,7 @@ def test_native_rejection_preserves_every_prior_owner(tmp_path, kind):
     output = tmp_path / ("mapped.sqlite" if kind == "mapped" else "owner.json")
     store = produce(kind, output)
     old_selector, old_store = output.read_bytes(), store.read_bytes()
-    module = importlib.import_module("emuflow." + MODULES[kind])
+    module = importlib.import_module(MODULES[kind])
     with patch.object(
         module, "publish_sqlite_store", side_effect=ValidationError("native rejected")
     ) as native:
@@ -123,7 +123,7 @@ def test_original_input_scope_survives_until_native_adoption(tmp_path, kind):
     output = tmp_path / ("mapped.sqlite" if kind == "mapped" else "owner.json")
     store = produce(kind, output)
     old_selector, old_store = output.read_bytes(), store.read_bytes()
-    module = importlib.import_module("emuflow." + MODULES[kind])
+    module = importlib.import_module(MODULES[kind])
     publish = module.publish_sqlite_store
     observed = []
 
@@ -148,7 +148,7 @@ def test_input_changes_before_selector_commit_remove_only_uncommitted_sql(
     output = tmp_path / "owner.json"
     store = produce(kind, output)
     old_selector, old_store = output.read_bytes(), store.read_bytes()
-    module = importlib.import_module("emuflow." + MODULES[kind])
+    module = importlib.import_module(MODULES[kind])
     write = module.write_json
 
     def change_at_commit(*args, **kwargs):
@@ -170,7 +170,7 @@ def test_input_changes_before_selector_commit_remove_only_uncommitted_sql(
 def test_reader_cannot_rebind_the_generation_after_validation(tmp_path, kind, changed):
     output = tmp_path / "owner.json"
     produce(kind, output)
-    module = importlib.import_module("emuflow." + MODULES[kind])
+    module = importlib.import_module(MODULES[kind])
     open_view = (
         module.XilinxOpenparfAtomicNameMapView
         if kind == "name_map"
@@ -193,7 +193,7 @@ def test_reader_cannot_rebind_the_generation_after_validation(tmp_path, kind, ch
 
 
 def test_handoff_rejects_active_sql_source_wal_after_independent_validation(tmp_path):
-    from emuflow.xilinx_physical_handoff import XilinxPhysicalHandoffBuilder
+    from emuflow.physical.xilinx_physical_handoff import XilinxPhysicalHandoffBuilder
     from tests.test_xilinx_physical_handoff import _contracts, XilinxPhysicalHandoffTest
 
     mapped = tmp_path / "mapped.sqlite"

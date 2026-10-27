@@ -3,11 +3,11 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-from emuflow.phase5 import _load_phase3_semantics
-from emuflow.phase5_native import _write_inputs
-from emuflow.platform import Platform
-from emuflow.system_route_storage import read_system_routes
-from emuflow.tdm import build_native_exact_schedule_request
+from emuflow.scheduling.phase5 import _load_phase3_semantics
+from emuflow.scheduling.phase5_native import _write_inputs
+from emuflow.platform.platform import Platform
+from emuflow.routing.system_route_storage import read_system_routes
+from emuflow.scheduling.tdm import build_native_exact_schedule_request
 from tests.native_build import native_pipeline_api_test
 
 

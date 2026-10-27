@@ -11,10 +11,10 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
 
 from .contest_boarddb import materialize_homogeneous_boarddb
-from emuflow.errors import EmuFlowError, ValidationError
-from emuflow.io import read_json, write_json
-from emuflow.native_tools import resolve_native_executable
-from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
+from emuflow.common.errors import EmuFlowError, ValidationError
+from emuflow.common.io import read_json, write_json
+from emuflow.common.native_tools import resolve_native_executable
+from emuflow.partition.partition import PARTITION_ASSIGNMENT_SCHEMA
 
 ICCAD2019_INSTANCE_SCHEMA = "emuflow.contest-iccad2019-instance/v1"
 ICCAD2019_EVALUATION_SCHEMA = "emuflow.contest-iccad2019-evaluation/v1"

@@ -10,9 +10,9 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-from emuflow.errors import ValidationError
-from emuflow.io import file_sha256, read_json, write_json
-from emuflow.xilinx_rwroute import _is_clock_sink_pin
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import file_sha256, read_json, write_json
+from emuflow.physical.rapidwright.xilinx_rwroute import _is_clock_sink_pin
 
 
 ULTRASCALE_CLOCKS_PER_REGION = 24

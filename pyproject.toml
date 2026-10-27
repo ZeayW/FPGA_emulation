@@ -15,13 +15,13 @@ authors = [
 dependencies = []
 
 [project.scripts]
-emuflow = "emuflow.cli:main"
+emuflow = "emuflow.flow.cli:main"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = {"" = "src/python"}
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src/python"]
 
 [tool.setuptools.package-data]
 emuflow = ["data/schema/*.sql", "data/schema/*.tcl", "data/rapidwright/*.json", "data/platforms/*.json", "data/io/*.json"]
@@ -33,4 +33,4 @@ emuflow = ["data/schema/*.sql", "data/schema/*.tcl", "data/rapidwright/*.json", 
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src", "tools", "."]
+pythonpath = ["src/python", "tools", "."]

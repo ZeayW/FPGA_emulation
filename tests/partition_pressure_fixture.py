@@ -1,11 +1,11 @@
 """Small input data and current typed-store preparation; no pressure algorithm."""
 import copy
-from emuflow.ir import EmuIR
-from emuflow.partition import (CUT_MODE_STATIC_EXACT)
+from emuflow.ir.ir import EmuIR
+from emuflow.partition.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (build_clusters, build_partition_assignment, normalize_partition_constraints)
-from emuflow.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
-from emuflow.platform import Platform
-from emuflow.routing import normalize_route_constraints
+from emuflow.partition.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
+from emuflow.platform.platform import Platform
+from emuflow.routing.routing import normalize_route_constraints
 from tests.test_phase5 import _link, _platform_value
 
 
@@ -212,12 +212,12 @@ def prepare_native(root, reference, platform, constraints, timing, routes, origi
     """Serialize small input facts to the current source-owned test boundary."""
     import json
     from types import SimpleNamespace
-    from emuflow.emuir_compact import write_compact_emuir
-    from emuflow.partition_ir import load_partition_ir
+    from emuflow.ir.emuir_compact import write_compact_emuir
+    from emuflow.partition.partition_ir import load_partition_ir
     from tests.native_partition_kernel_driver import initialize
-    from emuflow.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
-    from emuflow.opensta import OPENSTA_PROVIDER
-    from emuflow.io import read_json
+    from emuflow.timing.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
+    from emuflow.timing.opensta import OPENSTA_PROVIDER
+    from emuflow.common.io import read_json
     from tests.patron_kernel_fixture import pressure_kernel_inputs, write_pressure_requests, run_pressure_kernel
     source = root / 'source.sqlite'
     write_compact_emuir(source, reference.value)

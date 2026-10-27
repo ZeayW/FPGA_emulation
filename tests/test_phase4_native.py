@@ -9,13 +9,13 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
-from emuflow.phase4 import run_phase4
-from emuflow.phase4_native import prepare_policy, run_native_phase4
-from emuflow.routing import demands_from_assignment
-from emuflow.system_route_storage import read_system_routes
-from emuflow.timing_routing import load_sta_paths, validate_native_system_routes
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
+from emuflow.routing.phase4 import run_phase4
+from emuflow.routing.phase4_native import prepare_policy, run_native_phase4
+from emuflow.routing.routing import demands_from_assignment
+from emuflow.routing.system_route_storage import read_system_routes
+from emuflow.scheduling.timing_routing import load_sta_paths, validate_native_system_routes
 from tests.native_build import emuflow_native
 from tests.native_schedule_case import _case
 
@@ -59,7 +59,7 @@ def test_complete_native_stage_preserves_records_hashes_and_independent_checks(t
         timing.write_text(json.dumps(paths))
     # The public API hands off references. It cannot invoke the independent
     # Python validator or reconstruct route-scale input/output objects.
-    with patch('emuflow.phase4.validate_native_system_routes', side_effect=AssertionError('Python stage validator')):
+    with patch('emuflow.routing.phase4.validate_native_system_routes', side_effect=AssertionError('Python stage validator')):
         report = run_phase4(assignment, board, tmp_path/'native',
             timing_paths_path=timing, frame_slots=16, max_iterations=3,
             timing_driven=driven, router=str(emuflow_native()))
@@ -118,8 +118,8 @@ def test_existing_generation_is_never_overwritten(tmp_path):
 
 
 def test_native_route_adapter_is_not_a_second_production_entry(tmp_path):
-    from emuflow.errors import EmuFlowError
-    from emuflow.native_compile_adapter import execute
+    from emuflow.common.errors import EmuFlowError
+    from emuflow.flow.native_compile_adapter import execute
     with pytest.raises(EmuFlowError, match='C[+][+] Phase 4'):
         execute('route', tmp_path/'missing', None, tmp_path/'output', 'run')
 

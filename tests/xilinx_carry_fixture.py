@@ -3,8 +3,8 @@ import hashlib
 import json
 from pathlib import Path
 
-from emuflow.io import read_json
-from emuflow.rapidwright_provider import validate_rapidwright_provider_manifest
+from emuflow.common.io import read_json
+from emuflow.physical.rapidwright.rapidwright_provider import validate_rapidwright_provider_manifest
 from tests.xilinx_site_reference import pack_xilinx_sites
 
 ROOT = Path(__file__).resolve().parents[1]

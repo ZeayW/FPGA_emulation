@@ -12,18 +12,18 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from unittest import mock
 
-from emuflow.errors import (
+from emuflow.common.errors import (
     EmuFlowError,
     TDMScheduleInfeasibleError,
     ValidationError,
 )
-from emuflow.io import read_json
-from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
-from emuflow.phase5 import run_phase5, validate_phase5
-from emuflow.platform import Platform
-from emuflow.tdm_schedule_storage import read_tdm_schedule
-from emuflow.routing import normalize_route_constraints
-from emuflow.tdm import _independently_reconstruct_exact_captures, validate_tdm_schedule
+from emuflow.common.io import read_json
+from emuflow.partition.partition import PARTITION_ASSIGNMENT_SCHEMA
+from emuflow.scheduling.phase5 import run_phase5, validate_phase5
+from emuflow.platform.platform import Platform
+from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
+from emuflow.routing.routing import normalize_route_constraints
+from emuflow.scheduling.tdm import _independently_reconstruct_exact_captures, validate_tdm_schedule
 from tests.tdm_timing_oracle import timing_summary as reconstruct_tdm_schedule_timing, timing_paths as reconstruct_tdm_schedule_timing_paths, timing_paths as reconstruct_tdm_schedule_timing_paths_from_routes
 from tests.schedule_reference import build_tdm_schedule
 from tests.schedule_fixture_facts import exact_root_routes
@@ -107,7 +107,7 @@ class Phase5Test(unittest.TestCase):
     def test_retired_provider_is_rejected_before_reading_inputs(self):
         for provider in ("deterministic-round-barrier-earliest-slot-v2", "lagrangian-kkt-v1", "native-timing-dag-ratio-v1"):
             with self.subTest(provider=provider), mock.patch(
-                "emuflow.phase5.read_system_routes", side_effect=AssertionError("input read"),
+                "emuflow.scheduling.phase5.read_system_routes", side_effect=AssertionError("input read"),
             ), self.assertRaisesRegex(ValueError, "unsupported Phase 5 provider"):
                 run_phase5(Path("missing"), Path("missing"), Path("unused"), provider=provider)
 
@@ -128,7 +128,7 @@ class Phase5Test(unittest.TestCase):
             self.assertFalse((root / "output").exists())
 
     def test_retired_schedule_export_and_simulation_apis_are_absent(self):
-        from emuflow import tdm
+        from emuflow.scheduling import tdm
         for name in (
             'simulate_tdm_schedule', 'iter_schedule_tsv_lines', 'schedule_to_tsv',
             'write_schedule_tsv', 'build_transport_manifest',

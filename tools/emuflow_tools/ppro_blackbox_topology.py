@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Sequence
 
-from emuflow.errors import ValidationError
-from emuflow.io import write_json
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import write_json
 from .ppro_blackbox_runner import (
     MOCK_REPORT_PROFILE,
     RUN_SPEC_SCHEMA,

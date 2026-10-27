@@ -4,9 +4,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.architecture import ArchitectureDB
-from emuflow.io import file_sha256, json_write_policy, read_json, write_json
-from emuflow.managed_json_storage import pack_managed_json
+from emuflow.platform.architecture import ArchitectureDB
+from emuflow.common.io import file_sha256, json_write_policy, read_json, write_json
+from emuflow.storage.managed_json_storage import pack_managed_json
 
 
 class JsonIoTest(unittest.TestCase):
@@ -25,7 +25,7 @@ class JsonIoTest(unittest.TestCase):
             output = Path(temporary) / "artifact.bin"
             output.write_bytes(b"first")
             with patch(
-                "emuflow.io.hashlib.sha256", wraps=hashlib.sha256
+                "emuflow.common.io.hashlib.sha256", wraps=hashlib.sha256
             ) as sha256:
                 first = file_sha256(output)
                 self.assertEqual(file_sha256(output), first)
@@ -61,7 +61,7 @@ class JsonIoTest(unittest.TestCase):
 
     def test_managed_staging_skips_per_artifact_fsync(self):
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.io.os.fsync"
+            "emuflow.common.io.os.fsync"
         ) as fsync:
             output = Path(temporary) / "managed.json"
             with json_write_policy(durable=False):
@@ -103,7 +103,7 @@ class JsonIoTest(unittest.TestCase):
             write_json(output, {"generation": 1})
 
             with patch(
-                "emuflow.io.json.dump",
+                "emuflow.common.io.json.dump",
                 side_effect=RuntimeError("injected serialization failure"),
             ):
                 with self.assertRaisesRegex(RuntimeError, "injected"):

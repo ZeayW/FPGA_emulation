@@ -7,11 +7,11 @@ import shutil
 
 import pytest
 
-from emuflow import split_netlist_storage as split
-from emuflow import split_overlay as owner
-from emuflow.emuir_compact import write_compact_emuir
-from emuflow.errors import ValidationError
-from emuflow.tdm_schedule_storage import read_tdm_schedule
+from emuflow.transport import split_netlist_storage as split
+from emuflow.transport import split_overlay as owner
+from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow.common.errors import ValidationError
+from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 
 
@@ -91,7 +91,7 @@ def test_split_publication_keeps_prior_generation_when_an_input_changes(
 def test_exact_owner_is_borrowed_without_alias_or_copy(tmp_path,touch_metadata):
     from tests.test_combinational_cut import StaticExactCombinationalCutPartitionTest
     from tests.schedule_reference import build_tdm_schedule
-    from emuflow.native_tools import native_file_generation
+    from emuflow.common.native_tools import native_file_generation
     case=StaticExactCombinationalCutPartitionTest();case.setUp()
     _,value=case._exact_artifacts(dependent_return=True)
     ir=tmp_path/'ir.sqlite';assignment=tmp_path/'assignment.sqlite';selector=tmp_path/'schedule.json'

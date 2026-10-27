@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.partition import (CUT_MODE_STATIC_EXACT)
+from emuflow.partition.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (build_clusters)
 from tests.native_partition_kernel_driver import initialize
 from tests.partition_init_reference import facts, cut_score
@@ -37,7 +37,7 @@ def weights(tmp_path,rows):
     path=tmp_path/'weights.sqlite'
     with sqlite3.connect(path) as db:
         db.execute('PRAGMA user_version=1')
-        db.executescript((Path(__file__).parents[1]/'src/emuflow/data/schema/sta_net_weights.sql').read_text())
+        db.executescript((Path(__file__).parents[1]/'src/python/emuflow/data/schema/sta_net_weights.sql').read_text())
         db.executemany('INSERT INTO net_weights VALUES(?,?,?,?)',rows)
     selector=tmp_path/'weights.json';selector.write_text(json.dumps({'schema':'emuflow.partition-net-weights/v2','payloads':{'weights':{'format':'sqlite-net-weights/v1','path':path.name,'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'records':len(rows)}}}))
     return selector
@@ -232,8 +232,8 @@ def test_native_initializer_runs_through_patron_without_host_ownership_rewrite(p
 
 @pytest.mark.skipif(not os.environ.get('EMUFLOW_TEST_OPENROAD'),reason='qualified OpenROAD runtime is not configured')
 def test_real_tritonpart_initializer_reaches_final_phase3_publication(pressure_inputs,tmp_path):
-    from emuflow.io import write_json
-    from emuflow.phase3 import run_phase3, validate_phase3_indexed
+    from emuflow.common.io import write_json
+    from emuflow.partition.phase3 import run_phase3, validate_phase3_indexed
     args,_,timing=pressure_inputs
     platform=tmp_path/'platform.json';write_json(platform,args[1].to_dict())
     routes=tmp_path/'routes.json';write_json(routes,args[5])

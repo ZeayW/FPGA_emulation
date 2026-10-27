@@ -9,11 +9,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.errors import ValidationError
-from emuflow.vivado_lineage import (INVENTORY_HEADER, LINEAGE_POLICY,
+from emuflow.common.errors import ValidationError
+from emuflow.physical.vivado.vivado_lineage import (INVENTORY_HEADER, LINEAGE_POLICY,
                                     import_cell_lineage, resolve_timing_query)
-from emuflow.vivado_netlist import emit_vivado_mapped_verilog
-from emuflow.yosys import import_yosys_json
+from emuflow.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
+from emuflow.frontend.yosys import import_yosys_json
 
 
 class VivadoLineageTests(unittest.TestCase):

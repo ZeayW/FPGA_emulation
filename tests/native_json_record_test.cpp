@@ -1,4 +1,4 @@
-#include "emuflow_core/json_record.hpp"
+#include "common/json_record.hpp"
 #include <cstring>
 #include <iostream>
 #include <limits>

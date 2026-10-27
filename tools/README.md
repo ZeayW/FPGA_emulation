@@ -12,7 +12,7 @@ emuflow-ppro-calibration --help
 This distribution contains public-contest import/evaluation, standalone benchmark
 qualification, public BoardDB materialization and PPro calibration tools. It
 depends on `emuflow`; the runtime package does not depend on or install these tools.
-For source checkout execution, use `PYTHONPATH=src:tools python3 -m emuflow_tools`.
+For source checkout execution, use `PYTHONPATH=src/python:tools python3 -m emuflow_tools`.
 
 Dataset catalogs and source fetchers remain repository inputs. Supply their
 explicit paths when using an installed tool outside the checkout.

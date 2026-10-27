@@ -8,8 +8,8 @@ from unittest import mock
 import pytest
 from tests.system_timing_oracle import compare_system_timing
 
-from emuflow.errors import ValidationError
-from emuflow.global_sta import (
+from emuflow.common.errors import ValidationError
+from emuflow.timing.global_sta import (
     EventCheck, _IndexedEventChecks,
     _IndexedPathMetadata,
     export_event_checks, read_engine_identity,
@@ -17,8 +17,8 @@ from emuflow.global_sta import (
 )
 
 from tests.global_sta_fixture import bind_physical_checks, build_timing_from_records as build_opensta_timing
-from emuflow.global_measurements import NativeTimingPaths, NativeMeasurements, import_measurements
-from emuflow.global_event_store import event_model_sources
+from emuflow.timing.global_measurements import NativeTimingPaths, NativeMeasurements, import_measurements
+from emuflow.timing.global_event_store import event_model_sources
 from tests.event_facts import EventFacts as _EventCheckBuilder, MetadataFacts as _PathMetadataBuilder
 _reference_physical_checks = bind_physical_checks
 
@@ -274,7 +274,7 @@ def test_indexed_check_view_rejects_changed_owner(file):
     compact.close()
 
 def test_indexed_path_metadata_is_sorted_compact_mapping():
-    from emuflow.local_path_timing import path_id_set_sha256
+    from emuflow.timing.local_path_timing import path_id_set_sha256
 
     builder = _PathMetadataBuilder()
     builder.append(
@@ -386,7 +386,7 @@ def test_native_check_index_compares_repeated_bundles_exactly():
     assert list(mapping) == [0, 1, 2, 3, 0, 1]
 
 def test_python_event_producers_are_retired():
-    from emuflow import global_event_store
+    from emuflow.timing import global_event_store
     for name in ('EventBuilder', 'MetadataBuilder'):
         assert not hasattr(global_event_store, name)
     for name in ('append_values', 'append_metadata', 'flush', 'seal'):
@@ -441,7 +441,7 @@ def test_native_expansion_is_reiterable_sliceable_and_rejects_changed_owner(tmp_
         rows.close()
 
 def test_retired_inline_execution_and_reduction_are_rejected(tmp_path):
-    import emuflow.global_sta as sta
+    import emuflow.timing.global_sta as sta
     with pytest.raises(ValidationError, match='inline execution is retired'):
         sta.run_event_checks(example(), tmp_path)
     with pytest.raises(ValidationError, match='inline reduction is retired'):
@@ -487,9 +487,9 @@ def test_comparison_rejects_corrupt_evidence(damage):
 @pytest.mark.parametrize("saved", [False, True])
 def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch, saved):
     from tests.test_phase7c import Phase7CTest
-    from emuflow.io import write_json, read_json
-    from emuflow.phase7c import run_phase7c
-    import emuflow.global_sta as sta
+    from emuflow.common.io import write_json, read_json
+    from emuflow.timing.phase7c import run_phase7c
+    import emuflow.timing.global_sta as sta
     f = Phase7CTest(); f.setUp()
     # Current typed entries express the absolute event directly. This small
     # orchestration fixture's former round label was always zero.
@@ -497,15 +497,15 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch, s
         assert entry.pop('transport_round') == 0
         entry['capacity_key'] = f"{entry['link']}:{entry['from']}:{entry['to']}"
 
-    monkeypatch.setattr("emuflow.phase7c.validate_phase5_generation", lambda _: {"status": "pass"})
+    monkeypatch.setattr("emuflow.timing.phase7c.validate_phase5_generation", lambda _: {"status": "pass"})
     # This test isolates orchestration. Independent typed projection and full
     # coverage rejection are exercised by test_phase5_timing_native and
     # test_physical_coverage_native, without legacy Python projection.
     class Coverage(dict):
         def close(self):
             pass
-    monkeypatch.setattr("emuflow.phase7c.validate_cross_layer_timing_contract", lambda *_: {"status":"pass"})
-    monkeypatch.setattr("emuflow.phase7c.build_cross_layer_physical_binding",
+    monkeypatch.setattr("emuflow.timing.phase7c.validate_cross_layer_timing_contract", lambda *_: {"status":"pass"})
+    monkeypatch.setattr("emuflow.timing.phase7c.build_cross_layer_physical_binding",
         lambda *a, **k: Coverage(status="pass", metrics={}))
     for name, value in {"schedule": f.schedule, "platform": f.platform.to_dict(),
                         "physical": f._physical_summary(), "routes": f.routes, **f.reports}.items():
@@ -535,7 +535,7 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch, s
             assert path == tmp_path / "saved/measurements.json"
             return engine(checks, None, None, verify_arcs=False)
         monkeypatch.setattr(sta, "run_event_checks", forbidden)
-        monkeypatch.setattr("emuflow.global_measurements.read_native_measurements", read_saved)
+        monkeypatch.setattr("emuflow.timing.global_measurements.read_native_measurements", read_saved)
     else:
         monkeypatch.setattr(sta, "run_event_checks", engine)
     monkeypatch.setattr(sta, "read_engine_identity", lambda p: {"name": "test-sta"})
@@ -561,7 +561,7 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch, s
 
 @pytest.mark.parametrize("late", [False, True])
 def test_standalone_report_preserves_event_gate_without_comparison(late, monkeypatch):
-    import emuflow.global_sta as sta
+    import emuflow.timing.global_sta as sta
     def forbidden(*args, **kwargs):
         raise AssertionError("comparison must not run")
     monkeypatch.setattr("tests.system_timing_oracle.compare_system_timing", forbidden)
@@ -599,7 +599,7 @@ def test_standalone_report_preserves_event_gate_without_comparison(late, monkeyp
 @pytest.mark.parametrize("repeated_complete_bundle", [False, True])
 def test_standalone_report_rejects_interleaved_measurements(
         indexed_metadata, repeated_complete_bundle):
-    import emuflow.global_sta as sta
+    import emuflow.timing.global_sta as sta
 
     rows = [
         {"path": "p", "role": "target", "event": "capture",
@@ -640,9 +640,9 @@ def test_standalone_report_rejects_interleaved_measurements(
 
 def test_only_opensta_engine_is_exposed():
     import inspect
-    from emuflow.cli import _build_parser
-    from emuflow.phase7c import run_phase7c
-    from emuflow.multi_fpga_flow import run_multi_fpga_flow
+    from emuflow.flow.cli import _build_parser
+    from emuflow.timing.phase7c import run_phase7c
+    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
     for fn in (run_phase7c, run_multi_fpga_flow):
         assert inspect.signature(fn).parameters["global_timing_engine"].default == "opensta"
     parser = _build_parser()
@@ -656,8 +656,8 @@ def test_only_opensta_engine_is_exposed():
 
 def test_physical_binding_uses_raw_measurements():
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
-    from emuflow.board_link_timing import build_board_link_timing_model
-    from emuflow.runtime import build_virtual_runtime
+    from emuflow.platform.board_link_timing import build_board_link_timing_model
+    from emuflow.transport.runtime import build_virtual_runtime
     fixture = StaticExactSystemTimingTest()
     fixture.setUp()
     _, routes, _ = fixture._system_inputs()
@@ -723,15 +723,15 @@ def test_indexed_metadata_produces_fixed_width_final_timing_paths():
 
 def test_indexed_logic_segments_are_exact_for_checks_and_system_timing(tmp_path):
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
-    from emuflow.board_link_timing import build_board_link_timing_model
-    from emuflow.io import write_json
-    from emuflow.logic_segment_timing_storage import (logic_segment_timing_reference)
+    from emuflow.platform.board_link_timing import build_board_link_timing_model
+    from emuflow.common.io import write_json
+    from emuflow.timing.logic_segment_timing_storage import (logic_segment_timing_reference)
     from tests.timing_facts import logic_timing_facts
-    from emuflow.physical_summary_storage import (
+    from emuflow.physical.physical_summary_storage import (
         publish_logic_segment_timing_store,
         read_physical_summary,
     )
-    from emuflow.runtime import build_virtual_runtime
+    from emuflow.transport.runtime import build_virtual_runtime
     from tests.system_timing_oracle import build_system_timing
 
     fixture = StaticExactSystemTimingTest()
@@ -832,12 +832,12 @@ def test_indexed_logic_segments_are_exact_for_checks_and_system_timing(tmp_path)
 def test_indexed_logic_segments_expand_compressed_members_exactly(tmp_path):
     import copy
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
-    from emuflow.board_link_timing import build_board_link_timing_model
-    from emuflow.io import write_json
-    from emuflow.logic_segment_timing_storage import (logic_segment_timing_reference)
+    from emuflow.platform.board_link_timing import build_board_link_timing_model
+    from emuflow.common.io import write_json
+    from emuflow.timing.logic_segment_timing_storage import (logic_segment_timing_reference)
     from tests.timing_facts import logic_timing_facts
-    from emuflow.physical_summary_storage import read_physical_summary
-    from emuflow.runtime import build_virtual_runtime
+    from emuflow.physical.physical_summary_storage import read_physical_summary
+    from emuflow.transport.runtime import build_virtual_runtime
 
     fixture = StaticExactSystemTimingTest()
     fixture.setUp()
@@ -916,8 +916,8 @@ def test_indexed_logic_segments_expand_compressed_members_exactly(tmp_path):
 
 def test_physical_binding_does_not_reindex_schedule_entries():
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
-    from emuflow.board_link_timing import build_board_link_timing_model
-    from emuflow.runtime import build_virtual_runtime
+    from emuflow.platform.board_link_timing import build_board_link_timing_model
+    from emuflow.transport.runtime import build_virtual_runtime
 
     class SinglePassEntries(list):
         iterations = 0
@@ -952,11 +952,11 @@ def test_physical_binding_does_not_reindex_schedule_entries():
 
 def test_indexed_physical_binding_streams_routes_paths_and_schedule(tmp_path):
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
-    from emuflow.board_link_timing import build_board_link_timing_model
-    from emuflow.runtime import build_virtual_runtime
-    from emuflow.system_route_storage import SystemRouteSequence, read_system_routes
+    from emuflow.platform.board_link_timing import build_board_link_timing_model
+    from emuflow.transport.runtime import build_virtual_runtime
+    from emuflow.routing.system_route_storage import SystemRouteSequence, read_system_routes
     from tests.native_route_seal_fixture import write_route_store_fixture
-    from emuflow.tdm_schedule_storage import (read_tdm_schedule)
+    from emuflow.scheduling.tdm_schedule_storage import (read_tdm_schedule)
 
     fixture = StaticExactSystemTimingTest()
     fixture.setUp()

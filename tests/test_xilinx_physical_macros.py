@@ -6,15 +6,15 @@ from pathlib import Path
 from types import MappingProxyType
 from unittest import mock
 
-from emuflow.errors import ValidationError
-import emuflow.xilinx_physical_macros as physical_macros
-from emuflow.xilinx_physical_macros import (
+from emuflow.common.errors import ValidationError
+import emuflow.physical.xilinx_physical_macros as physical_macros
+from emuflow.physical.xilinx_physical_macros import (
     XILINX_PHYSICAL_MACRO_CONTRACT_SCHEMA,
     derive_xilinx_physical_macro_contract,
     validate_xilinx_physical_macro_contract,
 )
-from emuflow.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
-from emuflow.yosys import import_yosys_json
+from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
+from emuflow.frontend.yosys import import_yosys_json
 
 
 class ImmutableMacroDerivationTests(unittest.TestCase):

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import torch
 
-from emuflow.openparf_native_driver import (
+from emuflow.physical.openparf.openparf_native_driver import (
     OPENPARF_NATIVE_CONVERGENCE_SCHEMA,
     bounded_native_area_adjustment_condition,
     stable_native_stop_condition,

@@ -8,10 +8,10 @@ from emuflow_tools.board_arm_mps4 import (
     MPS4_B2B_REFCLK_DEFAULT_MHZ,
     materialize_arm_mps4_boarddb,
 )
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
 from tests.virtual_anchor_fixture import anchor_facts
-from emuflow.platform import Platform
+from emuflow.platform.platform import Platform
 
 
 class ArmMps4BoardTest(unittest.TestCase):

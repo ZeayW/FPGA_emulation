@@ -31,7 +31,7 @@ class PProBlackboxProvenanceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             for relative in RUNNER_SOURCE_MEMBERS:
-                shutil.copyfile((Path(__file__).resolve().parents[1] / "src" / "emuflow" / "io.py") if relative == "io.py" else source / relative, root / relative)
+                shutil.copyfile((Path(__file__).resolve().parents[1] / "src/python/emuflow/common/io.py") if relative == "io.py" else source / relative, root / relative)
             first = runner_source_bundle(root)
             runtime = root / "ppro_blackbox_runtime.py"
             runtime.write_bytes(runtime.read_bytes() + b"\n# mutation\n")

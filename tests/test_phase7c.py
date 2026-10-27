@@ -6,18 +6,18 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.board_link_timing import build_board_link_timing_model
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
-from emuflow.phase5 import (
+from emuflow.platform.board_link_timing import build_board_link_timing_model
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
+from emuflow.scheduling.phase5 import (
     PHASE5_GENERATION_SCHEMA,
     PHASE5_REPORT_SCHEMA,
     _canonical_phase5_report_identity,
 )
-from emuflow.phase7c import run_phase7c
-from emuflow.platform import Platform
-from emuflow.local_path_timing import path_id_set_sha256
-from emuflow.runtime import (
+from emuflow.timing.phase7c import run_phase7c
+from emuflow.platform.platform import Platform
+from emuflow.timing.local_path_timing import path_id_set_sha256
+from emuflow.transport.runtime import (
     PHYSICAL_SUMMARY_SCHEMA,
     aggregate_qor as _aggregate_qor,
     build_virtual_runtime,
@@ -28,7 +28,7 @@ from emuflow.runtime import (
     validate_virtual_runtime,
     virtual_runtime_controller_to_systemverilog,
 )
-from emuflow.tdm import TDM_SCHEDULE_SCHEMA
+from emuflow.scheduling.tdm import TDM_SCHEDULE_SCHEMA
 from tests.tdm_timing_oracle import timing_summary as reconstruct_tdm_schedule_timing
 
 
@@ -205,7 +205,7 @@ class Phase7CTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             with mock.patch(
-                "emuflow.phase7c.read_tdm_schedule",
+                "emuflow.timing.phase7c.read_tdm_schedule",
                 side_effect=AssertionError("uncommitted schedule was opened"),
             ) as read_schedule, self.assertRaisesRegex(
                 ValidationError, "commit report is missing"
@@ -276,7 +276,7 @@ class Phase7CTest(unittest.TestCase):
             (root / "cross_layer_timing.json").write_bytes(b"new")
 
             with mock.patch(
-                "emuflow.phase7c.read_tdm_schedule",
+                "emuflow.timing.phase7c.read_tdm_schedule",
                 side_effect=AssertionError("cross-generation schedule was opened"),
             ) as read_schedule, self.assertRaisesRegex(
                 ValidationError, "generation member seal is broken"
@@ -294,7 +294,7 @@ class Phase7CTest(unittest.TestCase):
 
             (root / "cross_layer_timing.json").write_bytes(b"old")
             with mock.patch(
-                "emuflow.phase7c.read_tdm_schedule",
+                "emuflow.timing.phase7c.read_tdm_schedule",
                 side_effect=AssertionError("unsealed schedule path was opened"),
             ) as read_schedule, self.assertRaisesRegex(
                 ValidationError, "schedule path disagrees"
@@ -1223,7 +1223,7 @@ class Phase7CTest(unittest.TestCase):
         )
         self.assertEqual(path["fixed_slot_event_timing_status"], "pass")
 
-    @mock.patch("emuflow.phase7c.validate_phase5_generation", return_value={"status": "pass"})
+    @mock.patch("emuflow.timing.phase7c.validate_phase5_generation", return_value={"status": "pass"})
     def test_phase7c_generates_runtime_and_rejects_retired_physical_engine(self, _generation):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1274,16 +1274,16 @@ class Phase7CTest(unittest.TestCase):
                 "mode": "static-exact-combinational",
             }
             with mock.patch(
-                "emuflow.phase7c.read_system_routes",
+                "emuflow.timing.phase7c.read_system_routes",
                 return_value=semantic_routes,
             ), mock.patch(
-                "emuflow.phase7c.read_phase3_assignment_view",
+                "emuflow.timing.phase7c.read_phase3_assignment_view",
                 return_value={"design": "dut"},
             ), mock.patch(
-                "emuflow.phase7c.semantic_contract_for_routes",
+                "emuflow.timing.phase7c.semantic_contract_for_routes",
                 return_value=semantic_contract,
             ) as bind_semantic, mock.patch(
-                "emuflow.phase7c.validate_cross_layer_timing_contract",
+                "emuflow.timing.phase7c.validate_cross_layer_timing_contract",
                 side_effect=RuntimeError("after semantic binding"),
             ), self.assertRaisesRegex(RuntimeError, "after semantic"):
                 run_phase7c(
@@ -1294,7 +1294,7 @@ class Phase7CTest(unittest.TestCase):
                     routes_path=paths["routes"],
                 )
             bind_semantic.assert_called_once()
-            from emuflow.physical_summary_storage import PhysicalSummaryView
+            from emuflow.physical.physical_summary_storage import PhysicalSummaryView
             mismatched = PhysicalSummaryView(self._physical_summary())
             mismatched.update({
                 "logic_segment_timing": {},
@@ -1302,7 +1302,7 @@ class Phase7CTest(unittest.TestCase):
                 "logic_segment_tdm_schedule_sha256": "0" * 64,
             })
             with mock.patch(
-                "emuflow.phase7c.read_physical_summary",
+                "emuflow.timing.phase7c.read_physical_summary",
                 return_value=mismatched,
             ), self.assertRaisesRegex(
                 ValidationError, "route/schedule seal disagrees"
@@ -1442,8 +1442,8 @@ if __name__ == "__main__":
 
 def test_current_native_phase5_generation_enters_phase7c_without_validation_bypass(tmp_path):
     from tests.test_phase5_native_stage import current_case
-    from emuflow.phase5_native import run_native_phase5
-    from emuflow.io import write_json
+    from emuflow.scheduling.phase5_native import run_native_phase5
+    from emuflow.common.io import write_json
     case, routes, producer = current_case(tmp_path, False, False)
     phase5 = tmp_path / 'phase5'
     run_native_phase5(producer, phase5)
@@ -1464,6 +1464,6 @@ def test_current_native_phase5_generation_enters_phase7c_without_validation_bypa
     assert report['status'] == 'generated'
     assert report['schedule_legality']['status'] == 'pass'
     assert report['design'] == case.ir.value['design']['name']
-    from emuflow.io import read_json
+    from emuflow.common.io import read_json
     qor = read_json(output / 'qor_report.json')
     assert qor['tdm']['frame_slots'] == producer.header['route_constraints']['frame_slots']

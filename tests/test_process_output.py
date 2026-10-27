@@ -2,7 +2,7 @@ import sys
 
 import pytest
 
-from emuflow.process_output import run_with_bounded_output
+from emuflow.common.process_output import run_with_bounded_output
 
 
 def test_bounded_output_retains_only_tail() -> None:

@@ -18,8 +18,8 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from emuflow_tools.benchmark import BenchmarkRun
-from emuflow.io import write_json
-from emuflow.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+from emuflow.common.io import write_json
+from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 from scripts.benchmarks.nvdla_ram_stubs import (
     BLACKBOX_MEMORY_POLICY,
     MEMORY_POLICIES,

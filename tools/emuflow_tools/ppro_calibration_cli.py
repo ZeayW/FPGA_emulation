@@ -7,8 +7,8 @@ import json
 from pathlib import Path
 from typing import Any, Sequence
 
-from emuflow.errors import ValidationError
-from emuflow.io import read_json, write_json
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json, write_json
 from .open_transport_characterization import (
     fit_open_transport_cost_model,
     generate_open_transport_matrix,

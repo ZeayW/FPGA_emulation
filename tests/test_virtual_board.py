@@ -8,13 +8,13 @@ from collections import Counter, defaultdict
 
 import pytest
 
-from emuflow import virtual_board
+from emuflow.transport import virtual_board
 from tests.virtual_binding_fixture import native_binding, binding_text
-from emuflow.default_platform import materialize_research_platform, research_platform_path
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
-from emuflow.platform import Platform
-from emuflow.virtual_board import (
+from emuflow.platform.default_platform import materialize_research_platform, research_platform_path
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
+from emuflow.platform.platform import Platform
+from emuflow.transport.virtual_board import (
     INVENTORY_PATH,
     build_virtual_board,
     build_virtual_io_physical_contract,

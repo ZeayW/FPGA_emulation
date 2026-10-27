@@ -9,9 +9,9 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
-from emuflow.board_link_timing import validate_board_link_timing
-from emuflow.errors import ValidationError
-from emuflow.io import read_json, write_json
+from emuflow.platform.board_link_timing import validate_board_link_timing
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json, write_json
 from .open_transport_characterization import (
     BASE_FEATURE_NAMES,
     FRAME_SLOTS,
@@ -20,15 +20,15 @@ from .open_transport_characterization import (
     OPEN_TRANSPORT_PROVENANCE,
     extract_transport_features,
 )
-from emuflow.platform import Platform
+from emuflow.platform.platform import Platform
 from .ppro_blackbox_calibration import validate_public_platform_prior
 from .ppro_blackbox_stage3 import CALIBRATED_CAPACITY_SCHEMA, TOPOLOGY_FIT_SCHEMA
 from .ppro_blackbox_stage4 import LATENCY_FIT_SCHEMA, PAYLOAD_FIT_SCHEMA
-from emuflow.rapidwright_provider import validate_rapidwright_provider_manifest
-from emuflow.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
+from emuflow.physical.rapidwright.rapidwright_provider import validate_rapidwright_provider_manifest
+from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 
 
-from emuflow.transport_cost import (TRANSPORT_COST_SCHEMA, validate_transport_cost_database, predict_transport_resources)
+from emuflow.transport.transport_cost import (TRANSPORT_COST_SCHEMA, validate_transport_cost_database, predict_transport_resources)
 CALIBRATED_MANIFEST_SCHEMA = "emuflow.ppro-calibrated-platform-manifest/v2"
 _PROFILES = ("aggressive", "nominal", "conservative")
 _MAX_HOLDOUT_RELATIVE_ERROR = 0.15

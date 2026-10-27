@@ -8,9 +8,9 @@ import tempfile
 import unittest
 from unittest import mock
 
-from emuflow.errors import ValidationError
-from emuflow.xilinx_netlist import open_xilinx_mapped_index
-from emuflow import xilinx_openparf_atomic as adapter
+from emuflow.common.errors import ValidationError
+from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index
+from emuflow.physical.openparf import xilinx_openparf_atomic as adapter
 from tests.native_build import emuflow_native
 
 

@@ -7,8 +7,8 @@ from pathlib import Path
 import sqlite3
 import struct
 
-from emuflow.errors import ValidationError
-from emuflow.global_event_store import _Owner, EventChecks, PathMetadata
+from emuflow.common.errors import ValidationError
+from emuflow.timing.global_event_store import _Owner, EventChecks, PathMetadata
 
 _ROLES = ('target', 'runtime', 'tx', 'commit')
 
@@ -19,12 +19,12 @@ class EventFacts:
         self._owner.mode = 2 if metadata_only else 3 if bound else 1
         db = self._owner.connection = sqlite3.connect(self._owner.primary)
         db.executescript('PRAGMA application_id=1162692421; PRAGMA user_version=1;'
-            + (Path(__file__).parents[1] / 'src/emuflow/data/schema/global_events.sql').read_text())
+            + (Path(__file__).parents[1] / 'src/python/emuflow/data/schema/global_events.sql').read_text())
         self._path_ids, self._event_ids = {}, {}
         self._finished = False
 
     def append_values(self, path, role, event, launch, arcs, required):
-        from emuflow.global_sta import EventCheck
+        from emuflow.timing.global_sta import EventCheck
         self.append(EventCheck(path, role, event, launch, arcs, required))
 
     def append(self, row):

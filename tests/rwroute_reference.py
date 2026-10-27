@@ -15,12 +15,12 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Set, Tuple
 
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
-from emuflow.xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
-from emuflow.xilinx_placement import XILINX_PLACEMENT_SCHEMA
-from emuflow.xilinx_physical_handoff import validate_xilinx_physical_handoff_pair
-from emuflow.xilinx_rwroute import _sha256, _select_module, _primitive_parameter, _is_clock_sink_pin
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
+from emuflow.physical.xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
+from emuflow.physical.xilinx_placement import XILINX_PLACEMENT_SCHEMA
+from emuflow.physical.xilinx_physical_handoff import validate_xilinx_physical_handoff_pair
+from emuflow.physical.rapidwright.xilinx_rwroute import _sha256, _select_module, _primitive_parameter, _is_clock_sink_pin
 
 class _TsvSpool:
     """Append a large route contract without retaining its text in memory."""

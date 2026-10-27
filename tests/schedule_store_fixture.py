@@ -5,6 +5,8 @@ not implement a scheduler and does not produce any retired storage version.
 """
 
 from __future__ import annotations
+
+from emuflow.common.paths import DATA_ROOT
 from pathlib import Path
 from collections.abc import Mapping
 from typing import Any
@@ -13,9 +15,9 @@ import json
 import os
 import sqlite3
 import uuid
-from emuflow.errors import ValidationError
-from emuflow.io import file_sha256, write_json
-from emuflow.tdm_schedule_storage import (
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import file_sha256, write_json
+from emuflow.scheduling.tdm_schedule_storage import (
     TDM_SCHEDULE_LOGICAL_SCHEMA,
     TDM_SCHEDULE_SECTIONS,
     TYPED_COMPLETION_RELATION_SCHEMA,
@@ -33,15 +35,15 @@ from emuflow.tdm_schedule_storage import (
     _update_digest,
     _validate_typed_entry_values,
 )
-from emuflow.tdm_schedule_storage import (
+from emuflow.scheduling.tdm_schedule_storage import (
     TDM_SCHEDULE_STORAGE_SCHEMA,
     TDM_SCHEDULE_USER_VERSION,
     TDM_SCHEDULE_APPLICATION_ID,
     _content_addressed_store_name,
 )
-import emuflow.tdm_schedule_storage as _storage
+import emuflow.scheduling.tdm_schedule_storage as _storage
 
-_SCHEMA_DIRECTORY = Path(_storage.__file__).parent / "data/schema"
+_SCHEMA_DIRECTORY = DATA_ROOT / "schema"
 SCHEDULE_DDL = (_SCHEMA_DIRECTORY / "phase5_schedule.sql").read_text()
 SCHEDULE_INDEX_DDL = (_SCHEMA_DIRECTORY / "phase5_schedule_indexes.sql").read_text()
 
@@ -317,10 +319,10 @@ def _publish_fixture_records(
 
 
 def write_tdm_schedule_storage(manifest_path: Path, schedule) -> dict[str, Any]:
-    from emuflow.tdm import NativeExactScheduleRequest
+    from emuflow.scheduling.tdm import NativeExactScheduleRequest
 
     if isinstance(schedule, NativeExactScheduleRequest):
-        from emuflow.phase5_native import run_native_phase5
+        from emuflow.scheduling.phase5_native import run_native_phase5
         if manifest_path.name != "schedule.json":
             raise ValidationError("native Phase 5 owns schedule.json")
         run_native_phase5(schedule, manifest_path.parent)

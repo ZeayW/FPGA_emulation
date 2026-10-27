@@ -3,8 +3,8 @@ import copy
 
 import pytest
 
-from emuflow.cross_layer_timing import build_cross_layer_timing_contract, validate_cross_layer_timing_contract
-from emuflow.errors import ValidationError
+from emuflow.scheduling.cross_layer_timing import build_cross_layer_timing_contract, validate_cross_layer_timing_contract
+from emuflow.common.errors import ValidationError
 from tests.test_phase5_timing_native import _timed_case
 
 

@@ -1,6 +1,6 @@
 // Exercise rejection at the private kernel/result boundary without adding a
 // second public routing producer or duplicating its model/parser in tests.
-#include "../src/native/emuflow_core/phase4.cpp"
+#include "../src/core/routing/phase4.cpp"
 #include <iostream>
 #include <sqlite3.h>
 

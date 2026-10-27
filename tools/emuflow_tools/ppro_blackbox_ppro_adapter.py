@@ -14,7 +14,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 
 
 PPRO_2026_REPORT_PROFILE = "ppro-2026-ordinary-reports-v1"

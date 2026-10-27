@@ -4,9 +4,9 @@ import unittest
 from io import StringIO
 from pathlib import Path
 
-from emuflow.ir import EmuIR
-from emuflow.phase1 import run_phase1
-from emuflow.xilinx_primitives import normalize_xilinx_indexed_staging
+from emuflow.ir.ir import EmuIR
+from emuflow.frontend.phase1 import run_phase1
+from emuflow.physical.xilinx_primitives import normalize_xilinx_indexed_staging
 
 
 ROOT = Path(__file__).resolve().parents[1]

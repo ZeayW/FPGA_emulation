@@ -10,18 +10,18 @@ from bisect import bisect_left
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
-from emuflow.architecture import ArchitectureDB
-from emuflow.errors import ValidationError
-from emuflow.io import file_sha256, read_json, write_json
-from emuflow.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE, audit_xilinx_mapped_json
-from emuflow.xilinx_packing import (
+from emuflow.platform.architecture import ArchitectureDB
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import file_sha256, read_json, write_json
+from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE, audit_xilinx_mapped_json
+from emuflow.physical.xilinx_packing import (
     PACKED_SITE_NETLIST_SCHEMA, SLICE_LUT_BELS, SLICE_FF_BELS,
     FF_TYPES, LUT_TYPES, DUAL_OUTPUT_LUT_TYPE, CONSTANT_TYPES, MUX_TYPES,
     HARD_BINDINGS, CASCADE_PORTS, _select_module, _bits, _ff_control_set,
     _net_drivers, _pack_mux_cone, _mux_input_driver, _derive_cascade_chains,
     validate_xilinx_packing,
 )
-from emuflow.xilinx_placement import (
+from emuflow.physical.xilinx_placement import (
     XILINX_PLACEMENT_SCHEMA, XILINX_EXACT_SITE_LEGALIZER_PROVIDER,
     XILINX_ROUTE_A_SITE_UTILIZATION_LIMIT, _nonempty, _load_constraints,
     _template_contracts, _local_site_limits, _clock_region_site_key,

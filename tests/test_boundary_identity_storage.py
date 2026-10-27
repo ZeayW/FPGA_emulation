@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from emuflow.boundary_identity_storage import (
+from emuflow.timing.boundary_identity_storage import (
     BOUNDARY_IDENTITY_SCHEMA,
     BOUNDARY_IDENTITY_STORAGE_SCHEMA,
     BoundaryIdentityView,
@@ -13,8 +13,8 @@ from emuflow.boundary_identity_storage import (
     read_boundary_identity_storage,
     write_boundary_identity_storage,
 )
-from emuflow.errors import ValidationError
-from emuflow.physical_summary_storage import LazyPhysicalEvidenceMap
+from emuflow.common.errors import ValidationError
+from emuflow.physical.physical_summary_storage import LazyPhysicalEvidenceMap
 
 
 def _header() -> dict[str, object]:

@@ -4,11 +4,11 @@ from pathlib import Path
 import tempfile
 import weakref
 
-from emuflow.ir import EmuIR
-from emuflow.pin_plan_storage import write_pin_plan_storage
-from emuflow.tdm_schedule_storage import read_tdm_schedule
-from emuflow.transport_storage import write_transport_storage
-from emuflow.virtual_board import write_virtual_binding_xdc, write_virtual_binding_systemverilog
+from emuflow.ir.ir import EmuIR
+from emuflow.transport.pin_plan_storage import write_pin_plan_storage
+from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
+from emuflow.transport.transport_storage import write_transport_storage
+from emuflow.transport.virtual_board import write_virtual_binding_xdc, write_virtual_binding_systemverilog
 from tests.phase3_store_fixture import write_assignment_index_fixture
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 

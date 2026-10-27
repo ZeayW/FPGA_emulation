@@ -10,12 +10,12 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from emuflow.architecture import ArchitectureDB
-from emuflow.rapidwright_provider import (
+from emuflow.platform.architecture import ArchitectureDB
+from emuflow.physical.rapidwright.rapidwright_provider import (
     load_rapidwright_provider_manifest,
     validate_rapidwright_provider_manifest,
 )
-from emuflow.xilinx_native_device_constraints import (
+from emuflow.physical.xilinx_native_device_constraints import (
     load_xilinx_native_device_constraints,
 )
 

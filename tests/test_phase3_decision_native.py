@@ -7,7 +7,7 @@ import zlib
 
 import pytest
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from tests.partition_balance_fixture import _cluster_assignment_summary
 from tests.native_partition_facts import (build_partition_assignment, validate_partition_artifacts_online)
 from tests.native_partition_kernel_driver import initialize
@@ -15,7 +15,7 @@ from tests.patron_kernel_fixture import pressure_kernel_inputs, write_pressure_r
 from tests.phase3_decision_reference import _select_patron_timing_assignment
 from tests.native_partition_core_fixture import select_assignment
 from tests.native_partition_core_fixture import audit_assignment
-from emuflow.store_publication import bind_store_source
+from emuflow.storage.store_publication import bind_store_source
 from tests.test_phase3_pressure_native import inputs, run
 
 
@@ -58,7 +58,7 @@ def test_original_owner_pair_matches_reference_choice_and_independent_legality(d
 def test_native_decision_and_owned_reduction_never_serialize_or_compare_host_columns(decision):
     args, initial, candidate, _ = decision
     _, platform, clusters, *_ = args
-    from emuflow.native_protocol import CheckedRequestWriter as _Writer
+    from emuflow.common.native_protocol import CheckedRequestWriter as _Writer
     from tests.partition_views import ClusterOwners as _PackedClusterAssignment
     original_bytes = _Writer.bytes
     def bounded_bytes(writer, data):
@@ -192,7 +192,7 @@ def test_production_phase3_uses_native_decision_before_final_transaction(decisio
     args, initial, _, _ = decision
     ir, platform, _, constraints, manifest, routes = args
     import json
-    from emuflow.phase3 import run_phase3
+    from emuflow.partition.phase3 import run_phase3
     board, limits, routing = (tmp_path/name for name in ('board.json', 'constraints.json', 'routing.json'))
     board.write_text(json.dumps(platform.to_dict()))
     limits.write_text(json.dumps(constraints))
@@ -208,7 +208,7 @@ def test_production_phase3_uses_native_decision_before_final_transaction(decisio
 def test_original_nonlexical_part_coordinates_remain_a_borrowed_view(inputs, tmp_path):
     args, reference, timing = inputs
     ir, platform, clusters, constraints, manifest, routes = args
-    from emuflow.platform import Platform
+    from emuflow.platform.platform import Platform
     from tests.partition_views import PartTranslation as _TranslatedPartColumn
     document = platform.to_dict()
     document['fpgas'].reverse()

@@ -10,13 +10,13 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.io import file_sha256, read_json
-from emuflow.native_tools import native_file_generation
-from emuflow.xilinx_netlist import IndexedXilinxMappedNetlist
-from emuflow.xilinx_physical_handoff import open_xilinx_physical_handoff
-from emuflow.xilinx_rwroute import validate_xilinx_route_db
-from emuflow.xilinx_timing import build_xilinx_routed_timing, validate_xilinx_routed_timing
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import file_sha256, read_json
+from emuflow.common.native_tools import native_file_generation
+from emuflow.physical.xilinx_netlist import IndexedXilinxMappedNetlist
+from emuflow.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
+from emuflow.physical.rapidwright.xilinx_rwroute import validate_xilinx_route_db
+from emuflow.timing.xilinx_timing import build_xilinx_routed_timing, validate_xilinx_routed_timing
 from tests.test_rwroute_native import write_mapped
 from tests import test_xilinx_rwroute as rwroute_fixture
 from tests.xilinx_timing_reference import build_xilinx_routed_timing as reference
@@ -82,8 +82,8 @@ def test_native_records_manifest_bytes_and_validation_match_independent_producer
             raise AssertionError("Python route metadata population")
     c["route"]["clock_gates"] = NoIteration()
     c["route"]["virtual_io"] = NoIteration()
-    with patch("emuflow.xilinx_netlist._IndexedCells.items", side_effect=AssertionError("Python mapped cells")), \
-         patch("emuflow.xilinx_physical_handoff._ClusterSequence.__iter__", side_effect=AssertionError("Python sites")), \
+    with patch("emuflow.physical.xilinx_netlist._IndexedCells.items", side_effect=AssertionError("Python mapped cells")), \
+         patch("emuflow.physical.xilinx_physical_handoff._ClusterSequence.__iter__", side_effect=AssertionError("Python sites")), \
          patch("tests.xilinx_timing_reference._build_payload", side_effect=AssertionError("Python endpoints")):
         report = run(c, actual, sink)
     assert actual.read_bytes() == expected.read_bytes()
@@ -97,7 +97,7 @@ def test_native_records_manifest_bytes_and_validation_match_independent_producer
 
 @pytest.mark.parametrize("damage", ["count", "digest", "truncated", "duplicate-bit", "negative", "unbound-site", "driver-site", "missing-sink", "owner", "crc", "generation"])
 def test_rejects_bad_input_without_replacing_manifest_or_endpoint_owner(tmp_path, damage):
-    from emuflow import routed_endpoints_native as native
+    from emuflow.physical.rapidwright import routed_endpoints_native as native
     c = case(tmp_path)
     output = tmp_path / "native" / "timing.json"
     run(c, output)
@@ -167,15 +167,15 @@ def test_path_producer_keeps_generation_from_before_manifest_read(tmp_path):
         value = read_json(path)
         path.chmod(path.stat().st_mode ^ 0o100)
         return value
-    with patch("emuflow.xilinx_timing.read_json", side_effect=mutate_after_read), \
+    with patch("emuflow.timing.xilinx_timing.read_json", side_effect=mutate_after_read), \
          pytest.raises(ValidationError, match="generation changed"):
         build_xilinx_routed_timing(c["mapped_path"], c["physical"], c["physical"], c["route_path"], output)
     assert not output.exists()
 
 
 def test_consumer_keeps_the_produced_timing_generation(tmp_path):
-    from emuflow.routed_endpoints_native import bind_routed_timing_sources
-    from emuflow.xilinx_opensta import _bind_routed_opensta_inputs
+    from emuflow.physical.rapidwright.routed_endpoints_native import bind_routed_timing_sources
+    from emuflow.timing.xilinx_opensta import _bind_routed_opensta_inputs
     c = case(tmp_path);sink = {};output = tmp_path / "native" / "timing.json"
     run(c, output, sink)
     output.chmod(output.stat().st_mode ^ 0o100)
@@ -265,8 +265,8 @@ def test_binding_modes_and_metadata_match_independent_record_producer(tmp_path, 
 
 
 def test_manifest_array_reader_streams_large_array_and_detects_mutation(tmp_path):
-    from emuflow.routed_endpoints_native import _TimingMetadataArray
-    from emuflow.store_publication import bind_store_source
+    from emuflow.physical.rapidwright.routed_endpoints_native import _TimingMetadataArray
+    from emuflow.storage.store_publication import bind_store_source
     manifest, payload = tmp_path / "manifest.json", tmp_path / "payload.jsonl"
     count = 100000
     with manifest.open("w") as out:
@@ -289,7 +289,7 @@ def test_manifest_array_reader_streams_large_array_and_detects_mutation(tmp_path
 
 @pytest.mark.parametrize("after_manifest", [False, True])
 def test_group_publication_failure_restores_both_old_outputs(tmp_path, after_manifest):
-    from emuflow import store_publication as publisher
+    from emuflow.storage import store_publication as publisher
     c = case(tmp_path);output = tmp_path / "native" / "timing.json"
     run(c, output)
     endpoints = output.with_name(output.name+".endpoints.jsonl")
@@ -354,20 +354,20 @@ def test_large_repeated_net_population_uses_no_python_site_or_endpoint_table(tmp
         source_generations={name: list(native_file_generation(path)) for name, path in
                             [("route", c["route_path"]), ("nets", c["nets"]), ("pips", c["pips"])]})
     # This is a repeated binding-kernel input, not a qualified physical route.
-    with patch("emuflow.xilinx_netlist._IndexedCells.items", side_effect=AssertionError("Python cells")), \
-         patch("emuflow.xilinx_physical_handoff._ClusterSequence.__iter__", side_effect=AssertionError("Python sites")):
+    with patch("emuflow.physical.xilinx_netlist._IndexedCells.items", side_effect=AssertionError("Python cells")), \
+         patch("emuflow.physical.xilinx_physical_handoff._ClusterSequence.__iter__", side_effect=AssertionError("Python sites")):
         report = run(c)
     assert report["logical_endpoints"] == 2*count
     assert report["exact_site_bindings"] == 2*count
     assert report["maximum_route_delay_ns"] == .02
-    from emuflow.xilinx_timing import iter_xilinx_routed_timing_endpoints
+    from emuflow.timing.xilinx_timing import iter_xilinx_routed_timing_endpoints
     output = tmp_path / "native" / "timing.json"
     assert sum(1 for _ in iter_xilinx_routed_timing_endpoints(output, read_json(output))) == 2*count
 
 
 def test_array_slice_uses_one_cursor_and_closes_it(tmp_path):
-    from emuflow.routed_endpoints_native import _TimingMetadataArray
-    from emuflow.store_publication import bind_store_source
+    from emuflow.physical.rapidwright.routed_endpoints_native import _TimingMetadataArray
+    from emuflow.storage.store_publication import bind_store_source
     manifest, payload = tmp_path / "manifest.json", tmp_path / "payload.jsonl"
     manifest.write_text(json.dumps({"virtual_io": list(range(100))}))
     payload.write_bytes(b"")
@@ -386,14 +386,14 @@ def test_array_slice_uses_one_cursor_and_closes_it(tmp_path):
 
 
 def test_native_endpoint_capability_fails_before_frontend(tmp_path):
-    from emuflow.errors import EmuFlowError
-    from emuflow.multi_fpga_flow import run_multi_fpga_flow
+    from emuflow.common.errors import EmuFlowError
+    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
     def require(schema):
         if schema == "routed-endpoint-request-v1":
             raise EmuFlowError("missing native endpoint producer")
-    with patch("emuflow.multi_fpga_flow._validate_mapping_timing_contract"), \
-         patch("emuflow.native_tools.require_native_schema", side_effect=require), \
-         patch("emuflow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend started")), \
+    with patch("emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract"), \
+         patch("emuflow.common.native_tools.require_native_schema", side_effect=require), \
+         patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend started")), \
          pytest.raises(EmuFlowError, match="missing native endpoint producer"):
         run_multi_fpga_flow(sources=[tmp_path / "absent.v"], top="dut", clocks=["clk"], clock_periods={"clk": 10.0},
                            physical=True, physical_backend="rapidwright", output_dir=tmp_path / "flow")
@@ -401,11 +401,11 @@ def test_native_endpoint_capability_fails_before_frontend(tmp_path):
 
 
 def test_cli_requires_one_typed_handoff_and_mapped_index(tmp_path):
-    from emuflow.cli import main
+    from emuflow.flow.cli import main
     args = ["arch", "build-xilinx-routed-timing", "--mapped-index", str(tmp_path / "mapped.sqlite"),
             "--physical-handoff", str(tmp_path / "physical.sqlite"), "--route", str(tmp_path / "route.json"),
             "--output", str(tmp_path / "timing.json")]
-    with patch("emuflow.cli.build_xilinx_routed_timing", return_value={"status": "pass"}) as producer:
+    with patch("emuflow.flow.cli.build_xilinx_routed_timing", return_value={"status": "pass"}) as producer:
         assert main(args) == 0
     producer.assert_called_once_with(tmp_path / "mapped.sqlite", tmp_path / "physical.sqlite", tmp_path / "physical.sqlite",
                                      tmp_path / "route.json", tmp_path / "timing.json")

@@ -28,7 +28,7 @@ def path_facts(routes):
 
 def coverage_contract_facts(routes, schedule=None, semantic_contract=None):
     """Encode explicit old-shape facts accepted only by bounded coverage tests."""
-    from emuflow.cross_layer_timing import _canonical_sha256
+    from emuflow.scheduling.cross_layer_timing import _canonical_sha256
     exact = semantic_contract is not None
     assert len(routes['routes']) <= 4096
     segments = [] if not exact or semantic_contract.get('indexed') else [

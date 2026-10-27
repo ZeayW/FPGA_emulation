@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from emuflow.cli import _build_parser
+from emuflow.flow.cli import _build_parser
 
 
 @pytest.mark.parametrize("command", [
@@ -20,7 +20,7 @@ def test_retired_contest_command_is_rejected(command):
 def test_retired_topology_pipeline_has_no_module_or_native_target():
     root = Path(__file__).resolve().parents[1]
     assert importlib.util.find_spec("emuflow.contest_eda2025") is None
-    assert not (root / "src/native/eda2025_topology_optimizer.cpp").exists()
+    assert not (root / "src/core/eda2025_topology_optimizer.cpp").exists()
     # The former option may remain only as an explicit rejection. The build
     # target and implementation must be absent.
     assert "emuflow_eda2025_topology_optimizer" not in (root / "CMakeLists.txt").read_text()

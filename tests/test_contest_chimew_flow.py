@@ -6,34 +6,34 @@ import unittest
 from collections import defaultdict
 from pathlib import Path
 
-from emuflow.chimew_bank_channel import (
+from emuflow.transport.chimew.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
 )
-from emuflow.chimew_bank_channel_storage import (
+from emuflow.transport.chimew.chimew_bank_channel_storage import (
     write_chimew_bank_channel_storage,
 )
-from emuflow.chimew_grouping import (
+from emuflow.transport.chimew.chimew_grouping import (
     CHIMEW_CROSSING_PROVIDER,
     CHIMEW_CROSSING_SCHEMA,
     build_chimew_initial_groups,
 )
-from emuflow.chimew_phase6 import (
+from emuflow.transport.chimew.chimew_phase6 import (
     CHIMEW_ELECTRICAL_MAP_PROVIDER,
     CHIMEW_ELECTRICAL_MAP_SCHEMA,
 )
-from emuflow.chimew_pipeline import (
+from emuflow.transport.chimew.chimew_pipeline import (
     CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER,
     run_chimew_phase6_pipeline,
     validate_chimew_phase6_pipeline,
 )
-from emuflow.chimew_qualification import canonical_sha256
-from emuflow.chimew_refinement import (
+from emuflow.transport.chimew.chimew_qualification import canonical_sha256
+from emuflow.transport.chimew.chimew_refinement import (
     CHIMEW_POSITION_PROVIDER,
     CHIMEW_POSITION_SCHEMA,
     refine_chimew_groups,
 )
-from emuflow.chimew_rudy import (
+from emuflow.transport.chimew.chimew_rudy import (
     CHIMEW_RUDY_INPUT_PROVIDER,
     CHIMEW_RUDY_INPUT_SCHEMA,
 )
@@ -41,15 +41,15 @@ from emuflow_tools.contest_iccad2019 import (
     import_iccad2019_instance,
     materialize_iccad2019_rtl_boarddb,
 )
-from emuflow.io import read_json, write_json
+from emuflow.common.io import read_json, write_json
 from tests.partition_fixture import run_phase3_fixture as run_phase3
-from emuflow.phase4 import run_phase4
-from emuflow.phase5 import run_phase5
-from emuflow.tdm_schedule_storage import read_tdm_schedule
-from emuflow.phase6 import run_phase6, validate_phase6
-from emuflow.phase7c import run_phase7c
-from emuflow.platform import Platform
-from emuflow.yosys import import_yosys_json
+from emuflow.routing.phase4 import run_phase4
+from emuflow.scheduling.phase5 import run_phase5
+from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
+from emuflow.transport.phase6 import run_phase6, validate_phase6
+from emuflow.timing.phase7c import run_phase7c
+from emuflow.platform.platform import Platform
+from emuflow.frontend.yosys import import_yosys_json
 from tests.native_build import tlr_router,emuflow_native
 
 
@@ -422,7 +422,7 @@ class ContestChimewCrossFlowTest(unittest.TestCase):
                 ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"]
             )
             ir_path = root / "counter.emuir.sqlite"
-            from emuflow.emuir_compact import write_compact_emuir
+            from emuflow.ir.emuir_compact import write_compact_emuir
             write_compact_emuir(ir_path, ir.to_dict())
             phase3_root = root / "phase3"
             phase4_root = root / "phase4"

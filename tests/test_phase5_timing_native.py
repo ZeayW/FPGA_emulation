@@ -11,18 +11,18 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.cross_layer_timing import (
+from emuflow.scheduling.cross_layer_timing import (
     build_cross_layer_timing_contract,
     validate_cross_layer_timing_contract,
 )
 from tests.cross_layer_facts import coverage_contract_facts
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
-from emuflow.phase5_timing_native import project_native_schedule_timing
-from emuflow.system_route_storage import read_system_routes
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
+from emuflow.scheduling.phase5_timing_native import project_native_schedule_timing
+from emuflow.routing.system_route_storage import read_system_routes
 from tests.native_route_seal_fixture import write_route_store_fixture
 from tests.tdm_timing_oracle import timing_summary as reconstruct_tdm_schedule_timing
-from emuflow.tdm_schedule_storage import read_tdm_schedule
+from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from tests.native_schedule_case import _case
 from tests.schedule_reference import build_tdm_schedule
 from tests.schedule_store_fixture import write_tdm_schedule_storage
@@ -118,9 +118,9 @@ def test_native_combined_summary_and_full_projection_match_independent_reference
                 side_effect=AssertionError("Python P population"),
             )
         )
-        import emuflow.tdm as tdm
+        import emuflow.scheduling.tdm as tdm
         assert not hasattr(tdm, "_iter_tdm_schedule_timing_paths_from_routes")
-        import emuflow.cross_layer_timing as cross_layer
+        import emuflow.scheduling.cross_layer_timing as cross_layer
         assert not hasattr(cross_layer, "_build_contract")
         actual = project_native_schedule_timing(
             routes, schedule, case.platform, bind=True, analyze=True
@@ -363,7 +363,7 @@ def test_timing_statistics_preserve_signed_zero_after_external_numeric_sort(
 def test_native_timing_request_ownership_and_atomic_summary(
     tmp_path, monkeypatch, corruption
 ):
-    from emuflow.tool_runtime import NativeToolProcess
+    from emuflow.common.tool_runtime import NativeToolProcess
 
     case, _value, _semantic, routes, schedule, _reference = _timed_case(
         tmp_path, monkeypatch
@@ -425,16 +425,16 @@ def test_native_timing_request_ownership_and_atomic_summary(
 def test_phase5_rejects_missing_native_timing_schema_before_reading_circuit_inputs(
     tmp_path,
 ):
-    from emuflow.errors import EmuFlowError
-    from emuflow.phase5 import run_phase5
+    from emuflow.common.errors import EmuFlowError
+    from emuflow.scheduling.phase5 import run_phase5
 
     with (
         patch(
-            "emuflow.native_tools.require_native_schema",
+            "emuflow.common.native_tools.require_native_schema",
             side_effect=EmuFlowError("timing schema unavailable"),
         ),
         patch(
-            "emuflow.phase5.read_system_routes",
+            "emuflow.scheduling.phase5.read_system_routes",
             side_effect=AssertionError("circuit opened before preflight"),
         ),
     ):
@@ -453,7 +453,7 @@ def test_phase5_rejects_missing_native_timing_schema_before_reading_circuit_inpu
 def test_native_timing_adapter_rejects_malformed_success_payload(
     tmp_path, monkeypatch, corruption
 ):
-    from emuflow.tool_runtime import NativeToolProcess
+    from emuflow.common.tool_runtime import NativeToolProcess
 
     case, _value, _semantic, routes, schedule, _reference = _timed_case(
         tmp_path, monkeypatch
@@ -511,8 +511,8 @@ def test_native_timing_rejects_forged_route_population_before_rank_allocation(
     import sqlite3
     import struct
     import zlib
-    from emuflow.native_tools import native_file_generation
-    from emuflow.tool_runtime import NativeToolProcess
+    from emuflow.common.native_tools import native_file_generation
+    from emuflow.common.tool_runtime import NativeToolProcess
 
     case, _value, _semantic, routes, schedule, _reference = _timed_case(
         tmp_path, monkeypatch

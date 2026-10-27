@@ -6,11 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.architecture import ArchitectureDB
-from emuflow.errors import ValidationError
-from emuflow.fpga_interchange import architecture_from_fpga_interchange_extract
-from emuflow.io import read_json
-from emuflow.rapidwright_provider import (
+from emuflow.platform.architecture import ArchitectureDB
+from emuflow.common.errors import ValidationError
+from emuflow.platform.fpga_interchange import architecture_from_fpga_interchange_extract
+from emuflow.common.io import read_json
+from emuflow.physical.rapidwright.rapidwright_provider import (
     RAPIDWRIGHT_GENERATOR_QUALIFICATION,
     bind_rapidwright_route_certificate,
     rapidwright_producer_record,

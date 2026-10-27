@@ -14,9 +14,9 @@ import math
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
-from emuflow.errors import ValidationError
-from emuflow.platform import Platform
-from emuflow.routing import (
+from emuflow.common.errors import ValidationError
+from emuflow.platform.platform import Platform
+from emuflow.routing.routing import (
     ArcKey,
     build_directed_graph,
     demands_from_assignment,

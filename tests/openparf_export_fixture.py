@@ -10,8 +10,8 @@ from pathlib import Path
 import sqlite3
 import tempfile
 
-from emuflow.xilinx_netlist import open_xilinx_mapped_index, IndexedXilinxMappedNetlist
-from emuflow import xilinx_openparf_atomic as atomic
+from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index, IndexedXilinxMappedNetlist
+from emuflow.physical.openparf import xilinx_openparf_atomic as atomic
 
 
 @contextmanager

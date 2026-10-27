@@ -1,8 +1,8 @@
 // Offline W0 reader differential. Build the same source against each exact
 // core/header revision; never include this hashing pass in a production handoff.
-#include "emuflow_core/emuir_view.hpp"
-#include "emuflow_core/hash.hpp"
-#include "emuflow_core/json_record.hpp"
+#include "ir/emuir_view.hpp"
+#include "common/hash.hpp"
+#include "common/json_record.hpp"
 
 #include <iostream>
 #include <sstream>

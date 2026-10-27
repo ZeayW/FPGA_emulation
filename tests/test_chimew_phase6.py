@@ -11,16 +11,16 @@ from unittest import mock
 
 from tests.native_build import chimew_bank_channel_assigner
 
-from emuflow.chimew_bank_channel import (
+from emuflow.transport.chimew.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
     evaluate_chimew_bank_channel_assignment,
     validate_chimew_bank_channel_input,
 )
-from emuflow.chimew_bank_channel_storage import (
+from emuflow.transport.chimew.chimew_bank_channel_storage import (
     write_chimew_bank_channel_storage,
 )
-from emuflow.chimew_binding_storage import (
+from emuflow.transport.chimew.chimew_binding_storage import (
     CHIMEW_BINDING_STORAGE_SCHEMA,
     ChimewBindingEntrySequence,
     ChimewBindingView,
@@ -28,7 +28,7 @@ from emuflow.chimew_binding_storage import (
     read_chimew_binding,
     write_chimew_binding_storage,
 )
-from emuflow.chimew_phase6 import (
+from emuflow.transport.chimew.chimew_phase6 import (
     CHIMEW_ELECTRICAL_MAP_PROVIDER,
     CHIMEW_ELECTRICAL_MAP_SCHEMA,
     CHIMEW_ELECTRICAL_MAP_SCHEMA_V1,
@@ -40,21 +40,21 @@ from emuflow.chimew_phase6 import (
     validate_chimew_electrical_map,
     validate_chimew_phase6_binding,
 )
-from emuflow.chimew_qualification import (
+from emuflow.transport.chimew.chimew_qualification import (
     CHIMEW_QUALIFICATION_PROVIDER,
     CHIMEW_QUALIFICATION_SCHEMA,
     canonical_sha256,
 )
-from emuflow.cli import main
-from emuflow.errors import ValidationError
-from emuflow.io import read_json, write_json
-from emuflow.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, validate_pin_plan
-from emuflow.pin_plan_storage import (
+from emuflow.flow.cli import main
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json, write_json
+from emuflow.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, validate_pin_plan
+from emuflow.transport.pin_plan_storage import (
     PinPlanEntrySequence,
     write_pin_plan_storage,
 )
-from emuflow.platform import Platform
-from emuflow.tdm_schedule_storage import (
+from emuflow.platform.platform import Platform
+from emuflow.scheduling.tdm_schedule_storage import (
     ScheduleRecordSequence,
     TDM_SCHEDULE_STORAGE_SCHEMA,
     TypedScheduleEntrySequence,
@@ -509,7 +509,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             malformed_group = copy.deepcopy(binding)
             malformed_group["entries"][0]["group"] = None
             with mock.patch(
-                "emuflow.chimew_phase6.sqlite3.connect",
+                "emuflow.transport.chimew.chimew_phase6.sqlite3.connect",
                 side_effect=observed_connect,
             ):
                 with self.assertRaisesRegex(
@@ -1154,7 +1154,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
             electrical_map["provenance"]["producer_version"] = "2"
             write_json(paths["electrical"], electrical_map)
             real_publish = __import__(
-                "emuflow.chimew_phase6", fromlist=["_publish_chimew_adapter_file"]
+                "emuflow.transport.chimew.chimew_phase6", fromlist=["_publish_chimew_adapter_file"]
             )._publish_chimew_adapter_file
 
             predicates = {
@@ -1171,7 +1171,7 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                     return real_publish(source, destination)
 
                 with self.subTest(label=label), mock.patch(
-                    "emuflow.chimew_phase6._publish_chimew_adapter_file",
+                    "emuflow.transport.chimew.chimew_phase6._publish_chimew_adapter_file",
                     side_effect=fail_selected,
                 ):
                     with self.assertRaisesRegex(OSError, "injected"):

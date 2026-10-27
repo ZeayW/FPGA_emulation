@@ -6,8 +6,8 @@ routes, hops and original path members.
 """
 from __future__ import annotations
 import math
-from emuflow.errors import ValidationError
-from emuflow.routing import normalize_route_constraints, route_link_delay_coefficients_ns, route_link_delay_ns
+from emuflow.common.errors import ValidationError
+from emuflow.routing.routing import normalize_route_constraints, route_link_delay_coefficients_ns, route_link_delay_ns
 
 _LIMIT = 4096
 

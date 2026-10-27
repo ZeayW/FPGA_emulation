@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Small real-device qualification of the indexed Vivado provider.
 
-Run from a versioned checkout with PYTHONPATH=src. All products belong to OUT;
+Run from a versioned checkout with PYTHONPATH=src/python. All products belong to OUT;
 this is a synthetic physical/provider check, not full-design global STA.
 """
 import argparse
@@ -10,11 +10,11 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from emuflow.io import file_sha256, write_json
-from emuflow.vivado_netlist import emit_vivado_mapped_verilog
-from emuflow.vivado_physical import run_indexed_vivado_partition
-from emuflow.vivado_physical_timing import write_vivado_local_query
-from emuflow.yosys import import_yosys_json
+from emuflow.common.io import file_sha256, write_json
+from emuflow.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
+from emuflow.physical.vivado.vivado_physical import run_indexed_vivado_partition
+from emuflow.physical.vivado.vivado_physical_timing import write_vivado_local_query
+from emuflow.frontend.yosys import import_yosys_json
 
 
 def main():
@@ -87,7 +87,7 @@ def main():
         paths.append({"id": f"path{index}", "clock_domain": clock, "clock_period_ns": period,
             "fixed_delay_ns": 2.0, "slack_ns": period - 2.0,
             "startpoint": endpoint(start), "endpoint": endpoint(end)})
-    from emuflow.local_path_timing import path_id_set_sha256
+    from emuflow.timing.local_path_timing import path_id_set_sha256
     seals = {name: file_sha256(source) for name in ("path_database_sha256", "original_ir_sha256", "assignment_sha256", "routes_sha256")}
     seals.update(original_paths=len(paths), original_path_ids_sha256=path_id_set_sha256([p["id"] for p in paths]))
     identity, query = root / "local-identity.sqlite", root / "local-query.tsv"

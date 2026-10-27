@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.io import file_sha256
-from emuflow.vivado_lineage import LINEAGE_SCHEMA, PLACEMENT_COORDINATE_SYSTEM, import_cell_lineage
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import file_sha256
+from emuflow.physical.vivado.vivado_lineage import LINEAGE_SCHEMA, PLACEMENT_COORDINATE_SYSTEM, import_cell_lineage
 
 
 @pytest.fixture
@@ -115,8 +115,8 @@ proc get_property {args} {
 
 
 def test_native_registry_preflight_accepts_current_and_rejects_unknown_schema():
-    from emuflow.native_tools import require_native_schema
-    from emuflow.errors import EmuFlowError
+    from emuflow.common.native_tools import require_native_schema
+    from emuflow.common.errors import EmuFlowError
     require_native_schema("vivado-lineage-store-v2")
     with pytest.raises(EmuFlowError, match="required schema"):
         require_native_schema("vivado-lineage-store-unknown")
@@ -124,13 +124,13 @@ def test_native_registry_preflight_accepts_current_and_rejects_unknown_schema():
 
 def test_compile_rejects_incomplete_native_installation_before_frontend(tmp_path):
     from unittest.mock import patch
-    from emuflow.errors import EmuFlowError
-    from emuflow.multi_fpga_flow import run_multi_fpga_flow
+    from emuflow.common.errors import EmuFlowError
+    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
     # Other preflight tests qualify the upstream timing contract independently.
-    with patch("emuflow.multi_fpga_flow._validate_mapping_timing_contract"), patch(
-        "emuflow.native_tools.require_native_schema", side_effect=EmuFlowError("missing lineage capability")
+    with patch("emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract"), patch(
+        "emuflow.common.native_tools.require_native_schema", side_effect=EmuFlowError("missing lineage capability")
     ), patch(
-        "emuflow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend started")
+        "emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend started")
     ), pytest.raises(EmuFlowError, match="missing lineage capability"):
         run_multi_fpga_flow(sources=[tmp_path / "missing.v"], top="dut", clocks=["clk"],
             clock_periods={"clk": 10.0}, physical=True, physical_backend="vivado",

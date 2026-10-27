@@ -8,14 +8,14 @@ from pathlib import Path
 from unittest import mock
 
 from tests.openparf_bridge_fixture import materialize_bridge_fixture as materialize_xilinx_openparf_atomic_contract
-from emuflow.errors import ValidationError
-from emuflow.architecture import ArchitectureDB
-from emuflow.io import file_sha256
-from emuflow.xilinx_netlist import (
+from emuflow.common.errors import ValidationError
+from emuflow.platform.architecture import ArchitectureDB
+from emuflow.common.io import file_sha256
+from emuflow.physical.xilinx_netlist import (
     emit_xilinx_mapped_index,
     open_xilinx_mapped_index,
 )
-from emuflow.xilinx_openparf_atomic import (
+from emuflow.physical.openparf.xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
     OPENPARF_ATOMIC_PROVIDER,
     load_xilinx_openparf_atomic_placement_clusters,
@@ -24,14 +24,14 @@ from emuflow.xilinx_openparf_atomic import (
     validate_xilinx_openparf_atomic_placement,
     write_xilinx_openparf_atomic_placement_certificate,
 )
-from emuflow.xilinx_openparf_bridge import (
+from emuflow.physical.openparf.xilinx_openparf_bridge import (
     _validate_certificate,
 )
-from emuflow.xilinx_packing import validate_xilinx_packing
-from emuflow.xilinx_placement import validate_xilinx_placement
-from emuflow.xilinx_rwroute import export_rwroute_input
+from emuflow.physical.xilinx_packing import validate_xilinx_packing
+from emuflow.physical.xilinx_placement import validate_xilinx_placement
+from emuflow.physical.rapidwright.xilinx_rwroute import export_rwroute_input
 from tests.rwroute_reference import export_rwroute_reference
-from emuflow.yosys import import_yosys_json
+from emuflow.frontend.yosys import import_yosys_json
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 
 
@@ -294,7 +294,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
 
     def test_region_capacity_uses_all_sites_and_rejects_physical_overuse(self):
         from collections import Counter
-        from emuflow.xilinx_openparf_bridge import _local_utilization_summary
+        from emuflow.physical.openparf.xilinx_openparf_bridge import _local_utilization_summary
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             _mapped, architecture, _certificate = _native_certificate(root, include_hard=False)
@@ -316,12 +316,12 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
                 _local_utilization_summary(device, capacity)
 
     def test_public_bridge_only_accepts_one_output(self):
-        from emuflow.xilinx_openparf_bridge import materialize_xilinx_openparf_atomic_contract as typed_bridge
+        from emuflow.physical.openparf.xilinx_openparf_bridge import materialize_xilinx_openparf_atomic_contract as typed_bridge
         with self.assertRaises(TypeError):
             typed_bridge(Path('mapped'), Path('arch'), Path('cert'), Path('packed.json'), Path('placement.json'))
 
     def test_public_bridge_rejects_source_aliases_without_modification(self):
-        from emuflow.xilinx_openparf_bridge import materialize_xilinx_openparf_atomic_contract as typed_bridge
+        from emuflow.physical.openparf.xilinx_openparf_bridge import materialize_xilinx_openparf_atomic_contract as typed_bridge
         import os
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -338,7 +338,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
                 self.assertEqual(list(root.glob('.'+target.name+'.*.tmp')), [])
 
     def test_bridge_header_reuses_source_digests(self):
-        from emuflow import xilinx_openparf_bridge as bridge
+        from emuflow.physical.openparf import xilinx_openparf_bridge as bridge
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             mapped, architecture, certificate = _native_certificate(root, include_hard=False)
@@ -351,8 +351,8 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             self.assertEqual(digest.call_args_list.count(mock.call(certificate)), 1)
 
     def test_source_generation_is_checked_immediately_before_publication(self):
-        from emuflow.xilinx_openparf_bridge import materialize_xilinx_openparf_atomic_contract as typed_bridge
-        from emuflow.xilinx_physical_handoff import XilinxPhysicalHandoffBuilder
+        from emuflow.physical.openparf.xilinx_openparf_bridge import materialize_xilinx_openparf_atomic_contract as typed_bridge
+        from emuflow.physical.xilinx_physical_handoff import XilinxPhysicalHandoffBuilder
         import os
         publish = XilinxPhysicalHandoffBuilder.publish
         for changed in ('mapped', 'certificate', 'sidecar'):
@@ -469,17 +469,17 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             packed = {}
             placement = {}
             with mock.patch(
-                "emuflow.io.write_json",
+                "emuflow.common.io.write_json",
                 side_effect=AssertionError(
                     "production handoff retained the physical cluster tree"
                 ),
             ), mock.patch(
-                "emuflow.xilinx_packing.validate_xilinx_packing",
+                "emuflow.physical.xilinx_packing.validate_xilinx_packing",
                 side_effect=AssertionError(
                     "production handoff rebuilt generic packing owner maps"
                 ),
             ), mock.patch(
-                "emuflow.xilinx_placement.validate_xilinx_placement",
+                "emuflow.physical.xilinx_placement.validate_xilinx_placement",
                 side_effect=AssertionError(
                     "production handoff rebuilt generic placement maps"
                 ),
@@ -688,7 +688,7 @@ class XilinxOpenparfBridgeTest(unittest.TestCase):
             handoff.write_bytes(previous)
 
             with mock.patch(
-                "emuflow.xilinx_openparf_bridge._validate_streamed_physical_handoff",
+                "emuflow.physical.openparf.xilinx_openparf_bridge._validate_streamed_physical_handoff",
                 side_effect=ValidationError("late independent rejection"),
             ):
                 with self.assertRaisesRegex(

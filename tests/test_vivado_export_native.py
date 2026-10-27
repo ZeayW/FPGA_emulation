@@ -8,12 +8,12 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.io import file_sha256
-from emuflow.errors import ValidationError
-from emuflow.native_protocol import CheckedRequestWriter
-from emuflow.native_tools import native_file_generation, resolve_native_executable
-from emuflow.vivado_indexed_netlist import emit_indexed_vivado_verilog
-from emuflow.xilinx_netlist import emit_xilinx_mapped_index
+from emuflow.common.io import file_sha256
+from emuflow.common.errors import ValidationError
+from emuflow.common.native_protocol import CheckedRequestWriter
+from emuflow.common.native_tools import native_file_generation, resolve_native_executable
+from emuflow.physical.vivado.vivado_indexed_netlist import emit_indexed_vivado_verilog
+from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index
 from tests.test_vivado_indexed_physical import fixture
 from tests.vivado_verilog_reference import emit_indexed_vivado_verilog_reference
 
@@ -45,7 +45,7 @@ def signatures(path):
 def test_production_export_has_no_python_cell_or_pin_population(tmp_path):
     ir = fixture(tmp_path)
     expected = emit_indexed_vivado_verilog_reference(ir, tmp_path / "reference.v")
-    with patch("emuflow.xilinx_netlist._IndexedCells.items", side_effect=AssertionError("Python cell export")):
+    with patch("emuflow.physical.xilinx_netlist._IndexedCells.items", side_effect=AssertionError("Python cell export")):
         actual = emit_indexed_vivado_verilog(ir, tmp_path / "native.v")
     assert (tmp_path / "native.v").read_bytes() == (tmp_path / "reference.v").read_bytes()
     assert signatures(Path(actual["source_functions"]["path"])) == signatures(Path(expected["source_functions"]["path"]))
@@ -133,8 +133,8 @@ def test_repeated_typed_cells_are_consumed_in_one_native_operation(tmp_path):
 
 @pytest.mark.parametrize("previous", [False, True])
 def test_late_group_publication_failure_restores_both_outputs(tmp_path, previous):
-    from emuflow import store_publication
-    from emuflow.ir import EmuIR
+    from emuflow.storage import store_publication
+    from emuflow.ir.ir import EmuIR
 
     ir = fixture(tmp_path)
     rtl, functions = tmp_path / "out.v", tmp_path / "out.functions.sqlite"
@@ -190,17 +190,17 @@ def test_host_output_aliases_are_rejected_before_mapping(tmp_path):
 
 
 def test_compile_requires_export_capability_before_frontend(tmp_path):
-    from emuflow.errors import EmuFlowError
-    from emuflow.multi_fpga_flow import run_multi_fpga_flow
+    from emuflow.common.errors import EmuFlowError
+    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
 
     def capabilities(schema):
         if schema == "vivado-export-request-v1":
             raise EmuFlowError("missing native primitive exporter")
 
-    with patch("emuflow.multi_fpga_flow._validate_mapping_timing_contract"), patch(
-        "emuflow.native_tools.require_native_schema", side_effect=capabilities
+    with patch("emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract"), patch(
+        "emuflow.common.native_tools.require_native_schema", side_effect=capabilities
     ), patch(
-        "emuflow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend started")
+        "emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend started")
     ), pytest.raises(EmuFlowError, match="missing native primitive exporter"):
         run_multi_fpga_flow(sources=[tmp_path / "missing.v"], top="dut", clocks=["clk"],
             clock_periods={"clk": 10.0}, physical=True, physical_backend="vivado",

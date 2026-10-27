@@ -9,11 +9,11 @@ import subprocess
 from unittest.mock import patch
 import pytest
 
-from emuflow.emuir_compact import write_compact_emuir
-from emuflow.errors import ValidationError
-from emuflow.partition import (CUT_MODE_STATIC_EXACT)
+from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow.common.errors import ValidationError
+from emuflow.partition.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (build_clusters)
-from emuflow.partition_ir import load_partition_ir
+from emuflow.partition.partition_ir import load_partition_ir
 from tests.native_partition_core_fixture import build_native_clusters
 from tests.native_build import emuflow_native
 from tests import partition_pressure_fixture as reference_fixture
@@ -86,7 +86,7 @@ def test_invalid_source_or_request_preserves_existing_output(source,tmp_path,kin
         with pytest.raises(ValidationError,match='native primary cluster construction failed'):
             build_native_clusters(ir,constraints,set())
         return
-    from emuflow.native_tools import native_file_generation
+    from emuflow.common.native_tools import native_file_generation
     request=tmp_path/'request.bin'; output=tmp_path/'output.bin';output.write_bytes(b'old')
     cells,nets=len(ir.value['instances']),len(ir.value['nets'])
     bits=bytearray((nets+7)//8)

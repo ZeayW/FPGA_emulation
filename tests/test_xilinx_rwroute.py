@@ -10,15 +10,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests.rwroute_reference import export_rwroute_reference, _qualified_lut_clock_gates
-from emuflow.errors import ValidationError
-from emuflow.xilinx_netlist import (
+from emuflow.common.errors import ValidationError
+from emuflow.physical.xilinx_netlist import (
     emit_xilinx_mapped_index,
     open_xilinx_mapped_index,
 )
-from emuflow.xilinx_physical_handoff import (
+from emuflow.physical.xilinx_physical_handoff import (
     open_xilinx_physical_handoff,
 )
-from emuflow.xilinx_rwroute import (
+from emuflow.physical.rapidwright.xilinx_rwroute import (
     _validate_rapidwright_device_data,
     export_rwroute_input,
     validate_xilinx_route_db,
@@ -28,7 +28,7 @@ from tests.xilinx_timing_reference import (
     iter_xilinx_routed_timing_endpoints,
     validate_xilinx_routed_timing,
 )
-from emuflow.yosys import import_yosys_json
+from emuflow.frontend.yosys import import_yosys_json
 
 
 SHA = "0" * 64
@@ -42,7 +42,7 @@ class XilinxRWRouteTest(unittest.TestCase):
 
     def setUp(self):
         native = mock.patch(
-            "emuflow.rwroute_native.resolve_native_executable",
+            "emuflow.physical.rapidwright.rwroute_native.resolve_native_executable",
             return_value=str(self.native_exporter),
         )
         native.start()
@@ -1021,7 +1021,7 @@ class XilinxRWRouteTest(unittest.TestCase):
 
     def test_rapidwright_heap_override_is_bounded_java_size(self):
         source = (
-            Path(__file__).parents[1] / "src/emuflow/xilinx_rwroute.py"
+            Path(__file__).parents[1] / "src/python/emuflow/physical/rapidwright/xilinx_rwroute.py"
         ).read_text(encoding="utf-8")
         self.assertIn('EMUFLOW_RAPIDWRIGHT_MAX_HEAP", "32g"', source)
         self.assertIn('f"-Xmx{maximum_heap}"', source)
@@ -1115,7 +1115,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                 root, route
             )
             output = root / "routed-timing.json"
-            from emuflow import xilinx_rwroute
+            from emuflow.physical.rapidwright import xilinx_rwroute
             from tests import xilinx_timing_reference as xilinx_timing
 
             real_timing_read = xilinx_timing.read_json
@@ -1127,13 +1127,13 @@ class XilinxRWRouteTest(unittest.TestCase):
                     wraps=real_timing_read,
                 ) as timing_read,
                 mock.patch(
-                    "emuflow.xilinx_rwroute.read_json",
+                    "emuflow.physical.rapidwright.xilinx_rwroute.read_json",
                     side_effect=AssertionError(
                         "route validator reparsed preloaded objects"
                     ),
                 ),
                 mock.patch(
-                    "emuflow.xilinx_rwroute._sha256",
+                    "emuflow.physical.rapidwright.xilinx_rwroute._sha256",
                     wraps=real_rwroute_sha256,
                 ) as rwroute_sha256,
                 mock.patch(
@@ -1381,7 +1381,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             root = Path(temporary)
             output = root / "route.tsv"
             with mock.patch(
-                "emuflow.xilinx_rwroute.read_json",
+                "emuflow.physical.rapidwright.xilinx_rwroute.read_json",
                 side_effect=AssertionError("preloaded objects were reparsed"),
             ):
                 report = export_rwroute_reference(

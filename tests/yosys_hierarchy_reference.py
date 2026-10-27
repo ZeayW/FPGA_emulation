@@ -1,6 +1,6 @@
 """Independent former Python hierarchy producer, validation only."""
-from emuflow.streaming_json import StreamingJSONObjectReader
-from emuflow.errors import ImportError
+from emuflow.common.streaming_json import StreamingJSONObjectReader
+from emuflow.common.errors import ImportError
 from contextlib import nullcontext
 from typing import *
 from typing import TextIO

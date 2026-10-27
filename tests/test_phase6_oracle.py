@@ -7,10 +7,10 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.combinational_cut import semantic_contract_sha256
-from emuflow.emuir_compact import write_compact_emuir
-from emuflow.errors import ValidationError
-from emuflow.phase6_oracle import read_bounded_assignment
+from emuflow.partition.combinational_cut import semantic_contract_sha256
+from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow.common.errors import ValidationError
+from emuflow.transport.phase6_oracle import read_bounded_assignment
 from tests.phase3_store_fixture import write_current_assignment_fixture
 import tests.test_combinational_cut as fixture_module
 
@@ -41,7 +41,7 @@ def test_oracle_checks_population_before_reading_assignment(inputs,field,limit):
         raw=db.execute("SELECT value FROM metadata WHERE key='record_counts_json'").fetchone()[0]
         counts=json.loads(raw);counts[field]=limit+1
         db.execute("UPDATE metadata SET value=? WHERE key='record_counts_json'",(json.dumps(counts),))
-    with patch('emuflow.phase3_storage.read_phase3_assignment_view',side_effect=AssertionError('unbounded read')):
+    with patch('emuflow.partition.phase3_storage.read_phase3_assignment_view',side_effect=AssertionError('unbounded read')):
         with pytest.raises(ValidationError,match='limited'):read_bounded_assignment(source,path)
 
 
@@ -62,7 +62,7 @@ def test_resealed_binary_header_cannot_change_the_oracle_canonical_contract(inpu
 
 
 def test_oracle_rejects_replaced_typed_generation(inputs):
-    import emuflow.phase3_exact_binary as binary
+    import emuflow.partition.phase3_exact_binary as binary
     source,path,_=inputs;original=binary.iter_phase3_exact_segments
     def replace_after_read(*args,**kwargs):
         yield from original(*args,**kwargs)

@@ -6,16 +6,16 @@ from pathlib import Path
 import sqlite3
 import tempfile
 
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
-from emuflow.phase3_assignment_index import (
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
+from emuflow.partition.phase3_assignment_index import (
     ASSIGNMENT_INDEX_APPLICATION_ID, ASSIGNMENT_INDEX_SCHEMA,
     ASSIGNMENT_INDEX_USER_VERSION, CURRENT_DDL, CUT_RECORDS_SCHEMA,
     _json, _normalized_cut_record,
 )
-from emuflow.phase4_native import run_native_phase4
-from emuflow.routing import static_exact_contract_from_assignment
-from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER
+from emuflow.routing.phase4_native import run_native_phase4
+from emuflow.routing.routing import static_exact_contract_from_assignment
+from emuflow.scheduling.timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from tests.native_build import emuflow_native
 
 

@@ -9,18 +9,18 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow import physical_cells_native
-from emuflow.errors import ValidationError
-from emuflow.io import file_sha256
-from emuflow.native_protocol import CheckedRequestWriter
-from emuflow.native_tools import native_file_generation
-from emuflow.xilinx_netlist import open_xilinx_mapped_index
-from emuflow.xilinx_openparf_atomic import (
+from emuflow.physical import physical_cells_native
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import file_sha256
+from emuflow.common.native_protocol import CheckedRequestWriter
+from emuflow.common.native_tools import native_file_generation
+from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index
+from emuflow.physical.openparf.xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
     open_xilinx_openparf_atomic_placement,
     write_xilinx_openparf_atomic_placement_certificate,
 )
-from emuflow.xilinx_openparf_source_storage import (
+from emuflow.physical.openparf.xilinx_openparf_source_storage import (
     XilinxOpenparfAtomicSourceView,
     write_xilinx_openparf_atomic_source_storage,
 )
@@ -109,7 +109,7 @@ def validate(root, data):
 
 
 def test_millionth_singleton_rank_is_streamed_and_includes_constants(tmp_path):
-    from emuflow.xilinx_openparf_atomic import _AtomicPlacementCertificateBuilder
+    from emuflow.physical.openparf.xilinx_openparf_atomic import _AtomicPlacementCertificateBuilder
     from tests.test_rwroute_native import write_mapped
 
     # An ownership-only population: a single synthetic certificate group avoids
@@ -218,7 +218,7 @@ def test_ordered_merge_matches_independent_reference_without_python_population(
             side_effect=AssertionError("Python source ownership population"),
         ),
         patch(
-            "emuflow.xilinx_netlist._IndexedCells.items",
+            "emuflow.physical.xilinx_netlist._IndexedCells.items",
             side_effect=AssertionError("Python mapped population"),
         ),
     ):
@@ -391,10 +391,10 @@ def test_borrowed_certificate_view_rejects_changed_generation(tmp_path):
 def test_real_bridge_consumes_existing_authorities_without_ownership_mirrors(
     tmp_path, bad_owner
 ):
-    from emuflow.xilinx_openparf_bridge import (
+    from emuflow.physical.openparf.xilinx_openparf_bridge import (
         materialize_xilinx_openparf_atomic_contract,
     )
-    from emuflow.xilinx_physical_handoff import XilinxPhysicalHandoffBuilder
+    from emuflow.physical.xilinx_physical_handoff import XilinxPhysicalHandoffBuilder
     from tests.test_rwroute_native import write_mapped
     from tests.test_xilinx_openparf_bridge import _native_certificate
 

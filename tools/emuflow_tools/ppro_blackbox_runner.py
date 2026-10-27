@@ -19,8 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
-from emuflow.errors import ValidationError
-from emuflow.io import write_json
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import write_json
 from .ppro_blackbox_calibration import validate_blackbox_observation
 from .ppro_blackbox_ppro_adapter import (
     PPRO_2026_REPORT_PROFILE,

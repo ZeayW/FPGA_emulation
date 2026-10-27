@@ -20,13 +20,13 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Sequence
 
-from emuflow.transport_cost import (OPEN_TRANSPORT_MODEL, OPEN_TRANSPORT_PROVENANCE, BASE_FEATURE_NAMES, FRAME_SLOTS, _nonnegative_int, _positive_int, extract_transport_features)
-from emuflow.errors import ValidationError
-from emuflow.io import read_json, write_json
-from emuflow.netlist import transport_to_systemverilog
-from emuflow.platform import Platform
-from emuflow.runtime import virtual_runtime_controller_to_systemverilog
-from emuflow.synthesis import run_xilinx_ultrascaleplus_yosys
+from emuflow.transport.transport_cost import (OPEN_TRANSPORT_MODEL, OPEN_TRANSPORT_PROVENANCE, BASE_FEATURE_NAMES, FRAME_SLOTS, _nonnegative_int, _positive_int, extract_transport_features)
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json, write_json
+from emuflow.transport.netlist import transport_to_systemverilog
+from emuflow.platform.platform import Platform
+from emuflow.transport.runtime import virtual_runtime_controller_to_systemverilog
+from emuflow.frontend.synthesis import run_xilinx_ultrascaleplus_yosys
 
 
 OPEN_TRANSPORT_MATRIX_SCHEMA = "emuflow.open-transport-matrix/v2"
@@ -413,8 +413,8 @@ def characterize_open_transport_case(
             "source": {
                 "transport_sv_sha256": _sha256_bytes(transport_rtl.encode("utf-8")),
                 "runtime_sv_sha256": _sha256_bytes(runtime_rtl.encode("utf-8")),
-                "generator": "emuflow.netlist.transport_to_systemverilog",
-                "runtime_generator": "emuflow.runtime.virtual_runtime_controller_to_systemverilog",
+                "generator": "emuflow.transport.netlist.transport_to_systemverilog",
+                "runtime_generator": "emuflow.transport.runtime.virtual_runtime_controller_to_systemverilog",
             },
             "runtime_seconds": time.monotonic() - started,
             "provenance": {"class": OPEN_TRANSPORT_PROVENANCE},

@@ -10,11 +10,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import call, patch
 
-from emuflow.board_link_timing import build_board_link_timing_model
-from emuflow.cli import _build_parser, _dispatch
-from emuflow.errors import EmuFlowError, ValidationError
-from emuflow.io import read_json, write_json
-from emuflow.multi_fpga_flow import (
+from emuflow.platform.board_link_timing import build_board_link_timing_model
+from emuflow.flow.cli import _build_parser, _dispatch
+from emuflow.common.errors import EmuFlowError, ValidationError
+from emuflow.common.io import read_json, write_json
+from emuflow.flow.multi_fpga_flow import (
     _resolve_partition_openroad,
     _schedule_has_entries,
     _validate_mapping_timing_contract,
@@ -23,17 +23,17 @@ from emuflow.multi_fpga_flow import (
     validate_multi_fpga_flow_bundle,
     validate_multi_fpga_flow_report,
 )
-from emuflow.tdm_schedule_storage import TypedScheduleEntrySequence
-from emuflow.transport_cost import (
+from emuflow.scheduling.tdm_schedule_storage import TypedScheduleEntrySequence
+from emuflow.transport.transport_cost import (
     BASE_FEATURE_NAMES,
     FRAME_SLOTS,
     OPEN_TRANSPORT_MODEL,
     OPEN_TRANSPORT_PROVENANCE,
 )
-from emuflow.platform import Platform
-from emuflow.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
+from emuflow.platform.platform import Platform
+from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from tests.tdm_timing_oracle import timing_paths as reconstruct_tdm_schedule_timing_paths
-from emuflow.timing_routing import (
+from emuflow.scheduling.timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
 )
 from tests.native_build import tlr_router
@@ -64,7 +64,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
         entries._count = 3
         with (
             patch(
-                "emuflow.multi_fpga_flow.read_tdm_schedule",
+                "emuflow.flow.multi_fpga_flow.read_tdm_schedule",
                 return_value={"entries": entries},
             ),
             patch.object(
@@ -84,10 +84,10 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 if schema == "yosys-emuir-import-request-v1":
                     raise EmuFlowError("missing native frontend contract")
             with (
-                patch("emuflow.multi_fpga_flow.resolve_native_executable", return_value=str(FAKE_OPENSTA)),
-                patch("emuflow.multi_fpga_flow.check_opensta_engine_version"),
-                patch("emuflow.native_tools.require_native_schema", side_effect=require),
-                patch("emuflow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream") as mapper,
+                patch("emuflow.flow.multi_fpga_flow.resolve_native_executable", return_value=str(FAKE_OPENSTA)),
+                patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"),
+                patch("emuflow.common.native_tools.require_native_schema", side_effect=require),
+                patch("emuflow.flow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream") as mapper,
             ):
                 with self.assertRaisesRegex(EmuFlowError, "missing native frontend contract"):
                     run_multi_fpga_flow_fixture(
@@ -110,12 +110,12 @@ class MultiFpgaFlowTest(unittest.TestCase):
             )
             with (
                 patch(
-                    "emuflow.multi_fpga_flow.resolve_native_executable",
+                    "emuflow.flow.multi_fpga_flow.resolve_native_executable",
                     return_value=str(FAKE_OPENSTA),
                 ),
-                patch("emuflow.multi_fpga_flow.check_opensta_engine_version"),
+                patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"),
                 patch(
-                    "emuflow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream",
+                    "emuflow.flow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream",
                     side_effect=RuntimeError("reached multi-clock mapper"),
                 ) as mapper,
             ):
@@ -138,9 +138,9 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 timing = root / "timing.json"
                 write_json(timing, {"schema": "emuflow.xilinx-preplacement-timing-db/v1"})
                 with (
-                    patch("emuflow.multi_fpga_flow.resolve_native_executable", return_value=str(FAKE_OPENSTA)),
-                    patch("emuflow.multi_fpga_flow.check_opensta_engine_version"),
-                    patch("emuflow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream",
+                    patch("emuflow.flow.multi_fpga_flow.resolve_native_executable", return_value=str(FAKE_OPENSTA)),
+                    patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"),
+                    patch("emuflow.flow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream",
                           side_effect=RuntimeError("reached mapper")) as frontend,
                 ):
                     with self.assertRaisesRegex(RuntimeError, "reached mapper"):
@@ -183,7 +183,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                     str(source_root), "--platform", "platform.json",
                     "--xilinx-mapping-strategy", strategy, "--out", "unused",
                 ])
-                with patch("emuflow.cli.run_multi_fpga_flow") as run, patch("emuflow.cli._print_json"):
+                with patch("emuflow.flow.cli.run_multi_fpga_flow") as run, patch("emuflow.flow.cli._print_json"):
                     run.return_value = {"status": "pass"}
                     self.assertEqual(_dispatch(args), 0)
                     self.assertEqual(run.call_args.kwargs["xilinx_mapping_strategy"], strategy)
@@ -192,7 +192,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
 
     def test_partition_engine_is_resolved_before_flow_execution(self) -> None:
         with patch(
-            "emuflow.multi_fpga_flow.resolve_native_executable",
+            "emuflow.flow.multi_fpga_flow.resolve_native_executable",
             return_value="/sealed/install/bin/openroad",
         ) as resolver:
             self.assertEqual(
@@ -444,7 +444,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
     def test_cli_has_one_tdm_provider_and_rejects_retired_options(self):
         parser = _build_parser()
         base = ["multi-fpga", "compile", "--out", "unused"]
-        with patch("emuflow.cli.run_multi_fpga_flow", return_value={"status": "pass"}) as run, patch("emuflow.cli._print_json"):
+        with patch("emuflow.flow.cli.run_multi_fpga_flow", return_value={"status": "pass"}) as run, patch("emuflow.flow.cli._print_json"):
             self.assertEqual(_dispatch(parser.parse_args(base)), 0)
             self.assertEqual(run.call_args.kwargs["partition_provider"], "patron")
             self.assertEqual(run.call_args.kwargs["patron_algorithm_version"], 14)
@@ -477,8 +477,8 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 ]
             )
             with (
-                patch("emuflow.cli.run_multi_fpga_flow") as run,
-                patch("emuflow.cli._print_json"),
+                patch("emuflow.flow.cli.run_multi_fpga_flow") as run,
+                patch("emuflow.flow.cli._print_json"),
             ):
                 run.return_value = {"status": "pass"}
                 self.assertEqual(_dispatch(args), 0)
@@ -533,7 +533,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 )
 
     def test_compile_rejects_retired_cut_mode_before_frontend(self):
-        with patch("emuflow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend started")):
+        with patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend started")):
             with self.assertRaisesRegex(EmuFlowError, "requires static-exact-combinational"):
                 run_multi_fpga_flow(output_dir=Path("unused"), cut_mode="sequential-only")
 
@@ -636,19 +636,19 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
 
             with (
                 patch(
-                    "emuflow.multi_fpga_flow.run_multi_fpga_physical_flow",
+                    "emuflow.flow.multi_fpga_flow.run_multi_fpga_physical_flow",
                     side_effect=fake_physical,
                 ),
                 patch(
-                    "emuflow.multi_fpga_flow.validate_openparf_runtime",
+                    "emuflow.flow.multi_fpga_flow.validate_openparf_runtime",
                     return_value={"status": "pass"},
                 ),
                 patch(
-                    "emuflow.multi_fpga_flow.run_phase7c",
+                    "emuflow.flow.multi_fpga_flow.run_phase7c",
                     side_effect=fake_phase7c,
                 ),
                 patch(
-                    "emuflow.multi_fpga_flow.validate_multi_fpga_flow_report",
+                    "emuflow.flow.multi_fpga_flow.validate_multi_fpga_flow_report",
                     return_value={"status": "pass"},
                 ),
             ):
@@ -695,7 +695,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory) / "multi"
             with patch(
-                "emuflow.multi_fpga_flow.validate_openparf_runtime",
+                "emuflow.flow.multi_fpga_flow.validate_openparf_runtime",
                 side_effect=EmuFlowError("missing PyTorch runtime"),
             ):
                 with self.assertRaisesRegex(
@@ -730,7 +730,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 {"schema": "emuflow.xilinx-preplacement-timing-db/v1"},
             )
             with patch(
-                "emuflow.multi_fpga_flow.validate_openparf_runtime",
+                "emuflow.flow.multi_fpga_flow.validate_openparf_runtime",
                 side_effect=EmuFlowError("missing PyTorch runtime"),
             ) as preflight:
                 with self.assertRaisesRegex(
@@ -775,8 +775,8 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 path = root / "board-link-timing.json"
                 write_json(path, database)
                 output = root / "flow"
-                with patch("emuflow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream") as synthesis, patch(
-                    "emuflow.multi_fpga_flow.check_opensta_engine_version"
+                with patch("emuflow.flow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream") as synthesis, patch(
+                    "emuflow.flow.multi_fpga_flow.check_opensta_engine_version"
                 ) as engine_check:
                     with self.assertRaisesRegex(ValidationError, "board link timing"):
                         run_multi_fpga_flow_fixture(
@@ -812,8 +812,8 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 "provenance": {"class": OPEN_TRANSPORT_PROVENANCE, "fit_sha256": "1" * 64},
             })
             output = root / "flow"
-            with patch("emuflow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream") as synthesis, patch(
-                "emuflow.multi_fpga_flow.check_opensta_engine_version"
+            with patch("emuflow.flow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream") as synthesis, patch(
+                "emuflow.flow.multi_fpga_flow.check_opensta_engine_version"
             ) as engine_check:
                 with self.assertRaisesRegex(ValidationError, "transport cost platform disagrees"):
                     run_multi_fpga_flow_fixture(
@@ -901,15 +901,15 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
 
             with (
                 patch(
-                    "emuflow.multi_fpga_flow.validate_multi_fpga_physical_report",
+                    "emuflow.flow.multi_fpga_flow.validate_multi_fpga_physical_report",
                     return_value={"status": "pass"},
                 ),
                 patch(
-                    "emuflow.multi_fpga_flow.validate_multi_fpga_flow_report",
+                    "emuflow.flow.multi_fpga_flow.validate_multi_fpga_flow_report",
                     return_value={"status": "pass"},
                 ),
                 patch(
-                    "emuflow.multi_fpga_flow.run_phase7c",
+                    "emuflow.flow.multi_fpga_flow.run_phase7c",
                     side_effect=fake_phase7c,
                 ),
             ):
@@ -1197,7 +1197,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 return read_json(path, *args, **kwargs)
 
             with patch(
-                "emuflow.multi_fpga_flow.read_json",
+                "emuflow.flow.multi_fpga_flow.read_json",
                 side_effect=bounded_control_read,
             ):
                 typed_replay = validate_multi_fpga_flow_bundle(output)

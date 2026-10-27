@@ -7,7 +7,7 @@ import random
 from collections import defaultdict
 from typing import Any, Dict, Mapping, Sequence
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from .ppro_blackbox_calibration import validate_blackbox_observation
 from .ppro_blackbox_route_evidence import maximum_capacity_payload_hops
 

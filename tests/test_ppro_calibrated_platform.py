@@ -5,9 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.board_link_timing import validate_board_link_timing
-from emuflow.errors import ValidationError
-from emuflow.platform import Platform
+from emuflow.platform.board_link_timing import validate_board_link_timing
+from emuflow.common.errors import ValidationError
+from emuflow.platform.platform import Platform
 from emuflow_tools.ppro_calibrated_platform import (
     generate_calibrated_platform_profiles,
     predict_transport_resources,

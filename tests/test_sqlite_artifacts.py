@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from emuflow.sqlite_artifacts import immutable_sqlite_uri
+from emuflow.storage.sqlite_artifacts import immutable_sqlite_uri
 from tests.native_build import emuflow_native, tlr_router
 
 

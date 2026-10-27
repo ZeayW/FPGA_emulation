@@ -18,7 +18,7 @@
     "EMUFLOW_CODESPACES_JOBS": "2",
     "EMUFLOW_NATIVE_ROOT": "${containerWorkspaceFolder}/build/codespaces-core/install",
     "PATH": "${containerWorkspaceFolder}/.venv/bin:${containerWorkspaceFolder}/build/codespaces-core/install/bin:${containerEnv:PATH}",
-    "PYTHONPATH": "${containerWorkspaceFolder}/src:${containerWorkspaceFolder}/tools:${containerWorkspaceFolder}"
+    "PYTHONPATH": "${containerWorkspaceFolder}/src/python:${containerWorkspaceFolder}/tools:${containerWorkspaceFolder}"
   },
   "customizations": {
     "vscode": {

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from emuflow_tools.benchmark import BENCHMARK_REPORT_SCHEMA
-from emuflow.io import write_json
+from emuflow.common.io import write_json
 
 
 def _sha256(path: Path) -> str:

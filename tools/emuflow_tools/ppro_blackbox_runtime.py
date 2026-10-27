@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from .ppro_blackbox_ppro_adapter import PPRO_2026_REPORT_PROFILE
 from .ppro_blackbox_constraints import (
     render_ppro_prepartition_constraints,
@@ -26,7 +26,7 @@ from .ppro_blackbox_constraints import (
 )
 from .ppro_blackbox_provenance import require_current_runner_revision
 from .ppro_blackbox_runner import RuntimeBinding, validate_run_spec
-from emuflow.synthesis import YOSYS_DEFINE
+from emuflow.frontend.synthesis import YOSYS_DEFINE
 
 
 PPRO_COMPILATION_CONTEXT_SCHEMA = "emuflow.ppro-compilation-context/v1"

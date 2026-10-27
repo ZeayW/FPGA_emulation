@@ -4,18 +4,18 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.cli import _build_parser, _dispatch
-from emuflow.default_platform import (
+from emuflow.flow.cli import _build_parser, _dispatch
+from emuflow.platform.default_platform import (
     DEFAULT_PLATFORM_PATH,
     materialize_research_platform,
     research_platform_path,
 )
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
-from emuflow.multi_fpga_flow import run_multi_fpga_flow
-from emuflow.phase3 import run_phase3
-from emuflow.platform import Platform
-from emuflow.routing import normalize_route_constraints
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
+from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
+from emuflow.partition.phase3 import run_phase3
+from emuflow.platform.platform import Platform
+from emuflow.routing.routing import normalize_route_constraints
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -111,7 +111,7 @@ class DefaultPlatformTest(unittest.TestCase):
             pass
 
         with tempfile.TemporaryDirectory() as directory:
-            with patch("emuflow.multi_fpga_flow.run_phase1", side_effect=FrontendReached) as frontend, patch("emuflow.multi_fpga_flow.check_opensta_engine_version"), patch("emuflow.multi_fpga_flow._resolve_partition_openroad", return_value=None), patch("emuflow.multi_fpga_flow._validate_mapping_timing_contract"):
+            with patch("emuflow.flow.multi_fpga_flow.run_phase1", side_effect=FrontendReached) as frontend, patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"), patch("emuflow.flow.multi_fpga_flow._resolve_partition_openroad", return_value=None), patch("emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract"):
                 with self.assertRaises(FrontendReached):
                     run_multi_fpga_flow(
                         output_dir=Path(directory) / "run",
@@ -130,7 +130,7 @@ class DefaultPlatformTest(unittest.TestCase):
                     "platform", "research-model", "--fpga-count", str(count),
                     "--output", str(output),
                 ])
-                with patch("emuflow.cli._print_json") as report:
+                with patch("emuflow.flow.cli._print_json") as report:
                     self.assertEqual(_dispatch(args), 0)
                     self.assertEqual(report.call_args.args[0]["qualification"], "model-only")
                 self.assertEqual(
@@ -162,7 +162,7 @@ class DefaultPlatformTest(unittest.TestCase):
                 "platform", "research-model", "--wires-per-bank", "16",
                 "--output", str(output),
             ])
-            with patch("emuflow.cli._print_json"):
+            with patch("emuflow.flow.cli._print_json"):
                 self.assertEqual(_dispatch(args), 0)
             for link in Platform.load(output).links:
                 self.assertEqual((link.bank_count, link.wires_per_bank), (18, 16))
@@ -201,7 +201,7 @@ class DefaultPlatformTest(unittest.TestCase):
         )
         self.assertTrue(DEFAULT_PLATFORM_PATH.is_file())
         self.assertEqual(DEFAULT_PLATFORM_PATH.parent.parent.name, "data")
-        with patch("emuflow.cli.run_multi_fpga_flow") as run, patch("emuflow.cli._print_json"):
+        with patch("emuflow.flow.cli.run_multi_fpga_flow") as run, patch("emuflow.flow.cli._print_json"):
             run.return_value = {"status": "pass"}
             self.assertEqual(_dispatch(args), 0)
             self.assertEqual(run.call_args.kwargs["platform_path"], DEFAULT_PLATFORM_PATH)

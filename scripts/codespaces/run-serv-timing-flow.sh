@@ -17,7 +17,7 @@ fi
 
 export EMUFLOW_NATIVE_ROOT="${repository_root}/build/codespaces-core/install"
 export PATH="${repository_root}/.venv/bin:${EMUFLOW_NATIVE_ROOT}/bin:${PATH}"
-export PYTHONPATH="${repository_root}/src:${repository_root}/tools:${repository_root}"
+export PYTHONPATH="${repository_root}/src/python:${repository_root}/tools:${repository_root}"
 
 output_root="${1:-build/codespaces-runs/serv/timing-flow/attempt-0001}"
 if [[ -e "${output_root}" ]]; then

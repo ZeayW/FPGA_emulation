@@ -1,6 +1,6 @@
 """Small independent integer feasibility oracle for partition tests."""
 from typing import Iterable, Mapping, Optional, Tuple
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 
 def validate_indivisible_limits(
     records: Iterable[Tuple[str, Mapping[str, int], Optional[str]]],

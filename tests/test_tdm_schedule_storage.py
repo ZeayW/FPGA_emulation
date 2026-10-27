@@ -9,10 +9,10 @@ import sqlite3
 
 import pytest
 
-import emuflow.tdm_schedule_storage as tdm_schedule_storage
-from emuflow.errors import ValidationError
-from emuflow.io import read_json
-from emuflow.tdm_schedule_storage import (
+import emuflow.scheduling.tdm_schedule_storage as tdm_schedule_storage
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json
+from emuflow.scheduling.tdm_schedule_storage import (
     TDM_SCHEDULE_USER_VERSION,
     TDM_SCHEDULE_STORAGE_SCHEMA,
     TDM_SCHEDULE_APPLICATION_ID,

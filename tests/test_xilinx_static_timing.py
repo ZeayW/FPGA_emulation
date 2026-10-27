@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 import test_xilinx_rwroute as fixtures
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from tests.xilinx_timing_reference import (
     build_xilinx_routed_timing,
     iter_xilinx_routed_timing_endpoints,

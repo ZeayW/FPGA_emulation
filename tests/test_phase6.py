@@ -16,67 +16,67 @@ import shutil
 from pathlib import Path
 from unittest import mock
 
-from emuflow.equivalence import _MappedModel, simulate_partition_equivalence
-from emuflow.chimew_phase6 import (
+from emuflow.validation.equivalence import _MappedModel, simulate_partition_equivalence
+from emuflow.transport.chimew.chimew_phase6 import (
     CHIMEW_PHASE6_BINDING_PROVIDER,
     CHIMEW_PHASE6_BINDING_SCHEMA_V1,
 )
-from emuflow.chimew_binding_storage import (
+from emuflow.transport.chimew.chimew_binding_storage import (
     CHIMEW_BINDING_STORAGE_SCHEMA,
     read_chimew_binding,
 )
-from emuflow.errors import ValidationError
-from emuflow.emuir_compact import write_compact_emuir
-from emuflow.ir import EmuIR
-from emuflow.io import file_sha256, read_json, write_json
-from emuflow.netlist import (
+from emuflow.common.errors import ValidationError
+from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow.ir.ir import EmuIR
+from emuflow.common.io import file_sha256, read_json, write_json
+from emuflow.transport.netlist import (
     transport_to_systemverilog,
 )
 from tests.native_partition_facts import (build_partition_assignment, build_clusters, normalize_partition_constraints)
 from tests.partition_reference import assign_clusters
-from emuflow.phase6 import run_phase6, validate_phase6
-from emuflow.tdm_schedule_storage import read_tdm_schedule
+from emuflow.transport.phase6 import run_phase6, validate_phase6
+from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 
 def _indexed_split_schedule(root,value):
     path=Path(root)/"split-schedule.json"
     write_tdm_schedule_storage(path,value)
     return read_tdm_schedule(path)
 
-from emuflow.split_netlist_storage import (
+from emuflow.transport.split_netlist_storage import (
     SplitNetlistView,
 )
-from emuflow.pin_planning import (
+from emuflow.transport.pin_planning import (
     CHIMEW_PIN_PLAN_PROVIDER,
     SIGNAL_POSITION_HINTS_SCHEMA,
     _assignment_metrics,
 )
-from emuflow.pin_plan_storage import (
+from emuflow.transport.pin_plan_storage import (
     PIN_PLAN_STORAGE_SCHEMA,
     read_pin_plan,
     write_pin_plan_storage,
 )
-from emuflow.position_hints_storage import (
+from emuflow.transport.position_hints_storage import (
     POSITION_HINTS_STORAGE_SCHEMA,
     read_position_hints,
 )
-from emuflow.platform import Platform
-from emuflow.transport_cost import (
+from emuflow.platform.platform import Platform
+from emuflow.transport.transport_cost import (
     BASE_FEATURE_NAMES,
     FRAME_SLOTS,
     OPEN_TRANSPORT_MODEL,
     OPEN_TRANSPORT_PROVENANCE,
 )
-from emuflow.routing import normalize_route_constraints
+from emuflow.routing.routing import normalize_route_constraints
 from tests.schedule_reference import build_tdm_schedule
-from emuflow.tdm_schedule_storage import (open_tdm_schedule_view)
-from emuflow.transport_storage import (
+from emuflow.scheduling.tdm_schedule_storage import (open_tdm_schedule_view)
+from emuflow.transport.transport_storage import (
     LANE_MAP_STORAGE_SCHEMA,
     TRANSPORT_STORAGE_SCHEMA,
     LaneMapView,
     TransportView,
     write_transport_storage,
 )
-from emuflow.yosys import import_yosys_json
+from emuflow.frontend.yosys import import_yosys_json
 from tests.native_build import tlr_router
 
 
@@ -281,11 +281,11 @@ class Phase6Test(unittest.TestCase):
 
             with (
                 mock.patch(
-                    "emuflow.transport_storage.sqlite3.connect",
+                    "emuflow.transport.transport_storage.sqlite3.connect",
                     side_effect=recording_connect,
                 ),
                 mock.patch(
-                    "emuflow.store_publication.file_sha256", wraps=file_sha256
+                    "emuflow.storage.store_publication.file_sha256", wraps=file_sha256
                 ) as store_hash,
             ):
                 for run in range(2):
@@ -338,7 +338,7 @@ class Phase6Test(unittest.TestCase):
             with open_tdm_schedule_view(schedule_path) as indexed:
                 self.assertFalse(hasattr(indexed, 'iter_entry_route_records'))
                 with mock.patch(
-                    "emuflow.tdm_schedule_storage.ScheduleRecordSequence.__iter__",
+                    "emuflow.scheduling.tdm_schedule_storage.ScheduleRecordSequence.__iter__",
                     side_effect=AssertionError(
                         "schedule sections were decoded in Python"
                     ),
@@ -581,7 +581,7 @@ class Phase6Test(unittest.TestCase):
             write_assignment_index_fixture(assignment_path,large,assignment)
             write_tdm_schedule_storage(schedule_path, self.schedule)
             with mock.patch(
-                "emuflow.phase6.EmuIR.load",
+                "emuflow.transport.phase6.EmuIR.load",
                 side_effect=AssertionError(
                     "large Phase 6 must not materialize the EmuIR graph"
                 ),
@@ -703,7 +703,7 @@ class Phase6Test(unittest.TestCase):
                 return read_json(Path(path))
 
             with mock.patch(
-                "emuflow.phase6.read_json", side_effect=read_without_schedule
+                "emuflow.transport.phase6.read_json", side_effect=read_without_schedule
             ):
                 reused = validate_phase6(
                     ir_path,
@@ -1087,7 +1087,7 @@ class Phase6Test(unittest.TestCase):
 
     def test_independent_split_validation_does_not_invoke_the_producer(self):
         with NativeSplitFixture(self.ir, self.assignment, self.schedule, self.platform) as produced:
-            with mock.patch('emuflow.split_overlay.build_native_split', side_effect=AssertionError('split producer replayed')):
+            with mock.patch('emuflow.transport.split_overlay.build_native_split', side_effect=AssertionError('split producer replayed')):
                 self.assertEqual(produced.validate_split()['status'], 'pass')
 
     def test_retired_round_barrier_register_input_route_is_rejected(self) -> None:

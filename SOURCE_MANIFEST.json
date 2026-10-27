@@ -27,12 +27,12 @@
         "engines/openparf/thirdparty/pugixml",
         "engines/capnproto",
         "engines/fpga-interchange-schema",
-        "src/native/fpga_interchange_arch_importer.cpp",
-        "src/emuflow/fpga_interchange.py",
-        "src/emuflow/rapidwright_provider.py",
-        "src/emuflow/physical_regions.py",
-        "src/emuflow/xilinx_primitives.py",
-        "src/emuflow/xilinx_packing.py",
+        "src/cli/import_architecture.cpp",
+        "src/python/emuflow/platform/fpga_interchange.py",
+        "src/python/emuflow/physical/rapidwright/rapidwright_provider.py",
+        "src/python/emuflow/physical/physical_regions.py",
+        "src/python/emuflow/physical/xilinx_primitives.py",
+        "src/python/emuflow/physical/xilinx_packing.py",
         "schemas/archdb-v1.schema.json",
         "schemas/rapidwright-device-provider-v1.schema.json",
         "schemas/rapidwright-route-resource-certificate-v1.schema.json",
@@ -40,7 +40,7 @@
         "schemas/xilinx-primitive-library-db-v1.schema.json",
         "schemas/packed-site-netlist-v1.schema.json",
         "resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json",
-        "src/emuflow/data/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json",
+        "src/python/emuflow/data/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json",
         "scripts/rapidwright/export_physical_regions.py",
         "scripts/rapidwright/EmuFlowRouteResourceCertificate.java",
         "scripts/rapidwright/export_route_resource_certificate.py"
@@ -59,11 +59,11 @@
       "id": "rapidwright-site-packing",
       "stage": "Route A single-FPGA physical backend",
       "source_paths": [
-        "src/emuflow/xilinx_packing.py",
-        "src/emuflow/xilinx_placement.py",
-        "src/emuflow/xilinx_rwroute.py",
-        "src/emuflow/xilinx_timing.py",
-        "src/emuflow/xilinx_opensta.py",
+        "src/python/emuflow/physical/xilinx_packing.py",
+        "src/python/emuflow/physical/xilinx_placement.py",
+        "src/python/emuflow/physical/rapidwright/xilinx_rwroute.py",
+        "src/python/emuflow/timing/xilinx_timing.py",
+        "src/python/emuflow/timing/xilinx_opensta.py",
         "scripts/rapidwright/EmuFlowRWRoute.java",
         "schemas/packed-site-netlist-v1.schema.json",
         "tests/test_xilinx_packing.py",
@@ -85,10 +85,10 @@
       "source_paths": [
         "engines/yosys",
         "engines/yosys/abc",
-        "src/emuflow/synthesis.py",
-        "src/emuflow/xilinx_primitives.py",
+        "src/python/emuflow/frontend/synthesis.py",
+        "src/python/emuflow/physical/xilinx_primitives.py",
         "schemas/xilinx-primitive-library-db-v1.schema.json",
-        "src/emuflow/data/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json",
+        "src/python/emuflow/data/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json",
         "tests/test_xilinx_primitives.py",
         "examples/rtl/xilinx_hard_blocks_smoke.v",
         "scripts/yosys/logic_only_map.v"
@@ -123,8 +123,8 @@
       "id": "partition-independent-sta",
       "stage": "R0 / Phase 3/4/5 cross-stage timing projection",
       "source_paths": [
-        "src/emuflow/sta.py",
-        "src/emuflow/opensta.py",
+        "src/python/emuflow/timing/sta.py",
+        "src/python/emuflow/timing/opensta.py",
         "engines/openroad/src/sta",
         "engines/cudd",
         "scripts/opensta/export_timing_path_database.tcl",
@@ -147,8 +147,8 @@
       "id": "system-routing",
       "stage": "Phase 4/5 route-TDM co-optimization",
       "source_paths": [
-        "src/native/tlr_router.cpp",
-        "src/emuflow/timing_routing.py"
+        "src/core/routing/global_router.cpp",
+        "src/python/emuflow/scheduling/timing_routing.py"
       ],
       "build_targets": [
         "emuflow_native"
@@ -162,11 +162,11 @@
       "id": "tdm-assignment",
       "stage": "Phase 5",
       "source_paths": [
-        "src/native/tdm_exact_scheduler.cpp",
-        "src/emuflow/tdm.py",
-        "src/emuflow/phase5.py",
-        "src/emuflow/tdm_schedule_storage.py",
-        "src/emuflow/frame_search.py",
+        "src/core/scheduling/exact_scheduler.cpp",
+        "src/python/emuflow/scheduling/tdm.py",
+        "src/python/emuflow/scheduling/phase5.py",
+        "src/python/emuflow/scheduling/tdm_schedule_storage.py",
+        "src/python/emuflow/scheduling/frame_search.py",
         "schemas/frame-search-v5.schema.json"
       ],
       "build_targets": [
@@ -183,9 +183,9 @@
       "id": "netlist-transport-pin-generation",
       "stage": "Phase 6",
       "source_paths": [
-        "src/emuflow/pin_planning.py",
-        "src/emuflow/netlist.py",
-        "src/emuflow/phase6.py",
+        "src/python/emuflow/transport/pin_planning.py",
+        "src/python/emuflow/transport/netlist.py",
+        "src/python/emuflow/transport/phase6.py",
         "schemas/signal-position-hints-v1.schema.json",
         "schemas/placement-aware-pin-plan-v1.schema.json",
         "rtl/transport"
@@ -205,7 +205,7 @@
         "engines/openparf/openparf/placement",
         "engines/openparf/openparf/ops",
         "engines/openparf/openparf/pybind",
-        "src/emuflow/openparf.py"
+        "src/python/emuflow/physical/openparf/openparf.py"
       ],
       "build_targets": [
         "openparf_native"
@@ -220,8 +220,8 @@
       "id": "xilinx-physical-orchestration",
       "stage": "Phase 7 / two Xilinx physical backends",
       "source_paths": [
-        "src/emuflow/physical_backend.py",
-        "src/emuflow/multi_fpga_physical_flow.py",
+        "src/python/emuflow/physical/physical_backend.py",
+        "src/python/emuflow/flow/multi_fpga_physical_flow.py",
         "schemas/physical-backend-v1.schema.json",
         "schemas/physical-partition-result-v1.schema.json"
       ],
@@ -237,17 +237,17 @@
       "id": "optional-vivado-physical-provider",
       "stage": "Phase 7 indexed Xilinx physical backend",
       "source_paths": [
-        "src/emuflow/physical_backend.py",
-        "src/emuflow/vivado_backend.py",
-        "src/emuflow/vivado_netlist.py",
+        "src/python/emuflow/physical/physical_backend.py",
+        "src/python/emuflow/physical/vivado/vivado_backend.py",
+        "src/python/emuflow/physical/vivado/vivado_netlist.py",
         "schemas/physical-backend-v1.schema.json",
         "schemas/physical-partition-result-v1.schema.json",
-        "src/emuflow/vivado_physical.py",
-        "src/emuflow/vivado_indexed_netlist.py",
-        "src/emuflow/vivado_lineage.py",
-        "src/emuflow/vivado_physical_timing.py",
-        "src/emuflow/vivado_physical_top.py",
-        "src/emuflow/vivado_source.py",
+        "src/python/emuflow/physical/vivado/vivado_physical.py",
+        "src/python/emuflow/physical/vivado/vivado_indexed_netlist.py",
+        "src/python/emuflow/physical/vivado/vivado_lineage.py",
+        "src/python/emuflow/physical/vivado/vivado_physical_timing.py",
+        "src/python/emuflow/physical/vivado/vivado_physical_top.py",
+        "src/python/emuflow/physical/vivado/vivado_source.py",
         "scripts/vivado/implement_indexed_partition.tcl",
         "scripts/vivado/source_inventory.tcl",
         "scripts/vivado/resource_inventory.tcl",
@@ -266,7 +266,7 @@
       "id": "optional-vivado-gty-recipe",
       "stage": "Phase 6C commercial serial PHY preparation",
       "source_paths": [
-        "src/emuflow/board_link_timing.py",
+        "src/python/emuflow/platform/board_link_timing.py",
         "scripts/vivado/export_boundary_timing.tcl",
         "scripts/vivado/export_logic_segment_timing.tcl",
         "schemas/multi-fpga-flow-v2.schema.json",

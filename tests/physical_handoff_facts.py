@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import sqlite3
 
-from emuflow.xilinx_physical_handoff import _HANDOFF_DDL, XILINX_PHYSICAL_HANDOFF_SCHEMA
+from emuflow.physical.xilinx_physical_handoff import _HANDOFF_DDL, XILINX_PHYSICAL_HANDOFF_SCHEMA
 
 
 def physical_handoff_facts(path, packed, placement):

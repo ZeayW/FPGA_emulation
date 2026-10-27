@@ -5,16 +5,16 @@ from unittest import mock
 
 import pytest
 
-import emuflow.pin_plan_storage as pin_storage
-from emuflow.errors import ValidationError
-from emuflow.pin_plan_storage import (
+import emuflow.transport.pin_plan_storage as pin_storage
+from emuflow.common.errors import ValidationError
+from emuflow.transport.pin_plan_storage import (
     PIN_PLAN_STORAGE_SCHEMA,
     PinPlanEntrySequence,
     PinPlanView,
     read_pin_plan,
     write_pin_plan_storage,
 )
-from emuflow.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA
+from emuflow.transport.pin_planning import CHIMEW_PIN_PLAN_PROVIDER, PIN_PLAN_SCHEMA
 
 
 def _plan():
@@ -128,7 +128,7 @@ def test_pin_plan_selector_failure_preserves_previous_generation(
     def fail_selector(*_args, **_kwargs):
         raise OSError("injected selector failure")
 
-    monkeypatch.setattr("emuflow.store_publication.write_json", fail_selector)
+    monkeypatch.setattr("emuflow.storage.store_publication.write_json", fail_selector)
     updated = copy.deepcopy(expected)
     updated["design"] = "updated"
     with pytest.raises(OSError, match="injected"):

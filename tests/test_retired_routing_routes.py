@@ -3,11 +3,11 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.cli import _build_parser
-from emuflow.errors import EmuFlowError
-from emuflow.multi_fpga_flow import run_multi_fpga_flow
-from emuflow.phase4 import run_phase4
-from emuflow.timing_routing import (GLOBAL_CANDIDATE_PROVIDER)
+from emuflow.flow.cli import _build_parser
+from emuflow.common.errors import EmuFlowError
+from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
+from emuflow.routing.phase4 import run_phase4
+from emuflow.scheduling.timing_routing import (GLOBAL_CANDIDATE_PROVIDER)
 
 
 RETIRED = (
@@ -27,7 +27,7 @@ def test_retired_route_provider_rejected_before_circuit_loading(tmp_path, provid
 
 @pytest.mark.parametrize("provider", RETIRED)
 def test_retired_route_provider_rejected_before_compile_frontend(tmp_path, provider):
-    with patch("emuflow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend entered")):
+    with patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend entered")):
         with pytest.raises(EmuFlowError, match="unsupported Phase 4 routing provider"):
             run_multi_fpga_flow(output_dir=tmp_path / "out", route_provider=provider)
     assert not (tmp_path / "out").exists()

@@ -8,10 +8,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 import tempfile
 
-from emuflow.errors import ValidationError
-from emuflow.io import file_sha256, read_json, write_json
-from emuflow.xilinx_openparf_atomic import write_xilinx_openparf_atomic_placement_certificate
-from emuflow.xilinx_openparf_bridge import materialize_xilinx_openparf_atomic_contract as materialize_typed
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import file_sha256, read_json, write_json
+from emuflow.physical.openparf.xilinx_openparf_atomic import write_xilinx_openparf_atomic_placement_certificate
+from emuflow.physical.openparf.xilinx_openparf_bridge import materialize_xilinx_openparf_atomic_contract as materialize_typed
 
 
 def _snapshot(value):

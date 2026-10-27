@@ -13,8 +13,8 @@ import zlib
 from pathlib import Path
 from unittest import mock
 
-from emuflow import chimew_grouping as grouping_module
-from emuflow.chimew_grouping import (
+from emuflow.transport.chimew import chimew_grouping as grouping_module
+from emuflow.transport.chimew.chimew_grouping import (
     CHIMEW_CROSSING_PROVIDER,
     CHIMEW_CROSSING_SCHEMA,
     CHIMEW_GROUPING_PROVIDER,
@@ -25,7 +25,7 @@ from emuflow.chimew_grouping import (
     materialize_chimew_schedule_ratios,
     validate_chimew_crossings,
 )
-from emuflow.errors import EmuFlowError, ValidationError
+from emuflow.common.errors import EmuFlowError, ValidationError
 from tests.native_build import emuflow_native
 
 

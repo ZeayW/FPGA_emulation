@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from emuflow.phase5_native import run_native_phase5
-from emuflow.tdm_schedule_storage import read_tdm_schedule
-from emuflow.phase5 import validate_phase5_generation
+from emuflow.scheduling.phase5_native import run_native_phase5
+from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
+from emuflow.scheduling.phase5 import validate_phase5_generation
 from tests.native_build import emuflow_native
 from tests.test_phase5_native_stage import current_case
 from tests.test_native_schedule_generation import install_runtime
@@ -84,11 +84,11 @@ def test_native_configuration_rejects_mixed_or_corrupt_inputs_before_replacing_g
 def test_native_bank_split_preserves_independent_direction_objective(tmp_path, monkeypatch, forward, reverse, banks, wires):
     import copy
     from dataclasses import replace
-    from emuflow.io import read_json
-    from emuflow.routing import normalize_route_constraints
-    from emuflow.system_route_storage import read_system_routes, _demand_from_route
+    from emuflow.common.io import read_json
+    from emuflow.routing.routing import normalize_route_constraints
+    from emuflow.routing.system_route_storage import read_system_routes, _demand_from_route
     from tests.native_route_seal_fixture import write_route_store_fixture
-    from emuflow.tdm import build_native_exact_schedule_request
+    from emuflow.scheduling.tdm import build_native_exact_schedule_request
 
     case, routes, producer, inputs = native_inputs(tmp_path, "banks")
     case.platform = replace(case.platform, links=(replace(case.platform.links[0], bank_count=banks, wires_per_bank=wires, data_lanes_per_direction=banks * wires),))

@@ -8,7 +8,7 @@ from collections import defaultdict
 from statistics import median
 from typing import Any, Dict, Mapping, Sequence
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from .ppro_blackbox_calibration import (
     validate_blackbox_observation,
     validate_public_platform_prior,

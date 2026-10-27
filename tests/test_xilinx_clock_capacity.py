@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from scripts.validation.audit_xilinx_clock_capacity import audit_xilinx_clock_capacity
 
 

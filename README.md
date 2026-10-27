@@ -5,6 +5,9 @@ synchronous RTL into per-FPGA netlists and a statically scheduled communication
 fabric, with explicit interfaces between synthesis, partitioning, system
 routing, TDM assignment, physical implementation, and global timing analysis.
 
+See the [source layout](docs/PROJECT_LAYOUT.md) for core, CLI, Python package
+and optional tool ownership.
+
 The default research route uses RapidWright device resources, native OpenPARF
 placement, and RWRoute routing for supported Xilinx FPGAs. Vivado is the other
 maintained physical backend and requires an external proprietary installation.

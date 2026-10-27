@@ -10,24 +10,24 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.errors import EmuFlowError, ValidationError
-from emuflow.io import file_sha256, read_json
-from emuflow.partition import (PARTITION_ASSIGNMENT_SCHEMA)
+from emuflow.common.errors import EmuFlowError, ValidationError
+from emuflow.common.io import file_sha256, read_json
+from emuflow.partition.partition import (PARTITION_ASSIGNMENT_SCHEMA)
 from tests.native_partition_facts import (build_clusters, normalize_partition_constraints)
 from tests.partition_reference import assign_clusters
-from emuflow.phase4 import run_phase4
-from emuflow.platform import Platform
-from emuflow.routing import (
+from emuflow.routing.phase4 import run_phase4
+from emuflow.platform.platform import Platform
+from emuflow.routing.routing import (
     SYSTEM_ROUTES_SCHEMA,
     demands_from_assignment,
     normalize_route_constraints,
     validate_system_routes,
 )
 from tests.routing_reference import exact_route_tree_selection
-from emuflow.timing_routing import (GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, load_sta_paths, normalize_sta_paths, reconstruct_system_route_timing, validate_native_system_routes)
-from emuflow.system_route_storage import SYSTEM_ROUTE_STORAGE_SCHEMA, SYSTEM_ROUTE_USER_VERSION, SystemRoutesView, read_system_routes
+from emuflow.scheduling.timing_routing import (GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, load_sta_paths, normalize_sta_paths, reconstruct_system_route_timing, validate_native_system_routes)
+from emuflow.routing.system_route_storage import SYSTEM_ROUTE_STORAGE_SCHEMA, SYSTEM_ROUTE_USER_VERSION, SystemRoutesView, read_system_routes
 from tests.native_route_seal_fixture import write_route_store_fixture
-from emuflow.yosys import import_yosys_json
+from emuflow.frontend.yosys import import_yosys_json
 from tests.native_build import emuflow_native, tlr_router
 
 
@@ -163,7 +163,7 @@ def _assignment(platform, cuts):
 class Phase4Test(unittest.TestCase):
 
     def test_route_store_has_no_python_production_publisher(self) -> None:
-        from emuflow import system_route_storage
+        from emuflow.routing import system_route_storage
         self.assertFalse(hasattr(system_route_storage, 'write_system_route_storage'))
         self.assertFalse(hasattr(system_route_storage, '_typed_route_scalar_values'))
 

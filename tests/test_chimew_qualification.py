@@ -11,60 +11,60 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.chimew_bank_channel import (
+from emuflow.transport.chimew.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
     evaluate_chimew_bank_channel_assignment,
 )
-from emuflow.chimew_bank_channel_storage import (
+from emuflow.transport.chimew.chimew_bank_channel_storage import (
     write_chimew_bank_channel_storage,
 )
-from emuflow.chimew_bank_channel_report_storage import (
+from emuflow.transport.chimew.chimew_bank_channel_report_storage import (
     read_chimew_bank_channel_report,
     write_chimew_bank_channel_report_storage,
 )
-from emuflow.chimew_binding_storage import read_chimew_binding
-from emuflow.cli import main
-from emuflow.chimew_grouping import (
+from emuflow.transport.chimew.chimew_binding_storage import read_chimew_binding
+from emuflow.flow.cli import main
+from emuflow.transport.chimew.chimew_grouping import (
     CHIMEW_CROSSING_PROVIDER,
     CHIMEW_CROSSING_SCHEMA,
     build_chimew_initial_groups,
 )
-from emuflow.chimew_qualification import (
+from emuflow.transport.chimew.chimew_qualification import (
     CHIMEW_QUALIFICATION_PROVIDER,
     build_chimew_phase6_qualification,
     canonical_sha256,
     validate_chimew_phase6_qualification,
     validate_chimew_qualification_seal,
 )
-from emuflow.chimew_phase6 import (
+from emuflow.transport.chimew.chimew_phase6 import (
     CHIMEW_ELECTRICAL_MAP_PROVIDER,
     CHIMEW_ELECTRICAL_MAP_SCHEMA,
     build_chimew_phase6_pin_plan,
     validate_chimew_phase6_binding,
 )
-from emuflow.chimew_pipeline import (
+from emuflow.transport.chimew.chimew_pipeline import (
     CHIMEW_PIPELINE_PROVIDER,
     CHIMEW_SOURCE_BOUND_PIPELINE_PROVIDER,
     read_chimew_phase6_pipeline,
     run_chimew_phase6_pipeline,
     validate_chimew_phase6_pipeline,
 )
-from emuflow.chimew_refinement import (
+from emuflow.transport.chimew.chimew_refinement import (
     CHIMEW_POSITION_PROVIDER,
     CHIMEW_POSITION_SCHEMA,
     refine_chimew_groups,
 )
-from emuflow.chimew_rudy import (
+from emuflow.transport.chimew.chimew_rudy import (
     CHIMEW_RUDY_INPUT_PROVIDER,
     CHIMEW_RUDY_INPUT_SCHEMA,
     evaluate_chimew_rudy,
 )
-from emuflow.errors import ValidationError
-from emuflow.io import read_json, write_json
-from emuflow.pin_plan_storage import read_pin_plan
-from emuflow.platform import Platform
-from emuflow.position_hints_storage import read_position_hints
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json, write_json
+from emuflow.transport.pin_plan_storage import read_pin_plan
+from emuflow.platform.platform import Platform
+from emuflow.transport.position_hints_storage import read_position_hints
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -689,7 +689,7 @@ class ChimewQualificationTest(unittest.TestCase):
                 validate_chimew_phase6_pipeline(output)["status"], "pass"
             )
 
-            import emuflow.chimew_pipeline as chimew_pipeline_module
+            import emuflow.transport.chimew.chimew_pipeline as chimew_pipeline_module
 
             for identity_field, wrong_value in (
                 ("design", "wrong-design"),
@@ -743,7 +743,7 @@ class ChimewQualificationTest(unittest.TestCase):
                 return real_pipeline_write_json(path, value, **kwargs)
 
             with mock.patch(
-                "emuflow.chimew_pipeline.write_json",
+                "emuflow.transport.chimew.chimew_pipeline.write_json",
                 side_effect=fail_outer_commit,
             ):
                 with self.assertRaisesRegex(OSError, "outer pipeline commit"):
@@ -882,7 +882,7 @@ class ChimewQualificationTest(unittest.TestCase):
             self.assertEqual(writer_errors, [])
             self.assertFalse(leased_generation.exists())
 
-            import emuflow.chimew_pipeline as chimew_pipeline_module
+            import emuflow.transport.chimew.chimew_pipeline as chimew_pipeline_module
 
             real_locked_writer = (
                 chimew_pipeline_module._run_chimew_phase6_pipeline_locked
@@ -914,7 +914,7 @@ class ChimewQualificationTest(unittest.TestCase):
 
             writer_errors.clear()
             with mock.patch(
-                "emuflow.chimew_pipeline._run_chimew_phase6_pipeline_locked",
+                "emuflow.transport.chimew.chimew_pipeline._run_chimew_phase6_pipeline_locked",
                 side_effect=observe_locked_writer,
             ):
                 first_writer = threading.Thread(

@@ -4,19 +4,19 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.cut_segment_qualification import (
+from emuflow.validation.cut_segment_qualification import (
     build_cut_segment_qualification_value,
 )
-from emuflow.opensta import (
+from emuflow.timing.opensta import (
     _instance_pin_sets,
     build_architecture_opensta_timing_model,
     classify_through_net_timing_endpoints,
     validate_timing_model_coverage,
 )
-from emuflow.xilinx_preplacement_timing import (
+from emuflow.timing.xilinx_preplacement_timing import (
     build_xilinx_preplacement_timing_db,
 )
-from emuflow.yosys import import_yosys_json
+from emuflow.frontend.yosys import import_yosys_json
 
 
 def _sha(path: Path) -> str:
@@ -107,7 +107,7 @@ CLK ADDR_A[0] 500
         }
         database = root / "xilinx-preplacement.json"
         with patch.dict(
-            "emuflow.xilinx_preplacement_timing.RAPIDWRIGHT_TIMING_DATA_SHA256",
+            "emuflow.timing.xilinx_preplacement_timing.RAPIDWRIGHT_TIMING_DATA_SHA256",
             hashes,
             clear=True,
         ):
@@ -138,7 +138,7 @@ CLK ADDR_A[0] 500
             mapped.write_text(json.dumps(value), encoding="utf-8")
             ir = import_yosys_json(mapped, top="top", clocks=["clk"])
             with patch(
-                "emuflow.opensta._instance_pin_sets", wraps=_instance_pin_sets,
+                "emuflow.timing.opensta._instance_pin_sets", wraps=_instance_pin_sets,
             ) as pin_sets:
                 model, types = build_architecture_opensta_timing_model(ir, database)
             assert pin_sets.call_args.kwargs["instance_ids"] == {
@@ -147,13 +147,13 @@ CLK ADDR_A[0] 500
             # Compare all cells/arcs and per-instance types against the old
             # exhaustive pin collection, not merely aggregate timing scalars.
             with patch(
-                "emuflow.opensta._instance_pin_sets",
+                "emuflow.timing.opensta._instance_pin_sets",
                 side_effect=lambda graph, **kwargs: _instance_pin_sets(graph),
             ):
                 reference = build_architecture_opensta_timing_model(ir, database)
             assert (model, types) == reference
-            from emuflow.indexed_timing import IndexedTimingView
-            from emuflow.verilog import mapped_verilog, write_mapped_verilog
+            from emuflow.timing.indexed_timing import IndexedTimingView
+            from emuflow.frontend.verilog import mapped_verilog, write_mapped_verilog
             compact = root / "design.emuir.sqlite"
             ir.save(compact)
             view = IndexedTimingView(compact)
@@ -214,7 +214,7 @@ CLK ADDR_A[0] 500
         _mapped_fixture(mapped)
         ir = import_yosys_json(mapped, top="top", clocks=["clk"])
         with patch.dict(
-            "emuflow.xilinx_preplacement_timing.RAPIDWRIGHT_TIMING_DATA_SHA256",
+            "emuflow.timing.xilinx_preplacement_timing.RAPIDWRIGHT_TIMING_DATA_SHA256",
             hashes,
             clear=True,
         ):

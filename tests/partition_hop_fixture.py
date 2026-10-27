@@ -5,14 +5,14 @@ from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
 
-from emuflow.emuir_compact import write_compact_emuir
+from emuflow.ir.emuir_compact import write_compact_emuir
 from tests.partition_balance_fixture import active_partition_fpgas
 from tests.partition_balance_fixture import transported_cut_classes_for_clusters
 from tests.native_partition_facts import (build_clusters, build_partition_assignment, normalize_partition_constraints)
 from tests.native_partition_kernel_driver import initialize
-from emuflow.partition_ir import load_partition_ir
-from emuflow.platform import Platform
-from emuflow.yosys import import_yosys_json
+from emuflow.partition.partition_ir import load_partition_ir
+from emuflow.platform.platform import Platform
+from emuflow.frontend.yosys import import_yosys_json
 
 
 PLACEMENT = {'q_reg[0]': 'F0', 'q_reg[1]': 'F0', 'q_reg[2]': 'F1', 'q_reg[3]': 'F1',
@@ -65,7 +65,7 @@ def weights(root, rows):
     path = root / 'weights.sqlite'
     with sqlite3.connect(path) as database:
         database.execute('PRAGMA user_version=1')
-        database.executescript((Path(__file__).parents[1] / 'src/emuflow/data/schema/sta_net_weights.sql').read_text())
+        database.executescript((Path(__file__).parents[1] / 'src/python/emuflow/data/schema/sta_net_weights.sql').read_text())
         database.executemany('INSERT INTO net_weights VALUES(?,?,?,?)', rows)
     selector = root / 'weights.json'
     selector.write_text(json.dumps({'schema': 'emuflow.partition-net-weights/v2', 'payloads': {'weights': {

@@ -8,12 +8,12 @@ from unittest.mock import patch
 import pytest
 
 from tests.partition_graph_oracle import candidate_ids
-from emuflow.emuir_compact import write_compact_emuir
-from emuflow.errors import ValidationError
-from emuflow.ir import EmuIR
-from emuflow.partition_ir import load_partition_ir
+from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow.common.errors import ValidationError
+from emuflow.ir.ir import EmuIR
+from emuflow.partition.partition_ir import load_partition_ir
 from tests.native_partition_core_fixture import build_native_candidate_ids
-from emuflow.phase3_policy import write_candidate_policy
+from emuflow.partition.phase3_policy import write_candidate_policy
 from tests.native_build import emuflow_native
 from tests import test_combinational_cut as reference
 

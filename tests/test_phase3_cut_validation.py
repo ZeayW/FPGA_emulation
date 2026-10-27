@@ -11,9 +11,9 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.phase3_assignment_index import (_iter_cut_records, validate_phase3_assignment_index)
-from emuflow.phase3_assignment_native import validate_native_assignment_cuts
+from emuflow.common.errors import ValidationError
+from emuflow.partition.phase3_assignment_index import (_iter_cut_records, validate_phase3_assignment_index)
+from emuflow.partition.phase3_assignment_native import validate_native_assignment_cuts
 from tests.native_build import emuflow_native
 from tests.test_phase3_assignment_direct_cuts import _assignment
 from tests.test_phase3_clusters_native import source
@@ -70,11 +70,11 @@ def test_native_validation_matches_independent_host_identity_without_host_expans
     count, sinks, digest = reference_identity(path)
     original = path.read_bytes()
     with patch(
-        "emuflow.phase3_assignment_index._iter_cut_records",
+        "emuflow.partition.phase3_assignment_index._iter_cut_records",
         side_effect=AssertionError("host cut expansion"),
     ):
         with patch(
-            "emuflow.phase3_assignment_index._json",
+            "emuflow.partition.phase3_assignment_index._json",
             side_effect=AssertionError("host canonical cut JSON"),
         ):
             assert validate_phase3_assignment_index(path) == expected
@@ -239,8 +239,8 @@ def test_read_only_validator_rejects_corruption_and_preserves_prior_summary(
     ],
 )
 def test_native_summary_rejection_has_no_host_fallback(source, tmp_path, kind):
-    import emuflow.phase3_assignment_native as native
-    from emuflow.tool_runtime import NativeToolProcess
+    import emuflow.partition.phase3_assignment_native as native
+    from emuflow.common.tool_runtime import NativeToolProcess
 
     path = published(source, tmp_path)
     original = path.read_bytes()
@@ -281,7 +281,7 @@ def test_native_summary_rejection_has_no_host_fallback(source, tmp_path, kind):
 
     with patch.object(native, "NativeToolProcess", ChangedResult):
         with patch(
-            "emuflow.phase3_assignment_index._iter_cut_records",
+            "emuflow.partition.phase3_assignment_index._iter_cut_records",
             side_effect=AssertionError("host fallback"),
         ):
             with pytest.raises(ValidationError):
@@ -341,7 +341,7 @@ def test_large_ordered_cut_relation_has_bounded_host_memory(source, tmp_path):
                 (json.dumps(digest.hexdigest()),),
             )
         with patch(
-            "emuflow.phase3_assignment_index._iter_cut_records",
+            "emuflow.partition.phase3_assignment_index._iter_cut_records",
             side_effect=AssertionError("host cut population"),
         ):
             # Warm protocol/import caches and settle reference-only objects.

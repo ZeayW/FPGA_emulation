@@ -14,7 +14,7 @@ from datetime import date
 from typing import Any, Dict, Mapping, Sequence
 from urllib.parse import urlparse
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 
 
 PUBLIC_PRIOR_SCHEMA = "emuflow.ppro-public-platform-prior/v1"

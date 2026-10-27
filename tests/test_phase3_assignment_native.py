@@ -10,16 +10,16 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.errors import ValidationError
-from emuflow.native_tools import native_file_generation
+from emuflow.common.errors import ValidationError
+from emuflow.common.native_tools import native_file_generation
 from tests.partition_views import ClusterColumns as _CompactClusterRecords
 from tests.partition_views import InstanceOwners as _CompactInstanceAssignment
 from tests.partition_views import ClusterOwners as _PackedClusterAssignment
 from tests.partition_balance_fixture import validate_cluster_assignment_balance
-from emuflow.partition import CUT_MODE_STATIC_EXACT
+from emuflow.partition.partition import CUT_MODE_STATIC_EXACT
 from tests.native_partition_facts import (build_clusters, build_partition_assignment, validate_partition_artifacts_online)
 from tests.native_partition_core_fixture import reduce_native_partition_loads
-from emuflow.native_protocol import CheckedRequestWriter as _Writer
+from emuflow.common.native_protocol import CheckedRequestWriter as _Writer
 from tests.test_phase3_clusters_native import source
 from tests import partition_pressure_fixture as reference_fixture
 from tests.native_build import emuflow_native
@@ -181,15 +181,15 @@ def test_native_index_matches_reference_without_host_instance_records(source, tm
         k:v for k,v in reference_summary.items() if k not in ('writer_implementation','native_writer_metrics')}
     assert _published_rows(actual) == _published_rows(expected)
     if exact:
-        from emuflow.phase3_exact_binary import EXACT_BINARY_ARTIFACT
+        from emuflow.partition.phase3_exact_binary import EXACT_BINARY_ARTIFACT
         assert (actual.parent/EXACT_BINARY_ARTIFACT).read_bytes() == (expected.parent/EXACT_BINARY_ARTIFACT).read_bytes()
 
 
 @pytest.mark.parametrize('kind', ['checksum', 'truncated', 'version', 'ownership', 'generation', 'source-count', 'dangling-predecessor'])
 def test_native_index_failure_preserves_published_pair_without_retry(source, tmp_path, kind):
     import struct
-    from emuflow.phase3_exact_binary import EXACT_BINARY_ARTIFACT
-    from emuflow.tool_runtime import NativeToolProcess
+    from emuflow.partition.phase3_exact_binary import EXACT_BINARY_ARTIFACT
+    from emuflow.common.tool_runtime import NativeToolProcess
     import tests.native_assignment_publication_fixture as publication
     ir, platform, constraints, clusters, parts = prepare(source)
     assignment = build_partition_assignment(ir, platform, clusters, constraints, parts, 'fixture', 7,
@@ -230,8 +230,8 @@ def test_native_index_failure_preserves_published_pair_without_retry(source, tmp
 
 @pytest.mark.parametrize('kind', ['lost-primary', 'stale-primary', 'stale-source', 'validator', 'post-validation-source', 'post-validation-primary'])
 def test_native_publication_rejection_preserves_existing_index_and_exact_data(source, tmp_path, kind):
-    import emuflow.phase3_assignment_index as index
-    from emuflow.phase3_exact_binary import EXACT_BINARY_ARTIFACT
+    import emuflow.partition.phase3_assignment_index as index
+    from emuflow.partition.phase3_exact_binary import EXACT_BINARY_ARTIFACT
     from contextlib import ExitStack
     ir, platform, constraints, clusters, parts = prepare(source)
     assignment = build_partition_assignment(ir, platform, clusters, constraints, parts, 'fixture', 7,

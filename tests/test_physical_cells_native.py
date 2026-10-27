@@ -9,11 +9,11 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow import physical_cells_native
-from emuflow.errors import ValidationError
-from emuflow.native_protocol import CheckedRequestWriter
-from emuflow.native_tools import native_file_generation
-from emuflow.xilinx_netlist import open_xilinx_mapped_index
+from emuflow.physical import physical_cells_native
+from emuflow.common.errors import ValidationError
+from emuflow.common.native_protocol import CheckedRequestWriter
+from emuflow.common.native_tools import native_file_generation
+from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index
 from tests.native_build import emuflow_native
 from tests.test_rwroute_native import fixture
 
@@ -49,11 +49,11 @@ def test_native_checks_all_typed_pins_without_python_record_reconstruction(tmp_p
     values, mapped, physical = prepare(tmp_path)
     with (
         patch(
-            "emuflow.xilinx_netlist._IndexedCells.__getitem__",
+            "emuflow.physical.xilinx_netlist._IndexedCells.__getitem__",
             side_effect=AssertionError("Python cell lookup"),
         ),
         patch(
-            "emuflow.xilinx_netlist._IndexedCells.items",
+            "emuflow.physical.xilinx_netlist._IndexedCells.items",
             side_effect=AssertionError("Python circuit scan"),
         ),
     ):
@@ -234,7 +234,7 @@ def test_indexed_family_and_driver_queries_only_decode_the_requested_subgraph(tm
 def test_indexed_bridge_uses_native_population_and_keeps_local_control_checks(tmp_path):
     from tests.test_xilinx_openparf_bridge import _native_certificate
     from tests.test_rwroute_native import write_mapped
-    from emuflow.xilinx_openparf_bridge import (
+    from emuflow.physical.openparf.xilinx_openparf_bridge import (
         materialize_xilinx_openparf_atomic_contract,
     )
 
@@ -339,7 +339,7 @@ def test_repeated_large_population_never_constructs_a_python_circuit(tmp_path):
             (count, count),
         )
     with patch(
-        "emuflow.xilinx_netlist.IndexedXilinxMappedNetlist.__init__",
+        "emuflow.physical.xilinx_netlist.IndexedXilinxMappedNetlist.__init__",
         side_effect=AssertionError("Python graph"),
     ):
         result = validate(mapped, physical)
@@ -349,7 +349,7 @@ def test_repeated_large_population_never_constructs_a_python_circuit(tmp_path):
 def test_bridge_binds_in_process_index_before_native_check_and_publication(tmp_path):
     from tests.test_xilinx_openparf_bridge import _native_certificate
     from tests.test_rwroute_native import write_mapped
-    from emuflow.xilinx_openparf_bridge import (
+    from emuflow.physical.openparf.xilinx_openparf_bridge import (
         materialize_xilinx_openparf_atomic_contract,
     )
 
@@ -394,7 +394,7 @@ def test_bridge_binds_in_process_index_before_native_check_and_publication(tmp_p
 def test_bridge_rejects_a_reader_leased_before_the_index_changed(tmp_path):
     from tests.test_xilinx_openparf_bridge import _native_certificate
     from tests.test_rwroute_native import write_mapped
-    from emuflow.xilinx_openparf_bridge import (
+    from emuflow.physical.openparf.xilinx_openparf_bridge import (
         materialize_xilinx_openparf_atomic_contract,
     )
 

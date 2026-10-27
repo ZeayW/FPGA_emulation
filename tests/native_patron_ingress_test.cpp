@@ -1,7 +1,7 @@
 // Small native model facts and publication-order gates. No Python model producer.
-#include "emuflow_core/patron_ingress.hpp"
-#include "emuflow_core/hash.hpp"
-#include "emuflow_core/json_record.hpp"
+#include "partition/patron_ingress.hpp"
+#include "common/hash.hpp"
+#include "common/json_record.hpp"
 #include <iostream>
 #include <iomanip>
 #include <type_traits>

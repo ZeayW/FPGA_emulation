@@ -89,18 +89,18 @@ REQUIRED_SOURCE_FILES = {
 }
 
 REQUIRED_FIRST_PARTY_NATIVE_FILES = (
-    "src/native/fpga_interchange_arch_importer.cpp",
-    "src/emuflow/fpga_interchange.py",
-    "src/emuflow/rapidwright_provider.py",
-    "src/emuflow/xilinx_primitives.py",
-    "src/emuflow/xilinx_packing.py",
-    "src/emuflow/xilinx_physical_macros.py",
-    "src/emuflow/xilinx_placement.py",
-    "src/emuflow/xilinx_rwroute.py",
-    "src/emuflow/xilinx_timing.py",
-    "src/emuflow/xilinx_preplacement_timing.py",
-    "src/emuflow/xilinx_opensta.py",
-    "src/emuflow/physical_regions.py",
+    "src/cli/import_architecture.cpp",
+    "src/python/emuflow/platform/fpga_interchange.py",
+    "src/python/emuflow/physical/rapidwright/rapidwright_provider.py",
+    "src/python/emuflow/physical/xilinx_primitives.py",
+    "src/python/emuflow/physical/xilinx_packing.py",
+    "src/python/emuflow/physical/xilinx_physical_macros.py",
+    "src/python/emuflow/physical/xilinx_placement.py",
+    "src/python/emuflow/physical/rapidwright/xilinx_rwroute.py",
+    "src/python/emuflow/timing/xilinx_timing.py",
+    "src/python/emuflow/timing/xilinx_preplacement_timing.py",
+    "src/python/emuflow/timing/xilinx_opensta.py",
+    "src/python/emuflow/physical/physical_regions.py",
     "schemas/archdb-v1.schema.json",
     "schemas/rapidwright-device-provider-v1.schema.json",
     "schemas/ppro-calibrated-platform-manifest-v2.schema.json",
@@ -112,7 +112,7 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "schemas/xilinx-preplacement-timing-db-v1.schema.json",
     "schemas/physical-region-sidecar-v1.schema.json",
     "resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json",
-    "src/emuflow/data/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json",
+    "src/python/emuflow/data/rapidwright/xilinx-ultrascaleplus-open-v1.primitives.json",
     "scripts/rapidwright/export_physical_regions.py",
     "scripts/rapidwright/EmuFlowRouteResourceCertificate.java",
     "scripts/rapidwright/EmuFlowRWRoute.java",
@@ -125,18 +125,18 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "tests/test_xilinx_rwroute.py",
     "tests/test_xilinx_opensta.py",
     "examples/rtl/xilinx_hard_blocks_smoke.v",
-    "src/native/tlr_router.cpp",
-    "src/native/hop_partition_refiner.cpp",
+    "src/core/routing/global_router.cpp",
+    "src/core/partition/hop_refiner.cpp",
 
 
-    "src/native/chimew_signal_grouper.cpp",
-    "src/native/chimew_position_refiner.cpp",
-    "src/native/chimew_rudy.cpp",
-    "src/native/chimew_bank_channel_assigner.cpp",
-    "src/emuflow/chimew_grouping.py",
-    "src/emuflow/chimew_refinement.py",
-    "src/emuflow/chimew_rudy.py",
-    "src/emuflow/chimew_bank_channel.py",
+    "src/core/transport/chimew/signal_grouper.cpp",
+    "src/core/transport/chimew/position_refiner.cpp",
+    "src/core/transport/chimew/rudy.cpp",
+    "src/core/transport/chimew/bank_channel_assigner.cpp",
+    "src/python/emuflow/transport/chimew/chimew_grouping.py",
+    "src/python/emuflow/transport/chimew/chimew_refinement.py",
+    "src/python/emuflow/transport/chimew/chimew_rudy.py",
+    "src/python/emuflow/transport/chimew/chimew_bank_channel.py",
     "schemas/sta-path-database-v1.schema.json",
     "schemas/fpga-timing-model-v1.schema.json",
     "schemas/fpga-timing-model-v2.schema.json",
@@ -149,19 +149,19 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "scripts/yosys/logic_only_map.v",
     "tests/test_openparf_runtime.py",
     "resources/timing/ultrascaleplus-softlogic-v1.json",
-    "src/emuflow/physical_backend.py",
-    "src/emuflow/vivado_backend.py",
-    "src/emuflow/vivado_physical.py",
-    "src/emuflow/vivado_indexed_netlist.py",
-    "src/emuflow/vivado_lineage.py",
-    "src/emuflow/vivado_physical_timing.py",
-    "src/emuflow/vivado_physical_top.py",
-    "src/emuflow/vivado_source.py",
+    "src/python/emuflow/physical/physical_backend.py",
+    "src/python/emuflow/physical/vivado/vivado_backend.py",
+    "src/python/emuflow/physical/vivado/vivado_physical.py",
+    "src/python/emuflow/physical/vivado/vivado_indexed_netlist.py",
+    "src/python/emuflow/physical/vivado/vivado_lineage.py",
+    "src/python/emuflow/physical/vivado/vivado_physical_timing.py",
+    "src/python/emuflow/physical/vivado/vivado_physical_top.py",
+    "src/python/emuflow/physical/vivado/vivado_source.py",
     "scripts/vivado/implement_indexed_partition.tcl",
     "scripts/vivado/source_inventory.tcl",
     "scripts/vivado/resource_inventory.tcl",
     "scripts/vivado/timing_contract.tcl",
-    "src/emuflow/vivado_netlist.py",
+    "src/python/emuflow/physical/vivado/vivado_netlist.py",
     "tools/emuflow_tools/contest_eda2024.py",
     "tools/emuflow_tools/contest_iccad2019.py",
     "schemas/contest-eda2024-evaluation-v1.schema.json",
@@ -536,13 +536,13 @@ def audit(repo_root: Path) -> list[str]:
             errors.append(
                 f"first-party native source is missing: {relative_file}"
             )
-    native_root = repo_root / "src" / "native"
-    for path in native_root.rglob("*"):
-        if path.is_file() and (reason := _opaque_format(path)) is not None:
-            errors.append(
-                "first-party native tree contains a non-source artifact "
-                f"({reason}): {path.relative_to(repo_root)}"
-            )
+    for source_root in (repo_root / "src" / "core", repo_root / "src" / "cli"):
+        for path in source_root.rglob("*"):
+            if path.is_file() and (reason := _opaque_format(path)) is not None:
+                errors.append(
+                    "first-party native tree contains a non-source artifact "
+                    f"({reason}): {path.relative_to(repo_root)}"
+                )
     engines = repo_root / "engines"
     for component, relative_files in REQUIRED_SOURCE_FILES.items():
         component_root = engines / component

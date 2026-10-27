@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow import store_publication as common
-from emuflow.errors import ValidationError
+from emuflow.storage import store_publication as common
+from emuflow.common.errors import ValidationError
 from tests.native_build import emuflow_native
 
 
@@ -22,8 +22,17 @@ KINDS = (
 )
 
 
+MODULES = {
+    'pin_plan': 'emuflow.transport.pin_plan_storage',
+    'position_hints': 'emuflow.transport.position_hints_storage',
+    'chimew_binding': 'emuflow.transport.chimew.chimew_binding_storage',
+    'chimew_bank_channel': 'emuflow.transport.chimew.chimew_bank_channel_storage',
+    'chimew_bank_channel_report': 'emuflow.transport.chimew.chimew_bank_channel_report_storage',
+}
+
+
 def prepare(kind):
-    module = importlib.import_module("emuflow." + kind + "_storage")
+    module = importlib.import_module(MODULES[kind])
     if kind == "pin_plan":
         from tests.test_pin_plan_storage import _plan
 
@@ -44,7 +53,7 @@ def prepare(kind):
         case.setUp()
         document = case.document
         if kind.endswith("_report"):
-            from emuflow.chimew_bank_channel import (
+            from emuflow.transport.chimew.chimew_bank_channel import (
                 evaluate_chimew_bank_channel_assignment,
             )
 

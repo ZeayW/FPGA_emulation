@@ -6,9 +6,9 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
-from emuflow.errors import ValidationError
-from emuflow.io import read_json, write_json
-from emuflow.platform import Platform
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json, write_json
+from emuflow.platform.platform import Platform
 
 
 def materialize_homogeneous_boarddb(

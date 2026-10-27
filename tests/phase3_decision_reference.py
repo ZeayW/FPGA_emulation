@@ -1,7 +1,7 @@
 """Small independent candidate-ranking oracle; no stage execution or publishing."""
 import math
 from typing import Any, Dict
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 
 PATRON_PATH_OBJECTIVE_SELECTION_PROVIDER = "patron-path-objective-selection-v2"
 

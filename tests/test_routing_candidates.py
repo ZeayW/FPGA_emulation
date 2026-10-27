@@ -8,13 +8,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.errors import ValidationError
-from emuflow.platform import Platform
-from emuflow.routing import demands_from_assignment, normalize_route_constraints
-from emuflow.phase4_native import run_native_phase4
-from emuflow.system_route_storage import read_system_routes
+from emuflow.common.errors import ValidationError
+from emuflow.platform.platform import Platform
+from emuflow.routing.routing import demands_from_assignment, normalize_route_constraints
+from emuflow.routing.phase4_native import run_native_phase4
+from emuflow.routing.system_route_storage import read_system_routes
 from tests.routing_reference import exact_route_tree_selection
-from emuflow.timing_routing import (GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, normalize_sta_paths, validate_native_system_routes)
+from emuflow.scheduling.timing_routing import (GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, normalize_sta_paths, validate_native_system_routes)
 from tests.native_build import tlr_router
 from tests.test_phase4 import _assignment, _link, _platform_value
 
@@ -22,7 +22,7 @@ from tests.test_phase4 import _assignment, _link, _platform_value
 class RouteCandidatePoolTest(unittest.TestCase):
     def test_adaptive_hop_does_not_clone_the_complete_input(self) -> None:
         source = (
-            Path(__file__).parents[1] / "src" / "native" / "tlr_router.cpp"
+            Path(__file__).parents[1] / "src/core/routing/global_router.cpp"
         ).read_text(encoding="utf-8")
         helper = re.search(
             r"Route shortest_path_tree_with_limit\([^}]+\n  \}",

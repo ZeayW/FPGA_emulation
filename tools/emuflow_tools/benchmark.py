@@ -3,12 +3,12 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 from typing import Any, Dict, Optional
-from emuflow.benchmark_inputs import BenchmarkRun, BENCHMARK_RUN_SCHEMA
-from emuflow.timing_io import timing_io_sha256
-from emuflow.io import write_json
-from emuflow.phase1 import run_phase1
-from emuflow.platform import Platform
-from emuflow.synthesis import run_yosys
+from emuflow.flow.benchmark_inputs import BenchmarkRun, BENCHMARK_RUN_SCHEMA
+from emuflow.timing.timing_io import timing_io_sha256
+from emuflow.common.io import write_json
+from emuflow.frontend.phase1 import run_phase1
+from emuflow.platform.platform import Platform
+from emuflow.frontend.synthesis import run_yosys
 
 BENCHMARK_REPORT_SCHEMA = "emuflow.benchmark-report/v1"
 

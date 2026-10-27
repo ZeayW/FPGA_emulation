@@ -187,7 +187,7 @@ complete Phase 1–7/7C, physical legality or original-path global timing accept
 ## Native physical export differential
 
 The offline command
-`PYTHONPATH=src python scripts/validation/qualify_rwroute_native_export.py --mapped MAPPED.sqlite --physical PHYSICAL.sqlite --expected-top TOP --out OUTPUT`
+`PYTHONPATH=src/python python scripts/validation/qualify_rwroute_native_export.py --mapped MAPPED.sqlite --physical PHYSICAL.sqlite --expected-top TOP --out OUTPUT`
 executes the reference and native exporters in separately supervised processes.
 Pass `--virtual-io-contract` and `--resource-limits` to freeze the actual board
 configuration, `--minimum-logical-cells` for a real-design scale floor, and

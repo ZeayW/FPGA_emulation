@@ -6,12 +6,12 @@ import json
 import sqlite3
 from pathlib import Path
 
-from emuflow.phase3_assignment_index import (
+from emuflow.partition.phase3_assignment_index import (
     ASSIGNMENT_INDEX_APPLICATION_ID,
     CORE_DDL,
     PACKED_EXACT_ASSIGNMENT_INDEX_SCHEMA,
 )
-from emuflow.phase3_exact_binary import (EXACT_BINARY_ARTIFACT)
+from emuflow.partition.phase3_exact_binary import (EXACT_BINARY_ARTIFACT)
 
 
 def write_assignment_v3_fixture(

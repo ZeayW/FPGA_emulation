@@ -11,11 +11,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple, cast
 
 from .contest_boarddb import materialize_homogeneous_boarddb
-from emuflow.errors import EmuFlowError, ValidationError
-from emuflow.io import read_json, write_json
-from emuflow.native_tools import resolve_native_executable
-from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
-from emuflow.routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA, SYSTEM_ROUTES_SCHEMA
+from emuflow.common.errors import EmuFlowError, ValidationError
+from emuflow.common.io import read_json, write_json
+from emuflow.common.native_tools import resolve_native_executable
+from emuflow.partition.partition import PARTITION_ASSIGNMENT_SCHEMA
+from emuflow.routing.routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA, SYSTEM_ROUTES_SCHEMA
 
 EDA2023_INSTANCE_SCHEMA = "emuflow.contest-eda2023-instance/v1"
 EDA2023_HIERARCHY_SCHEMA = "emuflow.die-hierarchy/v1"

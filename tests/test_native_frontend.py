@@ -10,15 +10,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from emuflow.frontend_native import prepare_frontend, read_frontend_summary
-from emuflow.native_protocol import CheckedRequestWriter
-from emuflow.native_tools import native_file_generation
-from emuflow.platform import Platform
-from emuflow.phase1 import indexed_phase1_facts, analyze_indexed_clock_topology
-from emuflow.xilinx_primitives import DEFAULT_XILINX_PRIMITIVE_LIBRARY
+from emuflow.frontend.frontend_native import prepare_frontend, read_frontend_summary
+from emuflow.common.native_protocol import CheckedRequestWriter
+from emuflow.common.native_tools import native_file_generation
+from emuflow.platform.platform import Platform
+from emuflow.frontend.phase1 import indexed_phase1_facts, analyze_indexed_clock_topology
+from emuflow.physical.xilinx_primitives import DEFAULT_XILINX_PRIMITIVE_LIBRARY
 from tests.native_build import emuflow_native
 from tests.test_yosys_emuir_native import old_source_to_emuir
-from emuflow.ir import EmuIR
+from emuflow.ir.ir import EmuIR
 
 ROOT=Path(__file__).resolve().parents[1]
 PLATFORM=ROOT/'platforms/virtual/xcvu3p_2fpga_p2p.json'
@@ -132,7 +132,7 @@ def test_summary_rejects_a_changed_published_generation(native,tmp_path):
 
 
 def test_preflight_request_is_only_configuration_and_original_source_generations(tmp_path,monkeypatch):
-    from emuflow import frontend_native as host
+    from emuflow.frontend import frontend_native as host
     rtl=tmp_path/'source.v';rtl.write_text('module top; endmodule')
     monkeypatch.setattr(host,'require_native_schema',lambda _:None)
     monkeypatch.setattr(host,'resolve_native_executable',lambda *a:sys.executable)
@@ -153,7 +153,7 @@ def test_native_compile_executes_whole_frontend_without_starting_its_python_adap
     fields=tmp_path/'frontend-fields.json'
     fields.write_text(json.dumps({'native_frontend_request':['path',str(config)],
         'native_frontend_generation':['tuple',[str(v) for v in native_file_generation(config)]]}))
-    adapter=tmp_path/'source/emuflow/native_compile_adapter.py'
+    adapter=tmp_path/'source/emuflow/flow/native_compile_adapter.py'
     text=adapter.read_text()
     # This fixture qualifies the complete frontend boundary. Its later graph
     # test doubles use a different tiny input, so stop before joining them.
@@ -190,7 +190,7 @@ def test_raw_rtl_control_rejects_a_missing_native_request_instead_of_starting_py
     compile_request=fixture_request(tmp_path)
     fields=tmp_path/'raw-fields.json'
     fields.write_text(json.dumps({'sources':['tuple',[['path',str(tmp_path/'rtl.v')]]], 'yosys_json':None, 'prepared_frontend':None}))
-    adapter=tmp_path/'source/emuflow/native_compile_adapter.py'
+    adapter=tmp_path/'source/emuflow/flow/native_compile_adapter.py'
     text=adapter.read_text();marker='# FIXTURE_CONTROL_STATE_READY';assert marker in text
     text=text.replace(marker, "if a.stage=='preflight':state.update(json.loads(pathlib.Path("+repr(str(fields))+").read_text()))\nif a.stage=='frontend':raise AssertionError('Python fallback started')\n"+marker)
     adapter.write_text(text)

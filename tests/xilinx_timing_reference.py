@@ -12,10 +12,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional
 
-from emuflow.errors import ValidationError
-from emuflow.io import file_sha256, read_json, write_json
-from emuflow.xilinx_physical_handoff import validate_xilinx_physical_handoff_pair
-from emuflow.xilinx_rwroute import iter_xilinx_route_nets, validate_xilinx_route_db
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import file_sha256, read_json, write_json
+from emuflow.physical.xilinx_physical_handoff import validate_xilinx_physical_handoff_pair
+from emuflow.physical.rapidwright.xilinx_rwroute import iter_xilinx_route_nets, validate_xilinx_route_db
 
 
 XILINX_ROUTED_TIMING_SCHEMA = "emuflow.xilinx-routed-timing/v1"
@@ -509,4 +509,4 @@ def build_xilinx_routed_timing(
     }
 
 
-from emuflow.xilinx_timing import validate_xilinx_routed_timing
+from emuflow.timing.xilinx_timing import validate_xilinx_routed_timing

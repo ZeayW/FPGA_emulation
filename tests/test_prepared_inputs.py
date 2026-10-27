@@ -5,17 +5,17 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.default_platform import DEFAULT_PLATFORM_PATH
-from emuflow.emuir_compact import write_compact_emuir
-from emuflow.errors import ValidationError
-from emuflow.io import read_json, write_json
-from emuflow.multi_fpga_flow import _checked_flow_member, run_multi_fpga_flow
-from emuflow.prepared_inputs import (
+from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH
+from emuflow.ir.emuir_compact import write_compact_emuir
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import read_json, write_json
+from emuflow.flow.multi_fpga_flow import _checked_flow_member, run_multi_fpga_flow
+from emuflow.flow.prepared_inputs import (
     bind_prepared_inputs,
     validate_prepared_timing_boundary,
 )
-from emuflow.platform import Platform
-from emuflow.yosys import import_yosys_json
+from emuflow.platform.platform import Platform
+from emuflow.frontend.yosys import import_yosys_json
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE = "xilinx-ultrascaleplus-open-v1"
@@ -46,7 +46,7 @@ def boundaries(tmp_path):
 
 def test_binds_payloads_without_copying_or_loading_graph(tmp_path, boundaries):
     front, timing = boundaries
-    with patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("whole graph load")):
+    with patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("whole graph load")):
         bind_prepared_inputs(front, timing, tmp_path / "out/front", tmp_path / "out/timing",
                              DEFAULT_PLATFORM_PATH, {"clk": 10.0}, PROFILE)
     assert (tmp_path / "out/front/design.emuir.sqlite").resolve() == front / "design.emuir.sqlite"
@@ -139,12 +139,12 @@ def test_full_flow_continuation_reaches_phase3_without_synthesis_or_sta(tmp_path
         pass
     timing_model = tmp_path / "architecture-timing.json"
     write_json(timing_model, {"schema": "emuflow.xilinx-preplacement-timing-db/v1"})
-    with patch("emuflow.multi_fpga_flow.run_phase3", side_effect=ReachedPartition), \
-         patch("emuflow.multi_fpga_flow.run_phase1", side_effect=AssertionError("synthesis")), \
-         patch("emuflow.phase2_native.run_native_phase2", side_effect=AssertionError("Phase 2")), \
-         patch("emuflow.opensta.run_opensta_path_database", side_effect=AssertionError("shared timing extraction")), \
-         patch("emuflow.multi_fpga_flow.resolve_native_executable", return_value="/usr/bin/true"), \
-         patch("emuflow.multi_fpga_flow.check_opensta_engine_version"):
+    with patch("emuflow.flow.multi_fpga_flow.run_phase3", side_effect=ReachedPartition), \
+         patch("emuflow.flow.multi_fpga_flow.run_phase1", side_effect=AssertionError("synthesis")), \
+         patch("emuflow.timing.phase2_native.run_native_phase2", side_effect=AssertionError("Phase 2")), \
+         patch("emuflow.timing.opensta.run_opensta_path_database", side_effect=AssertionError("shared timing extraction")), \
+         patch("emuflow.flow.multi_fpga_flow.resolve_native_executable", return_value="/usr/bin/true"), \
+         patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"):
         with pytest.raises(ReachedPartition):
             run_multi_fpga_flow(output_dir=tmp_path / "continued", prepared_frontend=boundaries[0],
                                prepared_timing=boundaries[1], clock_periods={"clk": 10.0},
@@ -178,7 +178,7 @@ def test_native_published_phase2_checks_clocks_and_counts_without_standalone_rep
     )
     with pytest.raises(ValidationError, match="clock constraints mismatch"):
         validate_prepared_timing_boundary(front, timing, {"clk": 20.0})
-    with patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("graph replay")):
+    with patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("graph replay")):
         bind_prepared_inputs(front, timing, tmp_path / "valid/front", tmp_path / "valid/timing",
                              DEFAULT_PLATFORM_PATH, {"clk": 10.0}, PROFILE)
     assert read_json(tmp_path / "valid/timing/experiment-timing-report.json")["publication_validation"] == "sqlite-version-clocks-row-counts-v1"

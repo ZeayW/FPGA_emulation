@@ -67,7 +67,7 @@ Storage and adapter measurements alone do not qualify that endpoint.
   top-level and escaped-pin checks plus reported endpoint validation retain
   ambiguity rejection. A repeated escaped-name regression bounds SQL query
   count and compares emitted bytes against the reference writer.
-- `PYTHONPATH=src python scripts/validation/qualify_handoffs.py` measures `repack`, `scan`,
+- `PYTHONPATH=src/python python scripts/validation/qualify_handoffs.py` measures `repack`, `scan`,
   `export` and actual-engine `timing` in separate processes. Explicit repack
   supports either storage version, with the old writer's engine audits removed.
   It records bytes, elapsed/CPU time, separate parent/child peak RSS,

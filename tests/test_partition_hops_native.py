@@ -5,13 +5,13 @@ from pathlib import Path
 from unittest.mock import patch
 import pytest
 
-from emuflow.errors import ValidationError
+from emuflow.common.errors import ValidationError
 from tests.native_partition_facts import (build_partition_assignment, validate_partition_artifacts_online)
 from tests.native_partition_kernel_driver import run_hops as run
 from tests.native_partition_kernel_driver import initialize
-from emuflow.partition_topology import _shortest_hop_distances
-from emuflow.routing import load_route_constraints, normalize_route_constraints
-from emuflow.store_publication import bind_store_source
+from emuflow.partition.partition_topology import _shortest_hop_distances
+from emuflow.routing.routing import load_route_constraints, normalize_route_constraints
+from emuflow.storage.store_publication import bind_store_source
 from tests.partition_hop_fixture import case as build_case, audit, line_platform, weights, weighted_objective
 
 
@@ -121,7 +121,7 @@ def test_native_owner_replay_is_deterministic_and_rejects_changed_weights(case, 
 
 
 def test_reordered_board_coordinates_preserve_independent_hop_legality(case):
-    from emuflow.platform import Platform
+    from emuflow.platform.platform import Platform
     f = case
     value = f.platform.to_dict()
     value['fpgas'].reverse()
@@ -155,7 +155,7 @@ def test_inactive_devices_remain_legal_topology_relays(case, tmp_path):
 
 
 def test_board_distances_preserve_simplex_direction_and_unavailable_links():
-    from emuflow.platform import Platform
+    from emuflow.platform.platform import Platform
     value = line_platform().to_dict()
     for link in value['links']:
         link['direction'] = 'unidirectional'
@@ -177,7 +177,7 @@ def test_audit_request_rejects_malformed_board_or_fixed_identity(case, tmp_path,
     import subprocess
     import zlib
     import tests.native_partition_kernel_driver as host
-    from emuflow.native_tools import resolve_native_executable
+    from emuflow.common.native_tools import resolve_native_executable
     f = case
     ir, constraints, clusters, assignment, route_path = f.ir, f.constraints, f.clusters, f.assignment, f.route_path
     route_path.write_text(json.dumps({'schema':'emuflow.system-route-constraints/v1', 'max_route_hops':3}))
@@ -226,7 +226,7 @@ def test_changed_original_source_generation_is_rejected(case):
 
 def test_retired_numeric_hop_cli_rejects_before_overwriting_results(case, tmp_path):
     import subprocess
-    from emuflow.native_tools import resolve_native_executable
+    from emuflow.common.native_tools import resolve_native_executable
     output = tmp_path/'prior'
     output.write_bytes(b'prior generation')
     result = subprocess.run([resolve_native_executable('emuflow-native'), 'phase3',
@@ -236,7 +236,7 @@ def test_retired_numeric_hop_cli_rejects_before_overwriting_results(case, tmp_pa
 
 
 def test_complete_stage_still_enforces_hop_contract(case, tmp_path):
-    from emuflow.phase3_native import run as run_phase3
+    from emuflow.partition.phase3_native import run as run_phase3
     f = case
     board = tmp_path/'board.json'
     board.write_text(json.dumps(f.platform.to_dict()))

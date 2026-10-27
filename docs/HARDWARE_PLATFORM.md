@@ -269,7 +269,7 @@ list all four package pins of every fixed differential connection. Regenerate
 JSON/CSV tables without compiling a design:
 
 ```sh
-python -m emuflow.virtual_board --out build/virtual-board
+python -m emuflow.transport.virtual_board --out build/virtual-board
 # Optional: --platform platforms/virtual/rapidwright_xcvu19p_2fpga_p2p.json
 ```
 

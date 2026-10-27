@@ -1,7 +1,7 @@
 import io
 import unittest
 
-from emuflow.streaming_json import StreamingJSONObjectReader
+from emuflow.common.streaming_json import StreamingJSONObjectReader
 
 
 class StreamingJSONTest(unittest.TestCase):
