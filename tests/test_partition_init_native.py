@@ -67,7 +67,7 @@ def call(args,**kwargs):
 
 @pytest.mark.parametrize('parts', [(0, 1), (1, 0), (0,)])
 def test_imported_initial_owner_passes_independent_coverage_resources_and_cut_score(source, tmp_path, parts):
-    from emuflow.partition import validate_cluster_assignment_balance
+    from tests.partition_balance_fixture import validate_cluster_assignment_balance
     args = prepare(source); ir, platform, constraints, clusters = args
     imported = solution(tmp_path, len(clusters['clusters']), parts)
     reference = facts(ir, platform, clusters, constraints)
@@ -205,7 +205,7 @@ def test_borrowed_initializer_rejects_replaced_python_part_columns(pressure_inpu
 
 
 def test_native_initializer_runs_through_patron_without_host_ownership_rewrite(pressure_inputs,tmp_path):
-    from emuflow.partition import (_PackedClusterAssignment)
+    from tests.partition_views import ClusterOwners as _PackedClusterAssignment
     from tests.native_partition_facts import (build_partition_assignment)
     from tests.patron_kernel_fixture import pressure_kernel_inputs, write_pressure_requests, run_pressure_kernel
     from tests.test_phase3_pressure_native import run

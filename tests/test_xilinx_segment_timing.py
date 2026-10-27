@@ -17,10 +17,8 @@ from emuflow.local_path_timing import (
     LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION,
     local_path_timing_header,
 )
-from emuflow.local_path_timing_storage import (
-    read_local_path_timing_storage,
-    write_local_path_timing_storage,
-)
+from emuflow.local_path_timing_storage import (read_local_path_timing_storage)
+from tests.timing_facts import local_timing_facts
 from emuflow.xilinx_timing import (
     XILINX_ROUTED_TIMING_PAYLOAD_FORMAT,
     XILINX_ROUTED_TIMING_STREAM_SCHEMA,
@@ -186,7 +184,16 @@ def test_boundary_timing_covers_rx_and_tx_with_routed_delays():
         timing_path = root / "timing.json"
         timing_path.write_text(json.dumps(timing), encoding="utf-8")
         identity_path = root / "identity.json"
-        identity_path.write_text(json.dumps(identity), encoding="utf-8")
+        from emuflow.boundary_identity_storage import write_boundary_identity_storage
+        from tests.test_boundary_identity_storage import _record
+        records=[]
+        for i, fact in enumerate(identity['endpoints']):
+            base=_record(fact['id'],fact['kind'],i)
+            base.update(fact)
+            base['merged_ir']={**_record(fact['id'],fact['kind'],i)['merged_ir'],**fact['merged_ir']}
+            records.append(base)
+        with write_boundary_identity_storage(identity_path,
+                {k:v for k,v in identity.items() if k!='endpoints'}, records):pass
         output = root / "boundary.json"
         result = build_xilinx_boundary_timing(
             identity_path, mapped_path, timing_path, output
@@ -331,7 +338,7 @@ def test_local_path_timing_is_source_bound_and_uses_routed_graph():
         timing_path = root / "timing.json"
         timing_path.write_text(json.dumps(timing), encoding="utf-8")
         identity_path = root / "identity.json"
-        with write_local_path_timing_storage(
+        with local_timing_facts(
             identity_path,
             local_path_timing_header(
                 identity,

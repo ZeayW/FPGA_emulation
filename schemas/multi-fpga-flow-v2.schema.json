@@ -3,40 +3,83 @@
   "$id": "https://emuflow.dev/schema/multi-fpga-flow-v2.schema.json",
   "title": "EmuFlow provider-neutral multi-FPGA flow report v2",
   "type": "object",
-  "required": ["schema", "status", "provider", "architecture_policy", "runtime", "stages", "artifacts", "summary"],
+  "required": [
+    "schema",
+    "status",
+    "provider",
+    "architecture_policy",
+    "runtime",
+    "stages",
+    "artifacts",
+    "summary"
+  ],
   "properties": {
-    "schema": {"const": "emuflow.multi-fpga-flow/v2"},
-    "status": {"const": "pass"},
-    "provider": {"type": "string", "minLength": 1},
-    "architecture_policy": {"const": "provider-neutral"},
-    "runtime": {"type": "object"},
-    "physical": {"type": "object"},
+    "schema": {
+      "const": "emuflow.multi-fpga-flow/v2"
+    },
+    "status": {
+      "const": "pass"
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1
+    },
+    "architecture_policy": {
+      "const": "provider-neutral"
+    },
+    "runtime": {
+      "type": "object"
+    },
+    "physical": {
+      "type": "object"
+    },
     "board_link_timing": {
       "type": "object",
       "properties": {
-        "status": {"const": "pass"},
-        "validation": {"type": "object"},
-        "routing_projection": {"type": "object"},
-        "applied_to": {"type": "array", "items": {"type": "string"}}
+        "status": {
+          "const": "pass"
+        },
+        "validation": {
+          "type": "object"
+        },
+        "routing_projection": {
+          "type": "object"
+        },
+        "applied_to": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       },
-      "required": ["status", "validation", "routing_projection", "applied_to"]
-    },
-    "hardware_bsp": {
-      "type": "object",
-      "properties": {
-        "schema": {"const": "emuflow.multi-fpga-bsp-flow/v1"},
-        "status": {"const": "pass"}
-      },
-      "required": ["schema", "status"]
+      "required": [
+        "status",
+        "validation",
+        "routing_projection",
+        "applied_to"
+      ]
     },
     "stages": {
       "type": "object",
-      "required": ["frontend", "partition", "system_route", "tdm", "split"]
+      "required": [
+        "frontend",
+        "partition",
+        "system_route",
+        "tdm",
+        "split"
+      ]
     },
-    "artifacts": {"type": "object"},
+    "artifacts": {
+      "type": "object"
+    },
     "summary": {
       "type": "object",
-      "required": ["status", "design", "platform", "physical_status", "hardware_bsp_status"]
+      "required": [
+        "status",
+        "design",
+        "platform",
+        "physical_status"
+      ]
     }
   },
   "additionalProperties": true

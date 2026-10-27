@@ -16,7 +16,6 @@ from emuflow.partition_ir import load_partition_ir
 from tests.native_partition_kernel_driver import initialize
 from tests.phase3_store_fixture import write_assignment_index_fixture
 from tests.native_assignment_publication_fixture import publish_native_assignment_descriptor
-from emuflow.phase3_exact_records import StaticExactRecordSequence
 from emuflow.platform import Platform
 from tests.native_build import emuflow_native
 from tests.test_combinational_cut import _chain_ir,_reconvergent_ir,_wide_fanout_ir,PLATFORM_PATH
@@ -75,12 +74,11 @@ def build(selected):
 
 
 def test_complete_selected_semantic_generation_and_publication_match_explicit_projection(selected,tmp_path):
-    from emuflow.partition import _CompactInstanceAssignment
+    from tests.partition_views import InstanceOwners as _CompactInstanceAssignment
     import emuflow.combinational_cut as retired_semantics
     assert not hasattr(retired_semantics,'build_static_exact_semantic_contract')
     with (patch('tests.native_partition_facts.compute_cut_nets',side_effect=AssertionError('host endpoint projection')),
-          patch.object(_CompactInstanceAssignment,'canonical_sha256',side_effect=AssertionError('host instance hash')),
-          patch.object(StaticExactRecordSequence,'__iter__',side_effect=AssertionError('host semantic population'))):
+          patch.object(_CompactInstanceAssignment,'canonical_sha256',side_effect=AssertionError('host instance hash'))):
         actual=build(selected)
     ir,_,_,_,_,expected=selected
     assert actual['metrics']==expected['metrics']
@@ -113,7 +111,7 @@ def test_complete_selected_semantic_generation_and_publication_match_explicit_pr
         'artifact':'assignment.sqlite','schema':'emuflow.phase3-cut-records/v1',
         'records':summary['cut_records'],'sha256':summary['cut_records_sha256']})
     reference=old.with_name('assignment.json');write_json(reference,expected_selector,compact=True)
-    with (patch('emuflow.partition._CompactInstanceAssignment.__iter__',side_effect=AssertionError('host instance population'))):
+    with (patch('tests.partition_views.InstanceOwners.__iter__',side_effect=AssertionError('host instance population'))):
         metrics=publish_native_assignment_descriptor(new.with_name('assignment.json'),ir,actual,selected[2],summary)
     assert metrics['request_bytes']<32768
     assert reference.read_bytes()==new.with_name('assignment.json').read_bytes()
@@ -134,12 +132,13 @@ def test_invalid_final_descriptor_preserves_previous_selector(selected,tmp_path,
     assert selector.read_bytes()==b'previous-selector'
 
 
-def test_all_mappings_close_before_shared_directory_retirement(selected):
+def test_native_fact_leases_retire_scratch_and_reject_later_publication(selected):
     actual=build(selected);nodes=actual['semantic_contract']['cut_nodes'];captures=actual['semantic_contract']['capture_requirements']
     counts=actual['cut_nets']._cuts._sink_endpoints;root=counts.native_source.path.parent.parent
     assert root.exists();nodes.close();assert root.exists();captures.close();assert root.exists()
     counts.owner.close();assert not root.exists()
-    with pytest.raises((ValidationError,ValueError)):list(nodes)
+    from tests.native_assignment_publication_fixture import native_assignment_cut_source
+    with pytest.raises((ValidationError, OSError)): native_assignment_cut_source(actual)
 
 
 def test_changed_count_generation_preserves_the_previous_index_and_binary(selected,tmp_path):
@@ -153,7 +152,7 @@ def test_changed_count_generation_preserves_the_previous_index_and_binary(select
 
 
 def test_depth_policy_is_enforced_by_the_native_final_owner(selected):
-    from emuflow.partition import _CompactInstanceAssignment
+    from tests.partition_views import InstanceOwners as _CompactInstanceAssignment
     from tests.native_partition_facts import finalize_selected_semantics
     ir,platform,clusters,_,owners,expected=selected
     if expected['semantic_contract']['metrics']['maximum_combinational_dependency_depth']<=1:return

@@ -1,3 +1,4 @@
+from tests.physical_handoff_facts import physical_handoff_facts
 """Independent complete TSV parity and rejection tests for shared RWRoute export."""
 import copy
 import json
@@ -16,7 +17,7 @@ from unittest import mock
 from emuflow import rwroute_native
 from emuflow.errors import ValidationError
 from emuflow.xilinx_netlist import open_xilinx_mapped_index
-from emuflow.xilinx_physical_handoff import open_xilinx_physical_handoff, write_xilinx_physical_handoff
+from emuflow.xilinx_physical_handoff import open_xilinx_physical_handoff
 from emuflow.xilinx_rwroute import export_rwroute_input
 from tests.rwroute_reference import export_rwroute_reference
 from tests.native_build import emuflow_native
@@ -74,7 +75,7 @@ def fixture(root):
             'n': {'port': f'io{i}_n', 'package_pin': f'N{i}', 'site': f'IOB_X0Y{2*i+1}'}})
     mapped_path, handoff = root/'mapped ?#%中文.sqlite', root/'physical ?#%中文.sqlite'
     write_mapped(mapped_path, mapped)
-    write_xilinx_physical_handoff(handoff, packed, placement)
+    physical_handoff_facts(handoff, packed, placement)
     return mapped, packed, placement, contract, mapped_path, handoff
 
 
@@ -371,7 +372,7 @@ class NativeRwrouteTests(unittest.TestCase):
                     'assignments':[dict(assignment,placement_mode='fixed',site='SLICE_X99Y0')]})
                 if invalid:cells['dsp']['connections']['A'][0]=91
                 mp.unlink();handoff.unlink();write_mapped(mp,mapped)
-                write_xilinx_physical_handoff(handoff,packed,placement)
+                physical_handoff_facts(handoff,packed,placement)
                 def reference():
                     return export_rwroute_reference(root/'m.json',root/'p.json',root/'l.json',root/'reference.tsv',
                         mapped_value=mapped,packed_value=packed,placement_value=placement,
@@ -430,7 +431,7 @@ class NativeRwrouteTests(unittest.TestCase):
                         'x':0,'y':i,'fixed':False,'physical_region':None,
                         'assignments':[dict(assignment,placement_mode='fixed',site=site)]})
                 mp.unlink();handoff.unlink();write_mapped(mp,mapped)
-                write_xilinx_physical_handoff(handoff,packed,placement)
+                physical_handoff_facts(handoff,packed,placement)
                 expected=export_rwroute_reference(root/'m.json',root/'p.json',root/'l.json',root/'reference.tsv',
                     mapped_value=mapped,packed_value=packed,placement_value=placement,source_sha256=DIGESTS,
                     resource_limits={'lut':100,'ff':200,'dsp48':3})

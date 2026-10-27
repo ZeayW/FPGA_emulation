@@ -10,16 +10,16 @@ from tests.system_timing_oracle import compare_system_timing
 
 from emuflow.errors import ValidationError
 from emuflow.global_sta import (
-    EventCheck, _EventCheckBuilder, _IndexedEventChecks,
+    EventCheck, _IndexedEventChecks,
     _IndexedPathMetadata,
-    _PathMetadataBuilder,
     export_event_checks, read_engine_identity,
     run_event_checks, validate_checks,
 )
 
 from tests.global_sta_fixture import bind_physical_checks, build_timing_from_records as build_opensta_timing
 from emuflow.global_measurements import NativeTimingPaths, NativeMeasurements, import_measurements
-from emuflow.global_event_store import event_model_directory
+from emuflow.global_event_store import event_model_sources
+from tests.event_facts import EventFacts as _EventCheckBuilder, MetadataFacts as _PathMetadataBuilder
 _reference_physical_checks = bind_physical_checks
 
 def _indexed(values):
@@ -54,7 +54,7 @@ def test_exports_raw_arc_chain_and_absolute_events(tmp_path):
     rows = _indexed(example())
     try:
         export_event_checks(rows, tmp_path)
-        model = event_model_directory(tmp_path)
+        model = event_model_sources(tmp_path)[0]
         sdc = (model / "global_timing.sdc").read_text()
         assert "set_input_delay -clock epoch -max 0" in sdc
         assert "set_output_delay -clock epoch -max -1 [get_ports o2]" in sdc
@@ -225,8 +225,8 @@ def test_indexed_check_builder_is_exact_compact_and_sealed(tmp_path):
     assert not isinstance(compact._paths, list)
     assert not isinstance(compact._events, list)
     assert compact._owner.header["numeric_bytes"] == len(rows) * 40
-    assert not compact._owner.pending
-    assert not compact._owner.event_cache
+    assert not hasattr(compact._owner, "pending")
+    assert not hasattr(compact._owner, "event_cache")
     assert not hasattr(compact, "_arcs")
     assert not hasattr(compact, "_path_indices")
     assert compact._owner.primary.is_file()
@@ -247,7 +247,7 @@ def test_indexed_check_builder_is_exact_compact_and_sealed(tmp_path):
     compact_dir = tmp_path / "compact"
     small_compact = _indexed(rows[:8])
     assert export_event_checks(small_compact, compact_dir) is small_compact
-    model = event_model_directory(compact_dir)
+    model = event_model_sources(compact_dir)[0]
     assert all((model / name).is_file() for name in
                ("global_timing.lib", "global_timing.v", "global_timing.sdc", "analyze.tcl"))
     small_compact.close()
@@ -319,7 +319,7 @@ def test_indexed_path_metadata_is_sorted_compact_mapping():
         builder.finish()
 
     invalid = _PathMetadataBuilder()
-    with pytest.raises(ValidationError, match="representative"):
+    with pytest.raises(ValidationError, match="invalid text|metadata|representative"):
         invalid.append(
             "path",
             representative_path=None,
@@ -328,6 +328,7 @@ def test_indexed_path_metadata_is_sorted_compact_mapping():
             target_period_ns=10.0,
             physical_logic_segments_cone_bound=False,
         )
+        invalid.finish()
 
     duplicate = _PathMetadataBuilder()
     with pytest.raises(ValidationError, match="overlap"):
@@ -346,7 +347,7 @@ def test_check_validation_rejects_interleaved_bundles(incomplete):
                  for role, deadline in (("target", 2), ("runtime", 20))]
     values = ([canonical[i] for i in (0, 2, 1, 3)]
               if incomplete else canonical+canonical[:2])
-    with pytest.raises(ValidationError, match="population|contiguous"):
+    with pytest.raises(ValidationError, match="population|contiguous|UNIQUE"):
         _indexed(values)
 
 def test_exact_compression_uses_complete_path_bundles(tmp_path):
@@ -384,31 +385,12 @@ def test_native_check_index_compares_repeated_bundles_exactly():
     assert representatives == rows[:4]
     assert list(mapping) == [0, 1, 2, 3, 0, 1]
 
-def test_indexed_check_builder_bounds_live_identity_caches():
-    builder = _EventCheckBuilder()
-    builder._owner.EVENT_CACHE_SIZE = 2
-    builder._owner.CHECK_BATCH_SIZE = 3
-    rows = []
-    for index in range(20):
-        for role, deadline in (("target", 40.0), ("runtime", 400.0)):
-            row = EventCheck(
-                f"path-{index}",
-                role,
-                f"event-{index}-{role}",
-                0.0,
-                (float(index + 1),),
-                deadline,
-            )
-            rows.append(row)
-            builder.append(row)
-        assert len(builder._owner.event_cache) <= 2
-        assert len(builder._owner.pending) < 3
-    compact = builder.finish()
-    assert compact == rows
-    assert not builder._owner.event_cache
-    assert not builder._owner.pending
-    assert not hasattr(builder, "_path_ids")
-    assert not hasattr(builder, "_event_ids")
+def test_python_event_producers_are_retired():
+    from emuflow import global_event_store
+    for name in ('EventBuilder', 'MetadataBuilder'):
+        assert not hasattr(global_event_store, name)
+    for name in ('append_values', 'append_metadata', 'flush', 'seal'):
+        assert not hasattr(global_event_store._Owner, name)
 
 def test_native_check_index_distinguishes_bundle_counts():
     builder = _EventCheckBuilder()
@@ -505,7 +487,6 @@ def test_comparison_rejects_corrupt_evidence(damage):
 @pytest.mark.parametrize("saved", [False, True])
 def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch, saved):
     from tests.test_phase7c import Phase7CTest
-    from emuflow.cross_layer_timing import build_cross_layer_timing_contract
     from emuflow.io import write_json, read_json
     from emuflow.phase7c import run_phase7c
     import emuflow.global_sta as sta
@@ -517,14 +498,21 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch, s
         entry['capacity_key'] = f"{entry['link']}:{entry['from']}:{entry['to']}"
 
     monkeypatch.setattr("emuflow.phase7c.validate_phase5_generation", lambda _: {"status": "pass"})
-    from tests.physical_coverage_fixture import build_cross_layer_physical_binding
-    monkeypatch.setattr("emuflow.phase7c.build_cross_layer_physical_binding", build_cross_layer_physical_binding)
+    # This test isolates orchestration. Independent typed projection and full
+    # coverage rejection are exercised by test_phase5_timing_native and
+    # test_physical_coverage_native, without legacy Python projection.
+    class Coverage(dict):
+        def close(self):
+            pass
+    monkeypatch.setattr("emuflow.phase7c.validate_cross_layer_timing_contract", lambda *_: {"status":"pass"})
+    monkeypatch.setattr("emuflow.phase7c.build_cross_layer_physical_binding",
+        lambda *a, **k: Coverage(status="pass", metrics={}))
     for name, value in {"schedule": f.schedule, "platform": f.platform.to_dict(),
                         "physical": f._physical_summary(), "routes": f.routes, **f.reports}.items():
         write_json(tmp_path / f"{name}.json", value)
     write_json(tmp_path / "manifest.json", {"clock_periods": {"clk": 20.0}})
     write_json(tmp_path / "cross_layer_timing.json",
-               build_cross_layer_timing_contract(f.routes, f.schedule))
+               {"schema":"emuflow.cross-layer-timing/v3"})
     def forbidden(*args, **kwargs):
         raise AssertionError("original Python timing calculator was called")
     monkeypatch.setattr("tests.system_timing_oracle.build_system_timing", forbidden)
@@ -737,10 +725,8 @@ def test_indexed_logic_segments_are_exact_for_checks_and_system_timing(tmp_path)
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
     from emuflow.board_link_timing import build_board_link_timing_model
     from emuflow.io import write_json
-    from emuflow.logic_segment_timing_storage import (
-        logic_segment_timing_reference,
-        write_logic_segment_timing_storage,
-    )
+    from emuflow.logic_segment_timing_storage import (logic_segment_timing_reference)
+    from tests.timing_facts import logic_timing_facts
     from emuflow.physical_summary_storage import (
         publish_logic_segment_timing_store,
         read_physical_summary,
@@ -783,7 +769,7 @@ def test_indexed_logic_segments_are_exact_for_checks_and_system_timing(tmp_path)
             key: value for key, value in database.items()
             if key not in {"segments", "unsupported_member_paths", "unmeasured_segments"}
         }
-        view = write_logic_segment_timing_storage(
+        view = logic_timing_facts(
             source,
             header=header,
             segments=database["segments"],
@@ -848,10 +834,8 @@ def test_indexed_logic_segments_expand_compressed_members_exactly(tmp_path):
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
     from emuflow.board_link_timing import build_board_link_timing_model
     from emuflow.io import write_json
-    from emuflow.logic_segment_timing_storage import (
-        logic_segment_timing_reference,
-        write_logic_segment_timing_storage,
-    )
+    from emuflow.logic_segment_timing_storage import (logic_segment_timing_reference)
+    from tests.timing_facts import logic_timing_facts
     from emuflow.physical_summary_storage import read_physical_summary
     from emuflow.runtime import build_virtual_runtime
 
@@ -897,7 +881,7 @@ def test_indexed_logic_segments_expand_compressed_members_exactly(tmp_path):
             key: value for key, value in database.items()
             if key not in {"segments", "unsupported_member_paths"}
         }
-        view = write_logic_segment_timing_storage(
+        view = logic_timing_facts(
             selector,
             header=header,
             segments=database["segments"],

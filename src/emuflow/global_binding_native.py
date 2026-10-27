@@ -98,7 +98,7 @@ def bind_native_physical_checks(runtime, routes, schedule, physical, platform, *
     encoded = json.dumps(config, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
     if len(encoded.encode()) > 4 * 1024 * 1024:
         raise ValidationError("native physical binding configuration exceeds bound")
-    owner = _Owner(3, native=True)
+    owner = _Owner()
     try:
         board, request = owner.root / "board.bin", owner.root / "request.bin"
         _write_native_schedule_board_request(

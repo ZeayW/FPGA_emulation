@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.contest_iccad2019 import evaluate_iccad2019_solution, import_iccad2019_instance, materialize_iccad2019_rtl_boarddb
+from emuflow_tools.contest_iccad2019 import evaluate_iccad2019_solution, import_iccad2019_instance, materialize_iccad2019_rtl_boarddb
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.phase4 import run_phase4

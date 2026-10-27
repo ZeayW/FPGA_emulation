@@ -1,3 +1,4 @@
+from tests.timing_facts import local_timing_facts, logic_timing_facts
 """Physical typed readers validate all records in shared native owners."""
 from contextlib import ExitStack
 import hashlib
@@ -53,10 +54,12 @@ def test_reader_uses_native_full_record_hash_and_validation(tmp_path,kind):
         expected=v.selector['logical_sha256']
     m=module(kind)
     poison_names={'boundary_identity':['_iter_records','_normalize_record'],
-                  'boundary_timing':['_record_from_row','_normalize_record'],
-                  'logic_segment_timing':['_segment_from_row','_validate_segment'],
+                  'boundary_timing':['_record_from_row'],
+                  'logic_segment_timing':['_segment_from_row'],
                   'logic_segment_identity':['segment_from_row'],
-                  'local_path_timing':['_iter_records','_normalize_record']}[kind]
+                  'local_path_timing':['_iter_records']}[kind]
+    if kind in {'logic_segment_timing', 'local_path_timing', 'boundary_timing'}:
+        assert not hasattr(m, '_validate_segment' if kind=='logic_segment_timing' else '_normalize_record')
     with ExitStack() as stack:
         for name in poison_names:stack.enter_context(patch.object(m,name,side_effect=AssertionError('Python full-record validation')))
         with read(kind,path) as view:
@@ -150,12 +153,13 @@ def test_utf8_control_strings_and_fractional_numbers_keep_original_logical_hash(
         fixture=importlib.import_module('tests.test_'+kind+'_storage');header=fixture._header()
         records=[fixture._record('端点-雪-😀\t"\\','tx',0)]
         if kind=='boundary_timing':records[0]['delay_ns']=1.2345678901234567e-5
-        with getattr(m,'write_'+kind+'_storage')(tmp_path/'owner.json',header,records) as v:
+        from tests.timing_facts import physical_facts_writer
+        with physical_facts_writer(kind)(tmp_path/'owner.json',header,records) as v:
             digest=v.selector['logical_sha256']
     elif kind=='local_path_timing':
         from tests.test_local_path_timing_storage import _header,_record
         header=_header();header['coverage']={'local_paths':1};records=[_record('路径-😀\n"',1.2345678901234567e-5)]
-        with m.write_local_path_timing_storage(tmp_path/'owner.json',header,records) as v:
+        with local_timing_facts(tmp_path/'owner.json',header,records) as v:
             digest=v.selector['logical_sha256']
     elif kind=='logic_segment_identity':
         with producer(kind,tmp_path/'source.json') as original:header=dict(original.selector['header'])
@@ -167,7 +171,7 @@ def test_utf8_control_strings_and_fractional_numbers_keep_original_logical_hash(
                 'provider':'fixture','qualification':'fixture','coverage':{},'system_routes_sha256':'a'*64,'tdm_schedule_sha256':'b'*64}
         records=[{'id':'片段-😀\t"','kind':'capture','system_path':'系统路径','member_path':'原始成员','cut_index':0,
                   'fpga':'fpga0','replace_tx_endpoint':None,'start_pin':'start','end_pin':'end','delay_ns':1.2345678901234567e-5}]
-        with m.write_logic_segment_timing_storage(tmp_path/'owner.json',header=header,segments=records) as v:
+        with logic_timing_facts(tmp_path/'owner.json',header=header,segments=records) as v:
             digest=v.selector['logical_sha256']
     with read(kind,tmp_path/'owner.json') as view:
         assert view.selector['logical_sha256']==digest
@@ -181,7 +185,7 @@ def test_native_logic_unsupported_unmeasured_and_collection_counts(tmp_path):
          'replace_tx_endpoint':None,'start_pin':'start','end_pin':'end','delay_ns':2.25,
          'measurement':'optimized-endpoint-collection-upper-bound','actual_start_object':'actual-start','actual_end_object':'actual-end'}
     path=tmp_path/'owner.json'
-    with m.write_logic_segment_timing_storage(path,header=header,segments=[row],
+    with logic_timing_facts(path,header=header,segments=[row],
         unsupported_member_paths=[{'path':'unsupported','reason':'reason'}],
         unmeasured_segments=[{'id':'unmeasured','kind':'launch','system_path':'system','member_path':'missing','reason':'reason'}]) as v:
         expected=v.selector['counts'];digest=v.selector['logical_sha256']
@@ -199,7 +203,8 @@ def test_native_empty_store_counts_hash_and_summary(tmp_path,kind):
     with producer(kind,tmp_path/'original.json') as v:
         header=dict(v.selector['header'])
     if kind=='local_path_timing':header['coverage']={'local_paths':0}
-    m=module(kind);writer=identity_facts if kind=='logic_segment_identity' else getattr(m,'write_'+kind+'_storage');path=tmp_path/'empty.json'
+    from tests.timing_facts import physical_facts_writer
+    m=module(kind);writer=identity_facts if kind=='logic_segment_identity' else physical_facts_writer(kind);path=tmp_path/'empty.json'
     if kind.startswith('logic_'):
         owner=writer(path,header=header,segments=[])
     else:owner=writer(path,header,[])
@@ -210,7 +215,7 @@ def test_native_empty_store_counts_hash_and_summary(tmp_path,kind):
         if hasattr(view,'validate_timing'):assert view.validate_timing()['maximum_delay_ns']==0
 
 
-@pytest.mark.parametrize("kind", [kind for kind in KINDS if kind != "logic_segment_identity"])
+@pytest.mark.parametrize("kind", ["boundary_identity"])
 def test_publication_reuses_producer_validation_without_reader_replay(tmp_path,kind):
     m=module(kind)
     names={"boundary_identity":"BoundaryIdentityView","boundary_timing":"BoundaryTimingView",

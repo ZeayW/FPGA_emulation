@@ -6,14 +6,14 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
-from emuflow.ppro_blackbox_constraints import (
+from emuflow_tools.ppro_blackbox_constraints import (
     parse_logical_targets,
     render_ppro_prepartition_constraints,
     render_ppro_timing_sdc,
 )
-from emuflow.ppro_blackbox_communication import generate_communication_probe_bundle
-from emuflow.ppro_blackbox_microbench import generate_capacity_probe_bundle
-from emuflow.ppro_blackbox_topology import generate_topology_probe_bundle
+from emuflow_tools.ppro_blackbox_communication import generate_communication_probe_bundle
+from emuflow_tools.ppro_blackbox_microbench import generate_capacity_probe_bundle
+from emuflow_tools.ppro_blackbox_topology import generate_topology_probe_bundle
 
 
 class PProBlackboxConstraintsTest(unittest.TestCase):

@@ -2,9 +2,11 @@ import unittest
 from types import SimpleNamespace
 
 from emuflow.errors import ValidationError
-from emuflow.partition import summarize_balance_observation, validate_cluster_assignment_balance
+from emuflow.partition import summarize_balance_observation
+from tests.partition_balance_fixture import validate_cluster_assignment_balance
 from emuflow.platform import FpgaNode
-from emuflow.partition_limits import strict_balance_limits, validate_indivisible_limits
+from emuflow.partition_limits import strict_balance_limits
+from tests.partition_indivisible_oracle import validate_indivisible_limits
 from emuflow.resource_budget import validate_device_resource_usage, validate_materialized_resource_counts
 
 

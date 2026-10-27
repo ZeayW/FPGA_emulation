@@ -1,24 +1,25 @@
 """Virtual wiring is fixed hardware; TDM and direction only select its use."""
 import copy
 import csv
+import hashlib
+import json
 import re
 from collections import Counter, defaultdict
 
 import pytest
 
 from emuflow import virtual_board
+from tests.virtual_binding_fixture import native_binding, binding_text
 from emuflow.default_platform import materialize_research_platform, research_platform_path
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.platform import Platform
 from emuflow.virtual_board import (
     INVENTORY_PATH,
-    build_virtual_binding,
     build_virtual_board,
     build_virtual_io_physical_contract,
     validate_virtual_binding,
     validate_virtual_board,
-    virtual_binding_to_xdc,
     write_wiring_csv,
 )
 
@@ -45,8 +46,7 @@ def schedule_and_ports(platform, uses, *, forward_banks=18, physical_wires=None)
         ],
         "entries": [],
     }
-    artifacts = {"lane_map": {"entries": []},
-                 "transports": {fpga.id: {"endpoints": []} for fpga in platform.fpgas}}
+    artifacts = {"lane_map": {"entries": []}}
     for index, (source, sink, logical_wire, slot) in enumerate(uses):
         entry_id = f"entry{index}"
         wire = logical_wire if physical_wires is None else physical_wires[index]
@@ -56,14 +56,6 @@ def schedule_and_ports(platform, uses, *, forward_banks=18, physical_wires=None)
         schedule["entries"].append(entry)
         mapping = {"schedule_entry": entry_id, "link": link.id, "from": source,
                    "to": sink, "lane": wire, "slot": slot}
-        for kind, fpga, peer in [("tx", source, sink), ("rx", sink, source)]:
-            endpoint_id = f"{entry_id}_{kind}"
-            mapping[f"{kind}_endpoint"] = endpoint_id
-            artifacts["transports"][fpga]["endpoints"].append({
-                "id": endpoint_id, "kind": kind, "fpga": fpga, "peer": peer,
-                "link": link.id, "lane": wire, "slot": slot,
-                "schedule_entry": entry_id,
-            })
         artifacts["lane_map"]["entries"].append(mapping)
     return schedule, artifacts
 
@@ -138,8 +130,8 @@ def test_reverse_direction_reuses_exact_same_physical_pair(platform):
     board = build_virtual_board(platform)
     forward, fa = schedule_and_ports(platform, [("fpga0", "fpga1", 7, 2)])
     reverse, ra = schedule_and_ports(platform, [("fpga1", "fpga0", 7, 2)], forward_banks=0)
-    f = build_virtual_binding(platform, board, forward, fa)["entries"][0]
-    r = build_virtual_binding(platform, board, reverse, ra)["entries"][0]
+    f = native_binding(platform, board, forward, fa)["entries"][0]
+    r = native_binding(platform, board, reverse, ra)["entries"][0]
     assert f["wire_id"] == r["wire_id"]
     for before, after in [(f["source"], r["sink"]), (f["sink"], r["source"])]:
         assert before["fpga"] == after["fpga"]
@@ -153,14 +145,14 @@ def test_reverse_direction_reuses_exact_same_physical_pair(platform):
 def test_tdm_nets_share_data_ports_and_emit_unique_lvds_constraints(platform):
     board = build_virtual_board(platform)
     schedule, artifacts = schedule_and_ports(platform, [("fpga0", "fpga1", 7, 2), ("fpga0", "fpga1", 7, 3)])
-    binding = build_virtual_binding(platform, board, schedule, artifacts)
+    binding = native_binding(platform, board, schedule, artifacts)
     assert binding["metrics"]["used_differential_pairs"] == 1
     assert binding["metrics"]["bound_data_ports"] == 4
     assert binding["entries"][0]["source"] == binding["entries"][1]["source"]
     assert binding["entries"][0]["sink"] == binding["entries"][1]["sink"]
     assert validate_virtual_binding(platform, board, schedule, artifacts, binding)["status"] == "pass"
     for fpga, role in [("fpga0", "source"), ("fpga1", "sink")]:
-        xdc = virtual_binding_to_xdc(binding, fpga)
+        xdc = binding_text(binding, fpga)
         assert xdc.count("set_property PACKAGE_PIN ") == 2
         assert xdc.count("set_property IOSTANDARD LVDS ") == 2
         for polarity in ("p", "n"):
@@ -171,20 +163,20 @@ def test_tdm_nets_share_data_ports_and_emit_unique_lvds_constraints(platform):
 def test_same_pair_same_slot_collision_is_rejected(platform):
     board = build_virtual_board(platform)
     schedule, artifacts = schedule_and_ports(platform, [("fpga0", "fpga1", 7, 2), ("fpga0", "fpga1", 7, 2)])
-    with pytest.raises(ValidationError, match="same slot"):
-        build_virtual_binding(platform, board, schedule, artifacts)
+    with pytest.raises(ValidationError, match="slot collision"):
+        native_binding(platform, board, schedule, artifacts)
 
 
 def test_physical_remap_preserves_bank_direction(platform):
     board = build_virtual_board(platform)
     uses = [("fpga0", "fpga1", 0, 2), ("fpga1", "fpga0", 140, 3)]
     schedule, artifacts = schedule_and_ports(platform, uses, forward_banks=7, physical_wires=[19, 159])
-    binding = build_virtual_binding(platform, board, schedule, artifacts)
+    binding = native_binding(platform, board, schedule, artifacts)
     assert [entry["wire"] for entry in binding["entries"]] == [19, 159]
     # Different wires and slots still cannot put opposite directions in one bank.
     schedule, bad = schedule_and_ports(platform, uses, forward_banks=7, physical_wires=[19, 18])
     with pytest.raises(ValidationError, match="allocated direction banks"):
-        build_virtual_binding(platform, board, schedule, bad)
+        native_binding(platform, board, schedule, bad)
 
 
 @pytest.mark.parametrize("mutation", ["missing", "pin", "polarity", "cable", "bank", "duplicate"])
@@ -211,12 +203,13 @@ def test_missing_or_modified_wiring_is_rejected(platform, mutation):
 def test_binding_replay_rejects_modified_assignments(platform, mutation):
     board = build_virtual_board(platform)
     schedule, artifacts = schedule_and_ports(platform, [("fpga0", "fpga1", 7, 2)])
-    binding = build_virtual_binding(platform, board, schedule, artifacts)
+    binding = native_binding(platform, board, schedule, artifacts)
     if mutation == "missing":
-        binding["entries"].clear()
+        binding._sections["entries"] = []
     elif mutation == "digest":
-        binding["board_sha256"] = "0" * 64
+        binding._header["board_sha256"] = "0" * 64
     else:
+        binding._sections["entries"] = list(binding["entries"])
         entry = binding["entries"][0]
         if mutation == "pin":
             entry["source"]["p"]["package_pin"] = "INVENTED"
@@ -233,22 +226,6 @@ def test_binding_replay_rejects_modified_assignments(platform, mutation):
         validate_virtual_binding(platform, board, schedule, artifacts, binding)
 
 
-@pytest.mark.parametrize("mutation", ["missing-port", "duplicate-port", "missing-endpoint", "wrong-peer", "wrong-slot"])
-def test_schedule_port_coverage_and_endpoint_identity_are_required(platform, mutation):
-    board = build_virtual_board(platform)
-    schedule, artifacts = schedule_and_ports(platform, [("fpga0", "fpga1", 7, 2)])
-    if mutation == "missing-port":
-        artifacts["lane_map"]["entries"].clear()
-    elif mutation == "duplicate-port":
-        artifacts["lane_map"]["entries"] *= 2
-    elif mutation == "missing-endpoint":
-        artifacts["transports"]["fpga0"]["endpoints"].clear()
-    elif mutation == "wrong-peer":
-        artifacts["transports"]["fpga0"]["endpoints"][0]["peer"] = "fpga0"
-    else:
-        artifacts["lane_map"]["entries"][0]["slot"] += 1
-    with pytest.raises(ValidationError):
-        build_virtual_binding(platform, board, schedule, artifacts)
 
 
 def test_variable_pair_width_materializes_without_hard_coded_twenty(tmp_path):
@@ -261,7 +238,7 @@ def test_variable_pair_width_materializes_without_hard_coded_twenty(tmp_path):
     assert all(a["data_pins_used"] == 32 for f in board["fpgas"] for a in f["bank_assignments"])
     assert all(a["differential_pairs_used"] == 16 for f in board["fpgas"] for a in f["bank_assignments"])
     schedule, artifacts = schedule_and_ports(platform, [("fpga0", "fpga1", 287, 2)])
-    assert build_virtual_binding(platform, board, schedule, artifacts)["entries"][0]["bank_group"] == 17
+    assert native_binding(platform, board, schedule, artifacts)["entries"][0]["bank_group"] == 17
 
 
 def test_pair_exhaustion_fails_without_single_ended_fallback(platform):
@@ -328,9 +305,9 @@ def test_wiring_csv_contains_both_polarities_of_every_connection(platform, tmp_p
 def test_lvds_adapter_deduplicates_tdm_ports_and_preserves_polarity(platform):
     board = build_virtual_board(platform)
     schedule, artifacts = schedule_and_ports(platform, [("fpga0", "fpga1", 7, 2), ("fpga0", "fpga1", 7, 3)])
-    binding = build_virtual_binding(platform, board, schedule, artifacts)
+    binding = native_binding(platform, board, schedule, artifacts)
     for fpga, role, primitive in [("fpga0", "source", "OBUFDS"), ("fpga1", "sink", "IBUFDS")]:
-        sv = virtual_board.virtual_binding_to_systemverilog(binding, fpga)
+        sv = binding_text(binding, fpga, systemverilog=True)
         assert f"module emuflow_virtual_io_{fpga}" in sv
         assert len(re.findall(rf"\b{primitive}\b", sv)) == 1
         if primitive == "IBUFDS":
@@ -348,12 +325,12 @@ def test_phase7_physical_contract_consumes_exact_xdc_and_adapter(platform, tmp_p
         platform,
         [("fpga0", "fpga1", 7, 2), ("fpga0", "fpga1", 7, 3)],
     )
-    binding = build_virtual_binding(platform, board, schedule, artifacts)
+    binding = native_binding(platform, board, schedule, artifacts)
     xdc = tmp_path / "virtual_data_pins.xdc"
     adapter = tmp_path / "virtual_differential_io.sv"
-    xdc.write_text(virtual_binding_to_xdc(binding, "fpga0"), encoding="utf-8")
+    xdc.write_text(binding_text(binding, "fpga0"), encoding="utf-8")
     adapter.write_text(
-        virtual_board.virtual_binding_to_systemverilog(binding, "fpga0"),
+        binding_text(binding, "fpga0", systemverilog=True),
         encoding="utf-8",
     )
     contract = build_virtual_io_physical_contract(
@@ -364,10 +341,39 @@ def test_phase7_physical_contract_consumes_exact_xdc_and_adapter(platform, tmp_p
         "physical_ports": 2,
         "scheduled_hops": 2,
     }
-    assert contract["entries"][0]["schedule_entries"] == ["entry0", "entry1"]
+    assert contract["entries"][0]["schedule_entry_count"] == 2
+    assert contract["entries"][0]["schedule_entries_sha256"] == hashlib.sha256(
+        b'"entry0"\n"entry1"\n').hexdigest()
     with xdc.open("a", encoding="utf-8") as stream:
         stream.write("# stale\n")
     with pytest.raises(ValidationError, match="XDC differs"):
         build_virtual_io_physical_contract(
             binding, "fpga0", xdc_path=xdc, adapter_path=adapter
         )
+
+
+@pytest.mark.parametrize("damage", ["missing", "duplicate", "wrong-peer", "wrong-slot"])
+def test_current_binding_requires_complete_lane_identity(platform, damage):
+    board = build_virtual_board(platform)
+    schedule, artifacts = schedule_and_ports(platform, [("fpga0", "fpga1", 7, 2)])
+    binding = native_binding(platform, board, schedule, artifacts)
+    rows = list(artifacts["lane_map"]["entries"])
+    if damage == "missing":
+        rows.clear()
+    elif damage == "duplicate":
+        rows *= 2
+    elif damage == "wrong-peer":
+        rows[0]["to"] = "fpga0"
+    else:
+        rows[0]["slot"] += 1
+    artifacts["lane_map"]._sections["entries"] = rows
+    with pytest.raises(ValidationError, match="coverage differs|identity differs|fields differ"):
+        validate_virtual_binding(platform, board, schedule, artifacts, binding)
+
+
+def test_raw_binding_validation_route_is_retired(platform):
+    board = build_virtual_board(platform)
+    schedule, artifacts = schedule_and_ports(platform, [("fpga0", "fpga1", 7, 2)])
+    binding = native_binding(platform, board, schedule, artifacts)
+    with pytest.raises(ValidationError, match="current typed transport owner"):
+        validate_virtual_binding(platform, board, schedule, artifacts, binding.materialize())

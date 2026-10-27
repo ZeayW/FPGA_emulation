@@ -431,44 +431,14 @@ def read_logic_segment_identity_storage(
     expected_system_routes_sha256: Optional[str] = None,
     expected_tdm_schedule_sha256: Optional[str] = None,
     expected_semantic_contract_sha256: Optional[str] = None,
-    allow_legacy: bool = False,
 ) -> Mapping[str, Any]:
-    lease: Optional[_Lease] = _Lease(path, exclusive=False)
-    try:
-        value = read_json(path)
-        if value.get("schema") == LOGIC_SEGMENT_IDENTITY_STORAGE_SCHEMA:
-            view = LogicSegmentIdentityView(
-                path,
-                expected_design=expected_design,
-                expected_platform=expected_platform,
-                expected_fpga=expected_fpga,
-                expected_system_routes_sha256=expected_system_routes_sha256,
-                expected_tdm_schedule_sha256=expected_tdm_schedule_sha256,
-                expected_semantic_contract_sha256=expected_semantic_contract_sha256,
-                _lease=lease,
-            )
-            lease = None
-            return view
-        if not allow_legacy or value.get("schema") != LOGIC_SEGMENT_IDENTITY_SCHEMA:
-            raise ValidationError(
-                "legacy logic segment identity JSON requires explicit compatibility"
-            )
-        from .logic_segment_timing import validate_logic_segment_identity
-
-        validate_logic_segment_identity(value)
-        expected = {
-            "design": expected_design, "platform": expected_platform,
-            "fpga": expected_fpga,
-            "system_routes_sha256": expected_system_routes_sha256,
-            "tdm_schedule_sha256": expected_tdm_schedule_sha256,
-            "semantic_contract_sha256": expected_semantic_contract_sha256,
-        }
-        for key, required in expected.items():
-            if required is not None and value.get(key) != required:
-                raise ValidationError(
-                    f"legacy logic segment identity {key} source seal disagrees"
-                )
-        return value
-    finally:
-        if lease is not None:
-            lease.close()
+    """Open only the current typed evidence owner."""
+    return LogicSegmentIdentityView(
+        path,
+        expected_design=expected_design,
+        expected_platform=expected_platform,
+        expected_fpga=expected_fpga,
+        expected_system_routes_sha256=expected_system_routes_sha256,
+        expected_tdm_schedule_sha256=expected_tdm_schedule_sha256,
+        expected_semantic_contract_sha256=expected_semantic_contract_sha256,
+    )

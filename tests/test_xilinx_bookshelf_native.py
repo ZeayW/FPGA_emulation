@@ -14,6 +14,81 @@ from emuflow import xilinx_openparf_atomic as adapter
 from tests.native_build import emuflow_native
 
 
+GOLDEN_NETS = """net n0 2
+  a0 O
+  a3 D
+endnet
+net n1 2
+  a3 Q
+  a1 A[1]
+endnet
+net n2 2
+  a0 I0
+  a2 CI
+endnet
+net n3 2
+  a1 A[0]
+  a3 C
+endnet
+"""
+GOLDEN_LIBRARY = """CELL CARRY8
+  PIN CI INPUT CAS
+  PIN CO[0] OUTPUT
+  PIN CO[1] OUTPUT
+  PIN CO[2] OUTPUT
+  PIN CO[3] OUTPUT
+  PIN CO[4] OUTPUT
+  PIN CO[5] OUTPUT
+  PIN CO[6] OUTPUT
+  PIN CO[7] OUTPUT CAS
+END CELL
+
+CELL DSP48E2
+  PIN A[0] INPUT
+  PIN A[1] INPUT
+  PIN A[2] INPUT
+  PIN P[0] OUTPUT
+  PIN P[1] OUTPUT
+END CELL
+
+CELL FDRE
+  PIN C INPUT CLOCK
+  PIN CE INPUT CTRL_CE
+  PIN D INPUT
+  PIN Q OUTPUT
+  PIN R INPUT CTRL_SR
+END CELL
+
+CELL LUT2
+  PIN I0 INPUT
+  PIN I1 INPUT
+  PIN O OUTPUT
+END CELL
+"""
+GOLDEN_MUX_LIBRARY = """
+CELL MUXF7
+  PIN I0 INPUT
+  PIN I1 INPUT
+  PIN O OUTPUT
+  PIN S INPUT
+END CELL
+
+CELL MUXF8
+  PIN I0 INPUT
+  PIN I1 INPUT
+  PIN O OUTPUT
+  PIN S INPUT
+END CELL
+
+CELL MUXF9
+  PIN I0 INPUT
+  PIN I1 INPUT
+  PIN O OUTPUT
+  PIN S INPUT
+END CELL
+"""
+
+
 def fixture(root):
     def cell(kind, connections, outputs):
         return {
@@ -79,15 +154,13 @@ class NativeBookshelfTests(unittest.TestCase):
     def setUpClass(cls):
         cls.command = [str(emuflow_native()), "phase7", "export-bookshelf"]
 
-    def test_native_matches_reference_and_does_not_reconstruct_cells(self):
+    def test_native_matches_complete_golden_and_does_not_reconstruct_cells(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             cells, path, atoms = fixture(root)
             self.addCleanup(atoms.close)
             names = adapter._OrdinalSafeNames(atoms)
-            expected = adapter._render_library_and_nets(
-                cells, atoms, names, platform_mux_types=["MUXF7", "MUXF8", "MUXF9"]
-            )
+            expected = (GOLDEN_LIBRARY + GOLDEN_MUX_LIBRARY, None, 4, 10)
             with open_xilinx_mapped_index(path) as mapped, mock.patch.object(
                 adapter, "resolve_native_stage_command", return_value=self.command
             ), mock.patch.object(
@@ -95,21 +168,15 @@ class NativeBookshelfTests(unittest.TestCase):
             ), mock.patch.object(
                 adapter, "_expanded_pins", side_effect=AssertionError("Python pin traversal")
             ):
-                actual = adapter._render_library_and_nets(
-                    mapped.cells, atoms, names,
-                    platform_mux_types=["MUXF7", "MUXF8", "MUXF9"],
-                )
                 output = root / "published" / "design.nets"
-                streamed = adapter._render_library_and_nets(
+                actual = adapter._render_library_and_nets(
                     mapped.cells, atoms, names,
                     platform_mux_types=["MUXF7", "MUXF8", "MUXF9"], nets_path=output,
                 )
             self.assertEqual(actual, expected)
-            self.assertEqual(streamed, (expected[0], None, expected[2], expected[3]))
-            self.assertEqual(output.read_text(), expected[1])
+            self.assertEqual(output.read_text(), GOLDEN_NETS)
             self.assertIn("PIN C INPUT CLOCK", actual[0])
             self.assertIn("PIN CO[7] OUTPUT CAS", actual[0])
-            self.assertGreater(actual[3], 0)
 
     def test_invalid_relations_do_not_replace_published_nets(self):
         mutations = {
@@ -147,7 +214,7 @@ class NativeBookshelfTests(unittest.TestCase):
             root = Path(temporary)
             cells, path, atoms = fixture(root)
             self.addCleanup(atoms.close)
-            expected = adapter._render_library_and_nets(cells, atoms, adapter._OrdinalSafeNames(atoms))
+            expected = GOLDEN_NETS
             path = path.rename(root / "mapped ?#%中文.sqlite")
             snapshots = {path: path.read_bytes(), atoms.path: atoms.path.read_bytes()}
             nets, summary, scratch = [root / suffix for suffix in ("nets", "summary", "scratch")]
@@ -155,7 +222,7 @@ class NativeBookshelfTests(unittest.TestCase):
             result = subprocess.run([str(emuflow_native()), "--report", str(report), "phase7", "export-bookshelf",
                 str(path), str(atoms.path), str(nets), str(summary), str(scratch)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(nets.read_text(), expected[1])
+            self.assertEqual(nets.read_text(), expected)
             self.assertFalse(scratch.exists())
             self.assertFalse(list(root.glob("*.tmp.*")))
             value = json.loads(report.read_text())
@@ -174,7 +241,7 @@ class NativeBookshelfTests(unittest.TestCase):
             cells, mapped_path, atoms = fixture(root)
             self.addCleanup(atoms.close)
             names = adapter._OrdinalSafeNames(atoms)
-            expected = adapter._render_library_and_nets(cells, atoms, names)
+            expected = (GOLDEN_LIBRARY, None, 4, 10)
             runtime = root / "runtime"
             (runtime / "bin").mkdir(parents=True)
             (runtime / "bin/emuflow-native").symlink_to(emuflow_native())
@@ -184,8 +251,8 @@ class NativeBookshelfTests(unittest.TestCase):
             ), mock.patch.object(adapter, "_ordered_cell_items", side_effect=AssertionError("Python cells")), \
                     mock.patch.object(adapter, "_expanded_pins", side_effect=AssertionError("Python pins")):
                 actual = adapter._render_library_and_nets(mapped.cells, atoms, names, nets_path=output)
-            self.assertEqual(actual, (expected[0], None, expected[2], expected[3]))
-            self.assertEqual(output.read_text(), expected[1])
+            self.assertEqual(actual, expected)
+            self.assertEqual(output.read_text(), GOLDEN_NETS)
 
     def test_unified_rejects_aliases_and_owned_scratch_before_writing(self):
         with tempfile.TemporaryDirectory() as temporary:

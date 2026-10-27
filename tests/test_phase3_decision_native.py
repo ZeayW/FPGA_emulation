@@ -8,12 +8,13 @@ import zlib
 import pytest
 
 from emuflow.errors import ValidationError
-from emuflow.partition import (_cluster_assignment_summary)
+from tests.partition_balance_fixture import _cluster_assignment_summary
 from tests.native_partition_facts import (build_partition_assignment, validate_partition_artifacts_online)
 from tests.native_partition_kernel_driver import initialize
 from tests.patron_kernel_fixture import pressure_kernel_inputs, write_pressure_requests, run_pressure_kernel
 from tests.phase3_decision_reference import _select_patron_timing_assignment
-from emuflow.phase3_decision_native import select_assignment, audit_assignment
+from tests.native_partition_core_fixture import select_assignment
+from tests.native_partition_core_fixture import audit_assignment
 from emuflow.store_publication import bind_store_source
 from tests.test_phase3_pressure_native import inputs, run
 
@@ -40,7 +41,7 @@ def test_original_owner_pair_matches_reference_choice_and_independent_legality(d
     args, initial, candidate, trace = decision
     _, platform, clusters, *_ = args
     expected, selection = _select_patron_timing_assignment(initial, candidate, trace)
-    with patch('emuflow.phase3_decision_native.audit_assignment', return_value=None):
+    with patch('tests.native_partition_core_fixture.audit_assignment', return_value=None):
         reference = [validate_partition_artifacts_online(platform, clusters, value)
                      for value in (initial, candidate)]
     actual = select_assignment(platform, clusters, initial, candidate)
@@ -58,7 +59,7 @@ def test_native_decision_and_owned_reduction_never_serialize_or_compare_host_col
     args, initial, candidate, _ = decision
     _, platform, clusters, *_ = args
     from emuflow.native_protocol import CheckedRequestWriter as _Writer
-    from emuflow.partition import _PackedClusterAssignment
+    from tests.partition_views import ClusterOwners as _PackedClusterAssignment
     original_bytes = _Writer.bytes
     def bounded_bytes(writer, data):
         if not isinstance(data, (bytes, bytearray)):
@@ -208,7 +209,7 @@ def test_original_nonlexical_part_coordinates_remain_a_borrowed_view(inputs, tmp
     args, reference, timing = inputs
     ir, platform, clusters, constraints, manifest, routes = args
     from emuflow.platform import Platform
-    from emuflow.partition import _TranslatedPartColumn
+    from tests.partition_views import PartTranslation as _TranslatedPartColumn
     document = platform.to_dict()
     document['fpgas'].reverse()
     platform = Platform.from_dict(document)

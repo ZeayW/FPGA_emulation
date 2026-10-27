@@ -12,9 +12,7 @@ import io
 import json
 import os
 from pathlib import Path
-import shutil
 from typing import Any, Dict, Iterator, Mapping, Sequence
-import uuid
 
 from .errors import ValidationError
 from .io import file_sha256, read_json
@@ -94,68 +92,8 @@ def physical_evidence_reference(
     return reference
 
 
-def publish_physical_evidence_reference(
-    source: Path,
-    logical_schema: str,
-    output_directory: Path,
-    relative_path: Path,
-) -> Dict[str, Any]:
-    """Publish a relocatable evidence member, preferring a zero-copy link."""
-
-    document, reference = publish_physical_evidence(
-        source, output_directory, relative_path
-    )
-    if document.get("schema") != logical_schema:
-        raise ValidationError("physical evidence logical schema disagrees")
-    return reference
 
 
-def publish_physical_evidence(
-    source: Path,
-    output_directory: Path,
-    relative_path: Path,
-) -> tuple[Dict[str, Any], Dict[str, Any]]:
-    """Publish, parse, and seal one evidence member in a single read pass."""
-
-    if relative_path.is_absolute() or ".." in relative_path.parts:
-        raise ValidationError("physical evidence relative path is unsafe")
-    resolved_source = source.resolve()
-    if source.is_symlink() or not resolved_source.is_file():
-        raise ValidationError("physical evidence artifact is missing")
-    target = output_directory / relative_path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.resolve() != resolved_source:
-        temporary = target.with_name(
-            f".{target.name}.{uuid.uuid4().hex}.tmp"
-        )
-        try:
-            try:
-                os.link(resolved_source, temporary)
-            except OSError:
-                with resolved_source.open("rb") as input_stream:
-                    with temporary.open("xb") as output_stream:
-                        shutil.copyfileobj(
-                            input_stream, output_stream, 1024 * 1024
-                        )
-                        output_stream.flush()
-                        os.fsync(output_stream.fileno())
-            os.replace(temporary, target)
-        except BaseException:
-            temporary.unlink(missing_ok=True)
-            raise
-    document, byte_count, digest = _read_sealed_json(target.resolve())
-    logical_schema = document.get("schema")
-    if not isinstance(logical_schema, str) or not logical_schema:
-        raise ValidationError("physical evidence logical schema is invalid")
-    reference = {
-        "schema": PHYSICAL_EVIDENCE_REFERENCE_SCHEMA,
-        "logical_schema": logical_schema,
-        "path": str(relative_path),
-        "bytes": byte_count,
-        "sha256": digest,
-    }
-    _validate_reference(reference)
-    return document, reference
 
 
 def publish_logic_segment_timing_store(
@@ -524,9 +462,7 @@ class PhysicalSummaryView(dict[str, Any]):
     def __exit__(self, *_args: Any) -> None:
         self.close()
 
-def read_physical_summary(
-    path: Path, *, allow_legacy_logic_segment_json: bool = False
-) -> PhysicalSummaryView:
+def read_physical_summary(path: Path) -> PhysicalSummaryView:
     """Read a physical summary while keeping large evidence maps lazy."""
 
     summary = PhysicalSummaryView(read_json(path))
@@ -579,9 +515,9 @@ def read_physical_summary(
                             "physical summary logic segment timing mixes indexed "
                             "and legacy evidence"
                         )
-                    if not any(indexed) and not allow_legacy_logic_segment_json:
+                    if not any(indexed):
                         raise ValidationError(
-                            "legacy logic segment JSON requires explicit compatibility"
+                            "logic segment timing requires current indexed evidence"
                         )
                     if any(indexed) and any(
                         not isinstance(summary.get(key), str) or not summary[key]
@@ -609,11 +545,9 @@ def read_physical_summary(
                         "logic_segment_semantic_contract_sha256"
                     ) if field == "logic_segment_timing" else None,
                 )
-            elif field == "logic_segment_timing" and not (
-                allow_legacy_logic_segment_json
-            ):
+            elif field == "logic_segment_timing":
                 raise ValidationError(
-                    "inline logic segment JSON requires explicit compatibility"
+                    "logic segment timing requires current indexed evidence"
                 )
         return summary
     except BaseException:

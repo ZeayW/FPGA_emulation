@@ -32,6 +32,10 @@ if(DEFINED EMUFLOW_BUILD_PIN_PLANNER)
   message(FATAL_ERROR "EMUFLOW_BUILD_PIN_PLANNER is retired; remove the cache entry; Chimew is in the shared native core")
 endif()
 
+if(DEFINED EMUFLOW_BUILD_BSP_PIN_SOLVER)
+  message(FATAL_ERROR "EMUFLOW_BUILD_BSP_PIN_SOLVER is retired; remove the cache entry")
+endif()
+
 option(EMUFLOW_BUILD_YOSYS "Build the in-tree Yosys and ABC source" ON)
 option(
   EMUFLOW_BUILD_CUDD
@@ -39,11 +43,6 @@ option(
   ON
 )
 
-option(
-  EMUFLOW_BUILD_BSP_PIN_SOLVER
-  "Build the in-tree electrical package-pin min-cost-flow solver"
-  ON
-)
 option(EMUFLOW_BUILD_OPENROAD "Build the in-tree OpenROAD/TritonPart source" ON)
 option(
   EMUFLOW_BUILD_OPENSTA
@@ -385,24 +384,6 @@ file(
   "${CMAKE_SOURCE_DIR}/scripts/patron/*"
   "${CMAKE_SOURCE_DIR}/scripts/vivado/*.tcl"
 )
-set(
-  EMUFLOW_PUBLIC_CONTEST_DATA
-  "${CMAKE_SOURCE_DIR}/benchmarks/contest_validation_matrix.json"
-  "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2023_benchmarks.py"
-  "${CMAKE_SOURCE_DIR}/scripts/fetch_repart_benchmarks.py"
-  "${CMAKE_SOURCE_DIR}/platforms/virtual/academic_vtr_4fpga_mesh.json"
-)
-file(
-  GLOB EMUFLOW_RTL_BENCHMARK_RUNS
-  CONFIGURE_DEPENDS
-  "${CMAKE_SOURCE_DIR}/benchmarks/runs/*.json"
-)
-set(
-  EMUFLOW_RTL_BENCHMARK_DATA
-  "${CMAKE_SOURCE_DIR}/benchmarks/rtl_catalog.json"
-  "${CMAKE_SOURCE_DIR}/scripts/benchmarks/fetch.py"
-  ${EMUFLOW_RTL_BENCHMARK_RUNS}
-)
 configure_file(
   "${CMAKE_SOURCE_DIR}/cmake/emuflow.in"
   "${CMAKE_BINARY_DIR}/emuflow"
@@ -486,37 +467,19 @@ add_custom_command(
     "${EMUFLOW_INSTALL_ROOT}/scripts/vivado"
   COMMAND
     "${CMAKE_COMMAND}" -E make_directory
-    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts"
-    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts/benchmarks"
-    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks"
-    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/runs"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/platforms/virtual"
   COMMAND
-    "${CMAKE_COMMAND}" -E copy
-    "${CMAKE_SOURCE_DIR}/scripts/benchmarks/fetch.py"
-    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts/benchmarks/fetch.py"
-  COMMAND
     "${CMAKE_COMMAND}" -E rm -rf
-    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/runs"
-  COMMAND
-    "${CMAKE_COMMAND}" -E copy_directory
-    "${CMAKE_SOURCE_DIR}/benchmarks/runs"
-    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/runs"
-  COMMAND
-    "${CMAKE_COMMAND}" -E copy
-    "${CMAKE_SOURCE_DIR}/benchmarks/rtl_catalog.json"
-    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/rtl_catalog.json"
-  COMMAND
-    "${CMAKE_COMMAND}" -E copy
-    "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2023_benchmarks.py"
-    "${CMAKE_SOURCE_DIR}/scripts/fetch_repart_benchmarks.py"
-    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts"
-  COMMAND
-    "${CMAKE_COMMAND}" -E copy
-    "${CMAKE_SOURCE_DIR}/benchmarks/contest_validation_matrix.json"
-    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks/contest_validation_matrix.json"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/benchmarks"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts/benchmarks"
   COMMAND
     "${CMAKE_COMMAND}" -E rm -f
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts/fetch_eda2023_benchmarks.py"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts/fetch_repart_benchmarks.py"
+  COMMAND
+    "${CMAKE_COMMAND}" -E rm -f
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow_bsp_pin_solver"
+    "${EMUFLOW_INSTALL_BINDIR}/emuflow-ppro-calibration"
     "${EMUFLOW_INSTALL_BINDIR}/emuflow_static_exact_analyzer"
     "${EMUFLOW_INSTALL_BINDIR}/emuflow_chimew_signal_grouper"
     "${EMUFLOW_INSTALL_BINDIR}/emuflow_chimew_position_refiner"
@@ -538,8 +501,6 @@ add_custom_command(
   DEPENDS
     ${EMUFLOW_PYTHON_SOURCES}
     ${EMUFLOW_RUNTIME_DATA}
-    ${EMUFLOW_PUBLIC_CONTEST_DATA}
-    ${EMUFLOW_RTL_BENCHMARK_DATA}
   COMMENT "Installing the in-tree EmuFlow Python control plane"
   VERBATIM
 )
@@ -608,19 +569,6 @@ endif()
 
 
 
-if(EMUFLOW_BUILD_BSP_PIN_SOLVER)
-  add_executable(
-    emuflow_bsp_pin_solver
-    "${CMAKE_SOURCE_DIR}/src/native/bsp_pin_solver.cpp"
-  )
-  target_compile_features(emuflow_bsp_pin_solver PRIVATE cxx_std_17)
-  target_compile_options(emuflow_bsp_pin_solver PRIVATE -O3)
-  set_target_properties(
-    emuflow_bsp_pin_solver
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
 
 
 if(EMUFLOW_BUILD_YOSYS)
@@ -972,16 +920,6 @@ if(BUILD_TESTING)
 
 
 
-  if(EMUFLOW_BUILD_BSP_PIN_SOLVER)
-    add_test(
-      NAME emuflow_bsp_pin_solver_cli
-      COMMAND "$<TARGET_FILE:emuflow_bsp_pin_solver>"
-    )
-    set_tests_properties(
-      emuflow_bsp_pin_solver_cli
-      PROPERTIES WILL_FAIL TRUE
-    )
-  endif()
 
   if(EMUFLOW_BUILD_FPGA_INTERCHANGE)
     add_test(

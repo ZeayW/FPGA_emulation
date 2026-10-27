@@ -1,5 +1,5 @@
 """Whole native stage qualification, record identity and failure boundaries."""
-from tests.phase3_store_fixture import write_assignment_index_fixture
+from tests.phase3_store_fixture import write_current_assignment_fixture
 
 import importlib.util
 import json
@@ -43,8 +43,7 @@ def prepare(root, monkeypatch):
         )
     )
     write_compact_emuir(ir, case.ir.to_dict())
-    write_assignment_index_fixture(assignment, case.ir, case.assignment)
-    (root / "assignment.json").write_text(json.dumps(case.assignment))
+    write_current_assignment_fixture(root / "assignment.json", case.ir, case.assignment)
     write_tdm_schedule_storage(schedule, case.schedule)
     platform.write_text(json.dumps(case.platform.to_dict()))
     commit = subprocess.check_output(

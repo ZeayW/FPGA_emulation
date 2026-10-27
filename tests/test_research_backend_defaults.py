@@ -140,7 +140,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
         from contextlib import redirect_stderr
         import io
         import json
-        from emuflow.benchmark import BenchmarkRun
+        from emuflow.benchmark_inputs import BenchmarkRun
 
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             _build_parser().parse_args([

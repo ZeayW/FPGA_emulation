@@ -21,8 +21,6 @@ from .phase3_exact_binary import (
     iter_phase3_exact_node_sources,
     iter_phase3_exact_segments,
     phase3_exact_binary_counts,
-    read_phase3_exact_binary_contract,
-    read_phase3_exact_binary_partition,
     validate_phase3_exact_binary,
 )
 from .phase3_runtime import phase3_runtime_call
@@ -353,38 +351,8 @@ def _exact_binary_reference(
     return path.with_name(artifact), descriptor
 
 
-def read_phase3_exact_semantic_partition(
-    path: Path, fpga: str
-) -> dict[str, Any]:
-    """Read one FPGA's Static Exact records from a supported v3/v4 index."""
-
-    connection = open_phase3_assignment_index(path)
-    try:
-        part = connection.execute(
-            "SELECT part_index FROM parts WHERE fpga=?", (fpga,)
-        ).fetchone()
-        if part is None:
-            raise ValidationError(f"assignment index omits FPGA {fpga!r}")
-        binary_path, descriptor = _exact_binary_reference(connection, path)
-        return read_phase3_exact_binary_partition(binary_path, descriptor, fpga)
-    finally:
-        connection.close()
 
 
-def read_phase3_exact_semantic_contract(
-    path: Path, assignment: Mapping[str, Any]
-) -> dict[str, Any]:
-    """Explicitly reconstruct the v3/v4 contract for validation or debugging.
-
-    Production consumers use bounded per-FPGA records instead.
-    """
-
-    connection = open_phase3_assignment_index(path)
-    try:
-        binary_path, descriptor = _exact_binary_reference(connection, path)
-        return read_phase3_exact_binary_contract(binary_path, descriptor, assignment)
-    finally:
-        connection.close()
 
 
 def phase3_exact_semantic_counts(path: Path) -> dict[str, int]:

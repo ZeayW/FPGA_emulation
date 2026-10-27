@@ -12,7 +12,7 @@ from emuflow.boundary_timing import (
     validate_boundary_timing_database,
 )
 from emuflow.boundary_identity_storage import read_boundary_identity_storage
-from emuflow.boundary_timing_storage import write_boundary_timing_storage
+from tests.timing_facts import boundary_timing_facts
 from emuflow.errors import ValidationError
 from emuflow.store_publication import bind_view_sources
 from emuflow.emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_only
@@ -28,7 +28,7 @@ from emuflow.local_path_timing import (
     validate_local_path_identity,
     validate_local_path_timing,
 )
-from emuflow.local_path_timing_storage import write_local_path_timing_storage
+from tests.timing_facts import local_timing_facts
 from emuflow.xilinx_timing import (
     iter_xilinx_routed_timing_endpoints,
     validate_xilinx_routed_timing,
@@ -326,7 +326,7 @@ def build_xilinx_boundary_timing(
     *,
     _timing_graph: Optional[_TimingGraph] = None,
 ) -> Dict[str, Any]:
-    identity = read_boundary_identity_storage(identity_path, allow_legacy=True)
+    identity = read_boundary_identity_storage(identity_path)
     graph = (
         _timing_graph
         if _timing_graph is not None
@@ -399,11 +399,10 @@ def build_xilinx_boundary_timing(
         provider="rapidwright-lightweight-segment-graph-v1",
         qualification=XILINX_SEGMENT_QUALIFICATION,
     )
-    with write_boundary_timing_storage(
+    with boundary_timing_facts(
         output_path,
         header,
         records(),
-        source_bindings=bind_view_sources((identity, "boundary-identity-store-v1")),
     ) as database:
         validation = validate_boundary_timing_database(database, identity)
     close_identity = getattr(identity, "close", None)
@@ -419,7 +418,6 @@ def build_xilinx_logic_segment_timing(
     output_path: Path,
     *,
     _timing_graph: Optional[_TimingGraph] = None,
-    allow_legacy_identity: bool = False,
 ) -> Dict[str, Any]:
     from emuflow.logic_segment_identity_storage import (
         LogicSegmentIdentityView,
@@ -427,7 +425,7 @@ def build_xilinx_logic_segment_timing(
     )
 
     identity = read_logic_segment_identity_storage(
-        identity_path, allow_legacy=allow_legacy_identity
+        identity_path
     )
     validate_logic_segment_identity(identity)
     graph = (
@@ -473,17 +471,14 @@ def build_xilinx_logic_segment_timing(
                 "actual_end_object": segment["end_pin"],
             }
 
-    from emuflow.logic_segment_timing_storage import write_logic_segment_timing_storage
+    from tests.timing_facts import logic_timing_facts
 
     try:
-        view = write_logic_segment_timing_storage(
+        view = logic_timing_facts(
             output_path,
             header=header,
             segments=records(),
             unsupported_member_paths=identity["unsupported_member_paths"],
-            source_bindings=bind_view_sources(
-                (identity, "logic-segment-identity-store-v1")
-            ),
         )
         try:
             validation = view.validate_timing()
@@ -529,11 +524,10 @@ def build_xilinx_local_path_timing(
                 )
                 yield {**path, "delay_ns": delay}
 
-        with write_local_path_timing_storage(
+        with local_timing_facts(
             output_path,
             header,
             records(),
-            source_bindings=bind_view_sources((identity, "local-path-timing-store-v1")),
         ) as database:
             validation = validate_local_path_timing(database)
         return {**validation, "output": str(output_path)}

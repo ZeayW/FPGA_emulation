@@ -19,10 +19,6 @@ STA_PATHS_SCHEMA = "emuflow.sta-paths/v1"
 GLOBAL_CANDIDATE_PROVIDER = "timing-aware-global-candidate-v1"
 
 
-
-
-
-
 def _number(value: Any, context: str, *, positive: bool = False) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValidationError(f"{context}: expected a number")
@@ -396,41 +392,6 @@ def load_sta_paths(
                 )
         return dict(value)
     return compress_sta_paths(normalize_sta_paths(value, demands))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def _tree_latency_cycles(
-    source: str,
-    sinks: Sequence[str],
-    edge_keys: Sequence[ArcKey],
-    arcs: Mapping[ArcKey, Mapping[str, Any]],
-) -> int:
-    graph: Dict[str, List[Tuple[str, int]]] = defaultdict(list)
-    for key in edge_keys:
-        graph[key[1]].append((key[2], int(arcs[key]["latency_cycles"])))
-    latency = {source: 0}
-    queue = deque([source])
-    while queue:
-        node = queue.popleft()
-        for sink, edge_latency in graph[node]:
-            latency[sink] = latency[node] + edge_latency
-            queue.append(sink)
-    return max(latency[sink] for sink in sinks)
 
 
 def reconstruct_system_route_timing(

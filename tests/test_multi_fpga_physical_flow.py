@@ -572,7 +572,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             def fake_vivado(**kwargs):
                 from emuflow.boundary_identity_storage import read_boundary_identity_storage
                 from emuflow.boundary_timing import boundary_timing_header
-                from emuflow.boundary_timing_storage import write_boundary_timing_storage
+                from tests.timing_facts import boundary_timing_facts
                 from emuflow.resource_budget import validate_device_resource_usage
                 self.assertFalse(kwargs["ir_path"].with_name("transport.emuir.sqlite").exists())
                 self.assertTrue(kwargs["ir_path"].is_file())
@@ -582,7 +582,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 timing_path = output / "boundary-timing.json"
                 with read_boundary_identity_storage(kwargs["boundary_identity_path"]) as identity:
                     header = boundary_timing_header(identity, provider="test", qualification="mocked")
-                    write_boundary_timing_storage(timing_path, header, ()).close()
+                    boundary_timing_facts(timing_path, header, ()).close()
                 result = {
                     "schema": "emuflow.physical-partition-result/v1", "status": "pass",
                     "identity": {"backend": "vivado", "fpga": kwargs["fpga"], "part": kwargs["part"]},

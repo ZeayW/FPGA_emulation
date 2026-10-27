@@ -28,6 +28,24 @@ The retained system-routing provider uses the fixed BoardDB topology. Public
 EDA2023 and EDA2024 format checks retain sealed import and evaluation support.
 Historical EDA2025 experiments use their matching Git revision.
 
+## Optional research and dataset tools
+
+Install the main runtime with `python3 -m pip install .`. The optional tools
+are a separate distribution: `python3 -m pip install ./tools`. They depend on
+the installed runtime; the runtime does not import or install them.
+
+Use `emuflow-tools contest ...`, `emuflow-tools benchmark ...`, and
+`emuflow-tools platform arm-mps4-materialize ...` for dataset preparation and
+independent BoardDB materialization. PPro calibration uses the separately
+installed `emuflow-ppro-calibration` entry point. Direct imports use
+`emuflow_tools`, while current frontend input and transport-cost contracts
+remain in the runtime. From a source checkout, include `tools` in `PYTHONPATH`.
+
+The hardware-BSP, serial-wrapper, PHY-provider, runtime-sync materialization,
+Phase 6B/6C and board-integrated Vivado chains are retired, including their
+CLIs, schemas and provider assets. The maintained Phase 6 baseline/Chimew,
+fixed wiring and electrical checks, and both per-FPGA physical backends remain.
+
 ## Installed runtime data
 
 The root CMake `emuflow_python` target installs a complete current Python
@@ -107,8 +125,8 @@ bound control data; no placement or endpoint population is embedded in it.
 Baseline reports have one owner within the comparison and are restored as
 references within each phase, rather than serialized twice. This control state
 is private to the live invocation and cannot be used as an old-artifact reader.
-Frame-length search and serial-BSP continuation still reject before synthesis;
-they remain available through the Python controller. No rejected or failed native
+Frame-length search still rejects before native synthesis and remains available
+through the Python controller. Serial-BSP continuation is retired from both controllers. No rejected or failed native
 run retries through Python or changes providers. This entry does not establish
 large-design qualification or completion of the C++ data-plane migration.
 
@@ -520,8 +538,8 @@ The old `phase2` placement spike, generic `placement` commands and single-FPGA
 Bookshelf exporter, greedy placement and generic placement schema.
 The dependent `phase7d`/`phase8a` release/BSP-requirements chain is also retired;
 its reports do not qualify either current physical backend. Current multi-FPGA
-BSP materialization, fixed-pin/electrical checks and terminal flow validation
-remain. OpenSTA Phase 2 is unaffected. Use the multi-FPGA compile/physical
+fixed-pin/electrical checks and terminal flow validation remain. Hardware-BSP
+materialization and its serial-provider execution chain are retired. OpenSTA Phase 2 is unaffected. Use the multi-FPGA compile/physical
 interface for the maintained implementations. Chimew reads indexed Xilinx
 placement; the VTR placement/atom-order adapter is removed. Historical artifacts
 require their matching Git revision.

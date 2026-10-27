@@ -10,14 +10,14 @@ from pathlib import Path
 from unittest import mock
 
 from emuflow.errors import ValidationError
-from emuflow.ppro_blackbox_runner import (
+from emuflow_tools.ppro_blackbox_runner import (
     RuntimeBinding,
     execute_blackbox_case,
     execute_blackbox_queue,
     validate_run_spec,
     validate_runtime_binding,
 )
-from emuflow.ppro_blackbox_provenance import runner_source_bundle
+from emuflow_tools.ppro_blackbox_provenance import runner_source_bundle
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -396,7 +396,7 @@ class PProBlackboxRunnerTest(unittest.TestCase):
                 real_write_json(path, payload, **kwargs)
 
             with mock.patch(
-                "emuflow.ppro_blackbox_runner.write_json", side_effect=fail_once
+                "emuflow_tools.ppro_blackbox_runner.write_json", side_effect=fail_once
             ):
                 result = execute_blackbox_case(run_spec(), value)
             self.assertEqual(result["execution"]["outcome"], "pass")

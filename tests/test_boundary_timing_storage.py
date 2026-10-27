@@ -5,14 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from emuflow.boundary_timing_storage import (
-    BOUNDARY_TIMING_SCHEMA,
-    BOUNDARY_TIMING_STORAGE_SCHEMA,
-    BoundaryTimingView,
-    publish_boundary_timing_selector,
-    read_boundary_timing_storage,
-    write_boundary_timing_storage,
-)
+from emuflow.boundary_timing_storage import (BOUNDARY_TIMING_SCHEMA, BOUNDARY_TIMING_STORAGE_SCHEMA, BoundaryTimingView, publish_boundary_timing_selector, read_boundary_timing_storage)
+from tests.timing_facts import boundary_timing_facts
 from emuflow.errors import ValidationError
 from emuflow.physical_summary_storage import LazyPhysicalEvidenceMap
 
@@ -49,7 +43,7 @@ def _record(endpoint_id: str, kind: str, index: int) -> dict[str, object]:
 def test_typed_boundary_timing_round_trip_and_relocation(tmp_path: Path) -> None:
     selector = tmp_path / "source" / "boundary-timing.json"
     records = [_record("tx-0", "tx", 0), _record("rx-1", "rx", 1)]
-    with write_boundary_timing_storage(
+    with boundary_timing_facts(
         selector, _header(), reversed(records)
     ) as view:
         assert isinstance(view, BoundaryTimingView)
@@ -88,14 +82,14 @@ def test_typed_boundary_timing_rejects_duplicate_schedule_kind(
     second = _record("tx-1", "tx", 1)
     second["schedule_entry"] = first["schedule_entry"]
     with pytest.raises(ValidationError, match="duplicated"):
-        write_boundary_timing_storage(
+        boundary_timing_facts(
             tmp_path / "boundary-timing.json", _header(), [first, second]
         )
 
 
 def test_typed_boundary_timing_rejects_store_tampering(tmp_path: Path) -> None:
     selector = tmp_path / "boundary-timing.json"
-    view = write_boundary_timing_storage(
+    view = boundary_timing_facts(
         selector, _header(), [_record("tx-0", "tx", 0)]
     )
     store = view.store_path
@@ -106,7 +100,7 @@ def test_typed_boundary_timing_rejects_store_tampering(tmp_path: Path) -> None:
         read_boundary_timing_storage(selector)
 
 
-def test_legacy_boundary_timing_requires_explicit_compatibility(
+def test_old_boundary_timing_json_is_retired(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "legacy.json"
@@ -118,6 +112,7 @@ def test_legacy_boundary_timing_requires_explicit_compatibility(
         }),
         encoding="utf-8",
     )
-    with pytest.raises(ValidationError, match="explicit compatibility"):
+    with pytest.raises(ValidationError, match="selector.*malformed|storage schema"):
         read_boundary_timing_storage(path)
-    assert read_boundary_timing_storage(path, allow_legacy=True)["endpoints"] == []
+    with pytest.raises(TypeError, match="allow_legacy"):
+        read_boundary_timing_storage(path, allow_legacy=True)

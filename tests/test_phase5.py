@@ -26,7 +26,9 @@ from emuflow.routing import normalize_route_constraints
 from emuflow.tdm import _independently_reconstruct_exact_captures, validate_tdm_schedule
 from tests.tdm_timing_oracle import timing_summary as reconstruct_tdm_schedule_timing, timing_paths as reconstruct_tdm_schedule_timing_paths, timing_paths as reconstruct_tdm_schedule_timing_paths_from_routes
 from tests.schedule_reference import build_tdm_schedule
+from tests.schedule_fixture_facts import exact_root_routes
 from tests.phase5_fixture import write_native_phase5_fixture
+from tests.phase3_store_fixture import write_current_assignment_fixture
 from tests.native_build import emuflow_native, tlr_router
 
 
@@ -93,12 +95,12 @@ def _routes(platform, cuts, frame_slots):
         },
         platform,
     )
-    return route_system_native(
+    return exact_root_routes(route_system_native(
         assignment,
         platform,
         constraints,
         executable=str(tlr_router()),
-    )
+    ))
 
 
 class Phase5Test(unittest.TestCase):
@@ -120,7 +122,7 @@ class Phase5Test(unittest.TestCase):
             routes_path = root / "routes.json"
             assignment_path = root / "assignment.json"
             routes_path.write_text(json.dumps(routes), encoding="utf-8")
-            assignment_path.write_text(json.dumps(assignment), encoding="utf-8")
+            write_current_assignment_fixture(assignment_path, case.ir, assignment)
             with self.assertRaisesRegex(ValidationError, "requires the current typed RouteStore"):
                 run_phase5(routes_path, PLATFORM_PATH, root / "output", assignment_path)
             self.assertFalse((root / "output").exists())
@@ -225,12 +227,12 @@ class Phase5Test(unittest.TestCase):
         validation = validate_tdm_schedule(routes, platform, schedule)
         self.assertEqual(validation["status"], "pass")
         self.assertEqual(
-            schedule["transport_semantics"], "registered-boundary"
+            schedule["transport_semantics"], "sampled-virtual-wire"
         )
         self.assertEqual(validation["scheduled_bit_hops"], 3)
         self.assertEqual(validation["collisions"], 0)
         mismatched = copy.deepcopy(schedule)
-        mismatched["transport_semantics"] = "sampled-virtual-wire"
+        mismatched["transport_semantics"] = "registered-boundary"
         with self.assertRaisesRegex(
             ValidationError, "transport_semantics"
         ):
@@ -327,11 +329,11 @@ class Phase5Test(unittest.TestCase):
         schedule = build_tdm_schedule(routes, platform)
         validate_tdm_schedule(routes, platform, schedule)
         entries = sorted(schedule["entries"], key=lambda entry: entry["hop"])
-        self.assertEqual(entries[0]["slot"], 0)
-        self.assertEqual(entries[0]["arrival_slot"], 1)
-        self.assertEqual(entries[1]["ready_slot"], 2)
-        self.assertEqual(entries[1]["slot"], 2)
-        self.assertEqual(entries[1]["arrival_slot"], 3)
+        self.assertEqual(entries[0]["slot"], 1)
+        self.assertEqual(entries[0]["arrival_slot"], 2)
+        self.assertEqual(entries[1]["ready_slot"], 3)
+        self.assertEqual(entries[1]["slot"], 3)
+        self.assertEqual(entries[1]["arrival_slot"], 4)
 
     def test_retired_register_input_round_barrier_routing_is_rejected(self) -> None:
         platform = Platform.from_dict(
@@ -353,35 +355,9 @@ class Phase5Test(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "round-barrier routing is retired"):
             route_system_native(assignment, platform, constraints, executable=str(tlr_router()))
 
-    def test_many_transport_rounds_do_not_rescan_prior_rounds(self) -> None:
-        platform = Platform.from_dict(
-            _platform_value(
-                "many-rounds",
-                ["a", "b"],
-                [_link("ab", "a", "b", lanes=2, latency=0)],
-            )
-        )
-        routes = _routes(
-            platform,
-            [(f"n{index}", "a", ["b"]) for index in range(128)],
-            frame_slots=512,
-        )
-        for index, route in enumerate(routes["routes"]):
-            route["transport_round"] = index
-        schedule = build_tdm_schedule(routes, platform)
-        validation = validate_tdm_schedule(routes, platform, schedule)
-        self.assertEqual(validation["transport_rounds"], 128)
-        self.assertEqual(validation["max_transport_round"], 127)
-        self.assertEqual(
-            sorted(
-                (
-                    item["transport_round"],
-                    item["source_ready_slot"],
-                )
-                for item in schedule["demand_completions"]
-            ),
-            [(index, index) for index in range(128)],
-        )
+    def test_round_barrier_artifact_is_rejected_before_reading_routes(self):
+        with self.assertRaisesRegex(ValidationError, 'unsupported TDM schedule artifact provider'):
+            validate_tdm_schedule({}, None, {'provider': 'deterministic-round-barrier-earliest-slot-v2'})
 
     def test_latency_can_make_route_capacity_schedule_infeasible(self) -> None:
         platform = Platform.from_dict(
@@ -441,7 +417,7 @@ class Phase5Test(unittest.TestCase):
             [("n0", "a", ["b"]), ("n1", "b", ["a"])],
         )
         constraints = normalize_route_constraints(
-            None, platform, frame_slots=4
+            None, platform, frame_slots=5
         )
         demands = [
             {
@@ -493,11 +469,12 @@ class Phase5Test(unittest.TestCase):
                 "total_link_bit_hops": 2,
             },
         }
+        exact_root_routes(routes)
         schedule = build_tdm_schedule(routes, platform)
         validation = validate_tdm_schedule(routes, platform, schedule)
         self.assertEqual(validation["collisions"], 0)
         slots = sorted(entry["slot"] for entry in schedule["entries"])
-        self.assertEqual(slots, [0, 1])
+        self.assertEqual(slots, [1, 2])
 
     def test_collision_is_rejected(self) -> None:
         platform = Platform.from_dict(

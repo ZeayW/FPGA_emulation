@@ -18,8 +18,8 @@ def build_cross_layer_physical_binding(contract,schedule,physical,platform,assig
     from tests.schedule_store_fixture import write_tdm_schedule_storage
     from emuflow.tdm_schedule_storage import read_tdm_schedule, TDMScheduleView
     from emuflow.boundary_identity_storage import write_boundary_identity_storage
-    from emuflow.boundary_timing_storage import write_boundary_timing_storage
-    from emuflow.logic_segment_timing_storage import write_logic_segment_timing_storage
+    from tests.timing_facts import boundary_timing_facts
+    from tests.timing_facts import logic_timing_facts
     if isinstance(schedule,TDMScheduleView):
         return build_physical_coverage(contract,schedule,physical,platform,assignment_index_path,output_path=output_path,fixture=True)
     if len(schedule.get('entries',[]))>4096 or sum(len(db.get(section,[])) for key,section in (
@@ -38,8 +38,8 @@ def build_cross_layer_physical_binding(contract,schedule,physical,platform,assig
         indexed={key:value for key,value in physical.items() if key not in ('boundary_identities','boundary_timing','logic_segment_timing')}
         for key,section,writer in (
             ('boundary_identities','endpoints',write_boundary_identity_storage),
-            ('boundary_timing','endpoints',write_boundary_timing_storage),
-            ('logic_segment_timing','segments',write_logic_segment_timing_storage),
+            ('boundary_timing','endpoints',boundary_timing_facts),
+            ('logic_segment_timing','segments',logic_timing_facts),
         ):
             indexed[key]={}
             for fpga,database in physical.get(key,{}).items():

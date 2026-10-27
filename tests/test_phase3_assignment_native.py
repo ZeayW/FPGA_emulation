@@ -12,9 +12,13 @@ import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.native_tools import native_file_generation
-from emuflow.partition import (_CompactClusterRecords, _CompactInstanceAssignment, _PackedClusterAssignment, validate_cluster_assignment_balance, CUT_MODE_STATIC_EXACT)
+from tests.partition_views import ClusterColumns as _CompactClusterRecords
+from tests.partition_views import InstanceOwners as _CompactInstanceAssignment
+from tests.partition_views import ClusterOwners as _PackedClusterAssignment
+from tests.partition_balance_fixture import validate_cluster_assignment_balance
+from emuflow.partition import CUT_MODE_STATIC_EXACT
 from tests.native_partition_facts import (build_clusters, build_partition_assignment, validate_partition_artifacts_online)
-from emuflow.phase3_assignment_native import reduce_native_partition_loads
+from tests.native_partition_core_fixture import reduce_native_partition_loads
 from emuflow.native_protocol import CheckedRequestWriter as _Writer
 from tests.test_phase3_clusters_native import source
 from tests import partition_pressure_fixture as reference_fixture

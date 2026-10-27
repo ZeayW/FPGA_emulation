@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.ppro_blackbox_provenance import (
+from emuflow_tools.ppro_blackbox_provenance import (
     RUNNER_SOURCE_BUNDLE_SCHEMA,
     RUNNER_SOURCE_MEMBERS,
     runner_source_bundle,
@@ -27,11 +27,11 @@ class PProBlackboxProvenanceTest(unittest.TestCase):
         self.assertNotIn("/Users/", text)
 
     def test_any_runtime_source_change_changes_revision(self):
-        source = Path(__file__).resolve().parents[1] / "src" / "emuflow"
+        source = Path(__file__).resolve().parents[1] / "tools" / "emuflow_tools"
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             for relative in RUNNER_SOURCE_MEMBERS:
-                shutil.copyfile(source / relative, root / relative)
+                shutil.copyfile((Path(__file__).resolve().parents[1] / "src" / "emuflow" / "io.py") if relative == "io.py" else source / relative, root / relative)
             first = runner_source_bundle(root)
             runtime = root / "ppro_blackbox_runtime.py"
             runtime.write_bytes(runtime.read_bytes() + b"\n# mutation\n")

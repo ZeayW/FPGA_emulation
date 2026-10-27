@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
-from emuflow.ppro_blackbox_application import generate_application_holdout_bundle
+from emuflow_tools.ppro_blackbox_application import generate_application_holdout_bundle
 
 
 def _timing_io():

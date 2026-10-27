@@ -7,6 +7,7 @@ The current complete native stage owns production cluster publication.
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -62,7 +63,6 @@ def catalog_sources(clusters, eligible):
 
 
 def write_catalog_request(request, value, document, eligible, eligible_present, sources):
-    from emuflow.phase3_storage import _canonical_json
     clusters = value["clusters"]
     if len(clusters) > 65536 or len(eligible) > 65536:
         raise ValidationError("catalog qualification fixture exceeds bound")
@@ -71,7 +71,7 @@ def write_catalog_request(request, value, document, eligible, eligible_present, 
         writer.put("QI", 0x31514343464D5545, 1)
         for source in sources[:2]:
             writer.put("3Q4q", *source.generation)
-        writer.text(_canonical_json(document))
+        writer.text(json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(',', ':')))
         candidate = (
             getattr(eligible, "_source", None)
             if not getattr(eligible, "_materialized", False)

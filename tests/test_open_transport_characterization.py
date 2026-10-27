@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.open_transport_characterization import (
+from emuflow_tools.open_transport_characterization import (
     OPEN_TRANSPORT_FIT_SCHEMA,
     OPEN_TRANSPORT_MODEL,
     OPEN_TRANSPORT_OBSERVATION_SCHEMA,

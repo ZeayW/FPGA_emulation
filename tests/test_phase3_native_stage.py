@@ -1,5 +1,6 @@
 """Complete native stage validation, source binding and host-entry parity."""
 import json
+from contextlib import contextmanager
 import importlib.util
 from pathlib import Path
 from unittest.mock import patch
@@ -9,7 +10,17 @@ from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.phase3 import run_phase3, validate_phase3_indexed
 from emuflow.phase3_native import run as native_run
+from emuflow.phase3_storage import read_phase3_assignment_view
 from tests.test_phase3_pressure_native import inputs
+
+
+@contextmanager
+def assignment_view(path):
+    value = read_phase3_assignment_view(path, include_instance_assignment=True)
+    try:
+        yield value
+    finally:
+        value['instance_assignment'].close()
 
 
 @pytest.mark.parametrize('name', ['partition_init_native', 'partition_hops_native',
@@ -38,7 +49,6 @@ def test_native_phase3_runs_complete_stage_with_independent_record_validation(in
     assert not hasattr(partition, 'build_clusters')
     with patch('emuflow.ir.EmuIR.load', side_effect=AssertionError('Python graph import')):
         report = native_run(actual, ir.path, board, **config)
-    generated = read_json(actual/'assignment.json')
     assert report['stage_implementation_id'] == 'native-phase3-v1'
     assert report['algorithm_validation']['native_input_transport'] == 'native-primary-store-model-v2'
     # These validators reconstruct legality from source IR and final records,
@@ -48,7 +58,8 @@ def test_native_phase3_runs_complete_stage_with_independent_record_validation(in
     assert main(['partition', 'validate', str(actual/'assignment.sqlite'),
                  '--phase3-report', str(actual/'phase3_report.json'),
                  '--ir', str(ir.path), '--platform', str(board)]) == 0
-    assert len(generated['instance_assignment']) == len(inputs[0][0].value['instances'])
+    with assignment_view(actual/'assignment.json') as generated:
+        assert len(generated['instance_assignment']) == len(inputs[0][0].value['instances'])
 
 
 @pytest.mark.parametrize('damage', ['version', 'generation', 'capacity', 'timing-seal', 'solution', 'existing'])
@@ -121,10 +132,10 @@ def test_complete_stage_preserves_default_and_zero_search_effort(inputs, tmp_pat
     expected = tmp_path/'reference-effort';actual = tmp_path/'native-effort'
     run_phase3(ir.path, board, expected, **config)
     native_run(actual, ir.path, board, **config)
-    a, b = read_json(expected/'assignment.json'), read_json(actual/'assignment.json')
-    assert a['semantic_contract_sha256'] == b['semantic_contract_sha256']
-    assert dict(a['instance_assignment']) == dict(b['instance_assignment'])
-    assert a['provider'] == b['provider']
+    with assignment_view(expected/'assignment.json') as a, assignment_view(actual/'assignment.json') as b:
+        assert a['semantic_contract_sha256'] == b['semantic_contract_sha256']
+        assert dict(a['instance_assignment']) == dict(b['instance_assignment'])
+        assert a['provider'] == b['provider']
 
 
 def test_complete_stage_supervises_original_openroad_initializer(inputs, tmp_path):
@@ -169,9 +180,9 @@ def test_complete_stage_preserves_initializer_provider_when_selected_directly(in
     expected = tmp_path/'reference-initializer';actual = tmp_path/'native-initializer'
     reference = run_phase3(ir.path, board, expected, **config)
     generated = native_run(actual, ir.path, board, **config)
-    a, b = read_json(expected/'assignment.json'), read_json(actual/'assignment.json')
-    assert b['provider'] == a['provider'] == 'tritonpart-openroad-hypergraph-v1'
-    assert generated['provider'] == reference['provider']
-    assert b['semantic_contract_sha256'] == a['semantic_contract_sha256']
-    assert dict(b['instance_assignment']) == dict(a['instance_assignment'])
+    with assignment_view(expected/'assignment.json') as a, assignment_view(actual/'assignment.json') as b:
+        assert b['provider'] == a['provider'] == 'tritonpart-openroad-hypergraph-v1'
+        assert generated['provider'] == reference['provider']
+        assert b['semantic_contract_sha256'] == a['semantic_contract_sha256']
+        assert dict(b['instance_assignment']) == dict(a['instance_assignment'])
     assert generated['validation'] == reference['validation']

@@ -1,5 +1,5 @@
 from tests.phase3_exact_fixture import write_exact_fixture
-from tests.phase3_store_fixture import assignment_selector_fixture, cluster_document_fixture, write_assignment_index_fixture
+from tests.phase3_store_fixture import assignment_selector_fixture, cluster_document_fixture, write_assignment_index_fixture, write_current_assignment_fixture
 from tests.native_split_fixture import NativeSplitFixture
 from tests.native_route_fixture import route_system_native
 from tests.schedule_store_fixture import write_tdm_schedule_storage
@@ -39,16 +39,10 @@ from tests.partition_reference import assign_clusters
 from emuflow.platform import Platform
 from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.split_netlist_storage import SplitNetlistView
-from emuflow.phase3_assignment_index import (ASSIGNMENT_INDEX_APPLICATION_ID, open_phase3_assignment_index, phase3_exact_semantic_counts, phase3_exact_relation_counts, read_phase3_exact_split_relations, read_phase3_exact_semantic_contract, read_phase3_exact_semantic_partition, validate_phase3_assignment_index)
-from emuflow.phase3_exact_records import (
-    StaticExactCutNodeSequence,
-    StaticExactRecordSequence,
-    build_static_exact_capture_stream,
-    build_static_exact_cut_node_stream,
-    read_native_static_exact_cut_node_stream,
-    read_native_static_exact_capture_stream,
-)
+from emuflow.phase3_assignment_index import (ASSIGNMENT_INDEX_APPLICATION_ID, open_phase3_assignment_index, phase3_exact_semantic_counts, phase3_exact_relation_counts, read_phase3_exact_split_relations, validate_phase3_assignment_index)
+from tests.native_semantic_facts import read_nodes as read_native_static_exact_cut_node_stream
 from emuflow.phase3_exact_binary import (validate_phase3_exact_binary)
+from tests.phase3_exact_fixture import indexed_exact_facts
 from emuflow.phase3_storage import (PACKED_ASSIGNMENT_SCHEMA, read_phase3_assignment_view)
 from emuflow.routing import (
     build_directed_graph,
@@ -772,9 +766,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     "capture_segment_ids": [],
                 })
             self.assertEqual(list(native), expected)
-            reference = build_static_exact_cut_node_stream(expected)
-            self.assertEqual([native.binary_node(i) for i in range(2)],
-                             [reference.binary_node(i) for i in range(2)])
             valid_output = output.read_bytes()
             for payload in (valid_output[:16], valid_output + b"extra",
                             valid_output[:24] + struct.pack("<Q", 1) + valid_output[32:]):
@@ -863,7 +854,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
 
 
 
-    def test_indexed_assignment_storage_reconstructs_exact_contract(self):
+    def test_current_assignment_reader_preserves_lazy_semantic_reference(self):
         clusters, assignment = self._exact_artifacts(dependent_return=True)
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -897,7 +888,11 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 compact=True,
             )
             write_json(root / "assignment.json", packed, compact=True)
-            self.assertEqual(read_json(root / "assignment.json"), assignment)
+            loaded = read_json(root / "assignment.json")
+            self.assertEqual(list(loaded['cut_nets']), assignment['cut_nets'])
+            self.assertNotIn('semantic_contract', loaded)
+            self.assertNotIn('cluster_assignment', loaded)
+            self.assertNotIn('instance_assignment', loaded)
 
             route_view = read_phase3_assignment_view(
                 root / "assignment.json",
@@ -966,7 +961,11 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             view = read_phase3_assignment_view(root / "assignment.json")
             self.assertEqual(len(view["cut_nets"]), 0)
             self.assertEqual(list(view["cut_nets"]), [])
-            self.assertEqual(read_json(root / "assignment.json"), assignment)
+            loaded = read_json(root / "assignment.json")
+            self.assertEqual(list(loaded['cut_nets']), assignment['cut_nets'])
+            self.assertNotIn('semantic_contract', loaded)
+            self.assertNotIn('cluster_assignment', loaded)
+            self.assertNotIn('instance_assignment', loaded)
 
     def _exact_assignment_with_bit(self, bit):
         _, assignment = self._exact_artifacts(dependent_return=True)
@@ -998,10 +997,10 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     index = Path(temporary) / "assignment.sqlite"
                     summary = write_assignment_index_fixture(index, self.ir, assignment)
                     self.assertEqual(summary["status"], "pass")
-                    partition = read_phase3_exact_semantic_partition(index, fpga)
+                    partition = indexed_exact_facts(index, fpga=fpga)
                     capture = next(r for r in partition["capture_requirements"] if r["id"] == capture_id)
                     self.assertEqual(capture["bit"], bit)
-                    self.assertEqual(read_phase3_exact_semantic_contract(index, assignment), assignment["semantic_contract"])
+                    self.assertEqual(indexed_exact_facts(index, assignment), assignment["semantic_contract"])
                     self.assertEqual(validate_phase3_assignment_index(index)["status"], "pass")
 
     def test_current_assignment_rejects_oversized_capture_without_publishing(self):
@@ -1016,7 +1015,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
 
     def test_retired_assignment_versions_rejected_by_all_readers(self):
         from emuflow.phase3_storage import (
-            IndexedInstanceAssignment, _enrich_indexed_cut_dependencies,
+            IndexedInstanceAssignment,
             read_phase3_cut_timing_view,
         )
         from emuflow import phase3_assignment_index
@@ -1033,9 +1032,6 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                     lambda: open_phase3_assignment_index(index),
                     lambda: IndexedInstanceAssignment(index),
                     lambda: read_phase3_cut_timing_view(index.parent / "assignment.json"),
-                    lambda: _enrich_indexed_cut_dependencies({"cut_nets": []}, index),
-                    lambda: read_phase3_exact_semantic_partition(index, "fpga0"),
-                    lambda: read_phase3_exact_semantic_contract(index, {}),
                     lambda: phase3_exact_semantic_counts(index),
                     lambda: phase3_exact_relation_counts(index),
                     lambda: read_phase3_exact_split_relations(index),
@@ -2477,9 +2473,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             output = root / "phase5"
             from tests.native_route_seal_fixture import write_route_store_fixture
             write_route_store_fixture(routes_path, routes)
-            assignment_path.write_text(
-                json.dumps(assignment), encoding="utf-8"
-            )
+            write_current_assignment_fixture(assignment_path, self.ir, assignment)
             with redirect_stdout(io.StringIO()):
                 self.assertEqual(
                     main(
@@ -2648,16 +2642,11 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             schedule_path = root / "schedule.json"
             output = root / "phase6"
             self.ir.save(ir_path)
-            assignment_path.write_text(json.dumps(assignment), encoding="utf-8")
-            write_assignment_index_fixture(
-                root / "assignment.sqlite", self.ir, assignment
-            )
+            write_current_assignment_fixture(assignment_path, self.ir, assignment)
             indexed_segments = []
             indexed_captures = []
             for fpga in ("fpga0", "fpga1"):
-                partition = read_phase3_exact_semantic_partition(
-                    root / "assignment.sqlite", fpga
-                )
+                partition = indexed_exact_facts(root / "assignment.sqlite", fpga=fpga)
                 self.assertEqual(
                     partition["sha256"],
                     assignment["semantic_contract_sha256"],

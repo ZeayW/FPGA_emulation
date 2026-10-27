@@ -509,8 +509,8 @@ This is a native orchestration milestone, not completed W7. Python phase data
 planes and several direct engine adapters remain. Retained Chimew comparison
 runs through native control with either Xilinx backend. Its source-bound device
 catalog is carried as bounded control data; baseline physical/runtime reports
-are serialized once within the comparison. Frame search and serial BSP remain
-unsupported by native control. Component coverage does not establish real-design
+are serialized once within the comparison. Frame search remains unsupported by native
+control. Serial BSP is retired from both controllers. Component coverage does not establish real-design
 physical/global timing qualification.
 The controller reports `native_data_plane_complete:false`. Full native data-plane
 ownership and real-design Phase 7/7C qualification remain required for completion.

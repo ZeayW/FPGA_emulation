@@ -414,51 +414,6 @@ def _route_hops(
 def _link_by_id(platform: Platform):
     return {link.id: link for link in platform.links}
 
-def _round_order(
-    routes: Sequence[Mapping[str, Any]],
-    planned_hops: Optional[Mapping[HopKey, Mapping[str, Any]]] = None,
-) -> Tuple[List[Mapping[str, Any]], List[int]]:
-    for route in routes:
-        transport_round = route.get("transport_round", 0)
-        if (
-            isinstance(transport_round, bool)
-            or not isinstance(transport_round, int)
-            or transport_round < 0
-        ):
-            raise ValidationError(
-                f"TDM route {route['id']!r}.transport_round must be a "
-                "non-negative integer"
-            )
-    ordered = sorted(
-        routes,
-        key=lambda route: (
-            route.get("transport_round", 0),
-            min(
-                (
-                    planned_hops[
-                        _hop_key(
-                            route["id"],
-                            edge["link"],
-                            edge["from"],
-                            edge["to"],
-                        )
-                    ]["continuous_ratio"]
-                    for _depth, edge in _route_hops(route)
-                ),
-                default=float("inf"),
-            )
-            if planned_hops is not None
-            else 0.0,
-            -max((depth for depth, _ in _route_hops(route)), default=0),
-            route["net"],
-            route["id"],
-        ),
-    )
-    active_rounds = sorted(
-        {route.get("transport_round", 0) for route in routes}
-    )
-    return ordered, active_rounds
-
 def _exact_dependency_order(
     exact_nodes: Mapping[str, Mapping[str, Any]],
     routes: Sequence[Mapping[str, Any]],
@@ -1137,21 +1092,17 @@ def validate_tdm_schedule(
     platform: Platform,
     schedule: Mapping[str, Any],
 ) -> Dict[str, Any]:
-    if schedule.get("provider") not in {
-        TDM_EXACT_DEPENDENCY_PROVIDER, "deterministic-round-barrier-earliest-slot-v2",
-    }:
+    if schedule.get("provider") != TDM_EXACT_DEPENDENCY_PROVIDER:
         raise ValidationError("unsupported TDM schedule artifact provider")
     exact_contract = _static_exact_contract_from_routes(routes)
+    if exact_contract is None:
+        raise ValidationError("Static Exact schedule requires an exact dependency contract")
     if schedule.get("schema") != TDM_SCHEDULE_SCHEMA:
         raise ValidationError(
             f"schedule.schema: expected {TDM_SCHEDULE_SCHEMA!r}, "
             f"got {schedule.get('schema')!r}"
         )
-    expected_transport_semantics = (
-        "sampled-virtual-wire"
-        if exact_contract is not None
-        else "registered-boundary"
-    )
+    expected_transport_semantics = "sampled-virtual-wire"
     if schedule.get("transport_semantics") != expected_transport_semantics:
         raise ValidationError(
             "schedule.transport_semantics does not match the Phase 3 "
@@ -1168,23 +1119,20 @@ def validate_tdm_schedule(
             "schedule.route_constraints does not match routes"
         )
     frame_slots = constraints["frame_slots"]
-    sampled_timing_constraints = None
-    if exact_contract is not None:
-        sampled_timing_constraints = sampled_virtual_wire_timing_constraints(
-            frame_slots
+    sampled_timing_constraints = sampled_virtual_wire_timing_constraints(
+        frame_slots
+    )
+    if schedule.get("timing_constraints") != sampled_timing_constraints:
+        raise ValidationError(
+            "sampled virtual-wire timing constraints do not match Phase 5 policy"
         )
-        if schedule.get("timing_constraints") != sampled_timing_constraints:
-            raise ValidationError(
-                "sampled virtual-wire timing constraints do not match Phase 5 policy"
-            )
     _, arcs, _ = build_directed_graph(platform, constraints)
     links = _link_by_id(platform)
     bank_allocations = _bank_direction_allocations(routes, platform, constraints)
     if bank_allocations and schedule.get("bank_allocations") != _bank_allocation_records(bank_allocations):
         raise ValidationError("schedule.bank_allocations does not match routed bank allocation")
-    indexed_store = callable(
-        getattr(schedule, "open_validation_index", None)
-    )
+    from .tdm_schedule_storage import TDMScheduleView
+    indexed_store = isinstance(schedule, TDMScheduleView)
     indexed_exact_store = bool(
         indexed_store
         and exact_contract is not None
@@ -1216,7 +1164,6 @@ def validate_tdm_schedule(
         )
     bank_directions: Dict[Tuple[str, int], Tuple[str, str]] = {}
     expected = _expected_hops(routes)
-    extended_schedule = True
     expected_route_metadata = []
     for route in sorted(routes["routes"], key=lambda item: item["id"]):
         record = {
@@ -1226,8 +1173,6 @@ def validate_tdm_schedule(
             "sinks": list(route["sinks"]),
             "tree_edges": list(route["tree_edges"]),
         }
-        if extended_schedule and exact_contract is None:
-            record["transport_round"] = route.get("transport_round", 0)
         expected_route_metadata.append(record)
     if schedule.get("routes") != expected_route_metadata:
         raise ValidationError("schedule.routes does not match system routes")
@@ -1345,65 +1290,43 @@ def validate_tdm_schedule(
     indexed_exact = bool(
         exact_contract is not None and exact_contract.get("indexed") is True
     )
-    if exact_contract is None:
-        ordered_routes, active_rounds = _round_order(routes["routes"])
+    if indexed_exact:
+        exact_nodes = _indexed_exact_nodes(routes["routes"])
     else:
-        if indexed_exact:
-            exact_nodes = _indexed_exact_nodes(routes["routes"])
-        else:
-            exact_nodes, exact_segments, exact_captures = (
-                _exact_contract_indexes(exact_contract)
-            )
-        ordered_routes = _exact_dependency_order(
-            exact_nodes, routes["routes"]
+        exact_nodes, exact_segments, exact_captures = (
+            _exact_contract_indexes(exact_contract)
         )
-        active_rounds = [0]
-    completion_by_round: Dict[int, int] = {}
-    prior_round_completion = -1
-    active_round = None
+    ordered_routes = _exact_dependency_order(
+        exact_nodes, routes["routes"]
+    )
     completions = []
     for route in ordered_routes:
-        transport_round = route.get("transport_round", 0)
-        if transport_round != active_round:
-            if active_round is not None:
-                prior_round_completion = max(
-                    prior_round_completion,
-                    completion_by_round[active_round],
+        if indexed_exact:
+            source_ready_slot, _source_evidence = (
+                _indexed_source_readiness(
+                    route,
+                    exact_arrivals,
+                    sampled_timing_constraints,
                 )
-            active_round = transport_round
-        if exact_contract is None:
-            source_ready_slot = (
-                prior_round_completion + COMBINATIONAL_SETTLE_SLOTS
-                if prior_round_completion >= 0
-                else 0
             )
         else:
-            if indexed_exact:
-                source_ready_slot, _source_evidence = (
-                    _indexed_source_readiness(
-                        route,
-                        exact_arrivals,
-                        sampled_timing_constraints,
-                    )
+            source_ready_slot, source_evidence = (
+                _independently_reconstruct_exact_source_readiness(
+                    exact_nodes[route["net"]],
+                    exact_segments,
+                    exact_arrivals,
+                    sampled_timing_constraints,
                 )
-            else:
-                source_ready_slot, source_evidence = (
-                    _independently_reconstruct_exact_source_readiness(
-                        exact_nodes[route["net"]],
-                        exact_segments,
-                        exact_arrivals,
-                        sampled_timing_constraints,
-                    )
-                )
-                exact_readiness_records.append(
-                    {
-                        "demand": route["id"],
-                        "net": route["net"],
-                        "source": route["source"],
-                        "source_ready_slot": source_ready_slot,
-                        "evidence": source_evidence,
-                    }
-                )
+            )
+            exact_readiness_records.append(
+                {
+                    "demand": route["id"],
+                    "net": route["net"],
+                    "source": route["source"],
+                    "source_ready_slot": source_ready_slot,
+                    "evidence": source_evidence,
+                }
+            )
         arrival_by_node = {route["source"]: source_ready_slot - 1}
         for depth, edge in _route_hops(route):
             del depth
@@ -1438,25 +1361,18 @@ def validate_tdm_schedule(
         completion_slot = max(
             arrival_by_node[sink] for sink in route["sinks"]
         )
-        completion_by_round[transport_round] = max(
-            completion_slot,
-            completion_by_round.get(transport_round, completion_slot),
-        )
         completion = {
             "demand": route["id"],
             "net": route["net"],
             "completion_slot": completion_slot,
         }
         completion["source_ready_slot"] = source_ready_slot
-        if exact_contract is None:
-            completion["transport_round"] = transport_round
-        if exact_contract is not None:
-            sink_arrivals = {
-                sink: arrival_by_node[sink] for sink in sorted(route["sinks"])
-            }
-            completion["sink_arrival_slots"] = sink_arrivals
-            for sink, arrival in sink_arrivals.items():
-                exact_arrivals[(route["net"], sink)] = arrival
+        sink_arrivals = {
+            sink: arrival_by_node[sink] for sink in sorted(route["sinks"])
+        }
+        completion["sink_arrival_slots"] = sink_arrivals
+        for sink, arrival in sink_arrivals.items():
+            exact_arrivals[(route["net"], sink)] = arrival
         completions.append(completion)
     completions.sort(key=lambda item: item["demand"])
     if schedule.get("demand_completions") != completions:
@@ -1485,111 +1401,96 @@ def validate_tdm_schedule(
         ),
         "collisions": 0,
     }
-    if extended_schedule and exact_contract is None:
-        expected_metrics.update(
-            {
-                "transport_rounds": len(active_rounds),
-                "round_barriers": max(0, len(active_rounds) - 1),
-                "max_transport_round": max(active_rounds, default=0),
-                "combinational_settle_slots": COMBINATIONAL_SETTLE_SLOTS,
-            }
+    expected_metrics["transport_ordering_policy"] = (
+        "path-local-dependency-dag-v1"
+    )
+    if (
+        schedule.get("qualification")
+        != "dependency-schedule-readiness-pass"
+        or schedule.get("transport_semantics") != "sampled-virtual-wire"
+        or schedule.get("semantic_contract_schema")
+        != exact_contract.get("schema")
+        or schedule.get("semantic_contract_sha256")
+        != routes.get("semantic_contract_sha256")
+    ):
+        raise ValidationError(
+            "cross-layer timing schedule binding is invalid"
         )
-    elif exact_contract is not None:
-        expected_metrics["transport_ordering_policy"] = (
-            "path-local-dependency-dag-v1"
+    if indexed_exact:
+        expected_certificate = _indexed_certificate(
+            ordered_routes,
+            exact_arrivals,
+            sampled_timing_constraints,
         )
-    if exact_contract is not None:
-        if (
-            schedule.get("qualification")
-            != "dependency-schedule-readiness-pass"
-            or schedule.get("transport_semantics") != "sampled-virtual-wire"
-            or schedule.get("semantic_contract_schema")
-            != exact_contract.get("schema")
-            or schedule.get("semantic_contract_sha256")
-            != routes.get("semantic_contract_sha256")
-        ):
-            raise ValidationError(
-                "cross-layer timing schedule binding is invalid"
-            )
-        if indexed_exact:
-            expected_certificate = _indexed_certificate(
-                ordered_routes,
+        captures = None
+        minimum_capture_slack = expected_certificate[
+            "minimum_sink_slack_slots"
+        ]
+    else:
+        captures, minimum_capture_slack = (
+            _independently_reconstruct_exact_captures(
+                exact_segments,
+                exact_captures,
                 exact_arrivals,
                 sampled_timing_constraints,
             )
-            captures = None
-            minimum_capture_slack = expected_certificate[
-                "minimum_sink_slack_slots"
-            ]
-        else:
-            captures, minimum_capture_slack = (
-                _independently_reconstruct_exact_captures(
-                    exact_segments,
-                    exact_captures,
-                    exact_arrivals,
-                    sampled_timing_constraints,
-                )
-            )
-            expected_certificate = {
-                "schema": SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
-                "provider": "independent-readiness-certificate-v1",
-                "topological_cut_order": [
-                    route["net"] for route in ordered_routes
+        )
+        expected_certificate = {
+            "schema": SAMPLED_VIRTUAL_WIRE_SCHEDULE_CERTIFICATE_SCHEMA,
+            "provider": "independent-readiness-certificate-v1",
+            "topological_cut_order": [
+                route["net"] for route in ordered_routes
+            ],
+            "demand_readiness": exact_readiness_records,
+            "capture_readiness": captures,
+            "minimum_capture_slack_slots": minimum_capture_slack,
+        }
+    if schedule.get("schedule_dependency_certificate") != (
+        expected_certificate
+    ):
+        raise ValidationError(
+            "cross-layer timing readiness certificate does not match "
+            "independent reconstruction"
+        )
+    if indexed_exact:
+        expected_metrics.update(
+            {
+                "commit_slot": sampled_timing_constraints["commit_slot"],
+                "dependency_edges": expected_certificate[
+                    "dependency_edges"
                 ],
-                "demand_readiness": exact_readiness_records,
-                "capture_readiness": captures,
+                "maximum_combinational_dependency_depth": max(
+                    (
+                        route["combinational_dependency_depth"]
+                        for route in ordered_routes
+                    ),
+                    default=0,
+                ),
+                "conservative_sink_readiness_checks": expected_certificate[
+                    "sink_readiness_checks"
+                ],
                 "minimum_capture_slack_slots": minimum_capture_slack,
             }
-        if schedule.get("schedule_dependency_certificate") != (
-            expected_certificate
-        ):
-            raise ValidationError(
-                "cross-layer timing readiness certificate does not match "
-                "independent reconstruction"
-            )
-        if indexed_exact:
-            expected_metrics.update(
-                {
-                    "commit_slot": sampled_timing_constraints["commit_slot"],
-                    "dependency_edges": expected_certificate[
-                        "dependency_edges"
-                    ],
-                    "maximum_combinational_dependency_depth": max(
-                        (
-                            route["combinational_dependency_depth"]
-                            for route in ordered_routes
-                        ),
-                        default=0,
-                    ),
-                    "conservative_sink_readiness_checks": expected_certificate[
-                        "sink_readiness_checks"
-                    ],
-                    "minimum_capture_slack_slots": minimum_capture_slack,
-                }
-            )
-        else:
-            expected_metrics.update(
-                {
-                    "commit_slot": sampled_timing_constraints["commit_slot"],
-                    "dependency_edges": len(exact_contract["dependency_edges"]),
-                    "maximum_combinational_dependency_depth": exact_contract[
-                        "metrics"
-                    ]["maximum_combinational_dependency_depth"],
-                    "capture_requirements": len(captures),
-                    "minimum_capture_slack_slots": minimum_capture_slack,
-                }
-            )
+        )
+    else:
+        expected_metrics.update(
+            {
+                "commit_slot": sampled_timing_constraints["commit_slot"],
+                "dependency_edges": len(exact_contract["dependency_edges"]),
+                "maximum_combinational_dependency_depth": exact_contract[
+                    "metrics"
+                ]["maximum_combinational_dependency_depth"],
+                "capture_requirements": len(captures),
+                "minimum_capture_slack_slots": minimum_capture_slack,
+            }
+        )
     if schedule.get("metrics") != expected_metrics:
         raise ValidationError(
             "schedule.metrics does not match independently recomputed metrics"
         )
     return {
         "status": "pass",
-        **(
-            {"qualification": "dependency-schedule-readiness-pass"}
-            if exact_contract is not None
-            else {}
-        ),
+        "qualification": "dependency-schedule-readiness-pass",
         **expected_metrics,
         "routed_sinks": sum(
             len(route["sinks"]) for route in routes["routes"]

@@ -33,13 +33,11 @@ _BooleanOptionalAction = getattr(
 from .partition import DEFAULT_PARTITION_CUT_MODE, DEFAULT_PATRON_ALGORITHM_VERSION
 
 from .architecture import ArchitectureDB
-from .benchmark import BenchmarkRun, run_benchmark
-from .board_arm_mps4 import materialize_arm_mps4_boarddb
+from .benchmark_inputs import BenchmarkRun
 from .board_link_timing import (
     build_board_link_timing_model,
     validate_board_link_timing,
 )
-from .board_support import validate_board_support_overlay_file
 from .default_platform import (
     DEFAULT_PLATFORM_PATH,
     DEFAULT_WIRES_PER_BANK,
@@ -56,33 +54,7 @@ from .chimew_pipeline import (
     run_chimew_phase6_pipeline,
     validate_chimew_phase6_pipeline,
 )
-from .chimew_correlation import (
-    build_chimew_vivado_correlation,
-    validate_chimew_vivado_correlation,
-)
 from .chimew_qualification import build_chimew_phase6_qualification
-from .contest_eda2024 import (
-    evaluate_eda2024_solution,
-    materialize_eda2024_rtl_boarddb,
-)
-from .contest_eda2023 import (
-    evaluate_eda2023_solution,
-    import_eda2023_case,
-    materialize_eda2023_rtl_boarddb,
-)
-from .contest_iccad2019 import (
-    evaluate_iccad2019_solution,
-    import_iccad2019_instance,
-    materialize_iccad2019_rtl_boarddb,
-)
-from .contest_public import (
-    evaluate_public_contest_case,
-    fetch_public_contest_case,
-    import_public_contest_case,
-    materialize_public_contest_boarddb,
-    validate_public_contest_evaluation,
-)
-from .contest_validation_matrix import load_contest_validation_matrix
 from .combinational_cut import (
     STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2,
     STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
@@ -130,7 +102,6 @@ from .multi_fpga_flow import (
     run_multi_fpga_flow,
     validate_multi_fpga_flow_bundle,
 )
-from .multi_fpga_bsp_flow import run_multi_fpga_bsp_flow
 from .multi_fpga_physical_flow import (
     run_multi_fpga_physical_flow,
 )
@@ -145,12 +116,6 @@ from .phase4 import run_phase4, validate_phase4
 from .phase5 import run_phase5, validate_phase5
 from .phase6 import run_phase6, validate_phase6
 from .phase7c import run_phase7c
-from .physical_pins import (
-    SERIAL_TRANSCEIVER_PROVIDER,
-    run_phase6b,
-    validate_package_pin_binding,
-    validate_serial_transceiver_binding,
-)
 from .physical_regions import (
     run_physical_region_merge,
     run_physical_region_rebind,
@@ -163,10 +128,6 @@ from .pin_planning import (
 from .pin_plan_storage import read_pin_plan
 from .position_hints_storage import read_position_hints
 
-from .runtime_sync import (
-    run_runtime_sync_materialization,
-    validate_runtime_sync_provider,
-)
 from .synthesis import (
     VALID_SYNTHESIS_POLICIES,
     VALID_XILINX_FAMILIES,
@@ -179,21 +140,11 @@ from .sta import (
     project_sta_path_database,
     validate_sta_path_database,
 )
-from .serial_wrapper import run_phase6c
-from .serial_phy_provider import validate_serial_phy_provider_file
-from .serial_phy_elaboration import run_serial_phy_elaboration
-from .serial_phy_recipe import materialize_serial_phy_recipe
 from .tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from .tdm_schedule_storage import read_tdm_schedule
 from .timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from .yosys import import_yosys_json
 from .verilog import emit_mapped_verilog
-from .vivado_board_flow import (
-    run_vivado_board_flow,
-    validate_vivado_board_flow_bundle,
-)
-from .vivado_board_timing import run_vivado_board_timing
-from .vivado_pin_sites import derive_vivado_pin_sites
 
 def _print_json(value: Dict[str, Any]) -> None:
     print(json.dumps(value, indent=2, sort_keys=True))
@@ -258,38 +209,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="differential data pairs per HP bank (default: 20; two pins per pair)",
     )
     platform_research.add_argument("--output", "-o", type=Path, required=True)
-    platform_mps4 = platform_subparsers.add_parser(
-        "arm-mps4-materialize",
-        help="materialize Arm's documented three-MPS4 serial-link topology",
-    )
-    platform_mps4.add_argument("--output", "-o", type=Path, required=True)
-    platform_mps4.add_argument("--name", default="arm_mps4_3board_ring")
-    platform_mps4.add_argument(
-        "--fabric-clock-mhz", type=float, required=True
-    )
-    platform_mps4.add_argument(
-        "--payload-bits-per-lane-per-cycle", type=int, required=True
-    )
-    platform_mps4.add_argument(
-        "--latency-cycles", type=int, required=True
-    )
-    platform_mps4.add_argument(
-        "--utilization-limit", type=float, default=0.75
-    )
-    platform_overlay = platform_subparsers.add_parser(
-        "overlay-validate",
-        help="validate board-specific site, reference-clock, and reset bindings",
-    )
-    platform_overlay.add_argument("--platform", type=Path, required=True)
-    platform_overlay.add_argument("--overlay", type=Path, required=True)
-    platform_overlay.add_argument("--normalized-out", type=Path)
-    platform_gt_sites = platform_subparsers.add_parser(
-        "vivado-derive-gt-sites",
-        help="derive GT sites from BoardDB package pins using a Vivado device DB",
-    )
-    platform_gt_sites.add_argument("--platform", type=Path, required=True)
-    platform_gt_sites.add_argument("--vivado", type=Path, required=True)
-    platform_gt_sites.add_argument("--out", type=Path, required=True)
     platform_link_model = platform_subparsers.add_parser(
         "link-timing-model",
         help="materialize explicit directed link-delay bounds from BoardDB",
@@ -303,229 +222,8 @@ def _build_parser() -> argparse.ArgumentParser:
     platform_link_validate.add_argument("--platform", type=Path, required=True)
     platform_link_validate.add_argument("--input", type=Path, required=True)
 
-    phy_provider = subparsers.add_parser(
-        "phy-provider", help="serial PHY provider and vendor recipe operations"
-    )
-    phy_provider_subparsers = phy_provider.add_subparsers(
-        dest="phy_provider_command", required=True
-    )
-    phy_provider_validate = phy_provider_subparsers.add_parser(
-        "validate", help="validate source inventory and BoardDB compatibility"
-    )
-    phy_provider_validate.add_argument("--manifest", type=Path, required=True)
-    phy_provider_validate.add_argument("--platform", type=Path)
-    phy_provider_validate.add_argument("--normalized-out", type=Path)
-    phy_provider_elaborate = phy_provider_subparsers.add_parser(
-        "elaborate", help="elaborate provider sources with generated FPGA shells"
-    )
-    phy_provider_elaborate.add_argument("--manifest", type=Path, required=True)
-    phy_provider_elaborate.add_argument("--platform", type=Path, required=True)
-    phy_provider_elaborate.add_argument("--phase6c-dir", type=Path, required=True)
-    phy_provider_elaborate.add_argument(
-        "--runtime-controller", type=Path, required=True
-    )
-    phy_provider_elaborate.add_argument(
-        "--transport", action="append", default=[], metavar="FPGA=PATH"
-    )
-    elaborate_tool = phy_provider_elaborate.add_mutually_exclusive_group(
-        required=True
-    )
-    elaborate_tool.add_argument("--yosys", type=Path)
-    elaborate_tool.add_argument("--vivado", type=Path)
-    phy_provider_elaborate.add_argument("--out", type=Path, required=True)
-    phy_provider_materialize = phy_provider_subparsers.add_parser(
-        "materialize-recipe",
-        help="materialize a source-visible vendor GT recipe into a build directory",
-    )
-    phy_provider_materialize.add_argument(
-        "--manifest", type=Path, required=True
-    )
-    phy_provider_materialize.add_argument("--part", required=True)
-    phy_provider_materialize.add_argument("--vivado", type=Path, required=True)
-    phy_provider_materialize.add_argument("--platform", type=Path)
-    phy_provider_materialize.add_argument("--out", type=Path, required=True)
 
-    runtime_sync = subparsers.add_parser(
-        "runtime-sync",
-        help="source-visible distributed runtime synchronization operations",
-    )
-    runtime_sync_subparsers = runtime_sync.add_subparsers(
-        dest="runtime_sync_command", required=True
-    )
-    runtime_sync_validate = runtime_sync_subparsers.add_parser(
-        "validate-provider",
-        help="validate the runtime synchronization source inventory",
-    )
-    runtime_sync_validate.add_argument("--provider", type=Path, required=True)
-    runtime_sync_materialize = runtime_sync_subparsers.add_parser(
-        "materialize",
-        help="build a deterministic synchronization tree and HDL testbench",
-    )
-    runtime_sync_materialize.add_argument("--platform", type=Path, required=True)
-    runtime_sync_materialize.add_argument("--provider", type=Path, required=True)
-    runtime_sync_materialize.add_argument("--root")
-    runtime_sync_materialize.add_argument(
-        "--ready-stable-cycles", type=int, default=4
-    )
-    runtime_sync_materialize.add_argument("--out", type=Path, required=True)
 
-    contest_parser = subparsers.add_parser(
-        "contest", help="public multi-FPGA contest format adapters"
-    )
-    contest_subparsers = contest_parser.add_subparsers(
-        dest="contest_command", required=True
-    )
-    contest_matrix = contest_subparsers.add_parser(
-        "matrix-validate",
-        help="validate the versioned public contest qualification matrix",
-    )
-    contest_matrix.add_argument("matrix", type=Path)
-    contest_fetch = contest_subparsers.add_parser(
-        "fetch-public",
-        help="fetch one hash-pinned public matrix case and validate provenance",
-    )
-    contest_fetch.add_argument("--matrix", type=Path, required=True)
-    contest_fetch.add_argument("--case-id", required=True)
-    contest_fetch.add_argument("--out", type=Path, required=True)
-    contest_import = contest_subparsers.add_parser(
-        "import-public",
-        help="semantically import one pinned public matrix case",
-    )
-    contest_import.add_argument("--matrix", type=Path, required=True)
-    contest_import.add_argument("--case-id", required=True)
-    contest_import.add_argument("--source-dir", type=Path, required=True)
-    contest_import.add_argument("--out", type=Path, required=True)
-    contest_evaluate_public = contest_subparsers.add_parser(
-        "evaluate-public",
-        help="build a replayable sealed evaluation for one public matrix case",
-    )
-    contest_evaluate_public.add_argument("--matrix", type=Path, required=True)
-    contest_evaluate_public.add_argument("--case-id", required=True)
-    contest_evaluate_public.add_argument("--source-dir", type=Path, required=True)
-    contest_evaluate_public.add_argument("--import-dir", type=Path, required=True)
-    contest_evaluate_public.add_argument("--routes", type=Path)
-    contest_evaluate_public.add_argument("--expected-routes-sha256")
-    contest_evaluate_public.add_argument("--tdm-plan", type=Path)
-    contest_evaluate_public.add_argument("--expected-tdm-plan-sha256")
-    contest_evaluate_public.add_argument("--solution", type=Path)
-    contest_evaluate_public.add_argument("--expected-solution-sha256")
-    contest_evaluate_public.add_argument(
-        "--runtime-seconds", type=float, default=0.0
-    )
-    contest_evaluate_public.add_argument("--out", type=Path, required=True)
-    contest_validate_evaluation = contest_subparsers.add_parser(
-        "validate-public-evaluation",
-        help="independently replay and validate a sealed public evaluation",
-    )
-    contest_validate_evaluation.add_argument("--matrix", type=Path, required=True)
-    contest_validate_evaluation.add_argument("bundle", type=Path)
-    contest_boarddb = contest_subparsers.add_parser(
-        "materialize-public-boarddb",
-        help="materialize a passed public import on an RTL-capable FPGA template",
-    )
-    contest_boarddb.add_argument("--matrix", type=Path, required=True)
-    contest_boarddb.add_argument("--case-id", required=True)
-    contest_boarddb.add_argument("--source-dir", type=Path, required=True)
-    contest_boarddb.add_argument("--import-dir", type=Path, required=True)
-    contest_boarddb.add_argument("--device-template", type=Path, required=True)
-    contest_boarddb.add_argument("--out", type=Path, required=True)
-    contest_boarddb.add_argument("--lane-scale", type=int, default=1)
-    contest_boarddb.add_argument("--unweighted-link-lanes", type=int, default=1)
-    contest_boarddb.add_argument("--fabric-clock-mhz", type=float, default=50.0)
-    contest_boarddb.add_argument("--latency-cycles", type=int, default=2)
-    eda2024_evaluate = contest_subparsers.add_parser(
-        "eda2024-evaluate",
-        help="independently check a 2024 logic-replication solution",
-    )
-    eda2024_evaluate.add_argument("--case-dir", type=Path, required=True)
-    eda2024_evaluate.add_argument("--solution", type=Path)
-    eda2024_evaluate.add_argument(
-        "--runtime-seconds", type=float, default=0.0
-    )
-    eda2024_evaluate.add_argument("--output", "-o", type=Path)
-    eda2024_boarddb = contest_subparsers.add_parser(
-        "eda2024-materialize-boarddb",
-        help="project a public unweighted topology using explicit abstract lanes",
-    )
-    eda2024_boarddb.add_argument("--case-dir", type=Path, required=True)
-    eda2024_boarddb.add_argument("--device-template", type=Path, required=True)
-    eda2024_boarddb.add_argument("--output", "-o", type=Path, required=True)
-    eda2024_boarddb.add_argument("--route-constraints-output", type=Path)
-    eda2024_boarddb.add_argument("--name", required=True)
-    eda2024_boarddb.add_argument("--lanes-per-edge", type=int, required=True)
-    eda2024_boarddb.add_argument("--template-fpga")
-    eda2024_boarddb.add_argument("--fabric-clock-mhz", type=float, default=50.0)
-    eda2024_boarddb.add_argument("--latency-cycles", type=int, default=2)
-    eda2024_boarddb.add_argument(
-        "--link-mode",
-        choices=("abstract", "parallel", "serial", "source_synchronous"),
-        default="abstract",
-    )
-    eda2023_import = contest_subparsers.add_parser(
-        "eda2023-import",
-        help="normalize an official 2023 die-level routing case",
-    )
-    eda2023_import.add_argument("--case-dir", type=Path, required=True)
-    eda2023_import.add_argument("--name", required=True)
-    eda2023_import.add_argument("--out", type=Path, required=True)
-    eda2023_boarddb = contest_subparsers.add_parser(
-        "eda2023-materialize-boarddb",
-        help="project public die Wire banks onto RTL-capable physical FPGAs",
-    )
-    eda2023_boarddb.add_argument("--instance", type=Path, required=True)
-    eda2023_boarddb.add_argument("--device-template", type=Path, required=True)
-    eda2023_boarddb.add_argument("--output", "-o", type=Path, required=True)
-    eda2023_boarddb.add_argument("--route-constraints-output", type=Path)
-    eda2023_boarddb.add_argument("--name", required=True)
-    eda2023_boarddb.add_argument("--template-fpga")
-    eda2023_boarddb.add_argument("--lane-scale", type=int, default=1)
-    eda2023_boarddb.add_argument("--fabric-clock-mhz", type=float, default=50.0)
-    eda2023_boarddb.add_argument("--latency-cycles", type=int, default=2)
-    eda2023_boarddb.add_argument(
-        "--link-mode",
-        choices=("abstract", "parallel", "serial", "source_synchronous"),
-        default="abstract",
-    )
-    eda2023_evaluate = contest_subparsers.add_parser(
-        "eda2023-evaluate",
-        help="independently check routed trees and a per-Wire TDM plan",
-    )
-    eda2023_evaluate.add_argument("--instance", type=Path, required=True)
-    eda2023_evaluate.add_argument("--routes", type=Path, required=True)
-    eda2023_evaluate.add_argument("--tdm-plan", type=Path, required=True)
-    eda2023_evaluate.add_argument("--output", "-o", type=Path)
-    iccad2019_import = contest_subparsers.add_parser(
-        "iccad2019-import",
-        help="normalize an official ICCAD 2019 Problem B instance",
-    )
-    iccad2019_import.add_argument("--input", type=Path, required=True)
-    iccad2019_import.add_argument("--name", required=True)
-    iccad2019_import.add_argument("--out", type=Path, required=True)
-    iccad2019_boarddb = contest_subparsers.add_parser(
-        "iccad2019-materialize-boarddb",
-        help="populate a Problem B FPGA graph with an RTL-capable device template",
-    )
-    iccad2019_boarddb.add_argument("--instance", type=Path, required=True)
-    iccad2019_boarddb.add_argument("--device-template", type=Path, required=True)
-    iccad2019_boarddb.add_argument("--output", "-o", type=Path, required=True)
-    iccad2019_boarddb.add_argument("--name", required=True)
-    iccad2019_boarddb.add_argument("--template-fpga")
-    iccad2019_boarddb.add_argument("--lane-scale", type=int, default=1)
-    iccad2019_boarddb.add_argument("--fabric-clock-mhz", type=float, default=50.0)
-    iccad2019_boarddb.add_argument("--latency-cycles", type=int, default=2)
-    iccad2019_boarddb.add_argument(
-        "--link-mode",
-        choices=("abstract", "parallel", "serial", "source_synchronous"),
-        default="abstract",
-    )
-    iccad2019_evaluate = contest_subparsers.add_parser(
-        "iccad2019-evaluate",
-        help="independently check an official-format ICCAD 2019 solution",
-    )
-    iccad2019_evaluate.add_argument("--instance", type=Path, required=True)
-    iccad2019_evaluate.add_argument("--solution", type=Path, required=True)
-    iccad2019_evaluate.add_argument("--runtime-seconds", type=float)
-    iccad2019_evaluate.add_argument("--median-runtime-seconds", type=float)
     ir_parser = subparsers.add_parser("ir", help="EmuIR operations")
     ir_subparsers = ir_parser.add_subparsers(dest="ir_command", required=True)
     ir_validate = ir_subparsers.add_parser("validate", help="validate an EmuIR")
@@ -956,25 +654,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument("--global-timing-engine", choices=("opensta",),
                                    default="opensta", help="global physical timing engine (default: opensta)")
-    multi_fpga_compile.add_argument(
-        "--serial-bsp-phy-provider",
-        type=Path,
-        help=(
-            "continue the completed compile through serial hardware-BSP "
-            "generation using this provider manifest"
-        ),
-    )
-    multi_fpga_compile.add_argument(
-        "--serial-bsp-runtime-sync-provider", type=Path
-    )
-    multi_fpga_compile.add_argument("--serial-bsp-board-overlay", type=Path)
-    multi_fpga_compile.add_argument("--serial-bsp-gt-site-map", type=Path)
-    multi_fpga_compile.add_argument("--serial-bsp-vivado", type=Path)
-    multi_fpga_compile.add_argument("--serial-bsp-yosys", type=Path)
-    multi_fpga_compile.add_argument("--serial-bsp-runtime-sync-root")
-    multi_fpga_compile.add_argument(
-        "--serial-bsp-ready-stable-cycles", type=int, default=4
-    )
     multi_fpga_physical = multi_fpga_subparsers.add_parser(
         "physical",
         help=(
@@ -1064,77 +743,6 @@ def _build_parser() -> argparse.ArgumentParser:
             "reuse only independently validated physical "
             "checkpoints before continuing OpenPARF and detailed routing"
         ),
-    )
-    multi_fpga_bsp = multi_fpga_subparsers.add_parser(
-        "bsp",
-        help=(
-            "continue a completed compile through serial Phase 6B/6C, "
-            "runtime synchronization, and checked PHY elaboration"
-        ),
-    )
-    multi_fpga_bsp.add_argument("--flow", type=Path, required=True)
-    multi_fpga_bsp.add_argument("--platform", type=Path, required=True)
-    multi_fpga_bsp.add_argument("--phy-provider", type=Path, required=True)
-    multi_fpga_bsp.add_argument(
-        "--runtime-sync-provider", type=Path, required=True
-    )
-    multi_fpga_bsp.add_argument("--board-overlay", type=Path)
-    multi_fpga_bsp.add_argument("--gt-site-map", type=Path)
-    multi_fpga_bsp.add_argument("--vivado", type=Path)
-    multi_fpga_bsp.add_argument("--yosys", type=Path)
-    multi_fpga_bsp.add_argument("--runtime-sync-root")
-    multi_fpga_bsp.add_argument(
-        "--ready-stable-cycles", type=int, default=4
-    )
-    multi_fpga_bsp.add_argument("--out", type=Path, required=True)
-    multi_fpga_board = multi_fpga_subparsers.add_parser(
-        "board-implement",
-        help=(
-            "place and route each Vivado DUT+transport partition together "
-            "with its source-bound serial BSP"
-        ),
-    )
-    multi_fpga_board.add_argument("--flow", type=Path, required=True)
-    multi_fpga_board.add_argument("--bsp", type=Path, required=True)
-    multi_fpga_board.add_argument("--platform", type=Path, required=True)
-    multi_fpga_board.add_argument("--phy-provider", type=Path, required=True)
-    multi_fpga_board.add_argument("--vivado", type=Path, required=True)
-    multi_fpga_board.add_argument("--place-directive", default="Default")
-    multi_fpga_board.add_argument("--route-directive", default="Default")
-    multi_fpga_board.add_argument("--write-bitstream", action="store_true")
-    multi_fpga_board.add_argument("--out", type=Path, required=True)
-    multi_fpga_board_validate = multi_fpga_subparsers.add_parser(
-        "board-validate",
-        help="rehash and validate a relocatable Vivado board-flow bundle",
-    )
-    multi_fpga_board_validate.add_argument("board", type=Path)
-    multi_fpga_board_timing = multi_fpga_subparsers.add_parser(
-        "board-timing",
-        help=(
-            "export routed board-checkpoint logic/boundary timing and "
-            "rebuild unified Phase 7C timing"
-        ),
-    )
-    multi_fpga_board_timing.add_argument("--flow", type=Path, required=True)
-    multi_fpga_board_timing.add_argument("--board", type=Path, required=True)
-    multi_fpga_board_timing.add_argument("--platform", type=Path, required=True)
-    multi_fpga_board_timing.add_argument("--vivado", type=Path, required=True)
-    multi_fpga_board_timing.add_argument(
-        "--hierarchy-prefix", default="mapped_partition"
-    )
-    multi_fpga_board_timing.add_argument("--workers", type=int, default=3)
-    multi_fpga_board_timing.add_argument("--resume", action="store_true")
-    multi_fpga_board_timing.add_argument("--link-timing-db", type=Path)
-    multi_fpga_board_timing.add_argument("--out", type=Path, required=True)
-    benchmark = subparsers.add_parser(
-        "benchmark", help="run a pinned RTL benchmark through Phase 1"
-    )
-    benchmark.add_argument("spec", type=Path)
-    benchmark.add_argument("--source-root", type=Path, required=True)
-    benchmark.add_argument("--out", type=Path, required=True)
-    benchmark.add_argument(
-        "--yosys",
-        help="explicit comparison override; defaults to the in-tree build",
     )
     phase1 = subparsers.add_parser(
         "phase1", help="run the board-independent Phase 1 pipeline"
@@ -1763,20 +1371,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="independently validate a frozen Chimew Phase 6 bundle",
     )
     pin_plan_chimew_validate.add_argument("bundle", type=Path)
-    pin_plan_chimew_correlate = pin_plan_subparsers.add_parser(
-        "chimew-correlate",
-        help="rank-correlate source-bound Chimew candidates with Vivado evidence",
-    )
-    pin_plan_chimew_correlate.add_argument("--input", type=Path, required=True)
-    pin_plan_chimew_correlate.add_argument("--output", "-o", type=Path, required=True)
-    pin_plan_chimew_correlation_validate = pin_plan_subparsers.add_parser(
-        "chimew-correlation-validate",
-        help="independently replay a Chimew/Vivado correlation report",
-    )
-    pin_plan_chimew_correlation_validate.add_argument(
-        "--input", type=Path, required=True
-    )
-    pin_plan_chimew_correlation_validate.add_argument("report", type=Path)
     pin_plan_validate = pin_plan_subparsers.add_parser(
         "validate", help="independently validate a pin plan"
     )
@@ -1826,95 +1420,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="required for multi-clock Phase 6; repeat once per DUT clock",
     )
 
-    phase6b = subparsers.add_parser(
-        "phase6b",
-        help="bind virtual link anchors to electrical BSP package pins",
-    )
-    phase6b.add_argument("--schedule", type=Path, required=True)
-    phase6b.add_argument("--platform", type=Path, required=True)
-    phase6b.add_argument(
-        "--position-hints",
-        type=Path,
-        help="required with --pin-plan or for a parallel-I/O BSP",
-    )
-    phase6b.add_argument(
-        "--pin-plan",
-        type=Path,
-        help="required with --position-hints or for a parallel-I/O BSP",
-    )
-    phase6b.add_argument(
-        "--anchor", action="append", default=[], metavar="FPGA=PATH"
-    )
-    phase6b.add_argument(
-        "--bsp",
-        type=Path,
-        help=(
-            "parallel-I/O hardware BSP; omit for source-backed serial "
-            "endpoint bindings embedded in BoardDB"
-        ),
-    )
-    phase6b.add_argument("--solver")
-    phase6b.add_argument("--iostandard", default="LVCMOS18")
-    phase6b.add_argument("--placement-weight", type=float, default=1.0)
-    phase6b.add_argument("--skew-weight", type=float, default=1.0)
-    phase6b.add_argument("--out", type=Path, required=True)
 
-    phase6c = subparsers.add_parser(
-        "phase6c",
-        help="generate serial-PHY wrapper RTL and its unresolved provider contract",
-    )
-    phase6c.add_argument("--platform", type=Path, required=True)
-    phase6c.add_argument("--binding", type=Path, required=True)
-    phase6c.add_argument(
-        "--transport", action="append", default=[], metavar="FPGA=PATH"
-    )
-    phase6c.add_argument(
-        "--phy-provider",
-        type=Path,
-        help="source-visible or materialized vendor serial PHY provider manifest",
-    )
-    phase6c.add_argument(
-        "--board-overlay",
-        type=Path,
-        help="validated board-specific GT site, reference-clock, and reset bindings",
-    )
-    phase6c.add_argument(
-        "--gt-site-map",
-        type=Path,
-        help="Vivado-derived package-pin to GT channel site map",
-    )
-    phase6c.add_argument(
-        "--runtime-sync-topology",
-        type=Path,
-        help="validated rooted-tree runtime synchronization topology",
-    )
-    phase6c.add_argument(
-        "--runtime-sync-provider",
-        type=Path,
-        help="source-visible runtime synchronization provider manifest",
-    )
-    phase6c.add_argument("--out", type=Path, required=True)
 
-    package_pin = subparsers.add_parser(
-        "package-pin",
-        help="physical package-pin binding artifact operations",
-    )
-    package_pin_subparsers = package_pin.add_subparsers(
-        dest="package_pin_command", required=True
-    )
-    package_pin_validate = package_pin_subparsers.add_parser(
-        "validate",
-        help="independently validate a package-pin binding",
-    )
-    package_pin_validate.add_argument("binding", type=Path)
-    package_pin_validate.add_argument("--schedule", type=Path, required=True)
-    package_pin_validate.add_argument("--platform", type=Path, required=True)
-    package_pin_validate.add_argument("--position-hints", type=Path)
-    package_pin_validate.add_argument("--pin-plan", type=Path)
-    package_pin_validate.add_argument(
-        "--anchor", action="append", default=[], metavar="FPGA=PATH"
-    )
-    package_pin_validate.add_argument("--bsp", type=Path)
 
     lower = subparsers.add_parser(
         "lower-placement-ir",
@@ -1998,35 +1505,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 wires_per_bank=args.wires_per_bank,
             ))
             return 0
-        if args.platform_command == "arm-mps4-materialize":
-            report = materialize_arm_mps4_boarddb(
-                output_path=args.output,
-                name=args.name,
-                fabric_clock_mhz=args.fabric_clock_mhz,
-                payload_bits_per_lane_per_cycle=(
-                    args.payload_bits_per_lane_per_cycle
-                ),
-                latency_cycles=args.latency_cycles,
-                utilization_limit=args.utilization_limit,
-            )
-            _print_json(report)
-            return 0
-        if args.platform_command == "overlay-validate":
-            report = validate_board_support_overlay_file(
-                platform_path=args.platform,
-                overlay_path=args.overlay,
-                normalized_out=args.normalized_out,
-            )
-            _print_json(report)
-            return 0
-        if args.platform_command == "vivado-derive-gt-sites":
-            report = derive_vivado_pin_sites(
-                platform_path=args.platform,
-                vivado_executable=args.vivado,
-                output_dir=args.out,
-            )
-            _print_json(report)
-            return 0
         if args.platform_command == "link-timing-model":
             platform = Platform.load(args.platform)
             database = build_board_link_timing_model(platform)
@@ -2046,178 +1524,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         _print_json(platform.summary())
         return 0
 
-    if args.command == "phy-provider":
-        if args.phy_provider_command == "materialize-recipe":
-            report = materialize_serial_phy_recipe(
-                manifest_path=args.manifest,
-                part=args.part,
-                vivado_executable=args.vivado,
-                output_dir=args.out,
-                platform_path=args.platform,
-            )
-            _print_json(report)
-            return 0
-        if args.phy_provider_command == "elaborate":
-            report = run_serial_phy_elaboration(
-                platform_path=args.platform,
-                provider_manifest_path=args.manifest,
-                phase6c_dir=args.phase6c_dir,
-                runtime_controller_path=args.runtime_controller,
-                transport_rtl_paths=_keyed_paths(
-                    args.transport, "--transport"
-                ),
-                yosys_executable=args.yosys,
-                vivado_executable=args.vivado,
-                output_dir=args.out,
-            )
-            _print_json(report)
-            return 0
-        report = validate_serial_phy_provider_file(
-            manifest_path=args.manifest,
-            platform_path=args.platform,
-            normalized_out=args.normalized_out,
-        )
-        _print_json(report)
-        return 0
 
-    if args.command == "runtime-sync":
-        if args.runtime_sync_command == "validate-provider":
-            report = validate_runtime_sync_provider(
-                read_json(args.provider), args.provider
-            )
-            report = {key: value for key, value in report.items() if key != "normalized"}
-        else:
-            report = run_runtime_sync_materialization(
-                platform_path=args.platform,
-                provider_path=args.provider,
-                output_dir=args.out,
-                root=args.root,
-                ready_stable_cycles=args.ready_stable_cycles,
-            )
-        _print_json(report)
-        return 0
 
-    if args.command == "contest":
-        if args.contest_command == "matrix-validate":
-            _, report = load_contest_validation_matrix(args.matrix)
-        elif args.contest_command == "fetch-public":
-            report = fetch_public_contest_case(
-                args.matrix, args.case_id, args.out
-            )
-        elif args.contest_command == "import-public":
-            report = import_public_contest_case(
-                args.matrix, args.case_id, args.source_dir, args.out
-            )
-        elif args.contest_command == "evaluate-public":
-            report = evaluate_public_contest_case(
-                args.matrix,
-                args.case_id,
-                args.source_dir,
-                args.import_dir,
-                args.routes,
-                args.out,
-                tdm_plan_path=args.tdm_plan,
-                solution_path=args.solution,
-                runtime_seconds=args.runtime_seconds,
-                expected_routes_sha256=args.expected_routes_sha256,
-                expected_tdm_plan_sha256=args.expected_tdm_plan_sha256,
-                expected_solution_sha256=args.expected_solution_sha256,
-            )
-        elif args.contest_command == "validate-public-evaluation":
-            report = validate_public_contest_evaluation(args.matrix, args.bundle)
-        elif args.contest_command == "materialize-public-boarddb":
-            report = materialize_public_contest_boarddb(
-                args.matrix,
-                args.case_id,
-                args.source_dir,
-                args.import_dir,
-                args.device_template,
-                args.out,
-                lane_scale=args.lane_scale,
-                unweighted_link_lanes=args.unweighted_link_lanes,
-                fabric_clock_mhz=args.fabric_clock_mhz,
-                latency_cycles=args.latency_cycles,
-            )
-        elif args.contest_command == "eda2023-import":
-            report = import_eda2023_case(
-                case_dir=args.case_dir,
-                output_dir=args.out,
-                name=args.name,
-            )
-        elif args.contest_command == "eda2023-materialize-boarddb":
-            report = materialize_eda2023_rtl_boarddb(
-                instance_path=args.instance,
-                device_template_path=args.device_template,
-                output_path=args.output,
-                name=args.name,
-                template_fpga_id=args.template_fpga,
-                lane_scale=args.lane_scale,
-                fabric_clock_mhz=args.fabric_clock_mhz,
-                latency_cycles=args.latency_cycles,
-                link_mode=args.link_mode,
-                route_constraints_path=args.route_constraints_output,
-            )
-        elif args.contest_command == "eda2023-evaluate":
-            report = evaluate_eda2023_solution(
-                instance_path=args.instance,
-                routes_path=args.routes,
-                tdm_plan_path=args.tdm_plan,
-            )
-            if args.output is not None:
-                write_json(args.output, report)
-        elif args.contest_command == "eda2024-evaluate":
-            solution = args.solution or args.case_dir / "design.fpga.out"
-            report = evaluate_eda2024_solution(
-                info_path=args.case_dir / "design.info",
-                area_path=args.case_dir / "design.are",
-                net_path=args.case_dir / "design.net",
-                topology_path=args.case_dir / "design.topo",
-                solution_path=solution,
-                runtime_seconds=args.runtime_seconds,
-                output_path=args.output,
-            )
-        elif args.contest_command == "eda2024-materialize-boarddb":
-            report = materialize_eda2024_rtl_boarddb(
-                case_dir=args.case_dir,
-                device_template_path=args.device_template,
-                output_path=args.output,
-                name=args.name,
-                lanes_per_edge=args.lanes_per_edge,
-                template_fpga_id=args.template_fpga,
-                fabric_clock_mhz=args.fabric_clock_mhz,
-                latency_cycles=args.latency_cycles,
-                link_mode=args.link_mode,
-                route_constraints_path=args.route_constraints_output,
-            )
-        elif args.contest_command == "iccad2019-import":
-            report = import_iccad2019_instance(
-                input_path=args.input,
-                output_dir=args.out,
-                name=args.name,
-            )
-        elif args.contest_command == "iccad2019-materialize-boarddb":
-            report = materialize_iccad2019_rtl_boarddb(
-                instance_path=args.instance,
-                device_template_path=args.device_template,
-                output_path=args.output,
-                name=args.name,
-                template_fpga_id=args.template_fpga,
-                lane_scale=args.lane_scale,
-                fabric_clock_mhz=args.fabric_clock_mhz,
-                latency_cycles=args.latency_cycles,
-                link_mode=args.link_mode,
-            )
-        elif args.contest_command == "iccad2019-evaluate":
-            report = evaluate_iccad2019_solution(
-                instance_path=args.instance,
-                solution_path=args.solution,
-                runtime_seconds=args.runtime_seconds,
-                median_runtime_seconds=args.median_runtime_seconds,
-            )
-        else:
-            raise AssertionError(f"unhandled contest command {args.contest_command!r}")
-        _print_json(report)
-        return 0
 
     if args.command == "ir":
         ir = EmuIR.load(args.path)
@@ -2287,15 +1595,6 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         return 0
 
-    if args.command == "benchmark":
-        report = run_benchmark(
-            spec_path=args.spec,
-            source_root=args.source_root,
-            output_dir=args.out,
-            yosys=args.yosys,
-        )
-        _print_json(report)
-        return 0 if report["status"] == "pass" else 2
 
     if args.command == "phase1":
         report = run_phase1(
@@ -2471,53 +1770,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             _print_json(report["summary"])
             return 0
 
-        if args.multi_fpga_command == "board-validate":
-            _print_json(validate_vivado_board_flow_bundle(args.board))
-            return 0
-        if args.multi_fpga_command == "board-timing":
-            report = run_vivado_board_timing(
-                flow_root=args.flow,
-                board_root=args.board,
-                platform_path=args.platform,
-                vivado_executable=args.vivado,
-                output_dir=args.out,
-                hierarchy_prefix=args.hierarchy_prefix,
-                workers=args.workers,
-                resume=args.resume,
-                link_timing_path=args.link_timing_db,
-            )
-            _print_json(report["summary"])
-            return 0
-        if args.multi_fpga_command == "board-implement":
-            report = run_vivado_board_flow(
-                flow_root=args.flow,
-                bsp_root=args.bsp,
-                platform_path=args.platform,
-                phy_provider_path=args.phy_provider,
-                vivado_executable=args.vivado,
-                output_dir=args.out,
-                place_directive=args.place_directive,
-                route_directive=args.route_directive,
-                write_bitstream=args.write_bitstream,
-            )
-            _print_json(report["summary"])
-            return 0
-        if args.multi_fpga_command == "bsp":
-            report = run_multi_fpga_bsp_flow(
-                flow_root=args.flow,
-                platform_path=args.platform,
-                phy_provider_path=args.phy_provider,
-                runtime_sync_provider_path=args.runtime_sync_provider,
-                output_dir=args.out,
-                board_overlay_path=args.board_overlay,
-                gt_site_map_path=args.gt_site_map,
-                vivado_executable=args.vivado,
-                yosys_executable=args.yosys,
-                runtime_sync_root=args.runtime_sync_root,
-                ready_stable_cycles=args.ready_stable_cycles,
-            )
-            _print_json(report["summary"])
-            return 0
         if args.multi_fpga_command == "physical":
             report = run_multi_fpga_physical_flow(
                 split_root=args.split,
@@ -2732,20 +1984,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             physical_workers=args.physical_workers,
             global_sta_executable=args.global_sta_executable,
             global_timing_engine=args.global_timing_engine,
-            serial_bsp_phy_provider=args.serial_bsp_phy_provider,
-            serial_bsp_runtime_sync_provider=(
-                args.serial_bsp_runtime_sync_provider
-            ),
-            serial_bsp_board_overlay=args.serial_bsp_board_overlay,
-            serial_bsp_gt_site_map=args.serial_bsp_gt_site_map,
-            serial_bsp_vivado=args.serial_bsp_vivado,
-            serial_bsp_yosys=args.serial_bsp_yosys,
-            serial_bsp_runtime_sync_root=(
-                args.serial_bsp_runtime_sync_root
-            ),
-            serial_bsp_ready_stable_cycles=(
-                args.serial_bsp_ready_stable_cycles
-            ),
         )
         _print_json(report.get("summary", report))
         return 0 if report["status"] == "pass" else 2
@@ -2969,14 +2207,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             report = validate_chimew_phase6_pipeline(args.bundle)
             _print_json(report)
             return 0
-        if args.pin_plan_command == "chimew-correlate":
-            report = build_chimew_vivado_correlation(args.input, args.output)
-            _print_json(report)
-            return 0
-        if args.pin_plan_command == "chimew-correlation-validate":
-            report = validate_chimew_vivado_correlation(args.input, args.report)
-            _print_json(report)
-            return 0
         schedule = read_tdm_schedule(args.schedule)
         platform = Platform.load(args.platform)
         report = validate_pin_plan(
@@ -3024,83 +2254,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
 
-    if args.command == "phase6b":
-        report = run_phase6b(
-            schedule_path=args.schedule,
-            platform_path=args.platform,
-            positions_path=args.position_hints,
-            pin_plan_path=args.pin_plan,
-            anchor_paths=_keyed_paths(args.anchor, "--anchor"),
-            bsp_path=args.bsp,
-            output_dir=args.out,
-            executable=args.solver,
-            iostandard=args.iostandard,
-            placement_weight=args.placement_weight,
-            skew_weight=args.skew_weight,
-        )
-        _print_json(report)
-        return 0 if report["status"] == "pass" else 2
 
-    if args.command == "phase6c":
-        report = run_phase6c(
-            platform_path=args.platform,
-            binding_path=args.binding,
-            output_dir=args.out,
-            transport_paths=(
-                _keyed_paths(args.transport, "--transport")
-                if args.transport
-                else None
-            ),
-            board_overlay_path=args.board_overlay,
-            phy_provider_path=args.phy_provider,
-            gt_site_map_path=args.gt_site_map,
-            runtime_sync_topology_path=args.runtime_sync_topology,
-            runtime_sync_provider_path=args.runtime_sync_provider,
-        )
-        _print_json(report)
-        return 0 if report["status"] == "pass" else 2
 
-    if args.command == "package-pin":
-        platform = Platform.load(args.platform)
-        schedule = read_tdm_schedule(args.schedule)
-        positions = (
-            read_position_hints(args.position_hints)
-            if args.position_hints is not None
-            else None
-        )
-        plan = read_pin_plan(args.pin_plan) if args.pin_plan is not None else None
-        anchors = {
-            fpga: read_json(path)
-            for fpga, path in _keyed_paths(
-                args.anchor, "--anchor"
-            ).items()
-        }
-        binding = read_json(args.binding)
-        if binding.get("provider") == SERIAL_TRANSCEIVER_PROVIDER:
-            if args.bsp is not None:
-                parser.error(
-                    "--bsp must be omitted for a BoardDB serial binding"
-                )
-            report = validate_serial_transceiver_binding(
-                schedule, platform, positions, plan, anchors, binding
-            )
-        else:
-            if args.bsp is None or positions is None or plan is None:
-                parser.error(
-                    "--bsp, --position-hints, and --pin-plan are required "
-                    "for a parallel package-pin binding"
-                )
-            report = validate_package_pin_binding(
-                schedule,
-                platform,
-                positions,
-                plan,
-                anchors,
-                read_json(args.bsp),
-                binding,
-            )
-        _print_json(report)
-        return 0
 
     if args.command == "lower-placement-ir":
         report = run_placement_ir_lowering_from_split(

@@ -1,3 +1,4 @@
+from tests.openparf_export_fixture import export_atomic_facts as export_xilinx_openparf_atomic
 from tests.openparf_bridge_fixture import materialize_bridge_fixture as materialize_xilinx_openparf_atomic_contract
 import tempfile
 import unittest
@@ -10,7 +11,6 @@ from unittest import mock
 from emuflow.xilinx_openparf_atomic import (
     _native_carry_y_axis_order,
     build_xilinx_openparf_atomic_source,
-    export_xilinx_openparf_atomic,
     read_xilinx_openparf_atomic_source,
     read_xilinx_openparf_atomic_name_map,
     validate_xilinx_openparf_atomic_placement,

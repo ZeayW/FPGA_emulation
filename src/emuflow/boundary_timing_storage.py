@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from contextlib import closing
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 import fcntl
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import shutil
@@ -42,7 +41,6 @@ _SELECTOR_KEYS = {
     "counts", "logical_sha256", "artifact", "store_bytes", "store_sha256",
 }
 
-_DDL = (Path(__file__).parent / "data/schema/boundary_timing.sql").read_text()
 
 
 def _canonical(value: Any) -> str:
@@ -103,31 +101,6 @@ def _validate_header(raw: Any, counts: Optional[Mapping[str, int]] = None) -> di
     return header
 
 
-def _normalize_record(raw: Any) -> dict[str, Any]:
-    if not isinstance(raw, Mapping) or set(raw) != {
-        "id", "kind", "schedule_entry", "delay_ns", "start_object",
-        "end_object", "measurement",
-    }:
-        raise ValidationError("boundary timing endpoint fields are invalid")
-    record = dict(raw)
-    delay = record.get("delay_ns")
-    if (
-        record.get("kind") not in {"tx", "rx"}
-        or any(
-            not isinstance(record.get(field), str) or not record[field]
-            for field in (
-                "id", "schedule_entry", "start_object", "end_object",
-                "measurement",
-            )
-        )
-        or isinstance(delay, bool)
-        or not isinstance(delay, (int, float))
-        or not math.isfinite(float(delay))
-        or float(delay) < 0.0
-    ):
-        raise ValidationError("boundary timing endpoint values are invalid")
-    record["delay_ns"] = float(delay)
-    return record
 
 
 def _record_from_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -394,170 +367,11 @@ def _collect_stale(path: Path, keep: Path) -> None:
         candidate.unlink()
 
 
-def write_boundary_timing_storage(
-    path: Path,
-    header: Mapping[str, Any],
-    records: Iterable[Mapping[str, Any]],
-    *,
-    source_bindings=(),
-) -> BoundaryTimingView:
-    """Atomically publish one typed boundary timing generation."""
-
-    source_bindings = validate_store_destination(path, source_bindings)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    base_header = dict(header)
-    base_header["coverage"] = {"endpoints": 0, "tx": 0, "rx": 0}
-    _validate_header(base_header)
-    lease: Optional[_Lease] = _Lease(path, exclusive=True)
-    temporary: Optional[Path] = None
-    selector_temporary: Optional[Path] = None
-    published_store: Optional[Path] = None
-    created_store = False
-    committed = False
-    connection: Optional[sqlite3.Connection] = None
-    try:
-        if path.is_symlink() or (path.exists() and not path.is_file()):
-            raise ValidationError("boundary timing selector is invalid")
-        descriptor, name = tempfile.mkstemp(
-            prefix=f".{path.stem}.", suffix=".sqlite.tmp", dir=path.parent
-        )
-        os.close(descriptor)
-        temporary = Path(name)
-        descriptor, name = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-        )
-        os.close(descriptor)
-        selector_temporary = Path(name)
-        connection = sqlite3.connect(temporary)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=OFF")
-        connection.execute("PRAGMA synchronous=OFF")
-        connection.execute(f"PRAGMA application_id={BOUNDARY_TIMING_APPLICATION_ID}")
-        connection.execute(f"PRAGMA user_version={BOUNDARY_TIMING_USER_VERSION}")
-        connection.executescript(_DDL)
-        rows: list[tuple[Any, ...]] = []
-
-        def flush() -> None:
-            if rows:
-                connection.executemany(
-                    "INSERT INTO timings VALUES (?,?,?,?,?,?,?)", rows
-                )
-                rows.clear()
-
-        try:
-            for raw in records:
-                record = _normalize_record(raw)
-                rows.append((
-                    record["id"], record["kind"], record["schedule_entry"],
-                    record["delay_ns"], record["start_object"],
-                    record["end_object"], record["measurement"],
-                ))
-                if len(rows) >= 8192:
-                    flush()
-            flush()
-        except sqlite3.IntegrityError as error:
-            raise ValidationError("boundary timing endpoint is duplicated") from error
-        kind_counts = {
-            str(row[0]): int(row[1])
-            for row in connection.execute(
-                "SELECT kind,count(*) FROM timings GROUP BY kind"
-            )
-        }
-        endpoint_count = sum(kind_counts.values())
-        counts = {
-            "endpoints": endpoint_count,
-            "tx": kind_counts.get("tx", 0),
-            "rx": kind_counts.get("rx", 0),
-        }
-        normalized_header = _validate_header(
-            {**base_header, "coverage": counts}, counts
-        )
-        endpoint_digest = hashlib.sha256()
-        for row in connection.execute("SELECT * FROM timings ORDER BY id"):
-            endpoint_digest.update(
-                _canonical(_record_from_row(row)).encode("utf-8")
-            )
-            endpoint_digest.update(b"\n")
-        logical_sha = hashlib.sha256(_canonical({
-            "header": normalized_header, "counts": counts,
-            "endpoint_sha256": endpoint_digest.hexdigest(),
-        }).encode("utf-8")).hexdigest()
-        for key, value in (
-            ("counts", counts), ("header", normalized_header),
-            ("logical_sha256", logical_sha),
-        ):
-            connection.execute(
-                "INSERT INTO metadata VALUES (?,?)", (key, _canonical(value))
-            )
-        connection.commit()
-        connection.close()
-        connection = None
-        store_sha = file_sha256(temporary)
-        published_store = path.with_name(_store_name(path, store_sha))
-        if published_store.is_symlink():
-            raise ValidationError("boundary timing generation is a symlink")
-        require_store_sources_unchanged(source_bindings)
-        if published_store.is_file():
-            if file_sha256(published_store) != store_sha:
-                raise ValidationError("boundary timing generation seal disagrees")
-            temporary.unlink()
-        else:
-            publish_sqlite_store(
-                temporary,
-                published_store,
-                "boundary-timing-store-v1",
-                sources=source_bindings,
-            )
-            created_store = True
-        selector = {
-            "schema": BOUNDARY_TIMING_STORAGE_SCHEMA,
-            "logical_schema": BOUNDARY_TIMING_SCHEMA,
-            "application_id": BOUNDARY_TIMING_APPLICATION_ID,
-            "user_version": BOUNDARY_TIMING_USER_VERSION,
-            "header": normalized_header, "counts": counts,
-            "logical_sha256": logical_sha,
-            "artifact": published_store.name,
-            "store_bytes": published_store.stat().st_size,
-            "store_sha256": store_sha,
-        }
-        _validate_selector(selector)
-        write_json(selector_temporary, selector, compact=True)
-        with selector_temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
-        require_store_sources_unchanged(source_bindings)
-        os.replace(selector_temporary, path)
-        committed = True
-        _fsync_directory(path.parent)
-        try:
-            _collect_stale(path, published_store)
-        except OSError:
-            pass
-        assert lease is not None
-        lease.downgrade_shared()
-        view = BoundaryTimingView._from_publication(
-            path, selector, published_store, lease
-        )
-        lease = None
-        return view
-    except BaseException:
-        if connection is not None:
-            connection.close()
-        if published_store is not None and created_store and not committed:
-            published_store.unlink(missing_ok=True)
-        raise
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-        if selector_temporary is not None:
-            selector_temporary.unlink(missing_ok=True)
-        if lease is not None:
-            lease.close()
 
 
 def read_boundary_timing_storage(
     path: Path,
     *,
-    allow_legacy: bool = False,
     expected_design: Any = None,
     expected_platform: Any = None,
     expected_fpga: Any = None,
@@ -575,34 +389,18 @@ def read_boundary_timing_storage(
         or file_sha256(path) != expected_selector_sha256
     ):
         raise ValidationError("boundary timing selector digest disagrees")
-    value = read_json(path)
-    if value.get("schema") == BOUNDARY_TIMING_STORAGE_SCHEMA:
-        view = BoundaryTimingView(path)
-        if any(
-            expected is not None and view.get(field) != expected
-            for field, expected in (
-                ("design", expected_design),
-                ("platform", expected_platform),
-                ("fpga", expected_fpga),
-            )
-        ):
-            view.close()
-            raise ValidationError("boundary timing indexed evidence source disagrees")
-        return view
-    if not allow_legacy or value.get("schema") != BOUNDARY_TIMING_SCHEMA:
-        raise ValidationError(
-            "legacy boundary timing JSON requires explicit compatibility"
-        )
+    view = BoundaryTimingView(path)
     if any(
-        expected is not None and value.get(field) != expected
+        expected is not None and view.get(field) != expected
         for field, expected in (
             ("design", expected_design),
             ("platform", expected_platform),
             ("fpga", expected_fpga),
         )
     ):
-        raise ValidationError("boundary timing legacy evidence source disagrees")
-    return value
+        view.close()
+        raise ValidationError("boundary timing indexed evidence source disagrees")
+    return view
 
 
 def boundary_timing_reference(

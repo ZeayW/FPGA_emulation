@@ -22,7 +22,7 @@ KINDS = (
 )
 
 
-PYTHON_WRITER_KINDS = tuple(kind for kind in KINDS if kind != "logic_segment_identity")
+PYTHON_WRITER_KINDS = ("boundary_identity",)
 
 
 def producer(
@@ -76,7 +76,14 @@ def producer(
     if kind == "logic_segment_identity":
         assert not source_bindings and before_records is None and not options
         return identity_facts(path, header=header, segments=records)
-    writer = getattr(module, "write_" + kind + "_storage")
+    from tests.timing_facts import physical_facts_writer
+    writer = physical_facts_writer(kind)
+    if kind == "logic_segment_timing":
+        assert not source_bindings and before_records is None and not options
+        return writer(path, header=header, segments=records)
+    if kind in {"local_path_timing", "boundary_timing"}:
+        assert not source_bindings and before_records is None and not options
+        return writer(path, header, records)
     if kind.startswith("logic_"):
         return writer(
             path,

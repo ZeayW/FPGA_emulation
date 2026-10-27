@@ -18,6 +18,7 @@ from emuflow.errors import ValidationError
 from emuflow.native_tools import native_file_generation
 from tests.native_build import emuflow_native,native_pipeline_api_test
 from tests.test_split_overlay_native import owners
+from tests.phase3_store_fixture import write_current_assignment_fixture
 
 
 @pytest.mark.parametrize('periods',[
@@ -54,7 +55,7 @@ def compile_inputs(owners,tmp_path):
     reference=deepcopy(case._phase5_assignment)
     declared={p['fpga'] for p in reference['partitions']}
     reference['partitions'].extend({'fpga':fpga.id,'resources':{}} for fpga in case.platform.fpgas if fpga.id not in declared)
-    assignment.with_name('assignment.json').write_text(json.dumps(reference))
+    write_current_assignment_fixture(assignment.with_name('assignment.json'), case.ir, reference)
     periods={clock['id']:1.0 for clock in case.ir.value['clocks']}
     policy=prepare_compile_policy(tmp_path/'policy',source,board,clock_periods=periods)
     output=tmp_path/'native'

@@ -8,8 +8,8 @@ from io import StringIO
 from pathlib import Path
 
 from emuflow.errors import ValidationError
-from emuflow.ppro_calibration_cli import _campaign_status, _parser, main
-from emuflow.ppro_blackbox_provenance import runner_source_bundle
+from emuflow_tools.ppro_calibration_cli import _campaign_status, _parser, main
+from emuflow_tools.ppro_blackbox_provenance import runner_source_bundle
 
 
 ROOT = Path(__file__).resolve().parents[1]

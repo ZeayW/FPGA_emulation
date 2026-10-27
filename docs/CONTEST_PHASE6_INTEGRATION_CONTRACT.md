@@ -1,44 +1,40 @@
 # Contest Architecture and Phase 6 Integration Contract
 
-This contract keeps public multi-FPGA contest integration independent from
-placement-aware Phase 6 development.  Both tracks consume and emit the common
-artifacts below; neither track may reinterpret another phase's decisions.
+Public contest import and evaluation belong to the separately installed
+`emuflow-tools` distribution. They may supply explicit BoardDB and design inputs
+to the maintained upstream flow; they do not select an alternate production
+scheduler or physical backend. Phase 6 consumes the decisions below unchanged.
 
 ## Frozen upstream artifacts
 
-- `emuflow.partition-assignment/v1` is the source of instance ownership,
-  replication, fixed placement, and directed cut-net endpoints.
-- `emuflow.system-routes/v1` is the source of every multicast route and its
-  ordered source-to-sink paths.
-- `emuflow.system-route-constraints/v1` is the source of shared-capacity,
-  maximum-hop, and ratio-domain constraints.
-- `emuflow.tdm-schedule/v1` is the source of each schedule-entry identity,
-  link, direction, logical lane, slot, round, and frame length. Ratio-plan
-  schedules also carry `tdm_ratio`; direct-lane round-barrier schedules omit
-  that optional metadata and have the established effective ratio `1`.
-- BoardDB is the source of FPGA and link identities.  A contest projection
-  remains a virtual academic platform unless a revision-controlled BSP adds
-  package pins, electrical rules, clocks, and measured link properties.
+- Instance ownership and directed cut endpoints use the current Phase 3 v4
+  assignment selector and its sealed assignment index. The logical assignment
+  schema remains `emuflow.partition-assignment/v1`.
+- RouteStore v3 owns multicast trees and timing-path identities;
+  `emuflow.system-route-constraints/v1` owns shared capacity and maximum hops.
+- ScheduleStore v4 owns each demand, hop, direction, logical lane, absolute
+  slot, arrival slot and `tdm_ratio`. The maintained scheduler is
+  `deterministic-dependency-earliest-slot-v1`; round-barrier scheduling is retired.
+- BoardDB owns FPGA identities and fixed link inventory. A contest projection
+  is an academic architecture model. Real-board qualification additionally
+  requires verified package pins, electrical constraints, clocks and link
+  measurements; the runtime has no hardware-BSP execution chain.
 
-Phase 6 may group entries onto physical lanes and add physical annotations. It
-must not change a schedule entry's route, direction, effective ratio, logical
-lane, slot, round, or target-cycle meaning, and must not rewrite a direct-lane
-schedule merely to materialize the implied ratio.
+Phase 6 may group entries onto physical lanes and add physical annotations.
+It must preserve the route, direction, logical lane, ratio and absolute event
+meaning of every schedule entry. Fixed wiring, P/N pairing, bank direction and
+resource-budget checks remain mandatory.
 
-## Frozen Phase 6 boundary
+## Phase 6 boundary
 
-The existing v1 split contracts remain readable throughout the upgrade:
+The runtime publishes split-netlists v3 and typed transport v2, with small
+selectors for logical lanes, virtual anchors and fixed differential bindings.
+Logical schema names do not authorize legacy whole-graph JSON production paths.
+Current readers validate the source generation and typed relation coverage.
 
-- `emuflow.logical-lane-map/v1`;
-- `emuflow.transport-endpoints/v1`;
-- `emuflow.virtual-io-anchors/v1`;
-- `emuflow.fpga-netlist/v1`;
-- `emuflow.split-manifest/v1`; and
-- `emuflow.phase6-report/v1`.
-
-New placement, congestion, crossing-signature, grouping, bank, channel, and
-package-pin records use new versioned schemas or optional fields.  A new
-provider must not silently change the meaning of an existing v1 field.
+The baseline and retained Chimew adapter consume the same upstream decisions.
+Chimew may select physical channels within the fixed inventory; it must preserve
+schedule identity, direction and slot semantics.
 
 ## Cross-track acceptance
 

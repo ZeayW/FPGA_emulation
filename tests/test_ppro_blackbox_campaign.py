@@ -7,14 +7,14 @@ from pathlib import Path
 from unittest import mock
 
 from emuflow.errors import ValidationError
-from emuflow.ppro_blackbox_campaign import (
+from emuflow_tools.ppro_blackbox_campaign import (
     PProCampaignRuntime,
     discover_generated_bundles,
     execute_generated_campaign,
 )
-from emuflow.ppro_blackbox_smoke import generate_connected_smoke_bundle
-from emuflow.ppro_blackbox_application import generate_application_holdout_bundle
-from emuflow.ppro_blackbox_provenance import runner_source_bundle
+from emuflow_tools.ppro_blackbox_smoke import generate_connected_smoke_bundle
+from emuflow_tools.ppro_blackbox_application import generate_application_holdout_bundle
+from emuflow_tools.ppro_blackbox_provenance import runner_source_bundle
 from test_ppro_blackbox_ppro_adapter import PARTITION_REPORT, ROUTE_REPORT, TIMING_REPORT
 
 
@@ -140,7 +140,7 @@ class PProBlackboxCampaignTest(unittest.TestCase):
             bundles = discover_generated_bundles(bundle_root, maximum_cases=2)
             runtime = self._runtime(root)
             with mock.patch(
-                "emuflow.ppro_blackbox_campaign.execute_blackbox_queue",
+                "emuflow_tools.ppro_blackbox_campaign.execute_blackbox_queue",
                 side_effect=OSError("simulated queue failure"),
             ):
                 with self.assertRaisesRegex(OSError, "simulated queue failure"):

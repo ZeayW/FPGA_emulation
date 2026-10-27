@@ -6,7 +6,8 @@ from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
 from emuflow.platform import Platform
-from emuflow.partition import (active_partition_fpgas, transported_cut_classes_for_clusters)
+from tests.partition_balance_fixture import active_partition_fpgas
+from tests.partition_balance_fixture import transported_cut_classes_for_clusters
 from tests.native_partition_facts import (build_partition_assignment)
 from emuflow.partition_limits import planning_resource_capacities, strict_balance_limits
 from emuflow.resources import RESOURCE_FIELDS, ResourceVector

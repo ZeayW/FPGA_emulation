@@ -37,7 +37,7 @@ from emuflow.chimew_rudy import (
     CHIMEW_RUDY_INPUT_PROVIDER,
     CHIMEW_RUDY_INPUT_SCHEMA,
 )
-from emuflow.contest_iccad2019 import (
+from emuflow_tools.contest_iccad2019 import (
     import_iccad2019_instance,
     materialize_iccad2019_rtl_boarddb,
 )

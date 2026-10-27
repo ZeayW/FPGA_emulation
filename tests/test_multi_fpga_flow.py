@@ -24,7 +24,7 @@ from emuflow.multi_fpga_flow import (
     validate_multi_fpga_flow_report,
 )
 from emuflow.tdm_schedule_storage import TypedScheduleEntrySequence
-from emuflow.open_transport_characterization import (
+from emuflow.transport_cost import (
     BASE_FEATURE_NAMES,
     FRAME_SLOTS,
     OPEN_TRANSPORT_MODEL,
@@ -1144,90 +1144,11 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                     architecture_timing_db=write_mock_xilinx_timing_contract(Path(temporary_directory) / "mock-timing.json"),
                 )
 
-    def test_compile_can_continue_into_checked_serial_bsp(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            output = Path(temporary_directory) / "multi"
-            platform_name = Platform.load(PLATFORM).name
-            bsp_report = {
-                "schema": "emuflow.multi-fpga-bsp-flow/v1",
-                "status": "pass",
-                "design": "counter",
-                "platform": platform_name,
-                "qualification": "source_bound_bsp_structure_validation",
-                "hardware_release_status": "blocked_on_board_proof",
-                "source_flow_report_sha256": "0" * 64,
-                "stages": {
-                    "phase6b": {
-                        "status": "pass",
-                        "design": "counter",
-                        "platform": platform_name,
-                    },
-                    "runtime_sync": {"status": "pass"},
-                    "phase6c": {
-                        "status": "pass",
-                        "design": "counter",
-                        "platform": platform_name,
-                    },
-                    "phy_elaboration": {
-                        "status": "pass",
-                        "design": "counter",
-                        "platform": platform_name,
-                        "tool": {"name": "yosys"},
-                    },
-                },
-                "validation": {
-                    "fpgas": 2,
-                    "elaboration_failures": 0,
-                    "hardware_release_authorized": False,
-                    "gt_site_map_status": "not-provided",
-                },
-                "artifacts": {},
-            }
-
-            def fake_bsp(**kwargs):
-                destination = kwargs["output_dir"]
-                destination.mkdir(parents=True)
-                source_report = (
-                    kwargs["flow_root"]
-                    / "board-independent-flow-report.json"
-                )
-                bsp_report["source_flow_report_sha256"] = hashlib.sha256(
-                    source_report.read_bytes()
-                ).hexdigest()
-                write_json(
-                    destination / "multi-fpga-bsp-flow-report.json",
-                    bsp_report,
-                )
-                return bsp_report
-
-            with patch(
-                "emuflow.multi_fpga_flow.run_multi_fpga_bsp_flow",
-                side_effect=fake_bsp,
-            ):
-                report = run_multi_fpga_flow_fixture(
-                    platform_path=PLATFORM,
-                    output_dir=output,
-                    yosys_json=ROOT / "examples/yosys/counter.json",
-                    top="counter",
-                    clocks=["clk"],
-                    partition_provider="tritonpart",
-                    cut_mode="static-exact-combinational",
-                    timing_driven=False,
-                    clock_periods={"clk": 10.0},
-                    opensta=str(FAKE_OPENSTA),
-                    router=str(tlr_router()),
-                    frame_slots=32,
-                    equivalence_cycles=2,
-                    serial_bsp_phy_provider=Path("provider.json"),
-                    serial_bsp_runtime_sync_provider=Path("runtime.json"),
-                    serial_bsp_yosys=Path("yosys"),
-                    mapping_profile="xilinx-ultrascaleplus-open-v1",
-                )
-            self.assertEqual(report["summary"]["hardware_bsp_status"], "pass")
-            self.assertTrue(
-                (output / "board-independent-flow-report.json").is_file()
-            )
-            self.assertEqual(report["hardware_bsp"], bsp_report)
+    def test_retired_serial_bsp_options_are_not_a_compile_api(self):
+        import inspect
+        self.assertFalse(any(name.startswith("serial_bsp_") for name in inspect.signature(run_multi_fpga_flow).parameters))
+        with self.assertRaises(TypeError):
+            run_multi_fpga_flow(serial_bsp_phy_provider=Path("provider.json"))
 
     def test_zero_cut_flow_skips_vacuous_interconnect_optimizers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

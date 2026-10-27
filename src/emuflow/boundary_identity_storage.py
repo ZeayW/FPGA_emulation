@@ -646,17 +646,9 @@ def write_boundary_identity_storage(
             lease.close()
 
 
-def read_boundary_identity_storage(
-    path: Path, *, allow_legacy: bool = False
-) -> Mapping[str, Any]:
-    value = read_json(path)
-    if value.get("schema") == BOUNDARY_IDENTITY_STORAGE_SCHEMA:
-        return BoundaryIdentityView(path)
-    if not allow_legacy or value.get("schema") != BOUNDARY_IDENTITY_SCHEMA:
-        raise ValidationError(
-            "legacy boundary identity JSON requires explicit compatibility"
-        )
-    return value
+def read_boundary_identity_storage(path: Path) -> BoundaryIdentityView:
+    """Read the current source-bound typed owner."""
+    return BoundaryIdentityView(path)
 
 
 def boundary_identity_reference(

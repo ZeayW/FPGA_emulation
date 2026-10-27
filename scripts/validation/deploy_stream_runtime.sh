@@ -86,7 +86,7 @@ echo "RUNTIME_CXX=$selected_cxx"
 for binary in "$native_base"/bin/*; do
   test -e "$binary" || continue
   case "$(basename "$binary")" in
-    openroad|sta|yosys|yosys-abc|emuflow_bsp_pin_solver|emuflow_fpgaif_arch_importer)
+    openroad|sta|yosys|yosys-abc|emuflow_fpgaif_arch_importer)
       ln -s "$binary" "$runtime_dir/bin/$(basename "$binary")" ;;
   esac
 done

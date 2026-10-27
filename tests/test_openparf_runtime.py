@@ -164,6 +164,23 @@ class OpenparfRuntimeAndArchitectureTest(unittest.TestCase):
                 )
             self.assertEqual(placement, (result_dir / "runner.pl").resolve())
 
+    def test_retired_continuous_driver_cannot_be_selected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            installation = root / "openparf-install"
+            (installation / "openparf").mkdir(parents=True)
+            (installation / "openparf.py").write_text("")
+            config = root / "openparf.json"
+            for flag in (True, False):
+                config.write_text(json.dumps({"benchmark_name":"runner",
+                    "result_dir":str(root / "results"),
+                    "emuflow_continuous_global_guidance":flag}))
+                with mock.patch("emuflow.openparf.subprocess.run") as launch:
+                    with self.assertRaisesRegex(Exception, "continuous guidance placement is retired"):
+                        run_openparf(config, install_root=installation,
+                            python_executable=Path(sys.executable))
+                    launch.assert_not_called()
+
     def test_secondary_ultrascale_ff_bel_is_supported(self) -> None:
         self.assertEqual(
             compatible_cells_for_bel("AFF2", "FF"),

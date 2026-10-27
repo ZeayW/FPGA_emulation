@@ -24,8 +24,9 @@ def runtime(monkeypatch):
 def test_whole_native_query_preserves_every_member_and_exact_semantic(tmp_path,backend,members):
     value=sources(tmp_path/'input',members=members)
     with (patch('emuflow.ir.EmuIR.load',side_effect=AssertionError('Python full source graph')),
-          patch('emuflow.sta.iter_sta_path_database_paths',side_effect=AssertionError('Python path records')),
-          patch('emuflow.phase3_assignment_index.read_phase3_exact_semantic_partition',side_effect=AssertionError('Python semantic tree'))):
+          patch('emuflow.sta.iter_sta_path_database_paths',side_effect=AssertionError('Python path records'))):
+        import emuflow.phase3_assignment_index as retired_exact
+        assert not hasattr(retired_exact, 'read_phase3_exact_semantic_partition')
         import emuflow.tdm as tdm
         assert not hasattr(tdm, 'reconstruct_tdm_schedule_timing_paths')
         prepared=prepare(value)

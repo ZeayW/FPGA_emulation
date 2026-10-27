@@ -24,8 +24,6 @@ their own licenses.
 
 | Local path | Component and upstream source | Pinned revision/version | License | Use |
 | --- | --- | --- | --- | --- |
-| `engines/corundum_eth` | Minimal [Corundum/verilog-ethernet](https://github.com/corundum/corundum/tree/1ca0151b97af85aa5dd306d74b6bcec65904d2ce/fpga/lib/eth) source closure | `1ca0151b97af85aa5dd306d74b6bcec65904d2ce` | MIT | Source-visible 10GBASE-R PCS and Gray-pointer asynchronous FIFO; imported files are hash-pinned and unmodified |
-| `providers/vivado_gty_10g` | Adapted [verilog-ethernet VCU108 10G GTY recipe](https://github.com/alexforencich/verilog-ethernet/blob/77320a9471d19c7dd383914bc049e02d9f4f1ffb/example/VCU108/fpga_10g/ip/eth_xcvr_gt.tcl) plus the EmuFlow v3 quad adapter | `77320a9471d19c7dd383914bc049e02d9f4f1ffb` | MIT | Source-visible 64+2 adapter and recipe; Vivado-generated XCI products stay outside source control and do not count as the open flow |
 | `engines/capnproto` | [Cap'n Proto](https://github.com/capnproto/capnproto) | `373e61ec89e2359f1c362e9b2eadc552f4779306` / v1.5.0 | Apache-2.0 | Build and parse FPGA Interchange messages |
 | `engines/fpga-interchange-schema` | [FPGA Interchange Schema](https://github.com/chipsalliance/fpga-interchange-schema) | `c985b4648e66414b250261c1ba4cbe45a2971b1c` | Apache-2.0 | Open logical-netlist and device-resource contracts |
 | `engines/fpga-interchange-schema/third_party/capnproto-java` | [capnproto-java schema](https://github.com/capnproto/capnproto-java) | `1a0ac9d2e0e607ccae7ca83cb3aacce93b065dd7` | MIT | Vendored `java.capnp` import required by the schema |

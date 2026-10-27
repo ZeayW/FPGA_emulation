@@ -36,7 +36,7 @@ class NativeAssignmentCutSource:
 
 def native_assignment_cut_source(assignment):
     """Require exact original columns; never rebind a changed semantic source."""
-    from emuflow.partition import _StaticExactCutNetRecords
+    from tests.partition_views import SelectedCuts as _StaticExactCutNetRecords
     cuts=assignment.get('cut_nets');contract=assignment.get('semantic_contract')
     nodes=cuts._nodes if isinstance(cuts,_StaticExactCutNetRecords) else (contract or {}).get('cut_nodes')
     path=getattr(nodes,'native_semantic_artifact_path',None)
@@ -49,6 +49,9 @@ def native_assignment_cut_source(assignment):
     paths=source.native_record_paths()
     counts=cuts._cuts._sink_endpoints if isinstance(cuts,_StaticExactCutNetRecords) else array('Q',(cut['sink_endpoints'] for cut in cuts))
     generations=(getattr(nodes,'native_semantic_generation',None),getattr(source.captures,'native_capture_generation',None))
+    count_owner=getattr(counts,'owner',None)
+    if count_owner is not None and count_owner.data.closed:
+        raise ValidationError('native assignment semantic count owner is closed')
     if (paths is None or Path(path).resolve()!=paths[0] or any(g is None for g in generations)
             or len(counts)!=len(cuts) or len(cuts)!=len(nodes) or counts.itemsize!=8 or sys.byteorder!='little'
             or len(cuts)>65536):raise ValidationError('native assignment semantic source dimensions disagree')

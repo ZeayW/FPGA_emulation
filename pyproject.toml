@@ -16,7 +16,6 @@ dependencies = []
 
 [project.scripts]
 emuflow = "emuflow.cli:main"
-emuflow-ppro-calibration = "emuflow.ppro_calibration_cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -34,3 +33,4 @@ emuflow = ["data/schema/*.sql", "data/schema/*.tcl", "data/rapidwright/*.json", 
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src", "tools", "."]

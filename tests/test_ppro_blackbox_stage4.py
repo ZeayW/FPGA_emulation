@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from emuflow.ppro_blackbox_stage4 import (
+from emuflow_tools.ppro_blackbox_stage4 import (
     fit_latency_model,
     fit_payload_intervals,
     fit_transport_cost_model,

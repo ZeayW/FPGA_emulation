@@ -12,8 +12,8 @@ from emuflow.errors import ValidationError
 from emuflow.global_sta import bind_physical_checks
 from tests.global_sta_fixture import bind_physical_checks as fixture_bind
 from emuflow.boundary_identity_storage import write_boundary_identity_storage
-from emuflow.boundary_timing_storage import write_boundary_timing_storage
-from emuflow.logic_segment_timing_storage import write_logic_segment_timing_storage
+from tests.timing_facts import boundary_timing_facts
+from tests.timing_facts import logic_timing_facts
 from emuflow.system_route_storage import read_system_routes, pretty_system_routes_sha256
 from tests.native_route_seal_fixture import write_route_store_fixture
 from emuflow.tdm_schedule_storage import read_tdm_schedule
@@ -61,7 +61,7 @@ def physical_case(tmp_path, *, members=1, uncertainty=0.125, registered=False, m
     write_tdm_schedule_storage(tmp_path/'schedule.json', schedule)
     indexed_schedule = read_tdm_schedule(tmp_path/'schedule.json')
     indexed = {k:v for k,v in physical.items() if k not in {'boundary_timing','boundary_identities','logic_segment_timing'}}
-    for key, writer in [('boundary_timing',write_boundary_timing_storage),('boundary_identities',write_boundary_identity_storage)]:
+    for key, writer in [('boundary_timing',boundary_timing_facts),('boundary_identities',write_boundary_identity_storage)]:
         indexed[key] = {}
         for fpga, database in physical[key].items():
             header = {k:v for k,v in database.items() if k != 'endpoints'}
@@ -74,7 +74,7 @@ def physical_case(tmp_path, *, members=1, uncertainty=0.125, registered=False, m
         header.update(system_routes_sha256=pretty_system_routes_sha256(indexed_routes),
                       tdm_schedule_sha256=indexed_schedule.manifest['logical_pretty_sha256'])
         database.update(system_routes_sha256=header['system_routes_sha256'], tdm_schedule_sha256=header['tdm_schedule_sha256'])
-        indexed['logic_segment_timing'][fpga]=write_logic_segment_timing_storage(
+        indexed['logic_segment_timing'][fpga]=logic_timing_facts(
             tmp_path/f'logic-{fpga}.json', header=header, segments=sorted(database['segments'], key=lambda x:(x['system_path'],x['member_path'],x['cut_index'],x['id'])))
     return f, runtime, routes, schedule, physical, indexed_routes, indexed_schedule, indexed
 
@@ -108,7 +108,7 @@ def test_selected_native_physical_facts_never_fallback_to_inline(tmp_path):
 
 
 def add_local_paths(tmp_path, f, routes, physical, indexed, *, version=2, pure=False):
-    from emuflow.local_path_timing_storage import write_local_path_timing_storage
+    from tests.timing_facts import local_timing_facts
     from emuflow.local_path_timing import path_id_set_sha256
     from tests.test_local_path_timing_storage import _header, _record
     if pure:
@@ -129,7 +129,7 @@ def add_local_paths(tmp_path, f, routes, physical, indexed, *, version=2, pure=F
                 for key in ['required_time_ns','measurement','path_pins']: del row[key]
         header['coverage']={'local_paths':len(records)}
         physical['local_path_timing'][fpga]={**header,'paths':sorted(records,key=lambda r:r['id'])}
-        indexed['local_path_timing'][fpga]=write_local_path_timing_storage(tmp_path/f'local-{fpga}.json',header,records)
+        indexed['local_path_timing'][fpga]=local_timing_facts(tmp_path/f'local-{fpga}.json',header,records)
     return source
 
 
@@ -242,7 +242,7 @@ def test_native_multicast_relay_and_affine_physical_chains(tmp_path,monkeypatch,
             row={**row,'id':f'{member}:capture','kind':'capture','cut_index':index+1,'fpga':last,'replace_tx_endpoint':None,'delay_ns':1.375}
             physical['logic_segment_timing'][last]['segments'].append(row)
     indexed={k:v for k,v in physical.items() if k not in {'boundary_timing','boundary_identities','logic_segment_timing'}}
-    for key,writer in [('boundary_timing',write_boundary_timing_storage),('boundary_identities',write_boundary_identity_storage)]:
+    for key,writer in [('boundary_timing',boundary_timing_facts),('boundary_identities',write_boundary_identity_storage)]:
         indexed[key]={}
         for fpga,database in physical[key].items():
             indexed[key][fpga]=writer(tmp_path/f'{key}-{fpga}.json',{k:v for k,v in database.items() if k!='endpoints'},database['endpoints'])
@@ -250,7 +250,7 @@ def test_native_multicast_relay_and_affine_physical_chains(tmp_path,monkeypatch,
     for fpga,database in physical['logic_segment_timing'].items():
         rows=sorted(database['segments'],key=lambda r:(r['system_path'],r['member_path'],r['cut_index'],r['id']))
         database['coverage'].update(segments=len(rows),system_paths=len({r['system_path'] for r in rows}),member_paths=len({r['member_path'] for r in rows}))
-        indexed['logic_segment_timing'][fpga]=write_logic_segment_timing_storage(tmp_path/f'logic-{fpga}.json',
+        indexed['logic_segment_timing'][fpga]=logic_timing_facts(tmp_path/f'logic-{fpga}.json',
             header={k:v for k,v in database.items() if k not in {'segments','unsupported_member_paths'}},segments=rows)
     expected=fixture_bind(runtime,routes,schedule,physical,platform)
     actual=bind_physical_checks(runtime,ir,ischedule,indexed,platform)
@@ -308,7 +308,7 @@ def test_native_rejects_resealed_physical_evidence_from_another_source(tmp_path,
     f,runtime,routes,schedule,physical,ir,ischedule,ip=physical_case(tmp_path)
     original=ip['logic_segment_timing']['fpga0']
     header={**original.selector['header'],field:'0'*64}
-    bad=write_logic_segment_timing_storage(tmp_path/'other-logic.json',header=header,
+    bad=logic_timing_facts(tmp_path/'other-logic.json',header=header,
         segments=sorted(physical['logic_segment_timing']['fpga0']['segments'],key=lambda r:(r['system_path'],r['member_path'],r['cut_index'],r['id'])))
     ip['logic_segment_timing']['fpga0']=bad
     with pytest.raises(ValidationError,match='source seals'):

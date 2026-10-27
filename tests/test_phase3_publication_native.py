@@ -1,5 +1,6 @@
 """Whole final-directory identity, failed-publication and source-binding gates."""
 import copy
+from contextlib import closing
 import json
 from pathlib import Path
 from unittest.mock import patch
@@ -8,6 +9,9 @@ import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
+from emuflow.phase3_storage import read_phase3_assignment_view
+from tests.phase3_store_fixture import write_cluster_fixture, cluster_column_facts
+from tests.native_partition_facts import materialize_facts
 from tests.native_partition_kernel_driver import publish_partition as publish
 from emuflow.phase3_assignment_index import validate_phase3_assignment_index_against_emuir
 from tests.native_partition_facts import close_published_semantics
@@ -28,12 +32,16 @@ def test_complete_directory_uses_native_transaction_and_reloads_without_private_
         final=publish(output,selected[0],selected[2],actual,report(actual))
     assert final['finalization_implementation_id']=='native-partition-publication-v1'
     close_published_semantics(actual)
-    loaded=read_json(output/'assignment.json')
-    assert dict(loaded['instance_assignment'])==dict(selected[5]['instance_assignment'])
+    loaded=read_phase3_assignment_view(output/'assignment.json',include_instance_assignment=True)
+    with closing(loaded['instance_assignment']) as owners:
+        assert dict(owners)==dict(selected[5]['instance_assignment'])
     assert list(loaded['cut_nets'])==list(selected[5]['cut_nets'])
     assert loaded['semantic_contract_sha256']==selected[5]['semantic_contract_sha256']
     clusters=read_json(output/'clusters.json')
-    assert list(clusters['clusters'])==list(selected[2]['clusters'])
+    assert 'clusters' not in clusters
+    expected_catalog=tmp_path/'expected-cluster-facts/clusters.json'
+    write_cluster_fixture(expected_catalog,materialize_facts(selected[2]))
+    assert cluster_column_facts(output/'clusters.json')==cluster_column_facts(expected_catalog)
     proof=validate_phase3_assignment_index_against_emuir(output/'assignment.sqlite',selected[0].path,
         expected_design=actual['design'],expected_platform=actual['platform'])
     assert proof['status']=='pass'

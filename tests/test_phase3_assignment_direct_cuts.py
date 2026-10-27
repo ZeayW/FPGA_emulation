@@ -10,7 +10,8 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.errors import ValidationError
-from emuflow.partition import (_StaticExactCutNetRecords, _PackedClusterAssignment)
+from tests.partition_views import SelectedCuts as _StaticExactCutNetRecords
+from tests.partition_views import ClusterOwners as _PackedClusterAssignment
 from tests.native_partition_facts import (build_partition_assignment)
 from emuflow.phase3_exact_binary import EXACT_BINARY_ARTIFACT
 from tests.native_assignment_publication_fixture import native_assignment_cut_source
@@ -131,7 +132,7 @@ def test_native_cut_source_rejection_preserves_existing_pair(source, tmp_path, k
         elif kind == "missing-generation":
             del nodes.native_semantic_generation
         elif kind == "lost-owner":
-            nodes._direct_binary_source = None
+            nodes.direct_binary_source = None
         elif kind == "lost-path":
             del nodes.native_semantic_artifact_path
         elif kind == "mixed-owner":
@@ -350,20 +351,14 @@ def test_original_semantic_bindings_survive_independent_index_validation(
         )
 
 
-def test_assignment_test_scope_closes_mappings_before_scratch_retirement(source):
+def test_assignment_test_scope_retires_native_fact_leases_and_mapped_columns(source):
     with _assignment(source) as (_ir, assignment, _typed):
-        nodes = assignment["semantic_contract"]["cut_nodes"]
+        nodes = assignment['semantic_contract']['cut_nodes']
         captures = nodes.direct_binary_source.captures
-        owners = [nodes._native_mapping_owner, captures._native_mapping_owner]
-        roots = [Path(owner.scratch.name) for owner in owners]
-        borrowed = [nodes.native_dependency_indices, captures._binary_indexer]
-        assert all(
-            root.exists() and not owner.data.closed
-            for root, owner in zip(roots, owners)
-        )
-    assert all(
-        owner.data.closed and not root.exists() for root, owner in zip(roots, owners)
-    )
-    for reader in borrowed:
-        with pytest.raises(ValueError, match="mapping is closed"):
-            reader(0)
+        counts = assignment['cut_nets']._cuts._sink_endpoints
+        owner = counts.owner
+        root = Path(nodes._scratch.name)
+        assert root.exists() and nodes._scratch.live and captures._scratch.live
+        assert not owner.data.closed
+    assert owner.data.closed and not root.exists()
+    assert nodes._scratch is None and captures._scratch is None

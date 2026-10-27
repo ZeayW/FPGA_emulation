@@ -141,28 +141,22 @@ def test_report_committed_adapter_accepts_fixed_differential_map(fixed_case, tmp
 
 def test_selected_channels_reach_the_existing_phase7_lvds_contract(fixed_case, tmp_path):
     from emuflow.virtual_board import (
-        build_virtual_binding, build_virtual_board, build_virtual_io_physical_contract,
+        build_virtual_board, build_virtual_io_physical_contract,
         write_virtual_binding_systemverilog, write_virtual_binding_xdc,
     )
     platform, schedule, problem, electrical = fixed_case
     result = build_chimew_phase6_pin_plan(schedule, platform, problem, electrical,
         executable=str(chimew_bank_channel_assigner()))
     planned = {row["schedule_entry"]: row for row in result["pin_plan"]["entries"]}
-    endpoints = {fpga.id: {"endpoints": []} for fpga in platform.fpgas}
     lanes = []
     for entry in schedule["entries"]:
         lane = planned[entry["id"]]["physical_lane"]
         row = {"schedule_entry": entry["id"], "lane": lane,
                **{key: entry[key] for key in ("link", "from", "to", "slot")}}
-        for role, fpga, peer in (("tx", entry["from"], entry["to"]), ("rx", entry["to"], entry["from"])):
-            name = f"{role}-{entry['id']}"
-            endpoints[fpga]["endpoints"].append({"id": name, "kind": role, "fpga": fpga,
-                "peer": peer, "link": entry["link"], "lane": lane,
-                "slot": entry["slot"], "schedule_entry": entry["id"]})
-            row[f"{role}_endpoint"] = name
         lanes.append(row)
-    virtual = build_virtual_binding(platform, build_virtual_board(platform), schedule,
-        {"lane_map": {"entries": lanes}, "transports": endpoints})
+    from tests.virtual_binding_fixture import native_binding
+    virtual = native_binding(platform, build_virtual_board(platform), schedule,
+        {"lane_map": {"entries": lanes}})
     by_entry = {member: record for record in result["electrical_binding"]["entries"]
                 for member in record["schedule_entries"]}
     for row in virtual["entries"]:

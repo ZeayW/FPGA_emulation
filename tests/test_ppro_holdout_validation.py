@@ -8,13 +8,13 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.benchmark import timing_io_sha256
+from emuflow_tools.benchmark import timing_io_sha256
 from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
 from emuflow.platform import Platform
-from emuflow.ppro_blackbox_application import benchmark_rtl_identity
-from emuflow.ppro_calibration_cli import main
-from emuflow.ppro_holdout_validation import (
+from emuflow_tools.ppro_blackbox_application import benchmark_rtl_identity
+from emuflow_tools.ppro_calibration_cli import main
+from emuflow_tools.ppro_holdout_validation import (
     _resource_utilization,
     _validate_holdout_preparation,
     assemble_holdout_result,
@@ -719,10 +719,10 @@ class PProHoldoutValidationTest(unittest.TestCase):
             (flow / "multi-fpga-flow-report.json").write_text(json.dumps(flow_report), encoding="utf-8")
 
             with patch(
-                "emuflow.ppro_holdout_validation.validate_calibrated_platform_bundle",
+                "emuflow_tools.ppro_holdout_validation.validate_calibrated_platform_bundle",
                 return_value={"status": "pass", "configuration_id": "lx2-m2"},
             ), patch(
-                "emuflow.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
+                "emuflow_tools.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
                 return_value={"status": "pass"},
             ) as flow_validator:
                 value = assemble_holdout_result(
@@ -756,10 +756,10 @@ class PProHoldoutValidationTest(unittest.TestCase):
             )
             observation_path.write_text(json.dumps(observation), encoding="utf-8")
             with patch(
-                "emuflow.ppro_holdout_validation.validate_calibrated_platform_bundle",
+                "emuflow_tools.ppro_holdout_validation.validate_calibrated_platform_bundle",
                 return_value={"status": "pass", "configuration_id": "lx2-m2"},
             ), patch(
-                "emuflow.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
+                "emuflow_tools.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
                 return_value={"status": "pass"},
             ):
                 with self.assertRaisesRegex(ValidationError, "RTL identity"):
@@ -783,10 +783,10 @@ class PProHoldoutValidationTest(unittest.TestCase):
                 json.dumps(flow_report), encoding="utf-8"
             )
             with patch(
-                "emuflow.ppro_holdout_validation.validate_calibrated_platform_bundle",
+                "emuflow_tools.ppro_holdout_validation.validate_calibrated_platform_bundle",
                 return_value={"status": "pass", "configuration_id": "lx2-m2"},
             ), patch(
-                "emuflow.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
+                "emuflow_tools.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
                 return_value={"status": "pass"},
             ):
                 with self.assertRaisesRegex(ValidationError, "timing I/O"):
@@ -813,10 +813,10 @@ class PProHoldoutValidationTest(unittest.TestCase):
                 json.dumps(flow_report), encoding="utf-8"
             )
             with patch(
-                "emuflow.ppro_holdout_validation.validate_calibrated_platform_bundle",
+                "emuflow_tools.ppro_holdout_validation.validate_calibrated_platform_bundle",
                 return_value={"status": "pass", "configuration_id": "lx2-m2"},
             ), patch(
-                "emuflow.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
+                "emuflow_tools.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
                 return_value={"status": "pass"},
             ):
                 with self.assertRaisesRegex(
@@ -847,10 +847,10 @@ class PProHoldoutValidationTest(unittest.TestCase):
                 json.dumps(flow_report), encoding="utf-8"
             )
             with patch(
-                "emuflow.ppro_holdout_validation.validate_calibrated_platform_bundle",
+                "emuflow_tools.ppro_holdout_validation.validate_calibrated_platform_bundle",
                 return_value={"status": "pass", "configuration_id": "lx2-m2"},
             ), patch(
-                "emuflow.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
+                "emuflow_tools.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
                 return_value={"status": "pass"},
             ):
                 with self.assertRaisesRegex(
@@ -874,10 +874,10 @@ class PProHoldoutValidationTest(unittest.TestCase):
             )
             (flow / "multi-fpga-flow-report.json").write_text(json.dumps(flow_report), encoding="utf-8")
             with patch(
-                "emuflow.ppro_holdout_validation.validate_calibrated_platform_bundle",
+                "emuflow_tools.ppro_holdout_validation.validate_calibrated_platform_bundle",
                 return_value={"status": "pass", "configuration_id": "lx2-m2"},
             ), patch(
-                "emuflow.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
+                "emuflow_tools.ppro_holdout_validation.validate_multi_fpga_flow_bundle",
                 return_value={"status": "pass"},
             ):
                 with self.assertRaisesRegex(ValidationError, "physical seed 1"):

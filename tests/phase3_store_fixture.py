@@ -40,20 +40,18 @@ def assignment_selector_fixture(value, clusters_artifact, *, cut_nets_index=None
     raw = b''.join(parts.index(value['cluster_assignment'][name]).to_bytes(width, 'little') for name in ids)
     contract = value.get('semantic_contract')
     digest = value.get('semantic_contract_sha256')
-    indexed = (contract is not None and contract.get('schema') == 'emuflow.static-exact-combinational-cut/v3' and isinstance(digest, str) and len(digest) == 64)
-    encoded = json.dumps(contract, sort_keys=True, separators=(',', ':')).encode() if contract is not None and not indexed else None
-    excluded = {'cluster_assignment', 'instance_assignment', 'partitions', 'semantic_contract'} | ({'cut_nets'} if cut_nets_index is not None else set())
-    result = {'schema':'emuflow.phase3-assignment-storage/v4' if cut_nets_index is not None else 'emuflow.phase3-assignment-storage/v3',
+    if not isinstance(cut_nets_index, dict):
+        raise ValueError('current assignment fixture requires typed cut index')
+    excluded = {'cluster_assignment', 'instance_assignment', 'partitions', 'semantic_contract', 'cut_nets'}
+    return {'schema':'emuflow.phase3-assignment-storage/v4',
         'document':{key:item for key,item in value.items() if key not in excluded},
         'cluster_count':len(ids), 'cluster_ids':None if ids == [f'c{i:06d}' for i in range(len(ids))] else ids,
         'part_ids':parts, 'cluster_parts':{'codec':'zlib-level-1-base64-unsigned-index', 'count':len(ids),
             'width':width, 'data':base64.b64encode(zlib.compress(raw, 1)).decode()},
         'partitions':[{key:item for key,item in part.items() if key!='clusters'} for part in value['partitions']],
-        'semantic_contract':({'codec':'zlib-level-1-base64-canonical-json','uncompressed_bytes':len(encoded),
-            'data':base64.b64encode(zlib.compress(encoded,1)).decode()} if encoded is not None else None),
-        'semantic_contract_index':({'artifact':'assignment.sqlite','schema':contract['schema'],'sha256':digest} if indexed else None)}
-    if cut_nets_index is not None: result['cut_nets_index'] = dict(cut_nets_index)
-    return result
+        'semantic_contract':None,
+        'semantic_contract_index':({'artifact':'assignment.sqlite','schema':contract['schema'],'sha256':digest} if contract is not None else None),
+        'cut_nets_index':dict(cut_nets_index)}
 
 
 def write_cluster_fixture(path, value, **_options):
@@ -85,7 +83,7 @@ def write_cluster_fixture(path, value, **_options):
             columns['eligible_nets'] = list(eligible); columns['document'] = [_json(document)]
             counts = {'clusters':len(rows),'instances':len(columns['member_names']),'eligible_nets':len(eligible)}
             with sqlite3.connect(store) as db:
-                db.executescript(f'PRAGMA application_id={storage.CLUSTERS_SQLITE_APPLICATION_ID};PRAGMA user_version=1;'+storage._CLUSTERS_DDL)
+                db.executescript(f'PRAGMA application_id={storage.CLUSTERS_SQLITE_APPLICATION_ID};PRAGMA user_version=1;'+(Path(storage.__file__).parent/'data/schema/phase3_clusters.sql').read_text())
                 for name, items in sorted(columns.items()):
                     integers = name in {'member_counts','resource_counts','fixed_indices','group_counts'}
                     raw = b''.join(item.to_bytes(4,'little') if integers else len(item.encode()).to_bytes(4,'little')+item.encode() for item in items)
@@ -163,3 +161,39 @@ def write_assignment_index_fixture(path, ir, assignment):
     summary['writer_implementation'] = 'native-primary-assignment-index-v1' if native else 'python-reference-v1'
     if native: summary['native_writer_metrics'] = metrics
     return summary
+
+
+def write_current_assignment_fixture(path, ir, assignment):
+    """Publish one small current typed input for downstream qualification."""
+    path = Path(path)
+    summary = write_assignment_index_fixture(path.with_name('assignment.sqlite'), ir, assignment)
+    owners = assignment['cluster_assignment']
+    if len(owners) > 65536:
+        raise AssertionError('assignment selector fixture exceeds bound')
+    clusters = {'clusters':[{'id':name} for name in sorted(owners)]}
+    selector = assignment_selector_fixture(assignment,clusters,cut_nets_index={
+        'artifact':'assignment.sqlite','schema':'emuflow.phase3-cut-records/v1',
+        'records':summary['cut_records'],'sha256':summary['cut_records_sha256']})
+    write_json(path,selector,compact=True)
+    return summary
+
+
+def cluster_column_facts(path):
+    """Bounded logical column bytes for full catalog publication assertions."""
+    from emuflow.io import read_json
+    path = Path(path)
+    selector = read_json(path)
+    with sqlite3.connect(path.with_name(selector['artifact'])) as db:
+        sections = db.execute('SELECT section,records,raw_bytes FROM sections ORDER BY section').fetchall()
+        if any(records > 65536 for _,records,_ in sections) or sum(size for _,_,size in sections) > 32*1024*1024:
+            raise AssertionError('cluster column fixture exceeds bound')
+        result = {}
+        for section,records,size in sections:
+            compressed = b''.join(row[0] for row in db.execute(
+                'SELECT payload FROM section_chunks WHERE section=? ORDER BY chunk_seq',(section,)))
+            decoder = zlib.decompressobj()
+            raw = decoder.decompress(compressed,32*1024*1024+1)
+            if len(raw) != size or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+                raise AssertionError('cluster column fixture payload disagrees')
+            result[section] = (records,raw)
+    return result

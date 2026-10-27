@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.benchmark import BenchmarkRun
-from emuflow.ppro_blackbox_application import benchmark_rtl_identity
+from emuflow_tools.benchmark import BenchmarkRun
+from emuflow_tools.ppro_blackbox_application import benchmark_rtl_identity
 from scripts.benchmarks.nvdla_release_inventory import (
     collect_nvdla_source_files,
 )

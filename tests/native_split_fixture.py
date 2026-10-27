@@ -1,5 +1,5 @@
 """Bounded test inputs and views around the current complete native split stage."""
-from tests.phase3_store_fixture import write_assignment_index_fixture
+from tests.phase3_store_fixture import write_current_assignment_fixture
 import copy
 import json
 from pathlib import Path
@@ -32,8 +32,7 @@ class NativeSplitFixture:
         value = copy.deepcopy(assignment)
         declared = {row['fpga'] for row in value['partitions']}
         value['partitions'].extend({'fpga': fpga.id, 'resources': {}} for fpga in platform.fpgas if fpga.id not in declared)
-        write_assignment_index_fixture(self.assignment, ir, value)
-        (self.root/'assignment.json').write_text(json.dumps(value))
+        write_current_assignment_fixture(self.root/'assignment.json', ir, value)
         write_tdm_schedule_storage(self.schedule, schedule)
         self.board.write_text(json.dumps(platform.to_dict()))
         self.report = run_phase6(self.source, self.assignment, self.schedule,

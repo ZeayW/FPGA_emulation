@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
-from emuflow.ppro_blackbox_smoke import generate_connected_smoke_bundle
+from emuflow_tools.ppro_blackbox_smoke import generate_connected_smoke_bundle
 
 
 REVISION = "9" * 64

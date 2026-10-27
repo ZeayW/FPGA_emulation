@@ -1242,7 +1242,7 @@ class Phase7CTest(unittest.TestCase):
                 json.dumps({"clock_periods": {"clk": 20.0}}),
                 encoding="utf-8",
             )
-            from emuflow.cross_layer_timing import build_cross_layer_timing_contract
+            from tests.cross_layer_facts import coverage_contract_facts as build_cross_layer_timing_contract
 
             (root / "cross_layer_timing.json").write_text(
                 json.dumps(
@@ -1393,7 +1393,7 @@ class Phase7CTest(unittest.TestCase):
                 json.dumps({"clock_periods": {"clk": 20.0}}),
                 encoding="utf-8",
             )
-            from emuflow.cross_layer_timing import build_cross_layer_timing_contract
+            from tests.cross_layer_facts import coverage_contract_facts as build_cross_layer_timing_contract
 
             (root / "cross_layer_timing.json").write_text(
                 json.dumps(

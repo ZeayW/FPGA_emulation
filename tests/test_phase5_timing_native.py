@@ -15,6 +15,7 @@ from emuflow.cross_layer_timing import (
     build_cross_layer_timing_contract,
     validate_cross_layer_timing_contract,
 )
+from tests.cross_layer_facts import coverage_contract_facts
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.phase5_timing_native import project_native_schedule_timing
@@ -88,9 +89,7 @@ def test_native_combined_summary_and_full_projection_match_independent_reference
     expected_timing = reconstruct_tdm_schedule_timing(
         value, case.platform, reference_schedule
     )
-    expected_contract = build_cross_layer_timing_contract(
-        value, reference_schedule, semantic
-    )
+    expected_contract = coverage_contract_facts(value, reference_schedule, semantic)
     projection_sha = hashlib.sha256(
         json.dumps(
             expected_contract["path_bindings"],
@@ -121,12 +120,8 @@ def test_native_combined_summary_and_full_projection_match_independent_reference
         )
         import emuflow.tdm as tdm
         assert not hasattr(tdm, "_iter_tdm_schedule_timing_paths_from_routes")
-        patches.enter_context(
-            patch(
-                "emuflow.cross_layer_timing._build_contract",
-                side_effect=AssertionError("Python binding tree"),
-            )
-        )
+        import emuflow.cross_layer_timing as cross_layer
+        assert not hasattr(cross_layer, "_build_contract")
         actual = project_native_schedule_timing(
             routes, schedule, case.platform, bind=True, analyze=True
         )
@@ -272,7 +267,7 @@ def test_native_route_only_binding_does_not_invent_schedule_evidence(
     _case_value, value, semantic, routes, _schedule, _reference = _timed_case(
         tmp_path, monkeypatch
     )
-    expected = build_cross_layer_timing_contract(value, None, semantic)
+    expected = coverage_contract_facts(value, None, semantic)
     actual = build_cross_layer_timing_contract(routes, None, semantic)
     assert actual["metrics"] == expected["metrics"]
     assert "schedule_binding" not in actual and "hop_binding" not in actual
@@ -325,7 +320,7 @@ def test_large_member_group_is_hashed_without_expanding_a_second_python_populati
     case, value, semantic, routes, schedule, reference = _publish_case(
         fresh, monkeypatch, case, value, semantic
     )
-    expected = build_cross_layer_timing_contract(value, reference, semantic)
+    expected = coverage_contract_facts(value, reference, semantic)
     sha = hashlib.sha256(
         json.dumps(
             expected["path_bindings"],

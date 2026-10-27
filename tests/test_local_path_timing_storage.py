@@ -13,14 +13,8 @@ from emuflow.local_path_timing import (
     validate_local_path_identity,
     validate_local_path_timing,
 )
-from emuflow.local_path_timing_storage import (
-    LOCAL_PATH_TIMING_SCHEMA,
-    LOCAL_PATH_TIMING_STORAGE_SCHEMA,
-    LocalPathTimingView,
-    publish_local_path_timing_selector,
-    read_local_path_timing_storage,
-    write_local_path_timing_storage,
-)
+from emuflow.local_path_timing_storage import (LOCAL_PATH_TIMING_SCHEMA, LOCAL_PATH_TIMING_STORAGE_SCHEMA, LocalPathTimingView, publish_local_path_timing_selector, read_local_path_timing_storage)
+from tests.timing_facts import local_timing_facts
 from emuflow.physical_summary_storage import LazyPhysicalEvidenceMap
 
 
@@ -64,7 +58,7 @@ def _record(identity: str, delay: float) -> dict[str, object]:
 def test_local_path_typed_round_trip_and_relocation(tmp_path: Path) -> None:
     selector = tmp_path / "source" / "local-path-timing.json"
     records = [_record("a", 1.0), _record("b", 2.0)]
-    with write_local_path_timing_storage(
+    with local_timing_facts(
         selector, _header(), reversed(records)
     ) as view:
         assert isinstance(view, LocalPathTimingView)
@@ -101,7 +95,7 @@ def test_local_path_identity_is_a_zero_delay_typed_projection(
         "qualification": LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION,
     }
     records = [_record("a", 0.0), _record("b", 0.0)]
-    with write_local_path_timing_storage(selector, header, records):
+    with local_timing_facts(selector, header, records):
         pass
     with read_local_path_identity(selector) as identity:
         assert validate_local_path_identity(identity) == {
@@ -114,7 +108,7 @@ def test_local_path_identity_is_a_zero_delay_typed_projection(
         ]
 
     timing_selector = tmp_path / "ordinary-timing.json"
-    with write_local_path_timing_storage(
+    with local_timing_facts(
         timing_selector, _header(), records
     ):
         pass
@@ -125,21 +119,21 @@ def test_local_path_identity_is_a_zero_delay_typed_projection(
 def test_local_path_typed_rejects_duplicate_identity(tmp_path: Path) -> None:
     record = _record("a", 1.0)
     with pytest.raises(ValidationError, match="duplicated"):
-        write_local_path_timing_storage(
+        local_timing_facts(
             tmp_path / "local.json", _header(), [record, record]
         )
 
 
 def test_local_path_typed_rejects_incomplete_coverage(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="header counts disagree"):
-        write_local_path_timing_storage(
+        local_timing_facts(
             tmp_path / "local.json", _header(), [_record("a", 1.0)]
         )
 
 
 def test_local_path_typed_rejects_store_tampering(tmp_path: Path) -> None:
     selector = tmp_path / "local.json"
-    view = write_local_path_timing_storage(
+    view = local_timing_facts(
         selector, _header(), [_record("a", 1.0), _record("b", 2.0)]
     )
     store = view.store_path
@@ -156,6 +150,7 @@ def test_local_path_legacy_json_requires_explicit_compatibility(
     path = tmp_path / "legacy.json"
     value = {**_header(), "paths": [_record("a", 1.0), _record("b", 2.0)]}
     path.write_text(json.dumps(value), encoding="utf-8")
-    with pytest.raises(ValidationError, match="explicit compatibility"):
+    with pytest.raises(ValidationError, match="selector"):
         read_local_path_timing_storage(path)
-    assert len(read_local_path_timing_storage(path, allow_legacy=True)["paths"]) == 2
+    with pytest.raises(TypeError, match="allow_legacy"):
+        read_local_path_timing_storage(path, allow_legacy=True)

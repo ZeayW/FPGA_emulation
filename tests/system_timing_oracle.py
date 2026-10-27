@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Mapping, Optional
 from emuflow.errors import ValidationError
 from emuflow.local_path_timing import (
     path_id_set_sha256,
-    validate_local_path_timing,
 )
 from emuflow.platform import Platform
 from tests.static_exact_deadline_oracle import (
@@ -394,8 +393,10 @@ def _local_path_database(
     ids = set()
     for fpga in sorted(raw):
         database = raw[fpga]
-        validation = validate_local_path_timing(database)
-        if validation["fpga"] != fpga:
+        if (database.get("schema") != "emuflow.local-path-timing/v1" or
+                database.get("status") != "pass" or len(database["paths"]) > 4096):
+            raise ValidationError("local timing oracle requires small passing physical facts")
+        if database["fpga"] != fpga:
             raise ValidationError("physical local path FPGA identity disagrees")
         if source is None:
             source = dict(database["source"])

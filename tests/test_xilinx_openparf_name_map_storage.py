@@ -14,7 +14,6 @@ from emuflow.io import file_sha256, read_json
 from emuflow.xilinx_openparf_name_map_storage import (
     OPENPARF_ATOMIC_NAME_MAP_SCHEMA,
     OPENPARF_ATOMIC_NAME_MAP_STORAGE_SCHEMA,
-    materialize_xilinx_openparf_atomic_name_map,
     read_xilinx_openparf_atomic_name_map,
     write_xilinx_openparf_atomic_name_map_storage,
 )
@@ -88,7 +87,7 @@ def _write(path: Path, *, suffix="", cascades=(), atoms=None, digests=None):
 
 
 class XilinxOpenparfNameMapStorageTest(unittest.TestCase):
-    def test_typed_round_trip_and_explicit_legacy_export(self):
+    def test_typed_round_trip_and_relocation(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             path = root / "name_map.json"
@@ -103,14 +102,6 @@ class XilinxOpenparfNameMapStorageTest(unittest.TestCase):
             self.assertEqual(list(view["atoms"]), _carry_atoms())
             self.assertEqual(list(view["carry_cascade_chains"]), [cascade])
             self.assertEqual(view.atom_by_ordinal(1)["instance"], "carry1")
-            compatibility = root / "name-map.compatibility.json"
-            materialized = materialize_xilinx_openparf_atomic_name_map(
-                path, compatibility
-            )
-            self.assertEqual(materialized["schema"], OPENPARF_ATOMIC_NAME_MAP_SCHEMA)
-            self.assertEqual(materialized["atoms"], _carry_atoms())
-            self.assertEqual(read_json(compatibility), materialized)
-
             relocated = root / "relocated"
             relocated.mkdir()
             shutil.copy2(path, relocated / path.name)
@@ -369,33 +360,16 @@ class XilinxOpenparfNameMapStorageTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "store is a symbolic link"):
                 read_xilinx_openparf_atomic_name_map(path)
 
-    def test_legacy_requires_opt_in_and_expected_source_seals(self):
+    def test_old_whole_map_json_has_no_compatibility_opt_in(self):
+        import inspect
+        from emuflow import xilinx_openparf_name_map_storage as module
+        self.assertNotIn('allow_legacy', inspect.signature(read_xilinx_openparf_atomic_name_map).parameters)
+        self.assertFalse(hasattr(module, 'materialize_xilinx_openparf_atomic_name_map'))
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            typed = root / "name_map.json"
-            view = _write(typed)
-            view.close()
-            legacy = root / "legacy.json"
-            materialize_xilinx_openparf_atomic_name_map(typed, legacy)
-            with self.assertRaisesRegex(ValidationError, "explicit compatibility"):
+            legacy = Path(temporary) / 'legacy.json'
+            legacy.write_text(json.dumps({**_header(), 'atoms': _atoms(), 'source': _DIGESTS}))
+            with self.assertRaisesRegex(ValidationError, 'selector.*malformed'):
                 read_xilinx_openparf_atomic_name_map(legacy)
-            value = read_xilinx_openparf_atomic_name_map(
-                legacy, allow_legacy=True, **_DIGESTS
-            )
-            self.assertEqual(value["atoms"], _atoms())
-            broken = read_json(legacy)
-            broken["source"]["packed_sha256"] = "f" * 64
-            legacy.write_text(json.dumps(broken), encoding="utf-8")
-            with self.assertRaisesRegex(ValidationError, "packed source seal"):
-                read_xilinx_openparf_atomic_name_map(
-                    legacy, allow_legacy=True, **_DIGESTS
-                )
-            broken.pop("source")
-            legacy.write_text(json.dumps(broken), encoding="utf-8")
-            with self.assertRaisesRegex(ValidationError, "mapped source seal"):
-                read_xilinx_openparf_atomic_name_map(
-                    legacy, allow_legacy=True, **_DIGESTS
-                )
 
     def test_malformed_cascades_and_cross_chain_ownership_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

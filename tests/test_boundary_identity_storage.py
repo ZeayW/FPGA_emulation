@@ -117,7 +117,7 @@ def test_typed_boundary_identity_rejects_store_tampering(tmp_path: Path) -> None
         read_boundary_identity_storage(selector)
 
 
-def test_legacy_boundary_identity_requires_explicit_compatibility(
+def test_old_boundary_identity_json_is_retired(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "legacy.json"
@@ -131,6 +131,7 @@ def test_legacy_boundary_identity_requires_explicit_compatibility(
         }),
         encoding="utf-8",
     )
-    with pytest.raises(ValidationError, match="explicit compatibility"):
+    with pytest.raises(ValidationError, match="selector.*malformed|storage schema"):
         read_boundary_identity_storage(path)
-    assert read_boundary_identity_storage(path, allow_legacy=True)["endpoints"] == []
+    with pytest.raises(TypeError, match="allow_legacy"):
+        read_boundary_identity_storage(path, allow_legacy=True)

@@ -32,10 +32,6 @@ from .multi_fpga_physical_flow import (
     run_multi_fpga_physical_flow,
     validate_multi_fpga_physical_report,
 )
-from .multi_fpga_bsp_flow import (
-    run_multi_fpga_bsp_flow,
-    validate_multi_fpga_bsp_flow_report,
-)
 from .opensta import (
     DEFAULT_TIMING_MODEL,
     check_opensta_engine_version,
@@ -64,7 +60,7 @@ from .combinational_cut import (
 )
 from .native_tools import resolve_native_executable
 from .platform import Platform
-from .ppro_calibrated_platform import validate_transport_cost_database
+from .transport_cost import validate_transport_cost_database
 from .runtime import validate_virtual_runtime
 from .routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
 from .tdm import TDM_EXACT_DEPENDENCY_PROVIDER
@@ -807,26 +803,8 @@ def validate_multi_fpga_flow_report(
             raise ValidationError(
                 "multi-FPGA BoardLinkTimingDB application is invalid"
             )
-    hardware_bsp = report.get("hardware_bsp")
-    if hardware_bsp is not None:
-        bsp_validation = validate_multi_fpga_bsp_flow_report(hardware_bsp)
-        if (
-            bsp_validation["design"] != design
-            or bsp_validation["platform"] != platform
-        ):
-            raise ValidationError(
-                "multi-FPGA hardware BSP identity disagrees"
-            )
-        source_artifact = report.get("artifacts", {}).get(
-            "board_independent_flow_report", {}
-        )
-        if (
-            source_artifact.get("sha256")
-            != hardware_bsp.get("source_flow_report_sha256")
-        ):
-            raise ValidationError(
-                "multi-FPGA hardware BSP source-flow hash disagrees"
-            )
+    if "hardware_bsp" in report:
+        raise ValidationError("hardware BSP reports are no longer supported")
     frame_search = report.get("frame_search")
     if frame_search is not None:
         frame_validation = validate_frame_search_report(frame_search)
@@ -879,9 +857,6 @@ def validate_multi_fpga_flow_report(
         ),
         "physical_status": (
             "pass" if physical is not None else "not-requested"
-        ),
-        "hardware_bsp_status": (
-            "pass" if hardware_bsp is not None else "not-requested"
         ),
         "phase6_provider": (
             "chimew" if phase6_comparison is not None else "baseline"
@@ -1191,14 +1166,8 @@ def _compile_preflight(ctx: _CompileContext):
         raise EmuFlowError("only PATRON v14 is supported")
     if ctx.partition_provider not in {"patron", "tritonpart"}:
         raise EmuFlowError(f"unsupported Phase 3 provider {ctx.partition_provider!r}")
-    if ctx._native_mode and (
-        ctx.optimize_frame_slots or
-        ctx.serial_bsp_phy_provider is not None
-    ):
-        raise EmuFlowError(
-            "native compile does not yet support frame search "
-            "or serial BSP continuation"
-        )
+    if ctx._native_mode and ctx.optimize_frame_slots:
+        raise EmuFlowError("native compile does not yet support frame search")
     if ctx.output_dir is None:
         raise EmuFlowError("multi-FPGA compilation requires an output directory")
 
@@ -1307,33 +1276,6 @@ def _compile_preflight(ctx: _CompileContext):
             "multi-FPGA timing analysis requires at least one "
             "--clock-period CLOCK=PERIOD_NS; TimingPathDB remains mandatory "
             "for physical Phase 7C even with --no-timing-driven"
-        )
-    ctx.serial_bsp_requested = ctx.serial_bsp_phy_provider is not None
-    serial_bsp_auxiliary = any(
-        value is not None
-        for value in (
-            ctx.serial_bsp_runtime_sync_provider,
-            ctx.serial_bsp_board_overlay,
-            ctx.serial_bsp_gt_site_map,
-            ctx.serial_bsp_vivado,
-            ctx.serial_bsp_yosys,
-            ctx.serial_bsp_runtime_sync_root,
-        )
-    )
-    if serial_bsp_auxiliary and not ctx.serial_bsp_requested:
-        raise EmuFlowError(
-            "serial BSP options require --serial-bsp-phy-provider"
-        )
-    if ctx.serial_bsp_requested and ctx.serial_bsp_runtime_sync_provider is None:
-        raise EmuFlowError(
-            "serial BSP continuation requires --serial-bsp-runtime-sync-provider"
-        )
-    if ctx.serial_bsp_requested and (
-        (ctx.serial_bsp_vivado is None) == (ctx.serial_bsp_yosys is None)
-    ):
-        raise EmuFlowError(
-            "serial BSP continuation requires exactly one of "
-            "--serial-bsp-vivado or --serial-bsp-yosys"
         )
 
     # These small board contracts can be checked without a synthesized graph.
@@ -2461,35 +2403,6 @@ def _compile_finalize(ctx: _CompileContext):
         },
     }
     ctx.report["summary"] = validate_multi_fpga_flow_report(ctx.report)
-    if ctx.serial_bsp_requested:
-        write_json(ctx.output_dir / "board-independent-flow-report.json", ctx.report)
-        assert ctx.serial_bsp_phy_provider is not None
-        assert ctx.serial_bsp_runtime_sync_provider is not None
-        bsp_report = run_multi_fpga_bsp_flow(
-            flow_root=ctx.output_dir,
-            platform_path=ctx.platform_path,
-            phy_provider_path=ctx.serial_bsp_phy_provider,
-            runtime_sync_provider_path=ctx.serial_bsp_runtime_sync_provider,
-            output_dir=ctx.output_dir / "hardware-bsp",
-            board_overlay_path=ctx.serial_bsp_board_overlay,
-            gt_site_map_path=ctx.serial_bsp_gt_site_map,
-            vivado_executable=ctx.serial_bsp_vivado,
-            yosys_executable=ctx.serial_bsp_yosys,
-            runtime_sync_root=ctx.serial_bsp_runtime_sync_root,
-            ready_stable_cycles=ctx.serial_bsp_ready_stable_cycles,
-        )
-        ctx.report["hardware_bsp"] = bsp_report
-        ctx.report["artifacts"]["board_independent_flow_report"] = {
-            "path": "board-independent-flow-report.json",
-            "sha256": _sha256(ctx.output_dir / "board-independent-flow-report.json"),
-        }
-        ctx.report["artifacts"]["hardware_bsp_flow_report"] = {
-            "path": "hardware-bsp/multi-fpga-bsp-flow-report.json",
-            "sha256": _sha256(
-                ctx.output_dir / "hardware-bsp/multi-fpga-bsp-flow-report.json"
-            ),
-        }
-        ctx.report["summary"] = validate_multi_fpga_flow_report(ctx.report)
     write_json(ctx.output_dir / "multi-fpga-flow-report.json", ctx.report)
     return ctx.report
 
@@ -2607,14 +2520,6 @@ def run_multi_fpga_flow(
     physical_workers: int = 1,
     global_sta_executable: Optional[str] = None,
     global_timing_engine: str = "opensta",
-    serial_bsp_phy_provider: Optional[Path] = None,
-    serial_bsp_runtime_sync_provider: Optional[Path] = None,
-    serial_bsp_board_overlay: Optional[Path] = None,
-    serial_bsp_gt_site_map: Optional[Path] = None,
-    serial_bsp_vivado: Optional[Path] = None,
-    serial_bsp_yosys: Optional[Path] = None,
-    serial_bsp_runtime_sync_root: Optional[str] = None,
-    serial_bsp_ready_stable_cycles: int = 4,
 ) -> Dict[str, Any]:
     """Compile RTL/EmuIR using the shared phase adapters and current defaults."""
     ctx = _CompileContext(locals())

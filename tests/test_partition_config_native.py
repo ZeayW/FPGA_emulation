@@ -211,7 +211,7 @@ json.dump(rows,sys.stdout)
            'groups': [{'id': str(i), 'patterns': [pattern]} for i, (pattern, _) in enumerate(rows)]}
     expected = configuration_facts()
     expected['groups'] = [{'id': str(i), 'instances': sorted(matched)} for i, (_, matched) in enumerate(rows)]
-    with patch('emuflow.partition_config_native._pattern_range_policy', return_value='empty-ranges-v1'):
+    with patch('tests.native_partition_core_fixture._pattern_range_policy', return_value='empty-ranges-v1'):
         actual = normalize_partition_constraints(raw, indexed, platform)
     assert actual == expected
 
@@ -243,7 +243,7 @@ def test_invalid_configuration_rejects_without_reference_retry(configuration, ra
 @pytest.mark.parametrize('damage', ['request-crc', 'generation', 'output-generation'])
 def test_producer_bindings_reject_tampered_requests_sources_and_outputs(configuration, damage):
     _, indexed, platform = configuration
-    import emuflow.partition_config_native as module
+    import tests.native_partition_core_fixture as module
     real = module.NativeToolProcess
     def changed_process(executable, command, **kwargs):
         if damage == 'request-crc':
@@ -301,7 +301,7 @@ def test_resource_keys_cannot_alias_through_sqlite_nul_truncation(configuration)
 
 def test_original_constraint_file_bypasses_host_json_and_small_request_size(configuration, tmp_path):
     reference, indexed, platform = configuration
-    from emuflow.partition_config_native import prepare_configuration
+    from tests.native_partition_core_fixture import prepare_configuration
     path = tmp_path/'large-whitespace.json'
     with path.open('w') as stream:
         stream.write(' '*(8*1024*1024+1))
@@ -320,7 +320,7 @@ def test_original_constraint_file_bypasses_host_json_and_small_request_size(conf
 @pytest.mark.parametrize('tolerance', ['-0', '-0.0', '-0e0'])
 def test_original_numeric_tokens_preserve_integer_and_float_zero(configuration, tmp_path, tolerance):
     reference, indexed, platform = configuration
-    from emuflow.partition_config_native import prepare_configuration
+    from tests.native_partition_core_fixture import prepare_configuration
     text = ('{"schema":"emuflow.partition-constraints/v1","balance_tolerance":'+tolerance+
             ',"resource_reservations_by_fpga":{"a":{"lut":-0}}}')
     path = tmp_path/'numeric-zero.json'

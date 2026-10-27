@@ -183,50 +183,20 @@
       "id": "netlist-transport-pin-generation",
       "stage": "Phase 6",
       "source_paths": [
-        "src/native/bsp_pin_solver.cpp",
         "src/emuflow/pin_planning.py",
-        "src/emuflow/physical_pins.py",
         "src/emuflow/netlist.py",
         "src/emuflow/phase6.py",
         "schemas/signal-position-hints-v1.schema.json",
         "schemas/placement-aware-pin-plan-v1.schema.json",
-        "schemas/hardware-bsp-v1.schema.json",
-        "schemas/package-pin-binding-v1.schema.json",
-        "scripts/generate_synthetic_vu9p_bsp.py",
-        "platforms/synthetic/xcvu9p_4fpga_mesh_bsp.json",
-        "rtl/transport",
-        "rtl/runtime_sync",
-        "providers/runtime_sync_tree/provider.json",
-        "src/emuflow/runtime_sync.py",
-        "schemas/runtime-sync-provider-v1.schema.json",
-        "schemas/runtime-sync-topology-v1.schema.json",
-        "schemas/serial-wrapper-v1.schema.json"
+        "rtl/transport"
       ],
       "build_targets": [
-        "emuflow_bsp_pin_solver",
         "emuflow_python"
       ],
       "runtime_products": [
-        "emuflow_bsp_pin_solver",
         "emuflow"
       ],
       "integration": "default-in-tree-build"
-    },
-    {
-      "id": "open-serial-pcs-cdc",
-      "stage": "Phase 6C serial transport implementation",
-      "source_paths": [
-        "engines/corundum_eth",
-        "rtl/pcs",
-        "tests/rtl/pcs_record_link_tb.sv"
-      ],
-      "build_targets": [
-        "emuflow_python"
-      ],
-      "runtime_products": [
-        "synthesizable Verilog/SystemVerilog"
-      ],
-      "integration": "source-present-ultrascale-plus-integration-pending"
     },
     {
       "id": "fpga-placement",
@@ -296,33 +266,11 @@
       "id": "optional-vivado-gty-recipe",
       "stage": "Phase 6C commercial serial PHY preparation",
       "source_paths": [
-        "src/emuflow/serial_phy_recipe.py",
-        "src/emuflow/vivado_pin_sites.py",
-        "src/emuflow/serial_contract.py",
-        "src/emuflow/serial_phy_provider.py",
-        "src/emuflow/serial_phy_elaboration.py",
-        "src/emuflow/serial_wrapper.py",
-        "src/emuflow/multi_fpga_bsp_flow.py",
-        "src/emuflow/vivado_board_flow.py",
-        "src/emuflow/vivado_board_timing.py",
         "src/emuflow/board_link_timing.py",
         "scripts/vivado/export_boundary_timing.tcl",
         "scripts/vivado/export_logic_segment_timing.tcl",
-        "schemas/multi-fpga-bsp-flow-v1.schema.json",
         "schemas/multi-fpga-flow-v2.schema.json",
-        "schemas/vivado-board-flow-v1.schema.json",
-        "schemas/vivado-board-timing-v1.schema.json",
-        "schemas/board-link-timing-v1.schema.json",
-        "schemas/serial-phy-provider-v1.schema.json",
-        "schemas/serial-phy-provider-v2.schema.json",
-        "schemas/serial-phy-provider-v3.schema.json",
-        "schemas/serial-phy-elaboration-v1.schema.json",
-        "schemas/serial-phy-recipe-v1.schema.json",
-        "schemas/vivado-pin-site-map-v2.schema.json",
-        "providers/vivado_gty_10g/emuflow_vivado_gty_10g_quad.sv",
-        "providers/vivado_gty_10g/generate_gty_ip.tcl",
-        "providers/vivado_gty_10g/recipe.json",
-        "providers/vivado_gty_10g/LICENSE"
+        "schemas/board-link-timing-v1.schema.json"
       ],
       "build_targets": [
         "emuflow_python"
@@ -331,6 +279,20 @@
         "emuflow",
         "externally-installed-vivado",
         "local-vivado-generated-gty-products"
+      ],
+      "integration": "in-tree-python"
+    },
+    {
+      "id": "optional-research-tools",
+      "stage": "independent research and dataset preparation",
+      "source_paths": [
+        "tools/emuflow_tools",
+        "tools/pyproject.toml"
+      ],
+      "build_targets": [],
+      "runtime_products": [
+        "emuflow-tools",
+        "emuflow-ppro-calibration"
       ],
       "integration": "in-tree-python"
     }
@@ -358,9 +320,7 @@
       "uses": [
         "architecture comparison",
         "common TimingPathDB production",
-        "GT Wizard product generation from the in-tree editable Tcl recipe",
         "per-FPGA synthesis, placement, routing, and timing",
-        "board-integrated routed logic and interface timing feedback",
         "route and DRC comparison",
         "bitstream generation"
       ],

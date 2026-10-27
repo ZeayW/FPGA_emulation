@@ -22,8 +22,6 @@ from emuflow.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA_V1,
     CHIMEW_BANK_CHANNEL_PROVIDER,
-    _verify_certificate,
-    _verify_stage2_certificate,
     evaluate_chimew_bank_channel_assignment,
     validate_chimew_bank_channel_input,
 )
@@ -788,46 +786,31 @@ class ChimewBankChannelTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "singleton"):
             validate_chimew_bank_channel_input(nonsingleton)
 
-    def test_residual_dual_tampering_is_rejected(self) -> None:
-        with self.assertRaisesRegex(EmuFlowError, "negative reduced cost"):
-            _verify_certificate(
-                1,
-                [1],
-                1,
-                [(0, 0, 5)],
-                {0: (0, 5)},
-                [0, 0, 0, 0],
-                5,
-            )
-
-    def test_compact_repeated_row_certificate_rejects_tampering(self) -> None:
-        bank = {
-            "channels": [
-                {"pin_a": (0.0, 0.0), "pin_b": (100.0, 0.0)},
-                {"pin_a": (0.0, 20.0), "pin_b": (100.0, 20.0)},
-            ]
-        }
-        group = {
-            "kind": 1,
-            "direction": 0,
-            "members": [
-                {
-                    "fanout": (0.0, 0.0),
-                    "fanins": [(100.0, 0.0)],
-                }
-            ],
-        }
-        with self.assertRaisesRegex(EmuFlowError, "negative reduced cost"):
-            _verify_stage2_certificate(
-                bank,
-                [group],
-                [0],
-                0,
-                {0: (0, 0)},
-                [0, 0, 0, 100_000, 100_000],
-                0,
-                1000,
-            )
+    def test_indexed_certificates_reject_tampered_native_duals(self) -> None:
+        problem = validate_chimew_bank_channel_input(self.document)
+        digest = canonical_bank_channel_input_sha256(self.document)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            input_path = root / 'input.bin'
+            with input_path.open('wb') as stream:
+                bank_channel_module._serialize_typed(problem, stream, digest)
+            valid = subprocess.run([*self.command, '--typed-input', str(input_path), '-'],
+                capture_output=True, text=True, check=True).stdout.splitlines()
+            for stage in ('STAGE1', 'BANK'):
+                malformed = list(valid)
+                position = next(i for i, line in enumerate(valid) if line.startswith('CERT '+stage))
+                # Alter one dual variable while preserving all protocol sizes,
+                # primal assignments, objective totals and input identity.
+                fields = malformed[position+1].split()
+                fields[-1] = str(int(fields[-1])+1000000000000)
+                malformed[position+1] = ' '.join(fields)
+                executable = root / stage
+                executable.write_text('#!/usr/bin/env python3\nimport sys\n'
+                    + f'sys.stdout.write({(chr(10).join(malformed)+chr(10))!r})\n')
+                executable.chmod(0o755)
+                with self.subTest(stage=stage), self.assertRaisesRegex(
+                    EmuFlowError, 'negative reduced cost|primal certificate|dual'):
+                    evaluate_chimew_bank_channel_assignment(self.document, executable=str(executable))
 
     def test_200_group_sparse_certificate_regression(self) -> None:
         document = copy.deepcopy(self.document)

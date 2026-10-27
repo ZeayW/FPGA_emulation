@@ -16,9 +16,8 @@ import struct
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
-from .combinational_cut import semantic_contract_sha256
 from .errors import ValidationError
-from .phase3_exact_records import (
+from .phase3_exact_limits import (
     STATIC_EXACT_CAPTURE_BIT_ERROR,
     STATIC_EXACT_CAPTURE_BIT_MAX_BITS,
     STATIC_EXACT_CAPTURE_BIT_MAX_BYTES,
@@ -41,8 +40,6 @@ _CAPTURE = struct.Struct("<IIB")
 _MISSING = 0xFFFFFFFF
 
 
-
-
 def _number(value: Any, prefix: str) -> int:
     if not isinstance(value, str) or not value.startswith(prefix):
         raise ValidationError(f"Static Exact {prefix} identity is invalid")
@@ -57,24 +54,6 @@ def _number(value: Any, prefix: str) -> int:
 
 def _identity(prefix: str, number: int) -> str:
     return f"{prefix}{number:06d}"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _load_manifest(
@@ -456,94 +435,6 @@ def iter_phase3_exact_captures(
     yield from heapq.merge(
         *streams, key=lambda item: _number(item["id"], "capture")
     )
-
-
-def read_phase3_exact_binary_partition(
-    path: Path, descriptor: Mapping[str, Any], fpga: str
-) -> dict[str, Any]:
-    return {
-        "schema": descriptor.get("semantic_contract_schema"),
-        "sha256": descriptor.get("semantic_contract_sha256"),
-        "fpga": fpga,
-        "logic_segments": list(iter_phase3_exact_segments(path, descriptor, fpga)),
-        "capture_requirements": list(
-            iter_phase3_exact_captures(path, descriptor, fpga)
-        ),
-    }
-
-
-def read_phase3_exact_binary_contract(
-    path: Path,
-    descriptor: Mapping[str, Any],
-    assignment: Mapping[str, Any],
-) -> dict[str, Any]:
-    manifest = _load_manifest(path, descriptor)
-    header = manifest.get("contract_header")
-    expected_digest = manifest.get("semantic_contract_sha256")
-    if (
-        not isinstance(header, dict)
-        or header.get("schema") != manifest.get("semantic_contract_schema")
-        or assignment.get("semantic_contract_sha256") != expected_digest
-    ):
-        raise ValidationError("Static Exact binary identity is incomplete")
-    logic_segments = list(iter_phase3_exact_segments(path, descriptor))
-    capture_requirements = list(iter_phase3_exact_captures(path, descriptor))
-    source_segments = {
-        net: [_identity("segment", number) for number in numbers]
-        for net, numbers in iter_phase3_exact_node_sources(path, descriptor)
-    }
-    capture_segments: dict[str, list[str]] = {}
-    for segment in logic_segments:
-        if segment["kind"] == "rx_to_capture":
-            capture_segments.setdefault(segment["source_cut_net"], []).append(
-                segment["id"]
-            )
-    cut_by_net = {
-        cut.get("net"): cut
-        for cut in assignment.get("cut_nets", [])
-        if isinstance(cut, Mapping) and isinstance(cut.get("net"), str)
-    }
-    node_fields = (
-        "net",
-        "cut_class",
-        "source_fpgas",
-        "sink_fpgas",
-        "dependency_level",
-        "combinational_dependency_depth",
-        "predecessor_cut_nets",
-    )
-    cut_nodes = []
-    for net in sorted(source_segments):
-        cut = cut_by_net.get(net)
-        if cut is None or any(field not in cut for field in node_fields):
-            raise ValidationError("Static Exact binary cut node is incomplete")
-        cut_nodes.append(
-            {
-                **{field: cut[field] for field in node_fields},
-                "source_segment_ids": source_segments[net],
-                "capture_segment_ids": sorted(capture_segments.get(net, [])),
-            }
-        )
-    dependency_edges = [
-        {
-            "from": segment["source_cut_net"],
-            "to": segment["sink_cut_net"],
-            "segment": segment["id"],
-        }
-        for segment in logic_segments
-        if segment["kind"] == "rx_to_tx"
-    ]
-    dependency_edges.sort(key=lambda item: (item["to"], item["from"]))
-    contract = {
-        **header,
-        "cut_nodes": cut_nodes,
-        "dependency_edges": dependency_edges,
-        "logic_segments": logic_segments,
-        "capture_requirements": capture_requirements,
-    }
-    if semantic_contract_sha256(contract) != expected_digest:
-        raise ValidationError("reconstructed Static Exact binary digest disagrees")
-    return contract
 
 
 def phase3_exact_binary_counts(

@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.emuir_compact import write_compact_emuir
-from emuflow.phase3_exact_records import read_native_static_exact_capture_stream
+from tests.native_semantic_facts import read_captures as read_native_static_exact_capture_stream
 from tests import test_combinational_cut as reference
 from tests.native_build import emuflow_native
 
@@ -108,7 +108,12 @@ def test_native_build_matches_explicit_reference_and_retires_private_index(captu
 def test_independent_validator_rejects_mutated_stream_before_replacing_proof(captures, tmp_path, corruption):
     stream, proof = tmp_path/'captures.bin', tmp_path/'proof.json'
     subprocess.run(command(captures, 'build-captures', stream), check=True)
-    values = list(read_native_static_exact_capture_stream(stream).iter_binary_captures())
+    values = []
+    for row in read_native_static_exact_capture_stream(stream):
+        kind = int(row['kind'] == 'architectural-state')
+        bit = row.get('bit', 0)
+        values.append((row['cut_net'].encode(), row['fpga'].encode(), kind, row['endpoint'].encode(),
+            row.get('port', '').encode(), bit.to_bytes(max(1, (bit.bit_length()+7)//8), 'big') if kind else b''))
     empty = not values
     rows = list(values) or [(b'unknown', b'fpga0', 0, b'top:missing[0]', b'', b'')]
     if corruption == 'missing': rows.pop()

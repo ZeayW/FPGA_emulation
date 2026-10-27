@@ -14,7 +14,7 @@ import tempfile
 from types import SimpleNamespace
 
 from emuflow.errors import ValidationError
-from emuflow.native_columns import _ClusterScratch, _ColumnOwner, _MappedColumn
+from tests.native_column_fixture import _ClusterScratch, _ColumnOwner, _MappedColumn
 from emuflow.native_protocol import CheckedRequestWriter
 from emuflow.native_tools import native_file_generation, resolve_native_executable
 from emuflow.store_publication import StoreSource, require_store_sources_unchanged
@@ -47,7 +47,7 @@ def pressure_kernel_inputs(ir, platform, clusters, constraints, timing, routes, 
 
 def write_pressure_requests(value, root, initial, max_moves):
     from emuflow.partition_limits import planning_resource_capacities
-    from emuflow.phase3_semantics_native import _ownership_sources
+    from tests.native_partition_core_fixture import _ownership_sources
     from emuflow.resources import RESOURCE_FIELDS
     root = Path(root)
     if value.primary_artifact is None:
@@ -111,7 +111,7 @@ def write_pressure_requests(value, root, initial, max_moves):
 
 
 def run_pressure_kernel(value, initial, *, max_moves=0):
-    from emuflow.partition import (_PackedClusterAssignment)
+    from tests.partition_views import ClusterOwners as _PackedClusterAssignment
     from tests.native_partition_facts import (build_partition_assignment)
     count = len(value.clusters)
     workspace = _ClusterScratch(prefix='patron-kernel-facts-'); root = Path(workspace.name)

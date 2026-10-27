@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from emuflow.ppro_blackbox_route_evidence import maximum_capacity_payload_hops
+from emuflow_tools.ppro_blackbox_route_evidence import maximum_capacity_payload_hops
 
 
 class PProBlackboxRouteEvidenceTest(unittest.TestCase):

@@ -11,7 +11,8 @@ import pytest
 from emuflow.transport_storage import write_transport_storage
 from tests.virtual_anchor_fixture import expected_anchor_xdc
 from emuflow.runtime import build_virtual_runtime,virtual_runtime_controller_to_systemverilog
-from emuflow.virtual_board import build_virtual_board,virtual_binding_to_systemverilog,virtual_binding_to_xdc
+from emuflow.virtual_board import build_virtual_board
+from tests.virtual_binding_fixture import binding_text
 from tests.transport_reference import write_transport_storage as reference,write_transport_systemverilog
 from tests.test_split_overlay_native import owners
 from tests.native_build import emuflow_native
@@ -32,8 +33,8 @@ def compare(expected,actual,platform,root,runtime=None):
         assert actual['binding'].materialize()==expected['binding'].materialize()
         assert actual['binding'].canonical_sha256==expected['binding'].canonical_sha256
         for fpga in expected['transports']:
-            assert (root/'native'/fpga/'virtual_data_pins.xdc').read_text()==virtual_binding_to_xdc(expected['binding'],fpga)
-            assert (root/'native'/fpga/'virtual_differential_io.sv').read_text()==virtual_binding_to_systemverilog(expected['binding'],fpga)
+            assert (root/'native'/fpga/'virtual_data_pins.xdc').read_text()==binding_text(expected['binding'],fpga)
+            assert (root/'native'/fpga/'virtual_differential_io.sv').read_text()==binding_text(expected['binding'],fpga,systemverilog=True)
         actual['binding'].validate_transport_relations()
     if runtime is not None:
         assert (root/'native'/'virtual_runtime_controller.sv').read_text()==virtual_runtime_controller_to_systemverilog(runtime)

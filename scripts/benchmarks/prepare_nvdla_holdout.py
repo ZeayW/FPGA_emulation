@@ -17,7 +17,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
-from emuflow.benchmark import BenchmarkRun
+from emuflow_tools.benchmark import BenchmarkRun
 from emuflow.io import write_json
 from emuflow.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 from scripts.benchmarks.nvdla_ram_stubs import (

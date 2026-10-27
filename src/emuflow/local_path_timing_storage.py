@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from contextlib import closing
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 import fcntl
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import shutil
@@ -46,7 +45,6 @@ _SELECTOR_KEYS = {
     "counts", "logical_sha256", "artifact", "store_bytes", "store_sha256",
 }
 
-_DDL = (Path(__file__).parent / "data/schema/local_path_timing.sql").read_text()
 
 
 def _canonical(value: Any) -> str:
@@ -118,70 +116,6 @@ def _validate_header(
     return header
 
 
-def _normalize_record(raw: Any, header: Mapping[str, Any]) -> dict[str, Any]:
-    base = {
-        "id", "kind", "fpga", "clock_domain", "clock_period_ns",
-        "start_pin", "end_pin", "delay_ns",
-    }
-    expected = (
-        base | {"required_time_ns", "measurement", "path_pins"}
-        if header["identity_schema"] == "emuflow.local-path-identity/v2"
-        else base
-    )
-    if not isinstance(raw, Mapping) or set(raw) != expected:
-        raise ValidationError("local path timing path fields are invalid")
-    record = dict(raw)
-    period = record.get("clock_period_ns")
-    delay = record.get("delay_ns")
-    if (
-        record.get("kind") != "local"
-        or record.get("fpga") != header["fpga"]
-        or any(
-            not isinstance(record.get(field), str) or not record[field]
-            for field in ("id", "clock_domain", "start_pin", "end_pin")
-        )
-        or isinstance(period, bool)
-        or not isinstance(period, (int, float))
-        or not math.isfinite(float(period))
-        or float(period) <= 0.0
-        or isinstance(delay, bool)
-        or not isinstance(delay, (int, float))
-        or not math.isfinite(float(delay))
-        or float(delay) < 0.0
-    ):
-        raise ValidationError("local path timing path values are invalid")
-    record["clock_period_ns"] = float(period)
-    record["delay_ns"] = float(delay)
-    if header["identity_schema"] == "emuflow.local-path-identity/v2":
-        required = record.get("required_time_ns")
-        pins = record.get("path_pins")
-        measurement = record.get("measurement")
-        if (
-            isinstance(required, bool)
-            or not isinstance(required, (int, float))
-            or not math.isfinite(float(required))
-            or float(required) <= 0.0
-            or measurement not in {
-                "explicit-routed-path-chain",
-                "endpoint-longest-path-fallback",
-            }
-            or not isinstance(pins, Sequence)
-            or isinstance(pins, (str, bytes, bytearray))
-            or any(not isinstance(pin, str) or not pin or "," in pin for pin in pins)
-            or (
-                measurement == "explicit-routed-path-chain"
-                and (
-                    len(pins) < 2
-                    or pins[0] != record["start_pin"]
-                    or pins[-1] != record["end_pin"]
-                )
-            )
-            or (measurement == "endpoint-longest-path-fallback" and pins)
-        ):
-            raise ValidationError("local path timing measurement is invalid")
-        record["required_time_ns"] = float(required)
-        record["path_pins"] = list(pins)
-    return record
 
 
 def _record_from_row(
@@ -493,178 +427,11 @@ def _collect_stale(path: Path, keep: Path) -> None:
         candidate.unlink()
 
 
-def write_local_path_timing_storage(
-    path: Path,
-    header: Mapping[str, Any],
-    records: Iterable[Mapping[str, Any]],
-    *,
-    source_bindings=(),
-) -> LocalPathTimingView:
-    """Atomically publish one typed local-path timing generation."""
-
-    source_bindings = validate_store_destination(path, source_bindings)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    base_header = _validate_header(dict(header))
-    lease: Optional[_Lease] = _Lease(path, exclusive=True)
-    temporary: Optional[Path] = None
-    selector_temporary: Optional[Path] = None
-    published_store: Optional[Path] = None
-    created_store = False
-    committed = False
-    connection: Optional[sqlite3.Connection] = None
-    try:
-        if path.is_symlink() or (path.exists() and not path.is_file()):
-            raise ValidationError("local path timing selector is invalid")
-        descriptor, name = tempfile.mkstemp(
-            prefix=f".{path.stem}.", suffix=".sqlite.tmp", dir=path.parent
-        )
-        os.close(descriptor)
-        temporary = Path(name)
-        descriptor, name = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-        )
-        os.close(descriptor)
-        selector_temporary = Path(name)
-        connection = sqlite3.connect(temporary)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=OFF")
-        connection.execute("PRAGMA synchronous=OFF")
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute(f"PRAGMA application_id={LOCAL_PATH_TIMING_APPLICATION_ID}")
-        connection.execute(f"PRAGMA user_version={LOCAL_PATH_TIMING_USER_VERSION}")
-        connection.executescript(_DDL)
-        timing_rows: list[tuple[Any, ...]] = []
-        pin_rows: list[tuple[Any, ...]] = []
-        count = 0
-
-        def flush() -> None:
-            if timing_rows:
-                connection.executemany(
-                    "INSERT INTO timings VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    timing_rows,
-                )
-                timing_rows.clear()
-            if pin_rows:
-                connection.executemany(
-                    "INSERT INTO path_pins VALUES (?,?,?)", pin_rows
-                )
-                pin_rows.clear()
-
-        try:
-            for raw in records:
-                record = _normalize_record(raw, base_header)
-                timing_rows.append((
-                    count, record["id"], record["kind"], record["fpga"],
-                    record["clock_domain"], record["clock_period_ns"],
-                    record.get("required_time_ns"), record["start_pin"],
-                    record["end_pin"], record.get("measurement"),
-                    record["delay_ns"],
-                ))
-                pin_rows.extend(
-                    (record["id"], ordinal, pin)
-                    for ordinal, pin in enumerate(record.get("path_pins", ()))
-                )
-                count += 1
-                if len(timing_rows) >= 8192 or len(pin_rows) >= 8192:
-                    flush()
-            flush()
-        except sqlite3.IntegrityError as error:
-            raise ValidationError("local path timing path is duplicated") from error
-        counts = {"local_paths": count}
-        normalized_header = _validate_header(base_header, counts)
-        path_digest = hashlib.sha256()
-        maximum_delay = 0.0
-        measurement_counts = {"explicit-routed-path-chain": 0, "endpoint-longest-path-fallback": 0}
-        for record in _iter_records(connection):
-            maximum_delay = max(maximum_delay, record["delay_ns"])
-            if record.get("measurement") in measurement_counts:
-                measurement_counts[record["measurement"]] += 1
-            path_digest.update(_canonical(record).encode("utf-8"))
-            path_digest.update(b"\n")
-        logical_sha = hashlib.sha256(_canonical({
-            "header": normalized_header, "counts": counts,
-            "path_sha256": path_digest.hexdigest(),
-        }).encode("utf-8")).hexdigest()
-        for key, value in (
-            ("counts", counts), ("header", normalized_header),
-            ("logical_sha256", logical_sha),
-        ):
-            connection.execute(
-                "INSERT INTO metadata VALUES (?,?)", (key, _canonical(value))
-            )
-        connection.commit()
-        connection.close()
-        connection = None
-        store_sha = file_sha256(temporary)
-        published_store = path.with_name(_store_name(path, store_sha))
-        if published_store.is_symlink():
-            raise ValidationError("local path timing generation is a symlink")
-        require_store_sources_unchanged(source_bindings)
-        if published_store.is_file():
-            if file_sha256(published_store) != store_sha:
-                raise ValidationError("local path timing generation seal disagrees")
-            temporary.unlink()
-        else:
-            publish_sqlite_store(
-                temporary,
-                published_store,
-                "local-path-timing-store-v1",
-                sources=source_bindings,
-            )
-            created_store = True
-        selector = {
-            "schema": LOCAL_PATH_TIMING_STORAGE_SCHEMA,
-            "logical_schema": LOCAL_PATH_TIMING_SCHEMA,
-            "application_id": LOCAL_PATH_TIMING_APPLICATION_ID,
-            "user_version": LOCAL_PATH_TIMING_USER_VERSION,
-            "header": normalized_header, "counts": counts,
-            "logical_sha256": logical_sha,
-            "artifact": published_store.name,
-            "store_bytes": published_store.stat().st_size,
-            "store_sha256": store_sha,
-        }
-        _validate_selector(selector)
-        write_json(selector_temporary, selector, compact=True)
-        with selector_temporary.open("rb") as stream:
-            os.fsync(stream.fileno())
-        require_store_sources_unchanged(source_bindings)
-        os.replace(selector_temporary, path)
-        committed = True
-        _fsync_directory(path.parent)
-        try:
-            _collect_stale(path, published_store)
-        except OSError:
-            pass
-        assert lease is not None
-        lease.downgrade_shared()
-        view = LocalPathTimingView._from_publication(
-            path, selector, published_store, lease
-        )
-        view._maximum_delay_ns = maximum_delay
-        view._measurement_counts = (
-            measurement_counts if normalized_header["identity_schema"] == "emuflow.local-path-identity/v2" else {}
-        )
-        lease = None
-        return view
-    except BaseException:
-        if connection is not None:
-            connection.close()
-        if published_store is not None and created_store and not committed:
-            published_store.unlink(missing_ok=True)
-        raise
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-        if selector_temporary is not None:
-            selector_temporary.unlink(missing_ok=True)
-        if lease is not None:
-            lease.close()
 
 
 def read_local_path_timing_storage(
     path: Path,
     *,
-    allow_legacy: bool = False,
     expected_design: Any = None,
     expected_fpga: Any = None,
     expected_selector_bytes: Any = None,
@@ -681,32 +448,14 @@ def read_local_path_timing_storage(
         or file_sha256(path) != expected_selector_sha256
     ):
         raise ValidationError("local path timing selector digest disagrees")
-    value = read_json(path)
-    if value.get("schema") == LOCAL_PATH_TIMING_STORAGE_SCHEMA:
-        view = LocalPathTimingView(path)
-        if any(
-            expected is not None and view.get(field) != expected
-            for field, expected in (
-                ("design", expected_design),
-                ("fpga", expected_fpga),
-            )
-        ):
-            view.close()
-            raise ValidationError("local path timing indexed evidence source disagrees")
-        return view
-    if not allow_legacy or value.get("schema") != LOCAL_PATH_TIMING_SCHEMA:
-        raise ValidationError(
-            "legacy local path timing JSON requires explicit compatibility"
-        )
+    view = LocalPathTimingView(path)
     if any(
-        expected is not None and value.get(field) != expected
-        for field, expected in (
-            ("design", expected_design),
-            ("fpga", expected_fpga),
-        )
+        expected is not None and view.get(field) != expected
+        for field, expected in (("design", expected_design), ("fpga", expected_fpga))
     ):
-        raise ValidationError("local path timing legacy evidence source disagrees")
-    return value
+        view.close()
+        raise ValidationError("local path timing indexed evidence source disagrees")
+    return view
 
 
 def local_path_timing_reference(

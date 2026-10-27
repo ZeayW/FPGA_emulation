@@ -1,3 +1,5 @@
+from tests.timing_facts import boundary_timing_facts
+from tests.timing_facts import logic_timing_facts, local_timing_facts
 """Current physical measurement producers emit sealed typed records natively."""
 from contextlib import ExitStack
 import importlib
@@ -44,12 +46,12 @@ def _case(root,kind,count=5):
             header=dict(view.selector['header']);expected=list(view['segments'])
         rows=[[row['id'],row['kind'],i+0.25,row['start_pin'],row['end_pin'],'endpoint-exact',row['start_pin'],row['end_pin']] for i,row in enumerate(expected)]
     else:
-        from emuflow.local_path_timing_storage import write_local_path_timing_storage
+        from tests.timing_facts import local_timing_facts
         from tests.test_local_path_timing_storage import _header,_record
         header=_header();header.update(qualification=LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION)
         header['coverage']={'local_paths':count};header['source']['original_paths']=count
         expected=[{**_record(f'path-{i:05d}-雪',0.0),'measurement':'endpoint-longest-path-fallback','path_pins':[]} for i in reversed(range(count))]
-        with write_local_path_timing_storage(identity,header,expected) as view:header=dict(view.selector['header'])
+        with local_timing_facts(identity,header,expected) as view:header=dict(view.selector['header'])
         rows=[[r['id'],'local',i+0.25,r['start_pin'],r['end_pin'],'endpoint-exact',r['start_pin'],r['end_pin']] for i,r in enumerate(sorted(expected,key=lambda r:r['id']))]
     raw=root/'measurements.tsv'
     _tsv(raw,rows,kind)
@@ -82,15 +84,15 @@ def _reference(kind,output,identity_header,expected,rows):
                   'end_object':measurements[row['id']][4],
                   'measurement':'logical-source-to-tx-port' if row['kind']=='tx' else 'rx-port-to-shadow-capture'}
                  for row in expected]
-        return m.write_boundary_timing_storage(output,header,records)
+        return boundary_timing_facts(output,header,records)
     if kind==3:
         header={**identity_header,'schema':m.LOGIC_SEGMENT_TIMING_SCHEMA,'provider':'vivado-routed-logic-segment-datapath-v1','qualification':'routed-vendor-device-endpoint-chain'}
         records=[{**row,'delay_ns':measurements[row['id']][2],'measurement':measurements[row['id']][5],
                   'actual_start_object':measurements[row['id']][6],'actual_end_object':measurements[row['id']][7]} for row in expected]
-        return m.write_logic_segment_timing_storage(output,header=header,segments=sorted(records,key=lambda r:(r['system_path'],r['member_path'],r['cut_index'],r['id'])))
+        return logic_timing_facts(output,header=header,segments=sorted(records,key=lambda r:(r['system_path'],r['member_path'],r['cut_index'],r['id'])))
     header={**identity_header,'provider':'vivado-source-bound-local-endpoint-delay-v1','qualification':'routed-vendor-device-local-endpoint-longest-path'}
     records=[{**row,'delay_ns':measurements[row['id']][2]} for row in expected]
-    return m.write_local_path_timing_storage(output,header,records)
+    return local_timing_facts(output,header,records)
 
 
 @pytest.mark.parametrize('kind',[2,3,4])
@@ -105,7 +107,7 @@ def test_native_import_matches_complete_independent_writer_records_and_seals(tmp
         return open_path(path,*a,**kw)
     with ExitStack() as stack:
         stack.enter_context(patch.object(Path,'open',no_python_tsv))
-        stack.enter_context(patch.object(m,'write_'+m.__name__.split('.')[-1].replace('_storage','')+'_storage',side_effect=AssertionError('Python record writer')))
+        assert not hasattr(m, 'write_'+m.__name__.split('.')[-1].replace('_storage','')+'_storage')
         if kind==3:
             from emuflow import logic_segment_identity_storage as identities
             stack.enter_context(patch.object(identities,'segment_from_row',side_effect=AssertionError('Python source identity population')))

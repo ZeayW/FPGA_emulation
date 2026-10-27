@@ -265,12 +265,11 @@ def test_v4_exact_relations_live_once_in_producer_owned_typed_tables(tmp_path):
         assert pretty_tdm_schedule_sha256(view) == (
             pretty_tdm_schedule_sha256(expected)
         )
-        with view.open_validation_index() as index:
-            assert index[("d3", "ab", "a", "b")]["id"] == "s000003"
-            assert index._db.execute(
-                "SELECT count(*) FROM sqlite_temp_master "
-                "WHERE name='validation_entries'"
-            ).fetchone()[0] == 0
+        for name in ('open_validation_index', 'iter_entry_route_records',
+                     'iter_transport_records', 'iter_incoming_records'):
+            assert not hasattr(view, name)
+        assert not hasattr(tdm_schedule_storage, 'ScheduleValidationIndex')
+        assert not hasattr(tdm_schedule_storage, 'ScheduleTransportRecord')
     assert read_json(path) == expected
 
 
@@ -288,9 +287,7 @@ def test_v4_route_completion_cursors_do_not_decode_json(tmp_path, monkeypatch):
         assert list(view["demand_completions"]) == expected[
             "demand_completions"
         ]
-        assert [record.route_source for record in view.iter_transport_records()] == [
-            "a"
-        ] * 8
+        assert [record['source'] for record in view['routes']] == ['a'] * 8
 
 
 def test_v4_consumer_cursors_cover_multihop_multisink_routes_without_n_plus_one(
@@ -322,39 +319,12 @@ def test_v4_consumer_cursors_cover_multihop_multisink_routes_without_n_plus_one(
                 real_connect(*args, **kwargs)
             ),
         )
-        joined = list(view.iter_entry_route_records())
-
-        assert len(executed) == 1
-        assert [entry for entry, _route in joined] == expected["entries"]
-        assert [route for _entry, route in joined] == [
-            expected["routes"][0]
-        ] * 3
         assert list(view.iter_hop_identity_records()) == [
             ("d0", "ab", "a", "b", "s000000"),
             ("d0", "bc", "b", "c", "s000001"),
             ("d0", "bd", "b", "d", "s000002"),
         ]
-        assert list(view.iter_incoming_records()) == [
-            ("n0", "b", "s000000"),
-            ("n0", "c", "s000001"),
-            ("n0", "d", "s000002"),
-        ]
-
-
-def test_v4_incoming_cursor_rejects_duplicate_net_target(tmp_path):
-    value = _typed_exact_schedule(2)
-    value["routes"][1]["net"] = "n0"
-    value["entries"][1]["net"] = "n0"
-    value["demand_completions"][1]["net"] = "n0"
-    path = tmp_path / "schedule.json"
-    write_tdm_schedule_storage(path, value)
-
-    with open_tdm_schedule_view(path) as view:
-        with pytest.raises(
-            ValidationError,
-            match="multiple incoming hops",
-        ):
-            list(view.iter_incoming_records())
+        assert len(executed) == 1
 
 
 def test_v4_consumer_cursor_wraps_damaged_typed_table_as_validation_error(
@@ -568,81 +538,35 @@ def test_v4_typed_entry_mutation_breaks_logical_seal_validation(tmp_path):
             view.validate_logical_seals()
 
 
-def test_typed_transport_cursor_avoids_python_json_decode(tmp_path, monkeypatch):
+def test_typed_entry_reader_avoids_python_json_decode(tmp_path, monkeypatch):
     expected = _schedule(3)
-    expected["entries"][1]["tdm_ratio"] = 4
-    path = tmp_path / "schedule.json"
+    expected['entries'][1]['tdm_ratio'] = 4
+    path = tmp_path / 'schedule.json'
     write_tdm_schedule_storage(path, expected)
-
     with open_tdm_schedule_view(path) as view:
         def reject_decode(*_args, **_kwargs):
-            raise AssertionError("typed transport cursor decoded JSON in Python")
-
-        monkeypatch.setattr(tdm_schedule_storage.json, "loads", reject_decode)
-        records = list(view.iter_transport_records())
-
-    assert [record.entry_id for record in records] == ["e0", "e1", "e2"]
-    assert records[0]._asdict() == {
-        "entry_id": "e0",
-        "demand": "d0",
-        "net": "n0",
-        "link": "ab",
-        "source": "a",
-        "sink": "b",
-        "slot": 0,
-        "arrival_slot": 1,
-        "lane": 0,
-        "tdm_ratio": None,
-        "route_source": "a",
-    }
-    assert records[1].tdm_ratio == 4
+            raise AssertionError('typed entry reader decoded JSON in Python')
+        monkeypatch.setattr(tdm_schedule_storage.json, 'loads', reject_decode)
+        assert list(view['entries']) == expected['entries']
 
 
-def test_typed_transport_cursor_preserves_sequence_across_million_boundary(
-    tmp_path,
-):
+def test_typed_entry_reader_preserves_sequence_across_million_boundary(tmp_path):
     value = _schedule(2)
-    value["entries"][0]["id"] = "s999999"
-    value["entries"][1]["id"] = "s1000000"
-    path = tmp_path / "schedule.json"
+    value['entries'][0]['id'] = 's999999'
+    value['entries'][1]['id'] = 's1000000'
+    path = tmp_path / 'schedule.json'
     write_tdm_schedule_storage(path, value)
-
     with open_tdm_schedule_view(path) as view:
-        assert [
-            record.entry_id for record in view.iter_transport_records()
-        ] == ["s999999", "s1000000"]
-        assert [
-            record.entry_id
-            for record in view.iter_transport_records(identity_order=True)
-        ] == ["s999999", "s1000000"]
+        assert [row['id'] for row in view['entries']] == ['s999999', 's1000000']
+        assert [row['id'] for row in view['entries'].iter_by_identity()] == ['s999999', 's1000000']
 
 
-@pytest.mark.parametrize(
-    "mutation", ["net", "slot-type", "null-ratio", "missing-route"]
-)
-def test_typed_transport_cursor_fails_closed(tmp_path, mutation):
+@pytest.mark.parametrize('mutation', ['slot-type', 'null-ratio'])
+def test_typed_entry_fixture_rejects_untyped_protocol_values(tmp_path, mutation):
     value = _schedule(1)
-    if mutation == "net":
-        value["entries"][0]["net"] = "different-net"
-        message = "malformed"
-    elif mutation == "slot-type":
-        value["entries"][0]["slot"] = True
-        message = "malformed"
-    elif mutation == "null-ratio":
-        value["entries"][0]["tdm_ratio"] = None
-        message = "malformed"
-    else:
-        value["entries"][0]["demand"] = "missing-demand"
-        message = "coverage"
-    path = tmp_path / "schedule.json"
-    if mutation in {"slot-type", "null-ratio"}:
-        with pytest.raises(ValidationError, match="malformed|canonical"):
-            write_tdm_schedule_storage(path, value)
-        return
-    write_tdm_schedule_storage(path, value)
-    with open_tdm_schedule_view(path) as view:
-        with pytest.raises(ValidationError, match=message):
-            list(view.iter_transport_records())
+    value['entries'][0]['slot' if mutation == 'slot-type' else 'tdm_ratio'] = True if mutation == 'slot-type' else None
+    with pytest.raises(ValidationError, match='malformed|canonical'):
+        write_tdm_schedule_storage(tmp_path / 'schedule.json', value)
 
 
 def test_schedule_store_publishes_large_section_in_one_pass(tmp_path):
@@ -671,53 +595,6 @@ def test_schedule_store_publishes_large_section_in_one_pass(tmp_path):
     )
     with open_tdm_schedule_view(tmp_path / "schedule.json") as view:
         assert list(view["entries"]) == expected["entries"]
-
-
-def test_validation_index_spools_and_compares_complete_completion_relation(
-    tmp_path, monkeypatch,
-):
-    expected = _typed_exact_schedule(5)
-    path = tmp_path / "schedule.json"
-    manifest = write_tdm_schedule_storage(path, expected)
-    assert manifest["schema"] == TDM_SCHEDULE_STORAGE_SCHEMA
-
-    with open_tdm_schedule_view(path) as view:
-        with view.open_validation_index() as index:
-            with monkeypatch.context() as patch:
-                def no_json_copy(*args, **kwargs):
-                    raise AssertionError("typed completion validation serialized duplicate JSON")
-                patch.setattr(tdm_schedule_storage, "_canonical", no_json_copy)
-                assert index.validate_expected_completions(
-                    iter(expected["demand_completions"])
-                ) == len(expected["demand_completions"])
-
-    wrong = [dict(record) for record in expected["demand_completions"]]
-    wrong[2] = {
-        **wrong[2],
-        "sink_arrival_slots": {"b": wrong[2]["completion_slot"] + 1},
-    }
-    with open_tdm_schedule_view(path) as view:
-        with view.open_validation_index() as index:
-            with pytest.raises(
-                ValidationError, match="does not match recomputed"
-            ):
-                index.validate_expected_completions(iter(wrong))
-
-    mixed_run = [dict(record) for record in expected["demand_completions"]]
-    mixed_run[-1] = {**mixed_run[-1], "demand": "foreign-demand"}
-    with open_tdm_schedule_view(path) as view:
-        with view.open_validation_index() as index:
-            with pytest.raises(
-                ValidationError, match="does not match recomputed"
-            ):
-                index.validate_expected_completions(iter(mixed_run))
-
-    malformed = [dict(record) for record in expected["demand_completions"]]
-    malformed[0] = {**malformed[0], "completion_slot": True}
-    with open_tdm_schedule_view(path) as view:
-        with view.open_validation_index() as index:
-            with pytest.raises(ValidationError, match="malformed"):
-                index.validate_expected_completions(iter(malformed))
 
 
 @pytest.mark.parametrize("mutation", ["truncate", "replace", "manifest", "row"])

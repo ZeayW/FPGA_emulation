@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.contest_eda2024 import (
+from emuflow_tools.contest_eda2024 import (
     evaluate_eda2024_solution,
     import_eda2024_case,
     materialize_eda2024_rtl_boarddb,

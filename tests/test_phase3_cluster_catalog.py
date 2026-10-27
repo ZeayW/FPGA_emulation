@@ -116,9 +116,11 @@ def test_native_final_sections_match_reference_without_python_record_or_name_exp
                 tmp_path / "native/clusters.json", actual
             )
     assert result["counts"]["instances"] == actual["instances"]
-    assert read_json(tmp_path / "native/clusters.json") == read_json(
-        tmp_path / "reference/clusters.json"
-    )
+    left = read_json(tmp_path / 'native/clusters.json')
+    right = read_json(tmp_path / 'reference/clusters.json')
+    for field in ('schema', 'logical_schema', 'format', 'application_id', 'user_version', 'counts'):
+        assert left[field] == right[field]
+    assert 'clusters' not in left and 'clusters' not in right
     # Compare every logical column record, independently of SQLite page layout
     # and compressor call boundaries. No sampled cluster/member check.
     stores = []
@@ -182,7 +184,7 @@ def test_resealed_primary_semantic_corruption_cannot_publish_catalog(
     assert (tmp_path / previous["artifact"]).read_bytes() == before[1]
 
 
-def test_historical_fixed_name_catalog_remains_readable(source, tmp_path):
+def test_current_fixed_name_catalog_selector_remains_readable(source, tmp_path):
     _actual, expected = catalogs(source)
     selector = write_cluster_fixture(
         tmp_path / "clusters.json", expected
@@ -190,7 +192,7 @@ def test_historical_fixed_name_catalog_remains_readable(source, tmp_path):
     (tmp_path / selector["artifact"]).rename(tmp_path / "clusters.sqlite")
     selector["artifact"] = "clusters.sqlite"
     (tmp_path / "clusters.json").write_text(json.dumps(selector))
-    assert read_json(tmp_path / "clusters.json") == expected
+    assert read_json(tmp_path / "clusters.json") == selector
 
 
 @pytest.mark.parametrize(
@@ -199,7 +201,7 @@ def test_historical_fixed_name_catalog_remains_readable(source, tmp_path):
 def test_missing_or_foreign_native_owners_cannot_retry_reference(
     source, tmp_path, kind
 ):
-    from emuflow.phase3_candidates_native import build_native_candidate_ids
+    from tests.native_partition_core_fixture import build_native_candidate_ids
     from emuflow.partition_ir import load_partition_ir
     import shutil
 

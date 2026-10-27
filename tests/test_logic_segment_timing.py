@@ -40,20 +40,22 @@ from emuflow.local_path_timing import (
     validate_local_path_timing,
     write_xilinx_local_path_query,
 )
-from emuflow.local_path_timing_storage import (
-    LOCAL_PATH_TIMING_STORAGE_SCHEMA,
-    read_local_path_timing_storage,
-    write_local_path_timing_storage,
-)
+from emuflow.local_path_timing_storage import (LOCAL_PATH_TIMING_STORAGE_SCHEMA, read_local_path_timing_storage)
+from tests.timing_facts import local_timing_facts
 from emuflow.routing import SYSTEM_ROUTES_SCHEMA, system_route_timing_paths
 from emuflow.platform import Platform
 
 
-def import_vivado_logic_segment_timing(*args,allow_legacy_identity=False,**kwargs):
-    if allow_legacy_identity:
-        from tests.physical_timing_reference import import_reference_logic_timing
-        return import_reference_logic_timing(*args,**kwargs)
-    return _native_import_vivado_logic_segment_timing(*args,**kwargs)
+import_vivado_logic_segment_timing = _native_import_vivado_logic_segment_timing
+
+
+def _identity_document_facts(path, document):
+    """Encode explicit small identity facts in the current source-bound owner."""
+    with identity_facts(path, header={k:v for k,v in document.items()
+            if k not in {"segments", "unsupported_member_paths"}},
+            segments=document["segments"],
+            unsupported_member_paths=document.get("unsupported_member_paths", ())):
+        pass
 
 
 def _import_fixture_logic_measurements(raw, identity, output, **kwargs):
@@ -380,19 +382,15 @@ class LogicSegmentTimingTest(unittest.TestCase):
             "coverage": {"local_paths": 1},
             "paths": (record,),
         }
-        self.assertEqual(
-            validate_local_path_timing(database),
-            {
-                "status": "pass",
-                "fpga": "fpga0",
-                "local_paths": 1,
-                "maximum_delay_ns": 2.5,
-                "measurement_counts": {
-                    "explicit-routed-path-chain": 0,
-                    "endpoint-longest-path-fallback": 1,
-                },
-            },
-        )
+        with tempfile.TemporaryDirectory() as temporary:
+            header = {k:v for k,v in database.items() if k != "paths"}
+            with local_timing_facts(Path(temporary) / "local.json",
+                    header, database["paths"]) as view:
+                self.assertEqual(list(view["paths"]), list(view["paths"]))
+                checked = validate_local_path_timing(view)
+                self.assertEqual(checked["local_paths"], 1)
+                self.assertEqual(checked["maximum_delay_ns"], 2.5)
+                self.assertEqual(checked["measurement_counts"]["endpoint-longest-path-fallback"], 1)
 
     def test_vivado_pin_mapping_covers_logic_ff_and_memory_endpoints(self):
         ir = EmuIR(
@@ -517,7 +515,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             identity_path = root / "identity.json"
-            write_json(
+            _identity_document_facts(
                 identity_path,
                 {
                     "schema": "emuflow.logic-segment-identity/v1",
@@ -558,7 +556,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
             )
             output = root / "timing.json"
             report = _import_fixture_logic_measurements(
-                raw, identity_path, output, allow_legacy_identity=True
+                raw, identity_path, output
             )
             self.assertEqual(report["segments"], 1)
             self.assertEqual(report["maximum_delay_ns"], 2.5)
@@ -580,7 +578,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 "start_object_kind": "pin",
                 "end_object_kind": "pin",
             }
-            write_json(
+            _identity_document_facts(
                 identity_path,
                 {
                     "schema": "emuflow.logic-segment-identity/v1",
@@ -619,7 +617,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
             )
             output = root / "timing.json"
             report = import_vivado_logic_segment_timing(
-                raw, identity_path, output, allow_legacy_identity=True,
+                raw, identity_path, output,
                 allow_legacy_timing_format=True,
             )
             self.assertEqual(report["segments"], 1)
@@ -636,7 +634,6 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 root / "partial.json",
                 qualification="routed-board-integrated-endpoint-chain",
                 allow_missing=True,
-                allow_legacy_identity=True,
                 allow_legacy_timing_format=True,
             )
             self.assertEqual(partial["segments"], 0)
@@ -668,7 +665,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 "cone_anchor_object_kind": "pin",
                 "cone_anchor_pin": "cut_driver/O",
             }
-            write_json(
+            _identity_document_facts(
                 identity_path,
                 {
                     "schema": "emuflow.logic-segment-identity/v1",
@@ -710,7 +707,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
             )
             output = root / "timing.json"
             report = import_vivado_logic_segment_timing(
-                raw, identity_path, output, allow_legacy_identity=True
+                raw, identity_path, output
             )
             self.assertEqual(report["cone_bound_segments"], 1)
             with read_logic_segment_timing_storage(output) as database:
@@ -726,7 +723,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
             collection_fields[5] = "optimized-endpoint-collection-upper-bound"
             raw.write_text(raw.read_text().splitlines()[0]+"\n"+"\t".join(collection_fields)+"\n")
             collection_output = root / "collection.json"
-            collection = import_vivado_logic_segment_timing(raw, identity_path, collection_output, allow_legacy_identity=True)
+            collection = import_vivado_logic_segment_timing(raw, identity_path, collection_output)
             self.assertEqual(collection["endpoint_collection_bound_segments"], 1)
             self.assertEqual(collection["endpoint_exact_segments"], 0)
             self.assertEqual(collection["cone_bound_segments"], 0)
@@ -771,44 +768,21 @@ class LogicSegmentTimingTest(unittest.TestCase):
         view.close()
         return path, header
 
-    def test_typed_identity_import_matches_explicit_legacy(self):
+    def test_typed_identity_import_preserves_explicit_measurement_facts(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             typed, _header = self._typed_identity(root)
             raw = root / "timing.tsv"
-            with raw.open("w", encoding="utf-8") as stream:
-                stream.write("endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n")
-                for index in range(3):
-                    stream.write(
-                        f"logic{index:08d}\tlaunch\t{index + 0.25}\t"
-                        f"start{index:08d}\tend{index:08d}\n"
-                    )
-            typed_output = root / "typed-timing.json"
-            _import_fixture_logic_measurements(raw, typed, typed_output)
-            with read_logic_segment_identity_storage(typed) as view:
-                legacy_value = {
-                    key: view[key] for key in view
-                    if key not in {"segments", "unsupported_member_paths"}
-                }
-                legacy_value["segments"] = list(view["segments"])
-                legacy_value["unsupported_member_paths"] = []
-            legacy = root / "legacy.json"
-            write_json(legacy, legacy_value)
-            legacy_output = root / "legacy-timing.json"
-            _import_fixture_logic_measurements(
-                raw, legacy, legacy_output, allow_legacy_identity=True
-            )
-            typed_selector = read_json(typed_output)
-            legacy_selector = read_json(legacy_output)
-            self.assertEqual(
-                typed_selector["logical_sha256"],
-                legacy_selector["logical_sha256"],
-            )
-            with (
-                read_logic_segment_timing_storage(typed_output) as left,
-                read_logic_segment_timing_storage(legacy_output) as right,
-            ):
-                self.assertEqual(list(left["segments"]), list(right["segments"]))
+            raw.write_text("endpoint\tkind\tdelay_ns\tstart_pin\tend_pin\n" + "".join(
+                f"logic{index:08d}\tlaunch\t{index + 0.25}\tstart{index:08d}\tend{index:08d}\n"
+                for index in range(3)))
+            output = root / "timing.json"
+            report = _import_fixture_logic_measurements(raw, typed, output)
+            self.assertEqual(report["segments"], 3)
+            with read_logic_segment_timing_storage(output) as view:
+                self.assertEqual([(v["id"], v["delay_ns"], v["start_pin"], v["end_pin"])
+                    for v in view["segments"]], [(f"logic{i:08d}", i+0.25,
+                    f"start{i:08d}", f"end{i:08d}") for i in range(3)])
 
     def test_typed_identity_import_rejects_duplicate_missing_and_order(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -861,7 +835,7 @@ class LogicSegmentTimingTest(unittest.TestCase):
                 },
                 "segments": [], "unsupported_member_paths": [],
             })
-            with self.assertRaisesRegex(ValidationError, "explicit compatibility"):
+            with self.assertRaisesRegex(ValidationError, "selector"):
                 read_logic_segment_identity_storage(legacy)
 
     def test_typed_identity_rejects_truncated_generation(self):

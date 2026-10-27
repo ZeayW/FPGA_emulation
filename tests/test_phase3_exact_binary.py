@@ -1,4 +1,4 @@
-from tests.phase3_exact_fixture import write_exact_fixture
+from tests.phase3_exact_fixture import (write_exact_fixture, exact_contract_facts, exact_partition_facts)
 import copy
 import hashlib
 import json
@@ -15,15 +15,12 @@ from tests.native_build import emuflow_native
 
 from emuflow.combinational_cut import semantic_contract_sha256
 from emuflow.errors import ValidationError
-from emuflow.phase3_exact_binary import (iter_phase3_exact_captures, read_phase3_exact_binary_contract, read_phase3_exact_binary_partition, validate_phase3_exact_binary)
-from emuflow.phase3_exact_records import (
-    StaticExactCutNodeSequence,
-    StaticExactRecordSequence,
-    build_static_exact_capture_stream,
-    build_static_exact_cut_node_stream,
-    build_static_exact_record_streams,
-    read_native_static_exact_cut_node_stream,
-    read_native_static_exact_capture_stream,
+from emuflow.phase3_exact_binary import (iter_phase3_exact_captures, validate_phase3_exact_binary)
+from tests.phase3_exact_fixture import validate_static_exact_capture_bit
+from tests.native_semantic_facts import (
+    read_nodes as read_native_static_exact_cut_node_stream,
+    read_captures as read_native_static_exact_capture_stream,
+    semantic_arrays, native_hash,
 )
 
 
@@ -106,20 +103,6 @@ def _contract(design="binary_fixture"):
 
 
 class Phase3ExactBinaryTest(unittest.TestCase):
-    class _IntegerTopology:
-        def __init__(self, dependencies):
-            self.dependencies = dependencies
-
-        def __len__(self):
-            return len(self.dependencies)
-
-        def dependency_count(self, index):
-            return len(self.dependencies[index])
-
-        def dependency_indices(self, index):
-            return iter(self.dependencies[index])
-
-
     def test_v2_capture_bits_preserve_bounded_python_integers(self):
         for bit in (0, 2**32, 2**64, 1 << 130, 1 << 8190, 1 << 8191):
             with self.subTest(bit=bit), tempfile.TemporaryDirectory() as temporary:
@@ -149,13 +132,13 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                     bit,
                 )
                 self.assertEqual(
-                    read_phase3_exact_binary_partition(
+                    exact_partition_facts(
                         path, descriptor, "fpga1"
                     )["capture_requirements"][0]["bit"],
                     bit,
                 )
                 self.assertEqual(
-                    read_phase3_exact_binary_contract(
+                    exact_contract_facts(
                         path, descriptor, assignment
                     ),
                     contract,
@@ -170,9 +153,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                 with self.assertRaisesRegex(
                     ValidationError, "at most 8192 bits"
                 ):
-                    build_static_exact_capture_stream(
-                        [("net1", "fpga1", "architectural-state", "s/D", "D", bit)]
-                    )
+                    validate_static_exact_capture_bit(bit)
                 contract = _contract(f"oversized_{bit.bit_length()}")
                 contract["capture_requirements"][0]["bit"] = bit
                 with tempfile.TemporaryDirectory() as temporary, self.assertRaisesRegex(
@@ -211,7 +192,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                 "emuflow.phase3-static-exact-binary/v1",
             )
             self.assertEqual(
-                read_phase3_exact_binary_contract(path, descriptor, assignment),
+                exact_contract_facts(path, descriptor, assignment),
                 contract,
             )
             self.assertEqual(
@@ -386,203 +367,6 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                             path, changed_descriptor
                         )
 
-    def test_capture_stream_rejects_non_utf8_identity(self):
-        with self.assertRaisesRegex(ValidationError, "identity is invalid"):
-            build_static_exact_capture_stream(
-                [("cut\ud800", "fpga0", "top-output", "out[0]", None, None)]
-            )
-
-    def test_repeatable_record_stream_preserves_v3_digest_and_binary(self):
-        materialized = _contract()
-        materialized["canonical_header_fixture"] = {
-            "escaped": "line\n雪/😀",
-            "values": [None, True, False, 7, 1.25],
-        }
-        streamed = copy.deepcopy(materialized)
-        capture_relation = [
-            (
-                item["cut_net"],
-                item["fpga"],
-                item["kind"],
-                item["endpoint"],
-                item.get("port"),
-                item.get("bit"),
-            )
-            for item in streamed["capture_requirements"]
-        ]
-        streamed["capture_requirements"] = (
-            build_static_exact_capture_stream(iter(capture_relation))
-        )
-        streamed["cut_nodes"] = build_static_exact_cut_node_stream(
-            iter(streamed["cut_nodes"])
-        )
-        record_streams = build_static_exact_record_streams(
-            streamed["cut_nodes"],
-            streamed["capture_requirements"],
-            bytes([1, 0]),
-        )
-        streamed.update(record_streams)
-
-        self.assertIsInstance(
-            streamed["dependency_edges"], StaticExactRecordSequence
-        )
-        self.assertIsInstance(
-            streamed["cut_nodes"], StaticExactCutNodeSequence
-        )
-        self.assertIsInstance(
-            streamed["capture_requirements"], StaticExactRecordSequence
-        )
-        self.assertEqual(
-            list(streamed["capture_requirements"]),
-            materialized["capture_requirements"],
-        )
-        self.assertEqual(streamed["cut_nodes"][1], materialized["cut_nodes"][1])
-        self.assertEqual(streamed["cut_nodes"][-1], materialized["cut_nodes"][-1])
-        self.assertEqual(streamed["cut_nodes"][:1], materialized["cut_nodes"][:1])
-        self.assertEqual(
-            list(streamed["dependency_edges"]),
-            materialized["dependency_edges"],
-        )
-        self.assertEqual(
-            list(streamed["logic_segments"]),
-            materialized["logic_segments"],
-        )
-        self.assertEqual(
-            semantic_contract_sha256(streamed),
-            semantic_contract_sha256(materialized),
-        )
-        # Both the canonical hasher and binary publisher traverse the streams;
-        # a second traversal must remain complete and byte-identical.
-        self.assertEqual(
-            list(streamed["logic_segments"]),
-            materialized["logic_segments"],
-        )
-        with self.assertRaises(TypeError):
-            streamed["logic_segments"].append({})
-
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            materialized_path = root / "materialized.bin"
-            streamed_path = root / "streamed.bin"
-            materialized_descriptor = write_exact_fixture(
-                materialized_path, materialized, ["fpga0", "fpga1"]
-            )
-            streamed_descriptor = write_exact_fixture(
-                streamed_path, streamed, ["fpga0", "fpga1"]
-            )
-            self.assertEqual(
-                streamed_path.read_bytes(), materialized_path.read_bytes()
-            )
-            self.assertEqual(streamed_descriptor, materialized_descriptor)
-            self.assertEqual(
-                validate_phase3_exact_binary(
-                    streamed_path, streamed_descriptor
-                )["status"],
-                "pass",
-            )
-
-    def test_integer_topology_hash_preserves_identity_without_record_expansion(self):
-        materialized = _contract("direct_integer_writer")
-        streamed = copy.deepcopy(materialized)
-        streamed["capture_requirements"] = build_static_exact_capture_stream(
-            (
-                item["cut_net"],
-                item["fpga"],
-                item["kind"],
-                item["endpoint"],
-                item.get("port"),
-                item.get("bit"),
-            )
-            for item in streamed["capture_requirements"]
-        )
-        streamed["cut_nodes"] = build_static_exact_cut_node_stream(
-            iter(streamed["cut_nodes"])
-        )
-        streamed.update(
-            build_static_exact_record_streams(
-                streamed["cut_nodes"],
-                streamed["capture_requirements"],
-                bytes([1, 0]),
-                integer_topology=self._IntegerTopology([[], [0]]),
-            )
-        )
-
-        def forbidden_record_expansion():
-            raise AssertionError("direct writer expanded semantic records")
-            yield
-
-        for key in (
-            "cut_nodes",
-            "dependency_edges",
-            "logic_segments",
-            "capture_requirements",
-        ):
-            streamed[key]._factory = forbidden_record_expansion
-        digest = semantic_contract_sha256(streamed)
-        self.assertEqual(digest, semantic_contract_sha256(materialized))
-
-
-    def test_direct_digest_rejects_mixed_generation_and_truncated_raw_node(self):
-        def direct_contract(design):
-            contract = _contract(design)
-            contract["capture_requirements"] = build_static_exact_capture_stream(
-                (
-                    item["cut_net"],
-                    item["fpga"],
-                    item["kind"],
-                    item["endpoint"],
-                    item.get("port"),
-                    item.get("bit"),
-                )
-                for item in contract["capture_requirements"]
-            )
-            contract["cut_nodes"] = build_static_exact_cut_node_stream(
-                iter(contract["cut_nodes"])
-            )
-            contract.update(
-                build_static_exact_record_streams(
-                    contract["cut_nodes"],
-                    contract["capture_requirements"],
-                    bytes([1, 0]),
-                    integer_topology=self._IntegerTopology([[], [0]]),
-                )
-            )
-            return contract
-
-        first = direct_contract("first_generation")
-        second = direct_contract("second_generation")
-        first["dependency_edges"] = second["dependency_edges"]
-        with self.assertRaisesRegex(ValidationError, "generation is mixed"):
-            semantic_contract_sha256(first)
-
-        truncated = direct_contract("truncated_raw_node")
-        decoder = truncated["cut_nodes"]._binary_decoder
-        self.assertIsNotNone(decoder)
-        truncated["cut_nodes"]._binary_decoder = lambda index: decoder(index)[:-1]
-        with self.assertRaisesRegex(ValidationError, "cut node is invalid"):
-            semantic_contract_sha256(truncated)
-
-        malformed = direct_contract("malformed_source_segments")
-        decoder = malformed["cut_nodes"]._binary_decoder
-        self.assertIsNotNone(decoder)
-
-        def drop_source_segment(index):
-            node = list(decoder(index))
-            if index == 1:
-                node[7] = []
-            return tuple(node)
-
-        malformed["cut_nodes"]._binary_decoder = drop_source_segment
-        with self.assertRaisesRegex(ValidationError, "cardinality"):
-            semantic_contract_sha256(malformed)
-
-        invalid_direct = direct_contract("invalid_header")
-        invalid_materialized = _contract("invalid_header")
-        invalid_direct["opaque_header"] = b"not-json"
-        invalid_materialized["opaque_header"] = b"not-json"
-        for contract in (invalid_direct, invalid_materialized):
-            with self.assertRaises(TypeError):
-                semantic_contract_sha256(contract)
 
     def test_native_canonical_hash_matches_python_for_unicode_flags_and_wide_bits(self):
         executable = emuflow_native()
@@ -624,14 +408,14 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                         row += b"".join(string(value) for values in lists for value in values)
                         coordinates = [next(i for i, candidate in enumerate(contract["cut_nodes"]) if candidate["net"] == net) for net in node["predecessor_cut_nets"]]
                         node_records.append(row + b"".join(struct.pack("<I", value) for value in coordinates) + bytes([flag if index == 0 else 0]))
-                    captures = build_static_exact_capture_stream(
-                        (row["cut_net"], row["fpga"], row["kind"], row["endpoint"], row.get("port"), row.get("bit"))
-                        for row in contract["capture_requirements"]
-                    )
                     capture_records = []
-                    for net, fpga, kind, endpoint, port, raw_bit in captures.iter_binary_captures():
-                        fields = [net, fpga, endpoint, port, raw_bit]
-                        capture_records.append(struct.pack("<B5I", kind, *(len(value) for value in fields)) + b"".join(fields))
+                    for row in contract['capture_requirements']:
+                        kind = int(row['kind'] == 'architectural-state')
+                        bit_value = row.get('bit', 0)
+                        fields = [row['cut_net'].encode(), row['fpga'].encode(), row['endpoint'].encode(),
+                                  row.get('port', '').encode(),
+                                  bit_value.to_bytes(max(1, (bit_value.bit_length()+7)//8), 'big') if kind else b'']
+                        capture_records.append(struct.pack('<B5I', kind, *(len(value) for value in fields)) + b''.join(fields))
                     artifact(nodes_path, 0x314E4553464D5545, 2, node_records)
                     artifact(captures_path, 0x31434553464D5545, 1, capture_records)
                     with (
@@ -647,36 +431,11 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                             "cut_nodes": nodes,
                             "capture_requirements": native_captures,
                         }
-                        streamed.update(
-                            build_static_exact_record_streams(
-                                nodes,
-                                native_captures,
-                                bytes([flag, 0]),
-                                integer_topology=self._IntegerTopology([[], [0]]),
-                            )
-                        )
-                        with (
-                            patch(
-                                "emuflow.native_tools.resolve_native_stage_command",
-                                return_value=[
-                                    str(executable),
-                                    "phase3",
-                                    "hash-semantics",
-                                ],
-                            ),
-                            patch(
-                                "emuflow.phase3_exact_records._emit_direct_cut_nodes",
-                                side_effect=AssertionError(
-                                    "Python must not hash the native graph"
-                                ),
-                            ),
-                        ):
-                            self.assertEqual(
-                                semantic_contract_sha256(streamed), expected
-                            )
+                        streamed.update(semantic_arrays(nodes, native_captures, contract['metrics'], 1))
+                        self.assertEqual(native_hash(nodes_path, captures_path, streamed), expected)
                         streamed["invalid_header"] = {1: "not-a-string-key"}
                         with self.assertRaises(ValidationError):
-                            semantic_contract_sha256(streamed)
+                            native_hash(nodes_path, captures_path, streamed)
                         del streamed["invalid_header"]
                         expected_path, actual_path = (
                             root / "expected.bin",
@@ -745,18 +504,8 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                         broken = root / "broken-nodes.bin"
                         broken.write_bytes(nodes_path.read_bytes()[:-1])
                         nodes.native_semantic_artifact_path = broken
-                        with (
-                            patch(
-                                "emuflow.native_tools.resolve_native_stage_command",
-                                return_value=[
-                                    str(executable),
-                                    "phase3",
-                                    "hash-semantics",
-                                ],
-                            ),
-                            self.assertRaises(ValidationError),
-                        ):
-                            semantic_contract_sha256(streamed)
+                        with self.assertRaises(ValidationError):
+                            native_hash(broken, captures_path, streamed)
             # Independent command-envelope rejection must preserve the previous
             # output and cannot silently fall back to the Python hasher.
             tags = [("capture_requirements", 1), ("cut_nodes", 2), ("dependency_edges", 3), ("logic_segments", 4)]
@@ -784,203 +533,6 @@ class Phase3ExactBinaryTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(output.read_bytes(), b"previous-generation")
 
-    def test_mutable_launch_flags_are_frozen_for_all_record_views(self):
-        materialized = _contract("mutable_launch_flags")
-        streamed = copy.deepcopy(materialized)
-        streamed["capture_requirements"] = build_static_exact_capture_stream(
-            (
-                item["cut_net"],
-                item["fpga"],
-                item["kind"],
-                item["endpoint"],
-                item.get("port"),
-                item.get("bit"),
-            )
-            for item in streamed["capture_requirements"]
-        )
-        streamed["cut_nodes"] = build_static_exact_cut_node_stream(
-            iter(streamed["cut_nodes"])
-        )
-        flags = bytearray([1, 0])
-        streamed.update(
-            build_static_exact_record_streams(
-                streamed["cut_nodes"],
-                streamed["capture_requirements"],
-                flags,
-                integer_topology=self._IntegerTopology([[], [0]]),
-            )
-        )
-        flags[:] = b"\x00\x02"
-        replayed = {
-            **streamed,
-            "cut_nodes": list(streamed["cut_nodes"]),
-            "dependency_edges": list(streamed["dependency_edges"]),
-            "logic_segments": list(streamed["logic_segments"]),
-            "capture_requirements": list(streamed["capture_requirements"]),
-        }
-        self.assertEqual(replayed, materialized)
-        self.assertEqual(
-            semantic_contract_sha256(streamed),
-            semantic_contract_sha256(replayed),
-        )
-
-    def test_direct_digest_uses_logical_capture_order_for_kind_and_wide_bit(self):
-        materialized = _contract("capture_sort_order")
-        materialized["capture_requirements"] = [
-            {
-                "id": f"capture{index:06d}",
-                "cut_net": "net1",
-                "fpga": "fpga1",
-                "kind": kind,
-                "endpoint": endpoint,
-                **(
-                    {"port": "D", "bit": bit}
-                    if kind == "architectural-state"
-                    else {}
-                ),
-            }
-            for index, (kind, endpoint, bit) in enumerate(
-                (
-                    ("architectural-state", "state/D", 255),
-                    ("architectural-state", "state/D", 256),
-                    ("top-output", "top:out[0]", None),
-                )
-            )
-        ]
-        materialized["cut_nodes"][1]["capture_segment_ids"] = [
-            "segment000002",
-            "segment000003",
-            "segment000004",
-        ]
-        materialized["logic_segments"] = materialized["logic_segments"][:2] + [
-            {
-                "id": f"segment{index + 2:06d}",
-                "kind": "rx_to_capture",
-                "fpga": "fpga1",
-                "source_cut_net": "net1",
-                "capture_requirement": f"capture{index:06d}",
-            }
-            for index in range(3)
-        ]
-        materialized["metrics"]["logic_segments"] = 5
-        materialized["metrics"]["capture_requirements"] = 3
-        streamed = copy.deepcopy(materialized)
-        streamed["capture_requirements"] = build_static_exact_capture_stream(
-            (
-                item["cut_net"],
-                item["fpga"],
-                item["kind"],
-                item["endpoint"],
-                item.get("port"),
-                item.get("bit"),
-            )
-            for item in streamed["capture_requirements"]
-        )
-        streamed["cut_nodes"] = build_static_exact_cut_node_stream(
-            iter(streamed["cut_nodes"])
-        )
-        streamed.update(
-            build_static_exact_record_streams(
-                streamed["cut_nodes"],
-                streamed["capture_requirements"],
-                bytes([1, 0]),
-                integer_topology=self._IntegerTopology([[], [0]]),
-            )
-        )
-        self.assertEqual(
-            semantic_contract_sha256(streamed),
-            semantic_contract_sha256(materialized),
-        )
-
-    def test_integer_record_stream_preserves_launch_before_dependency_order(self):
-        materialized = _contract("launch_and_dependency")
-        materialized["cut_nodes"][1]["source_fpgas"] = ["fpga0"]
-        materialized["cut_nodes"][1]["source_segment_ids"] = [
-            "segment000001",
-            "segment000002",
-        ]
-        materialized["cut_nodes"][1]["capture_segment_ids"] = [
-            "segment000003"
-        ]
-        materialized["logic_segments"] = [
-            materialized["logic_segments"][0],
-            {
-                "id": "segment000001",
-                "kind": "launch_to_tx",
-                "fpga": "fpga0",
-                "sink_cut_net": "net1",
-            },
-            {
-                "id": "segment000002",
-                "kind": "rx_to_tx",
-                "fpga": "fpga0",
-                "source_cut_net": "net0",
-                "sink_cut_net": "net1",
-            },
-            {
-                **materialized["logic_segments"][2],
-                "id": "segment000003",
-            },
-        ]
-        materialized["dependency_edges"][0]["segment"] = "segment000002"
-        materialized["metrics"]["logic_segments"] = 4
-        streamed = copy.deepcopy(materialized)
-        streamed["capture_requirements"] = build_static_exact_capture_stream(
-            (
-                item["cut_net"],
-                item["fpga"],
-                item["kind"],
-                item["endpoint"],
-                item.get("port"),
-                item.get("bit"),
-            )
-            for item in streamed["capture_requirements"]
-        )
-        streamed["cut_nodes"] = build_static_exact_cut_node_stream(
-            iter(streamed["cut_nodes"])
-        )
-        streamed.update(
-            build_static_exact_record_streams(
-                streamed["cut_nodes"],
-                streamed["capture_requirements"],
-                bytes([1, 1]),
-                integer_topology=self._IntegerTopology([[], [0]]),
-            )
-        )
-        digest = semantic_contract_sha256(streamed)
-        self.assertEqual(digest, semantic_contract_sha256(materialized))
-        self.assertEqual(list(streamed["logic_segments"]), materialized["logic_segments"])
-        self.assertEqual(list(streamed["dependency_edges"]), materialized["dependency_edges"])
-
-
-
-    def test_cut_node_stream_rejects_noncanonical_and_incomplete_records(self):
-        nodes = _contract()["cut_nodes"]
-        with self.assertRaisesRegex(ValidationError, "cut-node stream"):
-            build_static_exact_cut_node_stream(reversed(nodes))
-        invalid = copy.deepcopy(nodes[0])
-        del invalid["capture_segment_ids"]
-        with self.assertRaisesRegex(ValidationError, "cut-node stream"):
-            build_static_exact_cut_node_stream([invalid])
-
-    def test_record_stream_rejects_inconsistent_cut_relation(self):
-        contract = _contract()
-        contract["cut_nodes"][1]["source_segment_ids"] = []
-        with self.assertRaisesRegex(ValidationError, "cut-node stream"):
-            build_static_exact_record_streams(
-                contract["cut_nodes"],
-                contract["capture_requirements"],
-                bytes([1, 0]),
-            )
-
-    def test_capture_stream_rejects_noncanonical_relation(self):
-        with self.assertRaisesRegex(ValidationError, "capture relation"):
-            build_static_exact_capture_stream(
-                [
-                    ("net1", "fpga1", "top-output", "top:z[0]", None, None),
-                    ("net0", "fpga0", "top-output", "top:a[0]", None, None),
-                ]
-            )
 
     def test_roundtrip_and_relocation_preserve_canonical_contract(self):
         contract = _contract()
@@ -1005,7 +557,7 @@ class Phase3ExactBinaryTest(unittest.TestCase):
             relocated.parent.mkdir()
             shutil.copyfile(source, relocated)
             self.assertEqual(
-                read_phase3_exact_binary_contract(
+                exact_contract_facts(
                     relocated, descriptor, assignment
                 ),
                 contract,

@@ -16,8 +16,9 @@ from emuflow.split_netlist_storage import (DDL,SPLIT_NETLIST_APPLICATION_ID,
 def _schedule_incoming_rows(schedule, parts):
     if len(schedule['entries']) > 16384:
         raise ValidationError('split relation fixture exceeds hop bound')
-    return [(net, parts[fpga], entry) for net, fpga, entry
-            in schedule.iter_incoming_records()]
+    route_nets = {row['id']: row['net'] for row in schedule['routes']}
+    return sorted((route_nets[row['demand']], parts[row['to']], row['id'])
+                  for row in schedule['entries'])
 
 
 def write_split_netlists_sqlite(

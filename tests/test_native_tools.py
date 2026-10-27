@@ -190,10 +190,10 @@ class NativeToolsTest(unittest.TestCase):
             "sta",
             "yosys",
             "yosys-abc",
-            "emuflow_bsp_pin_solver",
             "emuflow_fpgaif_arch_importer",
         }
         retired = {
+            "emuflow_bsp_pin_solver",
             "emuflow_eda2025_topology_optimizer",
             "emuflow_hop_partition_refiner",
             "emuflow-native",

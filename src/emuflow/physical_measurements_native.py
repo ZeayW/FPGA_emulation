@@ -162,3 +162,46 @@ def _publish_closed_projection(store, output_path, *, kind, result, sources):
     finally:
         if created and not committed:
             published.unlink(missing_ok=True)
+
+
+def publish_empty_partition_timing(identity_path, output_path, *, kind, provider):
+    """Publish inactive evidence through the current native measurement owner.
+
+    There is no nonempty Python writer. Unexpected measured population is
+    rejected before publication; unsupported logic members stay source-owned.
+    """
+    from .local_path_timing import local_path_timing_header, read_local_path_identity
+    from .logic_segment_identity_storage import read_logic_segment_identity_storage
+    from .logic_segment_timing import VIVADO_LOGIC_SEGMENT_TIMING_HEADER, _indexed_logic_measurement_import
+    from .store_publication import bind_view_sources
+    if kind not in (2, 3, 4):
+        raise ValidationError('inactive timing owner kind is invalid')
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    from .boundary_identity_storage import read_boundary_identity_storage
+    from .boundary_timing import boundary_timing_header
+    reader = {2:read_boundary_identity_storage, 3:read_logic_segment_identity_storage,
+              4:read_local_path_identity}[kind]
+    with reader(Path(identity_path)) as identity:
+        population = identity[{2:'endpoints',3:'segments',4:'paths'}[kind]]
+        if len(population):
+            raise ValidationError('inactive partition timing requires an empty identity population')
+        with tempfile.TemporaryDirectory(prefix='.inactive-timing.', dir=output_path.parent) as temporary:
+            measurements = Path(temporary) / 'empty.tsv'
+            measurements.write_text((VIVADO_LOGIC_SEGMENT_TIMING_HEADER.split('\tmeasurement')[0]
+                if kind == 2 else VIVADO_LOGIC_SEGMENT_TIMING_HEADER) + '\n')
+            if kind == 2:
+                return import_physical_measurements(measurements, identity.store_path, output_path, kind=2,
+                    header=boundary_timing_header(identity,provider=provider,
+                        qualification='not-applicable-empty-partition'),
+                    sources=bind_view_sources((identity,'boundary-identity-store-v1')) + (
+                        bind_store_source(measurements,'physical-timing-measurements-v1'),))
+            if kind == 3:
+                return _indexed_logic_measurement_import(measurements, identity, output_path,
+                    provider=provider, qualification='not-applicable-empty-partition',
+                    allow_missing=False, allow_legacy_timing_format=False)
+            return import_physical_measurements(measurements, identity.store_path, output_path, kind=4,
+                header=local_path_timing_header(identity, provider=provider,
+                    qualification='not-applicable-empty-partition'),
+                sources=bind_view_sources((identity, 'local-path-timing-store-v1')) + (
+                    bind_store_source(measurements, 'physical-timing-measurements-v1'),))

@@ -24,9 +24,9 @@ def bind_physical_checks(runtime, routes, schedule, physical, platform, *, metad
     from emuflow.tdm_schedule_storage import read_tdm_schedule
     from tests.schedule_store_fixture import write_tdm_schedule_storage
     from emuflow.boundary_identity_storage import write_boundary_identity_storage
-    from emuflow.boundary_timing_storage import write_boundary_timing_storage
-    from emuflow.logic_segment_timing_storage import write_logic_segment_timing_storage
-    from emuflow.local_path_timing_storage import write_local_path_timing_storage
+    from tests.timing_facts import boundary_timing_facts
+    from tests.timing_facts import logic_timing_facts
+    from tests.timing_facts import local_timing_facts
     with tempfile.TemporaryDirectory(prefix='global-sta-input-fixture-') as temporary, ExitStack() as stack:
         root = Path(temporary)
         if not getattr(routes['routes'], 'store_path', None):
@@ -49,9 +49,9 @@ def bind_physical_checks(runtime, routes, schedule, physical, platform, *, metad
         indexed = dict(physical)
         for key, writer, section in (
             ('boundary_identities', write_boundary_identity_storage, 'endpoints'),
-            ('boundary_timing', write_boundary_timing_storage, 'endpoints'),
-            ('logic_segment_timing', write_logic_segment_timing_storage, 'segments'),
-            ('local_path_timing', write_local_path_timing_storage, 'paths'),
+            ('boundary_timing', boundary_timing_facts, 'endpoints'),
+            ('logic_segment_timing', logic_timing_facts, 'segments'),
+            ('local_path_timing', local_timing_facts, 'paths'),
         ):
             indexed[key] = {}
             for fpga, database in physical.get(key, {}).items():
@@ -108,7 +108,7 @@ def bind_physical_checks(runtime, routes, schedule, physical, platform, *, metad
 
 def native_measurements(metadata, records):
     """Import supplied engine scalars through the production native importer."""
-    from emuflow.global_event_store import EventBuilder, MetadataBuilder
+    from tests.event_facts import EventFacts as EventBuilder, MetadataFacts as MetadataBuilder
     from emuflow.global_measurements import import_measurements
     builder = EventBuilder(bound=True)
     paths = MetadataBuilder(builder)

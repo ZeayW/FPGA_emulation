@@ -77,7 +77,8 @@ def test_native_assignment_coverage_records_and_small_publication(tmp_path):
 def test_all_semantic_segments_are_covered_even_outside_original_path_population(tmp_path):
     from tests.physical_coverage_fixture import build_cross_layer_physical_binding
     f, _, _, _, _, _, _, _ = physical_case(tmp_path)
-    contract = build_cross_layer_timing_contract(f.routes, f.schedule, f.assignment['semantic_contract'])
+    from tests.cross_layer_facts import coverage_contract_facts
+    contract = coverage_contract_facts(f.routes, f.schedule, f.assignment['semantic_contract'])
     contract['logic_segment_bindings'].extend([
         {'segment':'unmeasured-outside-original-paths','kind':'rx_to_capture','fpga':'fpga0'},
         {'segment':'configuration-only','kind':'launch_to_tx','fpga':'fpga0',

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
-from emuflow.ppro_blackbox_communication import (
+from emuflow_tools.ppro_blackbox_communication import (
     generate_communication_matrix,
     generate_communication_probe_bundle,
 )

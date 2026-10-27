@@ -29,6 +29,27 @@ from emuflow.yosys import import_yosys_json
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _write_assignment_facts(path, value):
+    """Encode small projection inputs in the current selector/index contract."""
+    from types import SimpleNamespace
+    from tests.phase3_store_fixture import write_current_assignment_fixture
+    owners = dict(value.get('instance_assignment', {}))
+    assert len(owners) <= 256 and len(value['cut_nets']) <= 4096
+    cuts = [dict(row, source_fpgas=row.get('source_fpgas', ['a']),
+                 sink_fpgas=row.get('sink_fpgas', ['b']),
+                 cut_class=row.get('cut_class', 'register_output'),
+                 sink_endpoints=max(1, len(row.get('sink_fpgas', ['b']))))
+            for row in value['cut_nets']]
+    parts = sorted(set(owners.values()) | {part for row in cuts
+                   for part in row['source_fpgas']+row['sink_fpgas']})
+    facts = dict(value, provider='explicit-projection-facts', seed=0, constraints={},
+        instance_assignment=owners, cut_nets=sorted(cuts,key=lambda row:row['net']),
+        cluster_assignment={f'c{i:06d}':owners[name] for i,name in enumerate(sorted(owners))},
+        partitions=[dict(fpga=part, clusters=[]) for part in parts])
+    source = SimpleNamespace(value={'instances':[{'id':name} for name in owners]})
+    write_current_assignment_fixture(path, source, facts)
+
+
 class StaAdapterTest(unittest.TestCase):
     def test_retired_vivado_provider_is_rejected_before_loading_sources(self) -> None:
         for importer in (import_sta_path_database_tsv, import_sta_path_database_tsv_streaming):
@@ -382,7 +403,7 @@ class StaAdapterTest(unittest.TestCase):
             assignment_path = root / "assignment.json"
             output_path = root / "projected.json"
             write_json(database_path, database)
-            write_json(assignment_path, assignment)
+            _write_assignment_facts(assignment_path, assignment)
             report = project_sta_path_database(
                 database_path, assignment_path, output_path
             )
@@ -412,8 +433,8 @@ class StaAdapterTest(unittest.TestCase):
             map_path = root / "net-map.tsv"
             tsv_path = root / "database.tsv"
             database_path = root / "database.json"
-            assignment_a_path = root / "assignment-a.json"
-            assignment_b_path = root / "assignment-b.json"
+            assignment_a_path = root / "assignment-a" / "assignment.json"
+            assignment_b_path = root / "assignment-b" / "assignment.json"
             projected_a_path = root / "projected-a.json"
             projected_b_path = root / "projected-b.json"
             write_json(ir_path, ir.value)
@@ -513,7 +534,7 @@ class StaAdapterTest(unittest.TestCase):
                     "platform": "fixture",
                     "cut_nets": [{"net": cut_net}],
                 }
-                write_json(path, assignment)
+                _write_assignment_facts(path, assignment)
             report_a = project_sta_path_database(
                 database_path, assignment_a_path, projected_a_path
             )
@@ -596,7 +617,7 @@ class StaAdapterTest(unittest.TestCase):
             staging = root / "staging"
             staging.mkdir()
             write_json(staging / "database.json", database)
-            write_json(staging / "assignment.json", assignment)
+            _write_assignment_facts(staging / "assignment.json", assignment)
             project_sta_path_database(
                 staging / "database.json",
                 staging / "assignment.json",

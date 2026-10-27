@@ -6,7 +6,8 @@ import sqlite3
 from types import SimpleNamespace
 
 from emuflow.emuir_compact import write_compact_emuir
-from emuflow.partition import (active_partition_fpgas, transported_cut_classes_for_clusters)
+from tests.partition_balance_fixture import active_partition_fpgas
+from tests.partition_balance_fixture import transported_cut_classes_for_clusters
 from tests.native_partition_facts import (build_clusters, build_partition_assignment, normalize_partition_constraints)
 from tests.native_partition_kernel_driver import initialize
 from emuflow.partition_ir import load_partition_ir

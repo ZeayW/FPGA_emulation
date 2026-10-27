@@ -13,7 +13,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, DefaultDict, Dict, Iterable, Mapping, Optional, Sequence
 
-from .benchmark import timing_io_sha256
+from .timing_io import timing_io_sha256
 from .errors import EmuFlowError, ValidationError
 from .io import file_sha256, read_json, write_json
 from .ir import EmuIR

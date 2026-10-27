@@ -15,7 +15,7 @@ Use a checked-in workload contract with its pinned source checkout:
 
 ```bash
 python3 scripts/benchmarks/fetch.py fetch secworks_aes
-emuflow benchmark benchmarks/runs/secworks_aes_l3.json \
+emuflow-tools benchmark benchmarks/runs/secworks_aes_l3.json \
   --source-root third_party/rtl/secworks_aes \
   --out build/secworks-aes
 ```

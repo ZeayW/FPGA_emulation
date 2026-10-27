@@ -10,9 +10,10 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.event_facts import EventFacts as EventBuilder, MetadataFacts as MetadataBuilder
 from emuflow.errors import ValidationError
 from emuflow.global_event_store import (
-    EventBuilder, MetadataBuilder, event_model_directory, event_model_sources,
+    event_model_sources,
     export_event_model,
 )
 from emuflow.global_sta import (
@@ -48,10 +49,9 @@ def test_native_independent_validation_rejects_untrusted_store(tmp_path, corrupt
     try:
         for row in example():
             builder.append(row)
-        owner.flush()
         db = owner.connection
         header = {"schema": "emuflow.global-event-checks/v1", "mode": 1,
-                  "paths": owner.paths, "checks": owner.checks, "events": owner.events}
+                  "paths": len(builder._path_ids), "checks": owner.checks, "events": len(builder._event_ids)}
         if corruption == "version":
             db.execute("PRAGMA user_version=99")
         elif corruption == "schema":
@@ -154,7 +154,7 @@ def test_native_export_preserves_all_arcs_constraints_and_file_seals(tmp_path, c
         path = model / 'analyze.tcl'
         path.write_text(path.read_text()+'\n')
         with pytest.raises(ValidationError, match='generation changed'):
-            event_model_directory(native)
+            event_model_sources(native)[0]
     finally:
         rows.close()
 

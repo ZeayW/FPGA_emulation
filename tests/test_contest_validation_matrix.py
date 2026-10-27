@@ -6,14 +6,14 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from emuflow.contest_validation_matrix import (
+from emuflow_tools.contest_validation_matrix import (
     CONTEST_VALIDATION_MATRIX_SCHEMA,
     canonical_matrix_sha256,
     case_keys,
     load_contest_validation_matrix,
     validate_contest_validation_matrix,
 )
-from emuflow.cli import main
+from emuflow_tools.cli import main
 from emuflow.errors import ValidationError
 
 

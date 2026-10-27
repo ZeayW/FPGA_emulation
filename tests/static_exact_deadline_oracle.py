@@ -11,7 +11,6 @@ import math
 
 from emuflow.combinational_cut import semantic_contract_sha256
 from emuflow.errors import ValidationError
-from emuflow.logic_segment_timing import validate_logic_segment_timing
 from emuflow.tdm import sampled_virtual_wire_timing_constraints
 
 _LIMIT = 4096
@@ -65,8 +64,11 @@ def build_static_exact_segment_deadlines(schedule, contract, physical_summary, p
         measurements += len(records)
         if measurements > _LIMIT:
             raise ValidationError("deadline oracle requires a small in-memory fixture")
-        checked = validate_logic_segment_timing(database)
-        if checked["fpga"] != fpga:
+        if database.get("status") != "pass" or database.get("schema") != "emuflow.logic-segment-timing/v1":
+            raise ValidationError("deadline oracle requires passing logic timing facts")
+        if any(record.get("fpga") != fpga or _nonnegative(record["delay_ns"]) < 0 for record in records):
+            raise ValidationError("deadline oracle physical facts disagree")
+        if database["fpga"] != fpga:
             raise ValidationError("static exact logic segment FPGA identity disagrees")
         if database.get("semantic_contract_sha256") != digest:
             raise ValidationError("static exact logic timing is bound to another contract")

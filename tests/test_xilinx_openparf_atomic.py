@@ -1,3 +1,5 @@
+from tests.openparf_export_fixture import run_atomic_facts as run_xilinx_openparf_atomic_qualification
+from tests.openparf_export_fixture import export_atomic_facts as export_xilinx_openparf_atomic
 from tests.openparf_bridge_fixture import materialize_bridge_fixture as materialize_xilinx_openparf_atomic_contract
 from contextlib import closing
 import json
@@ -24,13 +26,11 @@ from emuflow.xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_SOURCE_SCHEMA,
     OPENPARF_PHYSICAL_MACRO_CONSTRAINT_SCHEMA,
     build_xilinx_openparf_atomic_source,
-    export_xilinx_openparf_atomic,
     legalize_xilinx_openparf_ff_control_sets,
     iter_xilinx_openparf_atomic_placement_clusters,
     load_xilinx_openparf_atomic_placement_clusters,
     load_xilinx_openparf_atomic_sites,
     open_xilinx_openparf_atomic_placement,
-    run_xilinx_openparf_atomic_qualification,
     validate_xilinx_openparf_atomic_placement,
     materialize_xilinx_openparf_atomic_source,
     read_xilinx_openparf_atomic_name_map,
@@ -575,60 +575,20 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             "RAMB36E2": 1, "URAM288": 1,
         })
 
-    def test_export_scans_indexed_cells_without_per_atom_point_queries(self):
-        class SequentialOnlyCells(dict):
-            def __getitem__(self, key):
-                raise AssertionError(f"unexpected point query for {key!r}")
-
-            def get(self, key, default=None):
-                raise AssertionError(f"unexpected point query for {key!r}")
-
+    def test_retired_python_bookshelf_renderers_are_not_exposed(self):
+        self.assertFalse(hasattr(atomic_adapter, "_render_library"))
+        self.assertFalse(hasattr(atomic_adapter, "_render_nets"))
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            mapped_path, packed_path, _architecture = _fixture(root)
-            mapped = json.loads(mapped_path.read_text(encoding="utf-8"))
-            packed = json.loads(packed_path.read_text(encoding="utf-8"))
-            ordinary_cells = mapped["modules"]["top"]["cells"]
-            _top, _cells, expected_atoms = atomic_adapter._collect_atoms(
-                mapped, packed, "top"
-            )
-            names = {
-                atom["instance"]: f"a{index}"
-                for index, atom in enumerate(expected_atoms)
-            }
-            expected = (
-                atomic_adapter._render_library(ordinary_cells, expected_atoms),
-                *atomic_adapter._render_nets(
-                    ordinary_cells, expected_atoms, names
-                ),
-            )
-
-            mapped["modules"]["top"]["cells"] = SequentialOnlyCells(
-                ordinary_cells
-            )
-            _top, indexed_cells, atoms = atomic_adapter._collect_atoms(
-                mapped, packed, "top"
-            )
-            actual = atomic_adapter._render_library_and_nets(
-                indexed_cells, atoms, names
-            )
-            streamed_path = root / "streamed.nets"
-            streamed = atomic_adapter._render_library_and_nets(
-                indexed_cells, atoms, names, nets_path=streamed_path
-            )
-            streamed_text = streamed_path.read_text(encoding="utf-8")
-
-        self.assertNotIsInstance(atoms, list)
-        atom_store = atoms.path
-        expected_atom_store = expected_atoms.path
-        self.assertEqual(list(atoms), list(expected_atoms))
-        self.assertEqual(actual, expected)
-        self.assertEqual(streamed, (expected[0], None, *expected[2:]))
-        self.assertEqual(streamed_text, expected[1])
-        atoms.close()
-        expected_atoms.close()
-        self.assertFalse(atom_store.exists())
-        self.assertFalse(expected_atom_store.exists())
+            output = Path(temporary) / "design.nets"
+            output.write_text("prior generation\n")
+            with self.assertRaisesRegex(ValidationError, "current typed owners"):
+                atomic_adapter._render_library_and_nets({}, [], {}, nets_path=output)
+            self.assertEqual(output.read_text(), "prior generation\n")
+            mapped, packed, architecture = _fixture(Path(temporary))
+            with self.assertRaisesRegex(ValidationError, "current mapped-index owner"):
+                atomic_adapter.export_xilinx_openparf_atomic(
+                    mapped, packed, architecture, Path(temporary) / "untyped-export"
+                )
 
     def test_non_degenerate_runtime_fixture_export_contract(self):
         with tempfile.TemporaryDirectory() as temporary:

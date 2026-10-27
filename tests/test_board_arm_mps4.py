@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.board_arm_mps4 import (
+from emuflow_tools.board_arm_mps4 import (
     ARM_MPS4_TRM_URL,
     MPS4_B2B_REFCLK_DEFAULT_MHZ,
     materialize_arm_mps4_boarddb,

@@ -15,10 +15,21 @@ import zlib
 
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
-from emuflow.native_columns import _ClusterScratch, _ColumnOwner, _MappedColumn
+from tests.native_column_fixture import _ClusterScratch, _ColumnOwner, _MappedColumn
 from emuflow.native_protocol import CheckedRequestWriter
 from emuflow.native_tools import resolve_native_executable
-from emuflow.partition import CLUSTERS_SCHEMA, PARTITION_ASSIGNMENT_SCHEMA, CUT_MODE_STATIC_EXACT, CUT_MODE_SEQUENTIAL_ONLY, DEFAULT_PARTITION_CUT_MODE, LEGAL_CUT_CLASSES, REPLICATED_NET_CLASSES, HARD_MACRO_RESOURCES, _CompactInstanceAssignment, _PackedClusterAssignment, _StaticExactCutNetRecords, _cluster_assignment_summary
+from emuflow.partition import CLUSTERS_SCHEMA
+from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
+from emuflow.partition import CUT_MODE_STATIC_EXACT
+from emuflow.partition import CUT_MODE_SEQUENTIAL_ONLY
+from emuflow.partition import DEFAULT_PARTITION_CUT_MODE
+from emuflow.partition import LEGAL_CUT_CLASSES
+from emuflow.partition import REPLICATED_NET_CLASSES
+from emuflow.partition import HARD_MACRO_RESOURCES
+from tests.partition_views import InstanceOwners as _CompactInstanceAssignment
+from tests.partition_views import ClusterOwners as _PackedClusterAssignment
+from tests.partition_views import SelectedCuts as _StaticExactCutNetRecords
+from tests.partition_balance_fixture import _cluster_assignment_summary
 from emuflow.store_publication import bind_store_source, require_store_sources_unchanged
 from emuflow.tool_runtime import NativeToolProcess
 
@@ -78,7 +89,7 @@ def compact_source(ir):
 
 @_native_fixture
 def normalize_partition_constraints(value, ir, platform, min_used_fpgas=None, balance_tolerance=None):
-    from emuflow.partition_config_native import prepare_configuration
+    from tests.native_partition_core_fixture import prepare_configuration
     return prepare_configuration(compact_source(ir).path, platform, value,
         min_used_fpgas=min_used_fpgas, balance_tolerance=balance_tolerance)
 
@@ -92,8 +103,8 @@ def load_partition_constraints(path, ir, platform, min_used_fpgas=None, balance_
 def build_clusters(ir, constraints, cut_mode=DEFAULT_PARTITION_CUT_MODE,
         max_cross_fpga_dependency_depth=0, static_exact_candidate_policy='assignment-derived-acyclic-v2',
         *, _stream_eligible_policy_names=False, _native_compact_clusters=False):
-    from emuflow.phase3_candidates_native import build_native_candidate_ids
-    from emuflow.phase3_clusters_native import build_native_clusters
+    from tests.native_partition_core_fixture import build_native_candidate_ids
+    from tests.native_partition_core_fixture import build_native_clusters
     if cut_mode not in {CUT_MODE_STATIC_EXACT, CUT_MODE_SEQUENTIAL_ONLY}:
         raise ValidationError('partition cut mode is invalid')
     if static_exact_candidate_policy != 'assignment-derived-acyclic-v2':
@@ -122,7 +133,7 @@ def build_clusters(ir, constraints, cut_mode=DEFAULT_PARTITION_CUT_MODE,
 def explicit_owner(ir, rows, owners, parts):
     """Encode the current ownership facts, including deliberately illegal facts."""
     from tests.native_partition_kernel_driver import _owner
-    from emuflow.phase3_decision_native import ownership_sources
+    from tests.native_partition_core_fixture import ownership_sources
     if ownership_sources(rows, owners) is not None:
         return owners
     identities = [f'c{i:06d}' for i in range(len(rows))]
@@ -173,10 +184,9 @@ class _Leases:
 def finalize_selected_semantics(ir, platform, records, assignment, instance_assignment,
         *, max_dependency_depth, candidate_selection_policy):
     """Call the existing source-bound owner; project its current typed outputs."""
-    from emuflow.phase3_semantics_native import _ownership_sources
-    from emuflow.phase3_candidates_native import write_candidate_policy
-    from emuflow.phase3_exact_records import (read_native_static_exact_cut_node_stream,
-        read_native_static_exact_capture_stream, build_static_exact_record_streams, _NativeNodeLaunchFlags)
+    from tests.native_partition_core_fixture import _ownership_sources
+    from emuflow.phase3_policy import write_candidate_policy
+    from tests.native_semantic_facts import read_nodes, read_captures, semantic_arrays
     from tests.native_assignment_publication_fixture import NativeAssignmentOwnership
     from emuflow.combinational_cut import _canonical_sha256
     if candidate_selection_policy != 'assignment-derived-acyclic-v2':
@@ -219,8 +229,8 @@ def finalize_selected_semantics(ir, platform, records, assignment, instance_assi
         require_store_sources_unchanged(originals)
         if originals[3].path.stat().st_size>4*1024*1024:raise ValidationError('native semantic summary exceeds bound')
         summary=json.loads(originals[3].path.read_text());metrics=summary['metrics']
-        nodes=read_native_static_exact_cut_node_stream(originals[0].path,_validated_source=originals[0]);nodes.adopt_native_scratch(group.lease())
-        captures=read_native_static_exact_capture_stream(originals[1].path,_validated_source=originals[1]);captures.adopt_native_scratch(group.lease())
+        nodes=read_nodes(originals[0].path,_validated_source=originals[0]);nodes.adopt_native_scratch(group.lease())
+        captures=read_captures(originals[1].path,_validated_source=originals[1]);captures.adopt_native_scratch(group.lease())
         with originals[2].path.open('rb') as stream:data=mmap.mmap(stream.fileno(),0,access=mmap.ACCESS_READ)
         count_owner=_ColumnOwner(data,group.lease())
         assert struct.unpack_from('<QIQ',data)==(0x31544350464D5545,1,len(nodes))
@@ -233,11 +243,7 @@ def finalize_selected_semantics(ir, platform, records, assignment, instance_assi
             def __len__(self):return len(nodes)
             def net_at(self,i):return nodes[i]['net']
             def __getitem__(self,i):return {key:nodes[i][key] for key in ('net','cut_class','source_fpgas','sink_fpgas')}|{'sink_endpoints':counts[i]}
-        class Topology:
-            def __len__(self):return len(nodes)
-            def dependency_indices(self,i):return nodes.native_dependency_indices(i)
-            def dependency_count(self,i):return len(self.dependency_indices(i))
-        streams=build_static_exact_record_streams(nodes,captures,_NativeNodeLaunchFlags(nodes,metrics,summary['launches']),integer_topology=Topology())
+        streams=semantic_arrays(nodes,captures,metrics,summary['launches'],require_source_proof=True)
         contract=_FixtureContract(schema='emuflow.static-exact-combinational-cut/v3',mode='static-exact-combinational',
             qualification='structural-partition-legality',max_cross_fpga_dependency_depth=max_dependency_depth,
             candidate_selection_policy=candidate_selection_policy,cut_nodes=nodes,**streams,capture_requirements=captures,
@@ -278,7 +284,7 @@ def build_partition_assignment(ir, platform, clusters_artifact, constraints, clu
     if getattr(rows,'implementation_id',None)=='native-primary-clusters-v1' and getattr(rows,'native_artifact',None) is None:
         raise ValidationError('native assignment primary ownership is missing')
     if getattr(rows,'native_artifact',None) is None:
-        from emuflow.phase3_clusters_native import build_native_clusters
+        from tests.native_partition_core_fixture import build_native_clusters
         rows=build_native_clusters(source,constraints,set(clusters_artifact['policy'].get('eligible_combinational_cut_nets',())))
         rows._fixture_ir=source
     if _defer_derived_records and _include_semantic_contract:raise ValidationError('cannot defer semantic contract')
@@ -328,8 +334,9 @@ def close_published_semantics(assignment):
 @_native_fixture
 def validate_partition_artifacts_online(platform, clusters_artifact, assignment_artifact, *, _native_audit=None):
     """Independent native decision gate plus bounded fixture envelope checks."""
-    from emuflow.phase3_decision_native import audit_assignment, _OwnershipAudit
-    from emuflow.partition import _CompactClusterRecords
+    from tests.native_partition_core_fixture import audit_assignment
+    from tests.native_partition_core_fixture import _OwnershipAudit
+    from tests.partition_views import ClusterColumns as _CompactClusterRecords
     rows=clusters_artifact.get('clusters');owners=assignment_artifact.get('cluster_assignment');instances=assignment_artifact.get('instance_assignment')
     if clusters_artifact.get('schema')!=CLUSTERS_SCHEMA or assignment_artifact.get('schema')!=PARTITION_ASSIGNMENT_SCHEMA:
         raise ValidationError('invalid online partition schema')
@@ -342,7 +349,7 @@ def validate_partition_artifacts_online(platform, clusters_artifact, assignment_
     certificate=_native_audit or (audit_assignment(platform,clusters_artifact,assignment_artifact) if isinstance(rows,_CompactClusterRecords) else None)
     if certificate is not None:
         facts=certificate.require(platform,assignment_artifact)
-        from emuflow.phase3_assignment_native import decode_partition_load_summary
+        from tests.native_partition_core_fixture import decode_partition_load_summary
         totals,loads,counts=decode_partition_load_summary(facts,rows,facts['parts'],tuple(fpga.id for fpga in platform.fpgas))
     else:
         expected={member:owners[row['id']] for row in rows for member in row['instances']}
@@ -355,7 +362,8 @@ def validate_partition_artifacts_online(platform, clusters_artifact, assignment_
     used={part for part,count in counts.items() if count}
     if len(used)<constraints['min_used_fpgas']:raise ValidationError('online assignment uses too few FPGAs')
     if not used<=set(constraints['active_fpgas']):raise ValidationError('online assignment uses an inactive FPGA')
-    from emuflow.partition import _validate_balance_loads, _balance_partition_fpgas
+    from tests.partition_balance_fixture import _validate_balance_loads
+    from tests.partition_balance_fixture import _balance_partition_fpgas
     from emuflow.resources import RESOURCE_FIELDS
     balance=_validate_balance_loads(_balance_partition_fpgas(platform,constraints.get('active_fpgas')),totals,loads,
         {key:bool(totals[key]) for key in RESOURCE_FIELDS},constraints['balance_tolerance'],constraints.get('balance_tolerance_by_dimension',{}),constraints.get('balance_dimensions'),constraints.get('resource_reservations_by_fpga',{}))
@@ -404,5 +412,5 @@ def semantic_contract_facts(ir,platform,instance_assignment,cut_nets,*,max_depen
 def candidate_index_facts(ir,**_options):
     from emuflow.ir import EmuIR
     from tests.partition_graph_oracle import candidate_ids
-    from emuflow.phase3_candidates_native import build_native_candidate_ids
+    from tests.native_partition_core_fixture import build_native_candidate_ids
     return {'eligible_ids':candidate_ids(ir) if isinstance(ir,EmuIR) else build_native_candidate_ids(ir),'dependency_levels':{}}

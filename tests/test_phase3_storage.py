@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.phase3_index_fixture import write_assignment_v3_fixture
 from emuflow.io import read_json, write_json
 from emuflow.phase3_storage import (CLUSTERS_SQLITE_APPLICATION_ID, INDEXED_CLUSTERS_SCHEMA, read_phase3_assignment_view, read_phase3_cut_timing_view)
 
@@ -74,7 +73,7 @@ def _large_artifacts(count: int = 1000):
 
 
 class Phase3StorageTest(unittest.TestCase):
-    def test_indexed_clusters_round_trip_and_seal_typed_population(self) -> None:
+    def test_indexed_cluster_selector_validates_without_expanding_population(self) -> None:
         clusters, _ = _large_artifacts(32)
         clusters["design"] = "large-设计-µ"
         clusters["policy"]["eligible_combinational_cut_nets"] = [
@@ -110,7 +109,8 @@ class Phase3StorageTest(unittest.TestCase):
                     ).fetchone()[0],
                     64,
                 )
-            self.assertEqual(read_json(selector_path), clusters)
+            self.assertEqual(read_json(selector_path), selector)
+            self.assertNotIn('clusters', read_json(selector_path))
 
             with store.open("r+b") as stream:
                 stream.seek(128)
@@ -119,6 +119,7 @@ class Phase3StorageTest(unittest.TestCase):
                 stream.write(bytes([byte[0] ^ 1]))
             with self.assertRaisesRegex(ValueError, "seal disagrees"):
                 read_json(selector_path)
+
 
     def test_indexed_clusters_reject_resealed_section_count_corruption(self) -> None:
         clusters, _ = _large_artifacts(4)
@@ -144,285 +145,83 @@ class Phase3StorageTest(unittest.TestCase):
                 read_json(selector_path)
 
 
+    def _current_assignment(self, root, assignment=None, clusters=None):
+        from types import SimpleNamespace
+        from tests.phase3_store_fixture import write_assignment_index_fixture
+        if assignment is None: clusters, assignment = _large_artifacts(4)
+        ir = SimpleNamespace(value={'instances':[{'id':name} for name in assignment['instance_assignment']]})
+        index = root/'assignment.sqlite'
+        summary = write_assignment_index_fixture(index,ir,assignment)
+        selector = assignment_selector_fixture(assignment,clusters,cut_nets_index={
+            'artifact':index.name,'schema':'emuflow.phase3-cut-records/v1',
+            'records':summary['cut_records'],'sha256':summary['cut_records_sha256']})
+        path = root/'assignment.json';write_json(path,selector,compact=True)
+        return path, selector, assignment
 
+    def test_current_lazy_ownership_never_needs_sibling_clusters(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);path,selector,assignment=self._current_assignment(root)
+            with mock.patch('emuflow.ir.EmuIR.load',side_effect=AssertionError('graph load')):
+                view=read_phase3_assignment_view(path,include_instance_assignment=True)
+            self.assertNotIn('cluster_assignment',view)
+            self.assertNotIn('semantic_contract',view)
+            self.assertEqual(list(view['cut_nets']),[])
+            self.assertFalse((root/'clusters.json').exists())
+            owners=view['instance_assignment']
+            self.assertEqual(dict(owners),assignment['instance_assignment'])
+            self.assertIsNone(owners.get('absent'));owners.close()
+            self.assertEqual(read_json(path)['schema'],assignment['schema'])
 
-    def test_assignment_requires_its_exact_cluster_dependency(self) -> None:
-        clusters, assignment = _large_artifacts(4)
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            write_json(
-                root / "assignment.json",
-                assignment_selector_fixture(assignment, clusters),
-                compact=True,
-            )
-            with self.assertRaisesRegex(ValueError, "requires sibling"):
-                read_json(root / "assignment.json")
+    def test_current_cut_view_preserves_order_and_unused_partitions(self):
+        clusters,assignment=_large_artifacts(4)
+        assignment['partitions'].append({'fpga':'fpga4','cluster_count':0,'instance_count':0,'resources':{}})
+        assignment['cut_nets']=[{'net':'n0','cut_class':'register_output','source_fpgas':['fpga0'],
+            'sink_fpgas':['fpga1'],'sink_endpoints':1}]
+        with tempfile.TemporaryDirectory() as temporary:
+            path,_,_=self._current_assignment(Path(temporary),assignment,clusters)
+            view=read_phase3_cut_timing_view(path)
+            self.assertEqual(list(view['cut_nets']),assignment['cut_nets'])
+            self.assertEqual(view['partitions'][-1]['fpga'],'fpga4')
+            self.assertNotIn('clusters',view['partitions'][-1])
 
-    def test_unused_fpga_partition_round_trips(self) -> None:
-        clusters, assignment = _large_artifacts(4)
-        assignment["partitions"].append(
-            {
-                "fpga": "fpga4",
-                "clusters": [],
-                "cluster_count": 0,
-                "instance_count": 0,
-                "resources": {},
-                "effective_capacity": {"cells": 10000, "lut": 10000},
-                "utilization": {"cells": 0.0, "lut": 0.0},
-            }
-        )
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            write_json(
-                root / "clusters.json",
-                cluster_document_fixture(clusters),
-                compact=True,
-            )
-            write_json(
-                root / "assignment.json",
-                assignment_selector_fixture(assignment, clusters),
-                compact=True,
-            )
-            self.assertEqual(read_json(root / "assignment.json"), assignment)
+    def test_current_selector_rejects_owner_mismatch_and_missing_index(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);path,selector,_=self._current_assignment(root)
+            for field in ('design','platform','provider','seed','constraints'):
+                changed=json.loads(json.dumps(selector));changed['document'][field]='mixed-source'
+                write_json(path,changed,compact=True)
+                with self.subTest(field=field),self.assertRaisesRegex(ValueError,'identity disagree'):
+                    read_json(path)
+            write_json(path,selector,compact=True);(root/'assignment.sqlite').unlink()
+            with self.assertRaisesRegex(ValueError,'index is malformed'):read_json(path)
 
+    def test_retired_assignment_and_cluster_storage_versions_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary)/'selector.json'
+            for family,versions in (('clusters',(1,2)),('assignment',(1,2,3))):
+                for version in versions:
+                    write_json(path,{'schema':f'emuflow.phase3-{family}-storage/v{version}'})
+                    with self.subTest(family=family,version=version),self.assertRaisesRegex(ValueError,'retired or unsupported'):
+                        read_json(path)
+                    if family=='assignment':
+                        with self.assertRaisesRegex(ValueError,'retired or unsupported'):
+                            read_phase3_assignment_view(path)
 
-    def test_corrupt_cluster_vector_is_rejected(self) -> None:
-        clusters, assignment = _large_artifacts(4)
-        packed = assignment_selector_fixture(assignment, clusters)
-        packed["cluster_parts"]["data"] = "not-valid-base64!"
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            write_json(
-                root / "clusters.json",
-                cluster_document_fixture(clusters),
-                compact=True,
-            )
-            write_json(root / "assignment.json", packed, compact=True)
-            with self.assertRaisesRegex(ValueError, "index is corrupt"):
-                read_json(root / "assignment.json")
+    def test_plain_logical_assignment_is_not_a_production_reader_input(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary)/'assignment.json'
+            write_json(path,{'schema':'emuflow.partition-assignment/v1','cut_nets':[]})
+            with self.assertRaisesRegex(ValueError,'current v4 selector required'):
+                read_phase3_assignment_view(path)
 
-    def test_corrupt_compressed_semantic_contract_is_rejected(self) -> None:
-        clusters, assignment = _large_artifacts(4)
-        assignment["semantic_contract"] = {
-            "schema": "emuflow.static-exact-semantic-contract/v1",
-            "capture_requirements": [
-                {"id": f"capture{index:06d}", "kind": "architectural-state"}
-                for index in range(100)
-            ],
-        }
-        packed = assignment_selector_fixture(assignment, clusters)
-        packed["semantic_contract"]["data"] = "not-valid-base64!"
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            write_json(
-                root / "clusters.json",
-                cluster_document_fixture(clusters),
-                compact=True,
-            )
-            write_json(root / "assignment.json", packed, compact=True)
-            indexed = read_phase3_assignment_view(
-                root / "assignment.json",
-                include_semantic_contract=False,
-            )
-            self.assertTrue(indexed["semantic_contract_indexed"])
-            self.assertEqual(
-                indexed["semantic_contract_schema"],
-                "emuflow.static-exact-combinational-cut/v3",
-            )
-            self.assertNotIn("semantic_contract", indexed)
-            with self.assertRaisesRegex(ValueError, "contract is corrupt"):
-                read_json(root / "assignment.json")
-
-    def test_downstream_view_does_not_expand_sibling_clusters(self) -> None:
-        clusters, assignment = _large_artifacts(4)
-        assignment["semantic_contract"] = {
-            "schema": "emuflow.static-exact-semantic-contract/v1",
-            "mode": "static-exact-combinational",
-        }
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            write_json(
-                root / "assignment.json",
-                assignment_selector_fixture(assignment, clusters),
-                compact=True,
-            )
-            view = read_phase3_assignment_view(root / "assignment.json")
-            self.assertEqual(view["cut_nets"], assignment["cut_nets"])
-            self.assertEqual(
-                view["semantic_contract"], assignment["semantic_contract"]
-            )
-            self.assertNotIn("cluster_assignment", view)
-            self.assertNotIn("instance_assignment", view)
-            cluster_view = read_phase3_assignment_view(
-                root / "assignment.json",
-                include_cluster_assignment=True,
-            )["cluster_assignment"]
-            self.assertEqual(cluster_view["c000003"], "fpga3")
-            self.assertEqual(len(cluster_view), 4)
-
-    def test_downstream_view_uses_lazy_sqlite_instance_lookup(self) -> None:
-        clusters, assignment = _large_artifacts(4)
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            write_json(
-                root / "assignment.json",
-                assignment_selector_fixture(assignment, clusters),
-                compact=True,
-            )
-            with closing(sqlite3.connect(root / "assignment.sqlite")) as connection, connection:
-                connection.executescript(
-                    """
-                    PRAGMA application_id=0x454D5541;
-                    PRAGMA user_version=3;
-                    CREATE TABLE metadata(
-                      key TEXT PRIMARY KEY,
-                      value TEXT NOT NULL
-                    );
-                    CREATE TABLE parts(
-                      part_index INTEGER PRIMARY KEY,
-                      fpga TEXT NOT NULL UNIQUE
-                    );
-                    CREATE TABLE copies(
-                      source_instance_seq INTEGER NOT NULL,
-                      part_index INTEGER NOT NULL,
-                      copy_id TEXT NOT NULL,
-                      is_replica INTEGER NOT NULL
-                    );
-                    """
-                )
-                connection.execute(
-                    "INSERT INTO metadata VALUES (?,?)",
-                    ("schema", json.dumps("emuflow.phase3-assignment-sqlite/v3")),
-                )
-                connection.execute(
-                    "INSERT INTO metadata VALUES (?,?)",
-                    (
-                        "source_instance_count",
-                        json.dumps(len(assignment["instance_assignment"])),
-                    ),
-                )
-                connection.executemany(
-                    "INSERT INTO parts VALUES (?,?)",
-                    enumerate(["fpga0", "fpga1", "fpga2", "fpga3"]),
-                )
-                connection.executemany(
-                    "INSERT INTO copies VALUES (?,?,?,0)",
-                    (
-                        (index, index // 2 % 4, instance)
-                        for index, instance in enumerate(
-                            assignment["instance_assignment"]
-                        )
-                    ),
-                )
-            view = read_phase3_assignment_view(
-                root / "assignment.json",
-                include_instance_assignment=True,
-            )
-            indexed = view["instance_assignment"]
-            self.assertEqual(
-                indexed.get("top/logic_block_3/cell_1"), "fpga3"
-            )
-            self.assertEqual(len(indexed), 8)
-            self.assertIsNone(indexed.get("absent"))
-            indexed.close()
-
-    def test_cut_timing_view_uses_only_indexed_relations(self) -> None:
-        clusters, assignment = _large_artifacts(4)
-        assignment["cut_nets"] = [
-            {
-                "net": "n0",
-                "cut_class": "combinational",
-                "source_fpgas": ["fpga0"],
-                "sink_fpgas": ["fpga1"],
-            },
-            {
-                "net": "n1",
-                "cut_class": "register_input",
-                "source_fpgas": ["fpga1"],
-                "sink_fpgas": ["fpga0"],
-            },
-        ]
-        assignment["semantic_contract_sha256"] = "a" * 64
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            packed = assignment_selector_fixture(assignment, clusters)
-            packed["semantic_contract"] = {
-                "codec": "zlib-level-1-base64-canonical-json",
-                "uncompressed_bytes": 1,
-                "data": "invalid-on-purpose",
-            }
-            write_json(root / "assignment.json", packed, compact=True)
-            write_assignment_v3_fixture(
-                root / "assignment.sqlite", parts=("fpga0", "fpga1"),
-                metadata={
-                    "design": "large", "platform": "four", "provider": "test",
-                    "seed": 1, "constraints": {"balance_tolerance": 0.25},
-                    "source_instance_count": 2, "semantic_contract_sha256": "a" * 64,
-                },
-                copies=[(0, 0, "i0", 0), (1, 1, "i1", 0)],
-                cut_sinks=[("n0", 0, 1), ("n1", 1, 0)],
-                semantic={
-                    "schema": "emuflow.static-exact-combinational-cut/v3",
-                    "cut_nodes": [
-                        {"net": "n0", "source_segment_ids": ["segment000000"]},
-                        {"net": "n1", "source_segment_ids": ["segment000001"]},
-                    ],
-                    "logic_segments": [
-                        {"id": "segment000000", "kind": "launch_to_tx", "fpga": "fpga0", "sink_cut_net": "n0"},
-                        {"id": "segment000001", "kind": "rx_to_tx", "fpga": "fpga1", "source_cut_net": "n0", "sink_cut_net": "n1"},
-                        {"id": "segment000002", "kind": "rx_to_capture", "fpga": "fpga1", "source_cut_net": "n0", "capture_requirement": "capture000000"},
-                        {"id": "segment000003", "kind": "rx_to_capture", "fpga": "fpga0", "source_cut_net": "n1", "capture_requirement": "capture000001"},
-                    ],
-                    "capture_requirements": [
-                        {"id": "capture000000", "cut_net": "n0", "fpga": "fpga1", "kind": "top-output", "endpoint": "o0"},
-                        {"id": "capture000001", "cut_net": "n1", "fpga": "fpga0", "kind": "top-output", "endpoint": "o1"},
-                    ],
-                },
-            )
-            view = read_phase3_cut_timing_view(
-                root / "assignment.json",
-                include_instance_assignment=True,
-            )
-            self.assertEqual(
-                view["cut_nets"],
-                [
-                    {
-                        "net": "n0",
-                        "source_fpgas": ["fpga0"],
-                        "sink_fpgas": ["fpga1"],
-                    },
-                    {
-                        "net": "n1",
-                        "source_fpgas": ["fpga1"],
-                        "sink_fpgas": ["fpga0"],
-                    },
-                ],
-            )
-            self.assertEqual(view["semantic_contract_sha256"], "a" * 64)
-            self.assertNotIn("semantic_contract", view)
-            self.assertNotIn("semantic_contract_index", view)
-            indexed = view["instance_assignment"]
-            self.assertEqual(indexed["i1"], "fpga1")
-            indexed.close()
-            route_view = read_phase3_assignment_view(
-                root / "assignment.json",
-                include_semantic_contract=False,
-            )
-            self.assertEqual(
-                [
-                    (
-                        item["net"],
-                        item["dependency_level"],
-                        item["combinational_dependency_depth"],
-                        item["predecessor_cut_nets"],
-                    )
-                    for item in route_view["cut_nets"]
-                ],
-                [
-                    ("n0", 1, 1, []),
-                    ("n1", 2, 1, ["n0"]),
-                ],
-            )
+    def test_current_reader_rejects_legacy_compressed_semantic_payload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path,selector,_=self._current_assignment(Path(temporary))
+            selector['semantic_contract']={'codec':'zlib-level-1-base64-canonical-json','data':'unused'}
+            write_json(path,selector,compact=True)
+            with self.assertRaisesRegex(ValueError,'header is malformed'):read_json(path)
+            with self.assertRaisesRegex(ValueError,'materialization is retired'):
+                read_phase3_assignment_view(path,include_semantic_contract=True)
 
 
 if __name__ == "__main__":

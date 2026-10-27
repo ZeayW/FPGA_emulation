@@ -14,7 +14,7 @@ from emuflow.errors import ValidationError
 from emuflow.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (build_clusters)
 from emuflow.partition_ir import load_partition_ir
-from emuflow.phase3_clusters_native import build_native_clusters
+from tests.native_partition_core_fixture import build_native_clusters
 from tests.native_build import emuflow_native
 from tests import partition_pressure_fixture as reference_fixture
 
@@ -151,8 +151,8 @@ def test_large_fanout_primary_union_matches_reference(tmp_path,monkeypatch):
 def test_source_setup_failure_retires_unmapped_scratch(source,tmp_path):
     ir,constraints=source
     scratch=tmp_path/'setup-scratch'; scratch.mkdir()
-    with patch('emuflow.phase3_clusters_native.tempfile.mkdtemp',return_value=str(scratch)), \
-         patch('emuflow.phase3_clusters_native.native_file_generation',side_effect=FileNotFoundError('missing source')):
+    with patch('tests.native_partition_core_fixture.tempfile.mkdtemp',return_value=str(scratch)), \
+         patch('tests.native_partition_core_fixture.native_file_generation',side_effect=FileNotFoundError('missing source')):
         with pytest.raises(FileNotFoundError,match='missing source'):
             build_native_clusters(ir,constraints,set())
     assert not scratch.exists()

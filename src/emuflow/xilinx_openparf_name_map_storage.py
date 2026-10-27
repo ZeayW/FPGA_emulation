@@ -3,8 +3,7 @@
 The OpenPARF process itself consumes the Bookshelf files and never needs the
 historical graph-sized ``name_map.json``.  Production EmuFlow consumers need
 the same atom identities after placement, so keep those rows in a sealed typed
-sidecar and leave the JSON path as a small commit selector.  A compatibility
-export remains explicit for external tools which still require the old JSON.
+sidecar and leave the JSON path as a small commit selector.
 """
 
 from __future__ import annotations
@@ -876,70 +875,9 @@ def read_xilinx_openparf_atomic_name_map(
     mapped_sha256: Optional[str] = None,
     packed_sha256: Optional[str] = None,
     architecture_sha256: Optional[str] = None,
-    allow_legacy: bool = False,
-) -> Mapping[str, Any]:
-    """Read a checked typed selector; legacy JSON requires explicit opt-in."""
-
-    _validate_selector_location(path)
-    lease: Optional[_NameMapLease] = _NameMapLease(path, exclusive=False)
-    try:
-        value = read_json(path)
-        if (
-            isinstance(value, Mapping)
-            and value.get("schema") == OPENPARF_ATOMIC_NAME_MAP_STORAGE_SCHEMA
-        ):
-            view = XilinxOpenparfAtomicNameMapView(
-                path,
-                mapped_sha256=mapped_sha256,
-                packed_sha256=packed_sha256,
-                architecture_sha256=architecture_sha256,
-                _lease=lease,
-            )
-            lease = None
-            return view
-        if (
-            not allow_legacy
-            or not isinstance(value, Mapping)
-            or value.get("schema") != OPENPARF_ATOMIC_NAME_MAP_SCHEMA
-        ):
-            raise ValidationError(
-                "legacy OpenPARF atomic name map requires explicit compatibility"
-            )
-        source = value.get("source")
-        for key, expected in (
-            ("mapped_sha256", mapped_sha256),
-            ("packed_sha256", packed_sha256),
-            ("architecture_sha256", architecture_sha256),
-        ):
-            if expected is not None and (
-                not isinstance(source, Mapping) or source.get(key) != expected
-            ):
-                raise ValidationError(
-                    f"legacy OpenPARF atomic name-map {key[:-7]} source seal disagrees"
-                )
-        return value
-    finally:
-        if lease is not None:
-            lease.close()
-
-
-def materialize_xilinx_openparf_atomic_name_map(
-    source_path: Path, output_path: Path
-) -> dict[str, Any]:
-    """Explicitly export the historical graph-sized JSON compatibility map."""
-
-    source = read_xilinx_openparf_atomic_name_map(source_path)
-    try:
-        value = (
-            source.materialize()
-            if isinstance(source, XilinxOpenparfAtomicNameMapView)
-            else dict(source)
-        )
-        if isinstance(source, XilinxOpenparfAtomicNameMapView):
-            value["source"] = dict(source.selector["source"])
-    finally:
-        close = getattr(source, "close", None)
-        if callable(close):
-            close()
-    write_json(output_path, value, compact=True)
-    return value
+) -> XilinxOpenparfAtomicNameMapView:
+    """Open the current typed owner; whole-map JSON input is retired."""
+    return XilinxOpenparfAtomicNameMapView(
+        path, mapped_sha256=mapped_sha256, packed_sha256=packed_sha256,
+        architecture_sha256=architecture_sha256,
+    )

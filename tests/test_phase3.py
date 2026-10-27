@@ -15,13 +15,14 @@ from emuflow.errors import ValidationError
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.io import read_json
 from emuflow.ir import EmuIR
-from emuflow.partition import (validate_cluster_assignment_balance)
+from tests.partition_balance_fixture import validate_cluster_assignment_balance
 from tests.native_partition_facts import (build_partition_assignment, build_clusters, normalize_partition_constraints, validate_partition_artifacts, validate_partition_artifacts_online)
 from tests.partition_reference import assign_clusters
 from emuflow.partition_ir import load_partition_ir
 from emuflow.phase3 import run_phase3, validate_phase3_indexed
 from emuflow.phase3_assignment_index import (validate_phase3_assignment_index)
-from emuflow.phase3_exact_records import StaticExactRecordSequence
+from emuflow.phase3_storage import read_phase3_assignment_view
+from tests.phase3_exact_fixture import indexed_exact_manifest
 from emuflow.platform import BoardLink, FpgaNode, Platform
 from emuflow.resources import RESOURCE_FIELDS, ResourceVector
 from emuflow.yosys import import_yosys_json
@@ -292,8 +293,11 @@ class Phase3Test(unittest.TestCase):
                     cut_mode="static-exact-combinational",
                 )
             assignment = read_json(output / "assignment.json")
-            expected_assignment_digest = hashlib.sha256((json.dumps({'instance_assignment': dict(assignment['instance_assignment'])}, indent=2, sort_keys=True)+'\n').encode()).hexdigest()
-            self.assertEqual(assignment['semantic_contract']['source_identity']['instance_assignment_sha256'], expected_assignment_digest)
+            ownership_view = read_phase3_assignment_view(output/'assignment.json', include_instance_assignment=True)
+            with closing(ownership_view['instance_assignment']) as owners:
+                expected_assignment_digest = hashlib.sha256((json.dumps({'instance_assignment': dict(owners)}, indent=2, sort_keys=True)+'\n').encode()).hexdigest()
+            semantic_header = indexed_exact_manifest(output/'assignment.sqlite')['contract_header']
+            self.assertEqual(semantic_header['source_identity']['instance_assignment_sha256'], expected_assignment_digest)
             self.assertEqual(read_json(output/'phase3_report.json')['stage_implementation_id'], 'native-phase3-v1')
             packed_assignment = json.loads(
                 (output / "assignment.json").read_text(encoding="utf-8")
@@ -326,7 +330,7 @@ class Phase3Test(unittest.TestCase):
             self.assertEqual(
                 runtime["observations"]["static_exact_native"], 1
             )
-            source = assignment["semantic_contract"]["source_identity"]
+            source = semantic_header["source_identity"]
             self.assertEqual(
                 source["emuir"],
                 {

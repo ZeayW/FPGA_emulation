@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.errors import ValidationError
-from emuflow.global_event_store import EventBuilder, MetadataBuilder
+from tests.event_facts import EventFacts as EventBuilder, MetadataFacts as MetadataBuilder
 from emuflow.global_measurements import NativeMeasurements, NativeTimingPaths, import_measurements, read_native_measurements
 from emuflow.global_sta import EventCheck, build_opensta_timing
 from emuflow.qor_storage import write_qor_report, read_qor_report

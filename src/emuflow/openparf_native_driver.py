@@ -20,12 +20,68 @@ import os
 from pathlib import Path
 from typing import Any, MutableMapping
 
-from .openparf_continuous_driver import apply_high_fanout_net_weights
+
 
 
 OPENPARF_NATIVE_CONVERGENCE_SCHEMA = (
     "emuflow.openparf-native-convergence/v1"
 )
+
+
+def apply_high_fanout_net_weights(engine: Any) -> dict[str, Any]:
+    """Account for the routing demand hidden by one-HPWL-per-net models.
+
+    OpenPARF's Bookshelf reader gives every net unit weight.  That is a poor
+    proxy for an FPGA control net with hundreds of spatially distributed
+    sinks: its HPWL gradient sees only the bounding-box extrema while the
+    detailed router must build the complete distribution tree.  Apply a
+    bounded square-root fanout weight before any placement operator runs.
+
+    The policy is deliberately compact and architecture independent.  It
+    changes neither the netlist nor legality, and it avoids an unbounded
+    degree-proportional force that would collapse reset sinks into one hot
+    spot.  The downstream exact legalizer and router remain authoritative.
+    """
+
+    threshold = int(engine.params.emuflow_high_fanout_weight_threshold)
+    exponent = float(engine.params.emuflow_high_fanout_weight_exponent)
+    maximum = float(engine.params.emuflow_high_fanout_weight_maximum)
+    if threshold < 2:
+        raise RuntimeError("high-fanout weight threshold must be at least 2")
+    if not math.isfinite(exponent) or exponent <= 0.0:
+        raise RuntimeError("high-fanout weight exponent must be finite and positive")
+    if not math.isfinite(maximum) or maximum < 1.0:
+        raise RuntimeError("high-fanout maximum weight must be finite and at least 1")
+
+    starts = engine.data_cls.net_pin_map.b_starts
+    degrees = starts[1:] - starts[:-1]
+    if int(degrees.shape[0]) != int(engine.data_cls.net_weights.shape[0]):
+        raise RuntimeError("OpenPARF net degree and weight tensors disagree")
+    factors = (degrees.to(dtype=engine.data_cls.net_weights.dtype) / threshold).pow(
+        exponent
+    )
+    factors.clamp_(min=1.0, max=maximum)
+    engine.data_cls.net_weights.mul_(factors)
+    # The per-instance wirelength preconditioner was derived from the original
+    # unit weights during DataCollections construction.  Recompute it once so
+    # optimization step scaling matches the actual objective.
+    engine.data_cls.compute_wl_precond(
+        engine.params, engine.placedb, engine.dtype, engine.device
+    )
+    weighted = degrees > threshold
+    report = {
+        "policy": "bounded-sqrt-fanout-v1",
+        "threshold": threshold,
+        "exponent": exponent,
+        "maximum_weight": maximum,
+        "weighted_nets": int(weighted.sum().item()),
+        "maximum_degree": int(degrees.max().item()) if degrees.numel() else 0,
+        "observed_maximum_weight": (
+            float(factors.max().item()) if factors.numel() else 1.0
+        ),
+    }
+    engine._emuflow_high_fanout_weighting = report
+    return report
 
 
 def _number(value: Any) -> float:

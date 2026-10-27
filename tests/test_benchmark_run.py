@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from emuflow.benchmark import BenchmarkRun
+from emuflow_tools.benchmark import BenchmarkRun
 from emuflow.errors import EmuFlowError, ValidationError
 
 

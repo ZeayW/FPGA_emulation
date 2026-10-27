@@ -1,6 +1,7 @@
 """Differential tests of the production native ScheduleStore owner."""
 
 from tests.schedule_store_fixture import write_tdm_schedule_storage
+from tests.phase3_store_fixture import write_current_assignment_fixture
 import json
 import sqlite3
 import struct
@@ -38,7 +39,7 @@ def test_unified_typed_route_producer_selects_native_store(tmp_path,monkeypatch)
     persisted = case._persisted_routes(case._exact_routes(assignment))
     write_route_store_fixture(route_path,persisted)
     assignment_path=tmp_path/"assignment.json"
-    assignment_path.write_text(json.dumps(assignment),encoding="utf-8")
+    write_current_assignment_fixture(assignment_path, case.ir, assignment)
     output=tmp_path/"phase5"
     # Production must select the complete native producer from its indexed contract.
     with patch("tests.schedule_store_fixture._publish_fixture_records",side_effect=AssertionError("Python publisher used")), \

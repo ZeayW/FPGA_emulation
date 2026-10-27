@@ -77,7 +77,8 @@ def build_tdm_schedule(
     )
     baseline_hops = _tdm._baseline_ratio_hops(routes,platform,arcs,bank_allocations,constraints)
     if exact_contract is None:
-        ordered_routes, active_rounds = _tdm._round_order(raw_routes, planned_hops)
+        ordered_routes = sorted(raw_routes, key=lambda row: (row.get('transport_round', 0), -max((hop for hop, _ in _tdm._route_hops(row)), default=0), row['net'], row['id']))
+        active_rounds = sorted({row.get('transport_round', 0) for row in raw_routes})
     else:
         if indexed_exact:
             exact_nodes = _tdm._indexed_exact_nodes(raw_routes)

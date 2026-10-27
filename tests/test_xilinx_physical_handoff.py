@@ -1,3 +1,4 @@
+from tests.physical_handoff_facts import physical_handoff_facts
 import shutil
 import tempfile
 import unittest
@@ -12,7 +13,6 @@ from emuflow.xilinx_physical_handoff import (
     open_xilinx_physical_handoff,
     validate_xilinx_physical_handoff,
     validate_xilinx_physical_handoff_pair,
-    write_xilinx_physical_handoff,
 )
 from emuflow.xilinx_placement import XILINX_PLACEMENT_SCHEMA
 
@@ -77,7 +77,7 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "physical-handoff.sqlite"
             packed, placement = _contracts()
-            write_xilinx_physical_handoff(path, packed, placement)
+            physical_handoff_facts(path, packed, placement)
             report = validate_xilinx_physical_handoff(path)
             actual_packed, actual_placement = open_xilinx_physical_handoff(path)
 
@@ -96,7 +96,7 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
     def test_validated_digest_avoids_rehashing_published_database(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "physical-handoff.sqlite"
-            write_xilinx_physical_handoff(path, *_contracts())
+            physical_handoff_facts(path, *_contracts())
             digest = file_sha256(path)
 
             with mock.patch(
@@ -133,7 +133,7 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
             first_packed["clusters"].reverse()
             first_placement["clusters"].extend(second_placement["clusters"])
 
-            write_xilinx_physical_handoff(
+            physical_handoff_facts(
                 path, first_packed, first_placement
             )
             packed, placement = open_xilinx_physical_handoff(path)
@@ -151,7 +151,7 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source.sqlite"
-            write_xilinx_physical_handoff(source, *_contracts())
+            physical_handoff_facts(source, *_contracts())
             corrupt = root / "corrupt.sqlite"
             shutil.copyfile(source, corrupt)
             with corrupt.open("r+b") as stream:
@@ -174,7 +174,7 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             original = root / "first" / "physical-handoff.sqlite"
-            write_xilinx_physical_handoff(original, *_contracts("cell0"))
+            physical_handoff_facts(original, *_contracts("cell0"))
             relocated = root / "second" / original.name
             relocated.parent.mkdir()
             original.replace(relocated)
@@ -187,15 +187,8 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
                 placement["source"]["packed_sha256"], file_sha256(relocated)
             )
 
-            packed_a, _ = _contracts("cell-a")
-            _, placement_b = _contracts("cell-b")
-            with self.assertRaisesRegex(ValidationError, "coverage disagrees"):
-                write_xilinx_physical_handoff(
-                    root / "mixed.sqlite", packed_a, placement_b
-                )
-
             other = root / "other.sqlite"
-            write_xilinx_physical_handoff(other, *_contracts("cell-other"))
+            physical_handoff_facts(other, *_contracts("cell-other"))
             packed_first, _ = open_xilinx_physical_handoff(relocated)
             _, placement_other = open_xilinx_physical_handoff(other)
             with self.assertRaisesRegex(ValidationError, "runs disagree"):

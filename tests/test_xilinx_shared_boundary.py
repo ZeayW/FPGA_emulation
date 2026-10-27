@@ -1,3 +1,4 @@
+from tests.timing_facts import boundary_timing_facts
 from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
@@ -58,8 +59,7 @@ class SharedBoundaryTests(unittest.TestCase):
         captured = {}
 
         @contextmanager
-        def writer(_path, _header, records, *, source_bindings=()):
-            assert source_bindings == ()
+        def writer(_path, _header, records):
             captured.update((record["id"], record) for record in records)
             yield {}
 
@@ -67,7 +67,7 @@ class SharedBoundaryTests(unittest.TestCase):
                 timing, "read_boundary_identity_storage", return_value=identity
              ), \
              patch.object(timing, "_graph", return_value=g), \
-             patch.object(timing, "write_boundary_timing_storage", side_effect=writer), \
+             patch.object(timing, "boundary_timing_facts", side_effect=writer), \
              patch.object(timing, "validate_boundary_timing_database", return_value={}), \
              patch.object(timing, "boundary_timing_header", return_value={}):
             timing.build_xilinx_boundary_timing(*[Path("unused")] * 4)

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
-from emuflow.ppro_blackbox_calibration import (
+from emuflow_tools.ppro_blackbox_calibration import (
     validate_blackbox_observation,
     validate_public_platform_prior,
     validate_redacted_artifact,

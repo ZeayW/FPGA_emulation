@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from emuflow.contest_public import (
+from emuflow_tools.contest_public import (
     PUBLIC_CONTEST_BOARDDB_REPORT_SCHEMA,
     PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA,
     PUBLIC_CONTEST_FETCH_REPORT_SCHEMA,
@@ -17,8 +17,8 @@ from emuflow.contest_public import (
     materialize_public_contest_boarddb,
     validate_public_contest_evaluation,
 )
-from emuflow.contest_validation_matrix import canonical_matrix_sha256
-from emuflow.cli import main
+from emuflow_tools.contest_validation_matrix import canonical_matrix_sha256
+from emuflow_tools.cli import main
 from emuflow.errors import ValidationError
 from emuflow.io import read_json, write_json
 

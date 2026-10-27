@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
-from emuflow.ppro_blackbox_topology import (
+from emuflow_tools.ppro_blackbox_topology import (
     generate_ordered_pair_matrix,
     generate_topology_probe_bundle,
 )

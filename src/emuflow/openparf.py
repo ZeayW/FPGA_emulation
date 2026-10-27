@@ -197,37 +197,16 @@ def run_openparf(
         f"{log_path.stem}.console{log_path.suffix}"
     )
     environment = _openparf_environment(installation, python)
-    continuous_guidance = config.get("emuflow_continuous_global_guidance", False)
-    if not isinstance(continuous_guidance, bool):
-        raise EmuFlowError(
-            "emuflow_continuous_global_guidance must be a boolean"
-        )
+    if "emuflow_continuous_global_guidance" in config:
+        raise EmuFlowError("continuous guidance placement is retired; use stable native placement")
     stable_native = config.get("emuflow_stable_global_placement", False)
     if not isinstance(stable_native, bool):
         raise EmuFlowError(
             "emuflow_stable_global_placement must be a boolean"
         )
-    if continuous_guidance and stable_native:
-        raise EmuFlowError(
-            "continuous guidance and stable native placement are mutually exclusive"
-        )
     command = (
-        [
-            str(python.absolute()),
-            "-m",
-            "emuflow.openparf_continuous_driver",
-        ]
-        if continuous_guidance
-        else [
-            str(python.absolute()),
-            "-m",
-            "emuflow.openparf_native_driver",
-        ]
-        if stable_native
-        else [
-            str(python.absolute()),
-            str(installation / "openparf.py"),
-        ]
+        [str(python.absolute()), "-m", "emuflow.openparf_native_driver"]
+        if stable_native else [str(python.absolute()), str(installation / "openparf.py")]
     )
     with console_log_path.open("w", encoding="utf-8") as console_log:
         completed = subprocess.run(

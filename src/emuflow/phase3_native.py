@@ -20,8 +20,8 @@ def write_request(directory, ir_path, platform_path, *, constraints_path=None,
         timing_database_path=None, patron_max_moves=None):
     from .platform import Platform
     from .partition_ir import load_partition_ir
-    from .phase3_candidates_native import write_candidate_policy
-    from .partition_config_native import _pattern_range_policy
+    from .phase3_policy import write_candidate_policy
+    from .phase3_policy import _pattern_range_policy
     from .partition import LEGAL_CUT_CLASSES, REPLICATED_NET_CLASSES, HARD_MACRO_RESOURCES
     from .partition_topology import _shortest_routes, _capacity_key_by_arc
     from .routing import (load_route_constraints, build_directed_graph,

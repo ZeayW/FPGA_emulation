@@ -7,13 +7,13 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
-from emuflow.ppro_blackbox_runtime import (
+from emuflow_tools.ppro_blackbox_runtime import (
     PProRuntimeConfig,
     parse_fpga_aliases,
     render_ppro_runtime_binding,
 )
-from emuflow.ppro_blackbox_application import benchmark_rtl_identity
-from emuflow.ppro_blackbox_runner import execute_blackbox_case
+from emuflow_tools.ppro_blackbox_application import benchmark_rtl_identity
+from emuflow_tools.ppro_blackbox_runner import execute_blackbox_case
 from tests.test_ppro_blackbox_runner import run_spec
 
 

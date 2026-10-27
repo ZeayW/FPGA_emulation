@@ -32,7 +32,7 @@ from .position_hints_storage import (
     write_position_hints_storage,
 )
 from .pin_planning import CHIMEW_PIN_PLAN_PROVIDER, validate_pin_plan
-from .ppro_calibrated_platform import (
+from .transport_cost import (
     predict_transport_resources,
     validate_transport_cost_database,
 )
@@ -288,9 +288,10 @@ def run_phase6(
         equivalence = None
         if int(counts.get("cell_records", 0)) <= 10_000 and int(counts.get("endpoint_records", 0)) <= 100_000:
             qualification_schedule = schedule.materialize()
-            ir = EmuIR.load(ir_path)
             assignment_json = assignment_path.with_name("assignment.json") if assignment_path.suffix == ".sqlite" else assignment_path
-            assignment = read_json(assignment_json)
+            from .phase6_oracle import read_bounded_assignment
+            assignment = read_bounded_assignment(ir_path, assignment_json)
+            ir = EmuIR.load(ir_path)
             if is_sampled_virtual_wire_schedule(qualification_schedule):
                 equivalence = _static_exact_equivalence_evidence(ir, assignment,
                     qualification_schedule, cycles=equivalence_cycles,
@@ -598,13 +599,14 @@ def run_phase6(
             if materialize_schedule is not None
             else schedule
         )
-        ir = EmuIR.load(ir_path)
         assignment_json_path = (
             assignment_path.with_name("assignment.json")
             if assignment_path.suffix == ".sqlite"
             else assignment_path
         )
-        assignment = read_json(assignment_json_path)
+        from .phase6_oracle import read_bounded_assignment
+        assignment = read_bounded_assignment(ir_path, assignment_json_path)
+        ir = EmuIR.load(ir_path)
         if is_sampled_virtual_wire_schedule(qualification_schedule):
             equivalence = _static_exact_equivalence_evidence(
                 ir,
@@ -908,8 +910,9 @@ def validate_phase6(
             if assignment_path.suffix == ".sqlite"
             else assignment_path
         )
+        from .phase6_oracle import read_bounded_assignment
+        assignment = read_bounded_assignment(ir_path, assignment_json_path)
         ir = EmuIR.load(ir_path)
-        assignment = read_json(assignment_json_path)
         materialize_schedule = getattr(schedule, "materialize", None)
         qualification_schedule = (
             materialize_schedule()

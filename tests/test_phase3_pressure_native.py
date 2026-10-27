@@ -67,7 +67,7 @@ def run(args,model,initial,max_moves=0):
 
 def test_production_result_borrows_readonly_native_ownership_without_host_cluster_parsing(inputs):
     import gc
-    from emuflow.partition import _PackedClusterAssignment
+    from tests.partition_views import ClusterOwners as _PackedClusterAssignment
     args,initial,timing=inputs
     initial=dict(initial,cluster_assignment=_PackedClusterAssignment(('a','b'),
         (0 if initial['cluster_assignment'][f'c{i:06d}']=='a' else 1 for i in range(len(args[2]['clusters'])))))
@@ -89,7 +89,7 @@ def test_production_result_borrows_readonly_native_ownership_without_host_cluste
 
 
 def test_result_requires_the_original_producer_generation(inputs):
-    from emuflow.phase3_decision_native import audit_assignment
+    from tests.native_partition_core_fixture import audit_assignment
     args, initial, timing = inputs
     model = pressure_kernel_inputs(*args, timing_database_path=timing)
     actual, _ = run(args, model, initial, max_moves=0)
@@ -130,7 +130,7 @@ def test_primary_model_records_match_fixed_source_facts_and_borrow_primary(input
         assert path['end_cluster'] in net['sinks']
     assert trace['native_input_transport']=='native-primary-store-model-v2'
     assert trace['model_counts']=={'clusters':4,'nets':2,'paths':2,'capacity_domains':len(model.domains)}
-    from emuflow.phase3_decision_native import audit_assignment
+    from tests.native_partition_core_fixture import audit_assignment
     assert audit_assignment(platform,clusters,actual).require(platform,actual)['clusters']==4
 
 
@@ -340,7 +340,7 @@ def test_native_pressure_rejects_reference_columns_instead_of_snapshot(inputs):
 def test_current_typed_result_rejects_resealed_malformed_payload(inputs, damage):
     from emuflow.errors import ValidationError
     from emuflow.store_publication import bind_store_source
-    from emuflow.phase3_decision_native import audit_assignment
+    from tests.native_partition_core_fixture import audit_assignment
     args, initial, timing = inputs
     model = pressure_kernel_inputs(*args, timing_database_path=timing)
     actual, _ = run(args, model, initial, max_moves=0)

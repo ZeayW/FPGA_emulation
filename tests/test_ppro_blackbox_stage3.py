@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
-from emuflow.ppro_blackbox_stage3 import (
+from emuflow_tools.ppro_blackbox_stage3 import (
     finalize_calibrated_capacity,
     fit_capacity_intervals,
     fit_effective_topology,

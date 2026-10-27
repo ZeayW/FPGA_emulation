@@ -206,7 +206,7 @@ packed-cluster guidance flow and single-SLR planner are removed. The early
 `vpr fpga-open/full-open` flows are also removed; current OpenSTA Phase 2,
 native OpenPARF placement and Chimew lookahead retain their shared kernels.
 The obsolete `phase7d`/`phase8a` release chain that required the placement spike
-is retired; current multi-FPGA BSP and fixed-I/O validation remain.
+is retired. The serial hardware-BSP chain is also retired; current fixed-I/O validation remains.
 The multi-FPGA upstream uses OpenSTA for Phase 2. The independent Vivado timing
 producer and old whole-EmuIR physical flow are retired; Vivado implementation
 consumes the current indexed Xilinx input and complete timing queries. Old
@@ -534,7 +534,7 @@ engines/      selected EDA engines and their source provenance
 schemas/      versioned artifact contracts
 platforms/    virtual platforms and board-model inputs
 providers/    provider manifests and integration recipes
-rtl/          transport and runtime-synchronization RTL
+rtl/          retained transport RTL
 benchmarks/   workload catalogs, platform matrices, and run contracts
 examples/     small RTL and artifact fixtures
 scripts/      build, import, and provider utilities

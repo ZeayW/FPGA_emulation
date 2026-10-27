@@ -1,15 +1,9 @@
-"""Invocation-owned Global STA event facts; Python retains bounded write batches.
-
-The shared core independently validates numerical bundles and produces their
-index. Neither the index nor a representative selection duplicates arc payloads.
-"""
+"""Read native Global STA event facts and retain their source-bound lifetime."""
 from __future__ import annotations
 
-from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from contextlib import closing, contextmanager
 import json
-import math
 import os
 from pathlib import Path
 import sqlite3
@@ -25,8 +19,6 @@ from .store_publication import bind_store_source, require_store_sources_unchange
 from .tool_runtime import NativeToolProcess
 
 _ROLES = ("target", "runtime", "tx", "commit")
-_PRIMARY_ID = 0x454D4745
-_PRIMARY_DDL = (Path(__file__).parent / "data/schema/global_events.sql").read_text()
 
 
 def _native(arguments, root):
@@ -39,42 +31,20 @@ def _native(arguments, root):
 
 
 class _Owner:
-    EVENT_CACHE_SIZE = 8192
-    CHECK_BATCH_SIZE = 4096
-
-    def __init__(self, mode, *, native=False):
-        # Own retirement after SQLite closure. TemporaryDirectory's independent
-        # weak finalizer can run first during cyclic GC, leaving live NFS files.
+    def __init__(self):
+        # Retire only after the last borrowed cursor closes, including cyclic GC.
         self.closed = False
         self._borrows = 0
         self.connection = None
-        self.pending = []
-        self.event_cache = OrderedDict()
         self._dependents = []
         self.root = Path(tempfile.mkdtemp(prefix="emuflow-global-events-"))
         self.primary = self.root / "events.sqlite"
         self.index = self.root / "index.sqlite"
-        self.mode = mode
-        if not native:
-            self.connection = sqlite3.connect(self.primary)
-            self.connection.executescript(
-                f"PRAGMA application_id={_PRIMARY_ID}; PRAGMA user_version=1;"
-                "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=FILE; PRAGMA cache_size=-8192;"
-                + _PRIMARY_DDL
-            )
-            self.connection.execute("CREATE TEMP TABLE begun_paths(path_seq INTEGER PRIMARY KEY)")
+        self.mode = 3
         self.paths = self.events = self.checks = 0
-        self.pending = []
-        self.event_cache = OrderedDict()
-        self.current_path = None
-        self.current_path_seq = None
-        self.last_metadata_path = None
-        self.last_metadata_seq = None
         self.finished = False
-        self.closed = False
         self.sources = ()
         self.header = None
-        self._borrows = 0
 
     def close(self):
         if self.closed:
@@ -90,8 +60,6 @@ class _Owner:
         connection, self.connection = self.connection, None
         if connection is not None:
             connection.close()
-        self.pending.clear()
-        self.event_cache.clear()
         shutil.rmtree(self.root)
 
     def __del__(self):
@@ -127,118 +95,6 @@ class _Owner:
                 self._dispose()
             self.require()
 
-    def flush(self):
-        if self.pending:
-            try:
-                self.connection.executemany("INSERT INTO checks VALUES(?,?,?,?,?)", self.pending)
-            except sqlite3.IntegrityError as error:
-                raise ValidationError("global STA has duplicate/invalid check identity") from error
-            self.pending.clear()
-
-    def append_metadata(self, path, *, representative_path, path_scope, clock_domain,
-                        target_period_ns, physical_logic_segments_cone_bound,
-                        interconnect_delay_model=None):
-        self.writable()
-        if not self.mode & 2:
-            raise ValidationError("global STA event owner has no metadata producer")
-        if not isinstance(path, str) or not path:
-            raise ValidationError("global STA path metadata identity is invalid")
-        if not isinstance(representative_path, str) or not representative_path:
-            raise ValidationError("global STA path metadata representative is invalid")
-        if any(value is not None and (not isinstance(value, str) or not value)
-               for value in (clock_domain, interconnect_delay_model)):
-            raise ValidationError("global STA path metadata string is invalid")
-        if path_scope not in {"cross-fpga", "same-fpga-local"}:
-            raise ValidationError("global STA path metadata scope is invalid")
-        if (type(target_period_ns) not in (int, float) or not math.isfinite(target_period_ns)
-                or target_period_ns <= 0 or type(physical_logic_segments_cone_bound) is not bool):
-            raise ValidationError("global STA path metadata values are invalid")
-        try:
-            self.connection.execute("INSERT INTO paths VALUES(?,?,?,?,?,?,?,?)", (
-                self.paths, path, representative_path, int(path_scope == "same-fpga-local"),
-                clock_domain, float(target_period_ns), int(physical_logic_segments_cone_bound),
-                interconnect_delay_model,
-            ))
-        except sqlite3.IntegrityError as error:
-            raise ValidationError("global STA local/crossing path overlap") from error
-        self.last_metadata_path, self.last_metadata_seq = path, self.paths
-        self.paths += 1
-
-    def append_values(self, path, role, event, launch_ns, arcs_ns, required_ns):
-        self.writable()
-        if not self.mode & 1:
-            raise ValidationError("global STA metadata-only owner cannot contain checks")
-        if not isinstance(path, str) or not path or not isinstance(event, str) or not event:
-            raise ValidationError("global STA has duplicate/empty check identity")
-        if role not in _ROLES:
-            raise ValidationError("global STA has an unsupported check role")
-        if any(type(value) not in (int, float) or not math.isfinite(value)
-               for value in (launch_ns, required_ns, *arcs_ns)):
-            raise ValidationError("global STA times must be finite numbers")
-        if launch_ns < 0 or any(value < 0 for value in arcs_ns):
-            raise ValidationError("global STA launch/arc delay must be nonnegative")
-        if path != self.current_path:
-            if self.mode & 2:
-                if path == self.last_metadata_path:
-                    seq = self.last_metadata_seq
-                else:
-                    row = self.connection.execute("SELECT seq FROM paths WHERE path=?", (path,)).fetchone()
-                    if row is None:
-                        raise ValidationError("global STA check lacks path metadata")
-                    seq = row[0]
-            else:
-                try:
-                    self.connection.execute("INSERT INTO paths(seq,path) VALUES(?,?)", (self.paths, path))
-                except sqlite3.IntegrityError as error:
-                    raise ValidationError("global STA checks are not path-contiguous") from error
-                seq = self.paths
-                self.paths += 1
-            try:
-                self.connection.execute("INSERT INTO begun_paths VALUES(?)", (seq,))
-            except sqlite3.IntegrityError as error:
-                raise ValidationError("global STA checks are not path-contiguous") from error
-            self.current_path, self.current_path_seq = path, seq
-        identity = self.event_cache.get(event)
-        if identity is None:
-            row = self.connection.execute("SELECT seq FROM events WHERE event=?", (event,)).fetchone()
-            if row is None:
-                identity = self.events
-                self.connection.execute("INSERT INTO events VALUES(?,?)", (identity, event))
-                self.events += 1
-            else:
-                identity = row[0]
-            self.event_cache[event] = identity
-            if len(self.event_cache) > self.EVENT_CACHE_SIZE:
-                self.event_cache.popitem(last=False)
-        else:
-            self.event_cache.move_to_end(event)
-        numeric = struct.pack("<" + "d" * (2 + len(arcs_ns)), launch_ns, required_ns, *arcs_ns)
-        self.pending.append((self.checks, self.current_path_seq, _ROLES.index(role), identity, numeric))
-        self.checks += 1
-        if len(self.pending) >= self.CHECK_BATCH_SIZE:
-            self.flush()
-
-    def seal(self):
-        if self.finished:
-            self.require()
-            return
-        self.writable()
-        try:
-            self.flush()
-            self.finished = True
-            header = {"schema": "emuflow.global-event-checks/v1", "mode": self.mode,
-                      "paths": self.paths, "checks": self.checks, "events": self.events}
-            self.connection.execute("INSERT INTO metadata VALUES('header',?)", (
-                json.dumps(header, sort_keys=True, separators=(",", ":")),
-            ))
-            self.connection.commit()
-            self.connection.close()
-            self.connection = None
-            self.event_cache.clear()
-            self._open_index(header)
-        except BaseException:
-            self.close()
-            raise
 
     def _open_index(self, header):
         original = bind_store_source(self.primary, "global-event-primary-v1")
@@ -487,45 +343,6 @@ class PathMetadata(Mapping):
         return self._owner.header["path_ids_sha256"]
 
 
-class EventBuilder:
-    def __init__(self, *, bound=False):
-        self._owner = _Owner(3 if bound else 1)
-        self._finished = False
-
-    def append_values(self, *args):
-        if self._finished:
-            raise ValidationError("global STA event builder is sealed")
-        return self._owner.append_values(*args)
-
-    def append(self, row):
-        self.append_values(row.path, row.role, row.event, row.launch_ns, row.arcs_ns, row.required_ns)
-
-    def finish(self):
-        if self._finished:
-            raise ValidationError("global STA event builder is sealed")
-        self._finished = True
-        self._owner.seal()
-        return EventChecks(self._owner)
-
-
-class MetadataBuilder:
-    def __init__(self, events=None):
-        self._owner = events._owner if events is not None else _Owner(2)
-        self._finished = False
-
-    def append(self, path, **values):
-        if self._finished:
-            raise ValidationError("global STA path metadata builder is sealed")
-        self._owner.append_metadata(path, **values)
-
-    def finish(self):
-        if self._finished:
-            raise ValidationError("global STA path metadata builder is sealed")
-        self._finished = True
-        self._owner.seal()
-        return PathMetadata(self._owner)
-
-
 def export_event_model(rows, directory):
     rows.require_valid()
     owner = rows._owner
@@ -587,7 +404,3 @@ def event_model_sources(directory):
         sources.append(source)
     require_store_sources_unchanged(sources)
     return model, tuple(sources)
-
-
-def event_model_directory(directory):
-    return event_model_sources(directory)[0]

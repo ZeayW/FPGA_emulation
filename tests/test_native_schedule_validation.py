@@ -63,7 +63,6 @@ def test_native_independent_validation_matches_host_oracle_without_host_records(
             )
         for name in (
             "validate_logical_seals",
-            "open_validation_index",
             "iter_canonical_section_records",
         ):
             patches.enter_context(
@@ -115,6 +114,9 @@ def test_native_producer_and_independent_validator_share_no_solver_decisions(
         "hop",
         "ratio",
         "entry_missing",
+        "foreign_demand",
+        "duplicate_net",
+        "foreign_completion",
         "entry_extra",
         "collision",
         "completion",
@@ -156,6 +158,12 @@ def test_fully_resealed_wrong_schedule_is_rejected_independently(
         entry["hop"] += 1
     elif corruption == "ratio":
         entry["tdm_ratio"] += 8
+    elif corruption == "foreign_demand":
+        entry['demand'] = 'foreign-demand'
+    elif corruption == "duplicate_net":
+        schedule['routes'][1]['net'] = schedule['routes'][0]['net']
+    elif corruption == "foreign_completion":
+        schedule['demand_completions'][0]['demand'] = 'foreign-demand'
     elif corruption == "entry_missing":
         schedule["entries"].pop()
     elif corruption == "entry_extra":

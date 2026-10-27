@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from emuflow.benchmark import BENCHMARK_REPORT_SCHEMA
+from emuflow_tools.benchmark import BENCHMARK_REPORT_SCHEMA
 from emuflow.io import write_json
 
 

@@ -8,14 +8,14 @@ from pathlib import Path
 from emuflow.board_link_timing import validate_board_link_timing
 from emuflow.errors import ValidationError
 from emuflow.platform import Platform
-from emuflow.ppro_calibrated_platform import (
+from emuflow_tools.ppro_calibrated_platform import (
     generate_calibrated_platform_profiles,
     predict_transport_resources,
     validate_calibrated_platform_bundle,
     validate_transport_cost_database,
     write_calibrated_platform_profiles,
 )
-from emuflow.open_transport_characterization import (
+from emuflow_tools.open_transport_characterization import (
     BASE_FEATURE_NAMES,
     FRAME_SLOTS,
     OPEN_TRANSPORT_MODEL,

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.emuir_compact import repack_emuir
+from emuflow.emuir_compact import write_compact_emuir
 from emuflow.emuir_storage import _write_emuir_sqlite_v1
 from emuflow.errors import ValidationError
 from emuflow.indexed_timing import IndexedTimingView
@@ -33,7 +33,7 @@ def test_compact_stream_preserves_exact_timing_netlist_and_endpoint_identity(tmp
     source, compact = tmp_path / "old.emuir.sqlite", tmp_path / "new.emuir.sqlite"
     _write_emuir_sqlite_v1(source, ir.value)
     with patch("emuflow.ir.EmuIR.load", side_effect=AssertionError("whole-graph loading forbidden")):
-        repack_emuir(source, compact)
+        write_compact_emuir(compact, ir.value)
     assert EmuIR.load(source).value == EmuIR.load(compact).value
     view = IndexedTimingView(compact)
     try:

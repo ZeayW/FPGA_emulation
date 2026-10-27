@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 from .errors import ValidationError
@@ -95,101 +94,11 @@ def write_xilinx_logic_segment_query(
     )
 
 
-def validate_logic_segment_identity(
-    database: Mapping[str, Any],
-    *,
-    require_source_seals: bool = True,
-) -> Dict[str, Any]:
-    indexed_validator = getattr(database, "validate_identity", None)
-    if callable(indexed_validator):
-        return indexed_validator()
-    if database.get("schema") != LOGIC_SEGMENT_IDENTITY_SCHEMA:
-        raise ValidationError("logic segment identity schema is invalid")
-    if database.get("status") != "pass":
-        raise ValidationError("logic segment identity did not pass")
-    fpga = database.get("fpga")
-    if not isinstance(fpga, str) or not fpga:
-        raise ValidationError("logic segment identity FPGA is invalid")
-    exact_digest = database.get("semantic_contract_sha256")
-    if exact_digest is not None and (
-        not isinstance(exact_digest, str)
-        or len(exact_digest) != 64
-        or any(character not in "0123456789abcdef" for character in exact_digest)
-    ):
-        raise ValidationError("logic segment exact contract digest is invalid")
-    for field in ("system_routes_sha256", "tdm_schedule_sha256"):
-        digest = database.get(field)
-        if digest is None and not require_source_seals:
-            continue
-        if (
-            not isinstance(digest, str)
-            or len(digest) != 64
-            or any(character not in "0123456789abcdef" for character in digest)
-        ):
-            raise ValidationError(f"logic segment {field} seal is invalid")
-    ids = set()
-    members = set()
-    paths = set()
-    for index, segment in enumerate(database.get("segments", [])):
-        context = f"logic segment identity[{index}]"
-        if not isinstance(segment, dict):
-            raise ValidationError(f"{context} is invalid")
-        segment_id = segment.get("id")
-        if (
-            not isinstance(segment_id, str)
-            or not segment_id
-            or segment_id in ids
-            or segment.get("kind") not in {"launch", "transition", "capture"}
-            or segment.get("fpga") != fpga
-        ):
-            raise ValidationError(f"{context} identity is invalid")
-        ids.add(segment_id)
-        exact_segment_id = segment.get("static_exact_segment_id")
-        if exact_digest is not None and (
-            not isinstance(exact_segment_id, str) or not exact_segment_id
-        ):
-            raise ValidationError(
-                f"{context}.static_exact_segment_id is invalid"
-            )
-        if exact_digest is None and exact_segment_id is not None:
-            raise ValidationError(
-                f"{context} has an unbound static exact segment identity"
-            )
-        for field in ("system_path", "member_path", "start_pin", "end_pin"):
-            if not isinstance(segment.get(field), str) or not segment[field]:
-                raise ValidationError(f"{context}.{field} is invalid")
-        object_kind_fields = {"start_object_kind", "end_object_kind"}
-        present_object_kinds = object_kind_fields & set(segment)
-        if present_object_kinds and (
-            present_object_kinds != object_kind_fields
-            or segment["start_object_kind"] not in {"pin", "port"}
-            or segment["end_object_kind"] not in {"pin", "port"}
-        ):
-            raise ValidationError(f"{context} object kinds are invalid")
-        anchor_fields = {
-            "cone_anchor_object_kind",
-            "cone_anchor_pin",
-        }
-        present_anchor_fields = anchor_fields & set(segment)
-        if present_anchor_fields and (
-            present_anchor_fields != anchor_fields
-            or segment["kind"] == "capture"
-            or segment["cone_anchor_object_kind"] not in {"pin", "port"}
-            or not isinstance(segment["cone_anchor_pin"], str)
-            or not segment["cone_anchor_pin"]
-        ):
-            raise ValidationError(f"{context} cone anchor is invalid")
-        replacement = segment.get("replace_tx_endpoint")
-        if (segment["kind"] == "capture") != (replacement is None):
-            raise ValidationError(f"{context} replacement is invalid")
-        members.add(segment["member_path"])
-        paths.add(segment["system_path"])
-    return {
-        "status": "pass",
-        "segments": len(ids),
-        "member_paths": len(members),
-        "system_paths": len(paths),
-    }
+def validate_logic_segment_identity(database: Mapping[str, Any]) -> Dict[str, Any]:
+    from .logic_segment_identity_storage import LogicSegmentIdentityView
+    if not isinstance(database, LogicSegmentIdentityView):
+        raise ValidationError("logic segment identity requires a current typed owner")
+    return database.validate_identity()
 
 
 def _indexed_logic_measurement_import(input_path, identity, output_path, *, provider, qualification,
@@ -245,84 +154,8 @@ def import_vivado_logic_segment_timing(
     raise ValidationError("native physical timing import requires a current typed identity")
 
 
-def validate_logic_segment_timing(
-    database: Mapping[str, Any],
-) -> Dict[str, Any]:
-    indexed_validator = getattr(database, "validate_timing", None)
-    if callable(indexed_validator):
-        return indexed_validator()
-    if database.get("schema") != LOGIC_SEGMENT_TIMING_SCHEMA:
-        raise ValidationError("logic segment timing schema is invalid")
-    if database.get("status") != "pass":
-        raise ValidationError("logic segment timing did not pass")
-    identity = {
-        key: database[key]
-        for key in (
-            "status",
-            "design",
-            "platform",
-            "fpga",
-            "coverage",
-            "unsupported_member_paths",
-            "segments",
-        )
-    }
-    for key in ("system_routes_sha256", "tdm_schedule_sha256"):
-        if key in database:
-            identity[key] = database[key]
-    if "semantic_contract_sha256" in database:
-        identity["semantic_contract_sha256"] = database[
-            "semantic_contract_sha256"
-        ]
-    identity["schema"] = LOGIC_SEGMENT_IDENTITY_SCHEMA
-    identity["provider"] = "timing-validation"
-    validate_logic_segment_identity(identity, require_source_seals=False)
-    maximum = 0.0
-    endpoint_exact = 0
-    cone_bound = 0
-    collection_bound = 0
-    for segment in database["segments"]:
-        delay = segment.get("delay_ns")
-        if (
-            isinstance(delay, bool)
-            or not isinstance(delay, (int, float))
-            or not math.isfinite(float(delay))
-            or float(delay) < 0.0
-        ):
-            raise ValidationError("logic segment timing delay is invalid")
-        measurement = segment.get("measurement", "endpoint-exact")
-        if measurement not in {
-            "endpoint-exact",
-            "cut-net-cone-upper-bound",
-            "optimized-endpoint-collection-upper-bound",
-        }:
-            raise ValidationError("logic segment timing measurement is invalid")
-        if measurement == "cut-net-cone-upper-bound":
-            if segment.get("kind") == "capture" or not isinstance(
-                segment.get("cone_anchor_pin"), str
-            ):
-                raise ValidationError(
-                    "logic segment cone-bound trace is invalid"
-                )
-            cone_bound += 1
-        elif measurement == "optimized-endpoint-collection-upper-bound":
-            collection_bound += 1
-        else:
-            endpoint_exact += 1
-        for field in ("actual_start_object", "actual_end_object"):
-            if field in segment and (
-                not isinstance(segment[field], str) or not segment[field]
-            ):
-                raise ValidationError(
-                    "logic segment physical object trace is invalid"
-                )
-        maximum = max(maximum, float(delay))
-    return {
-        "status": "pass",
-        "fpga": database["fpga"],
-        "segments": len(database["segments"]),
-        "endpoint_exact_segments": endpoint_exact,
-        "cone_bound_segments": cone_bound,
-        "endpoint_collection_bound_segments": collection_bound,
-        "maximum_delay_ns": maximum,
-    }
+def validate_logic_segment_timing(database: Mapping[str, Any]) -> Dict[str, Any]:
+    from .logic_segment_timing_storage import LogicSegmentTimingView
+    if not isinstance(database, LogicSegmentTimingView):
+        raise ValidationError("logic segment timing requires a current typed owner")
+    return database.validate_timing()

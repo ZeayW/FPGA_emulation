@@ -1,3 +1,4 @@
+from tests.physical_handoff_facts import physical_handoff_facts
 import copy
 import hashlib
 import json
@@ -16,7 +17,6 @@ from emuflow.xilinx_netlist import (
 )
 from emuflow.xilinx_physical_handoff import (
     open_xilinx_physical_handoff,
-    write_xilinx_physical_handoff,
 )
 from emuflow.xilinx_rwroute import (
     _validate_rapidwright_device_data,
@@ -194,7 +194,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             source.write_text(json.dumps(mapped), encoding="utf-8")
             import_yosys_json(source).save(ir_path)
             emit_xilinx_mapped_index(ir_path, mapped_index)
-            write_xilinx_physical_handoff(handoff, packed, placement)
+            physical_handoff_facts(handoff, packed, placement)
             packed_view, placement_view = open_xilinx_physical_handoff(handoff)
             with (
                 open_xilinx_mapped_index(mapped_index) as indexed,
@@ -871,7 +871,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             indexed_output = root / "route-indexed.tsv"
             import_yosys_json(paths[0]).save(ir_path)
             emit_xilinx_mapped_index(ir_path, mapped_index)
-            write_xilinx_physical_handoff(handoff, packed, placement)
+            physical_handoff_facts(handoff, packed, placement)
             packed_view, placement_view = open_xilinx_physical_handoff(handoff)
             with (
                 open_xilinx_mapped_index(mapped_index) as indexed,
@@ -1002,7 +1002,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                     )
                     import_yosys_json(source).save(ir_path)
                     emit_xilinx_mapped_index(ir_path, mapped_index)
-                    write_xilinx_physical_handoff(handoff, packed, placement)
+                    physical_handoff_facts(handoff, packed, placement)
                     with open_xilinx_mapped_index(mapped_index) as indexed:
                         actual = {
                             name for name, _ordinal in

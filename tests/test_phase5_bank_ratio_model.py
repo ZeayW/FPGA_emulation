@@ -15,6 +15,7 @@ from emuflow.routing import normalize_route_constraints
 from emuflow.tdm import _bank_direction_allocations, tdm_hop_latency_cycles, validate_tdm_schedule
 from tests.tdm_timing_oracle import timing_summary as reconstruct_tdm_schedule_timing, timing_paths as reconstruct_tdm_schedule_timing_paths, timing_paths as reconstruct_tdm_schedule_timing_paths_from_routes
 from tests.schedule_reference import build_tdm_schedule
+from tests.schedule_fixture_facts import exact_root_routes
 from tests.test_phase5 import _platform_value, _link
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,7 +49,7 @@ def platform_and_routes(forward=1, reverse=0, *, chain=False, minimum=8):
                         'paths':[{'path':f'p{i}','clock_domain':'clk','clock_period_ns':200.,'fixed_delay_ns':6.5,
                                   'cut_nets':[r['net']], 'cut_transitions':[{'net':r['net'],'from':r['source'],'to':r['sinks'][0]}]}
                                  for i,r in enumerate(records)]}}
-    return platform, routes
+    return platform, exact_root_routes(routes)
 
 
 class BankRatioModelTest(unittest.TestCase):

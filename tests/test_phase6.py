@@ -1,4 +1,4 @@
-from tests.phase3_store_fixture import write_assignment_index_fixture
+from tests.phase3_store_fixture import write_assignment_index_fixture, write_current_assignment_fixture
 from tests.native_split_fixture import NativeSplitFixture
 from tests.native_route_fixture import route_system_native
 from tests.transport_reference import write_transport_storage as reference_transport
@@ -60,7 +60,7 @@ from emuflow.position_hints_storage import (
     read_position_hints,
 )
 from emuflow.platform import Platform
-from emuflow.open_transport_characterization import (
+from emuflow.transport_cost import (
     BASE_FEATURE_NAMES,
     FRAME_SLOTS,
     OPEN_TRANSPORT_MODEL,
@@ -336,13 +336,8 @@ class Phase6Test(unittest.TestCase):
                 clocks=self.ir.value["clocks"],
             )
             with open_tdm_schedule_view(schedule_path) as indexed:
-                with mock.patch.object(
-                    type(indexed),
-                    "iter_entry_route_records",
-                    side_effect=AssertionError(
-                        "legacy schedule dictionaries were materialized"
-                    ),
-                ), mock.patch(
+                self.assertFalse(hasattr(indexed, 'iter_entry_route_records'))
+                with mock.patch(
                     "emuflow.tdm_schedule_storage.ScheduleRecordSequence.__iter__",
                     side_effect=AssertionError(
                         "schedule sections were decoded in Python"
@@ -441,9 +436,7 @@ class Phase6Test(unittest.TestCase):
                 manifest["schema"], "emuflow.tdm-schedule-storage/v4"
             )
             with open_tdm_schedule_view(path) as indexed:
-                rows = list(
-                    indexed.iter_incoming_records()
-                )
+                rows = [(entry['net'], entry['to'], entry['id']) for entry in indexed['entries']]
         self.assertEqual(
             rows, [("n0", "b", "s000000"), ("n0", "c", "s000001")]
         )
@@ -684,12 +677,7 @@ class Phase6Test(unittest.TestCase):
             assignment_path = root / "assignment.json"
             schedule_path = root / "schedule.json"
             write_compact_emuir(ir_path, self.ir.to_dict())
-            assignment_path.write_text(
-                json.dumps(self.assignment), encoding="utf-8"
-            )
-            write_assignment_index_fixture(
-                root / "assignment.sqlite", self.ir, self.assignment
-            )
+            write_current_assignment_fixture(assignment_path, self.ir, self.assignment)
             write_tdm_schedule_storage(schedule_path, self.schedule)
             output = root / "phase6"
             report = run_phase6(
@@ -818,12 +806,7 @@ class Phase6Test(unittest.TestCase):
             schedule_path = root / "schedule.json"
             cost_path = root / "transport-cost.json"
             write_compact_emuir(ir_path, self.ir.to_dict())
-            assignment_path.write_text(
-                json.dumps(self.assignment), encoding="utf-8"
-            )
-            write_assignment_index_fixture(
-                root / "assignment.sqlite", self.ir, self.assignment
-            )
+            write_current_assignment_fixture(assignment_path, self.ir, self.assignment)
             schedule = copy.deepcopy(self.schedule)
             schedule["metrics"]["frame_slots"] = 8
             write_tdm_schedule_storage(schedule_path,schedule)
@@ -920,11 +903,9 @@ class Phase6Test(unittest.TestCase):
                 "plan": plan,
             }
             write_compact_emuir(paths["ir"], self.ir.to_dict())
-            write_assignment_index_fixture(
-                root / "assignment.sqlite", self.ir, self.assignment
-            )
+            write_current_assignment_fixture(paths["assignment"], self.ir, self.assignment)
             for name, path in paths.items():
-                if name == "ir":
+                if name in {"ir", "assignment", "schedule"}:
                     continue
                 path.write_text(
                     json.dumps(documents[name]), encoding="utf-8"

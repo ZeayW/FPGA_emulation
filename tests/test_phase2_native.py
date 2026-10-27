@@ -385,7 +385,7 @@ def test_native_stage_rejects_failed_or_invalid_engine_output(tmp_path, phase2_r
                                     'io-direction', 'optimization-string', 'optimization-int',
                                     'max-paths-bool'])
 def test_native_stage_independently_rejects_invalid_policy_semantics(tmp_path, phase2_runtime, damage):
-    from emuflow.benchmark import timing_io_sha256
+    from emuflow.timing_io import timing_io_sha256
     source, records = _counter_stage_input(tmp_path)
     engine, _trace = _fixed_opensta(tmp_path, records)
     policy = prepare_policy(tmp_path / 'policy', source, clocks={'clk': 10}, executable=str(engine))

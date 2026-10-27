@@ -73,40 +73,16 @@ def read_json(path: Path) -> Dict[str, Any]:
         from .transport_storage import expand_transport_storage
 
         return expand_transport_storage(value, path)
-    if schema in {
-        "emuflow.phase3-clusters-storage/v1",
-        "emuflow.phase3-clusters-storage/v2",
-        "emuflow.phase3-clusters-storage/v3",
-        "emuflow.phase3-assignment-storage/v1",
-        "emuflow.phase3-assignment-storage/v2",
-        "emuflow.phase3-assignment-storage/v3",
-        "emuflow.phase3-assignment-storage/v4",
-    }:
-        from .phase3_storage import (
-            COMPRESSED_CLUSTERS_SCHEMA,
-            INDEXED_CLUSTERS_SCHEMA,
-            LEGACY_PACKED_ASSIGNMENT_SCHEMA,
-            OLDER_PACKED_ASSIGNMENT_SCHEMA,
-            PACKED_ASSIGNMENT_SCHEMA,
-            PREVIOUS_PACKED_ASSIGNMENT_SCHEMA,
-            expand_compressed_phase3_clusters,
-            expand_indexed_phase3_clusters,
-            expand_phase3_assignment,
-            expand_phase3_clusters,
-        )
-
-        if schema in {
-            LEGACY_PACKED_ASSIGNMENT_SCHEMA,
-            OLDER_PACKED_ASSIGNMENT_SCHEMA,
-            PREVIOUS_PACKED_ASSIGNMENT_SCHEMA,
-            PACKED_ASSIGNMENT_SCHEMA,
-        }:
-            return expand_phase3_assignment(value, path, read_json)
-        if schema == COMPRESSED_CLUSTERS_SCHEMA:
-            return expand_compressed_phase3_clusters(value)
-        if schema == INDEXED_CLUSTERS_SCHEMA:
-            return expand_indexed_phase3_clusters(value, path)
-        return expand_phase3_clusters(value)
+    if isinstance(schema, str) and schema.startswith('emuflow.phase3-clusters-storage/'):
+        from .phase3_storage import INDEXED_CLUSTERS_SCHEMA, read_phase3_clusters_selector
+        if schema != INDEXED_CLUSTERS_SCHEMA:
+            raise ValueError('retired or unsupported Phase 3 clusters storage schema')
+        return read_phase3_clusters_selector(path, value)
+    if isinstance(schema, str) and schema.startswith('emuflow.phase3-assignment-storage/'):
+        from .phase3_storage import PACKED_ASSIGNMENT_SCHEMA, read_phase3_assignment_view
+        if schema != PACKED_ASSIGNMENT_SCHEMA:
+            raise ValueError('retired or unsupported Phase 3 assignment storage schema')
+        return read_phase3_assignment_view(path)
     return value
 
 

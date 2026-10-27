@@ -173,32 +173,20 @@ def write_transport_storage(
             (immutable_sqlite_uri(assignment_index_path),),
         )
 
-        typed_records = getattr(schedule, "iter_transport_records", None)
-        joined_records = getattr(schedule, "iter_entry_route_records", None)
-        if typed_records is not None:
-            entry_routes = (
-                (record, None)
-                for record in typed_records(
-                    identity_order=pin_lane_iterator is not None
-                )
+        routes = schedule.get("routes")
+        entries = schedule.get("entries")
+        if not isinstance(routes, Sequence) or not isinstance(entries, Sequence):
+            raise ValidationError("Phase 6 schedule lacks route metadata")
+        route_by_demand = {route["id"]: route for route in routes}
+        entry_routes = (
+            (entry, route_by_demand.get(entry["demand"]))
+            for entry in sorted(
+                entries,
+                key=lambda item: (
+                    len(item["id"]), item["id"]
+                ) if pin_lane_iterator is not None else item["id"],
             )
-        elif joined_records is None:
-            routes = schedule.get("routes")
-            entries = schedule.get("entries")
-            if not isinstance(routes, Sequence) or not isinstance(entries, Sequence):
-                raise ValidationError("Phase 6 schedule lacks route metadata")
-            route_by_demand = {route["id"]: route for route in routes}
-            entry_routes = (
-                (entry, route_by_demand.get(entry["demand"]))
-                for entry in sorted(
-                    entries,
-                    key=lambda item: (
-                        len(item["id"]), item["id"]
-                    ) if pin_lane_iterator is not None else item["id"],
-                )
-            )
-        else:
-            entry_routes = joined_records()
+        )
 
         endpoint_rows: list[tuple[Any, ...]] = []
         lane_rows: list[tuple[Any, ...]] = []
@@ -239,19 +227,7 @@ def write_transport_storage(
                 binding_adapter_rows.clear()
 
         for entry, route in entry_routes:
-            if typed_records is not None:
-                entry_id = entry.entry_id
-                demand = entry.demand
-                net = entry.net
-                link = entry.link
-                source = entry.source
-                sink = entry.sink
-                slot = entry.slot
-                arrival_slot = entry.arrival_slot
-                logical_lane = entry.lane
-                tdm_ratio = entry.tdm_ratio
-                route_source = entry.route_source
-            elif route is None:
+            if route is None:
                 raise ValidationError(
                     f"schedule entry {entry['id']!r} has no route metadata"
                 )

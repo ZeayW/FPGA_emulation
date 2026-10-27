@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from emuflow.errors import ValidationError
-from emuflow.ppro_blackbox_microbench import (
+from emuflow_tools.ppro_blackbox_microbench import (
     CAPACITY_AXES,
     generate_capacity_matrix,
     generate_capacity_probe_bundle,

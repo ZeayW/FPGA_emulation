@@ -368,15 +368,3 @@ def source_instances(c) -> Iterator[dict]:
         yield record
     resources.finish()
     constants.finish()
-
-
-def repack_emuir(source: Path, output: Path) -> None:
-    """Convert an existing mapped graph without synthesis or whole-graph load."""
-    if source.resolve() == output.resolve():
-        raise ValueError("repack output must differ from read-only source")
-    c = open_emuir_sqlite_read_only(source)
-    try:
-        write_compact_emuir(output, {**source_metadata(c),
-            "instances": source_instances(c), "nets": compact_nets(c)})
-    finally:
-        c.close()

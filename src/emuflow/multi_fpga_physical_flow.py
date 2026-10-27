@@ -21,7 +21,6 @@ from .boundary_timing import (
 from .boundary_identity_storage import read_boundary_identity_storage
 from .boundary_timing_storage import (
     read_boundary_timing_storage,
-    write_boundary_timing_storage,
 )
 from .chimew_binding_storage import (
     open_chimew_binding_schedule_entry_lookup,
@@ -46,7 +45,6 @@ from .local_path_timing import (
 )
 from .local_path_timing_storage import (
     read_local_path_timing_storage,
-    write_local_path_timing_storage,
 )
 from .ir import EMUIR_SCHEMA, EmuIR
 from .emuir_storage import open_emuir_sqlite_read_only
@@ -69,7 +67,6 @@ from .physical_summary_storage import (
     publish_boundary_timing_store,
     publish_logic_segment_timing_store,
     publish_local_path_timing_store,
-    publish_physical_evidence,
 )
 from .platform import Platform
 from .partition_limits import planning_resource_capacities
@@ -276,80 +273,16 @@ def _inactive_transport_ir(transport: Mapping[str, Any]) -> EmuIR:
     )
 
 
-def _write_inactive_logic_timing(
-    identity_path: Path, output_path: Path
-) -> Dict[str, Any]:
-    from .logic_segment_identity_storage import (
-        read_logic_segment_identity_storage,
-    )
-
-    identity = read_logic_segment_identity_storage(identity_path)
-    header = {
-        "schema": LOGIC_SEGMENT_TIMING_SCHEMA,
-        "status": "pass",
-        "design": identity["design"],
-        "platform": identity["platform"],
-        "fpga": identity["fpga"],
-        "provider": _INACTIVE_PARTITION_PROVIDER,
-        "qualification": "not-applicable-empty-partition",
-        "system_routes_sha256": identity["system_routes_sha256"],
-        "tdm_schedule_sha256": identity["tdm_schedule_sha256"],
-        "coverage": {
-            **identity["coverage"],
-            "endpoint_exact_segments": 0,
-            "cone_bound_segments": 0,
-        },
-        **(
-            {"semantic_contract_sha256": identity["semantic_contract_sha256"]}
-            if "semantic_contract_sha256" in identity
-            else {}
-        ),
-    }
-    from .logic_segment_timing_storage import write_logic_segment_timing_storage
-
-    try:
-        view = write_logic_segment_timing_storage(
-            output_path,
-            header=header,
-            segments=(),
-            unsupported_member_paths=identity["unsupported_member_paths"],
-            source_bindings=bind_view_sources(
-                (identity, "logic-segment-identity-store-v1")
-            ),
-        )
-        try:
-            validation = view.validate_timing()
-        finally:
-            view.close()
-    finally:
-        close = getattr(identity, "close", None)
-        if callable(close):
-            close()
-    return {**validation, "output": str(output_path)}
+def _write_inactive_logic_timing(identity_path: Path, output_path: Path) -> Dict[str, Any]:
+    from .physical_measurements_native import publish_empty_partition_timing
+    return publish_empty_partition_timing(identity_path, output_path, kind=3,
+        provider=_INACTIVE_PARTITION_PROVIDER)
 
 
-def _write_inactive_local_timing(
-    identity_path: Path, output_path: Path
-) -> Dict[str, Any]:
-    identity = read_local_path_identity(identity_path)
-    try:
-        header = local_path_timing_header(
-            identity,
-            provider=_INACTIVE_PARTITION_PROVIDER,
-            qualification="not-applicable-empty-partition",
-        )
-        with write_local_path_timing_storage(
-            output_path,
-            header,
-            (),
-            source_bindings=bind_view_sources((identity, "local-path-timing-store-v1")),
-        ) as database:
-            validation = validate_local_path_timing(database)
-        return {**validation, "output": str(output_path)}
-    finally:
-        close = getattr(identity, "close", None)
-        if callable(close):
-            close()
+def _write_inactive_local_timing(identity_path: Path, output_path: Path) -> Dict[str, Any]:
+    from .physical_measurements_native import publish_empty_partition_timing
+    return publish_empty_partition_timing(identity_path, output_path, kind=4,
+        provider=_INACTIVE_PARTITION_PROVIDER)
 
 
 def _sha256(path: Path) -> str:
@@ -1031,29 +964,14 @@ def run_multi_fpga_physical_flow(
             boundary_identity_path = Path(
                 lowering_report["boundary_identity"]["output"]
             )
-            boundary_identity = read_boundary_identity_storage(
-                boundary_identity_path, allow_legacy=True
-            )
             boundary_timing_path = fpga_root / "boundary-timing.json"
-            boundary_header = boundary_timing_header(
-                boundary_identity,
-                provider=_INACTIVE_PARTITION_PROVIDER,
-                qualification="not-applicable-empty-partition",
-            )
-            with write_boundary_timing_storage(
-                boundary_timing_path,
-                boundary_header,
-                (),
-                source_bindings=bind_view_sources(
-                    (boundary_identity, "boundary-identity-store-v1")
-                ),
-            ) as boundary_timing:
+            from .physical_measurements_native import publish_empty_partition_timing
+            publish_empty_partition_timing(boundary_identity_path, boundary_timing_path,
+                kind=2, provider=_INACTIVE_PARTITION_PROVIDER)
+            with read_boundary_identity_storage(boundary_identity_path) as boundary_identity, \
+                    read_boundary_timing_storage(boundary_timing_path) as boundary_timing:
                 boundary_validation = validate_boundary_timing_database(
-                    boundary_timing, boundary_identity
-                )
-            close_boundary = getattr(boundary_identity, "close", None)
-            if callable(close_boundary):
-                close_boundary()
+                    boundary_timing, boundary_identity)
             stages: Dict[str, Any] = {
                 "transport_synthesis": transport_report,
                 "placement_ir": lowering_report,

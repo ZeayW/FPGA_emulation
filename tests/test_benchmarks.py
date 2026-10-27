@@ -15,15 +15,11 @@ CATALOG = ROOT / "benchmarks/rtl_catalog.json"
 
 
 class RtlCatalogTest(unittest.TestCase):
-    def test_root_install_contains_rtl_benchmark_runtime_data(self) -> None:
+    def test_root_install_excludes_standalone_benchmark_tools(self) -> None:
         cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
-        for runtime_path in (
-            "scripts/benchmarks",
-            "benchmarks/runs",
-            "benchmarks/rtl_catalog.json",
-        ):
-            self.assertIn(runtime_path, cmake)
-        self.assertIn("EMUFLOW_RTL_BENCHMARK_DATA", cmake)
+        self.assertNotIn("EMUFLOW_RTL_BENCHMARK_DATA", cmake)
+        self.assertNotIn('"${CMAKE_SOURCE_DIR}/scripts/benchmarks/fetch.py"', cmake)
+        self.assertNotIn('"${CMAKE_SOURCE_DIR}/benchmarks/runs"', cmake)
         self.assertNotIn(
             '"${CMAKE_COMMAND}" -E copy_directory\n'
             '    "${CMAKE_SOURCE_DIR}/scripts/benchmarks"',

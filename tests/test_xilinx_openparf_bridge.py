@@ -1,3 +1,4 @@
+from tests.openparf_export_fixture import export_atomic_facts as export_xilinx_openparf_atomic
 import json
 import hashlib
 import copy
@@ -17,7 +18,6 @@ from emuflow.xilinx_netlist import (
 from emuflow.xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
     OPENPARF_ATOMIC_PROVIDER,
-    export_xilinx_openparf_atomic,
     load_xilinx_openparf_atomic_placement_clusters,
     load_xilinx_openparf_atomic_sites,
     read_xilinx_openparf_atomic_name_map,

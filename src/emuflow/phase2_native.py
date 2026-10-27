@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import tempfile
 
-from .benchmark import timing_io_sha256
+from .timing_io import timing_io_sha256
 from .errors import ValidationError
 from .indexed_timing import IndexedTimingView
 from .io import file_sha256

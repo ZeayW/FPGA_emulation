@@ -18,7 +18,7 @@ from tests.xilinx_segment_timing_reference import (_TimingGraph,
 from emuflow.yosys import import_yosys_json
 from emuflow.boundary_identity_storage import write_boundary_identity_storage
 from tests.logic_identity_fixture import identity_facts
-from emuflow.local_path_timing_storage import write_local_path_timing_storage
+from tests.timing_facts import local_timing_facts
 from emuflow.local_path_timing import LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION
 
 
@@ -84,7 +84,7 @@ def case(root):
     local_rows = [{**local_record(name, 0.0), "start_pin": start, "end_pin": end,
                    "measurement": "endpoint-longest-path-fallback", "path_pins": []}
                   for name, start, end in [("a", "cell:shadow/Q", "top:tx"), ("b", "top:rx", "cell:shadow/D")]]
-    with write_local_path_timing_storage(local, header, local_rows):
+    with local_timing_facts(local, header, local_rows):
         pass
     return {"root": root, "ir": ir, "mapped": mapped, "timing_path": timing_path, "timing": timing,
             "payload": payload, "endpoints": endpoints, "boundary": boundary, "logic": logic, "local": local}
@@ -249,7 +249,7 @@ def test_many_distinct_start_cones_do_not_initialize_or_scan_the_whole_graph_per
         for i in range(count):
             yield {**_record(f"p{i:05d}", 0.0), "start_pin": f"cell:ff{i:05d}/Q", "end_pin": f"cell:lut{i:05d}/O",
                    "measurement": "endpoint-longest-path-fallback", "path_pins": []}
-    with write_local_path_timing_storage(c["local"], header, records()):
+    with local_timing_facts(c["local"], header, records()):
         pass
     report = run(c, logic=False)
     graph = report["native_graph"]
@@ -298,7 +298,7 @@ def test_explicit_floating_input_stays_disconnected_without_becoming_a_source(tm
     header["coverage"] = {"local_paths": 1}
     row = {**_record("a", 0.0), "start_pin": "cell:shadow/Q", "end_pin": "top:tx",
            "measurement": "endpoint-longest-path-fallback", "path_pins": []}
-    with write_local_path_timing_storage(c["local"], header, [row]):
+    with local_timing_facts(c["local"], header, [row]):
         pass
     if source_has_driver:
         with pytest.raises(ValidationError, match="undriven source has a driver"):
@@ -309,7 +309,7 @@ def test_explicit_floating_input_stays_disconnected_without_becoming_a_source(tm
         assert "undriven_bits" not in report["source_constraints"]
         prior = (tmp_path / "local.json").read_bytes()
         row.update(start_pin="top:rx", end_pin="cell:shadow/D")
-        with write_local_path_timing_storage(c["local"], header, [row]):
+        with local_timing_facts(c["local"], header, [row]):
             pass
         with pytest.raises(ValidationError, match="no path"):
             run(c, logic=False)
@@ -343,7 +343,7 @@ def test_mixed_projection_namespace_cannot_publish(tmp_path, field, value):
     if field == "fpga":
         for row in records:
             row["fpga"] = value
-    with write_local_path_timing_storage(c["local"], header, records):
+    with local_timing_facts(c["local"], header, records):
         pass
     with pytest.raises(ValidationError, match="namespaces disagree"):
         run(c)

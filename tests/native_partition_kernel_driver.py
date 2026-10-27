@@ -12,7 +12,7 @@ import struct
 import tempfile
 
 from emuflow.errors import ValidationError
-from emuflow.native_columns import _ClusterScratch, _ColumnOwner, _MappedColumn
+from tests.native_column_fixture import _ClusterScratch, _ColumnOwner, _MappedColumn
 from emuflow.native_protocol import CheckedRequestWriter
 from emuflow.native_tools import resolve_native_executable
 from emuflow.store_publication import StoreSource, bind_store_source, require_store_sources_unchanged
@@ -36,7 +36,7 @@ def _invoke(stage, root, sources, request, output, *, executable=None):
 
 
 def _owner(path, records, parts, source, primary, scratch):
-    from emuflow.partition import _PackedClusterAssignment
+    from tests.partition_views import ClusterOwners as _PackedClusterAssignment
     if len(records) > 65536:
         raise ValidationError('kernel fixture exceeds cluster bound')
     with path.open('rb') as stream:
@@ -71,7 +71,8 @@ def initialize(ir, platform, clusters_artifact, constraints, *, seed, executable
                solution_input=None, weights_path=None, timeout_seconds=3600,
                seed_attempts=1, num_initial_solutions=50, num_best_initial_solutions=10,
                repair_min_used_fpgas=True, run_unweighted_baseline=False):
-    from emuflow.partition import active_partition_fpgas, transported_cut_classes_for_clusters
+    from tests.partition_balance_fixture import active_partition_fpgas
+    from tests.partition_balance_fixture import transported_cut_classes_for_clusters
     from emuflow.partition_limits import planning_resource_capacities
     from emuflow.resources import RESOURCE_FIELDS
     records = clusters_artifact['clusters']
@@ -120,8 +121,10 @@ def initialize(ir, platform, clusters_artifact, constraints, *, seed, executable
 
 def run_hops(ir, platform, clusters, constraints, assignment, routes, *, weights_path=None,
              executable=None, audit_only=False):
-    from emuflow.phase3_semantics_native import _ownership_sources
-    from emuflow.partition import active_partition_fpgas, transported_cut_classes_for_clusters, validate_cluster_assignment_balance
+    from tests.native_partition_core_fixture import _ownership_sources
+    from tests.partition_balance_fixture import active_partition_fpgas
+    from tests.partition_balance_fixture import transported_cut_classes_for_clusters
+    from tests.partition_balance_fixture import validate_cluster_assignment_balance
     from emuflow.partition_limits import planning_resource_capacities
     from emuflow.partition_topology import _shortest_hop_distances
     records = clusters['clusters']

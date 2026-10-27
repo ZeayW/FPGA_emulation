@@ -20,7 +20,7 @@ def prepare_compile_policy(directory, source, platform_path, *, clock_periods,
     from .split_netlist_storage import read_compact_emuir_control_metadata
     from .virtual_board import build_virtual_board
     from .io import read_json
-    from .ppro_calibrated_platform import validate_transport_cost_database
+    from .transport_cost import validate_transport_cost_database
     require_native_schema('phase6-compile-policy-v1')
     source_ref=bind_store_source(source, 'emuir-compact-v2')
     board=bind_store_source(platform_path, 'boarddb-v1')

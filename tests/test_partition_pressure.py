@@ -1,5 +1,6 @@
 """Current native PATRON v14 model/search contracts and small independent facts."""
 import copy
+from contextlib import closing
 import importlib.util
 import json
 import os
@@ -16,6 +17,8 @@ from emuflow.ir import EmuIR
 from emuflow.partition import (CUT_MODE_STATIC_EXACT)
 from tests.native_partition_facts import (compute_cut_nets, validate_partition_artifacts_online, build_clusters, build_partition_assignment, normalize_partition_constraints)
 from emuflow.phase3 import run_phase3
+from emuflow.phase3_storage import read_phase3_assignment_view
+from tests.phase3_exact_fixture import indexed_exact_manifest
 from emuflow.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
 from emuflow.opensta import OPENSTA_PROVIDER
 from emuflow.io import read_json, write_json
@@ -276,10 +279,9 @@ class SmallPartitionFactsTest(unittest.TestCase):
             )
             self.assertEqual(runtime['observations']['native_phase3_stage'], 1)
             self.assertNotIn("_derived_records", assignment)
-            self.assertEqual(
-                assignment["instance_assignment"],
-                generalized["instance_assignment"],
-            )
+            ownership_view = read_phase3_assignment_view(root/'phase3/assignment.json', include_instance_assignment=True)
+            with closing(ownership_view['instance_assignment']) as owners:
+                self.assertEqual(dict(owners), dict(generalized['instance_assignment']))
             self.assertGreater(
                 assignment["metrics"]["combinational_cut_nets"], 0
             )
@@ -400,7 +402,12 @@ class SmallPartitionFactsTest(unittest.TestCase):
                 assignment["metrics"]["cut_nets"],
                 len(assignment["cut_nets"]),
             )
-            self.assertIn("semantic_contract", assignment)
+            self.assertNotIn('semantic_contract', assignment)
+            self.assertTrue(assignment['semantic_contract_indexed'])
+            manifest = indexed_exact_manifest(root/'phase3/assignment.sqlite')
+            self.assertEqual(assignment['semantic_contract_schema'], manifest['contract_header']['schema'])
+            self.assertEqual(assignment['semantic_contract_sha256'], manifest['semantic_contract_sha256'])
+            self.assertEqual(manifest['contract_header']['mode'], CUT_MODE_STATIC_EXACT)
 
 
 def case(root, kind='default'):

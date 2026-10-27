@@ -20,8 +20,8 @@ from typing import Iterable
 
 from .errors import ValidationError
 from .global_event_store import (
-    EventChecks as _IndexedEventChecks, EventBuilder as _EventCheckBuilder,
-    PathMetadata as _IndexedPathMetadata, MetadataBuilder as _PathMetadataBuilder,
+    EventChecks as _IndexedEventChecks,
+    PathMetadata as _IndexedPathMetadata,
     export_event_model, event_model_sources,
 )
 from .native_tools import resolve_native_executable

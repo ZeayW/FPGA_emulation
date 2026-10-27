@@ -17,7 +17,7 @@ fi
 
 export EMUFLOW_NATIVE_ROOT="${repository_root}/build/codespaces-core/install"
 export PATH="${repository_root}/.venv/bin:${EMUFLOW_NATIVE_ROOT}/bin:${PATH}"
-export PYTHONPATH="${repository_root}/src:${repository_root}"
+export PYTHONPATH="${repository_root}/src:${repository_root}/tools:${repository_root}"
 
 output_root="${1:-build/codespaces-runs/serv/timing-flow/attempt-0001}"
 if [[ -e "${output_root}" ]]; then
@@ -28,7 +28,7 @@ fi
 
 python3 scripts/benchmarks/fetch.py fetch serv
 
-emuflow benchmark benchmarks/runs/serv_l1.json \
+python3 -m emuflow_tools benchmark benchmarks/runs/serv_l1.json \
   --source-root third_party/rtl/serv \
   --yosys build/codespaces-yosys/install/bin/yosys \
   --out "${output_root}/benchmark"

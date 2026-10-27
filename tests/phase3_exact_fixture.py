@@ -12,7 +12,14 @@ import tempfile
 
 from emuflow.combinational_cut import semantic_contract_sha256
 from emuflow.errors import ValidationError
-from emuflow.phase3_exact_records import validate_static_exact_capture_bit
+from emuflow.phase3_exact_limits import STATIC_EXACT_CAPTURE_BIT_MAX_BITS, STATIC_EXACT_CAPTURE_BIT_ERROR
+
+
+def validate_static_exact_capture_bit(value):
+    if type(value) is not int or value < 0 or value.bit_length() > STATIC_EXACT_CAPTURE_BIT_MAX_BITS:
+        raise ValidationError(STATIC_EXACT_CAPTURE_BIT_ERROR)
+    return value
+
 
 _ARRAYS = {'cut_nodes','dependency_edges','logic_segments','capture_requirements'}
 _MISSING = 0xffffffff
@@ -122,3 +129,59 @@ def write_exact_fixture(path, contract, parts, **options):
     if source is not None and source.native_record_paths() is not None:
         return publish_exact_native_fixture(path,contract,parts,**options)
     return write_exact_records_fixture(path,contract,parts,**options)
+
+
+def exact_partition_facts(path, descriptor, fpga):
+    from emuflow.phase3_exact_binary import iter_phase3_exact_segments, iter_phase3_exact_captures
+    return {'sha256':descriptor['semantic_contract_sha256'],
+        'logic_segments':list(iter_phase3_exact_segments(path, descriptor, fpga)),
+        'capture_requirements':list(iter_phase3_exact_captures(path, descriptor, fpga))}
+
+
+def exact_contract_facts(path, descriptor, assignment):
+    """Small independent record projection for canonical round-trip assertions."""
+    from emuflow.phase3_exact_binary import (_load_manifest, iter_phase3_exact_node_sources,
+        iter_phase3_exact_segments, iter_phase3_exact_captures)
+    manifest = _load_manifest(path, descriptor)
+    if max(manifest['counts'].values()) > 65536:
+        raise AssertionError('exact contract fixture exceeds bound')
+    segments = list(iter_phase3_exact_segments(path, descriptor))
+    captures = list(iter_phase3_exact_captures(path, descriptor))
+    cuts = {row['net']:row for row in assignment['cut_nets']}
+    fields = {'net','cut_class','source_fpgas','sink_fpgas','dependency_level',
+              'combinational_dependency_depth','predecessor_cut_nets'}
+    nodes = [{**{key:cuts[net][key] for key in fields},
+        'source_segment_ids':[f'segment{number:06d}' for number in numbers],
+        'capture_segment_ids':sorted(row['id'] for row in segments if row['kind']=='rx_to_capture' and row['source_cut_net']==net)}
+        for net,numbers in iter_phase3_exact_node_sources(path, descriptor)]
+    result = {**manifest['contract_header'], 'cut_nodes':nodes, 'logic_segments':segments,
+        'capture_requirements':captures, 'dependency_edges':sorted(({'from':row['source_cut_net'],
+        'to':row['sink_cut_net'],'segment':row['id']} for row in segments if row['kind']=='rx_to_tx'),
+        key=lambda row:(row['to'],row['from']))}
+    if semantic_contract_sha256(result) != assignment['semantic_contract_sha256']:
+        raise ValidationError('fixture canonical contract identity disagrees')
+    return result
+
+
+def indexed_exact_facts(path, assignment=None, fpga=None):
+    from emuflow.phase3_assignment_index import open_phase3_assignment_index, _exact_binary_reference
+    connection = open_phase3_assignment_index(path)
+    try:
+        binary, descriptor = _exact_binary_reference(connection, path)
+        if fpga is not None:
+            return exact_partition_facts(binary, descriptor, fpga)
+        return exact_contract_facts(binary, descriptor, assignment)
+    finally:
+        connection.close()
+
+
+def indexed_exact_manifest(path):
+    """Read only the sealed exact-file header/counts for qualification checks."""
+    from emuflow.phase3_assignment_index import open_phase3_assignment_index, _exact_binary_reference
+    from emuflow.phase3_exact_binary import _load_manifest
+    connection = open_phase3_assignment_index(path)
+    try:
+        binary, descriptor = _exact_binary_reference(connection, path)
+        return _load_manifest(binary, descriptor)
+    finally:
+        connection.close()
