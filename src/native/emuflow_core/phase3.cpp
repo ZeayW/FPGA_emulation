@@ -278,7 +278,7 @@ struct Stage {
       {"cluster_implementation_id",JsonQuote("native-primary-clusters-v1")},{"candidate_implementation_id",JsonQuote("native-candidate-ids-v1")},{"semantic_implementation_id",JsonQuote("native-selected-partition-semantics-v1")},
       {"artifacts",Object({{"clusters",JsonQuote("clusters.json")},{"constraints",JsonQuote("constraints.normalized.json")},{"assignment",JsonQuote("assignment.json")},{"assignment_index",JsonQuote("assignment.sqlite")},{"report",JsonQuote("phase3_report.json")},{"runtime_breakdown",JsonQuote("phase3-runtime.json")},{"semantic_contract",JsonQuote("assignment.json#/semantic_contract")},{"semantic_contract_data",JsonQuote("assignment.exact.bin")}})},
       {"artifact_storage",Object({{"clusters",JsonQuote("emuflow.phase3-clusters-storage/v3")},{"assignment",JsonQuote("emuflow.phase3-assignment-storage/v4")},{"assignment_index",JsonQuote("emuflow.phase3-assignment-sqlite/v4")},{"static_exact_data",JsonQuote("emuflow.phase3-exact-data/v2")},{"logical_schema",JsonQuote("unchanged-transparent-expansion")}})}};
-    if(provider=="patron" && active.size()>1){report["patron_algorithm_version"]="14";report["patron_initialization"]=JsonQuote(refs.count("solution")?"caller-supplied-generalized-tritonpart-solution-v1":"native-generalized-tritonpart-net-cut-v5");report["algorithm_validation"]=Object({{"status",JsonQuote("pass")},{"scope",JsonQuote("production-source-native-independent-audit")},{"decision_implementation_id",JsonQuote("native-partition-decision-v1")},{"candidate_selection",json.Get(decision,"selection")},{"model",model_summary}});report["patron_diagnostics"]=Object({{"storage",JsonQuote("not-persisted")},{"reason",JsonQuote("production-hot-path")},{"offline_qualification",JsonQuote("independent-current-model-validator")}});}
+    if(provider=="patron" && active.size()>1){report["patron_algorithm_version"]="14";report["patron_initialization"]=JsonQuote(refs.count("solution")?"caller-supplied-generalized-tritonpart-solution-v1":"native-generalized-tritonpart-net-cut-v5");report["algorithm_validation"]=Object({{"status",JsonQuote("pass")},{"scope",JsonQuote("production-source-native-independent-audit")},{"native_input_transport",JsonQuote("native-primary-store-model-v2")},{"decision_implementation_id",JsonQuote("native-partition-decision-v1")},{"candidate_selection",json.Get(decision,"selection")},{"model",model_summary}});report["patron_diagnostics"]=Object({{"storage",JsonQuote("not-persisted")},{"reason",JsonQuote("production-hot-path")},{"offline_qualification",JsonQuote("independent-current-model-validator")}});}
     if(active.size()==1)report["partition_decision"]=Object({{"executed","false"},{"reason",JsonQuote("one-active-assignment-target")},{"requested_provider",JsonQuote(provider)}});
     const auto catalog_request=root/"catalog.request";
     auto cluster_policy=json.Fields(json.Get(config,"cluster_policy"));if(policy=="assignment-derived-acyclic-v2")cluster_policy["candidate_selection_policy"]=JsonQuote(policy);
@@ -293,9 +293,12 @@ struct Stage {
 };
 }
 StageResult RunPhase3(const ArtifactRef& request,const std::string& directory,const volatile std::sig_atomic_t* cancelled){
+  // Stage owns mappings into workspace. Unwind those borrowers before removing
+  // the files on every exit, including failed initialization and cancellation.
+  std::unique_ptr<Workspace> workspace;
   std::unique_ptr<Stage> stage;const auto started=std::chrono::steady_clock::now();
   return RunStage("phase3.run",[&]{stage=std::make_unique<Stage>(request,cancelled);return stage->inputs;},[&](const auto& refs){
-    const fs::path destination=fs::absolute(directory);Check(!fs::exists(destination) && !fs::is_symlink(destination),"stage destination must be absent");fs::create_directories(destination.parent_path());Workspace workspace(destination.parent_path());const auto root=workspace.root;
+    const fs::path destination=fs::absolute(directory);Check(!fs::exists(destination) && !fs::is_symlink(destination),"stage destination must be absent");fs::create_directories(destination.parent_path());workspace=std::make_unique<Workspace>(destination.parent_path());const auto root=workspace->root;
     stage->Action("phase3.configuration",[&]{stage->Normalize();});stage->Cluster(root);
     std::string initial_summary,initial_hops,model_summary="{}";auto initial=stage->Initialize(root,initial_summary);
     initial=stage->Hops(root,initial,false,initial_hops);std::optional<Owner> candidate;

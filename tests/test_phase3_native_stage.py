@@ -43,6 +43,7 @@ def test_native_phase3_runs_complete_stage_and_preserves_final_records(inputs, t
     assert generated['provider'] == expected['provider']
     assert generated.get('provider_metadata', {}).get('initial_provider') == expected.get('provider_metadata', {}).get('initial_provider')
     assert report['stage_implementation_id'] == 'native-phase3-v1'
+    assert report['algorithm_validation']['native_input_transport'] == 'native-primary-store-model-v2'
 
 
 @pytest.mark.parametrize('damage', ['version', 'generation', 'capacity', 'timing-seal', 'solution', 'existing'])
