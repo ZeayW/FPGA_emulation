@@ -29,6 +29,7 @@ proc emuflow_use_clock_aware_reference_constraints {} {
   # Reference minus slack is the effective sampling cost, not raw data delay.
   set clocks [get_clocks -quiet]
   if {[llength $clocks] != 0} {set_max_delay -reset_path -from $clocks -to $clocks 1.0}
+  if {[llength [info commands emuflow_word_reference_data_budgets]]} {emuflow_word_reference_data_budgets}
 }
 
 proc emuflow_reference_path_cost {path} {

@@ -23,6 +23,40 @@ from .vivado_optimization import build_optimization_proofs
 from .vivado_clocks import implementation_clocks, implementation_timing_contract
 
 SCHEMA = "emuflow.vivado-native-session/v4"
+WORD_DATA_BUDGET_POLICY = "scheduled-dut-data-local-period-v1"
+
+
+def _word_data_source_origins(mapped_index, boundary_query, output, mapped_sha256):
+    """Bind RX source roles before optimization, without preserving any cell."""
+    from .xilinx_netlist import open_xilinx_mapped_index
+    from .store_publication import bind_store_source, require_store_sources_unchanged, validate_store_destination
+    path = Path(output)/"word-data-source-origins.tsv"
+    parents = tuple(bind_store_source(Path(value), schema) for value, schema in
+        ((mapped_index, "xilinx-mapped-index-v2"), (boundary_query, "vivado-boundary-query-v1"))) if boundary_query is not None else ()
+    validate_store_destination(path, parents)
+    origins = set()
+    requested = 0
+    if boundary_query is not None:
+        with open_xilinx_mapped_index(mapped_index) as mapped, Path(boundary_query).open(newline="") as stream:
+            reader = csv.reader(stream, delimiter="\t")
+            if next(reader, None) != ["endpoint_hex", "kind", "external_port_hex", "bit", "logical_net_hex", "boundary_cell_hex"]:
+                raise ValidationError("invalid word data boundary query header")
+            for row in reader:
+                if len(row) != 6 or row[1] not in {"tx", "rx"}:
+                    raise ValidationError("invalid word data boundary query")
+                if row[1] != "rx":
+                    continue
+                name = bytes.fromhex(row[5]).decode().replace("\\\\", "\\")
+                cell = mapped.connection.execute("SELECT seq,type FROM cells WHERE id=?", (name,)).fetchone()
+                if cell is None or cell[1] != "FDRE":
+                    raise ValidationError("word RX data source is not its mapped alignment register")
+                origins.add(cell[0])
+                requested += 1
+    require_store_sources_unchanged(parents)
+    path.write_text("source_origin\n"+"".join(f"s{origin}\n" for origin in sorted(origins)))
+    return {"policy":WORD_DATA_BUDGET_POLICY, "path":str(path.resolve()), "sha256":file_sha256(path),
+        "mapped_index_sha256":mapped_sha256, "rx_queries":requested, "source_origins":len(origins),
+        "boundary_query_sha256":file_sha256(Path(boundary_query)) if boundary_query is not None else None}
 
 
 def _tcl_word(value):
@@ -82,6 +116,9 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
         "retain_routed_checkpoint":retain_routed_checkpoint,
         "source_hierarchy_prefix":source_hierarchy_prefix,
         "route_after_proof_failure":route_after_proof_failure}
+    if word_phy_directory is not None:
+        manifest["word_data_budget"] = _word_data_source_origins(mapped_index,
+            queries.get("boundary_timing"), output, mapped_sha256)
     write_json(output/"native-session.json",manifest,compact=True)
     with (output/"clock-contract.tsv").open("w") as stream:
         stream.write("clock_hex\tport_hex\tperiod_ns\n")
@@ -92,6 +129,7 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
     command = _child_command(output)
     settings = {"emuflow_session_out":str(output),"emuflow_session_manifest":str(output/"native-session.json"),
         "emuflow_word_phy_directory":str(Path(word_phy_directory).resolve())if word_phy_directory is not None else "",
+        "emuflow_word_data_source_origins":manifest.get("word_data_budget", {}).get("path", ""),
         "emuflow_timing_query_mode":manifest["timing_query_mode"],
         "emuflow_retain_routed_checkpoint":"true"if retain_routed_checkpoint else"false",
         "emuflow_route_after_proof_failure":"true"if route_after_proof_failure else"false",
@@ -126,6 +164,14 @@ def load_session(path: Path):
         raise ValidationError('native source hierarchy is invalid')
     if (not legacy and 'source_hierarchy_prefix'not in value) or (value.get('word_phy_directory')is not None and (legacy or not prefix)):
         raise ValidationError('native word/source hierarchy requires a current explicit session manifest')
+    budget = value.get("word_data_budget")
+    if budget is not None:
+        if (not isinstance(budget, dict) or value.get("word_phy_directory") is None or
+                budget.get("policy") != WORD_DATA_BUDGET_POLICY or
+                budget.get("mapped_index_sha256") != value.get("mapped_index_sha256") or
+                not isinstance(budget.get("path"), str) or not Path(budget["path"]).is_file() or
+                file_sha256(Path(budget["path"])) != budget.get("sha256")):
+            raise ValidationError("native word data budget source contract differs")
     return value
 
 
@@ -196,6 +242,7 @@ def prepare_routed_timing_export(manifest_path: Path, output: Path, *, query_ove
         "emuflow_source_prefix":session.get("source_hierarchy_prefix", ""),
         "emuflow_clock_contract":str(output/"clock-contract.tsv"),
         "emuflow_allow_generated_clocks":"true" if session.get("word_phy_directory") else "false",
+        "emuflow_word_data_source_origins":session.get("word_data_budget", {}).get("path", ""),
         "emuflow_export_word_control_timing":"true" if session.get("word_phy_directory") and "boundary_timing" in session["queries"] else "false",
         "emuflow_io_timing_map":str(output/"fixed-io-timing-map.tsv") if (output/"fixed-io-timing-map.tsv").is_file() else ""}
     lines = [f"set {key} {_tcl_word(value)}" for key,value in settings.items()]

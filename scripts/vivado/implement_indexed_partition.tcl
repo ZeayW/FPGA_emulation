@@ -71,6 +71,16 @@ if {[catch {
   }
   if {$emuflow_start_checkpoint eq ""} {write_checkpoint -force "$out/synthesized.dcp"}
   opt_design
+  if {[info exists emuflow_word_data_source_origins] && $emuflow_word_data_source_origins ne ""} {
+    source [file join $emuflow_script_directory word_data_budgets.tcl]
+    lassign [emuflow_word_data_budgets $emuflow_word_data_source_origins] data_budget rx_launches
+    set stream [open "$out/word-data-budget-metrics.tsv" w]
+    puts $stream "metric\tvalue"
+    puts $stream "policy\tscheduled-dut-data-local-period-v1"
+    puts $stream "local_data_budget_ns\t$data_budget"
+    puts $stream "rx_clock_pins\t$rx_launches"
+    close $stream
+  }
   emuflow_inventory "$out/optimized_mapped_cells.tsv" $prefix
   emuflow_session_preplacement $emuflow_script_directory $out \
       $emuflow_retain_routed_checkpoint $emuflow_route_after_proof_failure
@@ -160,6 +170,10 @@ if {[catch {
     emuflow_word_write_control_metrics $metrics $word_checks
   }
   close $metrics
+  if {[info exists emuflow_word_data_source_origins] && $emuflow_word_data_source_origins ne ""} {
+    # Physical optimization may add replicas after the preplacement budget.
+    emuflow_word_data_budgets $emuflow_word_data_source_origins false
+  }
   emuflow_session_timings $emuflow_script_directory $prefix $emuflow_io_timing_map false \
       [expr {$emuflow_word_phy_directory ne ""}]
   puts "EMUFLOW_INDEXED_VIVADO status=pass part=$part fixed_pairs=$pairs"

@@ -424,7 +424,8 @@ def run_indexed_vivado_partition(
             raise ValidationError(f"Vivado physical artifact is missing: {name}")
         artifacts[name] = {"path": str(path), "sha256": file_sha256(path), "bytes": path.stat().st_size}
     if word_mode:
-        for name in ('native-word-preparation.json','native-word-clock-census.tsv','native-word-rx-sources.tsv'):
+        for name in ('native-word-preparation.json','native-word-clock-census.tsv','native-word-rx-sources.tsv',
+                     'word-data-source-origins.tsv','word-data-budget-metrics.tsv'):
             path=output_dir/name
             artifacts[name]={'path':str(path),'sha256':file_sha256(path),'bytes':path.stat().st_size}
     if retain_routed_checkpoint:
@@ -460,7 +461,7 @@ def run_indexed_vivado_partition(
     validation = validate_physical_partition_result(result, backend="vivado", fpga=fpga, part=part, original_cells=original_cells, transport_cells=transport_cells)
     native_scripts=("native_session.tcl","source_inventory.tcl","resource_inventory.tcl","timing_contract.tcl",
         "export_boundary_timing.tcl","export_logic_segment_timing.tcl")
-    if word_mode:native_scripts+=("word_native_physical.tcl","selectio_ip.tcl")
+    if word_mode:native_scripts+=("word_native_physical.tcl","word_data_budgets.tcl","selectio_ip.tcl")
     report = {"schema": "emuflow.vivado-partition-report/v1", "status": "pass", "provider": "indexed-phase6-vivado-word-physical-v4" if word_mode else "indexed-phase6-vivado-physical-v2",
         "tool": {"executable": executable, "version": metrics["vivado_version"], "threads": threads},
         "implementation": implementation, "continuation": continuation_validation, "input_identity": input_identity,

@@ -18,6 +18,10 @@ if {[catch {
   set incomplete [get_nets -quiet -hier -filter {ROUTE_STATUS == UNROUTED || ROUTE_STATUS == PARTIAL || ROUTE_STATUS == CONFLICTS}]
   if {[llength $incomplete]} {error "retained checkpoint contains incomplete routing"}
   emuflow_inventory "$emuflow_session_out/routed_mapped_cells.tsv" $emuflow_source_prefix 1
+  if {[info exists emuflow_word_data_source_origins] && $emuflow_word_data_source_origins ne ""} {
+    source [file join $emuflow_script_directory word_data_budgets.tcl]
+    emuflow_word_data_budgets $emuflow_word_data_source_origins false
+  }
   set prepared false
   if {[info exists emuflow_export_word_control_timing] && $emuflow_export_word_control_timing} {
     source [file join $emuflow_script_directory word_native_physical.tcl]
