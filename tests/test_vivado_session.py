@@ -649,11 +649,14 @@ def test_native_child_preserves_explicit_runtime_installation(tmp_path, monkeypa
 
 @pytest.mark.skipif(TCL86 is None, reason="Tcl 8.6 required")
 @pytest.mark.parametrize("condition", ["routed", "wrong-part", "incomplete-route"])
-def test_retained_checkpoint_exports_without_reimplementation(tmp_path, condition):
+@pytest.mark.parametrize("word_mode", [False, True])
+def test_retained_checkpoint_exports_without_reimplementation(tmp_path, condition, word_mode):
     from emuflow.vivado_session import prepare_routed_timing_export
     session, _, _ = session_fixture(tmp_path, require_constant=False)
     prior = Path(session["output"])
     session.update(source_hierarchy_prefix="", queries={}, implementation_timing={"dut_clock_periods_ns":{"clk":100}})
+    if word_mode:
+        session.update(source_hierarchy_prefix="partition", word_phy_directory=str(prior), timing_query_mode="clock-aware-reference")
     write_json(prior/"native-session.json", session)
     (prior/"routed.dcp").write_bytes(b"retained routed physical design")
     (prior/"clock-contract.tsv").write_text("clock_hex\tport_hex\tperiod_ns\n"+b"core_clk".hex()+"\t"+b"clk".hex()+"\t100\n")
@@ -674,6 +677,12 @@ rename source original_source
 proc source {path} {
   if {[file tail $path] eq "source_inventory.tcl"} {
     proc emuflow_inventory {path prefix placed} {file copy $::template $path}
+  } elseif {[file tail $path] eq "word_native_physical.tcl"} {
+    uplevel 1 [list original_source $path]
+    proc emuflow_word_routed_checks {directory scope} {
+      if {![file exists "$directory/routed-query-preparation.json"]} {error "RX scope queried before preparation"}
+      return {2 -0.2 2 3 0 -0.3}
+    }
   } else {uplevel 1 [list original_source $path]}
 }
 proc set_param {args} {}
@@ -704,6 +713,14 @@ foreach command {report_route_status report_drc report_timing_summary report_clo
         assert read_json(out/"routed-query-preparation.json")["timing_coverage"]["status"] == "complete"
         assert not (out/"constant-frontier-plan.json").exists()
         assert not (out/"optimization-proofs.sqlite").exists()
+        if word_mode:
+            with (out/"word-control-metrics.tsv").open() as stream:
+                metrics = dict(csv.reader(stream, delimiter="\t"))
+            assert metrics["native_word_infrastructure_wns_ns"] == "-0.2"
+            assert metrics["native_word_infrastructure_whs_ns"] == "-0.3"
+            assert metrics["native_word_rx_scope_complete"] == "0"
+        else:
+            assert not (out/"word-control-metrics.tsv").exists()
         with pytest.raises(FileExistsError):
             prepare_routed_timing_export(prior/"native-session.json", out)
     else:

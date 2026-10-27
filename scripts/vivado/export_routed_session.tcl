@@ -18,7 +18,18 @@ if {[catch {
   set incomplete [get_nets -quiet -hier -filter {ROUTE_STATUS == UNROUTED || ROUTE_STATUS == PARTIAL || ROUTE_STATUS == CONFLICTS}]
   if {[llength $incomplete]} {error "retained checkpoint contains incomplete routing"}
   emuflow_inventory "$emuflow_session_out/routed_mapped_cells.tsv" $emuflow_source_prefix 1
-  emuflow_session_timings $emuflow_script_directory $emuflow_source_prefix $emuflow_io_timing_map
+  set prepared false
+  if {$emuflow_allow_generated_clocks} {
+    source [file join $emuflow_script_directory word_native_physical.tcl]
+    emuflow_session_child prepare-timing
+    set prepared true
+    set checks [emuflow_word_routed_checks $emuflow_session_out "$emuflow_session_out/native-word-rx-sources.tsv"]
+    set metrics [open "$emuflow_session_out/word-control-metrics.tsv" w]
+    puts $metrics "metric\tvalue"
+    emuflow_word_write_control_metrics $metrics $checks
+    close $metrics
+  }
+  emuflow_session_timings $emuflow_script_directory $emuflow_source_prefix $emuflow_io_timing_map false $prepared
   puts "EMUFLOW_ROUTED_TIMING status=exported implementation=unchanged"
 } message options]} {
   puts stderr "EMUFLOW_ROUTED_TIMING status=failed message=$message"

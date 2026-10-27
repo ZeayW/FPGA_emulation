@@ -95,3 +95,16 @@ proc emuflow_word_routed_checks {directory rx_scope} {
   }
   return [list 2 [lindex $slacks 0] $excluded [llength $sources] $complete [lindex $slacks 1]]
 }
+
+proc emuflow_word_write_control_metrics {stream checks} {
+  foreach {key value} [list \
+      native_word_infrastructure_checks [lindex $checks 0] \
+      native_word_infrastructure_wns_ns [lindex $checks 1] \
+      native_word_infrastructure_whs_ns [lindex $checks 5] \
+      native_word_rx_clock_pins_excluded [lindex $checks 2] \
+      native_word_control_clock_pins [lindex $checks 3] \
+      native_word_rx_scope_complete [lindex $checks 4] \
+      native_word_infrastructure_scope registered-control-paths-excluding-rx-shadow-launches-v1] {
+    puts $stream "$key\t$value"
+  }
+}

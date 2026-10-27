@@ -157,13 +157,7 @@ if {[catch {
     puts $metrics "$key\t$value"
   }
   if {$emuflow_word_phy_directory ne ""} {
-    puts $metrics "native_word_infrastructure_checks\t[lindex $word_checks 0]"
-    puts $metrics "native_word_infrastructure_wns_ns\t[lindex $word_checks 1]"
-    puts $metrics "native_word_infrastructure_whs_ns\t[lindex $word_checks 5]"
-    puts $metrics "native_word_rx_clock_pins_excluded\t[lindex $word_checks 2]"
-    puts $metrics "native_word_control_clock_pins\t[lindex $word_checks 3]"
-    puts $metrics "native_word_rx_scope_complete\t[lindex $word_checks 4]"
-    puts $metrics "native_word_infrastructure_scope\tregistered-control-paths-excluding-rx-shadow-launches-v1"
+    emuflow_word_write_control_metrics $metrics $word_checks
   }
   close $metrics
   emuflow_session_timings $emuflow_script_directory $prefix $emuflow_io_timing_map false \
