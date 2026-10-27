@@ -380,26 +380,26 @@ def test_atomic_source_binds_mapped_input_and_source_seal_before_consumption(
 
 
 @pytest.mark.parametrize("changed", ["split-netlists-v3", "emuir-compact-v2"])
-def test_full_placement_lowering_refuses_source_change_at_native_publication(changed):
-    from emuflow import placement_ir_storage
+def test_full_placement_lowering_refuses_changed_original_sources(changed):
+    from emuflow import placement_lowering_native
+    from emuflow.split_overlay import bind_split_sources
     from tests.test_phase6 import Phase6Test
 
     case = Phase6Test()
     case.setUp()
-    publish = placement_ir_storage.publish_sqlite_store
+    launch = placement_lowering_native.NativeToolProcess
     observed = []
 
-    def mutate_then_publish(temporary, destination, schema, *, sources):
+    def mutate_then_launch(tool,command,**kwargs):
+        request=json.loads(Path(command[-2]).read_text())
+        sources=bind_split_sources(Path(request['sources'][0]['path']))
         observed.extend(source.schema for source in sources)
         source = next(source for source in sources if source.schema == changed)
         source.path.chmod(source.path.stat().st_mode ^ 0o100)
-        try:
-            return publish(temporary, destination, schema, sources=sources)
-        finally:
-            assert not destination.exists()
+        return launch(tool,command,**kwargs)
 
     with patch.object(
-        placement_ir_storage, "publish_sqlite_store", mutate_then_publish
+        placement_lowering_native, "NativeToolProcess", mutate_then_launch
     ):
         with pytest.raises(ValidationError, match="generation changed"):
             case.test_streaming_phase7_lowering_matches_legacy_exactly()

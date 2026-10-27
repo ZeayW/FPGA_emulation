@@ -311,15 +311,15 @@ class PhysicalSummaryStorageTest(unittest.TestCase):
                 self.assertEqual(len(database["segments"]), 7)
                 self.assertEqual(validate_logic_segment_timing(database)["segments"], 7)
                 lookup = _logic_segment_database(summary)
-                cursor = lookup.ordered_cursor()
-                for index in range(3):
-                    cursor.take(
-                        f"system-{index:08d}", f"member-{index:08d}"
+                with lookup.ordered_cursor() as cursor:
+                    for index in range(3):
+                        cursor.take(
+                            f"system-{index:08d}", f"member-{index:08d}"
+                        )
+                    self.assertEqual(
+                        cursor.take("system-00000003", "member-00000003")[0]["id"],
+                        document["segments"][3]["id"],
                     )
-                self.assertEqual(
-                    cursor.take("system-00000003", "member-00000003")[0]["id"],
-                    document["segments"][3]["id"],
-                )
             generation = selector.parent / read_json(selector)["artifact"]
             generation.write_bytes(generation.read_bytes() + b"x")
             with self.assertRaisesRegex(ValidationError, "seal"):

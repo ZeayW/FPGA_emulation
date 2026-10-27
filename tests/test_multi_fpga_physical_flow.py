@@ -640,7 +640,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                         self.assertFalse(Path(producer["output"]).exists())
                         self.assertEqual(producer["intermediate_lifecycle"]["state"], "retired")
                         self.assertGreater(producer["intermediate_lifecycle"]["bytes"], 0)
-                    persisted = read_json(root / "physical" / record["fpga"] / "placement-ir-report.json")
+                    persisted = read_json(root / "physical" / record["fpga"] / "lowering/placement-ir-report.json")
                     self.assertEqual(persisted, record["stages"]["placement_ir"])
                 self.assertTrue(all(
                     item["schema"] == PHYSICAL_INDEXED_EVIDENCE_REFERENCE_SCHEMA
@@ -730,7 +730,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                         split, PLATFORM, root / "schedule.json", root / "failed-physical",
                         backend="vivado", fpga_ids=["fpga0"],
                     )
-                self.assertTrue((root / "failed-physical/fpga0/placement.emuir.sqlite").is_file())
+                self.assertTrue((root / "failed-physical/fpga0/lowering/placement.emuir.sqlite").is_file())
                 self.assertTrue((root / "failed-physical/fpga0/partition.v").is_file())
                 self.assertFalse((root / "failed-physical/fpga0/partition-record.json").exists())
                 with patch(

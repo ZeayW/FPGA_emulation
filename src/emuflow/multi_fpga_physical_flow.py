@@ -787,6 +787,8 @@ def run_multi_fpga_physical_flow(
         raise EmuFlowError(
             f"multi-FPGA physical output must be an empty directory: {output_dir}"
         )
+    from .native_tools import require_native_schema
+    require_native_schema("placement-lowering-request-v1")
     if backend == "rapidwright":
         # Validate the compiled OpenPARF/PyTorch runtime before reading the
         # graph-sized EmuIR and timing databases.  A loader mismatch must fail
@@ -1006,7 +1008,7 @@ def run_multi_fpga_physical_flow(
                     transport_path,
                     transport_ir_path,
                     merged_ir,
-                    fpga_root / "placement-ir-report.json",
+                    merged_ir.parent / "placement-ir-report.json",
                 )
             assert netlist is not None
             return run_placement_ir_lowering_from_value(
@@ -1014,7 +1016,7 @@ def run_multi_fpga_physical_flow(
                 transport_path,
                 transport_ir_path,
                 merged_ir,
-                fpga_root / "placement-ir-report.json",
+                merged_ir.parent / "placement-ir-report.json",
             )
         fpga_part = next(
             fpga.part for fpga in platform.fpgas if fpga.id == fpga_id
@@ -1043,7 +1045,7 @@ def run_multi_fpga_physical_flow(
                 "output": str(transport_ir_path),
                 "sha256": _sha256(transport_ir_path),
             }
-            merged_ir = fpga_root / "placement.emuir.sqlite"
+            merged_ir = fpga_root / "lowering/placement.emuir.sqlite"
             lowering_report = lower_placement_ir(
                 transport_ir_path, merged_ir
             )
@@ -1250,7 +1252,7 @@ def run_multi_fpga_physical_flow(
             _retire_consumed_physical_input(
                 merged_ir, lowering_report,
                 last_consumer="empty-partition-query-and-timing-validation",
-                report_path=fpga_root / "placement-ir-report.json",
+                report_path=merged_ir.parent / "placement-ir-report.json",
             )
             physical_result["artifacts"]["placement_ir"]["retention"] = (
                 "retired-consumed-intermediate"
@@ -1327,7 +1329,7 @@ def run_multi_fpga_physical_flow(
             "sha256": _sha256(transport_ir_path),
         }
 
-        merged_ir = fpga_root / "placement.emuir.sqlite"
+        merged_ir = fpga_root / "lowering/placement.emuir.sqlite"
         lowering_report = lower_placement_ir(transport_ir_path, merged_ir)
         _retire_consumed_physical_input(
             transport_ir_path, transport_report,
@@ -1527,7 +1529,7 @@ def run_multi_fpga_physical_flow(
         _retire_consumed_physical_input(
             merged_ir, lowering_report,
             last_consumer=f"{backend}-physical-and-timing-validation",
-            report_path=fpga_root / "placement-ir-report.json",
+            report_path=merged_ir.parent / "placement-ir-report.json",
         )
         if backend == "vivado":
             _retire_consumed_physical_input(

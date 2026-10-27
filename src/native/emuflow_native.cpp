@@ -1,4 +1,5 @@
 #include "emuflow_core/transport.hpp"
+#include "emuflow_core/placement_lowering.hpp"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -36,6 +37,7 @@ constexpr const char* kUsage =
     "  phase6 build-transport ASSIGNMENT SCHEDULE REQUEST OUTPUT_DIR [PIN_PLAN]\n"
     "  phase6 audit-transport STORE SUMMARY\n"
     "  phase6 validate-split SPLIT SUMMARY\n"
+    "  phase7 lower SPLIT TRANSPORT_STORE SYNTHESIZED_EMUIR REQUEST OUTPUT_DIR\n"
     "  phase3 refine-hops-from-primary EMUIR PRIMARY REQUEST OUTPUT_DIR [OWNER [ORDER]] [WEIGHTS_SELECTOR WEIGHTS_STORE]\n"
     "  phase3 audit-hops-from-primary EMUIR PRIMARY REQUEST OUTPUT_DIR [OWNER [ORDER]]\n"
     "  phase3 initialize-tritonpart EMUIR PRIMARY REQUEST OUTPUT_DIR [WEIGHTS_SELECTOR WEIGHTS_STORE] [SOLUTION]\n"
@@ -191,6 +193,13 @@ int Dispatch(int argc, char** argv, const std::string& report) {
       emuflow::core::ArtifactRef::Bind(argv[4],"assignment-index-v4"),
       emuflow::core::ArtifactRef::Bind(argv[5],"tdm-schedule-store-v4"),
       emuflow::core::ArtifactRef::Bind(argv[6],"phase6-stage-request-v1")},argv[7],{},&tool_cancelled),report);
+  }
+  if(argc==8 && std::string(argv[1])=="phase7" && std::string(argv[2])=="lower") {
+    ToolSignals signals;
+    return Finish(emuflow::core::LowerPlacement({emuflow::core::ArtifactRef::Bind(argv[3],"split-netlists-v3"),
+      emuflow::core::ArtifactRef::Bind(argv[4],"transport-store-v2"),
+      emuflow::core::ArtifactRef::Bind(argv[5],"emuir-compact-v2"),
+      emuflow::core::ArtifactRef::Bind(argv[6],"placement-lowering-request-v1")},argv[7],&tool_cancelled),report);
   }
   if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="audit-transport") {
     return Finish(emuflow::core::AuditTransportArtifacts(emuflow::core::ArtifactRef::Bind(argv[3],"transport-store-v2"),argv[4]),report);

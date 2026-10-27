@@ -212,6 +212,45 @@ void Validate(const ArtifactRef& artifact,Manifest& m) {
   artifact.RequireUnchanged();
 }
 }
+void ProjectExactBoundarySegments(const ArtifactRef& artifact,const std::string& descriptor,
+                                 const std::string& fpga,SqliteDatabase& db){
+  auto m=Load(artifact,descriptor);const auto part=std::find(m.parts.begin(),m.parts.end(),fpga);
+  Check(part!=m.parts.end(),"boundary partition is missing");
+  db.Execute("CREATE TEMP TABLE exact_boundary_segments(net_id TEXT,side INTEGER,ordinal INTEGER,segment_id TEXT,PRIMARY KEY(net_id,side,ordinal)) WITHOUT ROWID;"
+      "CREATE TEMP TABLE exact_cut_ordinals(seq INTEGER PRIMARY KEY,net_id TEXT NOT NULL UNIQUE);"
+      "CREATE TEMP TABLE selected_exact_segments(number INTEGER PRIMARY KEY,source INTEGER,kind INTEGER)");
+  const auto name=[](std::uint32_t number){auto digits=std::to_string(number);return "segment"+std::string(digits.size()<6?6-digits.size():0,'0')+digits;};
+  {
+    Reader nets(artifact,m.sections.at("nets")),sources(artifact,m.sections.at("node_sources"));
+    auto net=db.Prepare("INSERT INTO exact_cut_ordinals VALUES (?,?)");
+    auto member=db.Prepare("INSERT INTO exact_boundary_segments SELECT ?,0,?,? WHERE EXISTS(SELECT 1 FROM exact_info WHERE net_id=? AND role='cut_source')");
+    U total=0;std::string previous;
+    for(U i=0;i<m.counts.nodes;++i){
+      const auto identity=nets.String();Check(!i || previous<identity,"cut nets are invalid");previous=identity;
+      net.BindInteger(1,i);net.BindText(2,identity);net.Execute();
+      const auto count=sources.Read<std::uint32_t>();Check(count<=sources.left/4 && count<=m.counts.sources-total,"source membership count disagrees");total+=count;
+      for(U ordinal=0;ordinal<count;++ordinal){const auto number=sources.Read<std::uint32_t>();Check(number<m.counts.segments,"source segment is invalid");
+        member.BindText(1,identity);member.BindInteger(2,ordinal);member.BindText(3,name(number));member.BindText(4,identity);member.Execute();}
+    }
+    Check(total==m.counts.sources,"source membership coverage disagrees");nets.Finish();sources.Finish();
+  }
+  {
+    const auto& section=m.sections.at("segments:"+std::to_string(part-m.parts.begin()));Reader segments(artifact,section);
+    auto put=db.Prepare("INSERT INTO selected_exact_segments VALUES (?,?,?)");
+    auto member=db.Prepare("INSERT INTO exact_boundary_segments SELECT n.net_id,1,?,? FROM exact_cut_ordinals n JOIN exact_info i ON i.net_id=n.net_id WHERE n.seq=? AND i.role='transport_shadow_sink'");
+    for(U i=0;i<section.records;++i){
+      const auto number=segments.Read<std::uint32_t>();const auto kind=segments.Read<std::uint8_t>(),flags=segments.Read<std::uint8_t>();
+      const auto source=segments.Read<std::uint32_t>(),target=segments.Read<std::uint32_t>();
+      Check(number<m.counts.segments && kind<=2 && !(flags&~1U),"boundary segment flags are invalid");
+      Check(kind==0?(source==kMissing && target<m.counts.nodes):(!flags && source<m.counts.nodes && target<(kind==1?m.counts.nodes:m.counts.captures)),"boundary segment coordinate is invalid");
+      put.BindInteger(1,number);put.BindInteger(2,source);put.BindInteger(3,kind);put.Execute();
+      if(kind){member.BindInteger(1,number);member.BindText(2,name(number));member.BindInteger(3,source);member.Execute();}
+    }
+    segments.Finish();
+  }
+  db.Execute("DROP TABLE exact_cut_ordinals;DROP TABLE selected_exact_segments");artifact.RequireUnchanged();
+}
+
 std::string ValidateExactBinaryArtifact(const ArtifactRef& artifact,const std::string& descriptor) {
   auto manifest=Load(artifact,descriptor);Validate(artifact,manifest);const auto& c=manifest.counts;
   std::map<std::string,JsonRecord> summary{{"status","pass"},{"schema",Schema(manifest.version)},

@@ -117,6 +117,14 @@ not sampled simultaneous process-tree peaks. The retired result v1 is read
 with its matching historical Git revision. This result
 retains requested and resolved configuration, common operation status and stage
 wall/CPU/RSS metrics. Its `native_data_plane_complete` is explicitly false.
+
+Both physical backends use the native lowering stage for current typed split
+inputs. Its PlacementIR, boundary identity selector/store and report publish
+together under `physical/<fpga>/lowering/`. The report identifies
+`native-placement-lowering-v1`; this is a component of the physical stage,
+whose backend preparation and orchestration are still transitional. Missing
+native lowering support fails preflight before transport synthesis. Failures
+never retry the former Python indexed lowering path.
 Other adapters may report sampled process-tree RSS in `stage-metrics/`; native
 TDM uses the explicit `wait4-single-native-process-high-water` measurement label.
 Preserve each measurement's scope. Retain the compact

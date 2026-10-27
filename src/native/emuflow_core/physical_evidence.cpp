@@ -237,18 +237,23 @@ void ValidatePhysicalEvidence(const std::vector<ArtifactRef>& inputs,const std::
 
 namespace emuflow::core {
 PhysicalEvidenceSeal SealPhysicalEvidence(SqliteDatabase& db,unsigned kind,const std::string& header,const std::string& source) {
-  Require(kind>=2 && kind<=4,"producer kind is invalid");
+  Require(kind>=1 && kind<=4,"producer kind is invalid");
   Sha256 records,unsupported,unmeasured;Object counts,measurements;double maximum=0;
-  if(kind==2)counts=BoundaryTiming(db,records,&maximum);
+  if(kind==1)counts=BoundaryIdentity(db,records);
+  else if(kind==2)counts=BoundaryTiming(db,records,&maximum);
   else if(kind==3)counts=LogicTiming(db,records,unsupported,unmeasured,header,"{\"endpoint_collection_bound_segments\":0}",maximum);
   else {auto result=LocalTiming(db,records,header);counts=std::move(result.counts);measurements=std::move(result.measurements);maximum=result.maximum;}
   Object output;
-  for(const char* field:{"schema","status","design","fpga","provider","qualification"})
+  for(const char* field:{"schema","status","design","fpga","provider"})
     output.emplace(field,JsonText(db,header,(std::string("$.")+field).c_str()));
+  if(kind!=1)output.emplace("qualification",JsonText(db,header,"$.qualification"));
   Require(JsonText(db,header,"$.status")=="pass","producer status is invalid");
   Object coverage;auto old=db.Prepare("SELECT key,value FROM json_each(?,'$.coverage') ORDER BY key");old.BindText(1,header);
   while(old.Step())coverage.emplace(Text(old,0),Count(old,1));
-  if(kind==2) {
+  if(kind==1) {
+    Require(JsonText(db,header,"$.schema")=="emuflow.boundary-identity/v1","producer schema is invalid");
+    output.emplace("platform",JsonText(db,header,"$.platform"));coverage=counts;
+  } else if(kind==2) {
     Require(JsonText(db,header,"$.schema")=="emuflow.boundary-timing/v1","producer schema is invalid");
     output.emplace("platform",JsonText(db,header,"$.platform"));output.emplace("measurement_scope",JsonText(db,header,"$.measurement_scope"));
     coverage=counts;
@@ -273,7 +278,7 @@ PhysicalEvidenceSeal SealPhysicalEvidence(SqliteDatabase& db,unsigned kind,const
   output.emplace("coverage",std::move(coverage));
   PhysicalEvidenceSeal result{JsonRecord(output).EncodeUtf8(),JsonRecord(counts).EncodeUtf8(),source,"",JsonRecord(measurements).EncodeUtf8(),maximum};
   std::string payload="{\"counts\":"+result.counts;
-  if(kind==2)payload+=",\"endpoint_sha256\":"+JsonQuote(Digest(records));
+  if(kind<=2)payload+=",\"endpoint_sha256\":"+JsonQuote(Digest(records));
   payload+=",\"header\":"+result.header;
   if(kind==4)payload+=",\"path_sha256\":"+JsonQuote(Digest(records));
   if(kind==3)payload+=",\"segment_sha256\":"+JsonQuote(Digest(records))+",\"source\":"+source+

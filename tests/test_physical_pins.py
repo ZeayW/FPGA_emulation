@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from tests.native_build import _runtime_link_flags
 
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.board_arm_mps4 import materialize_arm_mps4_boarddb
@@ -41,6 +42,7 @@ class PhysicalPinBindingTest(unittest.TestCase):
                 [
                     "c++",
                     "-std=c++17",
+                    *_runtime_link_flags(),
                     "-O2",
                     "-pthread",
                     str(ROOT / "src/native" / source),

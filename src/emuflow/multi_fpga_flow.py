@@ -1385,6 +1385,8 @@ def _compile_preflight(ctx: _CompileContext):
         ctx.opensta = resolve_native_executable("sta", ctx.opensta)
         check_opensta_engine_version(ctx.opensta)
     if ctx.physical:
+        from .native_tools import require_native_schema
+        require_native_schema("placement-lowering-request-v1")
         ctx.global_sta_executable = resolve_native_executable("sta", ctx.global_sta_executable)
         if not Path(ctx.global_sta_executable).is_file() or not os.access(ctx.global_sta_executable, os.X_OK):
             raise EmuFlowError("global OpenSTA executable is unavailable or not executable")

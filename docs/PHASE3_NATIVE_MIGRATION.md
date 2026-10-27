@@ -568,7 +568,7 @@ there is no silent implementation or provider fallback.
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
 | Phase 6 | Native baseline stage owns source-bound split, typed-hop transport/binding, independent audits, RTL/XDC, cost aggregation, manifest/report and atomic directory publication | Retained Chimew qualification/report ownership and real-design acceptance remain; bounded board-policy preparation stays in the transitional route-policy adapter. Baseline runtime/calendar and stage invocation are native, with independent size-limited behavioral replay preserved |
-| Phase 7 | Indexed lowering; typed physical handoff and native Bookshelf pin export | Complete remaining backend/export/validation ownership and full physical qualification |
+| Phase 7 | Complete native lowering publishes compact PlacementIR and typed boundary identities together; typed physical handoff and native Bookshelf/RWRoute input export | Complete remaining backend preparation, bridge/site semantics, validation ownership and full physical qualification on both retained backends |
 | Global STA | Native typed physical-to-event binding, event validation/model export, measurement import, full-original-path reduction and typed QoR publication | Migrate remaining physical producers and orchestration; qualify complete real-design physical/global timing |
 
 Native computation does not eliminate algorithmic search cost. Compare search,
@@ -651,6 +651,39 @@ decode the bounded physical-port summary; altering a compact pin record and
 its compatibility binding view together still fails original-wiring validation.
 Real NVDLA record equivalence, runtime/RSS/disk measurements and both physical
 backends remain required acceptance evidence.
+
+## Native physical lowering
+
+`phase7 lower SPLIT TRANSPORT_STORE SYNTHESIZED_EMUIR REQUEST OUTPUT_DIR`
+consumes the current source-bound split v3, typed transport v2 and synthesized
+compact EmuIR v2. The bounded request binds original input generations and the
+selected FPGA; it carries no cell, net, signal or endpoint population. A new
+directory publishes PlacementIR, its typed boundary identity generation,
+selector and report together. Failure or cancellation exposes no partial stage,
+and an existing output directory is rejected.
+
+The core joins source and shadow signals directly to synthesized port ordinals,
+applies the transport namespace, replaces RX placeholders, merges shared inputs,
+preserves endpoint order and recomputes fanout. Clock/reset sharing requires one
+DUT net per port bit, independently of its number of synthesized sinks. Static
+Exact boundary segment IDs are streamed from the original binary sections into
+private indexed relations; no capture population or semantic-contract tree is
+reconstructed. This also restores the segment membership labels omitted by the
+former indexed Python writer.
+
+Boundary identity production joins original transport endpoints with the merged
+port/net relation and actual synthesized shadow drivers. It checks complete
+endpoint coverage and exactly one shadow register where required. The existing
+independent typed evidence reader verifies its complete ordered-record seal.
+Outputs are independent of the consumed synthesis input and retain the existing
+compact EmuIR and boundary identity schemas.
+
+Both retained physical backends use this lowering owner under
+`physical/<fpga>/lowering/`. The former Python overlay/spool and indexed placement
+writer are retired; the logical merge remains available as a small independent
+oracle and explicit external-value adapter. A native failure never selects it.
+Whole lowering differential tests do not establish NVDLA physical, timing or
+performance acceptance. The complete physical stage remains unfinished.
 
 ## Complete native partition stage
 
