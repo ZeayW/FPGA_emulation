@@ -1,41 +1,5 @@
 # Architecture and phase contracts
 
-## Production data-plane ownership
-
-The maintained convergence target is one upstream flow: TritonPart initialization
-into PATRON v14, global-candidate routing, Static Exact dependency scheduling,
-and baseline Phase 6, retaining Chimew as an explicit alternative. It feeds two
-physical backends: OpenPARF/RapidWright and Vivado. Integration of code does not
-promote an experimental backend or establish complete Phase 7/7C acceptance.
-Older implementations remain only until their replacement and retirement are
-integrated; this policy does not assert that every branch already converged.
-
-| Responsibility | Owner and interface |
-| --- | --- |
-| Cell/net/hop/endpoint/path algorithms, conversion, aggregation and validation | `libemuflow_core`; typed stores and native views |
-| Store/schema, identity, atomic publication, tool lifetime | One shared core implementation; both physical backends consume the same contract |
-| Configuration and orchestration | Python; artifact references and explicitly bounded control/summary values |
-| Reference algorithms | Isolated test oracles; never a production fallback |
-| OpenPARF host | Required Python host; native operators and shared typed boundaries |
-
-Streaming Python and a Python loop issuing one SQL statement per object still
-scale with design size and are data-plane work. FFI/JSON must not reconstruct
-millions of Python dictionaries. Native algorithms may allocate graph-sized
-structures when necessary: record each representation's identity, owner,
-required consumers and last use, and avoid redundant graph copies.
-
-A delivery includes its producer, an independent validator, the production
-entry switch and deletion of unconsumed replaced code. Public stores and schemas
-have one owner; backend-specific projections reference it. Change both backend
-consumers and their rejection/compatibility tests with the contract. Existing
-work is tracked in the source-attributed
-[transition inventory](../config/data_plane_contract.json); entries permit only
-the named existing scope. They do not authorize expansion. The inventory is a
-review aid, not proof that arbitrary Python is bounded. W0 is the shared
-infrastructure contract; full stage/data-plane ownership remains W7 work.
-
-See [integration and qualification gates](VALIDATION.md#cross-branch-integration-gates).
-
 EmuFlow separates logical compilation, board-level communication, per-FPGA
 physical implementation, and global timing analysis. Providers exchange
 versioned artifacts rather than sharing tool-internal state.
