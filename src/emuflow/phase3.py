@@ -367,6 +367,7 @@ def run_phase3(
     patron_initial_clusters_path: Optional[Path] = None,
     retain_diagnostics: bool = False,
     retain_patron_baseline: bool = False,
+    patron_source_context=None,
 ) -> Dict[str, Any]:
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValidationError("partition seed: expected a non-negative integer")
@@ -391,16 +392,27 @@ def run_phase3(
     if (
         isinstance(patron_algorithm_version, bool)
         or not isinstance(patron_algorithm_version, int)
-        or patron_algorithm_version not in {14}
+        or patron_algorithm_version not in {14,15}
     ):
         raise ValidationError("PATRON algorithm version is invalid")
+    if provider == 'patron' and patron_algorithm_version == 15:
+        from .opensta_source_context import OpenSTASourceContext
+        from .native_tools import require_native_schema
+        if (retain_diagnostics or patron_initial_clusters_path is not None
+                or os.environ.get('EMUFLOW_PATRON_INPUT_COPY')
+                or not isinstance(patron_source_context,OpenSTASourceContext)
+                or patron_source_context.source_bindings[0].path != ir_path.resolve()
+                or patron_refiner is not None and not is_unified_native_executable(patron_refiner)):
+            raise ValidationError('PATRON v15 requires a compact native source model and its original timing context')
+        patron_source_context.require_unchanged()
+        require_native_schema('patron-witness-merge-request-v1')
     patron_flow_refinement = provider == "patron"
 
     if (
         (provider == "patron" and cut_mode != CUT_MODE_STATIC_EXACT)
     ):
         raise ValidationError(
-            "PATRON v14 requires generalized Static Exact mode"
+            f"PATRON v{patron_algorithm_version} requires generalized Static Exact mode"
         )
     # Explicit qualification mode may request full canonical source seals and
     # replay artifacts.  Production keeps only the partition facts resident.
@@ -687,152 +699,165 @@ def run_phase3(
                     )
                 ),
             )
-        assignment, patron_trace = phase3_runtime_call(
-            "patron.native_refinement",
-            run_partition_pressure_native,
-            ir,
-            platform,
-            clusters,
-            constraints,
-            route_constraints,
-            model,
-            initial,
-            executable=patron_refiner,
-            max_moves=patron_max_moves,
-            algorithm_version=patron_algorithm_version,
-            output_validation=("full" if retain_diagnostics else "caller"),
-            retain_trace_seals=retain_diagnostics,
-            stream_semantic_records=not retain_diagnostics,
-            timeout_seconds=tritonpart_timeout_seconds,
-            _release_model_before_assignment=not retain_diagnostics,
-            _defer_candidate_derived_records=(
-                not retain_diagnostics
-                and cut_mode == CUT_MODE_STATIC_EXACT
-            ),
-        )
-        if native_store_model:
-            if patron_trace.get("model_implementation_id") != model.implementation_id:
-                raise ValidationError("PATRON native model implementation disagrees")
-            patron_model_counts = patron_trace["model_counts"]
-            phase3_runtime_observe(pressure_clusters=patron_model_counts["clusters"],
-                pressure_nets=patron_model_counts["nets"], pressure_paths=patron_model_counts["paths"])
-        if retain_diagnostics:
-            write_json(output_dir / "patron" / "pressure_model.json", model)
-            write_json(
-                output_dir / "patron" / "refinement_trace.json", patron_trace
-            )
-            write_json(
-                output_dir / "patron" / "initial_assignment.json", initial
-            )
-            write_json(
-                output_dir / "patron" / "candidate_assignment.json",
-                assignment,
-            )
-            write_json(
-                output_dir / "patron" / "initial_hop_refinement.json",
-                patron_initial_hop,
-            )
-            patron_validation = phase3_runtime_call(
-                "patron.validate_diagnostic_bundle",
-                validate_partition_pressure_native_bundle,
+        if patron_algorithm_version == 15:
+            from .patron_source_feedback import run_patron_source_feedback
+            if not native_store_model:
+                raise ValidationError('PATRON v15 requires native primary ownership')
+            assignment,patron_trace=phase3_runtime_call('patron.source_feedback',
+                run_patron_source_feedback,model,patron_source_context,clusters,initial,
+                output_dir/'source-feedback',max_moves=patron_max_moves,
+                timeout_seconds=tritonpart_timeout_seconds,executable=patron_refiner)
+            patron_validation=dict(status='pass',qualification='complete-source-checkpoint-acceptance',
+                initial_assignment=validate_partition_artifacts_online(platform,clusters,initial),
+                candidate_assignment=validate_partition_artifacts_online(platform,clusters,assignment),
+                candidate_selection=patron_trace['candidate_selection'],source_feedback=patron_trace)
+        else:
+            assignment, patron_trace = phase3_runtime_call(
+                "patron.native_refinement",
+                run_partition_pressure_native,
                 ir,
                 platform,
                 clusters,
                 constraints,
-                timing_database,
                 route_constraints,
                 model,
                 initial,
+                executable=patron_refiner,
+                max_moves=patron_max_moves,
+                algorithm_version=patron_algorithm_version,
+                output_validation=("full" if retain_diagnostics else "caller"),
+                retain_trace_seals=retain_diagnostics,
+                stream_semantic_records=not retain_diagnostics,
+                timeout_seconds=tritonpart_timeout_seconds,
+                _release_model_before_assignment=not retain_diagnostics,
+                _defer_candidate_derived_records=(
+                    not retain_diagnostics
+                    and cut_mode == CUT_MODE_STATIC_EXACT
+                ),
+            )
+            if native_store_model:
+                if patron_trace.get("model_implementation_id") != model.implementation_id:
+                    raise ValidationError("PATRON native model implementation disagrees")
+                patron_model_counts = patron_trace["model_counts"]
+                phase3_runtime_observe(pressure_clusters=patron_model_counts["clusters"],
+                    pressure_nets=patron_model_counts["nets"], pressure_paths=patron_model_counts["paths"])
+            if retain_diagnostics:
+                write_json(output_dir / "patron" / "pressure_model.json", model)
+                write_json(
+                    output_dir / "patron" / "refinement_trace.json", patron_trace
+                )
+                write_json(
+                    output_dir / "patron" / "initial_assignment.json", initial
+                )
+                write_json(
+                    output_dir / "patron" / "candidate_assignment.json",
+                    assignment,
+                )
+                write_json(
+                    output_dir / "patron" / "initial_hop_refinement.json",
+                    patron_initial_hop,
+                )
+                patron_validation = phase3_runtime_call(
+                    "patron.validate_diagnostic_bundle",
+                    validate_partition_pressure_native_bundle,
+                    ir,
+                    platform,
+                    clusters,
+                    constraints,
+                    timing_database,
+                    route_constraints,
+                    model,
+                    initial,
+                    assignment,
+                    patron_trace,
+                    timing_database_path=timing_database_path,
+                )
+            else:
+                initial_validation = phase3_runtime_call(
+                    "patron.validate_initial_assignment",
+                    validate_partition_artifacts_online,
+                    platform,
+                    clusters,
+                    initial,
+                )
+                candidate_validation = phase3_runtime_call(
+                    "patron.validate_candidate_assignment",
+                    validate_partition_artifacts_online,
+                    platform,
+                    clusters,
+                    assignment,
+                )
+                move_count = patron_trace.get("move_count")
+                batch_count = patron_trace.get("batch_count")
+                change_count = patron_trace.get("change_count")
+                native_input_transport = patron_trace.get(
+                    "native_input_transport"
+                )
+                native_input_bytes = patron_trace.get("native_input_bytes")
+                native_input_records = patron_trace.get("native_input_records")
+                native_input_crc32 = patron_trace.get("native_input_crc32")
+                native_output_bytes = patron_trace.get("native_output_bytes")
+                if (
+                    isinstance(move_count, bool)
+                    or not isinstance(move_count, int)
+                    or move_count < 0
+                    or isinstance(batch_count, bool)
+                    or not isinstance(batch_count, int)
+                    or batch_count < 0
+                    or isinstance(change_count, bool)
+                    or not isinstance(change_count, int)
+                    or change_count < 0
+                    or native_input_transport
+                    not in {"typed-binary-pipe", "atomic-binary-file", "native-primary-store-model-v2"}
+                    or isinstance(native_input_bytes, bool)
+                    or not isinstance(native_input_bytes, int)
+                    or native_input_bytes <= 0
+                    or isinstance(native_input_records, bool)
+                    or not isinstance(native_input_records, int)
+                    or native_input_records <= 0
+                    or (
+                        native_input_transport in {"typed-binary-pipe", "atomic-binary-file"}
+                        and (
+                            isinstance(native_input_crc32, bool)
+                            or not isinstance(native_input_crc32, int)
+                            or native_input_crc32 < 0
+                            or native_input_crc32 > 0xFFFFFFFF
+                        )
+                    )
+                    or isinstance(native_output_bytes, bool)
+                    or not isinstance(native_output_bytes, int)
+                    or native_output_bytes <= 0
+                    or patron_trace.get("trace_storage") != "summary-only"
+                ):
+                    raise ValidationError("production PATRON summary is invalid")
+                patron_validation = {
+                    "status": "pass",
+                    "mode": patron_trace.get("mode"),
+                    "qualification": "online-native-output-contract",
+                    "deep_replay": "deferred-to-offline-qualification",
+                    "initial_assignment": initial_validation,
+                    "candidate_assignment": candidate_validation,
+                    "model": patron_model_counts,
+                    "moves": move_count,
+                    "batches": batch_count,
+                    "batch_changes": change_count,
+                    "native_input_transport": native_input_transport,
+                    "native_input_bytes": native_input_bytes,
+                    "native_input_records": native_input_records,
+                    "native_input_crc32": native_input_crc32,
+                    "native_output_bytes": native_output_bytes,
+                }
+                if native_store_model:
+                    patron_validation["model_implementation_id"] = patron_trace["model_implementation_id"]
+                    patron_validation["native_model_metrics"] = patron_trace["native_model_metrics"]
+            assignment, candidate_selection = phase3_runtime_call(
+                "patron.select_candidate",
+                _select_patron_timing_assignment,
+                initial,
                 assignment,
                 patron_trace,
-                timing_database_path=timing_database_path,
             )
-        else:
-            initial_validation = phase3_runtime_call(
-                "patron.validate_initial_assignment",
-                validate_partition_artifacts_online,
-                platform,
-                clusters,
-                initial,
-            )
-            candidate_validation = phase3_runtime_call(
-                "patron.validate_candidate_assignment",
-                validate_partition_artifacts_online,
-                platform,
-                clusters,
-                assignment,
-            )
-            move_count = patron_trace.get("move_count")
-            batch_count = patron_trace.get("batch_count")
-            change_count = patron_trace.get("change_count")
-            native_input_transport = patron_trace.get(
-                "native_input_transport"
-            )
-            native_input_bytes = patron_trace.get("native_input_bytes")
-            native_input_records = patron_trace.get("native_input_records")
-            native_input_crc32 = patron_trace.get("native_input_crc32")
-            native_output_bytes = patron_trace.get("native_output_bytes")
-            if (
-                isinstance(move_count, bool)
-                or not isinstance(move_count, int)
-                or move_count < 0
-                or isinstance(batch_count, bool)
-                or not isinstance(batch_count, int)
-                or batch_count < 0
-                or isinstance(change_count, bool)
-                or not isinstance(change_count, int)
-                or change_count < 0
-                or native_input_transport
-                not in {"typed-binary-pipe", "atomic-binary-file", "native-primary-store-model-v2"}
-                or isinstance(native_input_bytes, bool)
-                or not isinstance(native_input_bytes, int)
-                or native_input_bytes <= 0
-                or isinstance(native_input_records, bool)
-                or not isinstance(native_input_records, int)
-                or native_input_records <= 0
-                or (
-                    native_input_transport in {"typed-binary-pipe", "atomic-binary-file"}
-                    and (
-                        isinstance(native_input_crc32, bool)
-                        or not isinstance(native_input_crc32, int)
-                        or native_input_crc32 < 0
-                        or native_input_crc32 > 0xFFFFFFFF
-                    )
-                )
-                or isinstance(native_output_bytes, bool)
-                or not isinstance(native_output_bytes, int)
-                or native_output_bytes <= 0
-                or patron_trace.get("trace_storage") != "summary-only"
-            ):
-                raise ValidationError("production PATRON summary is invalid")
-            patron_validation = {
-                "status": "pass",
-                "mode": patron_trace.get("mode"),
-                "qualification": "online-native-output-contract",
-                "deep_replay": "deferred-to-offline-qualification",
-                "initial_assignment": initial_validation,
-                "candidate_assignment": candidate_validation,
-                "model": patron_model_counts,
-                "moves": move_count,
-                "batches": batch_count,
-                "batch_changes": change_count,
-                "native_input_transport": native_input_transport,
-                "native_input_bytes": native_input_bytes,
-                "native_input_records": native_input_records,
-                "native_input_crc32": native_input_crc32,
-                "native_output_bytes": native_output_bytes,
-            }
-            if native_store_model:
-                patron_validation["model_implementation_id"] = patron_trace["model_implementation_id"]
-                patron_validation["native_model_metrics"] = patron_trace["native_model_metrics"]
-        assignment, candidate_selection = phase3_runtime_call(
-            "patron.select_candidate",
-            _select_patron_timing_assignment,
-            initial,
-            assignment,
-            patron_trace,
-        )
-        patron_validation["candidate_selection"] = candidate_selection
+            patron_validation["candidate_selection"] = candidate_selection
         if not retain_diagnostics:
             # The pressure graph, timing source and native trace are no longer
             # inputs after online validation and v14 candidate selection.  In
@@ -1023,6 +1048,8 @@ def run_phase3(
             )
     elif provider == "patron":
         report["patron_algorithm_version"] = patron_algorithm_version
+        if patron_algorithm_version == 15:
+            report['artifacts']['patron_source_feedback']='source-feedback/report.json'
         report["patron_initialization"] = patron_initialization
         report["algorithm_validation"] = patron_validation
         if retain_diagnostics:

@@ -45,6 +45,8 @@ constexpr RegisteredSchema schemas[] = {
     {"source-metric-weights-tsv-v1", ArtifactEncoding::kText, 0, 1},
     {"patron-source-proxy-tsv-v1", ArtifactEncoding::kText, 0, 1},
     {"patron-source-board-request-v1", ArtifactEncoding::kBinary, 0x3151505354415045ULL, 1},
+    {"patron-witness-merge-request-v1", ArtifactEncoding::kBinary, 0x31514d57544d5545ULL, 1},
+    {"patron-witness-paths-tsv-v1", ArtifactEncoding::kText, 0, 1},
     {"source-net-map-tsv-v1", ArtifactEncoding::kText, 0, 1},
     {"source-net-map-request-v1", ArtifactEncoding::kBinary, 0x31514d4e534d5545ULL, 1},
     {"sta-path-selector-v1", ArtifactEncoding::kText, 0, 1},

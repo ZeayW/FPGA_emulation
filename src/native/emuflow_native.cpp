@@ -48,6 +48,7 @@ constexpr const char* kUsage =
     "  phase7 export-source-communication ORIGINAL_IR ASSIGNMENT SCHEDULE REQUEST OUTPUT\n"
     "  phase7 export-source-metric-weights ORIGINAL_IR ASSIGNMENT SCHEDULE REQUEST OUTPUT\n"
     "  phase3 export-source-proxy ORIGINAL_IR PRIMARY INITIAL REQUEST OUTPUT\n"
+    "  phase3 merge-witness-paths ORIGINAL_IR REQUEST OUTPUT TSV...\n"
     "  phase2 export-net-map ORIGINAL_IR [LEGACY_SOURCE] REQUEST OUTPUT\n"
     "  phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL\n"
     "  phase7 export-rwroute MAPPED PHYSICAL REQUEST TSV SUMMARY\n"
@@ -152,6 +153,11 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     return run(Stage::kExportSourceMetricWeights,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
   if (phase == "phase3" && operation == "export-source-proxy" && argc == 8)
     return run(Stage::kExportPatronSourceProxy,{argv[3],argv[4],argv[5],argv[6]},argv[7]);
+  if (phase == "phase3" && operation == "merge-witness-paths" && argc >= 7) {
+    std::vector<std::string> inputs{argv[3],argv[4]};
+    for(int i=6;i<argc;++i)inputs.push_back(argv[i]);
+    return run(Stage::kMergePatronWitnessPaths,std::move(inputs),argv[5]);
+  }
   if (phase == "phase2" && operation == "export-net-map" && (argc == 6 || argc == 7)) {
     std::vector<std::string> inputs;for(int i=3;i<argc-1;++i)inputs.push_back(argv[i]);
     return run(Stage::kExportSourceNetMap,std::move(inputs),argv[argc-1]);

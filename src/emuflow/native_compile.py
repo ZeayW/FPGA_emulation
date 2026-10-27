@@ -47,9 +47,9 @@ def _request(args, kwargs):
     if (
         isinstance(bound.arguments['patron_algorithm_version'], bool)
         or not isinstance(bound.arguments['patron_algorithm_version'], int)
-        or bound.arguments['patron_algorithm_version'] != 14
+        or bound.arguments['patron_algorithm_version'] not in {14,15}
     ):
-        raise EmuFlowError("only PATRON v14 is supported")
+        raise EmuFlowError("only PATRON v14/v15 are supported")
     if bound.arguments["global_timing_engine"] != "opensta":
         raise EmuFlowError("only the OpenSTA global timing engine is supported")
     for name, value in list(bound.arguments.items()):

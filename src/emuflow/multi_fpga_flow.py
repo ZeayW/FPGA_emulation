@@ -1242,9 +1242,9 @@ def _compile_preflight(ctx: _CompileContext):
     if (
         isinstance(ctx.patron_algorithm_version, bool)
         or not isinstance(ctx.patron_algorithm_version, int)
-        or ctx.patron_algorithm_version != 14
+        or ctx.patron_algorithm_version not in {14,15}
     ):
-        raise EmuFlowError("only PATRON v14 is supported")
+        raise EmuFlowError("only PATRON v14/v15 are supported")
     if ctx.partition_provider not in {"patron", "tritonpart"}:
         raise EmuFlowError(f"unsupported Phase 3 provider {ctx.partition_provider!r}")
     if ctx._native_mode and (
@@ -1304,11 +1304,11 @@ def _compile_preflight(ctx: _CompileContext):
     ctx.clocks = tuple(ctx.clocks)
     if (
         ctx.partition_provider == "patron"
-        and ctx.patron_algorithm_version == 14
+        and ctx.patron_algorithm_version in {14,15}
         and not ctx.exact_cut_mode
     ):
         raise EmuFlowError(
-            "PATRON v14 requires generalized Static Exact mode"
+            f"PATRON v{ctx.patron_algorithm_version} requires generalized Static Exact mode"
         )
     if not 2 <= ctx.phase6_chimew_region_count <= 31:
         raise EmuFlowError("--phase6-chimew-region-count must be in [2, 31]")
@@ -1624,7 +1624,7 @@ def _compile_timing(ctx: _CompileContext):
             max_paths=ctx.sta_max_paths,
             log_path=ctx.timing_root / "opensta.log",
             _stream_output=True,
-            clock_budget_policy=('engine-edge-v1' if ctx.physical else 'legacy-absolute-arrival-v1'),
+            clock_budget_policy=('engine-edge-v1' if ctx.physical or getattr(ctx,'patron_algorithm_version',14) == 15 else 'legacy-absolute-arrival-v1'),
         )
         timing_mode = "opensta-preplacement"
         weights_report = None
@@ -1744,6 +1744,14 @@ def _compile_timing(ctx: _CompileContext):
 
 def _compile_partition(ctx: _CompileContext):
     ctx.phase3_root = ctx.output_dir / "partition"
+    source_options={}
+    if ctx.partition_provider == 'patron' and ctx.patron_algorithm_version == 15:
+        from .opensta_source_context import emit_opensta_source_context
+        from .store_publication import bind_store_source
+        source_options['patron_source_context']=emit_opensta_source_context(
+            bind_store_source(ctx.ir_path,'emuir-compact-v2'),ctx.phase3_root/'source-context',
+            clocks=ctx.clock_periods,timing_io=ctx.timing_io,timing_model_path=ctx.timing_model,
+            architecture_timing_db_path=ctx.architecture_timing_db,executable=ctx.opensta)
     ctx.phase3_report = ctx.measured("phase3", run_phase3,
         ctx.ir_path,
         ctx.platform_path,
@@ -1780,6 +1788,7 @@ def _compile_partition(ctx: _CompileContext):
         patron_algorithm_version=ctx.patron_algorithm_version,
         static_exact_candidate_policy=ctx.static_exact_candidate_policy,
         retain_patron_baseline=False,
+        **source_options,
     )
     ctx.assignment_path = ctx.phase3_root / "assignment.json"
     phase3_validation = ctx.phase3_report.get("validation")

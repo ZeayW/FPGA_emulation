@@ -15,4 +15,6 @@ void ExportPatronSourceProxy(const std::vector<ArtifactRef>& inputs,
 // spelling. Retain those aliases alongside generated internal wire names.
 void ExportSourceNetMap(const std::vector<ArtifactRef>& inputs,
                         const std::string& output);
+void MergePatronWitnessPaths(const std::vector<ArtifactRef>& inputs,
+                            const std::string& output);
 }

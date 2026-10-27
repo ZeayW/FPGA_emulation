@@ -11,6 +11,8 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <fstream>
+#include <sstream>
 #include <tuple>
 
 namespace emuflow::core {
@@ -59,6 +61,74 @@ std::string CostPin(SqliteStatement& row,int cell,int port,int bit,int width,int
   Check(b>=0 && w>b && row.TypedInteger(valid)==1,"source communication pin shape is invalid");
   return Sdc(row.TypedText(cell))+"/"+Sdc(row.TypedText(port)+(w==1?"":"__"+std::to_string(b)));
 }
+
+}  // namespace
+
+void MergePatronWitnessPaths(const std::vector<ArtifactRef>& inputs,const std::string& output) {
+  Check(inputs.size()>=3 && inputs.size()<=11,"source witness owner count differs");
+  for(const auto& input:inputs)input.RequireUnchanged();
+  CheckedRequestReader request(inputs[1].path(),1024);
+  Check(request.Read<std::uint64_t>()==0x31514d57544d5545ULL && request.Read<std::uint32_t>()==1 &&
+        request.Read<std::uint32_t>()==inputs.size()-1,"unsupported source witness merge request");
+  for(std::size_t i=0;i<inputs.size();++i)if(i!=1) {
+    const FileGeneration generation{request.Read<std::uint64_t>(),request.Read<std::uint64_t>(),request.Read<std::uint64_t>(),
+      request.Read<std::int64_t>(),request.Read<std::int64_t>(),request.Read<std::int64_t>(),request.Read<std::int64_t>()};
+    if(!(generation==inputs[i].generation()))throw StageError(ErrorCode::kMixedGeneration,"source witness parent generation changed");
+  }
+  request.RequireEnd();
+  const std::string header="path_id_hex\tclock_domain_hex\tclock_period_ns\tslack_ns\tfixed_delay_ns\tpath_nets_hex"
+    "\tsource_clock_hex\tsource_period_ns\tlaunch_edge_ns\tcapture_edge_ns\tsource_offset_ns\ttarget_cycle_time_ns"
+    "\tmulticycle_adjustment_ns\tcheck_margin_ns\tsource_latency_ns\ttarget_clock_delay_ns\tclock_skew_ns\toutput_delay\tpath_delay\tlatch_check";
+  const auto line=[](std::istream& in,std::string& text) {
+    text.clear();char c;
+    while(in.get(c)) {if(c=='\n')return true;Check(c!='\0' && text.size()<2*1024*1024,"source witness row exceeds bounds");text+=c;}
+    Check(in.eof() && text.empty(),"source witness row is truncated");return false;
+  };
+  const auto unhex=[](const std::string& text) {
+    Check(!text.empty() && text.size()%2==0 && text.find_first_not_of("0123456789abcdef")==std::string::npos,
+          "source witness text encoding is invalid");
+    std::string result;result.reserve(text.size()/2);
+    for(std::size_t i=0;i<text.size();i+=2)result+=char(std::stoul(text.substr(i,2),nullptr,16));
+    Check(result.find('\0')==std::string::npos,"source witness identity contains NUL");JsonQuote(result);return result;
+  };
+  const auto number=[](const std::string& text) {
+    std::istringstream stream(text);stream.imbue(std::locale::classic());double value;
+    stream>>std::noskipws>>value;
+    Check(stream && stream.peek()==EOF && std::isfinite(value),"source witness numeric fact is invalid");return value;
+  };
+  AtomicBinaryWriter writer(output,inputs);auto& stream=writer.stream();stream<<header<<'\n';
+  std::set<std::string> seen;std::uint64_t received=0,emitted=0;
+  for(std::size_t i=2;i<inputs.size();++i) {
+    std::ifstream input(inputs[i].path(),std::ios::binary);std::string text;
+    Check(line(input,text) && text==header,"source witness header differs");
+    while(line(input,text)) {
+      std::vector<std::string> fields;std::size_t begin=0;
+      for(;;) {const auto end=text.find('\t',begin);fields.push_back(text.substr(begin,end-begin));
+        Check(!fields.back().empty() && fields.size()<=20,"source witness field count differs");
+        if(end==std::string::npos)break;begin=end+1;}
+      Check(fields.size()==20,"source witness field count differs");
+      const auto identity=unhex(fields[0]);unhex(fields[1]);unhex(fields[6]);
+      const auto hash=identity.rfind('#');
+      Check(hash!=std::string::npos && identity.size()-hash==9 && identity.find("->")!=std::string::npos &&
+        identity.substr(hash+1).find_first_not_of("0123456789")==std::string::npos,"source witness endpoint identity differs");
+      for(unsigned column=2;column<20;++column)if(column!=5 && column!=6)(void)number(fields[column]);
+      Check(number(fields[2])>0 && number(fields[7])>0 && number(fields[4])>=0 &&
+            number(fields[11])+number(fields[12])-number(fields[8])>0 &&
+            (fields[17]=="0" || fields[17]=="1") && fields[18]=="0" && fields[19]=="0",
+            "source witness clock/cost/check facts are invalid");
+      begin=0;
+      for(;;) {const auto end=fields[5].find(',',begin);unhex(fields[5].substr(begin,end-begin));
+        if(end==std::string::npos)break;begin=end+1;}
+      const auto tail=text.substr(text.find('\t'));const auto stem=identity.substr(0,hash);
+      ++received;if(!seen.insert(Hex(stem)+tail).second)continue;
+      Check(emitted<100000000,"source witness identity ordinal overflows");
+      std::ostringstream ordinal;ordinal<<std::setw(8)<<std::setfill('0')<<emitted++;
+      stream<<Hex(stem+"#"+ordinal.str())<<tail<<'\n';
+    }
+  }
+  Check(emitted>0 && stream.good(),"source witness merge is empty or incomplete");writer.Commit();
+  std::cout<<JsonRecord(std::map<std::string,JsonRecord>{{"schema","emuflow.patron-witness-merge/v1"},{"status","pass"},
+      {"input_rows",received},{"paths",emitted},{"duplicate_rows",received-emitted}}).Encode()<<'\n';
 }
 
 void ExportSourceCommunication(const std::vector<ArtifactRef>& inputs,const std::string& output) {

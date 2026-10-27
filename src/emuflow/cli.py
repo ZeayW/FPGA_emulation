@@ -846,7 +846,7 @@ def _build_parser() -> argparse.ArgumentParser:
     multi_fpga_compile.add_argument(
         "--patron-algorithm-version",
         type=int,
-        choices=(14,),
+        choices=(14,15),
         default=DEFAULT_PATRON_ALGORITHM_VERSION,
     )
     multi_fpga_compile.add_argument(
