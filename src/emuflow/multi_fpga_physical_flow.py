@@ -179,6 +179,26 @@ def _require_native_word_evidence(record, source_hashes):
     return 'legacy-data-only-v1'
 
 
+def _word_physical_calendar_policy(record):
+    """Bind the physical payload calendar to the source actually synthesized."""
+    from .word_transport_rtl import PHYSICAL_WORD_CALENDAR_POLICY
+    synthesis = record.get('stages', {}).get('transport_synthesis', {})
+    calendar = synthesis.get('physical_calendar')
+    if calendar is None:
+        return 'legacy-drained-word-epoch-v1'
+    if not isinstance(calendar, Mapping) or calendar.get('policy') != PHYSICAL_WORD_CALENDAR_POLICY:
+        raise ValidationError('completed word transport has an unsupported physical calendar')
+    rtl = calendar.get('rtl', {})
+    if not isinstance(rtl, Mapping) or not isinstance(rtl.get('path'), str):
+        raise ValidationError('completed word transport calendar lacks its RTL owner')
+    path = Path(rtl['path'])
+    if not path.is_file() or path.is_symlink() or _sha256(path) != rtl.get('sha256'):
+        raise ValidationError('completed word transport calendar RTL differs')
+    # The synthesis artifact is retained separately from the Phase6 virtual
+    # RTL. Historical implementations never acquire a continuous identity.
+    return PHYSICAL_WORD_CALENDAR_POLICY
+
+
 def _require_word_timing_policy(header, policy):
     from .sampling_cost import SAMPLING_COST_POLICY
     if policy not in ('legacy-data-only-v1', SAMPLING_COST_POLICY):
@@ -1324,6 +1344,11 @@ def run_multi_fpga_physical_flow(
             return record
 
         transport_rtl = split_root / item["transport_rtl"]
+        physical_calendar = None
+        if word_sources is not None:
+            from .word_transport_rtl import write_physical_word_transport
+            transport_rtl = fpga_root / "continuous-word-transport.sv"
+            physical_calendar = write_physical_word_transport(transport_rtl, transport, platform)
         transport_sources = tuple(
             bind_store_source(path, "yosys-source-document-v1")
             for path in (runtime_controller, transport_rtl)
@@ -1380,6 +1405,7 @@ def run_multi_fpga_physical_flow(
             },
             "output": str(transport_ir_path),
             "sha256": _sha256(transport_ir_path),
+            **({"physical_calendar": physical_calendar} if physical_calendar is not None else {}),
         }
 
         merged_ir = fpga_root / "placement.emuir.sqlite"
@@ -1739,6 +1765,7 @@ def _assemble_multi_fpga_physical_results(
     requires_virtual_io = manifest.get("virtual_board_binding") is not None
     requires_word_phy = manifest.get('word_phy_plan') is not None
     word_timing_policy = None
+    word_calendar_policy = None
     if requires_word_phy:
         if backend != 'vivado' or requires_virtual_io:
             raise ValidationError('completed word PHY evidence requires the native Vivado adapter')
@@ -1750,6 +1777,10 @@ def _assemble_multi_fpga_physical_results(
         if len(policies) > 1:
             raise ValidationError('completed word PHY workers mix timing measurement policies')
         word_timing_policy = next(iter(policies)) if policies else None
+        calendars = {_word_physical_calendar_policy(record) for record in records if record.get('active') is not False}
+        if len(calendars) > 1:
+            raise ValidationError('completed word PHY workers mix physical payload calendars')
+        word_calendar_policy = next(iter(calendars)) if calendars else None
     if requires_virtual_io:
         if backend not in {"rapidwright", "vivado"}:
             raise ValidationError("completed fixed differential I/O requires a supported Xilinx backend")
@@ -1799,6 +1830,7 @@ def _assemble_multi_fpga_physical_results(
             'fpgas':evidence, 'differential_pairs':sum(e['differential_pairs'] for e in evidence.values()),
             'global_timing_status':'pending-independent-phase7c',
             'timing_measurement_policy':word_timing_policy,
+            'physical_calendar_policy':word_calendar_policy,
         }
     if backend == "vivado":
         from .physical_summary_storage import publish_optimization_proofs
