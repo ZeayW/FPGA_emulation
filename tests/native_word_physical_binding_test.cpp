@@ -55,7 +55,12 @@ int main(int argc,char** argv) {
     if(capture.Step() && !capture.IsNull(0)) {
       auto targets=context.implementation_clock_periods_ns;
       if(!capture.IsNull(1))targets["clk"]=capture.TypedReal(1);
-      result=BindWordCaptureClockContext(result,launches,targets,capture.TypedReal(0));
+      auto continuous=parser.Prepare("SELECT json_extract(?1,'$.continuous_phase_word'),json_extract(?1,'$.continuous_offset_ns'),json_extract(?1,'$.horizon_words')");continuous.BindText(1,json);
+      if(continuous.Step() && !continuous.IsNull(0)) {
+        const auto phase=continuous.TypedInteger(0),horizon=continuous.TypedInteger(2);
+        if(phase<0 || horizon<0 || horizon>UINT32_MAX)throw std::runtime_error("invalid continuous test coordinates");
+        result=BindContinuousWordCaptureContext(result,launches,targets,capture.TypedReal(0),phase,continuous.TypedReal(1),horizon);
+      } else result=BindWordCaptureClockContext(result,launches,targets,capture.TypedReal(0));
     }
     if(argc==3 && std::string(argv[2])=="mix-capture-clock-owner") {
       const auto other=ArtifactRef::Bind(text("$.other_clocks"),"source-launch-clock-store-v1");
@@ -124,6 +129,12 @@ int main(int argc,char** argv) {
     }
     std::cout<<"],\"context_launches\":[";
     for(std::size_t i=0;i<result.model.root_launch_ns.size();++i){if(i)std::cout<<",";std::cout<<result.model.root_launch_ns[i];}
-    std::cout<<"],\"inputs\":"<<result.inputs.size()<<"}\n";return 0;
+    std::cout<<"],\"event_times\":[";
+    for(std::size_t i=0;i<selected.size();++i){if(i)std::cout<<",";std::cout<<WordEventTime(result.model,selected[i]);}
+    std::cout<<"]";
+    if(result.continuous)std::cout<<",\"continuous\":{\"phase\":"<<result.continuous->phase_word
+        <<",\"repeat_words\":"<<result.continuous->repeat_words<<",\"offset_ns\":"<<result.continuous->word_offset_ns
+        <<",\"anchor_words\":"<<result.continuous->anchor_words<<"}";
+    std::cout<<",\"inputs\":"<<result.inputs.size()<<"}\n";return 0;
   }catch(const std::exception& error){std::cerr<<error.what()<<"\n";return 1;}
 }

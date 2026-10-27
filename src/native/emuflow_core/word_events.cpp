@@ -4,6 +4,7 @@
 #include <cmath>
 #include <deque>
 #include <limits>
+#include <numeric>
 
 namespace emuflow::core {
 namespace {
@@ -30,10 +31,33 @@ double WordEventTime(const PhysicalWordModel& model, std::uint32_t index) {
   return time;
 }
 
+std::uint32_t LastPhysicalWordCapture(const PhysicalWordModel& model) {
+  if(model.calendar==PhysicalWordCalendar::kContinuousPhysical) {
+    Check(model.continuous_horizon_words>=3,"continuous word projection requires an explicit search horizon");
+    return model.continuous_horizon_words-1;
+  }
+  Check(model.calendar==PhysicalWordCalendar::kDrainedVirtualEpoch,"unsupported physical word calendar");
+  Check(model.frame_slots>=3,"physical word projection requires its frame drain boundary");
+  return model.frame_slots-2;
+}
+
+std::uint64_t ContinuousWordRepeatWords(const PhysicalWordModel& model) {
+  std::uint64_t repeat=1;
+  for(const auto& transfer:model.transfers) {
+    Check(transfer.ratio>=8 && transfer.ratio<=256 && transfer.ratio%8==0 &&
+          transfer.phase_word<transfer.ratio/8,"invalid physical eight-bit word transfer");
+    const auto words=transfer.ratio/8;
+    const auto quotient=repeat/std::gcd(repeat,std::uint64_t(words));
+    Check(quotient<=UINT64_MAX/words,"continuous word recurrence exceeds native domain");
+    repeat=quotient*words;
+  }
+  return repeat;
+}
+
 std::vector<std::uint32_t> ProjectPhysicalWordEvents(const PhysicalWordModel& model) {
   Check(std::isfinite(model.period_ns) && model.period_ns > 0 &&
         std::isfinite(model.epoch_ns), "invalid physical word clock");
-  Check(model.frame_slots >= 3, "physical word projection requires its frame drain boundary");
+  const auto last_allowed_capture=LastPhysicalWordCapture(model);
   const auto count = model.transfers.size();
   Check(count <= UINT32_MAX && model.root_launch_ns.size() <= UINT32_MAX,
         "physical word population exceeds native domain");
@@ -90,10 +114,11 @@ std::vector<std::uint32_t> ProjectPhysicalWordEvents(const PhysicalWordModel& mo
       guard = std::max(guard, candidate);
     }
     const auto words = transfer.ratio / 8;
-    // Match emitted RTL: load + fixed_latency < FRAME_SLOTS - 1.
-    Check(std::uint64_t(transfer.fixed_latency_words) + 2 < model.frame_slots,
+    Check(transfer.fixed_latency_words<last_allowed_capture,
+          model.calendar==PhysicalWordCalendar::kContinuousPhysical ?
+          "physical word transfer cannot arrive within search horizon" :
           "physical word transfer cannot arrive before frame drain");
-    const auto last = model.frame_slots - 2 - transfer.fixed_latency_words;
+    const auto last = last_allowed_capture - transfer.fixed_latency_words;
     Check(last_capture < last, "no word load after contributing RX capture");
     const auto first = FirstPeriodicWord(transfer.phase_word, words, last_capture + 1, last);
     const auto maximum_round = (last - transfer.phase_word) / words;
@@ -101,7 +126,9 @@ std::vector<std::uint32_t> ProjectPhysicalWordEvents(const PhysicalWordModel& mo
     const auto time_at = [&](std::uint64_t round) {
       return WordEventTime(model, static_cast<std::uint32_t>(transfer.phase_word + round * words));
     };
-    Check(time_at(high) >= guard, "physical readiness misses frame drain or native calendar");
+    Check(time_at(high) >= guard,model.calendar==PhysicalWordCalendar::kContinuousPhysical ?
+          "physical readiness exceeds continuous search horizon" :
+          "physical readiness misses frame drain or native calendar");
     // A bounded integer bisection avoids epsilon snapping at exact word edges.
     // This is monotonicity of one fixed clock calendar, not of DUT Fmax.
     while (low < high) {
@@ -130,9 +157,10 @@ void ValidatePhysicalWordEvents(const PhysicalWordModel& model,
     const std::vector<std::uint32_t>& selected,
     const std::vector<double>& support_slack_ns, double slack_tolerance_ns) {
   Check(std::isfinite(model.period_ns) && model.period_ns > 0 &&
-        std::isfinite(model.epoch_ns) && model.frame_slots >= 3 &&
+        std::isfinite(model.epoch_ns) &&
         std::isfinite(slack_tolerance_ns) && slack_tolerance_ns >= 0,
         "invalid independent word event check context");
+  const auto last_allowed_capture=LastPhysicalWordCapture(model);
   Check(selected.size() == model.transfers.size(),
         "independent word event population differs");
   for (auto phase : model.root_launch_ns)
@@ -146,7 +174,9 @@ void ValidatePhysicalWordEvents(const PhysicalWordModel& model,
           "independent word transfer semantics are invalid");
     const auto index = selected[i], words = transfer.ratio / 8;
     Check(index > 0 && index % words == transfer.phase_word &&
-          std::uint64_t(index) + transfer.fixed_latency_words < std::uint64_t(model.frame_slots) - 1,
+          std::uint64_t(index) + transfer.fixed_latency_words <= last_allowed_capture,
+          model.calendar==PhysicalWordCalendar::kContinuousPhysical ?
+          "independent word event violates its phase or continuous search horizon" :
           "independent word event violates its phase or frame drain");
     Check(transfer.fanins.size() <= support_slack_ns.size() - offset,
           "independent word support check coverage is incomplete");

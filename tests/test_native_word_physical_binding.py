@@ -294,6 +294,45 @@ def test_capture_context_never_rounds_an_earlier_edge_into_a_previous_cycle(phys
     assert report['context_launches'][-1]==50. and report['events']==[11,19,27]
 
 
+@pytest.mark.parametrize('capture,period,roots', [(50.,100.,[-50.,-25.,-100.]),
+                                               (100.,100.,[-100.,-75.,-50.]),
+                                               (300.,600.,[-300.,-150.,-600.])])
+@pytest.mark.parametrize('phase,offset', [(0,0.),(1,0.),(0,2.25),(1,4.75)])
+def test_continuous_capture_context_matches_absolute_clock_enumeration(physical,capture,period,roots,phase,offset):
+    config,_=physical
+    config.update(capture_edge_ns=capture,capture_period_ns=period,
+                  continuous_phase_word=phase,continuous_offset_ns=offset,horizon_words=4096)
+    result=run(physical);assert result.returncode==0,result.stderr
+    report=json.loads(result.stdout)
+    assert report['context_launches']==roots
+    assert report['continuous']['repeat_words']==2
+    assert report['continuous']['phase']==phase and report['continuous']['offset_ns']==offset
+    # Independently enumerate the absolute steady calendar. No epoch anchor,
+    # ceiling operation, or selected source-path database enters this oracle.
+    times=[]
+    for fanins in report['costs']:
+        for word in range(-1000,2000):
+            if (word+phase)%2!=1:continue
+            edge=offset+word*5.
+            if all(edge >= (times[source]+30. if event else roots[source])+cost
+                   and (not event or edge>times[source]+30.)for event,source,data,cost in fanins):
+                times.append(edge);break
+        else:pytest.fail('continuous fixture has no legal occurrence')
+    assert report['event_times']==times
+    # These remain the measured nonnegative data arcs and signed sampling
+    # costs. Clock rebasing does not replace or add any physical path cost.
+    config['slacks']=[check[4]-(check[2]+check[3])for check in report['checks']]
+    checked=run(physical,'validate');assert checked.returncode==0,checked.stderr
+
+
+@pytest.mark.parametrize('phase,offset,horizon', [(2,0.,4096),(-1,0.,4096),(0,-.1,4096),
+                                                (0,5.,4096),(0,0.,0),(0,0.,3)])
+def test_continuous_context_rejects_unknown_phase_and_insufficient_numerical_extent(physical,phase,offset,horizon):
+    physical[0].update(capture_edge_ns=50.,continuous_phase_word=phase,
+                       continuous_offset_ns=offset,horizon_words=horizon)
+    result=run(physical);assert result.returncode!=0 and not result.stdout
+
+
 @pytest.mark.parametrize('edge,period',[(0.,100.),(-1.,100.),(50.,0.),(50.,-10.)])
 def test_capture_context_rejects_invalid_edge_and_clock_coordinates(physical,edge,period):
     physical[0].update(capture_edge_ns=edge,capture_period_ns=period)

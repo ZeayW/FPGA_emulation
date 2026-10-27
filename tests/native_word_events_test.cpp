@@ -8,12 +8,19 @@ int main() {
   try {
     using namespace emuflow::core;
     std::string mode;
-    if (!(std::cin >> mode) || (mode != "project" && mode != "check")) throw std::runtime_error("invalid test mode");
+    if (!(std::cin >> mode)) throw std::runtime_error("invalid test mode");
+    const bool continuous=mode.rfind("continuous-",0)==0;
+    if(continuous)mode=mode.substr(11);
+    if(mode!="project" && mode!="check" && mode!="repeat")throw std::runtime_error("invalid test mode");
     const auto number = [] { std::string text; if (!(std::cin >> text)) throw std::runtime_error("truncated test input"); return std::stod(text); };
     PhysicalWordModel model;
     model.period_ns = number(); model.epoch_ns = number();
     unsigned roots, events;
     if (!(std::cin >> model.frame_slots >> roots >> events) || roots > 100000 || events > 100000) throw std::runtime_error("invalid test population");
+    if(continuous) {
+      model.calendar=PhysicalWordCalendar::kContinuousPhysical;
+      if(!(std::cin>>model.continuous_horizon_words))throw std::runtime_error("missing continuous horizon");
+    }
     for (unsigned i=0; i<roots; ++i) model.root_launch_ns.push_back(number());
     for (unsigned i=0; i<events; ++i) {
       PhysicalWordTransfer transfer{}; unsigned stable, count;
@@ -27,6 +34,9 @@ int main() {
         transfer.fanins.push_back({event != 0,index,data,cost});
       }
       model.transfers.push_back(std::move(transfer));
+    }
+    if(mode=="repeat") {
+      std::cout<<ContinuousWordRepeatWords(model)<<"\n";return 0;
     }
     if (mode == "check") {
       std::vector<std::uint32_t> selected;std::vector<double> slacks;

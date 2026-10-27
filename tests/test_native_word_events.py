@@ -24,9 +24,11 @@ def kernel(tmp_path_factory):
     return output
 
 
-def project(kernel, roots, transfers, *, period=5., epoch=0., frame=2048, fail=None, chosen=None, slacks=None):
-    text = ["check" if chosen is not None else "project",
-            f"{period!r} {epoch!r} {frame} {len(roots)} {len(transfers)}", *map(repr, roots)]
+def project(kernel, roots, transfers, *, period=5., epoch=0., frame=2048, fail=None, chosen=None, slacks=None, horizon=None, recurrence=False):
+    mode = "repeat" if recurrence else "check" if chosen is not None else "project"
+    text = [("continuous-" if horizon is not None else "")+mode,
+            f"{period!r} {epoch!r} {frame} {len(roots)} {len(transfers)}"+
+            (f" {horizon}" if horizon is not None else ""), *map(repr, roots)]
     for phase, ratio, latency, stable, fanins in transfers:
         text.append(f"{phase} {ratio} {latency} {int(stable)} {len(fanins)}")
         text.extend(f"{int(event)} {source} {data!r} {cost!r}" for event, source, data, cost in fanins)
@@ -145,6 +147,32 @@ def test_projection_obeys_rtl_strict_drain_boundary(kernel):
     assert project(kernel, [0.], transfers, frame=18) == [10]  # RX16 < frame-1.
     project(kernel, [0.], transfers, frame=17, fail="misses frame drain")
     project(kernel, [0.], transfers, frame=0, fail="requires its frame drain boundary")
+
+
+@pytest.mark.parametrize('frame', [0, 17, 1024])
+def test_continuous_projection_does_not_create_a_frame_drain_or_reset(kernel, frame):
+    transfers = [transfer([(False, 0, 1., 50.)], ratio=24, phase=1),
+                 transfer([(True, 0, 1., 1.)], ratio=16, phase=0)]
+    assert project(kernel, [0.], transfers, frame=frame, horizon=200) == exhaustive([0.], transfers)
+    late = [transfer([(False, 0, 1., 1600.)], ratio=24, phase=1)]
+    assert project(kernel, [0.], late, frame=frame, horizon=400) == [322]
+
+
+def test_continuous_horizon_is_a_finite_search_limit_not_a_dut_period(kernel):
+    transfers = [transfer([(False, 0, 1., 50.)])]
+    assert project(kernel, [0.], transfers, frame=0, horizon=17) == [10]
+    project(kernel, [0.], transfers, frame=4096, horizon=16, fail='continuous search horizon')
+    project(kernel, [0.], transfers, horizon=0, fail='explicit search horizon')
+    assert project(kernel, [0.], transfers, frame=0, horizon=17, chosen=[10], slacks=[0.]) is True
+    project(kernel, [0.], transfers, horizon=16, chosen=[10], slacks=[0.], fail='continuous search horizon')
+
+
+def test_joint_word_recurrence_keeps_all_lane_ratios_and_64bit_coordinates(kernel):
+    events = [transfer([(False, 0, 1., 1.)], ratio=r) for r in [16, 24, 32]]
+    assert project(kernel, [0.], events, recurrence=True) == 12
+    events = [transfer([(False, 0, 1., 1.)], ratio=8*n) for n in range(1, 33)]
+    assert project(kernel, [0.], events, recurrence=True) == math.lcm(*range(1, 33))
+    assert project(kernel, [0.], events, recurrence=True) > 2**32
 
 
 def test_changing_dut_period_requires_reprojection_and_is_not_monotone(kernel):

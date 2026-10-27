@@ -100,15 +100,65 @@ BoundPhysicalWordModel BindWordCaptureClockContext(const BoundPhysicalWordModel&
   }
   launches.RequireUnchanged();result.RequireUnchanged();return result;
 }
+BoundPhysicalWordModel BindContinuousWordCaptureContext(const BoundPhysicalWordModel& original,
+    SourceLaunchClockView& launches,const std::map<std::string,double>& targets,double capture_edge_ns,
+    std::uint64_t phase_word,double word_offset_ns,std::uint32_t horizon_words) {
+  Check(!original.continuous && original.model.calendar==PhysicalWordCalendar::kDrainedVirtualEpoch &&
+        original.model.epoch_ns==0. && original.context.epoch_ns==0.,
+        "continuous word context requires the original zero-epoch physical owner");
+  Check(std::isfinite(original.model.period_ns) && original.model.period_ns>0 &&
+        std::isfinite(word_offset_ns) && word_offset_ns>=0 && word_offset_ns<original.model.period_ns && horizon_words>=3,
+        "continuous word context has an invalid fractional phase or search horizon");
+  auto result=BindWordCaptureClockContext(original,launches,targets,capture_edge_ns);
+  const auto repeat=ContinuousWordRepeatWords(original.model);
+  Check(phase_word<repeat,"continuous word phase is outside the joint recurrence");
+  const auto period=result.model.period_ns;
+  for(auto& launch:result.model.root_launch_ns)launch-=capture_edge_ns;
+  double minimum=0.,maximum_cost=0.;std::uint32_t maximum_step=1;
+  for(const auto launch:result.model.root_launch_ns)minimum=std::min(minimum,launch);
+  for(const auto& transfer:result.model.transfers) {
+    Check(transfer.fixed_latency_words>0 && transfer.fixed_latency_words<UINT32_MAX-32,
+          "continuous word latency exceeds native domain");
+    maximum_step=std::max(maximum_step,transfer.ratio/8+transfer.fixed_latency_words+1);
+    for(const auto& fanin:transfer.fanins) {
+      Check(std::isfinite(fanin.sampling_cost_ns),"continuous word sampling cost is not finite");
+      maximum_cost=std::max(maximum_cost,fanin.sampling_cost_ns);
+      if(!fanin.from_event) {
+        Check(fanin.source<result.model.root_launch_ns.size(),"continuous word launch is absent");
+        minimum=std::min(minimum,result.model.root_launch_ns[fanin.source]+fanin.sampling_cost_ns);
+      }
+    }
+  }
+  // Start far enough before all launches to settle configuration-stable
+  // transfer chains as well. This bound uses an acyclic path's maximum node
+  // count; it is not charged to data delay or interpreted as a DUT cycle.
+  const auto step=double(maximum_step)+std::ceil(maximum_cost/period)+1.;
+  const auto anchor=std::ceil(-minimum/period)+2.+step*result.model.transfers.size();
+  Check(std::isfinite(anchor) && anchor>=1 && anchor<double(horizon_words)-2 && anchor<UINT32_MAX,
+        "continuous word startup anchor exceeds its numerical search horizon");
+  const auto words=static_cast<std::uint32_t>(anchor);
+  result.model.calendar=PhysicalWordCalendar::kContinuousPhysical;
+  result.model.continuous_horizon_words=horizon_words;
+  result.model.epoch_ns=word_offset_ns-double(words)*period;
+  Check(std::isfinite(result.model.epoch_ns),"continuous word epoch is nonfinite");
+  for(auto& transfer:result.model.transfers) {
+    const auto cycle=transfer.ratio/8;
+    transfer.phase_word=(transfer.phase_word+words%cycle+cycle-phase_word%cycle)%cycle;
+  }
+  result.capture_edge_ns=0.;
+  result.continuous=BoundPhysicalWordModel::ContinuousContext{capture_edge_ns,word_offset_ns,phase_word,repeat,words};
+  result.RequireUnchanged();return result;
+}
 void VisitPhysicalWordSupportChecks(const BoundPhysicalWordModel& binding,
     const std::vector<std::uint32_t>& selected,const std::function<void(const WordSupportCheck&)>& visitor) {
   const auto& model=binding.model;
   Check(selected.size()==model.transfers.size(),"word physical support occurrence coverage differs");
+  const auto last_capture=LastPhysicalWordCapture(model);
   for(std::uint32_t i=0;i<model.transfers.size();++i) {
     const auto& transfer=model.transfers[i];
     Check(transfer.ratio>=8 && transfer.ratio<=256 && transfer.ratio%8==0 && selected[i]>0 &&
           selected[i]%(transfer.ratio/8)==transfer.phase_word &&
-          std::uint64_t(selected[i])+transfer.fixed_latency_words<model.frame_slots-1,
+          std::uint64_t(selected[i])+transfer.fixed_latency_words<=last_capture,
           "word physical support occurrence is outside its calendar");
     for(std::uint32_t j=0;j<transfer.fanins.size();++j) {
       const auto& fanin=transfer.fanins[j];double launch;

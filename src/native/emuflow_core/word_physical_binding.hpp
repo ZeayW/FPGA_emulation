@@ -48,6 +48,12 @@ struct BoundPhysicalWordModel {
   // numerical data/check arc. Support-check indices enumerate active fanins.
   std::vector<std::vector<EliminatedFanin>> eliminated_fanins;
   std::optional<double> capture_edge_ns;
+  struct ContinuousContext {
+    double reference_capture_edge_ns,word_offset_ns;
+    std::uint64_t phase_word,repeat_words;
+    std::uint32_t anchor_words;
+  };
+  std::optional<ContinuousContext> continuous;
   std::vector<ArtifactRef> inputs;
   void RequireUnchanged() const;
 };
@@ -83,4 +89,14 @@ BoundPhysicalWordModel BindPhysicalWordModel(const ArtifactRef& assignment,
 // This is an epoch-bounded projection, not a continuous-run/hold certificate.
 BoundPhysicalWordModel BindWordCaptureClockContext(const BoundPhysicalWordModel& original,
     SourceLaunchClockView& launches,const std::map<std::string,double>& targets,double capture_edge_ns);
+
+// Rebase one continuous physical calendar context at its DUT capture edge.
+// phase_word identifies the serializer phase of the first word at/after the
+// capture edge; word_offset_ns is that edge's offset in [0,word_period).
+// No DUT/TDM phase alignment is inferred. A complete-phase consumer must cover
+// the whole repeat_words domain and fractional phase cells, with all capture
+// families, before accepting system timing. horizon is a numerical bound only.
+BoundPhysicalWordModel BindContinuousWordCaptureContext(const BoundPhysicalWordModel& original,
+    SourceLaunchClockView& launches,const std::map<std::string,double>& targets,double capture_edge_ns,
+    std::uint64_t phase_word,double word_offset_ns,std::uint32_t horizon_words);
 }  // namespace emuflow::core

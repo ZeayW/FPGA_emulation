@@ -20,12 +20,20 @@ struct PhysicalWordTransfer {
   bool configuration_stable = false;
   std::vector<WordFanIn> fanins;
 };
+enum class PhysicalWordCalendar { kDrainedVirtualEpoch, kContinuousPhysical };
 struct PhysicalWordModel {
   double period_ns = 5.0, epoch_ns = 0.0;
   std::uint32_t frame_slots = 0;
   std::vector<double> root_launch_ns;
   std::vector<PhysicalWordTransfer> transfers;
+  PhysicalWordCalendar calendar = PhysicalWordCalendar::kDrainedVirtualEpoch;
+  // Numerical search extent only. A continuous payload calendar has no frame
+  // drain or periodic phase reset. Its last RX must be below this bound.
+  std::uint32_t continuous_horizon_words = 0;
 };
+std::uint32_t LastPhysicalWordCapture(const PhysicalWordModel& model);
+// Joint serializer phase recurrence; never a DUT period or frame boundary.
+std::uint64_t ContinuousWordRepeatWords(const PhysicalWordModel& model);
 
 // Native data-plane kernel, not an STA engine or a source-binding certificate.
 // The caller must bind every canonical fanin/clock/disposition before calling.
