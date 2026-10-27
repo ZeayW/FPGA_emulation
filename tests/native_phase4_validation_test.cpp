@@ -63,9 +63,26 @@ void Audit(const std::string& damage) {
   }
   if(rejected!=!damage.empty())throw std::runtime_error("kernel boundary accepted damaged fixture");
 }
+void PreserveNormalizedWeight() {
+  Workspace work(std::filesystem::temp_directory_path());
+  Model model;Demand demand;demand.net="n";demand.source="a";demand.sinks={"b"};
+  model.demands.push_back(demand);model.demand_index.emplace("n",0);
+  const auto path=work.root/"timing.json";
+  {std::ofstream out(path);out<<R"({"schema":"emuflow.sta-paths/v1","normalization":{"positive_slack_scale_ns":3.0,"negative_slack_scale_ns":1.0,"max_clock_period_ns":10.0},"compression":{"original_paths":1,"compressed_paths":1},"paths":[{"id":"p","clock_domain":"clk","clock_period_ns":10.0,"slack_ns":3.0,"fixed_delay_ns":2.0,"cut_nets":["n"],"cut_signature":["a->b"],"normalized_slack":1.0000000000001,"compressed_path_ids":["p"]}]})";}
+  const auto source=ArtifactRef::Bind(path.string(),"system-routing-paths-v1");
+  SqliteDatabase db((work.root/"paths.sqlite").string(),SqliteDatabase::Mode::kCreateExclusive);
+  LoadPaths(model,&source,db,nullptr);
+  const auto expected=1.0000000000001;
+  auto row=db.Prepare("SELECT record_json FROM normalized_paths");
+  if(model.paths.size()!=1 || model.paths[0].normalized!=expected ||
+      model.demands[0].normalized_slack!=expected || !row.Step() ||
+      Num(Fields(row.TypedText(0)),"normalized_slack")!=expected)
+    throw std::runtime_error("validated source timing weight was replaced");
+}
 }
 int main() {
   try {
+    PreserveNormalizedWeight();
     for(const auto* damage:{"","unavailable-candidate","missing-metric","metric-type","unknown-metric"})Audit(damage);
     return 0;
   }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}

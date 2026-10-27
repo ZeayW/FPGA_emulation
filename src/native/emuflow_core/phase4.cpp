@@ -301,7 +301,12 @@ void LoadPaths(Model& model,const ArtifactRef* input,SqliteDatabase& db,const vo
   auto rows=db.Prepare("SELECT seq,record_json,explicit_signature FROM raw_paths ORDER BY seq");
   auto output=db.Prepare("INSERT INTO normalized_paths VALUES(?,?)");
   const auto append=[&](I source,Raw row){Path path;path.source_seq=source;path.id=Text(row,"id");path.clock=Text(row,"clock_domain");path.period=Num(row,"clock_period_ns");path.slack=Num(row,"slack_ns");path.fixed=Num(row,"fixed_delay_ns");path.normalized=Normalized(model,path.slack,path.period);
-    if(normalized)Check(row.count("compressed_path_ids") && std::abs(Num(row,"normalized_slack")-path.normalized)<=1e-12,"normalized path evidence disagrees");
+    if(normalized){
+      Check(row.count("compressed_path_ids") && std::abs(Num(row,"normalized_slack")-path.normalized)<=1e-12,"normalized path evidence disagrees");
+      // A validated normalized source owns its exact weight. Preserve the
+      // previous reader's tolerance without replacing accepted source values.
+      path.normalized=Num(row,"normalized_slack");
+    }
     row["normalized_slack"]=JsonRecord(path.normalized).Encode();
     for(const auto& net:Strings(Get(row,"cut_nets"))){const auto demand=model.demand_index.at(net);path.demands.push_back(demand);if(model.timing_driven)model.demands[demand].normalized_slack=std::min(model.demands[demand].normalized_slack,path.normalized);}
     output.BindInteger(1,model.paths.size());output.BindText(2,Encode(row));output.Execute();output.Reset();model.paths.push_back(std::move(path));};
