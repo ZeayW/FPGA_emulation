@@ -60,12 +60,15 @@ def partition(root,node):
 @pytest.mark.parametrize('node_index',(0,1))
 def test_word_top_sources_keep_full_banks_and_exact_pin_clock_slices(tmp_path,node_index):
     board,plan=model(tmp_path);node=plan['fpgas'][node_index];ir,ports=partition(tmp_path,node)
-    out=tmp_path/'native';report=write_vivado_word_top(ir,out,fpga=node['fpga'],board=board,plan=plan)
+    out=tmp_path/'native';report=write_vivado_word_top(ir,out,fpga=node['fpga'],board=board,plan=plan,dut_clock_ports=('clk',))
     assert report['active_banks']==2 and report['physical_ports']==84
     assert report['data_pairs']==40 and report['forwarded_clock_pairs']==2
     assert report['physical_implementation_qualified']is False
     top=(out/'physical_top.sv').read_text();wrappers=(out/'native-word-banks.sv').read_text()
     assert 'KEEP'not in top+wrappers and 'DONT_TOUCH'not in top+wrappers
+    assert report['dut_clock_buffers']==[{'port':'clk','net':'__emuflow_word_dut_clk_0','instance':'word_dut_reference_0'}]
+    assert 'BUFG word_dut_reference_0' in top
+    assert f'.{_identifier("clk")}(__emuflow_word_dut_clk_0)' in top
     assert wrappers.count('module emuflow_lvds_word_align #(')==1
     assert '#(.OUTPUT_STAGES(1))'in wrappers
     assert len((out/'fixed-io-query.tsv').read_text().splitlines())==43
@@ -100,7 +103,7 @@ def test_bad_word_physical_sources_fail_before_emission(tmp_path,damage):
 @pytest.mark.skipif(not shutil.which('iverilog')or not shutil.which('vvp'),reason='Icarus Verilog required')
 def test_native_word_top_rtl_connects_all_lanes_startup_status_and_payload(tmp_path):
     board,plan=model(tmp_path);node=plan['fpgas'][0];ir,ports=partition(tmp_path,node)
-    out=tmp_path/'native';write_vivado_word_top(ir,out,fpga=node['fpga'],board=board,plan=plan)
+    out=tmp_path/'native';write_vivado_word_top(ir,out,fpga=node['fpga'],board=board,plan=plan,dut_clock_ports=('clk',))
     partition_ports=[];partition_body=[];native_modules=[];checks=[]
     for name,p in ports.items():
         width=len(p['bits']);partition_ports.append(f"{p['direction']} wire "+(f'[{width-1}:0] 'if width>1 else'')+name)
@@ -166,6 +169,15 @@ endmodule
     result=subprocess.run(['vvp',str(out/'sim')],capture_output=True,text=True,timeout=20)
     assert result.returncode==0,result.stdout+result.stderr
     assert 'NATIVE_WORD_TOP_WIRING_PASS'in result.stdout
+
+
+@pytest.mark.parametrize('clock_ports', [('clk','clk'), ('missing',), ('q',), ('fabric_clk',), 'clk'])
+def test_dut_clock_buffers_require_distinct_scalar_design_clocks(tmp_path,clock_ports):
+    board,plan=model(tmp_path);node=plan['fpgas'][0];ir,_=partition(tmp_path,node)
+    out=tmp_path/'native'
+    with pytest.raises(ValidationError,match='DUT clock'):
+        write_vivado_word_top(ir,out,fpga=node['fpga'],board=board,plan=plan,dut_clock_ports=clock_ports)
+    assert not out.exists()
 
 
 def test_real_indexed_word_fixture_preparation_uses_current_native_owner(tmp_path,monkeypatch):

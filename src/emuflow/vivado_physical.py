@@ -271,6 +271,7 @@ def run_indexed_vivado_partition(
                 raise ValidationError('native word plan/wiring source is missing or exceeds its bounded board scope')
         word_sources=tuple(bind_store_source(path,'native-word-physical-source-v1')for path in (word_phy_plan_path,word_wiring_path))
         top_report=write_vivado_word_top(ir_path,output_dir,fpga=fpga,
+            dut_clock_ports=tuple(port for port in runtime['timing_model']['dut_clock_ports'] if port in ports),
             board=read_json(word_wiring_path),plan=read_json(word_phy_plan_path))
         if top_report['part']!=part or implementation_timing['tdm_clock']['period_ns']!=5.0:
             raise ValidationError('native word part or TDM clock differs from its PHY model')

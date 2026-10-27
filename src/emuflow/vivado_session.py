@@ -107,6 +107,9 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
             raise ValidationError('native word clock names or source ports overlap')
     manifest = {"schema": SCHEMA, "fpga": fpga, "part": part, "output": str(output),
         "implementation_timing": implementation_timing_contract(runtime, dut_frequency_mhz),
+        "synthesis": {"mode":"fresh" if synthesized_checkpoint is None else "retained-snapshot",
+            "fresh_options":{"flatten_hierarchy":"rebuilt" if word_phy_directory is not None else "none",
+                "gated_clock_conversion":"auto" if word_phy_directory is not None else "off"}},
         "source_preflight_stage": "optimized",
         "timing_query_mode": "clock-aware-reference" if word_phy_directory is not None else "datapath-only",
         "mapped_index": str(mapped_index.resolve()), "functions": str(functions.resolve()),

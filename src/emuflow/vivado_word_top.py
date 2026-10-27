@@ -94,7 +94,7 @@ def _bank_projection(board,plan,fpga):
     return nodes[fpga]['part'],banks
 
 
-def write_vivado_word_top(ir_path:Path,output:Path,*,fpga,board,plan):
+def write_vivado_word_top(ir_path:Path,output:Path,*,fpga,board,plan,dut_clock_ports=()):
     """Emit native-bank sources/XDC and hierarchical word timing boundaries.
 
     Full Phase6 validation owns schedule/transport validity. This consumer
@@ -104,6 +104,17 @@ def write_vivado_word_top(ir_path:Path,output:Path,*,fpga,board,plan):
     part,banks=_bank_projection(board,plan,fpga)
     with IndexedPhysicalIR(ir_path)as ir:
         source_top=ir.value['design']['top'];ports={p['id']:p for p in ir.value['ports']}
+    if not isinstance(dut_clock_ports,(tuple,list)):
+        raise ValidationError('native word DUT clock ports must be a sequence')
+    if (any(not isinstance(name,str) for name in dut_clock_ports)
+        or len(set(dut_clock_ports))!=len(dut_clock_ports)):
+        raise ValidationError('native word DUT clock ports must be distinct input identities')
+    dut_buffers=[]
+    for index,name in enumerate(dut_clock_ports):
+        if name=='fabric_clk' or ports.get(name,{}).get('direction')!='input' or ports[name]['width']!=1:
+            raise ValidationError('native word DUT clock is not a scalar design input')
+        dut_buffers.append({'port':name,'net':f'__emuflow_word_dut_clk_{index}',
+            'instance':f'word_dut_reference_{index}'})
     top='__emuflow_physical_top'
     reserved={top,'emuflow_lvds_word_align',*(b['module']for b in banks),*(b['record']['ip_module']for b in banks)}
     if source_top in reserved:raise ValidationError('native word top identity collides')
@@ -112,6 +123,8 @@ def write_vivado_word_top(ir_path:Path,output:Path,*,fpga,board,plan):
             raise ValidationError('native word partition lacks a scalar service input: '+name)
     if set(ports)&set((*SERVICE_INPUTS,*SERVICE_OUTPUTS,'__emuflow_word_tdm_clk','__emuflow_word_riu_clk')):
         raise ValidationError('native word startup service port collides')
+    if set(ports)&{name for record in dut_buffers for name in (record['net'],record['instance'])}:
+        raise ValidationError('native word DUT clock buffer identity collides')
     buses={};ranges={};physical={}
     for bank in banks:
         record=bank['record'];bus=record['logical_port'];width=record['logical_port_width']
@@ -142,9 +155,13 @@ def write_vivado_word_top(ir_path:Path,output:Path,*,fpga,board,plan):
     lines += ['  wire __emuflow_word_tdm_clk, __emuflow_word_riu_clk;',
         '  BUFG word_tdm_reference (.I(fabric_clk), .O(__emuflow_word_tdm_clk));',
         '  BUFG word_riu_reference (.I(__emuflow_riu_clk), .O(__emuflow_word_riu_clk));']
+    for record in dut_buffers:
+        lines += [f'  (* gated_clock = "true" *) wire {record["net"]};',
+            f'  BUFG {record["instance"]} (.I({_identifier(record["port"])}), .O({record["net"]}));']
+    local_clocks={'fabric_clk':'__emuflow_word_tdm_clk',**{record['port']:record['net']for record in dut_buffers}}
     lines.extend(f'  wire [{width-1}:0] {_identifier(bus)};'for bus,width in buses.items())
     lines += [f'  {_identifier(source_top)} mapped_partition (',
-        ',\n'.join(f'    .{_identifier(name)}('+('__emuflow_word_tdm_clk'if name=='fabric_clk'else _identifier(name))+')'for name in ports),'  );']
+        ',\n'.join(f'    .{_identifier(name)}('+local_clocks.get(name,_identifier(name))+')'for name in ports),'  );']
     for bus in sorted(buses):
         if ports[bus]['direction']=='input':
             for begin in range(0,buses[bus],160):
@@ -215,6 +232,7 @@ def write_vivado_word_top(ir_path:Path,output:Path,*,fpga,board,plan):
         'native_phy':plan['native_phy'],'source_board_sha256':plan['source']['board_sha256'],
         'source_word_plan_sha256':_digest(plan),'active_banks':len(banks),
         'data_pairs':20*len(banks),'forwarded_clock_pairs':len(banks),'physical_ports':len(physical),
+        'dut_clock_buffers':dut_buffers,
         'external_services':{'inputs':list(SERVICE_INPUTS),'outputs':list(SERVICE_OUTPUTS),
             'contract':'common synchronous global startup/readiness consensus and pausible DUT clock service; no distributed barrier implementation'},
         'artifacts':artifacts,'physical_implementation_qualified':False}

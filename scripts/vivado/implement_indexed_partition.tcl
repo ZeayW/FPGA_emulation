@@ -35,7 +35,13 @@ if {[catch {
     if {$wrapper ne ""} {read_verilog -sv $wrapper}
     read_xdc $timing_xdc
     if {$io_xdc ne ""} {read_xdc $io_xdc}
-    synth_design -top $top -part $part -flatten_hierarchy none -mode out_of_context
+    if {$emuflow_word_phy_directory ne ""} {
+      # Gated-clock conversion requires a flattening synthesis mode. Source
+      # tags carry surviving identities independently of hierarchy rebuilding.
+      synth_design -top $top -part $part -flatten_hierarchy rebuilt -gated_clock_conversion auto -mode out_of_context
+    } else {
+      synth_design -top $top -part $part -flatten_hierarchy none -mode out_of_context
+    }
   } else {
     open_checkpoint $emuflow_start_checkpoint
     emuflow_validate_synthesized_identity $part $top

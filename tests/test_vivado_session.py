@@ -393,6 +393,8 @@ def test_native_word_session_selects_sampling_costs_and_rejects_downgrades(tmp_p
         ports={'clk','fabric_clk'},word_phy_directory=tmp_path,source_hierarchy_prefix='mapped_partition')
     manifest=tmp_path/'native-session.json'
     assert load_session(manifest)['timing_query_mode']=='clock-aware-reference'
+    assert load_session(manifest)['synthesis']=={'mode':'fresh','fresh_options':{
+        'flatten_hierarchy':'rebuilt','gated_clock_conversion':'auto'}}
     assert 'set emuflow_timing_query_mode "clock-aware-reference"'in config.read_text()
     broken=read_json(manifest);broken['timing_query_mode']='datapath-only';write_json(manifest,broken)
     with pytest.raises(ValidationError,match='invalid Vivado native session'):
