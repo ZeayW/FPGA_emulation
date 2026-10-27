@@ -139,6 +139,7 @@ struct Objective {
 };
 
 struct Input {
+  const volatile std::sig_atomic_t* cancelled = nullptr;
   int node_count = 0;
   int max_iterations = 20;
   int reroute_rounds = 8;
@@ -345,7 +346,13 @@ class Router {
 
  public:
 
+  void check_cancelled() const {
+    if(model_.cancelled && *model_.cancelled)throw emuflow::core::StageError(
+        emuflow::core::ErrorCode::kExecutionFailed,"system routing cancelled");
+  }
+
   void run() {
+    check_cancelled();
     lock_shared_directions();
     const std::vector<int> order = timing_aware_order();
     // Generate two independent initial topology candidates.  The first is
@@ -911,6 +918,7 @@ CREATE TABLE metrics(
     const int batch_limit = std::min(
         model_.reroute_rounds, static_cast<int>(batches.size()));
     for (int batch_index = 0; batch_index < batch_limit; ++batch_index) {
+      check_cancelled();
       const auto& batch = batches[batch_index];
       std::vector<RerouteProposal> proposals;
       for (std::size_t first = 0; first < batch.size();
@@ -1002,6 +1010,7 @@ CREATE TABLE metrics(
                             CandidateGenerator generator) {
     Candidate result;
     for (int iteration = 1; iteration <= model_.max_iterations; ++iteration) {
+      check_cancelled();
       std::fill(usage_.begin(), usage_.end(), 0);
       bool reachable = true;
       try {
@@ -1405,6 +1414,7 @@ CREATE TABLE metrics(
     Objective global_best = objective();
     const int maximum_rounds = 8;
     for (int round = 0; round < maximum_rounds; ++round) {
+      check_cancelled();
       const std::vector<Route> round_routes = routes_;
       const std::vector<long long> round_usage = usage_;
       const std::vector<std::string> round_selection = master_selection_;
@@ -2706,8 +2716,11 @@ CREATE TABLE metrics(
 }  // namespace
 
 void emuflow::native::RouteTlr(const std::vector<emuflow::core::ArtifactRef>& inputs,
-                               const std::string& output_path) {
-  Router router(read_input(inputs.at(0).path()));
+                               const std::string& output_path,
+                               const volatile std::sig_atomic_t* cancelled) {
+  auto model=read_input(inputs.at(0).path());model.cancelled=cancelled;
+  Router router(std::move(model));
   router.run();
+  router.check_cancelled();
   router.write_typed_output(output_path,inputs);
 }

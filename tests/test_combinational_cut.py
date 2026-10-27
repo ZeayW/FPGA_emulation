@@ -1,3 +1,4 @@
+from tests.native_route_fixture import route_system_native
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 import copy
 import hashlib
@@ -104,7 +105,6 @@ from tests.schedule_reference import (
     build_tdm_schedule,
 )
 from emuflow.tdm_schedule_storage import (read_tdm_schedule)
-from emuflow.timing_routing import route_system_native
 from emuflow.transport_storage import write_transport_storage
 from emuflow.system_route_storage import (
     SystemRoutesView,
@@ -3056,11 +3056,12 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 route_path = root / "routes.json"
-                write_system_route_storage(route_path, candidate)
+                value = dict(candidate)
+                contract = value.pop("semantic_contract")
+                write_system_route_storage(route_path, value)
                 native_routes = read_system_routes(route_path)
-                with patch("emuflow.native_tools.resolve_native_stage_command",
-                           return_value=[str(emuflow_native()), "phase5", "build-schedule"]):
-                    request = build_native_exact_schedule_request(native_routes, self.platform)
+                native_routes["semantic_contract"] = contract
+                request = build_native_exact_schedule_request(native_routes, self.platform)
                 self.assertIsNotNone(request)
                 path = root / "schedule.json"
                 write_tdm_schedule_storage(path, request)
@@ -4027,11 +4028,9 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
     def test_phase3_cli_emits_structural_qualification(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            ir_path = root / "design.emuir.json"
+            ir_path = root / "design.emuir.sqlite"
             output = root / "phase3"
-            ir_path.write_text(
-                json.dumps(self.ir.to_dict()), encoding="utf-8"
-            )
+            write_compact_emuir(ir_path, self.ir.to_dict())
             from tests.partition_fixture import write_fixture_solution
             solution = root / "initial.part"
             write_fixture_solution(self.ir, PLATFORM_PATH, solution,

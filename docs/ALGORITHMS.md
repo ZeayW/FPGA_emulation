@@ -194,7 +194,7 @@ slot, and propagates actual RX arrival before releasing dependent transfers.
 It preserves relay latency, sampled virtual-wire settle/commit constraints,
 and absolute TX events used by downstream timing analysis.
 
-The shared native `build-schedule` operation consumes the current typed
+The complete native `phase5 run` stage consumes the current typed
 RouteStore and the Phase 3 source-bound contract. It constructs the schedule
 and readiness certificate directly in ScheduleStore. Independent cursor/join
 validation completes before atomic report-last publication; there is no

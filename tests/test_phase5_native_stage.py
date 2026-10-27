@@ -39,8 +39,7 @@ def test_whole_native_stage_matches_reference_and_has_one_production_owner(tmp_p
     expected = build_tdm_schedule(routes, case.platform)
     install_runtime(tmp_path, monkeypatch)
     output = tmp_path / "phase5"
-    with patch("emuflow.tdm._run_native_exact_schedule", side_effect=AssertionError("fragmented Python generation")), \
-         patch("emuflow.tdm_schedule_validation.validate_native_exact_schedule", side_effect=AssertionError("Python validation lifecycle")), \
+    with patch("emuflow.tdm_schedule_validation.validate_native_exact_schedule", side_effect=AssertionError("Python validation lifecycle")), \
          patch("emuflow.phase5_timing_native.project_native_schedule_timing", side_effect=AssertionError("Python timing lifecycle")):
         report = run_native_phase5(producer, output)
     assert report["phase_implementation"] == "native-exact-phase5-v1"
@@ -123,3 +122,13 @@ def test_repeated_stage_keeps_the_published_immutable_store_generation(tmp_path,
     assert native_file_generation(store) == generation
     assert len(borrowed["entries"]) == first["schedule_storage"]["records"]["entries"]
     assert validate_phase5_generation(output / "phase5_report.json")["status"] == "pass"
+
+
+@pytest.mark.parametrize("report", [None, {"schema": "emuflow.phase5-report/v1", "status": "pass"}])
+def test_unsealed_generation_is_rejected_before_opening_schedule(tmp_path, monkeypatch, report):
+    import json
+    path = tmp_path / "phase5_report.json"
+    if report is not None:
+        path.write_text(json.dumps(report))
+    with pytest.raises(ValidationError, match="commit report is missing|generation seal is missing"):
+        validate_phase5_generation(path)

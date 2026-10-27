@@ -161,21 +161,11 @@ def test_signed_zero_and_bundle_events_preserve_numerical_compression():
         rows.close()
 
 
-def test_binding_failure_releases_owner_even_when_exception_keeps_traceback():
-    from emuflow import global_sta
+def test_inline_binding_is_rejected_without_allocating_an_owner():
     from emuflow.global_event_store import _Owner
-    owners = []
-    constructor = _Owner.__init__
-    def observed(self, mode):
-        constructor(self, mode)
-        owners.append(self)
-    with patch.object(_Owner, '__init__', observed), \
-         patch.object(global_sta, '_bind_physical_checks', side_effect=ValidationError('deliberate failure')):
-        with pytest.raises(ValidationError, match='deliberate failure') as failure:
+    with patch.object(_Owner, '__init__', side_effect=AssertionError('retired inline owner')):
+        with pytest.raises(ValidationError, match='typed physical owners'):
             bind_physical_checks(None, None, None, None, None)
-        assert failure.value.__traceback__ is not None
-    assert len(owners) == 1 and owners[0].closed
-    assert not owners[0].root.exists()
 
 
 def test_native_event_execution_restores_all_original_identities(tmp_path, monkeypatch):

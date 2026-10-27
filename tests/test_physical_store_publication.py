@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.errors import ValidationError
+from tests.test_split_overlay_native import owners
 
 
 KINDS = (
@@ -380,13 +381,14 @@ def test_atomic_source_binds_mapped_input_and_source_seal_before_consumption(
 
 
 @pytest.mark.parametrize("changed", ["split-netlists-v3", "emuir-compact-v2"])
-def test_full_placement_lowering_refuses_changed_original_sources(changed):
+def test_full_placement_lowering_refuses_changed_original_sources(changed, owners, tmp_path):
     from emuflow import placement_lowering_native
     from emuflow.split_overlay import bind_split_sources
-    from tests.test_phase6 import Phase6Test
+    from tests.test_placement_lowering_native import prepare
+    from emuflow.lowering import run_placement_ir_lowering_from_split
 
-    case = Phase6Test()
-    case.setUp()
+    case, split, fpga, transport, logical, ir, source = prepare(owners, tmp_path)
+    output = tmp_path / "native/placement.emuir.sqlite"
     launch = placement_lowering_native.NativeToolProcess
     observed = []
 
@@ -402,5 +404,7 @@ def test_full_placement_lowering_refuses_changed_original_sources(changed):
         placement_lowering_native, "NativeToolProcess", mutate_then_launch
     ):
         with pytest.raises(ValidationError, match="generation changed"):
-            case.test_streaming_phase7_lowering_matches_legacy_exactly()
+            run_placement_ir_lowering_from_split(split, fpga, transport.manifest_path, source, output)
+    assert not output.parent.exists()
+    assert not list(tmp_path.glob(".lowering-stage-*"))
     assert {"split-netlists-v3","emuir-compact-v2","assignment-index-v4","tdm-schedule-store-v4"} <= set(observed)

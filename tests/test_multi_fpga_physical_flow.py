@@ -197,7 +197,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 self.assertFalse(has_hint("entry-missing"))
 
     def test_only_exactly_empty_partitions_skip_physical_work(self):
-        netlist = {"instances": [], "nets": [], "ports": []}
+        netlist = {"instances": 0, "nets": 0, "ports": 0}
         transport = {
             "endpoints": [],
             "source_signals": [],
@@ -210,12 +210,12 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
         self.assertTrue(_partition_has_physical_work(netlist, relay))
 
         passthrough = copy.deepcopy(netlist)
-        passthrough["ports"] = [{"id": "input"}]
+        passthrough["ports"] = 1
         self.assertTrue(_partition_has_physical_work(passthrough, transport))
 
         with self.assertRaisesRegex(ValidationError, "inventory"):
             _partition_has_physical_work(
-                {"instances": None, "nets": [], "ports": []}, transport
+                {"instances": None, "nets": 0, "ports": 0}, transport
             )
 
     def test_backend_specific_implementation_stage_owner(self):
@@ -442,13 +442,6 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 fpga_root = split / fpga
                 fpga_root.mkdir()
                 write_json(
-                    fpga_root / "netlist.json",
-                    {
-                        "instances": [{"id": f"{fpga}_original"}],
-                        "ports": [{"id": "clk", "clock": True}],
-                    },
-                )
-                write_json(
                     fpga_root / "transport.json",
                     {
                         "schema": "emuflow.transport-endpoints/v1",
@@ -465,7 +458,8 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 manifest["fpgas"].append(
                     {
                         "fpga": fpga,
-                        "netlist": f"{fpga}/netlist.json",
+                        "netlist": "split.sqlite",
+                        "netlist_selector": fpga,
                         "transport": f"{fpga}/transport.json",
                         "transport_rtl": f"{fpga}/transport_schedule.sv",
                         "virtual_anchors": f"{fpga}/virtual_anchors.json",
@@ -505,9 +499,20 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     _finalize=kwargs.get("_finalize_emuir"),
                 )
 
-            def fake_lower(netlist, _transport, _transport_ir, output, report):
+            class SplitCounts:
+                def __init__(self, path, fpga):
+                    self.fpga = fpga
+                    self.assert_path = path
+                def __enter__(self):
+                    return self
+                def __exit__(self, *_):
+                    pass
+                def counts(self):
+                    return {"instances": 1, "nets": 0, "ports": 1}
+
+            def fake_lower(_split, fpga, _transport, _transport_ir, output, report):
+                self.assertEqual(_split.resolve(), (split / "split.sqlite").resolve())
                 self.assertTrue(_transport_ir.is_file())
-                fpga = netlist["instances"][0]["id"].removesuffix("_original")
                 value = _merged_ir(fpga)
                 value.save(output)
                 boundary_path = output.with_name("boundary-identities.json")
@@ -598,6 +603,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     "boundary_timing": {"status": "pass", "import": {"output": str(timing_path)}}}
 
             with (
+                patch("emuflow.multi_fpga_physical_flow.SplitNetlistView", SplitCounts),
                 patch("emuflow.multi_fpga_physical_flow.emit_vivado_mapped_verilog", side_effect=fake_mapped_verilog),
                 patch(
                     "emuflow.multi_fpga_physical_flow.build_virtual_runtime",
@@ -615,7 +621,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 ),
                 patch(
                     "emuflow.multi_fpga_physical_flow."
-                    "run_placement_ir_lowering_from_value",
+                    "run_placement_ir_lowering_from_split",
                     side_effect=fake_lower,
                 ),
                 patch(
@@ -734,7 +740,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 self.assertTrue((root / "failed-physical/fpga0/partition.v").is_file())
                 self.assertFalse((root / "failed-physical/fpga0/partition-record.json").exists())
                 with patch(
-                    "emuflow.multi_fpga_physical_flow.run_placement_ir_lowering_from_value",
+                    "emuflow.multi_fpga_physical_flow.run_placement_ir_lowering_from_split",
                     side_effect=ValidationError("lowering rejected"),
                 ), self.assertRaisesRegex(ValidationError, "lowering rejected"):
                     run_multi_fpga_physical_flow(
@@ -847,7 +853,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             root = Path(temporary)
             split = root / "split"
             split.mkdir()
-            write_json(split / "manifest.json", {"schema": "emuflow.split-manifest/v1"})
+            write_json(split / "manifest.json", {"schema": "emuflow.split-manifest/v1", "fpgas": []})
             write_json(root / "schedule.json", {"schema": TDM_SCHEDULE_LOGICAL_SCHEMA})
             for selected in ([], ["unknown"], ["fpga0", "fpga0"], "fpga0"):
                 with self.subTest(selected=selected), self.assertRaisesRegex(
@@ -869,6 +875,23 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     Path(temporary) / "physical",
                     workers=0,
                 )
+
+    def test_json_split_lowering_is_rejected_before_any_tool_starts(self):
+        for selector in (None, "fpga1"):
+            with self.subTest(selector=selector), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                item = {"fpga": "fpga0", "netlist": "netlist.json"}
+                if selector is not None:
+                    item["netlist_selector"] = selector
+                write_json(root / "manifest.json", {
+                    "schema": "emuflow.split-manifest/v1", "fpgas": [item],
+                })
+                with patch("emuflow.multi_fpga_physical_flow.Platform.load",
+                           side_effect=AssertionError("old split must fail before tool/config loading")), \
+                     self.assertRaisesRegex(ValidationError, "JSON netlists are retired"):
+                    run_multi_fpga_physical_flow(root, PLATFORM, root / "schedule.json",
+                                                root / "physical", backend="vivado")
+                self.assertFalse((root / "physical").exists())
 
     def test_retired_rapidwright_placer_is_not_a_python_api(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -957,6 +980,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 {
                     "schema": "emuflow.split-manifest/v1",
                     "electrical_binding": "electrical_binding.json",
+                    "fpgas": [],
                 },
             )
             indexed = write_chimew_binding_storage(
@@ -1023,7 +1047,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 {
                     "schema": "emuflow.split-manifest/v1",
                     "clock_periods": {"clk": 10.0},
-                    "fpgas": [{"fpga": "fpga0"}, {"fpga": "fpga1"}],
+                    "fpgas": [{"fpga": "fpga0", "netlist_selector": "fpga0"}, {"fpga": "fpga1", "netlist_selector": "fpga1"}],
                 },
             )
             output = root / "physical"

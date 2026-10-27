@@ -111,28 +111,3 @@ def native_pipeline_api_test() -> Path:
 @lru_cache(maxsize=1)
 def hop_partition_refiner() -> Path:
     return emuflow_native()
-
-
-@lru_cache(maxsize=1)
-def eda2025_topology_optimizer() -> Path:
-    compiler = (
-        shutil.which("c++")
-        or shutil.which("g++")
-        or shutil.which("clang++")
-    )
-    if compiler is None:
-        raise RuntimeError("a C++17 compiler is required for topology tests")
-    executable = Path(_BUILD_ROOT.name) / "emuflow_eda2025_topology_optimizer"
-    subprocess.run(
-        [
-            compiler,
-            "-std=c++17",
-            *_runtime_link_flags(),
-            "-O2",
-            str(ROOT / "src/native/eda2025_topology_optimizer.cpp"),
-            "-o",
-            str(executable),
-        ],
-        check=True,
-    )
-    return executable

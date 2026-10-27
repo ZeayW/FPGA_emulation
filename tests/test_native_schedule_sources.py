@@ -80,29 +80,24 @@ def test_producer_rejects_source_and_report_aliases_before_writing(tmp_path, mon
     case, routes = _case(tmp_path, False, False)
     install_runtime(tmp_path, monkeypatch)
     producer = build_native_exact_schedule_request(routes, case.platform)
-    captured = []
-    run = subprocess.run
-    def record(command, **kwargs):
-        if command[1:3] == ['phase5', 'build-schedule']:
-            captured.append((command[:], [Path(p).read_bytes() for p in command[-3:-1]]))
-        return run(command, **kwargs)
-    with patch('emuflow.tdm.subprocess.run', side_effect=record):
-        write_tdm_schedule_storage(tmp_path / 'published/schedule.json', producer)
-    command, payloads = captured[0]
-    board, generation = tmp_path / 'board', tmp_path / 'generation'
-    board.write_bytes(payloads[0]);generation.write_bytes(payloads[1])
+    from emuflow.phase5_native import _write_inputs
+    request_root = tmp_path / 'request'
+    request_root.mkdir()
+    inputs = _write_inputs(producer, request_root)
     source = producer.route_store
-    inputs = [str(source), str(board), str(generation)]
-    snapshots = {p:p.read_bytes() for p in [source, board, generation]}
-    for target in [source, board, generation]:
-        result = run([command[0], 'phase5', 'build-schedule', *inputs, str(target)], capture_output=True, text=True)
+    snapshots = {Path(p): Path(p).read_bytes() for p in inputs}
+    run = subprocess.run
+    tool = str(emuflow_native())
+    for target in [Path(p) for p in inputs]:
+        result = run([tool, 'phase5', 'run', *inputs, str(target)], capture_output=True, text=True)
         assert result.returncode == 2, result.stderr
-    output = tmp_path / 'output'
+    output = tmp_path / 'phase5_report.json'
     output.write_bytes(b'previous output')
-    for report in [source, board, generation, output]:
-        result = run([command[0], '--report', str(report), 'phase5', 'build-schedule', *inputs, str(output)], capture_output=True, text=True)
+    for report in [*[Path(p) for p in inputs], output]:
+        result = run([tool, '--report', str(report), 'phase5', 'run', *inputs, str(output)], capture_output=True, text=True)
         assert result.returncode == 2, result.stderr
-    for p, content in snapshots.items():assert p.read_bytes() == content
+    for p, content in snapshots.items():
+        assert p.read_bytes() == content
     assert output.read_bytes() == b'previous output'
 
 

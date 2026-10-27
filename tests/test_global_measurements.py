@@ -65,13 +65,37 @@ def _tsv(path,rows):
 def test_native_full_population_metrics_paths_and_qor_match_reference(tmp_path,count,large):
     rows,info,runtime,native,reference=_case(tmp_path,count,large=large)
     try:
-        expected=build_opensta_timing(runtime,{'paths':dict(info['paths']),**{k:v for k,v in info.items() if k!='paths'}},reference)
         with patch.object(NativeMeasurements,'__iter__',side_effect=AssertionError('Python H scan')):
             actual=build_opensta_timing(runtime,info,native)
-        marker=actual['global_opensta'].pop('implementation_id')
-        digest=actual['global_opensta'].pop('measurement_logical_sha256')
-        assert actual==expected
-        actual['global_opensta'].update(implementation_id=marker,measurement_logical_sha256=digest)
+        by_path = {}
+        for row in reference:
+            by_path.setdefault(row['path'], {})[row['role']] = row
+        for row in actual['paths']:
+            values = by_path[row['path']]
+            assert {key:row[key] for key in info['paths'][row['path']]} == info['paths'][row['path']]
+            assert row['system_delay_bound_ns'] == values['target']['arrival_ns']
+            for role in ('target', 'runtime'):
+                assert row[role+'_required_time_ns'] == values[role]['required_ns']
+                assert row[role+'_clock_slack_bound_ns'] == values[role]['slack_ns']
+        for role in ('target', 'runtime'):
+            scalars = [(values[role]['slack_ns'], path) for path, values in by_path.items()]
+            worst, path = min(scalars)
+            assert actual[role+'_clock']['worst_slack_bound_ns'] == worst
+            assert actual[role+'_clock']['worst_path'] == path
+            assert actual[role+'_clock']['total_negative_slack_bound_ns'] == math.fsum(v for v,_ in scalars if v < 0)
+            assert actual[role+'_clock']['negative_slack_paths'] == sum(v < 0 for v,_ in scalars)
+        assert actual['global_opensta']['event_failures'] == sum(
+            row['role'] in ('tx','commit') and row['slack_ns'] < -1e-3 for row in reference)
+        assert actual['global_opensta']['implementation_id'] == 'native-global-measurements-v1'
+        expected_summary = {
+            'timing_paths':len(by_path), 'original_paths':None,
+            'original_local_paths':sum(row['path_scope']=='same-fpga-local' for row in info['paths'].values()),
+            'compressed_representative_paths':4, 'original_path_coverage':None,
+            'original_path_ids_sha256':None,
+            'maximum_system_delay_bound_ns':max(values['target']['arrival_ns'] for values in by_path.values()),
+        }
+        expected_summary['original_cross_fpga_paths'] = len(by_path)-expected_summary['original_local_paths']
+        assert actual['summary'] == expected_summary
         logical={'schema':'emuflow.qor-report/v4','status':'pass','timing':actual}
         with patch.object(NativeTimingPaths,'__iter__',side_effect=AssertionError('Python P publication')):
             owner=write_qor_report(tmp_path/'qor.json',logical)
@@ -82,7 +106,7 @@ def test_native_full_population_metrics_paths_and_qor_match_reference(tmp_path,c
         reference_owner.close()
         with patch('emuflow.qor_storage._record_from_row',side_effect=AssertionError('Python P validation')):
             with read_qor_report(tmp_path/'qor.json') as report:
-                assert report['timing']['summary']==expected['summary']
+                assert report['timing']['summary']==expected_summary
         replay=read_native_measurements(tmp_path/'native/measurements.json',rows)
         try:
             assert list(replay)==list(native)==list(reference)

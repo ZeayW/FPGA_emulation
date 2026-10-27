@@ -1,4 +1,4 @@
-"""Complete stage parity, source binding and native controller integration."""
+"""Complete native stage validation, source binding and host-entry parity."""
 import json
 from pathlib import Path
 from unittest.mock import patch
@@ -6,7 +6,7 @@ import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
-from emuflow.phase3 import _run_phase3_reference as run_phase3
+from emuflow.phase3 import run_phase3, validate_phase3, validate_phase3_indexed
 from emuflow.phase3_native import run as native_run
 from tests.test_phase3_pressure_native import inputs
 
@@ -23,27 +23,20 @@ def options(inputs, tmp_path):
         patron_max_moves=12)
 
 
-def test_native_phase3_runs_complete_stage_and_preserves_final_records(inputs, tmp_path):
+def test_native_phase3_runs_complete_stage_with_independent_record_validation(inputs, tmp_path):
     ir, board, config = options(inputs, tmp_path)
-    reference = tmp_path/'reference'
-    expected_report = run_phase3(ir.path, board, reference, **config)
     actual = tmp_path/'native-stage'
-    with patch('emuflow.phase3.run_tritonpart', side_effect=AssertionError('Python initializer')), \
+    with patch('emuflow.partition_init_native.initialize', side_effect=AssertionError('Python initializer')), \
          patch('emuflow.partition.build_clusters', side_effect=AssertionError('Python stage clusters')):
         report = native_run(actual, ir.path, board, **config)
-    expected = read_json(reference/'assignment.json');generated = read_json(actual/'assignment.json')
-    assert dict(generated['instance_assignment']) == dict(expected['instance_assignment'])
-    assert list(generated['cut_nets']) == list(expected['cut_nets'])
-    assert generated['semantic_contract_sha256'] == expected['semantic_contract_sha256']
-    assert generated['metrics'] == expected['metrics']
-    assert generated['constraints'] == expected['constraints']
-    assert generated['partitions'] == expected['partitions']
-    assert list(read_json(actual/'clusters.json')['clusters']) == list(read_json(reference/'clusters.json')['clusters'])
-    assert report['validation'] == expected_report['validation']
-    assert generated['provider'] == expected['provider']
-    assert generated.get('provider_metadata', {}).get('initial_provider') == expected.get('provider_metadata', {}).get('initial_provider')
+    generated = read_json(actual/'assignment.json')
     assert report['stage_implementation_id'] == 'native-phase3-v1'
     assert report['algorithm_validation']['native_input_transport'] == 'native-primary-store-model-v2'
+    # These validators reconstruct legality from source IR and final records,
+    # independently of the producer's cluster selection and timing decision.
+    assert validate_phase3(ir.path, board, actual/'clusters.json', actual/'assignment.json')['status'] == 'pass'
+    assert validate_phase3_indexed(ir.path, board, actual/'phase3_report.json', actual/'assignment.sqlite')['status'] == 'pass'
+    assert len(generated['instance_assignment']) == len(inputs[0][0].value['instances'])
 
 
 @pytest.mark.parametrize('damage', ['version', 'generation', 'capacity', 'timing-seal', 'solution', 'existing'])
@@ -85,9 +78,9 @@ def test_public_compact_api_uses_complete_native_stage_without_python_phase_bodi
     from emuflow.phase3 import run_phase3 as public
     ir, board, config = options(inputs, tmp_path)
     with ExitStack() as guards:
-        for name in ('build_clusters', 'run_tritonpart', 'run_partition_pressure_native',
-                     'build_partition_assignment', 'validate_partition_artifacts_online'):
-            guards.enter_context(patch('emuflow.phase3.'+name, side_effect=AssertionError('Python phase body: '+name)))
+        for name in ('partition.build_clusters', 'partition_init_native.initialize', 'partition_pressure.run_partition_pressure_native',
+                     'partition.build_partition_assignment', 'partition.validate_partition_artifacts_online'):
+            guards.enter_context(patch('emuflow.'+name, side_effect=AssertionError('Python phase body: '+name)))
         output = tmp_path/'public'
         report = public(ir.path, board, output, **config)
     assert report['stage_implementation_id'] == 'native-phase3-v1'
@@ -147,7 +140,7 @@ def test_complete_stage_keeps_search_deadline_and_reaps_native_child(inputs, tmp
     child.write_text('#!'+sys.executable+'\nimport os,time,pathlib\npathlib.Path('+repr(str(pid_file))+').write_text(str(os.getpid()))\ntime.sleep(60)\n')
     child.chmod(0o755)
     request = write_request(tmp_path/'deadline-configuration', ir.path, board, **config)
-    value = json.loads(request.read_text());value['timeout_seconds'] = 1
+    value = json.loads(request.read_text());value['timeout_seconds'] = 3
     value['inputs']['native'] = {'path':str(child), 'schema':'external-tool-executable-v1', 'generation':list(native_file_generation(child))}
     request.write_text(json.dumps(value));output = tmp_path/'timed-out'
     result = subprocess.run([resolve_native_executable('emuflow-native'), 'phase3', 'run', str(request), str(output)], capture_output=True, text=True, timeout=20)

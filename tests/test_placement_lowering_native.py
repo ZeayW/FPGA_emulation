@@ -1,4 +1,4 @@
-"""Whole native lowering against the independent logical merge and identities."""
+"""Native lowering ownership, source preservation, connectivity and identities."""
 from contextlib import closing
 from copy import deepcopy
 import json
@@ -12,7 +12,7 @@ from emuflow.boundary_timing import build_boundary_identity_database
 from emuflow.boundary_identity_storage import read_boundary_identity_storage
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.ir import EmuIR
-from emuflow.lowering import build_placement_ir,run_placement_ir_lowering_from_split
+from emuflow.lowering import run_placement_ir_lowering_from_split
 from emuflow.netlist import transport_endpoint_port
 from emuflow.split_netlist_storage import read_split_netlist_sqlite
 from emuflow.split_overlay import build_native_split
@@ -27,7 +27,12 @@ def synthesized_transport(transport,shared_port=None):
                       'parameters':{'INIT':'0'},'attributes':{'note':'保留'},'constant_connections':[]})
     for kind,port,direction in [('source','source_values','input'),('shadow','shadow_values','output')]:
         signals=transport[kind+'_signals']
-        if signals:ports.append({'id':port,'name':port,'width':len(signals),'direction':direction,'clock':False,'reset':False})
+        ports.append({'id':port,'name':port,'width':max(1,len(signals)),'direction':direction,'clock':False,'reset':False})
+        if not signals:
+            top={'instance':None,'port':port,'bit':0}
+            nets.append({'id':'dummy-'+kind,'name':'dummy-'+kind,'cut_class':'combinational',
+                         'drivers':[top] if kind=='source' else [],
+                         'sinks':[top] if kind=='shadow' else [],'fanout':int(kind=='shadow')})
         for signal in signals:
             name=kind+str(signal['index']);cell(name,'LUT1' if kind=='source' else 'FDRE')
             top={'instance':None,'port':port,'bit':signal['index']}
@@ -54,6 +59,9 @@ def synthesized_transport(transport,shared_port=None):
         nets.append({'id':'shared-clock','name':'shared-clock','cut_class':'clock','fanout':3,
                      'drivers':[{'instance':None,'port':shared_port['id'],'bit':0}],
                      'sinks':[{'instance':'clock_sink'+str(i),'port':'C','bit':0,'tag':i} for i in range(3)]})
+    for net in nets:
+        net['attributes'] = {'opaque': ['雪', 7, True]}
+        net.setdefault('aliases', ['alias-' + net['id']])
     return EmuIR({'schema':'emuflow.emuir/v1','design':{'name':'transport','top':'transport','source_format':'test'},
                   'ports':ports,'instances':cells,'nets':nets,'clocks':[],'warnings':['preserve warning']})
 
@@ -64,6 +72,9 @@ def prepare(owners,root,shared=False,fpga_index=0):
     if shared:
         from emuflow.phase3_assignment_index import write_phase3_assignment_index
         value=deepcopy(case.ir.value)
+        for net in value['nets']:
+            net['attributes'] = {'opaque_dut': ['保留', 11]}
+            net['aliases'] = ['dut-alias-' + net['id']]
         value['ports'].append({'id':'shared_reset','name':'shared_reset','direction':'input','width':1,'clock':False,'reset':True})
         value['nets'].append({'id':'shared_reset','name':'shared_reset','cut_class':'reset',
             'drivers':[{'instance':None,'port':'shared_reset','bit':0}],
@@ -87,29 +98,109 @@ def prepare(owners,root,shared=False,fpga_index=0):
     return case,split,fpga,transport,logical,ir,path
 
 
-@pytest.mark.parametrize('shared',[False,True])
-@pytest.mark.parametrize('fpga_index',[0,1,2,3])
-def test_native_whole_lowering_matches_all_logical_records_and_boundary_identities(owners,tmp_path,shared,fpga_index):
-    case,split,fpga,transport,logical,ir,path=prepare(owners,tmp_path,shared,fpga_index)
-    expected=build_placement_ir(logical,transport.materialize(),ir)
-    expected_path=tmp_path/'expected.emuir.sqlite';write_compact_emuir(expected_path,expected.to_dict())
-    expected=EmuIR.load(expected_path)
-    identities=build_boundary_identity_database(transport.materialize(),expected,ir)
-    output=tmp_path/'native/placement.emuir.sqlite'
-    with patch('emuflow.lowering.build_placement_ir',side_effect=AssertionError('Python graph merge')), \
-         patch('emuflow.lowering.EmuIR.load',side_effect=AssertionError('Python graph import')), \
-         patch('emuflow.boundary_timing.iter_boundary_identity_records',side_effect=AssertionError('Python endpoint binder')):
-        report=run_placement_ir_lowering_from_split(split,fpga,transport.manifest_path,path,output)
-    assert report['implementation_id']=='native-placement-lowering-v1'
-    assert EmuIR.load(output).to_dict()==expected.to_dict()
-    with read_boundary_identity_storage(output.with_name('boundary-identities.json')) as actual:
-        assert {**actual,'endpoints':list(actual['endpoints'])}==identities
-    assert report['original_instances']==len(logical['instances'])
-    assert report['transport_instances']==len(ir.value['instances'])
-    assert report['boundary_identity']['validation']['endpoints']==len(transport['endpoints'])
+@pytest.mark.parametrize('shared', [False, True])
+@pytest.mark.parametrize('fpga_index', [0, 1, 2, 3])
+def test_native_whole_lowering_preserves_sources_and_boundary_identities(owners, tmp_path, shared, fpga_index):
+    case, split, fpga, transport, logical, ir, path = prepare(owners, tmp_path, shared, fpga_index)
+    output = tmp_path / 'native/placement.emuir.sqlite'
+    with patch('emuflow.ir.EmuIR.load', side_effect=AssertionError('Python graph import')), \
+         patch('emuflow.boundary_timing.iter_boundary_identity_records', side_effect=AssertionError('Python endpoint binder')):
+        report = run_placement_ir_lowering_from_split(split, fpga, transport.manifest_path, path, output)
+    assert report['implementation_id'] == 'native-placement-lowering-v1'
+    actual = EmuIR.load(output)
+    before = actual.to_dict()
+    cells = {cell['id']: cell for cell in actual.value['instances']}
+    # Preserve every DUT and synthesized primitive field, including parameters,
+    # constants and opaque attributes; only transport identities are namespaced.
+    assert cells == {
+        **{cell['id']: cell for cell in logical['instances']},
+        **{'__emuflow_transport__/' + cell['id']: {
+            **cell, 'id': '__emuflow_transport__/' + cell['id'],
+            'name': '__emuflow_transport__/' + cell['id'],
+        } for cell in ir.value['instances']},
+    }
+    nets = {net['id']: net for net in actual.value['nets']}
+    logical_ids = {net['original_net'] for net in logical['nets']}
+    for net in logical['nets']:
+        merged = nets[net['original_net']]
+        assert merged['name'] == net['name']
+        for key, value in net.items():
+            if key not in ('id', 'drivers', 'sinks', 'fanout'):
+                assert merged[key] == value
+        for role in ('drivers', 'sinks'):
+            for endpoint in net[role]:
+                if not (endpoint['instance'] or '').startswith('__emuflow_rx_'):
+                    assert endpoint in merged[role]
+    consumed = {'dummy-source', 'dummy-shadow', 'shared-clock'}
+    for signal in transport['source_signals']:
+        consumed.add('source' + str(signal['index']))
+        net_id = signal['signal'].removeprefix('net:')
+        assert {'instance': '__emuflow_transport__/source' + str(signal['index']),
+                'port': 'I0', 'bit': 0, 'tag': signal['index']} in nets[net_id]['sinks']
+    shadow_nets = {endpoint['signal']: endpoint['net'] for endpoint in transport['endpoints'] if endpoint['kind']=='rx'}
+    for signal in transport['shadow_signals']:
+        name = 'shadow' + str(signal['index'])
+        cell_id = '__emuflow_transport__/' + name
+        endpoint = {'instance': cell_id, 'port': 'Q', 'bit': 0, 'tag': signal['index']}
+        target = shadow_nets[signal['signal']]
+        if target in logical_ids:
+            consumed.add(name)
+        else:
+            target = '__emuflow_transport__/' + name
+        assert endpoint in nets[target]['drivers']
+        assert sum(ep['instance'] == cell_id for net in nets.values() for ep in net['drivers']) == 1
+    remaining = [net for net in ir.value['nets'] if net['id'] not in consumed]
+    assert set(nets) == logical_ids | {'__emuflow_transport__/' + net['id'] for net in remaining}
+    for net in remaining:
+        expected = {**net, 'id': '__emuflow_transport__/' + net['id'],
+                    'name': '__emuflow_transport__/' + net['name']}
+        for role in ('drivers', 'sinks'):
+            expected[role] = [dict(ep, instance='__emuflow_transport__/' + ep['instance'])
+                             if ep['instance'] is not None else dict(ep) for ep in net[role]
+                             if ep['instance'] is not None or ep['port'] not in ('source_values', 'shadow_values')]
+        expected['fanout'] = len(expected['sinks'])
+        expected.setdefault('aliases', [])
+        assert nets[expected['id']] == expected
+    if shared:
+        candidates = [net for net in nets.values() if any(ep['instance'] is None and ep['port']=='shared_reset'
+                      for ep in net['drivers'])]
+        assert len(candidates) == 1 and candidates[0]['id'] == 'shared_reset'
+        assert sum(ep['instance'] is None and ep['port']=='shared_reset' for ep in candidates[0]['drivers']) == 1
+        for index in range(3):
+            assert {'instance':'__emuflow_transport__/clock_sink'+str(index),'port':'C','bit':0,'tag':index} in candidates[0]['sinks']
+    assert not any(net.startswith('__emuflow_transport__/dummy-') for net in nets)
+    assert not {'source_values', 'shadow_values'} & {port['id'] for port in actual.value['ports']}
+    assert not any((ep['instance'] or '').startswith('__emuflow_rx_')
+                   for net in nets.values() for ep in net['drivers'] + net['sinks'])
+    # An independent endpoint/port binder must reconstruct the exact emitted
+    # boundary facts from the physical netlist, including relay-only devices.
+    identities = build_boundary_identity_database(transport.materialize(), actual, ir)
+    with read_boundary_identity_storage(output.with_name('boundary-identities.json')) as emitted:
+        assert {**emitted, 'endpoints': list(emitted['endpoints'])} == identities
+    assert report['original_instances'] == len(logical['instances'])
+    assert report['transport_instances'] == len(ir.value['instances'])
+    assert report['boundary_identity']['validation']['endpoints'] == len(transport['endpoints'])
     assert not list(tmp_path.glob('.lowering-stage-*'))
-    # Outputs are independent owners after the synthesized source is retired.
-    path.unlink();assert EmuIR.load(output).to_dict()==expected.to_dict()
+    path.unlink()
+    assert EmuIR.load(output).to_dict() == before
+
+
+def test_removed_graph_lowering_interfaces_are_not_exposed():
+    import emuflow.lowering as lowering
+    from emuflow.cli import _build_parser
+    assert not any(hasattr(lowering, name) for name in (
+        'build_placement_ir', 'run_placement_ir_lowering',
+        'run_placement_ir_lowering_from_value',
+    ))
+    parser = _build_parser()
+    args = parser.parse_args(['lower-placement-ir', '--split', 'split.sqlite',
+        '--fpga', 'fpga0', '--transport', 'transport.json',
+        '--transport-ir', 'transport.sqlite', '--output', 'placement.sqlite'])
+    assert args.split == Path('split.sqlite') and args.fpga == 'fpga0'
+    with pytest.raises(SystemExit):
+        parser.parse_args(['lower-placement-ir', '--netlist', 'netlist.json',
+            '--transport', 'transport.json', '--transport-ir', 'transport.sqlite',
+            '--output', 'placement.sqlite'])
 
 
 @pytest.mark.parametrize('damage',['source-generation','missing-shadow','multiple-top','incompatible-port','nonlocal-source','missing-external','double-shadow-driver'])

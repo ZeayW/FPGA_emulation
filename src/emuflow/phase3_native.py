@@ -17,7 +17,7 @@ def write_request(directory, ir_path, platform_path, *, constraints_path=None,
         tritonpart_num_best_initial_solutions=10, tritonpart_repair_min_used_fpgas=True,
         tritonpart_run_unweighted_baseline=False, route_constraints_path=None,
         max_cross_fpga_dependency_depth=0, static_exact_candidate_policy=None,
-        timing_database_path=None, patron_max_moves=None, **unsupported):
+        timing_database_path=None, patron_max_moves=None):
     from .platform import Platform
     from .partition_ir import load_partition_ir
     from .phase3_candidates_native import write_candidate_policy
@@ -30,8 +30,6 @@ def write_request(directory, ir_path, platform_path, *, constraints_path=None,
     from .sta_weights_native import _selector
     from .combinational_cut import _canonical_sha256, STATIC_EXACT_DEFAULT_CANDIDATE_POLICY
 
-    if any(value not in (None, False) for value in unsupported.values()):
-        raise ValidationError('unsupported native Phase 3 option: '+', '.join(unsupported))
     require_native_schema('phase3-stage-request-v1')
     directory = Path(directory);directory.mkdir(parents=True, exist_ok=True)
     source = bind_store_source(Path(ir_path).resolve(), 'emuir-compact-v2')

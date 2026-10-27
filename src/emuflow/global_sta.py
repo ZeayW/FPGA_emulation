@@ -14,7 +14,6 @@ import json
 import math
 import os
 import re
-import subprocess
 from array import array
 from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
@@ -115,119 +114,6 @@ class _IndexedMeasurements(Sequence[Mapping[str, object]]):
 
 _UINT32_MAX = (1 << 32) - 1
 _UINT64_MASK = (1 << 64) - 1
-
-
-class _IndexedSystemTimingPaths(Sequence[Mapping[str, object]]):
-    """Fixed-width final OpenSTA values over indexed original-path metadata."""
-
-    def __init__(
-        self,
-        metadata: _IndexedPathMetadata,
-        system_delays: array,
-        target_required: array,
-        target_slacks: array,
-        runtime_required: array,
-        runtime_slacks: array,
-    ):
-        values = (
-            system_delays,
-            target_required,
-            target_slacks,
-            runtime_required,
-            runtime_slacks,
-        )
-        if any(column.typecode != "d" or len(column) != len(metadata) for column in values):
-            raise ValidationError("global STA indexed timing paths are malformed")
-        self._metadata = metadata
-        self._system_delays = system_delays
-        self._target_required = target_required
-        self._target_slacks = target_slacks
-        self._runtime_required = runtime_required
-        self._runtime_slacks = runtime_slacks
-
-    def __len__(self) -> int:
-        return len(self._metadata)
-
-    def __getitem__(self, index):
-        if isinstance(index, slice):
-            return [self[position] for position in range(*index.indices(len(self)))]
-        if index < 0:
-            index += len(self)
-        if index < 0 or index >= len(self):
-            raise IndexError(index)
-        path = self._metadata._paths[index]
-        return {
-            "path": path,
-            **self._metadata[path],
-            "system_delay_bound_ns": self._system_delays[index],
-            "target_required_time_ns": self._target_required[index],
-            "target_clock_slack_bound_ns": self._target_slacks[index],
-            "runtime_required_time_ns": self._runtime_required[index],
-            "runtime_clock_slack_bound_ns": self._runtime_slacks[index],
-        }
-
-    def __iter__(self):
-        with self._metadata._owner.borrow():
-            for index in range(len(self)):
-                yield self[index]
-
-    def __eq__(self, other):
-        if not isinstance(other, Sequence) or len(self) != len(other):
-            return False
-        return all(left == right for left, right in zip(self, other))
-
-    @property
-    def typed_payload_bytes(self) -> int:
-        return sum(
-            column.itemsize * len(column)
-            for column in (
-                self._system_delays,
-                self._target_required,
-                self._target_slacks,
-                self._runtime_required,
-                self._runtime_slacks,
-            )
-        )
-
-
-class _SystemTimingPathBuilder:
-    """Place one complete measurement bundle into sorted metadata columns."""
-
-    def __init__(self, metadata: _IndexedPathMetadata):
-        self._metadata = metadata
-        count = len(metadata)
-        self._seen = array("B", [0]) * count
-        self._system_delays = array("d", [math.nan]) * count
-        self._target_required = array("d", [math.nan]) * count
-        self._target_slacks = array("d", [math.nan]) * count
-        self._runtime_required = array("d", [math.nan]) * count
-        self._runtime_slacks = array("d", [math.nan]) * count
-
-    def append(self, path: str, target: Mapping, runtime: Mapping) -> bool:
-        index = self._metadata.position(path)
-        if self._seen[index]:
-            return False
-        self._seen[index] = 1
-        self._system_delays[index] = target["arrival_ns"]
-        self._target_required[index] = target["required_ns"]
-        self._target_slacks[index] = target["slack_ns"]
-        self._runtime_required[index] = runtime["required_ns"]
-        self._runtime_slacks[index] = runtime["slack_ns"]
-        return True
-
-    def finish(self) -> _IndexedSystemTimingPaths:
-        if not self._seen or any(not value for value in self._seen):
-            raise ValidationError(
-                "global STA invalid standalone measurement population"
-            )
-        return _IndexedSystemTimingPaths(
-            self._metadata,
-            self._system_delays,
-            self._target_required,
-            self._target_slacks,
-            self._runtime_required,
-            self._runtime_slacks,
-        )
 
 
 def _event_check_values_hash(
@@ -759,19 +645,14 @@ def _write_expanded_measurements(path: Path, rows: Sequence[EventCheck],
 def run_event_checks(checks: Iterable[EventCheck], directory: Path,
                      executable: str | None = None, *, verify_arcs=True
                      ) -> Sequence[dict]:
+    if not isinstance(checks, _IndexedEventChecks):
+        raise ValidationError("global OpenSTA requires native event ownership; inline execution is retired")
     rows = validate_checks(checks)
-    representatives, original_to_representative = (
-        _compress_path_equivalent_checks(rows)
-    )
+    representatives, _ = rows.compressed()
     export_event_checks(representatives, directory)
-    model_directory, model_sources = (
-        event_model_sources(directory) if isinstance(rows, _IndexedEventChecks) else (directory, ())
-    )
+    model_directory, model_sources = event_model_sources(directory)
     tool = resolve_native_executable("sta", executable)
     engine = require_opensta_engine(tool)
-    output = directory / "measurements.tsv"
-    if not isinstance(rows, _IndexedEventChecks):
-        output.unlink(missing_ok=True)
     with (directory / "opensta.log").open("w") as log:
         # Some packaged OpenSTA builds report ``GITDIR-NOT`` because their
         # source archive had no .git directory. Seal the exact executable in
@@ -783,43 +664,29 @@ def run_event_checks(checks: Iterable[EventCheck], directory: Path,
         if "launcher_sha256" in engine:
             log.write(f"EmuFlow OpenSTA launcher SHA256 {engine['launcher_sha256']}\n")
         log.flush()
-        if isinstance(rows, _IndexedEventChecks):
-            from .store_publication import require_store_sources_unchanged
-            from .tool_runtime import NativeToolProcess
-            rows.require_valid()
-            require_store_sources_unchanged(model_sources)
-            runner = resolve_native_executable("emuflow-native")
-            with NativeToolProcess(
-                runner, [tool, "-exit", "analyze.tcl"], cwd=model_directory,
-                environment=dict(os.environ), forward_stdout=True,
-                scratch_parent=rows._owner.root,
-            ) as process:
-                for line in process.stdout:
-                    log.write(line.decode("utf-8", errors="replace"))
-                result = process.finish()
-            rows.require_valid()
-            require_store_sources_unchanged(model_sources)
-        else:
-            result = subprocess.run([tool, "-exit", "analyze.tcl"], cwd=model_directory,
-                                    stdout=log, stderr=subprocess.STDOUT, check=False)
+        from .store_publication import require_store_sources_unchanged
+        from .tool_runtime import NativeToolProcess
+        rows.require_valid()
+        require_store_sources_unchanged(model_sources)
+        runner = resolve_native_executable("emuflow-native")
+        with NativeToolProcess(
+            runner, [tool, "-exit", "analyze.tcl"], cwd=model_directory,
+            environment=dict(os.environ), forward_stdout=True,
+            scratch_parent=rows._owner.root,
+        ) as process:
+            for line in process.stdout:
+                log.write(line.decode("utf-8", errors="replace"))
+            result = process.finish()
+        rows.require_valid()
+        require_store_sources_unchanged(model_sources)
     engine_output = model_directory / "measurements.tsv"
     if result.returncode or not engine_output.is_file():
         raise ValidationError("global OpenSTA failed; see opensta.log")
-    if isinstance(rows, _IndexedEventChecks):
-        from .global_measurements import import_measurements
-        expanded_values = import_measurements(
-            engine_output, representatives, verify_arcs=verify_arcs, directory=directory
-        )
-        engine_output.unlink()  # The sealed representative store is the numerical owner.
-    else:
-        representative_values = read_measurements(engine_output, representatives, verify_arcs=verify_arcs)
-        expanded_values = _write_expanded_measurements(
-            output,
-            rows,
-            representative_values,
-            original_to_representative,
-            representatives,
-        )
+    from .global_measurements import import_measurements
+    expanded_values = import_measurements(
+        engine_output, representatives, verify_arcs=verify_arcs, directory=directory
+    )
+    engine_output.unlink()
     with (directory / "opensta.log").open("a") as log:
         log.write(
             "EmuFlow exact path-bundle compression "
@@ -881,450 +748,22 @@ def read_engine_identity(log_path: Path) -> dict:
 
 def bind_physical_checks(runtime, routes, schedule, physical, platform, *, metadata=None,
                          routes_artifact_sha256=None):
+    """Bind only current typed physical facts through the shared native owner."""
     from .global_binding_native import has_native_physical_inputs, bind_native_physical_checks
-    if has_native_physical_inputs(routes, schedule, physical):
-        return bind_native_physical_checks(
-            runtime, routes, schedule, physical, platform, metadata=metadata,
-            routes_artifact_sha256=routes_artifact_sha256,
-        )
-    result = _EventCheckBuilder(bound=True)
-    path_metadata = _PathMetadataBuilder(result)
-    try:
-        return _bind_physical_checks(
-            runtime, routes, schedule, physical, platform, metadata=metadata,
-            routes_artifact_sha256=routes_artifact_sha256,
-            result=result, path_metadata=path_metadata,
-        )
-    except BaseException:
-        result._owner.close()
-        raise
-
-
-def _bind_physical_checks(runtime, routes, schedule, physical, platform, *, metadata=None,
-                          routes_artifact_sha256=None, result, path_metadata):
-    """Bind canonical measurements to event checks without composing delays.
-
-Shared database readers validate identities only. This exporter does not call
-the Python event propagator or consume its per-path numerical results.
-"""
-    from .physical_timing_inputs import (
-        _board_link_delay_database, _endpoint_delay_database,
-        _logic_segment_database,
+    if not has_native_physical_inputs(routes, schedule, physical):
+        raise ValidationError("global STA requires current typed physical owners; inline binding is retired")
+    return bind_native_physical_checks(
+        runtime, routes, schedule, physical, platform, metadata=metadata,
+        routes_artifact_sha256=routes_artifact_sha256,
     )
-    from .tdm import (
-        is_fixed_slot_transport_schedule,
-        open_tdm_schedule_timing_path_stream,
-    )
-
-    if not is_fixed_slot_transport_schedule(schedule):
-        raise ValidationError("global OpenSTA requires fixed-slot transport")
-    endpoints = _endpoint_delay_database(physical)
-    segments = _logic_segment_database(physical)
-    links = _board_link_delay_database(physical, platform)
-    if links is None:
-        # Preserve the ordinary academic flow's declared BoardDB cycle latency,
-        # explicitly model-only, never guessed or supposedly measured timing.
-        from .board_link_timing import build_board_link_timing_model
-        links = _board_link_delay_database(
-            {"board_link_timing": build_board_link_timing_model(platform)}, platform)
-    if endpoints is None or segments is None or links is None:
-        raise ValidationError("global OpenSTA requires physical logic and endpoint measurements")
-    board_links = {link.id: link for link in platform.links}
-    uncertainty = float(physical.get("static_exact_clock_uncertainty_ns", 0.0))
-    if uncertainty < 0 or not math.isfinite(uncertainty):
-        raise ValidationError("invalid global STA uncertainty")
-    from .runtime import runtime_clock_period_ns
-    representatives = 0
-    segment_cursor = (
-        segments.ordered_cursor()
-        if callable(getattr(segments, "ordered_cursor", None))
-        else None
-    )
-    try:
-        with open_tdm_schedule_timing_path_stream(
-            routes, platform, schedule, path_order="path"
-        ) as reconstructed:
-            for record in reconstructed:
-                virtual = runtime_clock_period_ns(
-                    runtime, record.get("clock_domain")
-                )
-                representatives += 1
-                by_demand = {}
-                for hop in record["scheduled_hops"]:
-                    by_demand.setdefault(hop["demand"], []).append(hop)
-                cut_demands = record.get("_cut_demands")
-                if (
-                    not isinstance(cut_demands, list)
-                    or len(cut_demands) != len(record["cut_nets"])
-                ):
-                    raise ValidationError(
-                        "global STA timing stream lacks cut-demand binding"
-                    )
-                members = sorted(
-                    record.get("compressed_path_ids", [record["path"]])
-                )
-                for member in members:
-                    chain = list(segment_cursor.take(record["path"], member)) if (
-                        segment_cursor is not None
-                    ) else sorted(
-                        segments.get(record["path"], {}).get(member, []),
-                        key=lambda s: s["cut_index"],
-                    )
-                    if [s["cut_index"] for s in chain] != list(range(len(record["cut_nets"])+1)):
-                        raise ValidationError("global STA missing original-member logic segments")
-                    origin = 0.0
-                    trailing = ()
-                    ratio_mode = any(board_links[h["link"]].tdm_delay_model is not None
-                                     for h in record["scheduled_hops"])
-                    if ratio_mode and not all(board_links[h["link"]].tdm_delay_model is not None
-                                              for h in record["scheduled_hops"]):
-                        raise ValidationError("one path cannot mix total net-ratio and fixed-slot delay models")
-                    model_arcs = []
-                    path_metadata.append(
-                        member,
-                        representative_path=record["path"],
-                        path_scope="cross-fpga",
-                        clock_domain=record.get("clock_domain"),
-                        target_period_ns=record["clock_period_ns"],
-                        physical_logic_segments_cone_bound=any(
-                            s.get("measurement") in {"cut-net-cone-upper-bound", "optimized-endpoint-collection-upper-bound"}
-                            for s in chain
-                        ),
-                        interconnect_delay_model=(
-                            "linear-ratio-v1" if ratio_mode else None
-                        ),
-                    )
-                    periods = set()
-                    seen_entries = set()
-                    for k, (net, demand) in enumerate(
-                        zip(record["cut_nets"], cut_demands)
-                    ):
-                        hops = by_demand.get(demand, [])
-                        if not hops or chain[k]["replace_tx_endpoint"] != hops[0]["tx_endpoint"]:
-                            raise ValidationError("global STA cut/segment binding disagrees")
-                        for j, hop in enumerate(hops):
-                            eid = hop["schedule_entry"]
-                            if eid in seen_entries:
-                                raise ValidationError("global STA reused a scheduled event")
-                            seen_entries.add(eid)
-                            period = float(hop["tdm_slot_ns"])
-                            periods.add(period)
-                            if "fixed_slot_tx_time_ns" not in hop:
-                                raise ValidationError(
-                                    "global STA timing stream lacks concrete scheduled TX time"
-                                )
-                            tx = float(hop["fixed_slot_tx_time_ns"])
-                            ratio = hop.get("tdm_ratio")
-                            if not math.isfinite(tx) or tx < 0.0:
-                                raise ValidationError("global STA TX time is invalid")
-                            arcs = trailing + (float(chain[k]["delay_ns"]) if not j else
-                                               endpoints[hop["tx_endpoint"]],)
-                            delay_model = board_links[hop["link"]].tdm_delay_model
-                            link_delay = (delay_model.delay_ns(ratio)
-                                          if delay_model is not None else
-                                          links[hop["link"], hop["from"], hop["to"]])
-                            if ratio_mode:
-                                model_arcs.extend((arcs[-1], link_delay, endpoints[hop["rx_endpoint"]]))
-                            # Previous-frame registered values are stable at first TX.
-                            # Only that check is exempt; relays retain current-frame causality.
-                            if not (schedule["transport_semantics"] == "registered-boundary" and not j):
-                                result.append_values(
-                                    member, "tx", eid, origin, arcs, tx - uncertainty
-                                )
-                            origin = tx
-                            trailing = (link_delay,
-                                        endpoints[hop["rx_endpoint"]])
-                    if len(periods) != 1 or len(seen_entries) != len(record["scheduled_hops"]):
-                        raise ValidationError("global STA incomplete event coverage or mixed slot periods")
-                    if chain[-1]["kind"] != "capture" or chain[-1]["replace_tx_endpoint"] is not None:
-                        raise ValidationError("global STA final segment is not capture")
-                    final_arcs = trailing + (float(chain[-1]["delay_ns"]), uncertainty)
-                    required = float(record.get("required_time_ns", record["clock_period_ns"]))
-                    commit = (schedule["route_constraints"]["frame_slots"]-1)*periods.pop()
-                    for role, deadline in (("target", required),
-                                           ("runtime", virtual-(record["clock_period_ns"]-required)),
-                                           ("commit", commit)):
-                        # The total net-ratio model already includes TDM delay.
-                        # Keep absolute TX/commit readiness checks separate; never
-                        # add their slot wait again to the modeled path delay.
-                        if ratio_mode and role in {"target", "runtime"}:
-                            result.append_values(
-                                member,
-                                role,
-                                "capture",
-                                0.0,
-                                tuple(model_arcs)
-                                + (float(chain[-1]["delay_ns"]), uncertainty),
-                                deadline,
-                            )
-                        else:
-                            result.append_values(
-                                member, role, "capture", origin, final_arcs, deadline
-                            )
-        if segment_cursor is not None:
-            segment_cursor.finish()
-    finally:
-        if segment_cursor is not None:
-            segment_cursor.close()
-    source = None
-    from .local_path_timing import validate_local_path_timing, path_id_set_sha256
-    for fpga, database in physical.get("local_path_timing", {}).items():
-        if metadata is not None:
-            if validate_local_path_timing(database)["fpga"] != fpga:
-                raise ValidationError("global STA local FPGA identity disagrees")
-            if source is not None and source != database["source"]:
-                raise ValidationError("global STA local source seals disagree")
-            source = database["source"]
-        for path in database["paths"]:
-            path_metadata.append(
-                path["id"],
-                representative_path=path["id"],
-                path_scope="same-fpga-local",
-                clock_domain=path.get("clock_domain"),
-                target_period_ns=path["clock_period_ns"],
-                physical_logic_segments_cone_bound=(
-                    path.get("measurement") != "explicit-routed-path-chain"
-                ),
-            )
-            required = float(path.get("required_time_ns", path["clock_period_ns"]))
-            virtual = runtime_clock_period_ns(
-                runtime, path.get("clock_domain")
-            )
-            for role, deadline in (("target", required),
-                                   ("runtime", virtual-(path["clock_period_ns"]-required))):
-                result.append_values(
-                    path["id"],
-                    role,
-                    "capture",
-                    0.0,
-                    (float(path["delay_ns"]),),
-                    deadline,
-                )
-    rows = validate_checks(result.finish())
-    indexed_path_metadata = path_metadata.finish()
-    if metadata is not None:
-        if source is not None and (
-            source["routes_sha256"] != routes_artifact_sha256
-            or source["original_paths"] != len(indexed_path_metadata)
-            or source["original_path_ids_sha256"]
-            != indexed_path_metadata.path_id_set_sha256()
-        ):
-            raise ValidationError("global STA original population/source binding disagrees")
-        metadata.update(paths=indexed_path_metadata, source_binding=source,
-                        compressed_representative_paths=representatives)
-    return rows
 
 
 def build_opensta_timing(runtime, metadata, measurements):
-    """Build the canonical report directly from engine scalars, never Python timing.
-
-    Binding owns coverage and physical qualifications. OpenSTA owns numerical
-    propagation. Python only aggregates the project's original-path metric.
-    """
+    """Publish the native complete-original-path reduction of OpenSTA scalars."""
     from .global_measurements import NativeMeasurements
-    if isinstance(measurements, NativeMeasurements):
-        return _build_native_opensta_timing(runtime, metadata, measurements)
-    metadata_paths = metadata["paths"]
-
-    def ordered_paths():
-        # bind_physical_checks emits one contiguous bundle per original path.
-        # Validate identities within the live bundle and construct the final
-        # path row when that bundle ends. This avoids an H-sized identity set
-        # and a second P-sized target/runtime record map in production.
-        typed_builder = (
-            _SystemTimingPathBuilder(metadata_paths)
-            if isinstance(metadata_paths, _IndexedPathMetadata)
-            else None
-        )
-        paths = [] if typed_builder is None else None
-        completed = set() if typed_builder is None else None
-        current_path = None
-        current_rows = {}
-        current_identities = set()
-        failures = 0
-        checks = 0
-
-        def finish_bundle():
-            if current_path is None:
-                return
-            if set(current_rows) != {"target", "runtime"}:
-                raise ValidationError(
-                    "global STA requires complete, contiguous original-path measurements"
-                )
-            info = metadata_paths[current_path]
-            target = current_rows["target"]
-            runtime_row = current_rows["runtime"]
-            if typed_builder is not None:
-                if not typed_builder.append(current_path, target, runtime_row):
-                    raise ValidationError(
-                        "global STA requires complete, contiguous original-path measurements"
-                    )
-            else:
-                assert paths is not None and completed is not None
-                path = {
-                    "path": current_path,
-                    **info,
-                    "system_delay_bound_ns": target["arrival_ns"],
-                    "target_required_time_ns": target["required_ns"],
-                    "target_clock_slack_bound_ns": target["slack_ns"],
-                    "runtime_required_time_ns": runtime_row["required_ns"],
-                    "runtime_clock_slack_bound_ns": runtime_row["slack_ns"],
-                }
-                paths.append(path)
-                completed.add(current_path)
-
-        for row in measurements:
-            checks += 1
-            path_id = row.get("path")
-            role = row.get("role")
-            event = row.get("event")
-            if (
-                path_id not in metadata_paths
-                or role not in {"target", "runtime", "tx", "commit"}
-                or not isinstance(event, str)
-                or not event
-            ):
-                raise ValidationError(
-                    "global STA invalid standalone measurement population"
-                )
-            if path_id != current_path:
-                if completed is not None and path_id in completed:
-                    raise ValidationError(
-                        "global STA requires complete, contiguous original-path measurements"
-                    )
-                finish_bundle()
-                current_path = path_id
-                current_rows = {}
-                current_identities = set()
-            identity = (role, event)
-            if identity in current_identities:
-                raise ValidationError(
-                    "global STA invalid standalone measurement population"
-                )
-            current_identities.add(identity)
-            if any(
-                isinstance(row.get(key), bool)
-                or not isinstance(row.get(key), (int, float))
-                or not math.isfinite(row[key])
-                for key in ("arrival_ns", "required_ns", "slack_ns")
-            ):
-                raise ValidationError(
-                    "global STA invalid standalone measurement population"
-                )
-            if role in {"target", "runtime"}:
-                if role in current_rows:
-                    raise ValidationError(
-                        "global STA invalid standalone measurement population"
-                    )
-                current_rows[role] = row
-            elif row["slack_ns"] < -1e-3:
-                failures += 1
-        finish_bundle()
-        if typed_builder is not None:
-            paths = typed_builder.finish()
-        else:
-            assert paths is not None
-            if not paths or len(paths) != len(metadata_paths):
-                raise ValidationError(
-                    "global STA invalid standalone measurement population"
-                )
-            paths.sort(key=lambda path: path["path"])
-        return paths, failures, checks
-
-    paths, failures, measurement_count = ordered_paths()
-    if not paths:
-        raise ValidationError("global STA empty standalone result")
-    source = metadata["source_binding"]
-    scope = "whole-original-design" if source is not None else "cross-fpga-path-subset"
-    local = 0
-    bounds = 0
-    maximum_delay = -math.inf
-    metrics = {
-        role: {
-            "wns_ns": math.inf,
-            "original_path_tns_ns": 0.0,
-            "negative_paths": 0,
-        }
-        for role in ("target", "runtime")
-    }
-    worst_paths = {role: None for role in ("target", "runtime")}
-    negative_partials = {role: [] for role in ("target", "runtime")}
-
-    def add_fsum(partials: list[float], value: float) -> None:
-        """Accumulate one value with math.fsum's bounded partials strategy."""
-
-        index = 0
-        for partial in partials:
-            if abs(value) < abs(partial):
-                value, partial = partial, value
-            high = value + partial
-            low = partial - (high - value)
-            if low:
-                partials[index] = low
-                index += 1
-            value = high
-        partials[index:] = [value]
-
-    for path in paths:
-        local += path["path_scope"] == "same-fpga-local"
-        bounds += path["physical_logic_segments_cone_bound"]
-        maximum_delay = max(maximum_delay, path["system_delay_bound_ns"])
-        for role in ("target", "runtime"):
-            slack = path[f"{role}_clock_slack_bound_ns"]
-            metric = metrics[role]
-            if (slack, path["path"]) < (
-                metric["wns_ns"], worst_paths[role] or ""
-            ):
-                metric["wns_ns"] = slack
-                worst_paths[role] = path["path"]
-            if slack < 0.0:
-                metric["negative_paths"] += 1
-                add_fsum(negative_partials[role], slack)
-    for role in ("target", "runtime"):
-        metrics[role]["original_path_tns_ns"] = math.fsum(
-            negative_partials[role]
-        )
-    timing = {"schema": "emuflow.system-timing/v2", "status": "fail" if failures else "pass",
-              "qualification": "opensta-fixed-event-physical-bounds", "timing_scope": scope,
-              "source_binding": source, "paths": paths,
-              "path_exactness": {"physical_model": "routed-staging-chain-upper-bounds",
-                  "endpoint_exact_logic_paths": len(paths)-bounds, "cone_bound_logic_paths": bounds,
-                  "fallback_logic_paths": 0, "discontinuous_compressed_paths": 0,
-                  "physical_logic_segment_bounds": True, "fixed_slot_event_failures": failures},
-              "summary": {"timing_paths": len(paths), "original_paths": source["original_paths"] if source else None,
-                  "original_local_paths": local, "original_cross_fpga_paths": len(paths)-local,
-                  "compressed_representative_paths": metadata["compressed_representative_paths"],
-                  "original_path_coverage": 1.0 if source else None,
-                  "original_path_ids_sha256": source["original_path_ids_sha256"] if source else None,
-                  "maximum_system_delay_bound_ns": maximum_delay}}
-    for role in ("target", "runtime"):
-        metric = metrics[role]
-        tns = metric["original_path_tns_ns"]
-        timing[f"{role}_clock"] = {"closure_gate": role=="runtime", "worst_path": worst_paths[role],
-            "worst_slack_bound_ns": metric["wns_ns"], "tns_bound_ns": tns,
-            "total_negative_slack_bound_ns": tns, "negative_slack_paths": metric["negative_paths"]}
-    clock_periods = {
-        clock: float(record["nominal_period_ns"])
-        for clock, record in runtime["virtual_dut_clocks"].items()
-    }
-    period = min(clock_periods.values())
-    timing["runtime_clock"].update(
-        period_ns=period,
-        frequency_mhz=1000.0 / period,
-        period_scope="fastest-domain-summary",
-        clock_periods_ns=clock_periods,
-    )
-    maximum = timing["summary"]["maximum_system_delay_bound_ns"]
-    timing["runtime_clock"].update(minimum_safe_period_bound_ns=maximum,
-        maximum_safe_frequency_bound_mhz=1000.0/maximum if maximum > 0 else None)
-    if metrics["runtime"]["wns_ns"] < 0:
-        timing["status"] = "fail"
-    timing["global_opensta"] = {"schema": "emuflow.global-opensta-check/v1",
-        "authority": "opensta", "execution": "standalone", "status": timing["status"],
-        "timing_scope": scope, "original_paths": len(paths), "checks": measurement_count,
-        "event_failures": failures, "metrics": metrics,
-        "tns_definition": "sum-negative-slack-once-per-original-TimingPathDB-path"}
-    return timing
+    if not isinstance(measurements, NativeMeasurements):
+        raise ValidationError("global STA requires native measurement ownership; inline reduction is retired")
+    return _build_native_opensta_timing(runtime, metadata, measurements)
 
 
 def _build_native_opensta_timing(runtime, metadata, measurements):

@@ -277,126 +277,7 @@ class Phase3Test(unittest.TestCase):
             ):
                 build_clusters(compact_ir, constraints, cut_mode="sequential-only")
 
-    def test_indexed_terminal_validation_avoids_graph_replay(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            ir_path = root / "design.emuir.sqlite"
-            output = root / "phase3"
-            write_compact_emuir(ir_path, self.ir.to_dict())
-            with patch(
-                "emuflow.partition_ir.EmuIR.load",
-                side_effect=AssertionError(
-                    "production Phase 3 must stream compact EmuIR"
-                ),
-            ):
-                report = run_phase3_fixture(
-                    ir_path,
-                    PLATFORM_PATH,
-                    output,
-                    cut_mode="sequential-only",
-                    provider="tritonpart",
-                    seed=7,
-                )
-            runtime = read_json(output / "phase3-runtime.json")
-            self.assertEqual(runtime["schema"], "emuflow.phase3-runtime/v1")
-            self.assertEqual(runtime["status"], "pass")
-            self.assertEqual(
-                report["artifacts"]["runtime_breakdown"],
-                "phase3-runtime.json",
-            )
-            self.assertEqual(
-                runtime["observations"]["instances"],
-                len(self.ir.value["instances"]),
-            )
-            step_by_name = {item["name"]: item for item in runtime["steps"]}
-            for name in (
-                "load_partition_ir",
-                "build_clusters",
-                "provider.tritonpart",
-                "publish.write_assignment_index",
-            ):
-                self.assertEqual(step_by_name[name]["status"], "pass")
-                self.assertGreaterEqual(step_by_name[name]["wall_seconds"], 0.0)
-            with patch(
-                "emuflow.phase3.EmuIR.load",
-                side_effect=AssertionError(
-                    "terminal validation must not replay the EmuIR graph"
-                ),
-            ):
-                checked = validate_phase3_indexed(
-                    ir_path,
-                    PLATFORM_PATH,
-                    output / "phase3_report.json",
-                    output / "assignment.sqlite",
-                )
-            self.assertEqual(checked, report["validation"])
-            with closing(sqlite3.connect(output / "assignment.sqlite")) as connection, connection:
-                self.assertEqual(
-                    connection.execute("PRAGMA user_version").fetchone()[0],
-                    4,
-                )
-                schema = json.loads(
-                    connection.execute(
-                        "SELECT value FROM metadata WHERE key='schema'"
-                    ).fetchone()[0]
-                )
-                self.assertEqual(
-                    schema, "emuflow.phase3-assignment-sqlite/v4"
-                )
-                exact_tables = connection.execute(
-                    "SELECT count(*) FROM sqlite_master "
-                    "WHERE type='table' AND name LIKE 'exact_%'"
-                ).fetchone()[0]
-                self.assertEqual(exact_tables, 0)
-            tampered = copy.deepcopy(report)
-            tampered["validation"]["effective_balance_percent"] = 210.0
-            (output / "phase3_report.json").write_text(json.dumps(tampered))
-            with self.assertRaisesRegex(ValidationError, "strict balance evidence"):
-                validate_phase3_indexed(ir_path, PLATFORM_PATH,
-                    output / "phase3_report.json", output / "assignment.sqlite")
-            (output / "phase3_report.json").write_text(json.dumps(report))
-            observed_tamper = copy.deepcopy(report)
-            observed_tamper["validation"]["balance_observation"]["max_to_mean_by_dimension"]["cells"] = 99
-            (output / "phase3_report.json").write_text(json.dumps(observed_tamper))
-            with self.assertRaisesRegex(ValidationError, "balance observation"):
-                validate_phase3_indexed(ir_path, PLATFORM_PATH,
-                    output / "phase3_report.json", output / "assignment.sqlite")
-            (output / "phase3_report.json").write_text(json.dumps(report))
 
-            with closing(sqlite3.connect(output / "assignment.sqlite")) as connection, connection:
-                connection.execute("DELETE FROM cut_sinks")
-            with self.assertRaisesRegex(ValidationError, "cut relation"):
-                validate_phase3_indexed(
-                    ir_path,
-                    PLATFORM_PATH,
-                    output / "phase3_report.json",
-                    output / "assignment.sqlite",
-                )
-
-    def test_runtime_breakdown_survives_phase3_failure(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            ir_path = root / "design.emuir.sqlite"
-            output = root / "phase3"
-            write_compact_emuir(ir_path, self.ir.to_dict())
-            with patch(
-                "emuflow.phase3.build_clusters",
-                side_effect=RuntimeError("synthetic cluster failure"),
-            ):
-                with self.assertRaisesRegex(RuntimeError, "cluster failure"):
-                    run_phase3_fixture(
-                        ir_path,
-                        PLATFORM_PATH,
-                        output,
-                        cut_mode="sequential-only",
-                        provider="tritonpart",
-                        seed=7,
-                    )
-            runtime = read_json(output / "phase3-runtime.json")
-            self.assertEqual(runtime["status"], "failed")
-            step_by_name = {item["name"]: item for item in runtime["steps"]}
-            self.assertEqual(step_by_name["load_partition_ir"]["status"], "pass")
-            self.assertEqual(step_by_name["build_clusters"]["status"], "failed")
 
     def test_static_exact_compact_input_uses_bounded_source_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -724,7 +605,7 @@ class Phase3Test(unittest.TestCase):
         self.assertEqual(constraints["active_fpgas"], ["fpga1", "fpga2"])
 
     def test_single_active_target_skips_requested_patron(self) -> None:
-        for compact in (False, True):
+        for compact in (True,):
             with self.subTest(compact=compact), tempfile.TemporaryDirectory() as temporary_directory:
                 root = Path(temporary_directory)
                 ir_path = root / ("design.emuir.sqlite" if compact else "design.emuir.json")
@@ -743,9 +624,9 @@ class Phase3Test(unittest.TestCase):
                     encoding="utf-8",
                 )
                 with (
-                    patch("emuflow.phase3.run_tritonpart") as tritonpart,
+                    patch("emuflow.partition_init_native.initialize") as tritonpart,
                     patch(
-                        "emuflow.phase3.run_partition_pressure_native"
+                        "emuflow.partition_pressure.run_partition_pressure_native"
                     ) as patron,
                 ):
                     report = run_phase3(
@@ -917,39 +798,6 @@ class Phase3Test(unittest.TestCase):
                 self.platform,
             )
 
-    def test_pipeline_writes_valid_forced_two_fpga_partition(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            output = Path(temporary_directory)
-            ir_path = output / "design.emuir.json"
-            ir_path.write_text(
-                json.dumps(self.ir.to_dict()), encoding="utf-8"
-            )
-            report = run_phase3_fixture(
-                ir_path=ir_path,
-                platform_path=PLATFORM_PATH,
-                output_dir=output / "phase3",
-                seed=11,
-                provider="tritonpart",
-                cut_mode="sequential-only",
-            )
-            self.assertEqual(report["status"], "pass")
-            self.assertEqual(report["validation"]["instances"], 8)
-            self.assertEqual(report["validation"]["used_fpgas"], 2)
-            self.assertEqual(report["validation"]["illegal_cuts"], 0)
-            self.assertGreater(report["validation"]["cut_nets"], 0)
-            self.assertTrue(
-                all(
-                    "clusters" not in partition
-                    for partition in report["partitions"]
-                )
-            )
-            for filename in (
-                "clusters.json",
-                "constraints.normalized.json",
-                "assignment.json",
-                "phase3_report.json",
-            ):
-                self.assertTrue((output / "phase3" / filename).is_file())
 
     def test_assignment_is_reproducible_for_fixed_seed(self) -> None:
         constraints, clusters, first = self._artifacts()

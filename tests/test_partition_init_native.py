@@ -14,7 +14,7 @@ import pytest
 
 from emuflow.partition import build_clusters, CUT_MODE_STATIC_EXACT
 from emuflow.partition_init_native import initialize
-from emuflow.tritonpart import export_tritonpart_inputs, run_tritonpart, _repair_min_used_fpgas, _stream_assignment_cut_summary
+from tests.partition_init_reference import facts, cut_score
 from tests.test_phase3_clusters_native import source
 from tests import test_partition_pressure as fixture
 
@@ -64,48 +64,71 @@ def call(args,**kwargs):
     return initialize(ir,platform,clusters,constraints,seed=0,**dict({'executable':None},**kwargs))
 
 
-@pytest.mark.parametrize('parts',[(0,1),(1,0),(0,)])
-def test_imported_initial_owner_matches_reference_objective_repair_and_bounds(source,tmp_path,parts):
-    args=prepare(source);ir,platform,constraints,clusters=args
-    imported=solution(tmp_path,len(clusters['clusters']),parts)
-    ref=export_tritonpart_inputs(ir,platform,clusters,constraints,tmp_path/'reference',write_manifest=False)
-    raw={f'c{i:06d}':ref['fpga_order'][parts[i%len(parts)]] for i in range(len(clusters['clusters']))}
-    expected,moves=_repair_min_used_fpgas(raw,clusters,platform,constraints,ref['hyperedges']) if len(set(raw.values()))<constraints['min_used_fpgas'] else (raw,[])
-    with patch('emuflow.tritonpart._compact_legal_hyperedges',side_effect=AssertionError('Python graph reconstructed')),patch('emuflow.tritonpart.parse_tritonpart_solution',side_effect=AssertionError('Python parsed owner')):
-        actual,summary=call(args,solution_input=imported)
-    assert dict(actual)==expected
+@pytest.mark.parametrize('parts', [(0, 1), (1, 0), (0,)])
+def test_imported_initial_owner_passes_independent_coverage_resources_and_cut_score(source, tmp_path, parts):
+    from emuflow.partition import validate_cluster_assignment_balance
+    args = prepare(source); ir, platform, constraints, clusters = args
+    imported = solution(tmp_path, len(clusters['clusters']), parts)
+    reference = facts(ir, platform, clusters, constraints)
+    raw = {f'c{i:06d}': reference['fpga_order'][parts[i % len(parts)]] for i in range(len(clusters['clusters']))}
+    actual, summary = call(args, solution_input=imported)
+    assert set(actual) == set(raw)
+    assert len(set(actual.values())) >= constraints['min_used_fpgas']
+    if len(set(raw.values())) >= constraints['min_used_fpgas']:
+        assert dict(actual) == raw
+    else:
+        # Repair may move an atomic cluster but cannot alter a fixed owner.
+        assert sum(actual[key] != raw[key] for key in raw) == 1
+        for cluster in clusters['clusters']:
+            if cluster['fixed_fpga'] is not None:
+                assert actual[cluster['id']] == cluster['fixed_fpga']
     assert actual.part_indices.readonly
-    assert summary['balance_allowed_loads']==ref['balance_allowed_loads']
-    assert summary['provider_metadata']['min_used_fpgas_repair']['moves']==moves
-    score=_stream_assignment_cut_summary(ref['hyperedges'],actual,set())
-    assert summary['provider_metadata']['seed_attempts'][-1]['cut_weight']==score['cut_weight']
+    validate_cluster_assignment_balance(platform, list(clusters['clusters']), dict(actual),
+        constraints['balance_tolerance'], requested_balance_dimensions=constraints.get('balance_dimensions', ()),
+        requested_tolerance_by_dimension=constraints.get('balance_tolerance_by_dimension', {}))
+    assert summary['balance_allowed_loads'] == reference['balance_allowed_loads']
+    score = cut_score(reference['hyperedges'], actual)
+    assert summary['provider_metadata']['seed_attempts'][-1]['cut_weight'] == score[0]
 
 
-@pytest.mark.parametrize('weighted,baseline',[(False,False),(True,False),(True,True)])
-def test_full_engine_handoff_matches_reference_input_bytes_and_selected_sweep(source,tmp_path,weighted,baseline):
-    args=prepare(source);ir,platform,constraints,clusters=args
-    rows=[('critical',.5,1,7.123456789123),('relaxed',0.0,1,1.0)]
-    selector=weights(tmp_path,rows) if weighted else None
-    ref=export_tritonpart_inputs(ir,platform,clusters,constraints,tmp_path/'reference',net_weights={'critical':rows[0][3]} if weighted else None,write_manifest=False)
-    tool,capture=engine(tmp_path,[(0,1),(0,0,1,1)])
-    actual,summary=call(args,weights_path=selector,executable=str(tool),seed_attempts=2,run_unweighted_baseline=baseline)
-    for name in ['partition.hgr','partition.fix','partition.resource-bounds']:
-        assert (capture/('0-w-'+name)).read_bytes()==(tmp_path/'reference'/name).read_bytes()
-    script=(capture/'0-w-run_tritonpart.tcl').read_text();reference_script=(tmp_path/'reference/run_tritonpart.tcl').read_text()
-    # Only the invocation-owned absolute artifact directory differs.
-    import re
-    assert re.sub(r'\{[^{}]*partition\.', '{ROOT/partition.',script)==re.sub(r'\{[^{}]*partition\.', '{ROOT/partition.',reference_script)
-    if baseline:assert (capture/'0-b-partition.unweighted.hgr').read_bytes()==(tmp_path/'reference/partition.unweighted.hgr').read_bytes()
-    else:assert not list(capture.glob('*partition.unweighted.hgr'))
-    objectives=[]
-    for seed,indices in enumerate([(0,1),(0,0,1,1)]):
-        candidate={f'c{i:06d}':ref['fpga_order'][indices[i%len(indices)]] for i in range(len(clusters['clusters']))}
-        score=_stream_assignment_cut_summary(ref['hyperedges'],candidate,{'critical'} if weighted else set())
-        objectives.append(((score['cut_weight'],score['cut_hyperedges'],seed),candidate))
-    if baseline:objectives.append((objectives[1][0][0:2]+(0,),objectives[1][1]))
-    expected=min(objectives,key=lambda row:row[0])
-    assert dict(actual)==expected[1]
-    assert summary['selected_seed']==expected[0][2]
+@pytest.mark.parametrize('weighted,baseline', [(False, False), (True, False), (True, True)])
+def test_full_engine_handoff_has_exact_graph_resource_limits_and_selected_objective(source, tmp_path, weighted, baseline):
+    args = prepare(source); ir, platform, constraints, clusters = args
+    rows = [('critical', .5, 1, 7.123456789123), ('relaxed', 0.0, 1, 1.0)]
+    selector = weights(tmp_path, rows) if weighted else None
+    reference = facts(ir, platform, clusters, constraints, {'critical': rows[0][3]} if weighted else None)
+    tool, capture = engine(tmp_path, [(0, 1), (0, 0, 1, 1)])
+    actual, summary = call(args, weights_path=selector, executable=str(tool), seed_attempts=2, run_unweighted_baseline=baseline)
+    graph = (capture/'0-w-partition.hgr').read_text().splitlines()
+    edges = reference['hyperedges']
+    assert graph[0] == f"{len(edges)} {len(clusters['clusters'])} 11"
+    assert graph[1:1+len(edges)] == [f"{edge['weight']:.9g} " + ' '.join(map(str, edge['vertices'])) for edge in edges]
+    assert [list(map(int, row.split())) for row in graph[1+len(edges):]] == reference['vertex_weights']
+    fixed = [int(row) for row in (capture/'0-w-partition.fix').read_text().splitlines()]
+    assert fixed == [reference['fpga_order'].index(c['fixed_fpga']) if c['fixed_fpga'] is not None else -1 for c in clusters['clusters']]
+    limits = (capture/'0-w-partition.resource-bounds').read_text().splitlines()
+    assert limits[0] == f"{len(reference['fpga_order'])} {len(reference['dimensions'])}"
+    assert [list(map(int, row.split())) for row in limits[1:]] == [
+        [value for field in reference['dimensions'] for value in (0, reference['balance_allowed_loads'][part][field])]
+        for part in reference['fpga_order']]
+    script = (capture/'0-w-run_tritonpart.tcl').read_text()
+    assert '-resource_bounds_file' in script and '-num_vertices_threshold_ilp 1000' in script
+    assert '-num_initial_solutions 50' in script and '-num_best_initial_solutions 10' in script
+    if baseline:
+        unweighted = (capture/'0-b-partition.unweighted.hgr').read_text().splitlines()
+        assert unweighted[1:1+len(edges)] == ['1 ' + ' '.join(map(str, edge['vertices'])) for edge in edges]
+    else:
+        assert not list(capture.glob('*partition.unweighted.hgr'))
+    objectives = []
+    for seed, indices in enumerate([(0, 1), (0, 0, 1, 1)]):
+        candidate = {f'c{i:06d}': reference['fpga_order'][indices[i % len(indices)]] for i in range(len(clusters['clusters']))}
+        score = cut_score(edges, candidate)
+        objectives.append(((*score, seed), candidate))
+    if baseline:
+        objectives.append((objectives[1][0][0:2]+(0,), objectives[1][1]))
+    expected = min(objectives, key=lambda row: row[0])
+    assert dict(actual) == expected[1]
+    assert summary['selected_seed'] == expected[0][2]
 
 
 @pytest.mark.parametrize('damage',['invalid-token','missing-owner','unknown-part','engine-exit','changed-source','unknown-weight','weight-count','weight-seal'])
@@ -128,13 +151,15 @@ def test_invalid_sources_or_results_never_produce_a_selected_owner(source,tmp_pa
     with pytest.raises(Exception):call(args,**options)
 
 
-def test_production_tritonpart_never_loads_the_weight_population_or_expands_primary(source,tmp_path):
-    args=prepare(source);ir,platform,constraints,clusters=args
-    imported=solution(tmp_path,len(clusters['clusters']),(0,1));selector=weights(tmp_path,[('critical',.5,1,3.0)])
-    with patch('emuflow.tritonpart.load_partition_net_weights',side_effect=AssertionError('Python net-weight map loaded')),patch('emuflow.tritonpart.export_tritonpart_inputs',side_effect=AssertionError('Python initializer entered')),patch.object(type(clusters['clusters']),'_record',side_effect=AssertionError('primary records expanded')):
-        actual=run_tritonpart(ir,platform,clusters,constraints,tmp_path/'unused',seed=0,solution_input=imported,net_weights_path=selector,persist_input_manifest=False,defer_semantic_contract=True,_defer_derived_records=True)
-    assert actual['provider_metadata']['initializer_implementation_id']=='native-tritonpart-initialization-v1'
-    assert actual['cluster_assignment'].part_indices.readonly
+def test_native_initializer_never_loads_the_weight_population_or_expands_primary(source, tmp_path):
+    args = prepare(source); ir, platform, constraints, clusters = args
+    imported = solution(tmp_path, len(clusters['clusters']), (0, 1))
+    selector = weights(tmp_path, [('critical', .5, 1, 3.0)])
+    with patch('emuflow.partition_inputs.load_partition_net_weights', side_effect=AssertionError('Python net-weight map loaded')), \
+         patch.object(type(clusters['clusters']), '_record', side_effect=AssertionError('primary records expanded')):
+        actual, summary = call(args, solution_input=imported, weights_path=selector)
+    assert summary['implementation_id'] == 'native-tritonpart-initialization-v1'
+    assert actual.part_indices.readonly
 
 
 def test_occupancy_repair_never_rescues_a_strictly_unbalanced_raw_solution(source,tmp_path):
@@ -217,7 +242,7 @@ def test_real_tritonpart_initializer_reaches_final_phase3_publication(pressure_i
     args,_,timing=pressure_inputs
     platform=tmp_path/'platform.json';write_json(platform,args[1].to_dict())
     routes=tmp_path/'routes.json';write_json(routes,args[5])
-    with patch('emuflow.tritonpart.export_tritonpart_inputs',side_effect=AssertionError('Python initializer')),patch.object(NativePressureModel,'_write_initial_ownership',side_effect=AssertionError('Python ownership rewrite')):
+    with patch('emuflow.partition.build_partition_assignment',side_effect=AssertionError('Python initializer')),patch.object(NativePressureModel,'_write_initial_ownership',side_effect=AssertionError('Python ownership rewrite')):
         report=run_phase3(args[0].path,platform,tmp_path/'phase3-real-engine',provider='patron',
             min_used_fpgas=2,balance_tolerance=1.0,patron_max_moves=2,
             openroad=os.environ['EMUFLOW_TEST_OPENROAD'],tritonpart_timeout_seconds=120,

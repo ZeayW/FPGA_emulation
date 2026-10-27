@@ -6,12 +6,9 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
-from .cross_layer_timing import (
-    validate_cross_layer_timing_contract,
-)
 from .phase5_timing_native import project_native_schedule_timing
 from .errors import ValidationError
-from .io import read_json, write_json
+from .io import read_json
 
 from .phase3_storage import read_phase3_assignment_view
 from .platform import Platform
@@ -19,13 +16,11 @@ from .routing import semantic_contract_for_routes
 from .tdm import (
     TDM_EXACT_DEPENDENCY_PROVIDER,
     build_native_exact_schedule_request,
-    reconstruct_tdm_schedule_timing,
     validate_tdm_schedule,
 )
 
 from .tdm_schedule_storage import (
     read_tdm_schedule,
-    tdm_schedule_store_path,
 )
 
 from .system_route_storage import read_system_routes
@@ -60,14 +55,11 @@ def validate_phase5_generation(
     phase5_report_path: Path,
     *,
     managed_root_sealed: bool = False,
-    allow_legacy: bool = False,
 ) -> Dict[str, Any]:
     """Validate the report-last Phase 5 generation before opening its data."""
 
     phase5_report_path = Path(phase5_report_path)
     if not phase5_report_path.is_file() or phase5_report_path.is_symlink():
-        if allow_legacy:
-            return {"status": "legacy", "report": None}
         raise ValidationError("Phase 5 generation commit report is missing")
     try:
         with phase5_report_path.open("r", encoding="utf-8") as stream:
@@ -78,8 +70,6 @@ def validate_phase5_generation(
         raise ValidationError("Phase 5 generation commit report is invalid")
     generation = report.get("generation")
     if generation is None:
-        if allow_legacy:
-            return {"status": "legacy", "report": report}
         raise ValidationError("Phase 5 generation seal is missing")
     if (
         report.get("schema") != PHASE5_REPORT_SCHEMA
@@ -244,20 +234,18 @@ def run_phase5(
 def validate_phase5(
     routes_path: Path, platform_path: Path, schedule_path: Path,
     assignment_path: Optional[Path] = None, *, managed_root_sealed: bool = False,
-    allow_legacy_generation: bool = False,
 ) -> Dict[str, Any]:
     generation = validate_phase5_generation(
         schedule_path.parent / "phase5_report.json",
-        managed_root_sealed=managed_root_sealed, allow_legacy=allow_legacy_generation,
+        managed_root_sealed=managed_root_sealed,
     )
-    report = generation.get("report")
-    if isinstance(report, dict):
-        if report.get("provider") != TDM_EXACT_DEPENDENCY_PROVIDER:
-            raise ValidationError("unsupported Phase 5 generation provider")
-        if report["artifacts"].get("ratio_plan") is not None:
-            raise ValidationError("retired ratio-plan generation is not supported")
-        if Path(os.path.abspath(schedule_path)) != Path(os.path.abspath(schedule_path.parent / "schedule.json")):
-            raise ValidationError("Phase 5 schedule path disagrees with generation report")
+    report = generation["report"]
+    if report.get("provider") != TDM_EXACT_DEPENDENCY_PROVIDER:
+        raise ValidationError("unsupported Phase 5 generation provider")
+    if report["artifacts"].get("ratio_plan") is not None:
+        raise ValidationError("retired ratio-plan generation is not supported")
+    if Path(os.path.abspath(schedule_path)) != Path(os.path.abspath(schedule_path.parent / "schedule.json")):
+        raise ValidationError("Phase 5 schedule path disagrees with generation report")
     persisted_routes = read_system_routes(routes_path)
     routes, semantic_contract = _load_phase3_semantics(persisted_routes, assignment_path)
     platform = Platform.load(platform_path)
@@ -265,33 +253,23 @@ def validate_phase5(
     if schedule.get("provider") != TDM_EXACT_DEPENDENCY_PROVIDER or semantic_contract is None:
         raise ValidationError("Phase 5 requires a Static Exact dependency schedule")
     validation = validate_tdm_schedule(routes, platform, schedule)
-    cross_layer_path = schedule_path.parent / "cross_layer_timing.json"
-    if cross_layer_path.is_file():
-        contract = read_json(cross_layer_path)
-        if contract.get("schema") != "emuflow.cross-layer-timing/v3":
-            raise ValidationError(
-                "current Phase 5 generation requires indexed cross-layer timing v3"
-            )
-        if contract.get("schema") == "emuflow.cross-layer-timing/v3":
-            projected = project_native_schedule_timing(
-                persisted_routes,
-                schedule,
-                platform,
-                bind=True,
-                analyze=isinstance(routes.get("timing"), dict),
-            )
-            if contract != projected["contract"]:
-                raise ValidationError(
-                    "cross-layer timing contract does not match canonical inputs"
-                )
-            if projected["timing_validation"] is not None:
-                validation["timing"] = projected["timing_validation"]
-            validation["cross_layer_timing"] = {"status": "pass", **contract["metrics"]}
-            return validation
-    if isinstance(routes.get("timing"), dict):
-        validation["timing"] = reconstruct_tdm_schedule_timing(routes, platform, schedule)
-    if cross_layer_path.is_file():
-        validation["cross_layer_timing"] = validate_cross_layer_timing_contract(
-            persisted_routes, read_json(cross_layer_path), schedule, semantic_contract,
+    contract = read_json(schedule_path.parent / "cross_layer_timing.json")
+    if contract.get("schema") != "emuflow.cross-layer-timing/v3":
+        raise ValidationError(
+            "current Phase 5 generation requires indexed cross-layer timing v3"
         )
+    projected = project_native_schedule_timing(
+        persisted_routes,
+        schedule,
+        platform,
+        bind=True,
+        analyze=isinstance(routes.get("timing"), dict),
+    )
+    if contract != projected["contract"]:
+        raise ValidationError(
+            "cross-layer timing contract does not match canonical inputs"
+        )
+    if projected["timing_validation"] is not None:
+        validation["timing"] = projected["timing_validation"]
+    validation["cross_layer_timing"] = {"status": "pass", **contract["metrics"]}
     return validation

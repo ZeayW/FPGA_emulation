@@ -12,7 +12,7 @@ from emuflow.partition import (build_partition_assignment,
     validate_partition_artifacts_online, _cluster_assignment_summary)
 from emuflow.partition_init_native import initialize
 from emuflow.partition_pressure import build_partition_pressure_model
-from emuflow.phase3 import _select_patron_timing_assignment
+from tests.phase3_decision_reference import _select_patron_timing_assignment
 from emuflow.phase3_decision_native import select_assignment, audit_assignment
 from emuflow.store_publication import bind_store_source
 from tests.test_phase3_pressure_native import inputs, run
@@ -197,7 +197,7 @@ def test_production_phase3_uses_native_decision_before_final_transaction(decisio
     board.write_text(json.dumps(platform.to_dict()))
     limits.write_text(json.dumps(constraints))
     routing.write_text(json.dumps(routes))
-    with patch('emuflow.phase3._select_patron_timing_assignment', side_effect=AssertionError('host candidate selector entered')):
+    with patch('tests.phase3_decision_reference._select_patron_timing_assignment', side_effect=AssertionError('host candidate selector entered')):
         result = run_phase3(ir.path, board, tmp_path/'phase3', constraints_path=limits,
             tritonpart_solution=tmp_path/'initial.solution', timing_database_path=tmp_path/'timing.json',
             route_constraints_path=routing, patron_max_moves=12)

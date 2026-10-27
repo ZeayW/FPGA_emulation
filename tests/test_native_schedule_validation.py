@@ -12,7 +12,8 @@ import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.tdm import validate_tdm_schedule, build_native_exact_schedule_request
-from emuflow.tdm_schedule_storage import read_tdm_schedule, write_tdm_schedule_storage
+from emuflow.tdm_schedule_storage import read_tdm_schedule
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 from tests.native_schedule_case import _case
 from tests.schedule_reference import build_tdm_schedule
 from tests.schedule_store_fixture import write_tdm_schedule_storage as write_fixture
@@ -284,6 +285,7 @@ def test_empty_typed_schedule_is_validated_without_a_host_special_case(
     selector = tmp_path / "empty.json"
     write_system_route_storage(selector, empty)
     routes = read_system_routes(selector)
+    routes["semantic_contract"] = _routes["semantic_contract"]
     install_runtime(tmp_path, monkeypatch)
     path = tmp_path / "schedule.json"
     write_tdm_schedule_storage(

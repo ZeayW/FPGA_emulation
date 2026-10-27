@@ -172,7 +172,7 @@ def run_frame_length_search(
         tdm_root = root / "tdm"
         try:
             phase4 = run_phase4(
-                assignment_path,
+                assignment_path.with_name("assignment.sqlite"),
                 platform_path,
                 route_root,
                 constraints_path=route_constraints,

@@ -211,68 +211,10 @@
       "tier": "smoke"
     },
     {
-      "case": "case01",
-      "evidence": [],
-      "id": "eda2025.case01",
-      "input_bytes": 301,
-      "qualification": "catalogued",
-      "source": {
-        "fetcher": "scripts/fetch_eda2025_benchmarks.py",
-        "revision": "45315b739e6678bf04605aaa246285c768bc8e13",
-        "revision_kind": "git-commit"
-      },
-      "suite": "eda2025",
-      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
-      "tier": "smoke"
-    },
-    {
-      "case": "case02",
-      "evidence": [],
-      "id": "eda2025.case02",
-      "input_bytes": 47175,
-      "qualification": "catalogued",
-      "source": {
-        "fetcher": "scripts/fetch_eda2025_benchmarks.py",
-        "revision": "45315b739e6678bf04605aaa246285c768bc8e13",
-        "revision_kind": "git-commit"
-      },
-      "suite": "eda2025",
-      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
-      "tier": "smoke"
-    },
-    {
-      "case": "case03",
-      "evidence": [],
-      "id": "eda2025.case03",
-      "input_bytes": 1131769,
-      "qualification": "catalogued",
-      "source": {
-        "fetcher": "scripts/fetch_eda2025_benchmarks.py",
-        "revision": "45315b739e6678bf04605aaa246285c768bc8e13",
-        "revision_kind": "git-commit"
-      },
-      "suite": "eda2025",
-      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
-      "tier": "small"
-    },
-    {
-      "case": "case04",
-      "evidence": [],
-      "id": "eda2025.case04",
-      "input_bytes": 36168634,
-      "qualification": "catalogued",
-      "source": {
-        "fetcher": "scripts/fetch_eda2025_benchmarks.py",
-        "revision": "45315b739e6678bf04605aaa246285c768bc8e13",
-        "revision_kind": "git-commit"
-      },
-      "suite": "eda2025",
-      "target_gates": ["fetch", "import", "evaluate", "materialize-boarddb", "phase3", "phase4", "phase5"],
-      "tier": "medium"
-    },
-    {
       "case": "official-sample",
-      "evidence": ["tests/test_contest_iccad2019.py"],
+      "evidence": [
+        "tests/test_contest_iccad2019.py"
+      ],
       "id": "iccad2019.official-sample",
       "input_bytes": 87,
       "qualification": "adapter-regression",

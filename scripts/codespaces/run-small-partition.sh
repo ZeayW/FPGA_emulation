@@ -32,7 +32,7 @@ emuflow phase1 \
 
 for provider in tritonpart; do
   emuflow phase3 \
-    --ir "${output_root}/phase1/design.emuir.json" \
+    --ir "${output_root}/phase1/design.emuir.sqlite" \
     --platform "${platform}" \
     --provider "${provider}" \
     --seed 0 \

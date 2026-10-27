@@ -264,7 +264,11 @@ def run_phase6(
         if position_hints_path is not None
         else None
     )
-    if pin_plan is None and position_hints is None and electrical_binding_path is None:
+    if pin_plan is None and position_hints is not None:
+        raise ValueError("pin_plan_path is required with position_hints_path")
+    if pin_plan is None and electrical_binding_path is not None:
+        raise ValueError("pin_plan_path is required with electrical_binding_path")
+    if pin_plan is None:
         from .phase6_native import run_native_phase6
         from .tdm import is_sampled_virtual_wire_schedule
 
@@ -300,121 +304,113 @@ def run_phase6(
             equivalence=equivalence, managed_storage=managed_storage,
             transport_cost=transport_cost, transport_cost_path=transport_cost_path)
     output_dir.mkdir(parents=True, exist_ok=True)
-    pin_validation = None
     electrical_validation = None
     electrical_binding = None
     electrical_binding_view = None
-    pin_plan_store_artifact = None
-    position_hints_store_artifact = None
-    if pin_plan is not None:
-        # Normalize legacy input into an indexed relation before its first
-        # full validation, but do not publish an invalid plan into the phase
-        # directory. The temporary directory gives the selector and SQLite
-        # sidecar their final relative names while validation is in flight.
-        with tempfile.TemporaryDirectory(
-            prefix=".pin-plan-validation-", dir=output_dir
-        ) as temporary_directory:
-            temporary_root = Path(temporary_directory)
-            staged_pin_plan = write_pin_plan_storage(
-                temporary_root / "pin_plan.json",
-                pin_plan,
-                source_bindings=bind_view_sources(
-                    (schedule, "tdm-schedule-store-v4"), (pin_plan, "pin-plan-store-v1")
-                ),
+    # This remaining owner is the retained pin-plan/Chimew path. Baseline
+    # has already returned from the complete native stage above.
+    # Normalize legacy input into an indexed relation before its first
+    # full validation, but do not publish an invalid plan into the phase
+    # directory. The temporary directory gives the selector and SQLite
+    # sidecar their final relative names while validation is in flight.
+    with tempfile.TemporaryDirectory(
+        prefix=".pin-plan-validation-", dir=output_dir
+    ) as temporary_directory:
+        temporary_root = Path(temporary_directory)
+        staged_pin_plan = write_pin_plan_storage(
+            temporary_root / "pin_plan.json",
+            pin_plan,
+            source_bindings=bind_view_sources(
+                (schedule, "tdm-schedule-store-v4"), (pin_plan, "pin-plan-store-v1")
+            ),
+        )
+        if position_hints is None:
+            raise ValueError(
+                "position_hints_path is required with pin_plan_path"
             )
-            if position_hints is None:
+        staged_position_hints = write_position_hints_storage(
+            temporary_root / "position_hints.json",
+            position_hints,
+            source_bindings=bind_view_sources(
+                (schedule, "tdm-schedule-store-v4"),
+                (position_hints, "position-hints-store-v1"),
+            ),
+        )
+        pin_validation = validate_pin_plan(
+            schedule,
+            platform,
+            staged_position_hints,
+            staged_pin_plan,
+        )
+        if staged_pin_plan.get("provider") == CHIMEW_PIN_PLAN_PROVIDER:
+            if electrical_binding_path is None:
                 raise ValueError(
-                    "position_hints_path is required with pin_plan_path"
+                    "electrical_binding_path is required with a Chimew pin plan"
                 )
-            staged_position_hints = write_position_hints_storage(
-                temporary_root / "position_hints.json",
-                position_hints,
-                source_bindings=bind_view_sources(
-                    (schedule, "tdm-schedule-store-v4"),
-                    (position_hints, "position-hints-store-v1"),
-                ),
+            from .chimew_phase6 import validate_chimew_phase6_binding
+
+            electrical_binding = read_chimew_binding(
+                electrical_binding_path
             )
-            pin_validation = validate_pin_plan(
+            electrical_validation = validate_chimew_phase6_binding(
                 schedule,
                 platform,
-                staged_position_hints,
                 staged_pin_plan,
+                electrical_binding,
             )
-            if staged_pin_plan.get("provider") == CHIMEW_PIN_PLAN_PROVIDER:
-                if electrical_binding_path is None:
-                    raise ValueError(
-                        "electrical_binding_path is required with a Chimew pin plan"
-                    )
-                from .chimew_phase6 import validate_chimew_phase6_binding
-
-                electrical_binding = read_chimew_binding(
-                    electrical_binding_path
-                )
-                electrical_validation = validate_chimew_phase6_binding(
-                    schedule,
-                    platform,
-                    staged_pin_plan,
-                    electrical_binding,
-                )
-            elif electrical_binding_path is not None:
-                raise ValueError(
-                    "electrical_binding_path is supported only with a Chimew pin plan"
-                )
-            staged_pin_artifact = staged_pin_plan.manifest["artifact"]
-            staged_position_artifact = staged_position_hints.manifest[
-                "artifact"
-            ]
-            pin_plan_store_artifact = staged_pin_artifact
-            position_hints_store_artifact = staged_position_artifact
-            previous_sidecars = []
-            for selector_name in ("pin_plan.json", "position_hints.json"):
-                selector_path = output_dir / selector_name
-                if not selector_path.is_file():
-                    continue
-                try:
-                    previous = read_json(selector_path)
-                except (OSError, ValueError):
-                    continue
-                previous_artifact = previous.get("artifact")
-                if (
-                    isinstance(previous_artifact, str)
-                    and Path(previous_artifact).name == previous_artifact
-                    and Path(previous_artifact).suffix == ".sqlite"
-                ):
-                    previous_sidecars.append(output_dir / previous_artifact)
-            os.replace(
-                temporary_root / staged_pin_artifact,
-                output_dir / staged_pin_artifact,
+        elif electrical_binding_path is not None:
+            raise ValueError(
+                "electrical_binding_path is supported only with a Chimew pin plan"
             )
-            os.replace(
-                temporary_root / staged_position_artifact,
-                output_dir / staged_position_artifact,
-            )
-            os.replace(
-                temporary_root / "pin_plan.json",
-                output_dir / "pin_plan.json",
-            )
-            os.replace(
-                temporary_root / "position_hints.json",
-                output_dir / "position_hints.json",
-            )
-            current_sidecars = {
-                (output_dir / staged_pin_artifact).resolve(),
-                (output_dir / staged_position_artifact).resolve(),
-            }
-            for previous_sidecar in previous_sidecars:
-                if previous_sidecar.resolve() not in current_sidecars:
-                    previous_sidecar.unlink(missing_ok=True)
-        pin_plan = read_pin_plan(output_dir / "pin_plan.json")
-        position_hints = read_position_hints(
-            output_dir / "position_hints.json"
+        staged_pin_artifact = staged_pin_plan.manifest["artifact"]
+        staged_position_artifact = staged_position_hints.manifest[
+            "artifact"
+        ]
+        pin_plan_store_artifact = staged_pin_artifact
+        position_hints_store_artifact = staged_position_artifact
+        previous_sidecars = []
+        for selector_name in ("pin_plan.json", "position_hints.json"):
+            selector_path = output_dir / selector_name
+            if not selector_path.is_file():
+                continue
+            try:
+                previous = read_json(selector_path)
+            except (OSError, ValueError):
+                continue
+            previous_artifact = previous.get("artifact")
+            if (
+                isinstance(previous_artifact, str)
+                and Path(previous_artifact).name == previous_artifact
+                and Path(previous_artifact).suffix == ".sqlite"
+            ):
+                previous_sidecars.append(output_dir / previous_artifact)
+        os.replace(
+            temporary_root / staged_pin_artifact,
+            output_dir / staged_pin_artifact,
         )
-    elif position_hints is not None:
-        raise ValueError(
-            "pin_plan_path is required with position_hints_path"
+        os.replace(
+            temporary_root / staged_position_artifact,
+            output_dir / staged_position_artifact,
         )
-    elif electrical_binding_path is not None:
-        raise ValueError("pin_plan_path is required with electrical_binding_path")
+        os.replace(
+            temporary_root / "pin_plan.json",
+            output_dir / "pin_plan.json",
+        )
+        os.replace(
+            temporary_root / "position_hints.json",
+            output_dir / "position_hints.json",
+        )
+        current_sidecars = {
+            (output_dir / staged_pin_artifact).resolve(),
+            (output_dir / staged_position_artifact).resolve(),
+        }
+        for previous_sidecar in previous_sidecars:
+            if previous_sidecar.resolve() not in current_sidecars:
+                previous_sidecar.unlink(missing_ok=True)
+    pin_plan = read_pin_plan(output_dir / "pin_plan.json")
+    position_hints = read_position_hints(
+        output_dir / "position_hints.json"
+    )
     virtual_board = None
     if platform.virtual_board_model is not None:
         from .virtual_board import build_virtual_board
@@ -442,11 +438,7 @@ def run_phase6(
         "schema": SPLIT_MANIFEST_SCHEMA,
         "design": design_name,
         "platform": platform.name,
-        "provider": (
-            "chimew-electrical-pin-split-v1"
-            if pin_plan is not None
-            else "sqlite-streaming-cut-shadow-split-v1"
-        ),
+        "provider": "chimew-electrical-pin-split-v1",
         "board_binding": {
             "status": "virtual",
             "requires_hardware_bsp_for_package_pins": True,
@@ -483,13 +475,8 @@ def run_phase6(
             }
             if exact_digest is not None else {}
         ),
-        **(
-            {
-                "pin_plan": "pin_plan.json",
-                "position_hints": "position_hints.json",
-            }
-            if pin_plan is not None else {}
-        ),
+        "pin_plan": "pin_plan.json",
+        "position_hints": "position_hints.json",
     }
     artifacts = {
         "manifest": manifest,
@@ -653,17 +640,16 @@ def run_phase6(
         ),
         compact=managed_storage,
     )
-    if pin_plan is not None:
-        if electrical_binding_path is not None:
-            electrical_binding_view = write_chimew_binding_storage(
-                output_dir / "electrical_binding.json",
-                electrical_binding,
-                source_bindings=bind_view_sources(
-                    (schedule, "tdm-schedule-store-v4"),
-                    (pin_plan, "pin-plan-store-v1"),
-                    (electrical_binding, "chimew-binding-store-v1"),
-                ),
-            )
+    if electrical_binding_path is not None:
+        electrical_binding_view = write_chimew_binding_storage(
+            output_dir / "electrical_binding.json",
+            electrical_binding,
+            source_bindings=bind_view_sources(
+                (schedule, "tdm-schedule-store-v4"),
+                (pin_plan, "pin-plan-store-v1"),
+                (electrical_binding, "chimew-binding-store-v1"),
+            ),
+        )
     if transport_cost is not None:
         write_json(output_dir / "transport-cost.json", transport_cost, compact=True)
     report = {
@@ -674,17 +660,11 @@ def run_phase6(
         "design": design_name,
         "platform": platform.name,
         "provider": artifacts["manifest"]["provider"],
-        "schedule_input": (
-            {
-                "dataflow": "indexed-lazy-sqlite-v1",
-                "logical_sha256": schedule.manifest[
-                    "logical_sha256"
-                ],
-                "store_bytes": schedule.manifest["store_bytes"],
-            }
-            if hasattr(schedule, "manifest")
-            else {"dataflow": "legacy-materialized-json-v1"}
-        ),
+        "schedule_input": {
+            "dataflow": "indexed-lazy-sqlite-v1",
+            "logical_sha256": schedule.manifest["logical_sha256"],
+            "store_bytes": schedule.manifest["store_bytes"],
+        },
         "transport_storage": transport_artifacts["summary"],
         "virtual_runtime_provider": runtime["provider"],
         "virtual_dut_clocks": sorted(runtime["virtual_dut_clocks"]),
@@ -697,11 +677,7 @@ def run_phase6(
             if virtual_board_validation is not None
             else {}
         ),
-        **(
-            {"pin_plan_validation": pin_validation}
-            if pin_validation is not None
-            else {}
-        ),
+        "pin_plan_validation": pin_validation,
         **(
             {"electrical_binding_validation": electrical_validation}
             if electrical_validation is not None
@@ -719,26 +695,10 @@ def run_phase6(
                 if virtual_board_validation is not None
                 else {}
             ),
-            **(
-                {"pin_plan": "pin_plan.json"}
-                if pin_plan is not None
-                else {}
-            ),
-            **(
-                {"position_hints": "position_hints.json"}
-                if pin_plan is not None
-                else {}
-            ),
-            **(
-                {"pin_plan_store": pin_plan_store_artifact}
-                if pin_plan_store_artifact is not None
-                else {}
-            ),
-            **(
-                {"position_hints_store": position_hints_store_artifact}
-                if position_hints_store_artifact is not None
-                else {}
-            ),
+            "pin_plan": "pin_plan.json",
+            "position_hints": "position_hints.json",
+            "pin_plan_store": pin_plan_store_artifact,
+            "position_hints_store": position_hints_store_artifact,
             **(
                 {"electrical_binding": "electrical_binding.json"}
                 if electrical_validation is not None

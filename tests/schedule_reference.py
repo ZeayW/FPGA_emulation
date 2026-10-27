@@ -116,7 +116,7 @@ def build_tdm_schedule(
                     )
                 )
             else:
-                source_ready_slot, source_evidence = _tdm._exact_source_readiness(
+                source_ready_slot, source_evidence = _tdm._independently_reconstruct_exact_source_readiness(
                     node,
                     exact_segments,
                     exact_arrivals,
@@ -331,7 +331,7 @@ def build_tdm_schedule(
                 }
             )
         else:
-            capture_records, minimum_capture_slack = _tdm._exact_capture_certificate(
+            capture_records, minimum_capture_slack = _tdm._independently_reconstruct_exact_captures(
                 exact_segments,
                 exact_captures,
                 exact_arrivals,

@@ -30,7 +30,7 @@ from tests.test_native_schedule_generation import install_runtime
 def _timed_case(tmp_path, monkeypatch, kind=False, count=9):
     case, original = _case(tmp_path, kind, kind == "wide-ratio")
     value = read_json(tmp_path / "routes.json")
-    semantic = value.pop("semantic_contract")
+    semantic = original["semantic_contract"]
     root = next(route for route in value["routes"] if not route["predecessor_cut_nets"])
     sink = sorted(root["sinks"])[0]
     paths = []

@@ -26,10 +26,8 @@ case "${suite}" in
     modules=(
       tests.test_phase1
       tests.test_phase3
-      tests.test_tritonpart
+      tests.test_partition_pressure
       tests.test_partition_hops
-      tests.test_partition_feedback
-      tests.test_cross_stage
     )
     ;;
   all)

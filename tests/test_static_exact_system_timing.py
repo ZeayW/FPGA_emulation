@@ -330,18 +330,25 @@ class StaticExactSystemTimingTest(unittest.TestCase):
             "qualification": "structural-partition-legality",
             "indexed": True,
         }
-        schedule = build_tdm_schedule(routes, fixture.platform)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             routes_path = root / "routes.json"
             platform_path = root / "platform.json"
             schedule_path = root / "schedule.json"
-            write_system_route_storage(routes_path, routes)
+            value = dict(routes)
+            contract = value.pop("semantic_contract")
+            write_system_route_storage(routes_path, value)
             indexed_routes = read_system_routes(routes_path)
+            indexed_routes["semantic_contract"] = contract
             platform_path.write_text(
                 json.dumps(fixture.platform.to_dict()), encoding="utf-8"
             )
-            write_tdm_schedule_storage(schedule_path, schedule)
+            from emuflow.phase5_native import run_native_phase5
+            from emuflow.tdm import build_native_exact_schedule_request
+            from tests.native_build import emuflow_native
+            producer = build_native_exact_schedule_request(indexed_routes, fixture.platform)
+            with mock.patch("emuflow.phase5_native.resolve_native_executable", return_value=str(emuflow_native())):
+                run_native_phase5(producer, root)
             with (
                 mock.patch(
                     "emuflow.phase5._load_phase3_semantics",
@@ -357,7 +364,6 @@ class StaticExactSystemTimingTest(unittest.TestCase):
                     routes_path,
                     platform_path,
                     schedule_path,
-                    allow_legacy_generation=True,
                 )
             self.assertEqual(result["status"], "pass")
 

@@ -314,8 +314,8 @@ differentials; it is not a production input path or failed-native fallback. See 
 [physical export contract](XILINX_PHYSICAL_FLOW.md#native-rwroute-export).
 This closes that exporter boundary, not all physical adapters or W7.
 
-`phase5 build-schedule ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST OUTPUT`
-owns the complete current indexed exact producer. It builds the integer model
+`phase5 run ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST STAGE_REQUEST REPORT`
+owns the complete current indexed exact stage. It builds the integer model
 from v3 RouteStore, computes a typed in-process solution, derives the dependency
 and sink-readiness certificates and domain/phase metrics, then publishes the
 existing v4 ScheduleStore through the shared writer. Python sends only bounded
@@ -330,7 +330,8 @@ capacity budgets, fixed lane/ratio groups and affine-delay cycle rounding.
 The numeric model/result readers and writers, Python result import owners,
 standalone Exact scheduler and split scheduling/publication commands have been
 removed. Current native production has one complete producer and no intermediate
-wire-format replay path. Negative tests exercise RouteStore/configuration sources,
+wire-format replay path. The former Python store-only producer/publication lifecycle is removed.
+Negative tests exercise the complete stage, RouteStore/configuration sources,
 publication ownership and the independent staged-store validator directly.
 
 Canonical and pretty logical hashes are accumulated from typed records during

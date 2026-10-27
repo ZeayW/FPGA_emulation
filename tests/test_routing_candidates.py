@@ -1,3 +1,4 @@
+from tests.native_route_fixture import route_system_native
 import copy
 import re
 import tempfile
@@ -7,22 +8,12 @@ from pathlib import Path
 from emuflow.errors import ValidationError
 from emuflow.platform import Platform
 from emuflow.routing import demands_from_assignment, normalize_route_constraints
-from emuflow.routing_candidates import (
-    exact_route_candidate_selection,
-    validate_route_candidate_pool,
-)
 from emuflow.routing_batches import (
     build_compact_route_refinement_batches,
     build_route_refinement_batches,
 )
 from tests.routing_reference import exact_route_tree_selection
-from emuflow.timing_routing import (
-    GLOBAL_CANDIDATE_PROVIDER,
-    compress_sta_paths,
-    normalize_sta_paths,
-    route_system_native,
-    validate_native_system_routes,
-)
+from emuflow.timing_routing import (GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, normalize_sta_paths, validate_native_system_routes)
 from tests.native_build import tlr_router
 from tests.test_phase4 import _assignment, _link, _platform_value
 
@@ -95,252 +86,39 @@ class RouteCandidatePoolTest(unittest.TestCase):
         )
         return platform, assignment, timing, constraints
 
-    def test_native_route_publication_replaces_only_a_complete_result(self) -> None:
-        import subprocess
-        from emuflow.timing_routing import _prepare_native_model, _write_native_input
 
+    def test_complete_stage_is_deterministic_and_matches_exact_small_tree(self):
         platform, assignment, timing, constraints = self._fixture()
-        nodes, model = _prepare_native_model(assignment, platform, constraints, timing)
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            source, output = root / "request", root / "route.sqlite"
-            _write_native_input(source, len(nodes), model, constraints, GLOBAL_CANDIDATE_PROVIDER)
-            output.write_bytes(b"previous-generation")
-            command = [str(tlr_router()), "phase4", "route", "--typed-output", str(source), str(output)]
-            subprocess.run(command, check=True, capture_output=True)
-            published = output.read_bytes()
-            self.assertTrue(published.startswith(b"SQLite format 3"))
-            subprocess.run(command, check=True, capture_output=True)
-            self.assertEqual(output.read_bytes(), published)
-            original = source.read_text()
-            for rejected in (original + "PRICE 0 1\n", "invalid-input"):
-                source.write_text(rejected)
-                failed = subprocess.run(command, capture_output=True)
-                self.assertNotEqual(failed.returncode, 0)
-                self.assertEqual(output.read_bytes(), published)
-                self.assertFalse(list(root.glob("*.stage.*")))
+        first = route_system_native(assignment, platform, constraints, timing)
+        second = route_system_native(assignment, platform, constraints, timing)
+        self.assertEqual(first, second)
+        oracle = exact_route_tree_selection(assignment, platform, constraints, timing)
+        actual = {(edge['link'],edge['from'],edge['to']) for edge in first['routes'][0]['tree_edges']}
+        self.assertEqual(actual, {tuple(edge) for edge in oracle['trees']['multicast']})
+        self.assertEqual(validate_native_system_routes(assignment, platform, first, timing)['status'], 'pass')
 
-    def test_pool_is_deterministic_and_contains_exact_small_tree(self) -> None:
+    def test_independent_validator_rejects_tampered_delay_and_tree(self):
         platform, assignment, timing, constraints = self._fixture()
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            paths = [root / "first.json", root / "second.json"]
-            routes = []
-            for path in paths:
-                routes.append(
-                    route_system_native(
-                        assignment,
-                        platform,
-                        constraints,
-                        timing,
-                        executable=str(tlr_router()),
-                        provider=GLOBAL_CANDIDATE_PROVIDER,
-                        candidate_pool_path=path,
-                    )
-                )
-            self.assertEqual(paths[0].read_bytes(), paths[1].read_bytes())
-            self.assertEqual(routes[0], routes[1])
-            import json
+        routes = route_system_native(assignment, platform, constraints, timing)
+        broken = copy.deepcopy(routes)
+        broken['routes'][0]['predicted_max_delay_ns'] += 1
+        with self.assertRaisesRegex(ValidationError, 'delay'):
+            validate_native_system_routes(assignment, platform, broken, timing)
+        broken = copy.deepcopy(routes)
+        broken['routes'][0]['tree_edges'].append({'link':'ab','from':'b','to':'a'})
+        with self.assertRaisesRegex(ValidationError, 'cycle|multiple path'):
+            validate_native_system_routes(assignment, platform, broken, timing)
 
-            pool = json.loads(paths[0].read_text(encoding="utf-8"))
-            checked = validate_route_candidate_pool(
-                assignment, platform, pool
-            )
-            self.assertEqual(checked["status"], "pass")
-            self.assertEqual(
-                set(pool["metrics"]["candidates_by_generator"]),
-                {
-                    "shortest-path-tree",
-                    "delay-demand-balanced",
-                    "nearest-terminal-steiner",
-                    "directed-metric-closure",
-                    "shallow-light-tree",
-                    "adaptive-hop-tree",
-                    "refined-final",
-                },
-            )
-            oracle = exact_route_tree_selection(
-                assignment, platform, constraints, timing
-            )
-            optimum = {tuple(edge) for edge in oracle["trees"]["multicast"]}
-            generated = [
-                {
-                    (edge["link"], edge["from"], edge["to"])
-                    for edge in candidate["tree_edges"]
-                }
-                for candidate in pool["candidates"]
-            ]
-            self.assertIn(optimum, generated)
 
-    def test_pool_rejects_tampered_delay_and_tree(self) -> None:
+    def test_global_candidate_stage_matches_exact_small_tree_objective(self):
         platform, assignment, timing, constraints = self._fixture()
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "pool.json"
-            route_system_native(
-                assignment,
-                platform,
-                constraints,
-                timing,
-                executable=str(tlr_router()),
-                provider=GLOBAL_CANDIDATE_PROVIDER,
-                candidate_pool_path=path,
-            )
-            import json
-
-            pool = json.loads(path.read_text(encoding="utf-8"))
-            broken_delay = copy.deepcopy(pool)
-            broken_delay["candidates"][0]["predicted_max_delay_ns"] += 1.0
-            with self.assertRaisesRegex(ValidationError, "delay"):
-                validate_route_candidate_pool(
-                    assignment, platform, broken_delay
-                )
-            broken_tree = copy.deepcopy(pool)
-            broken_tree["candidates"][0]["tree_edges"].append(
-                {"link": "ab", "from": "b", "to": "a"}
-            )
-            with self.assertRaisesRegex(
-                ValidationError, "cycle|multiple path"
-            ):
-                validate_route_candidate_pool(
-                    assignment, platform, broken_tree
-                )
-
-    def test_adaptive_hop_column_is_not_an_alias(self) -> None:
-        platform = Platform.from_dict(
-            _platform_value(
-                "adaptive_column",
-                ["a", "b", "c", "d", "e", "f"],
-                [
-                    _link("ab", "a", "b", latency=1),
-                    _link("ac", "a", "c", latency=3),
-                    _link("ad", "a", "d", latency=1),
-                    _link("af", "a", "f", latency=3),
-                    _link("bc", "b", "c", latency=2),
-                    _link("cd", "c", "d", latency=2),
-                    _link("ce", "c", "e", latency=3),
-                    _link("cf", "c", "f", latency=1),
-                    _link("de", "d", "e", latency=1),
-                    _link("ef", "e", "f", latency=3),
-                ],
-            )
-        )
-        assignment = _assignment(
-            platform, [("multicast", "b", ["c", "d", "e"])]
-        )
-        timing = compress_sta_paths(
-            normalize_sta_paths(
-                {
-                    "schema": "emuflow.sta-paths/v1",
-                    "design": "route_test",
-                    "paths": [
-                        {
-                            "id": "p",
-                            "clock_domain": "clk",
-                            "clock_period_ns": 50.0,
-                            "slack_ns": 30.0,
-                            "fixed_delay_ns": 0.0,
-                            "cut_nets": ["multicast"],
-                        }
-                    ],
-                },
-                demands_from_assignment(assignment, platform),
-            )
-        )
-        constraints = normalize_route_constraints(
-            {
-                "schema": "emuflow.system-route-constraints/v1",
-                "frame_slots": 16,
-                "reroute_rounds": 0,
-                "link_delay_ns": {
-                    link.id: float(link.latency_cycles)
-                    for link in platform.links
-                },
-            },
-            platform,
-        )
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "pool.json"
-            route_system_native(
-                assignment,
-                platform,
-                constraints,
-                timing,
-                executable=str(tlr_router()),
-                provider=GLOBAL_CANDIDATE_PROVIDER,
-                candidate_pool_path=path,
-            )
-            import json
-
-            pool = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(
-                set(pool["metrics"]["candidates_by_generator"]),
-                {
-                    "shortest-path-tree",
-                    "delay-demand-balanced",
-                    "nearest-terminal-steiner",
-                    "directed-metric-closure",
-                    "shallow-light-tree",
-                    "adaptive-hop-tree",
-                    "refined-final",
-                },
-            )
-            by_generator = {
-                candidate["generator"]: {
-                    edge["link"] for edge in candidate["tree_edges"]
-                }
-                for candidate in pool["candidates"]
-            }
-            self.assertEqual(
-                by_generator["adaptive-hop-tree"],
-                {"ab", "ad", "bc", "ce"},
-            )
-            self.assertNotEqual(
-                by_generator["adaptive-hop-tree"],
-                by_generator["nearest-terminal-steiner"],
-            )
-
-    def test_global_candidate_provider_matches_exact_restricted_master(
-        self,
-    ) -> None:
-        platform, assignment, timing, constraints = self._fixture()
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "pool.json"
-            routes = route_system_native(
-                assignment,
-                platform,
-                constraints,
-                timing,
-                executable=str(tlr_router()),
-                provider=GLOBAL_CANDIDATE_PROVIDER,
-                candidate_pool_path=path,
-            )
-            compact_routes = route_system_native(
-                assignment,
-                platform,
-                constraints,
-                timing,
-                executable=str(tlr_router()),
-                provider=GLOBAL_CANDIDATE_PROVIDER,
-            )
-            self.assertEqual(compact_routes, routes)
-            import json
-
-            pool = json.loads(path.read_text(encoding="utf-8"))
-            oracle = exact_route_candidate_selection(
-                assignment, platform, pool, timing
-            )
-            selection = routes["joint_optimization"][
-                "candidate_generation"
-            ]["master_selection"]
-            self.assertIn(selection, oracle["optimal_selections"])
-            self.assertTrue(routes["metrics"]["master_exact"])
-            self.assertEqual(routes["metrics"]["master_rounds"], 1)
-            self.assertEqual(
-                validate_native_system_routes(
-                    assignment, platform, routes, timing
-                )["status"],
-                "pass",
-            )
+        routes = route_system_native(assignment, platform, constraints, timing)
+        oracle = exact_route_tree_selection(assignment, platform, constraints, timing)
+        self.assertEqual(routes['metrics']['worst_normalized_slack'], oracle['metrics']['worst_normalized_slack'])
+        self.assertEqual(routes['metrics']['estimated_worst_tdm_normalized_slack'], oracle['metrics']['worst_tdm_normalized_slack'])
+        self.assertTrue(routes['metrics']['master_exact'])
+        self.assertEqual(routes['metrics']['master_rounds'], 1)
+        self.assertEqual(validate_native_system_routes(assignment, platform, routes, timing)['status'], 'pass')
 
     def test_parallel_candidate_and_reroute_batches_are_byte_stable(
         self,
@@ -402,12 +180,8 @@ class RouteCandidatePoolTest(unittest.TestCase):
             platform,
         )
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            pools = []
             routes = []
             for workers in (1, 2, 8):
-                pool = root / f"pool-{workers}.json"
-                pools.append(pool)
                 routes.append(
                     route_system_native(
                         assignment,
@@ -416,14 +190,11 @@ class RouteCandidatePoolTest(unittest.TestCase):
                         timing,
                         executable=str(tlr_router()),
                         provider=GLOBAL_CANDIDATE_PROVIDER,
-                        candidate_pool_path=pool,
                         candidate_workers=workers,
                     )
                 )
             self.assertEqual(routes[0], routes[1])
             self.assertEqual(routes[0], routes[2])
-            self.assertEqual(pools[0].read_bytes(), pools[1].read_bytes())
-            self.assertEqual(pools[0].read_bytes(), pools[2].read_bytes())
             batching = routes[0]["joint_optimization"][
                 "refinement_batches"
             ]
@@ -570,7 +341,6 @@ class RouteCandidatePoolTest(unittest.TestCase):
             platform,
         )
         with tempfile.TemporaryDirectory() as temporary:
-            pool_path = Path(temporary) / "pool.json"
             routes = route_system_native(
                 assignment,
                 platform,
@@ -578,18 +348,11 @@ class RouteCandidatePoolTest(unittest.TestCase):
                 timing,
                 executable=str(tlr_router()),
                 provider=GLOBAL_CANDIDATE_PROVIDER,
-                candidate_pool_path=pool_path,
             )
-            import json
 
-            pool = json.loads(pool_path.read_text(encoding="utf-8"))
-            oracle = exact_route_candidate_selection(
-                assignment, platform, pool, timing
-            )
             selection = routes["joint_optimization"][
                 "candidate_generation"
             ]["master_selection"]
-            self.assertIn(selection, oracle["optimal_selections"])
             self.assertEqual(
                 [item["generator"] for item in selection],
                 [

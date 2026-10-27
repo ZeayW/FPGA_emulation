@@ -7,7 +7,6 @@ import math
 import os
 from pathlib import Path
 import struct
-import subprocess
 import tempfile
 from collections import OrderedDict, defaultdict, deque
 from contextlib import ExitStack, contextmanager
@@ -597,57 +596,7 @@ def _exact_dependency_order(
         raise ValidationError("cross-layer timing dependency graph is cyclic")
     return ordered
 
-def _round_barrier_realization(
-    active_rounds: Sequence[int],
-    completion_by_round: Mapping[int, int],
-    planned_source_ready_slot: Optional[int],
-) -> Dict[str, Any]:
-    """Describe the concrete barrier realized by a legal slot schedule.
 
-    The ratio planner's source-ready slot is a capacity-split estimate.  It
-    deliberately ignores multicast-tree precedence and therefore cannot be a
-    hard upper bound on the concrete schedule.  The schedule is the
-    authoritative realization and is checked independently below.
-    """
-    realized = None
-    if len(active_rounds) > 1:
-        second_round = active_rounds[1]
-        realized = max(
-            (
-                completion + COMBINATIONAL_SETTLE_SLOTS
-                for transport_round, completion in completion_by_round.items()
-                if transport_round < second_round
-            ),
-            default=0,
-        )
-    return {
-        "active_rounds": list(active_rounds),
-        "capacity_split_slot": planned_source_ready_slot,
-        "source_ready_slot": realized,
-        "shift_slots": (
-            realized - planned_source_ready_slot
-            if realized is not None and planned_source_ready_slot is not None
-            else 0
-        ),
-    }
-
-def _exact_route_metadata(route: Mapping[str, Any]) -> Dict[str, Any]:
-    record = {
-        "id": route["id"],
-        "net": route["net"],
-        "source": route["source"],
-        "sinks": list(route["sinks"]),
-        "cut_class": route["cut_class"],
-        "dependency_level": route["dependency_level"],
-        "combinational_dependency_depth": route[
-            "combinational_dependency_depth"
-        ],
-        "predecessor_cut_nets": list(route["predecessor_cut_nets"]),
-        "tree_edges": list(route["tree_edges"]),
-    }
-    if "transport_round" in route:
-        record["transport_round"] = route["transport_round"]
-    return record
 
 def _exact_contract_indexes(
     contract: Mapping[str, Any],
@@ -693,148 +642,7 @@ def _exact_contract_indexes(
         raise ValidationError("exact semantic contract identities are not unique")
     return nodes, segments, captures
 
-def _exact_source_readiness(
-    node: Mapping[str, Any],
-    segments: Mapping[str, Mapping[str, Any]],
-    arrivals: Mapping[Tuple[str, str], int],
-    timing_constraints: Mapping[str, Any],
-) -> Tuple[int, List[Dict[str, Any]]]:
-    evidence = []
-    for segment_id in node.get("source_segment_ids", []):
-        segment = segments.get(segment_id)
-        if segment is None:
-            raise ValidationError(
-                f"exact cut {node.get('net')!r} references unknown segment "
-                f"{segment_id!r}"
-            )
-        budget = sampled_logic_segment_budget_slots(segment, timing_constraints)
-        kind = segment.get("kind")
-        if kind == "launch_to_tx":
-            if segment.get("sink_cut_net") != node.get("net"):
-                raise ValidationError(
-                    f"exact launch segment {segment_id!r} has wrong sink"
-                )
-            ready = budget
-            evidence.append(
-                {
-                    "segment": segment_id,
-                    "kind": kind,
-                    "launch_slot": 0,
-                    "budget_slots": budget,
-                    "ready_slot": ready,
-                }
-            )
-        elif kind == "rx_to_tx":
-            predecessor = segment.get("source_cut_net")
-            source_fpga = node["source_fpgas"][0]
-            if (
-                segment.get("sink_cut_net") != node.get("net")
-                or segment.get("fpga") != source_fpga
-                or predecessor not in node.get("predecessor_cut_nets", [])
-            ):
-                raise ValidationError(
-                    f"exact dependency segment {segment_id!r} is inconsistent"
-                )
-            key = (predecessor, source_fpga)
-            if key not in arrivals:
-                raise ValidationError(
-                    f"exact predecessor {predecessor!r} has not arrived at "
-                    f"{source_fpga!r}"
-                )
-            arrival = arrivals[key]
-            ready = arrival + budget
-            evidence.append(
-                {
-                    "segment": segment_id,
-                    "kind": kind,
-                    "predecessor_cut_net": predecessor,
-                    "arrival_slot": arrival,
-                    "budget_slots": budget,
-                    "ready_slot": ready,
-                }
-            )
-        else:
-            raise ValidationError(
-                f"exact source segment {segment_id!r} has unsupported kind"
-            )
-    if not evidence:
-        raise ValidationError(
-            f"exact cut {node.get('net')!r} has no source-readiness segment"
-        )
-    predecessors = sorted(node.get("predecessor_cut_nets", []))
-    evidenced_predecessors = sorted(
-        item["predecessor_cut_net"]
-        for item in evidence
-        if item["kind"] == "rx_to_tx"
-    )
-    if predecessors != evidenced_predecessors:
-        raise ValidationError(
-            f"exact cut {node.get('net')!r} predecessor coverage is incomplete"
-        )
-    return max(item["ready_slot"] for item in evidence), evidence
 
-def _exact_capture_certificate(
-    segments: Mapping[str, Mapping[str, Any]],
-    captures: Mapping[str, Mapping[str, Any]],
-    arrivals: Mapping[Tuple[str, str], int],
-    timing_constraints: Mapping[str, Any],
-) -> Tuple[List[Dict[str, Any]], Optional[int]]:
-    records = []
-    commit_slot = timing_constraints["commit_slot"]
-    # A large design can have tens of thousands of terminal captures.  Build
-    # the reverse relation once instead of scanning every logic segment for
-    # every capture (O(captures * segments)).  The independent validator below
-    # deliberately reconstructs its own index and exact coverage check.
-    segments_by_capture: Dict[str, List[Mapping[str, Any]]] = defaultdict(list)
-    for segment in segments.values():
-        if segment.get("kind") != "rx_to_capture":
-            continue
-        capture_id = segment.get("capture_requirement")
-        if isinstance(capture_id, str):
-            segments_by_capture[capture_id].append(segment)
-    for capture_id in sorted(captures):
-        capture = captures[capture_id]
-        matching = segments_by_capture.get(capture_id, [])
-        if len(matching) != 1:
-            raise ValidationError(
-                f"exact capture {capture_id!r} must have one timing segment"
-            )
-        segment = matching[0]
-        cut_net = capture["cut_net"]
-        fpga = capture["fpga"]
-        key = (cut_net, fpga)
-        if (
-            segment.get("source_cut_net") != cut_net
-            or segment.get("fpga") != fpga
-            or key not in arrivals
-        ):
-            raise ValidationError(
-                f"exact capture {capture_id!r} is not bound to an arrival"
-            )
-        budget = sampled_logic_segment_budget_slots(segment, timing_constraints)
-        arrival = arrivals[key]
-        ready = arrival + budget
-        slack = commit_slot - ready
-        if slack < 0:
-            raise ValidationError(
-                "exact schedule is infeasible at capture "
-                f"{capture_id!r}: ready={ready}, commit={commit_slot}"
-            )
-        records.append(
-            {
-                "capture": capture_id,
-                "cut_net": cut_net,
-                "fpga": fpga,
-                "segment": segment["id"],
-                "arrival_slot": arrival,
-                "budget_slots": budget,
-                "ready_slot": ready,
-                "commit_slot": commit_slot,
-                "slack_slots": slack,
-            }
-        )
-    minimum = min((item["slack_slots"] for item in records), default=None)
-    return records, minimum
 
 def _bank_direction_allocations(
     routes: Mapping[str, Any], platform: Platform,
@@ -980,14 +788,6 @@ def _write_native_schedule_board_request(
                 capacity_index[arc["capacity_key"]],offset,lanes,int(link.tdm_delay_model is not None),
                 link.latency_cycles,base,slope,1000.0/link.fabric_clock_mhz))
 
-def _run_native_exact_schedule(command: Sequence[str]) -> None:
-    completed = subprocess.run(list(command),capture_output=True,text=True,check=False)
-    if completed.returncode:
-        detail = completed.stderr.strip() or completed.stdout.strip()
-        if "infeasible" in detail:
-            raise TDMScheduleInfeasibleError(detail)
-        raise ValidationError("native Static Exact scheduling failed with exit code "
-                              f"{completed.returncode}: {detail}")
 
 def _entry_ratio_delay(
     link: Any, entry: Mapping[str, Any], base: float, slope: float,
@@ -1009,10 +809,8 @@ def _entry_ratio_delay(
 class NativeExactScheduleRequest:
     """Bounded producer request, deliberately not a logical schedule view."""
 
-    command: tuple[str, ...]
     route_store: Path
     route_generation: tuple[int, ...]
-    route_count: int
     header: Mapping[str, Any]
     domain_templates: tuple[Mapping[str, Any], ...]
     platform: Platform
@@ -1037,8 +835,7 @@ def build_native_exact_schedule_request(
 ) -> Optional[NativeExactScheduleRequest]:
     """Select the complete producer without importing routes or hop results.
 
-    The common builder serves other providers and small differentials. Current
-    indexed production uses one shared-core stage; failure is fatal, with no
+    Indexed production uses one shared-core stage; failure is fatal, with no
     alternate native replay or materialized-result retry.
     """
 
@@ -1048,14 +845,6 @@ def build_native_exact_schedule_request(
     contract = _static_exact_contract_from_routes(routes)
     if contract is None or contract.get("indexed") is not True:
         return None
-    from .native_tools import resolve_native_stage_command
-
-    command = resolve_native_stage_command("phase5", "build-schedule")
-    if len(command) != 3 or command[1:] != ["phase5", "build-schedule"]:
-        raise ValidationError(
-            "indexed Phase 5 production requires the unified emuflow-native scheduler; "
-            "rebuild the selected native installation"
-        )
     constraints = normalize_route_constraints(routes.get("constraints"), platform)
     _, arcs, capacities = build_directed_graph(platform, constraints)
     allocations = _bank_direction_allocations(routes, platform, constraints)
@@ -1100,10 +889,8 @@ def build_native_exact_schedule_request(
         raise ValidationError("indexed Phase 5 route ownership is missing")
     require_store_sources_unchanged(sources)
     return NativeExactScheduleRequest(
-        tuple(command),
         store,
         route_source.generation,
-        len(raw),
         header,
         tuple(templates),
         platform,

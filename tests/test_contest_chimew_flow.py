@@ -422,7 +422,8 @@ class ContestChimewCrossFlowTest(unittest.TestCase):
                 ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"]
             )
             ir_path = root / "counter.emuir.sqlite"
-            ir.save(ir_path)
+            from emuflow.emuir_compact import write_compact_emuir
+            write_compact_emuir(ir_path, ir.to_dict())
             phase3_root = root / "phase3"
             phase4_root = root / "phase4"
             phase5_root = root / "phase5"
@@ -438,7 +439,7 @@ class ContestChimewCrossFlowTest(unittest.TestCase):
                 balance_tolerance=1.0,
             )
             phase4 = run_phase4(
-                phase3_root / "assignment.json",
+                phase3_root / "assignment.sqlite",
                 platform_path,
                 phase4_root,
                 router=str(tlr_router()),

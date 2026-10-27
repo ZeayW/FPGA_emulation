@@ -7,7 +7,7 @@ from emuflow.cli import _build_parser
 from emuflow.errors import EmuFlowError
 from emuflow.multi_fpga_flow import run_multi_fpga_flow
 from emuflow.phase4 import run_phase4
-from emuflow.timing_routing import GLOBAL_CANDIDATE_PROVIDER, route_system_native
+from emuflow.timing_routing import (GLOBAL_CANDIDATE_PROVIDER)
 
 
 RETIRED = (
@@ -20,12 +20,8 @@ RETIRED = (
 
 @pytest.mark.parametrize("provider", RETIRED)
 def test_retired_route_provider_rejected_before_circuit_loading(tmp_path, provider):
-    with patch("emuflow.phase4.read_phase3_assignment_view", side_effect=AssertionError("assignment loaded")):
-        with pytest.raises(ValueError, match="unsupported Phase 4 routing provider"):
-            run_phase4(tmp_path / "assignment", tmp_path / "board", tmp_path / "out", provider=provider)
-    with patch("emuflow.timing_routing._prepare_native_model", side_effect=AssertionError("graph built")):
-        with pytest.raises(ValueError, match="unsupported Phase 4 routing provider"):
-            route_system_native({}, None, {}, provider=provider)
+    with pytest.raises(ValueError, match="unsupported Phase 4 routing provider"):
+        run_phase4(tmp_path / "assignment", tmp_path / "board", tmp_path / "out", provider=provider)
     assert not (tmp_path / "out").exists()
 
 
@@ -103,11 +99,7 @@ def test_retired_external_feedback_cli_is_rejected(option):
 
 
 def test_retired_external_feedback_api_cannot_load_a_design(tmp_path):
-    with patch("emuflow.phase4.read_phase3_assignment_view", side_effect=AssertionError("assignment loaded")):
-        with pytest.raises(TypeError, match="tdm_feedback_path"):
-            run_phase4(tmp_path / "assignment", tmp_path / "board", tmp_path / "out",
-                       tdm_feedback_path=tmp_path / "feedback")
-    with patch("emuflow.timing_routing._prepare_native_model", side_effect=AssertionError("graph built")):
-        with pytest.raises(TypeError, match="tdm_feedback"):
-            route_system_native({}, None, {}, tdm_feedback={})
+    with pytest.raises(TypeError, match="tdm_feedback_path"):
+        run_phase4(tmp_path / "assignment", tmp_path / "board", tmp_path / "out",
+                   tdm_feedback_path=tmp_path / "feedback")
     assert not (tmp_path / "out").exists()

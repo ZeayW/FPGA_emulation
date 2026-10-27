@@ -60,24 +60,24 @@ def test_complete_native_producer_matches_reference_records_certificates_and_has
     expected_manifest = write_tdm_schedule_storage(tmp_path / "reference/schedule.json", reference)
     install_runtime(tmp_path, monkeypatch)
     calls = []
-    run = subprocess.run
+    from emuflow.tool_runtime import NativeToolProcess
 
-    def record(command, **kwargs):
+    def record(executable, command, **kwargs):
         calls.append(command)
-        assert Path(command[-3]).stat().st_size < 20000
-        assert Path(command[-2]).stat().st_size < 20000
-        return run(command, **kwargs)
+        assert command[1:3] == ["phase5", "run"]
+        assert all(Path(path).stat().st_size < 20000 for path in command[-4:-1])
+        return NativeToolProcess(executable, command, **kwargs)
 
     with patch.object(type(routes["routes"]), "iter_native_exact_metadata", side_effect=AssertionError("Python R metadata")), \
          patch.object(type(routes["routes"]), "iter_native_exact_records", side_effect=AssertionError("Python H metadata")), \
          patch("emuflow.tdm._indexed_certificate", side_effect=AssertionError("Python readiness certificate")), \
          patch("emuflow.tdm._baseline_ratio_hops", side_effect=AssertionError("Python wire map")), \
          patch("tests.schedule_store_fixture._publish_fixture_records", side_effect=AssertionError("Python record publisher")), \
-         patch("emuflow.tdm.subprocess.run", side_effect=record):
+         patch("emuflow.phase5_native.NativeToolProcess", side_effect=record):
         request = build_native_exact_schedule_request(routes, case.platform)
         assert request is not None
         native_manifest = write_tdm_schedule_storage(tmp_path / "native/schedule.json", request)
-    assert [command[1:3] for command in calls] == [["phase5", "build-schedule"]]
+    assert [command[1:3] for command in calls] == [["phase5", "run"]]
     actual = read_tdm_schedule(tmp_path / "native/schedule.json", materialize=True)
     assert actual == reference
     for key in ("logical_sha256", "logical_pretty_sha256", "sections", "route_relation", "completion_relation", "entry_relation"):
@@ -121,11 +121,6 @@ def test_native_generation_rejects_corruption_without_replacing_published_schedu
     assert not list(tmp_path.glob(".*.tmp*"))
 
 
-def test_indexed_production_rejects_standalone_without_reference_fallback(tmp_path):
-    case, routes = _case(tmp_path, False, False)
-    with patch("emuflow.native_tools.resolve_native_stage_command", return_value=["standalone"]):
-        with pytest.raises(ValidationError, match="requires the unified emuflow-native"):
-            build_native_exact_schedule_request(routes, case.platform)
 
 
 def test_empty_indexed_production_uses_native_and_matches_reference(tmp_path, monkeypatch):
@@ -136,6 +131,7 @@ def test_empty_indexed_production_uses_native_and_matches_reference(tmp_path, mo
     path = tmp_path / "empty.json"
     write_system_route_storage(path, empty)
     routes = read_system_routes(path)
+    routes["semantic_contract"] = _routes["semantic_contract"]
     reference = build_tdm_schedule(routes, case.platform)
     install_runtime(tmp_path, monkeypatch)
     request = build_native_exact_schedule_request(routes, case.platform)

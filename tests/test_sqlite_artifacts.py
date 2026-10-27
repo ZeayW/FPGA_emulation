@@ -50,12 +50,8 @@ assert library.sqlite3_config(17, 0) == 0  # SQLITE_CONFIG_URI
 import tests.native_build as native
 native.emuflow_native = lambda: Path(sys.argv[1])
 native.tlr_router = lambda: Path(sys.argv[2])
-import unittest
-from tests.test_phase4 import Phase4Test
-suite = unittest.TestSuite([Phase4Test(
-    "test_production_router_uses_unified_entry_without_legacy_binary")])
-result = unittest.TextTestRunner(verbosity=2).run(suite)
-sys.exit(not result.wasSuccessful())
+import pytest
+sys.exit(pytest.main(["-q", "tests/test_phase4_native.py::test_complete_native_stage_preserves_records_hashes_and_independent_checks[False-False-False]"]))
 '''
     result = subprocess.run(
         [sys.executable, "-c", program, str(emuflow_native()), str(tlr_router())],

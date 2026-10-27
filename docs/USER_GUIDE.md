@@ -20,6 +20,14 @@ accepts the EmuIR symlink only when it resolves to the input declared in the
 passing Phase 1 continuation report, and hashes those original bytes as part
 of the flow artifact seal. Other flow artifacts still reject symlinks.
 
+## Retired contest topology experiments
+
+The EDA2025 topology-mutation, rerouting and scoring flow is retired, including
+its CLI commands, fetch catalog, interchange schemas and standalone optimizer.
+The retained system-routing provider uses the fixed BoardDB topology. Public
+EDA2023 and EDA2024 format checks retain sealed import and evaluation support.
+Historical EDA2025 experiments use their matching Git revision.
+
 ## Installed runtime data
 
 The root CMake `emuflow_python` target installs a complete current Python
@@ -31,23 +39,29 @@ package and verifies its module/data inventory and default profile resources.
 It requires the Python install target to have been built, as in the normal
 root build. This check does not execute synthesis or physical implementation.
 
-## Native route sealing
+## Native system routing
 
-Production Phase 4 requires an updated `emuflow-native` with the
-`system-route-seal-request-v1` protocol. The retained-row routing API checks
-that capability before constructing its model. The internal
-`phase4 seal-routes STORE REQUEST SUMMARY` command reads current RouteStore v3
-rows and returns a bounded `emuflow.system-route-seal/v1` summary; it does not
-export routes or replace the canonical store. Its request references the five
-relation families rather than embedding their records. Producers use the shared
-checked request writer; a stale native installation, corrupt source, mismatched
-header/count, or changed input fails instead of invoking another publisher.
+Phase 4 runs as `emuflow-native phase4 run ASSIGNMENT BOARD POLICY OUTPUT_DIR
+[TIMING_PATHS]`. The current assignment index, BoardDB and optional timing-path
+file are bound by generation in a small policy document. The C++ stage reads
+cut records, normalizes or consumes compressed timing paths, invokes the
+retained global candidate router, independently checks routes, candidates and
+timing, and atomically publishes RouteStore v3 with its selector and report.
+The Python API only prepares bounded configuration and reads the stage report.
+Its assignment argument names the explicit `assignment.sqlite` artifact; the
+JSON assignment summary is no longer a routing input.
 
-The public route selector, v3 typed schema, route ordering, logical SHA and
-independent legality checks retain their meanings. Prior store generations
-remain recoverable until the normal selector and typed-store validation pass.
-The Python mapping writer is an explicit reference/import interface, not a
-fallback for failed native sealing.
+The native compile controller invokes this stage directly. The old Python
+routing model, kernel-result parser, projected route/selection classes,
+publication adapter and diagnostic candidate-pool JSON option are retired.
+Registered round-barrier routing is retired; Static Exact transport rounds
+remain dependency diagnostics. Neither migration changes the routing provider
+or its search algorithm.
+
+The `phase4 seal-routes STORE REQUEST SUMMARY` API remains an independent
+ordered-record seal checker. It does not provide another routing producer.
+The mapping-to-store writer is used to construct explicit test/import records;
+it cannot accept private kernel-output callbacks or retry a failed stage.
 
 ## Native compile control
 
@@ -55,9 +69,10 @@ Add `--compile-implementation native-control-v1` to the normal
 `emuflow multi-fpga compile` invocation to select the C++ one-shot controller.
 The CLI still resolves benchmark/BoardDB inputs, then sends bounded configuration
 to `emuflow-native compile REQUEST_JSON`. The controller chooses the phase order;
-it never calls the Python compile function. TDM configuration and execution run
-in a native phase process; other shared phase bodies retain isolated Python
-adapters while their remaining data planes are migrated.
+it never calls the Python compile function. Ordinary RTL preparation, partitioning,
+system routing, exact scheduling and baseline splitting run in native phase
+processes. Timing preparation, Chimew and physical/signoff stage control retain
+isolated Python adapters while their complete stage ownership is migrated.
 The default remains `python-control-v1`, with the same provider, algorithm,
 seed and physical-policy defaults in both modes.
 
@@ -101,7 +116,8 @@ cache is not a phase publication.
 `multi-fpga-flow-report.json` remains the usual flow result. The separate
 [native-compile-result.json](../schemas/native-compile-result-v2.schema.json)
 uses result v2 and records each stage implementation explicitly. TDM uses
-`native-exact-phase5-v1`; partitioning uses `native-phase3-v1`; the ordinary RTL
+`native-exact-phase5-v1`; system routing uses `native-phase4-v1`; partitioning
+uses `native-phase3-v1`; the ordinary RTL
 frontend uses `native-rtl-frontend-v1`; baseline Phase 6 uses
 `native-baseline-phase6-v1`.
 Supplied JSON/prepared frontend modes, retained Chimew and remaining phases use
@@ -171,42 +187,26 @@ or cell-class arrays to the operation. `candidate_implementation_id` reports
 scopes as clustering below. Large compact native semantic analysis uses this
 producer too; explicit reference and full characterization APIs stay available.
 
-Normal compact Phase 3 runs use `phase3 build-clusters EMUIR REQUEST OUTPUT`
-inside the shared core. Packed eligibility bits and integer group membership
-bind to the EmuIR generation. The native producer performs connectivity union,
-lexical cell/cluster ordering, CSR membership and resource reduction. Downstream
-Python providers borrow sealed read-only columns; the mapping and its temporary
-file live until the last borrower releases them. Final v1 cluster records,
-group/fixed constraints and resource totals retain their reference semantics.
-`cluster_implementation_id` reports `native-primary-clusters-v1`;
-`native_cluster_metrics` retains common native wall/CPU/I/O measurements and the
-process-lifetime RSS high-water snapshot. It is separate from sampled whole-phase
-process-tree RSS. The ordinary
-Python `build_clusters` API keeps its reference default for comparison. Retained
-diagnostics and explicit PATRON comparison executables also keep that producer; a selected
-production native failure stops the phase. Remaining policy/semantic publication
-work is not claimed as native here.
+The public Phase 3 API executes `phase3 run REQUEST OUTPUT` in the shared core.
+It accepts compact indexed EmuIR and the current Static Exact contract. Native
+clustering, TritonPart initialization, PATRON v14, candidate selection, exact
+semantic construction and artifact publication belong to that one stage owner.
+Python prepares bounded board and tool configuration and checks original output
+references; it does not coordinate a second graph-level implementation.
 
-Compact indexed PATRON v14 runs normally select the shared native pressure-model
-producer. `algorithm_validation.model_implementation_id` identifies
-`native-primary-store-model-v2` when consuming native primary columns directly.
-Its input-transport counters describe packed initial/fixed ownership and the
-bounded request; the primary membership/resource columns are referenced. The
-private v2 primary store carries its EmuIR generation and resource totals, so
-TritonPart summary queries do not scan the columns. The former snapshot command
-and its input protocols are retired; missing primary ownership is an error. The native entry
-`phase3 refine-patron-from-primary EMUIR TIMING PRIMARY INITIAL REQUEST OUTPUT`
-also writes `OUTPUT.order` (sealed integer identity mapping) and
-`OUTPUT.summary.json` (bounded model counts). These are invocation-owned intermediates.
-Diagnostic/explicit comparison modes retain their named reference input path;
-a native failure never switches implementations. This does not establish complete
-native Phase 3 ownership or real-design physical/timing qualification.
-Configured route-hop limits use `emuflow-native phase3 refine-hops INPUT OUTPUT`.
-The unified operation publishes assignments and metric counters atomically and
-accepts `--trace-output` for diagnostic move records. The Phase 3 API follows
-`retain_diagnostics`; its normal report retains the total move count without
-materializing a Python move list. There is no standalone helper or installation
-fallback. Versioned runtimes build this kernel into `libemuflow_core`.
+`stage_implementation_id` reports `native-phase3-v1`. Native operation metrics
+and the sampled whole-stage process-tree measurements have separate scopes.
+The stage retains atomic publication and rejects changed source generations.
+Independent `validate_phase3` and `validate_phase3_indexed` APIs remain available
+for source-to-result legality and terminal artifact checks.
+
+The previous Python Phase 3 coordinator, TritonPart exporter/executor and frozen
+assignment promotion route are retired. Full diagnostic snapshots, retained
+baseline assignments and alternative refiner executables cannot select an old
+production chain. Historical tools and source remain available through Git.
+Small graph/model APIs used by independent correctness tests do not constitute
+another supported full-stage flow. Complete NVDLA physical and global timing
+qualification is separate from a Phase 3 stage result.
 
 `emuflow-native [--report OPERATION_JSON] phase7 export-bookshelf MAPPED ATOMS NETS SUMMARY SPOOL`
 streams the finalized mapped v2 and private lexical atom relations to OpenPARF
@@ -603,7 +603,10 @@ route count and requires the unified `emuflow-native` scheduler; a missing unifi
 entry does not silently select the reference producer. The old numeric
 model/result scheduling and separate publication commands are retired, along
 with the standalone Exact scheduler and its build option. Use the complete
-`emuflow-native phase5 build-schedule` operation. Production Phase 5 accepts only `deterministic-dependency-earliest-slot-v1`
+`emuflow-native phase5 run` stage. The stage owns schedule construction,
+independent validation, timing projection and report-last publication; the
+former Python ScheduleStore publication lifecycle has been removed.
+Production Phase 5 accepts only `deterministic-dependency-earliest-slot-v1`
 and requires a current typed RouteStore plus its Phase 3 Static Exact binding.
 The Python schedule oracle is test-only and bounded to 4096 routes.
 

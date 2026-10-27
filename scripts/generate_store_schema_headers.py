@@ -51,6 +51,14 @@ def generate(directory):
     if not output.exists() or output.read_text(encoding="utf-8") != catalog:
         output.write_text(catalog, encoding="utf-8")
 
+    ddl = (root / "src/emuflow/data/schema/phase4_routes.sql").read_text(encoding="utf-8")
+    if ')EMUFLOW_SQL"' in ddl:
+        raise ValueError("SQL schema contains the native raw-string delimiter")
+    routes = '#pragma once\nnamespace emuflow::core {\ninline constexpr const char* kSystemRouteDDL = R"EMUFLOW_SQL(' + ddl + ')EMUFLOW_SQL";\n}\n'
+    output = Path(directory) / "phase4_route_schema.hpp"
+    if not output.exists() or output.read_text(encoding="utf-8") != routes:
+        output.write_text(routes, encoding="utf-8")
+
     ddl = (root / "src/emuflow/data/schema/emuir_compact.sql").read_text(encoding="utf-8")
     if ')EMUFLOW_SQL"' in ddl:
         raise ValueError("SQL schema contains the native raw-string delimiter")

@@ -1,6 +1,5 @@
 """Cross-phase publication failures must not invalidate prior primary owners."""
 
-from array import array
 import errno
 import importlib
 import json
@@ -234,31 +233,6 @@ def test_sta_selector_failure_preserves_old_payload_and_retires_uncommitted_gene
     assert not list(tmp_path.glob("*.previous"))
 
 
-@pytest.mark.parametrize("failure", ["missing", "retired"])
-def test_missing_native_route_owner_cannot_select_python_reconstruction(
-    tmp_path, failure
-):
-    from emuflow import timing_routing as router, system_route_storage as storage
-    from tests.test_phase4 import _storage_routes
-
-    source = tmp_path / "native.sqlite"
-    source.write_bytes(b"source whose parser already ran")
-    records = router._ProjectedSystemRouteSequence(
-        [], router._PackedNativeRouteSequence(0), [], array("I"), source
-    )
-    if failure == "missing":
-        source.unlink()
-    else:
-        records.release_native_route_relations()
-    document = _storage_routes(0)
-    document["routes"] = records
-    with patch.object(
-        type(records), "__iter__", side_effect=AssertionError("reference retry")
-    ):
-        with pytest.raises(
-            ValidationError, match="generation changed|lease is unavailable"
-        ):
-            storage.write_system_route_storage(tmp_path / "result.json", document)
 
 
 def test_site_alias_failure_keeps_prior_target_and_shares_successful_bytes(tmp_path):
@@ -339,46 +313,6 @@ def test_route_and_qor_readers_preserve_the_generation_they_validated(
             close()
 
 
-@pytest.mark.parametrize("failure", ["native-rejection", "source-after-build"])
-def test_schedule_final_adoption_preserves_prior_commit(tmp_path, monkeypatch, failure):
-    from emuflow import tdm_schedule_storage as storage
-    from emuflow.tdm import build_native_exact_schedule_request
-    from tests.native_schedule_case import _case
-    from tests.schedule_reference import build_tdm_schedule
-    from tests.schedule_store_fixture import write_tdm_schedule_storage
-    from tests.test_native_schedule_generation import install_runtime
-
-    case, routes = _case(tmp_path, False, False)
-    output = tmp_path / "published/schedule.json"
-    previous = write_tdm_schedule_storage(
-        output, build_tdm_schedule(routes, case.platform)
-    )
-    payload = output.parent / previous["artifact"]
-    old = (output.read_bytes(), payload.read_bytes())
-    install_runtime(tmp_path, monkeypatch)
-    request = build_native_exact_schedule_request(routes, case.platform)
-    build = storage._publish_native_exact_generation
-
-    def finish_then_mutate(*args):
-        result = build(*args)
-        request.route_store.chmod(request.route_store.stat().st_mode ^ 0o100)
-        return result
-
-    target = (
-        "publish_sqlite_store"
-        if failure == "native-rejection"
-        else "_publish_native_exact_generation"
-    )
-    action = (
-        ValidationError("native rejected")
-        if failure == "native-rejection"
-        else finish_then_mutate
-    )
-    with patch.object(storage, target, side_effect=action):
-        with pytest.raises(ValidationError, match="native rejected|generation changed"):
-            storage.write_tdm_schedule_storage(output, request)
-    assert output.read_bytes() == old[0] and payload.read_bytes() == old[1]
-    assert not list(output.parent.glob(".*.tmp*"))
 
 
 def test_schedule_cannot_recapture_a_changed_validated_route_owner(

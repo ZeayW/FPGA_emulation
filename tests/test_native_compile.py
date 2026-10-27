@@ -149,6 +149,9 @@ def fixture_request(tmp_path, *, fail=None, corrupt=None, waiting=False, tempora
     from emuflow.phase6_native import prepare_compile_policy
     phase6_policy=prepare_compile_policy(native_root/'phase6-policy',source_ir,
         native_root/'platform.normalized.json',clock_periods={clock['id']:1.0 for clock in case.ir.value['clocks']})
+    from emuflow.phase4_native import prepare_policy
+    phase4_policy=prepare_policy(native_root/'phase4-policy',native_root/'assignment.sqlite',
+        native_root/'platform.normalized.json',frame_slots=16,max_iterations=3,timing_driven=False)
     state_fields = {
         "phase4_root": ["path", str(native_root / "current")],
         "phase3_root": ["path", str(native_root)],
@@ -181,7 +184,7 @@ if WAITING and a.stage=='frontend':
  (out/'pid').write_text(str(os.getpid()))
  time.sleep(60)
 st=request.stat();generation=[str(x) for x in (st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000))]
-if a.stage in ('tdm','partition') or (a.stage=='split' and v['options'].get('phase6_provider','baseline')=='baseline'):raise AssertionError('Python native-owned phase adapter started')
+if a.stage in ('tdm','partition','route') or (a.stage=='split' and v['options'].get('phase6_provider','baseline')=='baseline'):raise AssertionError('Python native-owned phase adapter started')
 state=STATE_FIELDS if not a.previous else json.loads(pathlib.Path(a.previous).read_text())['state'][1]
 if a.stage=='timing':
  root=out/'.native-phase3-request';root.mkdir()
@@ -195,6 +198,13 @@ if a.stage=='route-policy':
  policy=root/'phase6-policy.json';policy.write_text(pathlib.Path(PHASE6_POLICY).read_text())
  st=policy.stat();g=[str(x) for x in (st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000))]
  state.update(native_phase6_policy=['path',str(policy)],native_phase6_generation=['tuple',g])
+ root=out/'.native-phase4-request';root.mkdir()
+ policy=root/'phase4-policy.json';body=json.loads(pathlib.Path(PHASE4_POLICY).read_text())
+ assignment=out/'partition/assignment.sqlite';st=assignment.stat()
+ body['sources'][0].update(path=str(assignment.resolve()),generation=[st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000)])
+ policy.write_text(json.dumps(body));st=policy.stat()
+ g=[str(x) for x in (st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000))]
+ state.update(native_phase4_policy=['path',str(policy)],native_phase4_generation=['tuple',g],phase4_root=['path',str(out/'system-route')],projected_timing_paths=None)
 
 if a.stage=='physical' and v['options'].get('phase6_provider','baseline')=='baseline':
  assert state['phase5_report'][0]=='phase-report'
@@ -212,7 +222,7 @@ if a.stage=='preflight' and CORRUPT:value[CORRUPT]='invalid'
 pathlib.Path(a.output).write_text(json.dumps(value))
 if a.stage=='finalize':(out/'multi-fpga-flow-report.json').write_text(json.dumps({'schema':'emuflow.multi-fpga-flow/v2','status':'pass'}))
 '''.replace("FAIL", repr(fail)).replace("CORRUPT", repr(corrupt)).replace("WAITING", repr(waiting))
-       .replace("TEMPORARY_REFERENCE", repr(temporary_reference)).replace("STATE_FIELDS", repr(state_fields)).replace("PARTITION_REQUEST", repr(str(partition_request))).replace("PHASE6_POLICY",repr(str(phase6_policy))))
+       .replace("TEMPORARY_REFERENCE", repr(temporary_reference)).replace("STATE_FIELDS", repr(state_fields)).replace("PARTITION_REQUEST", repr(str(partition_request))).replace("PHASE6_POLICY",repr(str(phase6_policy))).replace("PHASE4_POLICY",repr(str(phase4_policy))))
     request = tmp_path / "request.json"
     request.write_text(json.dumps({"schema": "emuflow.native-compile/v1", "python_executable": sys.executable,
         "python_source": str(source.parent), "working_directory": str(tmp_path),
@@ -224,10 +234,16 @@ def test_native_controller_executes_fixed_order_and_publishes_metrics(tmp_path):
     request = fixture_request(tmp_path)
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "out/calls").read_text().splitlines() == [stage for stage in STAGES if stage not in {"tdm", "partition", "split"}]
+    assert (tmp_path / "out/calls").read_text().splitlines() == [stage for stage in STAGES if stage not in {"tdm", "partition", "route", "split"}]
     report = json.loads((tmp_path / "out/native-compile-result.json").read_text())
     assert report["operation"]["status"] == "pass"
     assert report["native_data_plane_complete"] is False
+    route_step = next(step for step in report["stages"] if step["stage"] == "route")
+    assert route_step["implementation_id"] == "native-phase4-v1"
+    assert not (tmp_path / "out/.native-phase4-request").exists()
+    route_report = json.loads((tmp_path / "out/system-route/phase4_report.json").read_text())
+    assert route_report["validation"]["status"] == "pass"
+    assert route_report["stage_implementation_id"] == "native-phase4-v1"
     native_step = next(step for step in report["stages"] if step["stage"] == "tdm")
     assert native_step["implementation_id"] == "native-exact-phase5-v1"
     split_step=next(step for step in report['stages'] if step['stage']=='split')
@@ -296,7 +312,7 @@ temporary=pathlib.Path(os.environ['TMPDIR'])""")
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     roots = (tmp_path / "out/temporary-paths").read_text().splitlines()
-    assert len(set(roots)) == len(STAGES)-3
+    assert len(set(roots)) == len(STAGES)-4
     assert all(not Path(root).exists() for root in roots)
 
 

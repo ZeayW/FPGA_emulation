@@ -562,11 +562,10 @@ class HopPartitionRefinementTest(unittest.TestCase):
     def test_phase3_standalone_applies_route_hop_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            ir_path = root / "design.emuir.json"
+            ir_path = root / "design.emuir.sqlite"
             platform_path = root / "board.json"
-            ir_path.write_text(
-                json.dumps(self.ir.to_dict()), encoding="utf-8"
-            )
+            from emuflow.emuir_compact import write_compact_emuir
+            write_compact_emuir(ir_path, self.ir.to_dict())
             platform_path.write_text(
                 json.dumps(self.platform.to_dict()), encoding="utf-8"
             )
@@ -575,7 +574,7 @@ class HopPartitionRefinementTest(unittest.TestCase):
                 platform_path,
                 root / "phase3",
                 provider="tritonpart",
-                cut_mode="sequential-only",
+                cut_mode="static-exact-combinational",
                 balance_tolerance=1.0,
                 route_constraints_path=self._route_constraints(root),
                 hop_refiner=str(self.executable),
@@ -589,18 +588,16 @@ class HopPartitionRefinementTest(unittest.TestCase):
             ],
             0,
         )
-        self.assertIn(
-            "hop_feasibility", assignment["provider_metadata"]
-        )
+        self.assertEqual(report['hop_refinement']['after']['status'], 'pass')
+        self.assertEqual(assignment['metrics']['cut_nets'], len(assignment['cut_nets']))
 
     def test_phase3_supports_relative_output_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            ir_path = root / "design.emuir.json"
+            ir_path = root / "design.emuir.sqlite"
             platform_path = root / "board.json"
-            ir_path.write_text(
-                json.dumps(self.ir.to_dict()), encoding="utf-8"
-            )
+            from emuflow.emuir_compact import write_compact_emuir
+            write_compact_emuir(ir_path, self.ir.to_dict())
             platform_path.write_text(
                 json.dumps(self.platform.to_dict()), encoding="utf-8"
             )
@@ -608,11 +605,11 @@ class HopPartitionRefinementTest(unittest.TestCase):
             try:
                 os.chdir(root)
                 report = run_phase3_fixture(
-                    Path("design.emuir.json"),
+                    Path("design.emuir.sqlite"),
                     Path("board.json"),
                     Path("relative-phase3"),
                     provider="tritonpart",
-                    cut_mode="sequential-only",
+                    cut_mode="static-exact-combinational",
                     balance_tolerance=1.0,
                     route_constraints_path=self._route_constraints(root),
                     hop_refiner=str(self.executable),

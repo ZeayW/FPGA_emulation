@@ -42,7 +42,7 @@ from .phase3_storage import read_phase3_assignment_view
 from .replication import apply_replication
 from .resources import RESOURCE_FIELDS
 from .routing import build_directed_graph, load_route_constraints
-from .tritonpart import _CompactClusterOrder, load_partition_net_weights
+from .partition_inputs import _CompactClusterOrder, load_partition_net_weights
 
 
 HOP_REFINER_INPUT_SCHEMA = "emuflow.hop-partition-refiner-input/v1"

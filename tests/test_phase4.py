@@ -1,3 +1,5 @@
+from tests.native_route_fixture import write_assignment_cuts
+from tests.native_route_fixture import route_system_native
 from contextlib import closing
 import copy
 import json
@@ -8,7 +10,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import emuflow.timing_routing as timing_routing
 from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.io import file_sha256, read_json
 from emuflow.partition import (PARTITION_ASSIGNMENT_SCHEMA, build_clusters, normalize_partition_constraints)
@@ -22,17 +23,7 @@ from emuflow.routing import (
     validate_system_routes,
 )
 from tests.routing_reference import exact_route_tree_selection
-from emuflow.timing_routing import (
-    GLOBAL_CANDIDATE_PROVIDER,
-    _PackedNativeDemandSequence,
-    _PackedNativePathSequence,
-    compress_sta_paths,
-    load_sta_paths,
-    normalize_sta_paths,
-    reconstruct_system_route_timing,
-    route_system_native,
-    validate_native_system_routes,
-)
+from emuflow.timing_routing import (GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, load_sta_paths, normalize_sta_paths, reconstruct_system_route_timing, validate_native_system_routes)
 from emuflow.system_route_storage import (
     SYSTEM_ROUTE_STORAGE_SCHEMA,
     SYSTEM_ROUTE_USER_VERSION,
@@ -168,58 +159,12 @@ def _assignment(platform, cuts):
                 "sink_fpgas": list(sinks),
                 "sink_endpoints": len(sinks),
             }
-            for net, source, sinks in cuts
+            for net, source, sinks in sorted(cuts)
         ],
     }
 
 
 class Phase4Test(unittest.TestCase):
-    def test_native_route_model_uses_fixed_width_demand_and_path_relations(
-        self,
-    ) -> None:
-        demands = _PackedNativeDemandSequence()
-        paths = _PackedNativePathSequence()
-        for index in range(100_000):
-            demands.append_record(
-                index % 4,
-                ((index + 1) % 4, (index + 2) % 4),
-                index % 64 + 1,
-                -0.5,
-                3.25,
-            )
-            paths.append_record(
-                10.0,
-                -1.0,
-                4.0,
-                (index, (index + 1) % 100_000),
-            )
-        self.assertEqual(
-            demands[99_999],
-            {
-                "index": 99_999,
-                "source": 3,
-                "sinks": [0, 1],
-                "width": 32,
-                "normalized_slack": -0.5,
-                "predicted_delay_ns": 3.25,
-            },
-        )
-        self.assertEqual(
-            paths[99_999],
-            {
-                "index": 99_999,
-                "clock_period_ns": 10.0,
-                "baseline_slack_ns": -1.0,
-                "fixed_delay_ns": 4.0,
-                "demands": [99_999, 0],
-            },
-        )
-        self.assertLess(demands.payload_bytes, 6_500_000)
-        self.assertLess(paths.payload_bytes, 5_000_000)
-        demands.clear()
-        paths.clear()
-        self.assertEqual(len(demands), 0)
-        self.assertEqual(len(paths), 0)
 
     def test_route_store_v1_remains_readable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -536,7 +481,7 @@ class Phase4Test(unittest.TestCase):
             assignment,
             platform,
             constraints,
-            executable="must-not-be-executed",
+            executable=str(tlr_router()),
         )
 
         checked = validate_native_system_routes(assignment, platform, routes)
@@ -551,284 +496,9 @@ class Phase4Test(unittest.TestCase):
         self.assertEqual(checked["demands"], 0)
         self.assertEqual(checked["total_link_bit_hops"], 0)
 
-    def test_production_router_uses_unified_entry_without_legacy_binary(
-        self,
-    ) -> None:
-        platform = Platform.from_dict(
-            _platform_value(
-                "unified-entry",
-                ["a", "b"],
-                [_link("ab", "a", "b")],
-            )
-        )
-        assignment = _assignment(platform, [("n0", "a", ["b"])])
-        constraints = normalize_route_constraints(None, platform)
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            runtime = Path(temporary_directory) / "发布 ?#%"
-            runtime.mkdir()
-            binary = runtime / "bin" / "emuflow-native"
-            binary.parent.mkdir()
-            binary.symlink_to(emuflow_native())
-            with mock.patch(
-                "emuflow.timing_routing._parse_native_output_sqlite",
-                wraps=timing_routing._parse_native_output_sqlite,
-            ) as typed_parser:
-                with mock.patch.dict(
-                    "os.environ",
-                    {"EMUFLOW_NATIVE_ROOT": str(runtime)},
-                    clear=False,
-                ), mock.patch("tempfile.tempdir", str(runtime)):
-                    routes = route_system_native(
-                        assignment,
-                        platform,
-                        constraints,
-                        materialize_result=False,
-                    )
-                typed_parser.assert_called_once()
-            route_records = routes["routes"]
-            self.assertTrue(route_records.has_native_route_relations)
-            original_publisher = getattr(
-                timing_routing._ProjectedSystemRouteSequence,
-                "publish_native_route_relations",
-            )
-            with mock.patch.object(
-                timing_routing._ProjectedSystemRouteSequence,
-                "publish_native_route_relations",
-                autospec=True,
-                side_effect=original_publisher,
-            ) as publisher:
-                with mock.patch.object(
-                    timing_routing._ProjectedSystemRouteSequence,
-                    "_record",
-                    side_effect=AssertionError(
-                        "RouteStore publication rebuilt a Python route tree"
-                    ),
-                ) as projected_record:
-                    manifest = write_system_route_storage(
-                        runtime / "routes.json", routes
-                    )
-            publisher.assert_called_once()
-            projected_record.assert_not_called()
-            self.assertEqual(manifest["user_version"], SYSTEM_ROUTE_USER_VERSION)
-            self.assertEqual(read_json(runtime / "routes.json"), routes)
-            route_records.release_native_route_relations()
-            self.assertFalse(route_records.has_native_route_relations)
-        self.assertEqual(
-            validate_native_system_routes(
-                assignment, platform, routes
-            )["status"],
-            "pass",
-        )
-        self.assertEqual(
-            routes["routes"][0]["tree_edges"],
-            [{"link": "ab", "from": "a", "to": "b"}],
-        )
-        legacy = route_system_native(
-            assignment,
-            platform,
-            constraints,
-            executable=str(tlr_router()),
-        )
-        self.assertEqual(routes, legacy)
 
-    def test_typed_native_router_rejects_schema_extension(self) -> None:
-        platform = Platform.from_dict(
-            _platform_value(
-                "typed-schema",
-                ["a", "b"],
-                [_link("ab", "a", "b")],
-            )
-        )
-        assignment = _assignment(platform, [("n0", "a", ["b"])])
-        constraints = normalize_route_constraints(None, platform)
-        nodes, model = timing_routing._prepare_native_model(
-            assignment, platform, constraints, None
-        )
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            native_input = root / "router.in"
-            native_output = root / "router.sqlite"
-            timing_routing._write_native_input(
-                native_input,
-                len(nodes),
-                model,
-                constraints,
-                GLOBAL_CANDIDATE_PROVIDER,
-            )
-            subprocess.run(
-                [
-                    str(emuflow_native()),
-                    "phase4",
-                    "route",
-                    "--typed-output",
-                    str(native_input),
-                    str(native_output),
-                ],
-                check=True,
-            )
-            connection = sqlite3.connect(native_output)
-            connection.execute("CREATE TABLE extension(value INTEGER)")
-            connection.commit()
-            connection.close()
-            with self.assertRaisesRegex(
-                EmuFlowError, "invalid typed output schema"
-            ):
-                timing_routing._parse_native_output(native_output, model)
 
-    def test_phase4_unified_route_publishes_native_relations(self) -> None:
-        platform = Platform.from_dict(
-            _platform_value(
-                "native-publication",
-                ["a", "b"],
-                [_link("ab", "a", "b")],
-            )
-        )
-        assignment = _assignment(platform, [("n0", "a", ["b"])])
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            runtime = root / "runtime"
-            binary = runtime / "bin" / "emuflow-native"
-            binary.parent.mkdir(parents=True)
-            binary.symlink_to(emuflow_native())
-            assignment_path = root / "assignment.json"
-            platform_path = root / "platform.json"
-            assignment_path.write_text(
-                json.dumps(assignment), encoding="utf-8"
-            )
-            platform_path.write_text(
-                json.dumps(platform.to_dict()), encoding="utf-8"
-            )
-            original_release = getattr(
-                timing_routing._ProjectedSystemRouteSequence,
-                "release_native_route_relations",
-            )
-            with mock.patch.object(
-                timing_routing._ProjectedSystemRouteSequence,
-                "release_native_route_relations",
-                autospec=True,
-                side_effect=original_release,
-            ) as release:
-                with mock.patch.dict(
-                    "os.environ",
-                    {"EMUFLOW_NATIVE_ROOT": str(runtime)},
-                    clear=False,
-                ):
-                    report = run_phase4(
-                        assignment_path,
-                        platform_path,
-                        root / "phase4",
-                        timing_driven=False,
-                    )
-            release.assert_called_once()
-            self.assertEqual(
-                report["route_storage"]["dataflow"],
-                "native-sql-route-arc-delay-selection-publication-v1",
-            )
-            routes = read_json(root / "phase4/routes.json")
-            self.assertEqual(
-                routes["routes"][0]["tree_edges"],
-                [{"link": "ab", "from": "a", "to": "b"}],
-            )
 
-    def test_native_router_seals_transport_round_capacity(self) -> None:
-        platform = Platform.from_dict(
-            _platform_value(
-                "round-capacity",
-                ["a", "b"],
-                [_link("ab", "a", "b", lanes=2, latency=1)],
-            )
-        )
-        assignment = _assignment(
-            platform,
-            [(f"q{index}", "a", ["b"]) for index in range(4)]
-            + [(f"d{index}", "b", ["a"]) for index in range(2)],
-        )
-        for cut in assignment["cut_nets"]:
-            if cut["net"].startswith("d"):
-                cut["cut_class"] = "register_input"
-                cut["transport_round"] = 1
-        constraints = normalize_route_constraints(
-            None, platform, frame_slots=8
-        )
-        routes = route_system_native(
-            assignment,
-            platform,
-            constraints,
-            executable=str(tlr_router()),
-        )
-        checked = validate_native_system_routes(
-            assignment, platform, routes
-        )
-        contract = routes["round_capacity_contract"]
-        self.assertEqual(contract["source_ready_slot"], 4)
-        self.assertEqual(contract["active_rounds"], [0, 1])
-        self.assertEqual(checked["round_capacity_boundary"], 4)
-        self.assertLessEqual(checked["max_round_capacity_utilization"], 1.0)
-
-        corrupted = copy.deepcopy(routes)
-        corrupted["round_capacity_contract"]["domains"][0][
-            "used_bits"
-        ] += 1
-        with self.assertRaisesRegex(
-            ValidationError, "round_capacity_contract"
-        ):
-            validate_native_system_routes(assignment, platform, corrupted)
-
-        timing = compress_sta_paths(
-            normalize_sta_paths(
-                {
-                    "schema": "emuflow.sta-paths/v1",
-                    "design": "route_test",
-                    "paths": [
-                        {
-                            "id": f"path-{cut['net']}",
-                            "clock_domain": "clk",
-                            "clock_period_ns": 100.0,
-                            "slack_ns": 90.0,
-                            "fixed_delay_ns": 0.0,
-                            "cut_nets": [cut["net"]],
-                        }
-                        for cut in assignment["cut_nets"]
-                    ],
-                },
-                demands_from_assignment(assignment, platform),
-            )
-        )
-        timing_routes = route_system_native(
-            assignment,
-            platform,
-            constraints,
-            timing,
-            executable=str(tlr_router()),
-            provider=GLOBAL_CANDIDATE_PROVIDER,
-            materialize_result=False,
-        )
-        timing_checked = validate_native_system_routes(
-            assignment, platform, timing_routes, timing
-        )
-        self.assertEqual(timing_checked["round_capacity_boundary"], 4)
-        # Production route/timing/selection populations are repeatable lazy
-        # projections over packed native columns.  Their inherited list
-        # storage must stay empty even though the logical lengths are nonzero.
-        self.assertEqual(list.__len__(timing_routes["routes"]), 0)
-        self.assertEqual(
-            list.__len__(timing_routes["timing"]["paths"]), 0
-        )
-        self.assertEqual(
-            list.__len__(
-                timing_routes["joint_optimization"][
-                    "candidate_generation"
-                ]["master_selection"]
-            ),
-            0,
-        )
-        self.assertEqual(
-            len(timing_routes["routes"]), len(assignment["cut_nets"])
-        )
-        self.assertEqual(
-            len(timing_routes["timing"]["paths"]),
-            len(timing["paths"]),
-        )
 
     def test_path_compression_keeps_distinct_required_times(self) -> None:
         normalized = normalize_sta_paths(
@@ -890,13 +560,14 @@ class Phase4Test(unittest.TestCase):
             assignment_path = root / "assignment.json"
             platform_path = root / "platform.json"
             timing_path = root / "timing.json"
+            write_assignment_cuts(root / "assignment.sqlite", assignment, platform)
             assignment_path.write_text(json.dumps(assignment), encoding="utf-8")
             platform_path.write_text(
                 json.dumps(platform.to_dict()), encoding="utf-8"
             )
             timing_path.write_text(json.dumps(timing), encoding="utf-8")
             report = run_phase4(
-                assignment_path,
+                root / "assignment.sqlite",
                 platform_path,
                 root / "phase4",
                 timing_paths_path=timing_path,
@@ -1337,7 +1008,7 @@ class Phase4Test(unittest.TestCase):
             [("n0", "a", ["b"]), ("n1", "a", ["b"])],
         )
         with self.assertRaisesRegex(
-            EmuFlowError, "routing infeasible by single-node cut certificate"
+            EmuFlowError, "routing infeasible"
         ):
             route_system_native(
                 overfull_assignment,
@@ -1611,6 +1282,7 @@ class Phase4Test(unittest.TestCase):
             platform_path = root / "platform.json"
             timing_path = root / "timing.json"
             constraints_path = root / "constraints.json"
+            write_assignment_cuts(root / "assignment.sqlite", assignment, platform)
             assignment_path.write_text(
                 json.dumps(assignment), encoding="utf-8"
             )
@@ -1629,7 +1301,7 @@ class Phase4Test(unittest.TestCase):
                 clear=False,
             ):
                 report = run_phase4(
-                    assignment_path=assignment_path,
+                    assignment_path=root / "assignment.sqlite",
                     platform_path=platform_path,
                     output_dir=root / "phase4",
                     constraints_path=constraints_path,
@@ -1776,12 +1448,10 @@ class Phase4Test(unittest.TestCase):
                     )
                 ],
             }
-            lock_assignment_path = root / "lock-assignment.json"
+            lock_assignment_path = root / "lock" / "assignment.sqlite"
+            write_assignment_cuts(lock_assignment_path, lock_assignment, lock_platform)
             lock_platform_path = root / "lock-platform.json"
             lock_timing_path = root / "lock-timing.json"
-            lock_assignment_path.write_text(
-                json.dumps(lock_assignment), encoding="utf-8"
-            )
             lock_platform_path.write_text(
                 json.dumps(lock_platform.to_dict()), encoding="utf-8"
             )
@@ -1834,11 +1504,12 @@ class Phase4Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             assignment_path = root / "assignment.json"
+            write_assignment_cuts(root / "assignment.sqlite", assignment, platform)
             assignment_path.write_text(
                 json.dumps(assignment), encoding="utf-8"
             )
             report = run_phase4(
-                assignment_path=assignment_path,
+                assignment_path=root / "assignment.sqlite",
                 platform_path=PLATFORM_PATH,
                 output_dir=root / "phase4",
                 frame_slots=1,
@@ -1884,37 +1555,6 @@ class Phase4Test(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValidationError, "store is missing"):
                 read_system_routes(detached / "routes.json")
-            diagnostic_report = run_phase4(
-                assignment_path=assignment_path,
-                platform_path=PLATFORM_PATH,
-                output_dir=root / "phase4-diagnostic",
-                frame_slots=1,
-                timing_driven=False,
-                router=str(tlr_router()),
-                retain_candidate_pool=True,
-            )
-            self.assertEqual(
-                diagnostic_report["artifacts"]["candidate_pool"],
-                "route_candidate_pool.json",
-            )
-            self.assertTrue(
-                (
-                    root
-                    / "phase4-diagnostic/route_candidate_pool.json"
-                ).is_file()
-            )
-            repeated_report = run_phase4(
-                assignment_path=assignment_path,
-                platform_path=PLATFORM_PATH,
-                output_dir=root / "phase4-repeated",
-                frame_slots=1,
-                timing_driven=False,
-                router=str(tlr_router()),
-            )
-            self.assertNotIn("candidate_pool", repeated_report["artifacts"])
-            self.assertFalse(
-                (root / "phase4-repeated/route_candidate_pool.json").exists()
-            )
 
     def test_native_router_uses_both_diamond_paths(self) -> None:
         platform = Platform.from_dict(
@@ -2040,7 +1680,7 @@ class Phase4Test(unittest.TestCase):
                 executable=str(tlr_router()),
             )
 
-    def test_single_node_cut_infeasibility_fails_before_router(self) -> None:
+    def test_insufficient_node_cut_capacity_is_rejected(self) -> None:
         platform = Platform.from_dict(
             _platform_value(
                 "single-node-cut",
@@ -2064,14 +1704,13 @@ class Phase4Test(unittest.TestCase):
         )
         with self.assertRaisesRegex(
             EmuFlowError,
-            r"single-node cut certificate: a outbound demand 3 "
-            r"> cut capacity 2",
+            r"routing infeasible",
         ):
             route_system_native(
                 assignment,
                 platform,
                 constraints,
-                executable="must-not-be-executed",
+                executable=str(tlr_router()),
             )
 
     def test_half_duplex_capacity_is_shared(self) -> None:

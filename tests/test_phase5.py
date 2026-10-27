@@ -1,3 +1,4 @@
+from tests.native_route_fixture import route_system_native
 import copy
 import json
 import math
@@ -21,10 +22,9 @@ from emuflow.partition import PARTITION_ASSIGNMENT_SCHEMA
 from emuflow.phase5 import run_phase5, validate_phase5
 from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints
-from emuflow.tdm import _exact_capture_certificate, reconstruct_tdm_schedule_timing, reconstruct_tdm_schedule_timing_paths, reconstruct_tdm_schedule_timing_paths_from_routes, schedule_to_tsv, schedule_to_systemverilog_testbench, simulate_tdm_schedule, validate_tdm_schedule, write_schedule_tsv
+from emuflow.tdm import _independently_reconstruct_exact_captures, reconstruct_tdm_schedule_timing, reconstruct_tdm_schedule_timing_paths, reconstruct_tdm_schedule_timing_paths_from_routes, schedule_to_tsv, schedule_to_systemverilog_testbench, simulate_tdm_schedule, validate_tdm_schedule, write_schedule_tsv
 from tests.schedule_reference import build_tdm_schedule
 from tests.phase5_fixture import write_native_phase5_fixture
-from emuflow.timing_routing import route_system_native
 from tests.native_build import emuflow_native, tlr_router
 
 
@@ -159,7 +159,7 @@ class Phase5Test(unittest.TestCase):
             [],
         )
 
-    def test_exact_capture_certificate_indexes_100k_segments_once(self) -> None:
+    def test_independently_reconstruct_exact_captures_indexes_100k_segments_once(self) -> None:
         class CountingSegments(dict):
             def __init__(self, value):
                 super().__init__(value)
@@ -193,7 +193,7 @@ class Phase5Test(unittest.TestCase):
         arrivals = {
             (f"net-{index}", "fpga1"): 1 for index in range(count)
         }
-        records, minimum = _exact_capture_certificate(
+        records, minimum = _independently_reconstruct_exact_captures(
             segments,
             captures,
             arrivals,
@@ -324,7 +324,7 @@ class Phase5Test(unittest.TestCase):
         self.assertEqual(entries[1]["slot"], 2)
         self.assertEqual(entries[1]["arrival_slot"], 3)
 
-    def test_register_input_round_waits_for_register_output_round(self) -> None:
+    def test_retired_register_input_round_barrier_routing_is_rejected(self) -> None:
         platform = Platform.from_dict(
             _platform_value(
                 "dependency",
@@ -341,27 +341,8 @@ class Phase5Test(unittest.TestCase):
         constraints = normalize_route_constraints(
             None, platform, frame_slots=8
         )
-        routes = route_system_native(
-            assignment,
-            platform,
-            constraints,
-            executable=str(tlr_router()),
-        )
-        schedule = build_tdm_schedule(routes, platform)
-        validation = validate_tdm_schedule(routes, platform, schedule)
-        entries = {entry["net"]: entry for entry in schedule["entries"]}
-        self.assertEqual(entries["q"]["slot"], 0)
-        self.assertEqual(entries["q"]["arrival_slot"], 1)
-        self.assertEqual(entries["d"]["ready_slot"], 2)
-        self.assertEqual(entries["d"]["slot"], 2)
-        self.assertEqual(validation["transport_rounds"], 2)
-        self.assertEqual(validation["round_barriers"], 1)
-        self.assertEqual(validation["max_transport_round"], 1)
-        completion = {
-            item["net"]: item for item in schedule["demand_completions"]
-        }
-        self.assertEqual(completion["d"]["source_ready_slot"], 2)
-        self.assertEqual(completion["d"]["transport_round"], 1)
+        with self.assertRaisesRegex(ValidationError, "round-barrier routing is retired"):
+            route_system_native(assignment, platform, constraints, executable=str(tlr_router()))
 
     def test_many_transport_rounds_do_not_rescan_prior_rounds(self) -> None:
         platform = Platform.from_dict(

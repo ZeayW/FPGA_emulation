@@ -1,3 +1,4 @@
+from tests.native_route_fixture import route_system_native
 """Phase 6 materializes and independently replays the declared virtual board."""
 from contextlib import closing
 import copy
@@ -21,7 +22,6 @@ from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints
 from tests.schedule_reference import build_tdm_schedule
-from emuflow.timing_routing import route_system_native
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 from emuflow.transport_storage import (
     VIRTUAL_BINDING_STORAGE_SCHEMA,

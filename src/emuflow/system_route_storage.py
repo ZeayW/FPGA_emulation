@@ -46,96 +46,7 @@ _SELECTOR_SCHEMA_PATTERN = re.compile(
 )
 
 
-_DDL = """
-CREATE TABLE metadata(
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-) WITHOUT ROWID;
-CREATE TABLE demands(
-  seq INTEGER PRIMARY KEY,
-  demand_id TEXT NOT NULL UNIQUE,
-  route_seq INTEGER NOT NULL UNIQUE
-);
-CREATE TABLE routes(
-  seq INTEGER PRIMARY KEY,
-  demand_id TEXT NOT NULL UNIQUE,
-  net_id TEXT NOT NULL UNIQUE,
-  source_fpga TEXT NOT NULL,
-  width_bits INTEGER NOT NULL,
-  transport_round INTEGER,
-  cut_class TEXT,
-  dependency_level INTEGER,
-  combinational_dependency_depth INTEGER,
-  max_latency_cycles INTEGER,
-  predicted_max_delay_ns REAL,
-  CHECK(length(demand_id)>0),
-  CHECK(length(net_id)>0),
-  CHECK(length(source_fpga)>0),
-  CHECK(typeof(width_bits)='integer' AND width_bits>0),
-  CHECK(transport_round IS NULL OR (
-    typeof(transport_round)='integer' AND transport_round>=0
-  )),
-  CHECK(cut_class IS NULL OR cut_class IN (
-    'combinational','register_input','register_output'
-  )),
-  CHECK((dependency_level IS NULL AND combinational_dependency_depth IS NULL)
-    OR (typeof(dependency_level)='integer' AND dependency_level>=0
-      AND typeof(combinational_dependency_depth)='integer'
-      AND combinational_dependency_depth>=0)),
-  CHECK(max_latency_cycles IS NULL OR (
-    typeof(max_latency_cycles)='integer' AND max_latency_cycles>=0
-  )),
-  CHECK(predicted_max_delay_ns IS NULL OR (
-    typeof(predicted_max_delay_ns) IN ('integer','real')
-    AND predicted_max_delay_ns>=0
-  ))
-);
-CREATE TABLE route_sinks(
-  route_seq INTEGER NOT NULL,
-  seq INTEGER NOT NULL,
-  sink_fpga TEXT NOT NULL,
-  PRIMARY KEY(route_seq,seq),
-  UNIQUE(route_seq,sink_fpga)
-) WITHOUT ROWID;
-CREATE TABLE route_edges(
-  route_seq INTEGER NOT NULL,
-  seq INTEGER NOT NULL,
-  link_id TEXT NOT NULL,
-  source_fpga TEXT NOT NULL,
-  sink_fpga TEXT NOT NULL,
-  PRIMARY KEY(route_seq,seq),
-  UNIQUE(route_seq,link_id,source_fpga,sink_fpga)
-) WITHOUT ROWID;
-CREATE TABLE route_predecessors(
-  route_seq INTEGER NOT NULL,
-  seq INTEGER NOT NULL,
-  predecessor_net TEXT NOT NULL,
-  PRIMARY KEY(route_seq,seq),
-  UNIQUE(route_seq,predecessor_net)
-) WITHOUT ROWID;
-CREATE TABLE timing_paths(
-  seq INTEGER PRIMARY KEY,
-  path_id TEXT NOT NULL UNIQUE,
-  record_json TEXT NOT NULL,
-  CHECK(json_valid(record_json))
-);
-CREATE TABLE route_master_selections(
-  seq INTEGER PRIMARY KEY,
-  demand_id TEXT NOT NULL UNIQUE,
-  generator TEXT NOT NULL
-);
-CREATE TABLE refinement_batch_paths(
-  seq INTEGER PRIMARY KEY,
-  batch_index INTEGER NOT NULL,
-  position INTEGER NOT NULL,
-  path_index INTEGER NOT NULL UNIQUE,
-  UNIQUE(batch_index,position)
-);
-CREATE INDEX routes_net_order ON routes(net_id,seq);
-CREATE INDEX routes_demand_order ON routes(demand_id,seq);
-CREATE INDEX route_edges_arc ON route_edges(link_id,source_fpga,sink_fpga);
-CREATE INDEX route_predecessors_net ON route_predecessors(predecessor_net);
-"""
+_DDL = (Path(__file__).parent / "data/schema/phase4_routes.sql").read_text(encoding="utf-8")
 
 
 def _canonical(value: Any) -> str:
@@ -1712,13 +1623,6 @@ def write_system_route_storage(
     if callable(bind_document):
         source_bindings += bind_document()
     source_bindings = validate_store_destination(manifest_path, source_bindings)
-    native_route_publisher = getattr(
-        raw_routes, "publish_native_route_relations", None
-    )
-    direct_native_routes = bool(
-        callable(native_route_publisher)
-        and getattr(raw_routes, "has_native_route_relations", False)
-    )
     header = dict(routes)
     del header["demands"]
     del header["routes"]
@@ -1766,9 +1670,6 @@ def write_system_route_storage(
         header["timing"] = {
             key: value for key, value in timing.items() if key != "paths"
         }
-    direct_native_selections = bool(
-        direct_native_routes and len(raw_master_selections)
-    )
 
     # Normalize macOS /var -> /private/var aliases before any generation
     # comparison.  Mixing resolved previous paths with unresolved new paths can
@@ -1794,50 +1695,20 @@ def write_system_route_storage(
         connection.execute("PRAGMA journal_mode=OFF")
         connection.execute("PRAGMA synchronous=OFF")
         connection.execute("PRAGMA temp_store=FILE")
-        if direct_native_routes:
-            connection.execute("PRAGMA cache_size=-2048")
-            connection.execute("PRAGMA temp.cache_size=-2048")
         connection.executescript(_DDL)
         connection.execute(f"PRAGMA application_id={SYSTEM_ROUTE_APPLICATION_ID}")
         connection.execute(f"PRAGMA user_version={SYSTEM_ROUTE_USER_VERSION}")
-        if direct_native_routes:
-            connection.execute(
-                "CREATE TEMP TABLE native_route_metadata("
-                "seq INTEGER PRIMARY KEY,demand_id TEXT NOT NULL UNIQUE,"
-                "net_id TEXT NOT NULL UNIQUE,source_fpga TEXT NOT NULL,"
-                "width_bits INTEGER NOT NULL,transport_round INTEGER,"
-                "cut_class TEXT,dependency_level INTEGER,"
-                "combinational_dependency_depth INTEGER,"
-                "max_latency_cycles INTEGER)"
-            )
-            if direct_native_selections:
-                connection.execute(
-                    "CREATE TEMP TABLE native_route_selection_requests("
-                    "seq INTEGER PRIMARY KEY,demand_id TEXT NOT NULL UNIQUE)"
-                )
         if len(raw_demands) != len(raw_routes):
             raise ValidationError("system-route demand/route coverage disagrees")
-        route_metadata_cursor = getattr(
-            raw_routes, "iter_route_storage_metadata", None
-        )
-        if direct_native_routes:
-            if not callable(route_metadata_cursor):
-                raise ValidationError("native route metadata cursor is missing")
-            route_records = (
-                ({**demand, "max_latency_cycles": latency}, True)
-                for demand, latency in route_metadata_cursor()
-            )
-        else:
-            route_records = ((route, False) for route in raw_routes)
         written_routes = 0
-        for seq, (route, metadata_only) in enumerate(route_records):
+        for seq, route in enumerate(raw_routes):
             if not isinstance(route, Mapping):
                 raise ValidationError("system route is not an object")
             route_id = route.get("id")
             net = route.get("net")
             source = route.get("source")
             sinks = route.get("sinks")
-            edges = [] if metadata_only else route.get("tree_edges")
+            edges = route.get("tree_edges")
             predecessors = route.get("predecessor_cut_nets", [])
             if (
                 not isinstance(route_id, str)
@@ -1856,37 +1727,20 @@ def write_system_route_storage(
                 )
             ):
                 raise ValidationError("system route typed fields are malformed")
-            if not metadata_only:
-                payload = _canonical(route)
-                relation_digests["routes"].update(payload.encode("utf-8"))
-                relation_digests["routes"].update(b"\n")
+            payload = _canonical(route)
+            relation_digests["routes"].update(payload.encode("utf-8"))
+            relation_digests["routes"].update(b"\n")
             scalar_values = list(_typed_route_scalar_values(route))
-            if direct_native_routes:
-                if scalar_values[-1] is not None:
-                    raise ValidationError(
-                        "native route metadata duplicated router-owned delay"
-                    )
-                connection.execute(
-                    "INSERT INTO native_route_metadata VALUES(?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        seq,
-                        route_id,
-                        net,
-                        source,
-                        *scalar_values[:-1],
-                    ),
-                )
-            else:
-                connection.execute(
-                    "INSERT INTO routes VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        seq,
-                        route_id,
-                        net,
-                        source,
-                        *scalar_values,
-                    ),
-                )
+            connection.execute(
+                "INSERT INTO routes VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    seq,
+                    route_id,
+                    net,
+                    source,
+                    *scalar_values,
+                ),
+            )
             demand = raw_demands[seq]
             if not isinstance(demand, Mapping) or demand != _demand_from_route(route):
                 raise ValidationError(
@@ -1899,23 +1753,17 @@ def write_system_route_storage(
                 "INSERT INTO demands VALUES(?,?,?)",
                 (seq, demand["id"], seq),
             )
-            if direct_native_selections:
-                connection.execute(
-                    "INSERT INTO native_route_selection_requests VALUES(?,?)",
-                    (seq, demand["id"]),
-                )
             connection.executemany(
                 "INSERT INTO route_sinks VALUES(?,?,?)",
                 ((seq, index, sink) for index, sink in enumerate(sinks)),
             )
-            if not direct_native_routes:
-                connection.executemany(
-                    "INSERT INTO route_edges VALUES(?,?,?,?,?)",
-                    (
-                        (seq, index, edge["link"], edge["from"], edge["to"])
-                        for index, edge in enumerate(edges)
-                    ),
-                )
+            connection.executemany(
+                "INSERT INTO route_edges VALUES(?,?,?,?,?)",
+                (
+                    (seq, index, edge["link"], edge["from"], edge["to"])
+                    for index, edge in enumerate(edges)
+                ),
+            )
             connection.executemany(
                 "INSERT INTO route_predecessors VALUES(?,?,?)",
                 (
@@ -1940,7 +1788,7 @@ def write_system_route_storage(
                 (seq, identity, payload),
             )
         selection_records = (
-            () if direct_native_selections else raw_master_selections
+            raw_master_selections
         )
         for seq, selection in enumerate(selection_records):
             if (
@@ -2047,27 +1895,9 @@ def write_system_route_storage(
                 ].hexdigest(),
             },
         }
-        if direct_native_routes:
-            # Seal the final typed rows, not their Python projection. Only
-            # bounded shape/header literals cross the native process boundary.
-            assert callable(native_route_publisher)
-            native_route_publisher(connection)
-            if direct_native_selections:
-                sections["master_selections"]["sha256"] = None
-            sections["routes"]["sha256"] = None
-            connection.executemany("INSERT INTO metadata VALUES(?,?)", (
-                ("header", _canonical(header)), ("sections", _canonical(sections))))
-            connection.commit()
-            connection.close()
-            from .route_seal_native import seal_native_system_routes
-            seal = seal_native_system_routes(temporary, routes)
-            logical_sha256, sections = seal["logical_sha256"], seal["sections"]
-            connection = sqlite3.connect(temporary, uri=True)
-            connection.execute("UPDATE metadata SET value=? WHERE key='sections'", (_canonical(sections),))
-        else:
-            logical_sha256 = _pretty_sha256(routes)
-            connection.executemany("INSERT INTO metadata VALUES(?,?)", (
-                ("header", _canonical(header)), ("sections", _canonical(sections))))
+        logical_sha256 = _pretty_sha256(routes)
+        connection.executemany("INSERT INTO metadata VALUES(?,?)", (
+            ("header", _canonical(header)), ("sections", _canonical(sections))))
         connection.execute("INSERT INTO metadata VALUES('logical_sha256',?)", (_canonical(logical_sha256),))
         connection.commit()
     except sqlite3.IntegrityError as error:

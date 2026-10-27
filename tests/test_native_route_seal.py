@@ -123,17 +123,6 @@ def test_native_rejects_corruption_without_replacing_prior_seal(native_root, tmp
     assert not list(tmp_path.glob('seal.tmp.*'))
 
 
-def test_production_native_route_publisher_does_not_expand_sql_rows_or_pretty_json(native_root,tmp_path):
-    from tests.test_routing_candidates import RouteCandidatePoolTest
-    from emuflow.timing_routing import route_system_native, GLOBAL_CANDIDATE_PROVIDER
-    platform,assignment,timing,constraints = RouteCandidatePoolTest()._fixture()
-    logical = route_system_native(assignment,platform,constraints,timing,executable=str(native_root),provider=GLOBAL_CANDIDATE_PROVIDER,materialize_result=False)
-    with patch('emuflow.system_route_storage._pretty_sha256',side_effect=AssertionError('Python pretty route hash')), \
-         patch('emuflow.system_route_storage.SystemRouteSequence.__iter__',side_effect=AssertionError('Python route row expansion')), \
-         patch('emuflow.system_route_storage._MasterSelectionSequence.__iter__',side_effect=AssertionError('Python selection expansion')):
-        manifest=write_system_route_storage(tmp_path/'routes.json',logical)
-    assert manifest['sections']['routes']['records'] == len(logical['routes'])
-    assert manifest['sections']['master_selections']['records'] == len(logical['routes'])
 
 
 def test_post_storage_float_owner_and_empty_batches_match_reference(native_root,tmp_path):
@@ -150,32 +139,8 @@ def test_post_storage_float_owner_and_empty_batches_match_reference(native_root,
     assert result['sections']==manifest['sections']
 
 
-def test_native_failure_does_not_fall_back_or_replace_previous_selector(native_root,tmp_path):
-    from tests.test_routing_candidates import RouteCandidatePoolTest
-    from emuflow.timing_routing import route_system_native,GLOBAL_CANDIDATE_PROVIDER
-    platform,assignment,timing,constraints=RouteCandidatePoolTest()._fixture()
-    logical=route_system_native(assignment,platform,constraints,timing,executable=str(native_root),
-                               provider=GLOBAL_CANDIDATE_PROVIDER,materialize_result=False)
-    selector=tmp_path/'routes.json'
-    previous=write_system_route_storage(selector,fixture(1))
-    before=selector.read_bytes()
-    with patch('emuflow.route_seal_native.seal_native_system_routes',side_effect=ValidationError('native seal failed')), \
-         patch('emuflow.system_route_storage._pretty_sha256',side_effect=AssertionError('silent Python fallback')):
-        with pytest.raises(ValidationError,match='native seal failed'):
-            write_system_route_storage(selector,logical)
-    assert selector.read_bytes()==before
-    assert (tmp_path/previous['artifact']).is_file()
-    assert not list(tmp_path.glob('.*.sqlite.tmp'))
-    logical['routes'].release_native_route_relations()
 
 
-def test_incomplete_runtime_rejected_before_route_model_loading():
-    from emuflow.errors import EmuFlowError
-    from emuflow.timing_routing import route_system_native
-    with patch('emuflow.native_tools.require_native_schema',side_effect=EmuFlowError('missing route seal')), \
-         patch('emuflow.timing_routing._prepare_native_model',side_effect=AssertionError('graph loaded')):
-        with pytest.raises(EmuFlowError,match='missing route seal'):
-            route_system_native({},None,{},materialize_result=False)
 
 
 def test_binary64_and_int64_records_match_python_oracle(native_root,tmp_path):

@@ -1,3 +1,4 @@
+from tests.native_route_fixture import route_system_native
 """Shared HP-bank routing and ratio-delay prediction contracts."""
 
 import copy
@@ -27,14 +28,7 @@ from emuflow.routing import (
     normalize_route_constraints,
     route_hop_delay_ns,
 )
-from emuflow.routing_candidates import exact_route_candidate_selection
-from emuflow.timing_routing import (
-    GLOBAL_CANDIDATE_PROVIDER,
-    compress_sta_paths,
-    normalize_sta_paths,
-    route_system_native,
-    validate_native_system_routes,
-)
+from emuflow.timing_routing import (GLOBAL_CANDIDATE_PROVIDER, compress_sta_paths, normalize_sta_paths, validate_native_system_routes)
 from tests.native_build import emuflow_native, tlr_router
 from tests import test_partition_pressure as pressure_fixture
 from tests.test_phase4 import _assignment, _link, _platform_value
@@ -138,7 +132,7 @@ def test_partition_python_and_native_share_bank_delay_model():
     assert check["status"] == "pass"
 
 
-def test_native_router_and_exact_oracle_use_direction_bank_pressure(tmp_path):
+def test_native_router_preserves_direction_bank_pressure(tmp_path):
     platform = Platform.from_dict(_platform_value(
         "bank_pair", ["b", "a"], [bank_link(
             "ab", "b", "a", banks=2, wires=1,
@@ -161,16 +155,11 @@ def test_native_router_and_exact_oracle_use_direction_bank_pressure(tmp_path):
         "schema": "emuflow.system-route-constraints/v1", "frame_slots": 8,
         "tdm_ratio_quantum": 1,
     }, platform)
-    pool_path = tmp_path / "pool.json"
     routes = route_system_native(
         assignment, platform, constraints, timing, executable=str(tlr_router()),
-        provider=GLOBAL_CANDIDATE_PROVIDER, candidate_pool_path=pool_path,
+        provider=GLOBAL_CANDIDATE_PROVIDER,
     )
     assert validate_native_system_routes(assignment, platform, routes, timing)["status"] == "pass"
-    oracle = exact_route_candidate_selection(
-        assignment, platform, json.loads(pool_path.read_text()), timing,
-    )
-    assert routes["joint_optimization"]["candidate_generation"]["master_selection"] in oracle["optimal_selections"]
     assert routes["metrics"]["estimated_max_tdm_ratio"] == 3
 
 

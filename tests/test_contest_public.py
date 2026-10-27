@@ -9,7 +9,6 @@ from unittest.mock import patch
 from emuflow.contest_public import (
     PUBLIC_CONTEST_BOARDDB_REPORT_SCHEMA,
     PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA,
-    PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA_V1,
     PUBLIC_CONTEST_FETCH_REPORT_SCHEMA,
     PUBLIC_CONTEST_IMPORT_REPORT_SCHEMA,
     evaluate_public_contest_case,
@@ -41,13 +40,6 @@ class PublicContestFetchTest(unittest.TestCase):
                 "design.are": "a 1 1 0 0 0 0 0 0\nb 1 1 0 0 0 0 0 0\n",
                 "design.net": "a 3 b\n",
                 "design.topo": "1\nF1 F2\n",
-            }
-        elif suite == "eda2025":
-            files = {
-                "design.info": "F1 2\nF2 2\n",
-                "design.net": "a 1 b\n",
-                "design.topo": "F1: 0,1\nF2: 1,0\n",
-                "design.fpga.out": "F1: a\nF2: b\n",
             }
         else:
             raise AssertionError(suite)
@@ -221,7 +213,7 @@ payload = b'abc'
             )
 
     def test_unified_import_dispatches_all_public_suite_adapters(self) -> None:
-        for suite in ("eda2023", "eda2024-repart", "eda2025"):
+        for suite in ("eda2023", "eda2024-repart"):
             with self.subTest(suite=suite), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 matrix, source = self._semantic_fixture(root, suite)
@@ -247,45 +239,33 @@ payload = b'abc'
                     matrix, "eda2024-repart.case1", source, root / "normalized"
                 )
 
-    def test_eda2025_evaluation_bundle_is_replayable_and_tamper_evident(self) -> None:
+    def test_evaluation_bundle_is_replayable_and_tamper_evident(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            matrix, source = self._semantic_fixture(root, "eda2025")
+            matrix, source = self._semantic_fixture(root, "eda2024-repart")
             normalized = root / "normalized"
             import_public_contest_case(
-                matrix, "eda2025.case1", source, normalized
+                matrix, "eda2024-repart.case1", source, normalized
             )
-            routes = root / "routes.json"
-            write_json(
-                routes,
-                {
-                    "schema": "emuflow.system-routes/v1",
-                    "routes": [
-                        {
-                            "net": "net_000001",
-                            "source": "F1",
-                            "sinks": ["F2"],
-                            "tree_edges": [{"from": "F1", "to": "F2"}],
-                        }
-                    ],
-                },
-            )
+            solution = root / "design.fpga.out"
+            solution.write_text("F1: a\nF2: b\n", encoding="utf-8")
             bundle = root / "evaluation"
-            routes_sha256 = hashlib.sha256(routes.read_bytes()).hexdigest()
+            solution_sha256 = hashlib.sha256(solution.read_bytes()).hexdigest()
             report = evaluate_public_contest_case(
                 matrix,
-                "eda2025.case1",
+                "eda2024-repart.case1",
                 source,
                 normalized,
-                routes,
+                None,
                 bundle,
+                solution_path=solution,
                 runtime_seconds=2.5,
-                expected_routes_sha256=routes_sha256,
+                expected_solution_sha256=solution_sha256,
             )
             self.assertEqual(
                 report["schema"], PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA
             )
-            self.assertEqual(report["metrics"]["routed_cut_nets"], 1)
+            self.assertEqual(report["metrics"]["total_hop_distance"], 3)
             validation = validate_public_contest_evaluation(matrix, bundle)
             self.assertEqual(validation["status"], "pass")
             self.assertEqual(
@@ -301,21 +281,7 @@ payload = b'abc'
                 0,
             )
             self.assertGreaterEqual(validation["artifacts_verified"], 10)
-            self.assertTrue((bundle / "official" / "design.route.out").is_file())
-
-            legacy = root / "legacy-evaluation"
-            shutil.copytree(bundle, legacy)
-            legacy_report = read_json(legacy / "evaluation_report.json")
-            legacy_report["schema"] = PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA_V1
-            legacy_report["candidate"] = {
-                key: legacy_report["candidate"][key]
-                for key in ("routes_sha256", "new_topology_sha256")
-            }
-            write_json(legacy / "evaluation_report.json", legacy_report)
-            self.assertEqual(
-                validate_public_contest_evaluation(matrix, legacy)["status"],
-                "pass",
-            )
+            self.assertTrue((bundle / "official" / "design.fpga.out").is_file())
 
             mixed = root / "mixed-evaluation"
             shutil.copytree(bundle, mixed)
@@ -365,10 +331,10 @@ payload = b'abc'
 
             file_link = root / "file-link-evaluation"
             shutil.copytree(bundle, file_link)
-            outside_routes = root / "outside-routes.json"
-            shutil.copy2(bundle / "candidate" / "routes.json", outside_routes)
-            (file_link / "candidate" / "routes.json").unlink()
-            (file_link / "candidate" / "routes.json").symlink_to(outside_routes)
+            outside_solution = root / "outside-solution.out"
+            shutil.copy2(bundle / "candidate" / "design.fpga.out", outside_solution)
+            (file_link / "candidate" / "design.fpga.out").unlink()
+            (file_link / "candidate" / "design.fpga.out").symlink_to(outside_solution)
             with self.assertRaisesRegex(ValidationError, "path is unsafe"):
                 validate_public_contest_evaluation(matrix, file_link)
 
@@ -386,35 +352,38 @@ payload = b'abc'
             with self.assertRaisesRegex(ValidationError, "overlaps"):
                 evaluate_public_contest_case(
                     matrix,
-                    "eda2025.case1",
+                    "eda2024-repart.case1",
                     source,
                     normalized,
-                    routes,
+                    None,
                     normalized / "evaluation",
+                    solution_path=solution,
                 )
             with self.assertRaisesRegex(ValidationError, "finite"):
                 evaluate_public_contest_case(
                     matrix,
-                    "eda2025.case1",
+                    "eda2024-repart.case1",
                     source,
                     normalized,
-                    routes,
+                    None,
                     root / "nonfinite-evaluation",
+                    solution_path=solution,
                     runtime_seconds=float("nan"),
                 )
-            routes.write_text("{}\n", encoding="utf-8")
+            solution.write_text("{}\n", encoding="utf-8")
             with self.assertRaisesRegex(ValidationError, "frozen candidate"):
                 evaluate_public_contest_case(
                     matrix,
-                    "eda2025.case1",
+                    "eda2024-repart.case1",
                     source,
                     normalized,
-                    routes,
+                    None,
                     root / "changed-candidate-evaluation",
-                    expected_routes_sha256=routes_sha256,
+                    solution_path=solution,
+                    expected_solution_sha256=solution_sha256,
                 )
 
-            (bundle / "candidate" / "routes.json").write_text(
+            (bundle / "candidate" / "design.fpga.out").write_text(
                 "{}\n", encoding="utf-8"
             )
             with self.assertRaisesRegex(ValidationError, "seal is broken"):

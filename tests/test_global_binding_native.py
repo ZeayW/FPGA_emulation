@@ -10,6 +10,7 @@ import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.global_sta import bind_physical_checks
+from tests.global_sta_fixture import bind_physical_checks as fixture_bind
 from emuflow.boundary_identity_storage import write_boundary_identity_storage
 from emuflow.boundary_timing_storage import write_boundary_timing_storage
 from emuflow.logic_segment_timing_storage import write_logic_segment_timing_storage
@@ -81,7 +82,7 @@ def physical_case(tmp_path, *, members=1, uncertainty=0.125, registered=False, m
 def test_native_complete_event_namespace_matches_reference(tmp_path,members,registered):
     f,runtime,routes,schedule,physical,ir,ischedule,ip=physical_case(tmp_path,members=members,registered=registered)
     expected_meta={}; actual_meta={}
-    expected=bind_physical_checks(runtime,routes,schedule,physical,f.platform,metadata=expected_meta)
+    expected=fixture_bind(runtime,routes,schedule,physical,f.platform,metadata=expected_meta)
     with patch('emuflow.physical_timing_inputs._endpoint_delay_database',side_effect=AssertionError('Python endpoint dictionary')), \
          patch('emuflow.tdm.open_tdm_schedule_timing_path_stream',side_effect=AssertionError('Python path/hop binding')):
         actual=bind_physical_checks(runtime,ir,ischedule,ip,f.platform,metadata=actual_meta)
@@ -135,7 +136,7 @@ def test_native_local_original_population_and_zero_cross_paths(tmp_path,version,
     f,runtime,routes,schedule,physical,ir,ischedule,ip=physical_case(tmp_path,members=7,mutate=mutate)
     source=add_local_paths(tmp_path,f,routes,physical,ip,version=version,pure=pure)
     expected_meta={};actual_meta={}
-    expected=bind_physical_checks(runtime,routes,schedule,physical,f.platform,metadata=expected_meta,routes_artifact_sha256=source['routes_sha256'])
+    expected=fixture_bind(runtime,routes,schedule,physical,f.platform,metadata=expected_meta,routes_artifact_sha256=source['routes_sha256'])
     actual=bind_physical_checks(runtime,ir,ischedule,ip,f.platform,metadata=actual_meta,routes_artifact_sha256=source['routes_sha256'])
     try:
         assert list(actual)==list(expected)
@@ -161,9 +162,8 @@ def test_native_rejects_semantically_invalid_current_stores(tmp_path,damage):
         elif damage=='entry': physical['boundary_identities']['fpga0']['endpoints'][0]['demand']='wrong-demand'
         elif damage=='member': transition['member_path']='wrong-member'
     f,runtime,routes,schedule,physical,ir,ischedule,ip=physical_case(tmp_path,mutate=mutate)
-    with patch('emuflow.global_sta._bind_physical_checks',side_effect=AssertionError('silent reference fallback')):
-        with pytest.raises(ValidationError):
-            bind_physical_checks(runtime,ir,ischedule,ip,f.platform)
+    with pytest.raises(ValidationError):
+        bind_physical_checks(runtime,ir,ischedule,ip,f.platform)
 
 
 def test_native_preserves_physical_lane_remap_and_clock_domain_errors(tmp_path):
@@ -172,7 +172,7 @@ def test_native_preserves_physical_lane_remap_and_clock_domain_errors(tmp_path):
             for row in database['endpoints']:
                 row['lane']+=1;row['merged_ir']['external_port_bit']=row['lane']
     f,runtime,routes,schedule,physical,ir,ischedule,ip=physical_case(tmp_path,mutate=mutate)
-    expected=bind_physical_checks(runtime,routes,schedule,physical,f.platform)
+    expected=fixture_bind(runtime,routes,schedule,physical,f.platform)
     actual=bind_physical_checks(runtime,ir,ischedule,ip,f.platform)
     try: assert list(actual)==list(expected)
     finally: actual._owner.close();expected._owner.close()
@@ -250,7 +250,7 @@ def test_native_multicast_relay_and_affine_physical_chains(tmp_path,monkeypatch,
         database['coverage'].update(segments=len(rows),system_paths=len({r['system_path'] for r in rows}),member_paths=len({r['member_path'] for r in rows}))
         indexed['logic_segment_timing'][fpga]=write_logic_segment_timing_storage(tmp_path/f'logic-{fpga}.json',
             header={k:v for k,v in database.items() if k not in {'segments','unsupported_member_paths'}},segments=rows)
-    expected=bind_physical_checks(runtime,routes,schedule,physical,platform)
+    expected=fixture_bind(runtime,routes,schedule,physical,platform)
     actual=bind_physical_checks(runtime,ir,ischedule,indexed,platform)
     try:
         assert list(actual)==list(expected)
@@ -281,7 +281,7 @@ def test_native_binding_rejoins_saved_measurements_and_publishes_qor_without_pyt
     from tests.test_global_measurements import _tsv
     f,runtime,routes,schedule,physical,ir,ischedule,ip=physical_case(tmp_path,members=7)
     reference_meta={};native_meta={}
-    reference=bind_physical_checks(runtime,routes,schedule,physical,f.platform,metadata=reference_meta)
+    reference=fixture_bind(runtime,routes,schedule,physical,f.platform,metadata=reference_meta)
     representatives,_=reference.compressed()
     tsv=tmp_path/'engine.tsv';_tsv(tsv,representatives)
     measurements=import_measurements(tsv,representatives,directory=tmp_path/'measurements')

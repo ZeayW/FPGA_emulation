@@ -21,7 +21,8 @@ find_program(EMUFLOW_MAKE_EXECUTABLE NAMES gmake make REQUIRED)
 foreach(EMUFLOW_RETIRED_BUILD_OPTION IN ITEMS
     EMUFLOW_BUILD_VTR_ARCHITECTURE EMUFLOW_BUILD_VPR
     EMUFLOW_BUILD_VPR_PACKED_NETLIST EMUFLOW_BUILD_VPR_ROUTE_CHECKER
-    EMUFLOW_BUILD_STATIC_EXACT_ANALYZER EMUFLOW_BUILD_CHIMEW)
+    EMUFLOW_BUILD_STATIC_EXACT_ANALYZER EMUFLOW_BUILD_CHIMEW
+    EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER)
   if(${EMUFLOW_RETIRED_BUILD_OPTION})
     message(FATAL_ERROR "${EMUFLOW_RETIRED_BUILD_OPTION} is retired; use the unified emuflow-native build")
   endif()
@@ -35,12 +36,6 @@ option(EMUFLOW_BUILD_YOSYS "Build the in-tree Yosys and ABC source" ON)
 option(
   EMUFLOW_BUILD_CUDD
   "Build the in-tree CUDD source required by OpenROAD/OpenSTA"
-  ON
-)
-
-option(
-  EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER
-  "Build the in-tree quantized-delay topology optimizer"
   ON
 )
 
@@ -242,6 +237,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase6_split_projection.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase6_split_build.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase6_transport.sql"
+  "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase4_routes.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase5_schedule.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/phase5_schedule_indexes.sql"
   "${CMAKE_SOURCE_DIR}/src/emuflow/data/schema/global_measurements.sql"
@@ -294,6 +290,11 @@ if(BUILD_TESTING)
     "${CMAKE_SOURCE_DIR}/tests/native_pipeline_api_test.cpp")
   target_link_libraries(emuflow_native_pipeline_api_test PRIVATE emuflow_core)
   add_test(NAME emuflow_native_pipeline_api COMMAND emuflow_native_pipeline_api_test)
+  add_executable(emuflow_phase4_validation_test
+    "${CMAKE_SOURCE_DIR}/tests/native_phase4_validation_test.cpp")
+  target_link_libraries(emuflow_phase4_validation_test PRIVATE emuflow_core)
+  target_include_directories(emuflow_phase4_validation_test PRIVATE "${CMAKE_BINARY_DIR}/generated")
+  add_test(NAME emuflow_phase4_validation COMMAND emuflow_phase4_validation_test)
   add_executable(emuflow_native_patron_ingress_test "${CMAKE_SOURCE_DIR}/tests/native_patron_ingress_test.cpp")
   target_link_libraries(emuflow_native_patron_ingress_test PRIVATE emuflow_core)
   add_test(NAME emuflow_native_patron_order COMMAND emuflow_native_patron_ingress_test --order)
@@ -374,7 +375,6 @@ set(
   "${CMAKE_SOURCE_DIR}/benchmarks/contest_validation_matrix.json"
   "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2023_benchmarks.py"
   "${CMAKE_SOURCE_DIR}/scripts/fetch_repart_benchmarks.py"
-  "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2025_benchmarks.py"
   "${CMAKE_SOURCE_DIR}/platforms/virtual/academic_vtr_4fpga_mesh.json"
 )
 file(
@@ -495,7 +495,6 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy
     "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2023_benchmarks.py"
     "${CMAKE_SOURCE_DIR}/scripts/fetch_repart_benchmarks.py"
-    "${CMAKE_SOURCE_DIR}/scripts/fetch_eda2025_benchmarks.py"
     "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts"
   COMMAND
     "${CMAKE_COMMAND}" -E copy
@@ -589,19 +588,6 @@ if(EMUFLOW_BUILD_FPGA_INTERCHANGE)
 endif()
 
 
-if(EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER)
-  add_executable(
-    emuflow_eda2025_topology_optimizer
-    "${CMAKE_SOURCE_DIR}/src/native/eda2025_topology_optimizer.cpp"
-  )
-  target_compile_features(emuflow_eda2025_topology_optimizer PRIVATE cxx_std_17)
-  target_compile_options(emuflow_eda2025_topology_optimizer PRIVATE -O3)
-  set_target_properties(
-    emuflow_eda2025_topology_optimizer
-    PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "${EMUFLOW_INSTALL_BINDIR}"
-  )
-endif()
 
 
 
@@ -966,12 +952,6 @@ if(BUILD_TESTING)
       "${EMUFLOW_INSTALL_ROOT}/scripts/yosys/logic_only_map.v"
   )
 
-  if(EMUFLOW_BUILD_EDA2025_TOPOLOGY_OPTIMIZER)
-    add_test(
-      NAME emuflow_eda2025_topology_optimizer_cli
-      COMMAND "$<TARGET_FILE:emuflow_eda2025_topology_optimizer>" --help
-    )
-  endif()
 
 
 

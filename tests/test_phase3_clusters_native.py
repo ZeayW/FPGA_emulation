@@ -161,17 +161,9 @@ def test_source_setup_failure_retires_unmapped_scratch(source,tmp_path):
     assert not scratch.exists()
 
 
-def test_tritonpart_resource_summaries_do_not_scan_native_columns(source,tmp_path,monkeypatch):
-    from emuflow.tritonpart import _active_resource_fields, _CompactVertexWeights
-    from emuflow.resources import RESOURCE_FIELDS
-    ir,constraints=source
-    root=tmp_path/'summary-native'; (root/'bin').mkdir(parents=True)
-    (root/'bin/emuflow-native').symlink_to(emuflow_native())
-    monkeypatch.setenv('EMUFLOW_NATIVE_ROOT',str(root))
-    columns=build_clusters(ir,constraints,cut_mode="sequential-only", _native_compact_clusters=True)['clusters']
-    expected=[sum(column) for column in columns._resource_columns]
-    assert list(columns.native_resource_totals)==[len(columns.source_cluster_indices),*expected]
-    with patch.object(type(columns._resource_columns[0]),'__iter__',side_effect=AssertionError('summary scanned native columns')):
-        fields=_active_resource_fields(columns)
-        weights=_CompactVertexWeights(columns,fields)
-        assert weights.totals()==[len(columns.source_cluster_indices),*(expected[RESOURCE_FIELDS.index(field)] for field in fields)]
+def test_native_cluster_totals_match_independent_resources(source, tmp_path, monkeypatch):
+    ir, constraints = source
+    columns = build_clusters(ir, constraints, cut_mode="sequential-only", _native_compact_clusters=True)['clusters']
+    expected = [sum(column) for column in columns._resource_columns]
+    with patch.object(type(columns._resource_columns[0]), '__iter__', side_effect=AssertionError('summary scanned native columns')):
+        assert list(columns.native_resource_totals) == [len(columns.source_cluster_indices), *expected]

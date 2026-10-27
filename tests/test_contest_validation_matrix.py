@@ -31,13 +31,12 @@ class ContestValidationMatrixTest(unittest.TestCase):
 
     def test_checked_in_matrix_is_valid_and_deterministic(self):
         self.assertEqual(self.summary["schema"], CONTEST_VALIDATION_MATRIX_SCHEMA)
-        self.assertEqual(self.summary["case_count"], 19)
+        self.assertEqual(self.summary["case_count"], 15)
         self.assertEqual(
             self.summary["suites"],
             {
                 "eda2023": 10,
                 "eda2024-repart": 4,
-                "eda2025": 4,
                 "iccad2019": 1,
             },
         )
@@ -57,7 +56,6 @@ class ContestValidationMatrixTest(unittest.TestCase):
         suites = {
             "eda2023": "scripts/fetch_eda2023_benchmarks.py",
             "eda2024-repart": "scripts/fetch_repart_benchmarks.py",
-            "eda2025": "scripts/fetch_eda2025_benchmarks.py",
         }
         records = {record["id"]: record for record in self.matrix["cases"]}
         for suite, script in suites.items():
@@ -99,6 +97,12 @@ class ContestValidationMatrixTest(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValidationError, "sorted"):
             validate_contest_validation_matrix(unsorted)
+
+    def test_retired_topology_contest_suite_is_rejected(self):
+        invalid = copy.deepcopy(self.matrix)
+        invalid["cases"][0]["suite"] = "eda2025"
+        with self.assertRaisesRegex(ValidationError, "suite"):
+            validate_contest_validation_matrix(invalid)
 
     def test_qualified_case_requires_evidence(self):
         invalid = copy.deepcopy(self.matrix)

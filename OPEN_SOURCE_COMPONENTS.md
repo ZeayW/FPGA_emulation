@@ -142,18 +142,6 @@ places downloaded data in the ignored `third_party/rtl/` cache.
 | VeeR EH1 | [chipsalliance/Cores-VeeR-EH1](https://github.com/chipsalliance/Cores-VeeR-EH1) |
 | NVDLA | [nvdla/hw](https://github.com/nvdla/hw) |
 
-## Public multi-FPGA benchmark inputs
-
-Benchmark inputs are fetched into ignored working directories and are not
-vendored into the source tree. The 2025 EDA Elite cases 01--04 come from the
-MIT-licensed
-[nsyw705/EDA-2025-git repository](https://github.com/nsyw705/EDA-2025-git/tree/45315b739e6678bf04605aaa246285c768bc8e13/data_case)
-at commit `45315b739e6678bf04605aaa246285c768bc8e13`.
-`scripts/fetch_eda2025_benchmarks.py` verifies every input by SHA-256 and records
-its provenance. Only the four input text files per case are fetched; neither
-participant algorithm source nor the opaque checker executable is incorporated
-as an EmuFlow component.
-
 ## CI actions
 
 The source-complete workflow uses

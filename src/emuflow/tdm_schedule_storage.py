@@ -15,8 +15,6 @@ import os
 import shutil
 import sqlite3
 import struct
-import subprocess
-import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple, Optional, TYPE_CHECKING
@@ -26,9 +24,7 @@ if TYPE_CHECKING:
 
 from .store_publication import (
     bind_store_source,
-    publish_sqlite_store,
     require_store_sources_unchanged,
-    validate_store_destination,
 )
 from .errors import ValidationError
 from .io import file_sha256, write_json
@@ -1087,127 +1083,8 @@ def write_native_exact_generation_request(path: Path, producer: "NativeExactSche
             value(domain)
 
 
-def _publish_native_exact_generation(
-    temporary: Path, producer: "NativeExactScheduleRequest",
-) -> tuple[str, str, dict[str, dict[str, Any]], dict[str, int]]:
-    """One core call owns model, calculation, certificate and typed records."""
-    from .tdm import _run_native_exact_schedule
-
-    board = temporary.with_name(temporary.name + ".board-request")
-    request = temporary.with_name(temporary.name + ".generation-request")
-    try:
-        producer.write_board_request(board)
-        write_native_exact_generation_request(request, producer)
-        _run_native_exact_schedule([
-            *producer.command, str(producer.route_store), str(board), str(request), str(temporary),
-        ])
-        with closing(sqlite3.connect(f"file:{temporary.resolve()}?mode=ro&immutable=1", uri=True)) as connection, connection:
-            row = connection.execute("SELECT value FROM metadata WHERE key='native_publication_summary'").fetchone()
-        if row is None:
-            raise ValidationError("native ScheduleStore generation summary is missing")
-        summary = json.loads(row[0])
-        if summary.get("schema") != "emuflow.native-schedule-publication/v1":
-            raise ValidationError("unsupported native ScheduleStore generation summary")
-        sections = summary["sections"]
-        if (sections["routes"]["records"] != producer.route_count or
-                sections["demand_completions"]["records"] != producer.route_count or
-                sections["domain_schedules"]["records"] != len(producer.domain_templates)):
-            raise ValidationError("native ScheduleStore generation coverage disagrees")
-        return summary["logical_sha256"], summary["logical_pretty_sha256"], sections, summary["relation_counts"]
-    finally:
-        board.unlink(missing_ok=True)
-        request.unlink(missing_ok=True)
 
 
-def write_tdm_schedule_storage(
-    manifest_path: Path, schedule: "NativeExactScheduleRequest"
-) -> dict[str, Any]:
-    """Publish the native v4 owner and commit its compact manifest last."""
-    from .tdm import NativeExactScheduleRequest
-
-    if not isinstance(schedule, NativeExactScheduleRequest):
-        raise ValidationError(
-            "production ScheduleStore requires a native exact schedule request"
-        )
-    source_bindings = schedule.source_bindings
-    if not any(
-        source.path == Path(schedule.route_store).resolve()
-        and source.schema == "system-route-store-v3"
-        and source.generation == schedule.route_generation
-        for source in source_bindings
-    ):
-        raise ValidationError("native schedule route ownership disagrees")
-    source_bindings = validate_store_destination(manifest_path, source_bindings)
-    header = schedule.header
-    if (
-        header.get("schema") != TDM_SCHEDULE_LOGICAL_SCHEMA
-        or header.get("provider") != TDM_EXACT_DEPENDENCY_PROVIDER
-        or header.get("qualification") != "dependency-schedule-readiness-pass"
-    ):
-        raise ValidationError("native generation requires fully typed exact semantics")
-    storage_schema = TDM_SCHEDULE_STORAGE_SCHEMA
-    user_version = TDM_SCHEDULE_USER_VERSION
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    staging_base = manifest_path.with_name("schedule.sqlite")
-    temporary = staging_base.with_name(f".{staging_base.name}.{uuid.uuid4().hex}.tmp")
-    store_path = staging_base
-    store_sha256: str | None = None
-    store_bytes: int | None = None
-    try:
-        (logical_sha256, logical_pretty_sha256, section_summaries, relation_counts) = (
-            _publish_native_exact_generation(temporary, schedule)
-        )
-        store_bytes = temporary.stat().st_size
-        store_sha256 = file_sha256(temporary)
-        store_path = manifest_path.with_name(
-            _content_addressed_store_name(store_sha256)
-        )
-        if store_path.exists():
-            if (
-                store_path.stat().st_size != store_bytes
-                or file_sha256(store_path) != store_sha256
-            ):
-                raise ValidationError("schedule content-addressed artifact disagrees")
-            temporary.unlink()
-        else:
-            publish_sqlite_store(
-                temporary, store_path, "tdm-schedule-store-v4", sources=source_bindings
-            )
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
-    assert store_sha256 is not None
-    assert store_bytes is not None
-    manifest = {
-        "schema": storage_schema,
-        "logical_schema": TDM_SCHEDULE_LOGICAL_SCHEMA,
-        "artifact": store_path.name,
-        "application_id": TDM_SCHEDULE_APPLICATION_ID,
-        "user_version": user_version,
-        "store_bytes": store_bytes,
-        "store_sha256": store_sha256,
-        "logical_sha256": logical_sha256,
-        "logical_pretty_sha256": logical_pretty_sha256,
-        "sections": section_summaries,
-    }
-    manifest["entry_relation"] = {
-        "schema": TYPED_ENTRY_RELATION_SCHEMA,
-        "records": section_summaries["entries"]["records"],
-    }
-    manifest["route_relation"] = {
-        "schema": TYPED_ROUTE_RELATION_SCHEMA,
-        "records": section_summaries["routes"]["records"],
-        "sink_records": relation_counts["route_sinks"],
-        "edge_records": relation_counts["route_edges"],
-    }
-    manifest["completion_relation"] = {
-        "schema": TYPED_COMPLETION_RELATION_SCHEMA,
-        "records": section_summaries["demand_completions"]["records"],
-        "arrival_records": relation_counts["completion_arrivals"],
-    }
-    require_store_sources_unchanged(source_bindings)
-    write_json(manifest_path, manifest, compact=True)
-    return manifest
 
 
 class ScheduleRecordSequence(Sequence[Mapping[str, Any]]):

@@ -53,7 +53,6 @@ from .emuir_storage import open_emuir_sqlite_read_only
 from .lowering import (
     PLACEMENT_IR_REPORT_SCHEMA,
     run_placement_ir_lowering_from_split,
-    run_placement_ir_lowering_from_value,
 )
 from .split_netlist_storage import SplitNetlistView
 from .netlist import SPLIT_MANIFEST_SCHEMA
@@ -239,34 +238,18 @@ def _validate_transport_resource_reservation(
 
 
 def _partition_has_physical_work(
-    netlist: Mapping[str, Any], transport: Mapping[str, Any]
+    split_counts: Mapping[str, int], transport: Mapping[str, Any]
 ) -> bool:
-    """Return whether one installed FPGA needs an implementation image.
-
-    A selected DUT partition has instances/nets/ports.  A routing-only relay
-    has transport endpoints or internal source/shadow signals.  Only a device
-    with neither kind of evidence is inactive.  In particular, do not infer
-    inactivity merely from an empty DUT instance list: that would silently
-    drop a legal multi-hop relay.
-    """
-
-    fields = (
-        (netlist, "instances"),
-        (netlist, "nets"),
-        (netlist, "ports"),
-        (transport, "endpoints"),
-        (transport, "source_signals"),
-        (transport, "shadow_signals"),
-    )
-    for document, field in fields:
-        value = document.get(field)
-        if not isinstance(value, list):
-            raise ValidationError(
-                f"physical partition {field} inventory must be an array"
-            )
-        if value:
+    """Keep selected DUTs and routing-only relays; skip only empty devices."""
+    for field in ("instances", "nets", "ports"):
+        count = split_counts.get(field)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValidationError(f"physical partition {field} inventory must be a count")
+        if count:
             return True
-    return False
+    return any(transport.get(field, ()) for field in (
+        "endpoints", "source_signals", "shadow_signals",
+    ))
 
 
 def _inactive_transport_ir(transport: Mapping[str, Any]) -> EmuIR:
@@ -667,6 +650,17 @@ def run_multi_fpga_physical_flow(
     manifest = read_json(manifest_path)
     if manifest.get("schema") != SPLIT_MANIFEST_SCHEMA:
         raise ValidationError("multi-FPGA physical input split manifest is invalid")
+    partitions = manifest.get("fpgas")
+    if not isinstance(partitions, list) or any(
+        not isinstance(item, Mapping)
+        or not isinstance(item.get("netlist_selector"), str)
+        or item["netlist_selector"] != item.get("fpga")
+        for item in partitions
+    ):
+        raise ValidationError(
+            "physical lowering requires the current indexed split manifest "
+            "with matching netlist_selector values; per-FPGA JSON netlists are retired"
+        )
     platform = Platform.load(platform_path)
     raw_reservations = manifest.get("resource_reservations_by_fpga", {})
     if (
@@ -984,35 +978,17 @@ def run_multi_fpga_physical_flow(
         transport_path = split_root / item["transport"]
         transport = read_transport(transport_path)
         split_selector = item.get("netlist_selector")
-        if split_selector is not None:
-            with SplitNetlistView(netlist_path, split_selector) as split_view:
-                split_counts = split_view.counts()
-            netlist = None
-            original_cells = split_counts["instances"]
-            physical_work = any(split_counts.values()) or any(
-                transport.get(field, [])
-                for field in ("endpoints", "source_signals", "shadow_signals")
-            )
-        else:
-            netlist = read_json(netlist_path)
-            original_cells = len(netlist["instances"])
-            physical_work = _partition_has_physical_work(netlist, transport)
+        with SplitNetlistView(netlist_path, split_selector) as split_view:
+            split_counts = split_view.counts()
+        original_cells = split_counts["instances"]
+        physical_work = _partition_has_physical_work(split_counts, transport)
 
         def lower_placement_ir(
             transport_ir_path: Path, merged_ir: Path
         ) -> Dict[str, Any]:
-            if split_selector is not None:
-                return run_placement_ir_lowering_from_split(
-                    netlist_path,
-                    split_selector,
-                    transport_path,
-                    transport_ir_path,
-                    merged_ir,
-                    merged_ir.parent / "placement-ir-report.json",
-                )
-            assert netlist is not None
-            return run_placement_ir_lowering_from_value(
-                netlist,
+            return run_placement_ir_lowering_from_split(
+                netlist_path,
+                split_selector,
                 transport_path,
                 transport_ir_path,
                 merged_ir,

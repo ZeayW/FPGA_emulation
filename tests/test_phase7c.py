@@ -1223,7 +1223,8 @@ class Phase7CTest(unittest.TestCase):
         )
         self.assertEqual(path["fixed_slot_event_timing_status"], "pass")
 
-    def test_phase7c_generates_runtime_and_rejects_retired_physical_engine(self):
+    @mock.patch("emuflow.phase7c.validate_phase5_generation", return_value={"status": "pass"})
+    def test_phase7c_generates_runtime_and_rejects_retired_physical_engine(self, _generation):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             paths = {}
@@ -1259,7 +1260,6 @@ class Phase7CTest(unittest.TestCase):
                 paths["phase5"],
                 paths["phase6"],
                 root / "generated",
-                allow_legacy_phase5_generation=True,
             )
             self.assertEqual(generated["status"], "generated")
             self.assertIn("runtime_timing_summary", generated)
@@ -1292,7 +1292,6 @@ class Phase7CTest(unittest.TestCase):
                     root / "generated-static-exact",
                     assignment_path=root / "assignment.json",
                     routes_path=paths["routes"],
-                    allow_legacy_phase5_generation=True,
                 )
             bind_semantic.assert_called_once()
             from emuflow.physical_summary_storage import PhysicalSummaryView
@@ -1313,7 +1312,6 @@ class Phase7CTest(unittest.TestCase):
                     paths["phase4"], paths["phase5"], paths["phase6"],
                     root / "mismatched", physical_summary_path=paths["physical"],
                     routes_path=paths["routes"],
-                    allow_legacy_phase5_generation=True,
                 )
             with self.assertRaisesRegex(ValidationError, "only the OpenSTA"):
                 run_phase7c(
@@ -1328,7 +1326,6 @@ class Phase7CTest(unittest.TestCase):
                     global_timing_engine="python",
                     routes_path=paths["routes"],
                     board_link_timing_path=paths["link_timing"],
-                    allow_legacy_phase5_generation=True,
                 )
             self.assertFalse((root / "closed").exists())
 
@@ -1418,7 +1415,6 @@ class Phase7CTest(unittest.TestCase):
                     physical_summary_path=paths["physical"],
                     global_timing_engine="python",
                     routes_path=paths["routes"],
-                    allow_legacy_phase5_generation=True,
                 )
             self.assertFalse((root / "closed").exists())
 
@@ -1442,3 +1438,32 @@ class Phase7CTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_current_native_phase5_generation_enters_phase7c_without_validation_bypass(tmp_path):
+    from tests.test_phase5_native_stage import current_case
+    from emuflow.phase5_native import run_native_phase5
+    from emuflow.io import write_json
+    case, routes, producer = current_case(tmp_path, False, False)
+    phase5 = tmp_path / 'phase5'
+    run_native_phase5(producer, phase5)
+    fixture = Phase7CTest()
+    fixture.setUp()
+    platform = tmp_path / 'platform.json'
+    write_json(platform, case.platform.to_dict())
+    for name in ('phase3', 'phase4', 'phase6'):
+        write_json(tmp_path / (name + '.json'), {**fixture.reports[name],
+            'design':case.ir.value['design']['name'], 'platform':case.platform.name})
+    write_json(tmp_path / 'manifest.json', {'clock_periods': {
+        clock['id']: clock.get('period_ns') or 20.0 for clock in case.ir.value['clocks']
+    }})
+    output = tmp_path / 'runtime'
+    report = run_phase7c(phase5 / 'schedule.json', platform,
+        tmp_path / 'phase3.json', tmp_path / 'phase4.json', phase5 / 'phase5_report.json',
+        tmp_path / 'phase6.json', output)
+    assert report['status'] == 'generated'
+    assert report['schedule_legality']['status'] == 'pass'
+    assert report['design'] == case.ir.value['design']['name']
+    from emuflow.io import read_json
+    qor = read_json(output / 'qor_report.json')
+    assert qor['tdm']['frame_slots'] == producer.header['route_constraints']['frame_slots']

@@ -192,9 +192,9 @@ class NativeToolsTest(unittest.TestCase):
             "yosys-abc",
             "emuflow_bsp_pin_solver",
             "emuflow_fpgaif_arch_importer",
-            "emuflow_eda2025_topology_optimizer",
         }
         retired = {
+            "emuflow_eda2025_topology_optimizer",
             "emuflow_hop_partition_refiner",
             "emuflow-native",
             "emuflow_static_exact_analyzer",
@@ -316,7 +316,7 @@ class NativeToolsTest(unittest.TestCase):
                 executable.chmod(executable.stat().st_mode | stat.S_IXUSR)
             self.assertEqual(
                 resolve_native_stage_command(
-                    "phase5", "build-schedule", str(explicit)
+                    "phase5", "run", str(explicit)
                 ),
                 [str(explicit.resolve())],
             )
@@ -342,7 +342,7 @@ class NativeToolsTest(unittest.TestCase):
             with patch.dict(os.environ, {"EMUFLOW_NATIVE_ROOT": str(root / "incomplete")}, clear=True), \
                     patch("emuflow.native_tools.REPO_ROOT", root / "other"):
                 with self.assertRaisesRegex(EmuFlowError, "in-tree emuflow-native build product"):
-                    resolve_native_stage_command("phase5", "build-schedule")
+                    resolve_native_stage_command("phase5", "run")
 
     def test_nonexecutable_unified_entry_does_not_select_standalone(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -354,7 +354,7 @@ class NativeToolsTest(unittest.TestCase):
             legacy.chmod(legacy.stat().st_mode | stat.S_IXUSR)
             with patch.dict(os.environ, {"EMUFLOW_NATIVE_ROOT": str(root)}, clear=True):
                 with self.assertRaisesRegex(EmuFlowError, "in-tree emuflow-native build product"):
-                    resolve_native_stage_command("phase5", "build-schedule")
+                    resolve_native_stage_command("phase5", "run")
 
 
 if __name__ == "__main__":

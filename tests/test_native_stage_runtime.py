@@ -105,7 +105,6 @@ class NativeStageRuntimeTest(unittest.TestCase):
                 ["global-sta", "export-events", missing, missing, missing],
                 ["phase5", "compile", missing, missing, missing],
                 ["phase5", "run", missing, missing, missing, missing],
-                ["phase5", "build-schedule", missing, missing, missing],
                 ["phase5", "validate-schedule", missing, missing, missing, missing],
                 ["phase5", "timing-contract", missing, missing],
                 ["phase5", "timing-contract", missing, missing, missing],

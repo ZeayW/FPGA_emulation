@@ -200,7 +200,6 @@ def measure_phase3_runtime(
             metadata={
                 "provider": arguments.arguments["provider"],
                 "cut_mode": arguments.arguments["cut_mode"],
-                "retain_diagnostics": arguments.arguments["retain_diagnostics"],
             },
         )
         prior_output_exists = profiler.output_dir.exists()

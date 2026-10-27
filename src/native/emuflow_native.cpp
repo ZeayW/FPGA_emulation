@@ -16,6 +16,7 @@
 #include "emuflow_core/partition_semantics.hpp"
 #include "emuflow_core/phase3_exact_binary.hpp"
 #include "emuflow_core/phase3.hpp"
+#include "emuflow_core/phase4.hpp"
 #include "emuflow_core/split_overlay.hpp"
 #include "emuflow_core/partition_publish.hpp"
 #include "emuflow_core/artifact_io.hpp"
@@ -69,12 +70,12 @@ constexpr const char* kUsage =
     "  phase3 audit-decision EMUIR PRIMARY REQUEST [INITIAL [CANDIDATE ORDER]] OUTPUT\n"
     "  phase3 normalize-configuration EMUIR REQUEST [RAW_CONSTRAINTS] OUTPUT\n"
     "  phase4 route --typed-output INPUT OUTPUT\n"
+    "  phase4 run ASSIGNMENT BOARD POLICY OUTPUT_DIR [TIMING_PATHS]\n"
     "  phase4 seal-routes STORE REQUEST SUMMARY\n"
     "  phase5 timing-contract ROUTE_STORE [SCHEDULE_STORE [BOARD_REQUEST]] REQUEST SUMMARY\n"
     "  phase5 validate-schedule ROUTE_STORE BOARD_REQUEST SCHEDULE_STORE REQUEST SUMMARY\n"
     "  phase5 compile ROUTE_SELECTOR ASSIGNMENT_STORE NORMALIZED_BOARD REPORT\n"
     "  phase5 run ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST STAGE_REQUEST REPORT\n"
-    "  phase5 build-schedule ROUTE_STORE BOARD_REQUEST GENERATION_REQUEST OUTPUT\n"
     "  global-sta import-measurements PRIMARY INDEX TSV REQUEST STORE\n"
     "  global-sta audit-measurements PRIMARY INDEX STORE REQUEST SUMMARY\n"
     "  global-sta publish-qor PRIMARY INDEX STORE REQUEST QOR\n"
@@ -217,6 +218,15 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if(argc==5 && std::string(argv[1])=="phase3" && std::string(argv[2])=="run") {
     ToolSignals signals;return Finish(emuflow::core::RunPhase3(emuflow::core::ArtifactRef::Bind(argv[3],"phase3-stage-request-v1"),argv[4],&tool_cancelled),report);
+  }
+  if((argc==7 || argc==8) && std::string(argv[1])=="phase4" && std::string(argv[2])=="run") {
+    ToolSignals signals;
+    std::vector<emuflow::core::ArtifactRef> inputs{
+      emuflow::core::ArtifactRef::Bind(argv[3],"assignment-index-v4"),
+      emuflow::core::ArtifactRef::Bind(argv[4],"boarddb-v1"),
+      emuflow::core::ArtifactRef::Bind(argv[5],"phase4-policy-v1")};
+    if(argc==8)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[7],"system-routing-paths-v1"));
+    return Finish(emuflow::core::RunPhase4(inputs,argv[6],&tool_cancelled),report);
   }
   if(argc>=7 && argc<=11 && std::string(argv[1])=="phase3" && (std::string(argv[2])=="refine-hops-from-primary" || std::string(argv[2])=="audit-hops-from-primary")) {
     std::vector<emuflow::core::ArtifactRef> inputs{emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),emuflow::core::ArtifactRef::Bind(argv[4],"partition-cluster-columns-v2"),emuflow::core::ArtifactRef::Bind(argv[5],"partition-hop-request-v1")};
@@ -463,8 +473,6 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     return run(Stage::kCompilePhase5, {argv[3],argv[4],argv[5]}, argv[6]);
   if (phase == "phase5" && operation == "run" && argc == 8)
     return run(Stage::kRunPhase5, {argv[3],argv[4],argv[5],argv[6]}, argv[7]);
-  if (phase == "phase5" && operation == "build-schedule" && argc == 7)
-    return run(Stage::kBuildSchedule, {argv[3],argv[4],argv[5]}, argv[6]);
   if (phase == "phase6") {
     if (operation == "rudy" && argc == 5)
       return run(Stage::kRudy, {argv[3]}, argv[4]);

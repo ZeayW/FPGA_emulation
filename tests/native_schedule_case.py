@@ -53,5 +53,8 @@ def _case(tmp_path, affine, repeated):
             route=copy.deepcopy(template);route.update(id=f"d{i:03d}",net=f"n{39-i:03d}")
             routes["routes"].append(route)
         routes["demands"]=[_demand_from_route(route) for route in routes["routes"]]
+    contract = routes.pop("semantic_contract")
     selector=tmp_path/"routes.json";write_system_route_storage(selector,routes)
-    return case,read_system_routes(selector)
+    view = read_system_routes(selector)
+    view["semantic_contract"] = contract
+    return case,view

@@ -61,13 +61,6 @@ from .chimew_correlation import (
     validate_chimew_vivado_correlation,
 )
 from .chimew_qualification import build_chimew_phase6_qualification
-from .contest_eda2025 import (
-    evaluate_eda2025_routes,
-    import_eda2025_instance,
-    materialize_eda2025_rtl_boarddb,
-    optimize_eda2025_routing,
-    optimize_eda2025_topology,
-)
 from .contest_eda2024 import (
     evaluate_eda2024_solution,
     materialize_eda2024_rtl_boarddb,
@@ -133,7 +126,7 @@ from .fpga_interchange import (
 )
 from .io import read_json, write_json
 from .ir import EmuIR
-from .lowering import run_placement_ir_lowering
+from .lowering import run_placement_ir_lowering_from_split
 from .multi_fpga_flow import (
     finalize_multi_fpga_physical_checkpoint,
     run_multi_fpga_flow,
@@ -418,8 +411,6 @@ def _build_parser() -> argparse.ArgumentParser:
     contest_evaluate_public.add_argument("--expected-tdm-plan-sha256")
     contest_evaluate_public.add_argument("--solution", type=Path)
     contest_evaluate_public.add_argument("--expected-solution-sha256")
-    contest_evaluate_public.add_argument("--new-topology", type=Path)
-    contest_evaluate_public.add_argument("--expected-topology-sha256")
     contest_evaluate_public.add_argument(
         "--runtime-seconds", type=float, default=0.0
     )
@@ -537,88 +528,6 @@ def _build_parser() -> argparse.ArgumentParser:
     iccad2019_evaluate.add_argument("--solution", type=Path, required=True)
     iccad2019_evaluate.add_argument("--runtime-seconds", type=float)
     iccad2019_evaluate.add_argument("--median-runtime-seconds", type=float)
-    eda2025_import = contest_subparsers.add_parser(
-        "eda2025-import",
-        help="normalize a 2025 EDA Elite routing benchmark",
-    )
-    eda2025_import.add_argument("--info", type=Path, required=True)
-    eda2025_import.add_argument("--net", type=Path, required=True)
-    eda2025_import.add_argument("--topology", type=Path, required=True)
-    eda2025_import.add_argument("--assignment", type=Path, required=True)
-    eda2025_import.add_argument("--name", required=True)
-    eda2025_import.add_argument("--out", type=Path, required=True)
-    eda2025_import.add_argument("--alpha-ns", type=float, default=0.7)
-    eda2025_import.add_argument("--beta-ns", type=float, default=30.0)
-    eda2025_import.add_argument(
-        "--topology-change-fraction", type=float, default=0.3
-    )
-    eda2025_evaluate = contest_subparsers.add_parser(
-        "eda2025-evaluate",
-        help="independently score EmuFlow routes with the 2025 model",
-    )
-    eda2025_evaluate.add_argument("--instance", type=Path, required=True)
-    eda2025_evaluate.add_argument("--routes", type=Path, required=True)
-    eda2025_evaluate.add_argument("--new-topology", type=Path)
-    eda2025_evaluate.add_argument("--runtime-seconds", type=float, default=0.0)
-    eda2025_evaluate.add_argument("--output", "-o", type=Path)
-    eda2025_evaluate.add_argument(
-        "--official-out",
-        type=Path,
-        help="also write design.route.out and design.newtopo",
-    )
-    eda2025_topology = contest_subparsers.add_parser(
-        "eda2025-optimize-topology",
-        help="optimize channel counts and emit Phase 4 rerouting contracts",
-    )
-    eda2025_topology.add_argument("--instance", type=Path, required=True)
-    eda2025_topology.add_argument("--routes", type=Path, required=True)
-    eda2025_topology.add_argument("--out", type=Path, required=True)
-    eda2025_topology.add_argument("--optimizer")
-    eda2025_topology.add_argument("--max-changes", type=int)
-    eda2025_topology.add_argument(
-        "--topology",
-        type=Path,
-        help="current design.newtopo for a subsequent optimization round",
-    )
-    eda2025_routing = contest_subparsers.add_parser(
-        "eda2025-optimize-routing",
-        help="select topology candidates using real Phase 4 rerouting",
-    )
-    eda2025_routing.add_argument("--instance", type=Path, required=True)
-    eda2025_routing.add_argument("--routes", type=Path, required=True)
-    eda2025_routing.add_argument("--out", type=Path, required=True)
-    eda2025_routing.add_argument("--topology", type=Path)
-    eda2025_routing.add_argument("--router")
-    eda2025_routing.add_argument("--topology-optimizer")
-    eda2025_routing.add_argument("--max-rounds", type=int, default=4)
-    eda2025_routing.add_argument(
-        "--capacity-only", action="store_true", help="disable shortcut candidates"
-    )
-    eda2025_boarddb = contest_subparsers.add_parser(
-        "eda2025-materialize-boarddb",
-        help="populate a contest topology with an RTL-capable FPGA template",
-    )
-    eda2025_boarddb.add_argument("--instance", type=Path, required=True)
-    eda2025_boarddb.add_argument("--device-template", type=Path, required=True)
-    eda2025_boarddb.add_argument("--output", "-o", type=Path, required=True)
-    eda2025_boarddb.add_argument("--route-constraints-output", type=Path)
-    eda2025_boarddb.add_argument("--name", required=True)
-    eda2025_boarddb.add_argument("--topology", type=Path)
-    eda2025_boarddb.add_argument("--template-fpga")
-    eda2025_boarddb.add_argument("--lane-scale", type=int, default=1)
-    eda2025_boarddb.add_argument("--fabric-clock-mhz", type=float, default=50.0)
-    eda2025_boarddb.add_argument("--latency-cycles", type=int, default=2)
-    eda2025_boarddb.add_argument(
-        "--link-mode",
-        choices=("abstract", "parallel", "serial", "source_synchronous"),
-        default="abstract",
-    )
-    eda2025_topology.add_argument(
-        "--enable-shortcuts",
-        action="store_true",
-        help="also propose direct links; candidates still require rerouting",
-    )
-
     ir_parser = subparsers.add_parser("ir", help="EmuIR operations")
     ir_subparsers = ir_parser.add_subparsers(dest="ir_command", required=True)
     ir_validate = ir_subparsers.add_parser("validate", help="validate an EmuIR")
@@ -1540,7 +1449,7 @@ def _build_parser() -> argparse.ArgumentParser:
     phase3.add_argument("--seed", type=int, default=0)
     phase3.add_argument(
         "--cut-mode",
-        choices=("sequential-only", "static-exact-combinational"),
+        choices=("static-exact-combinational",),
         default=DEFAULT_PARTITION_CUT_MODE,
         help=(
             "Phase 3 cut legality; generalized Static Exact v2 is the default"
@@ -1641,8 +1550,6 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=(14,),
         default=DEFAULT_PATRON_ALGORITHM_VERSION,
     )
-    phase3.add_argument("--patron-initial-assignment", type=Path)
-    phase3.add_argument("--patron-initial-clusters", type=Path)
 
     sta_parser = subparsers.add_parser(
         "sta", help="STA path extraction artifact operations"
@@ -1764,14 +1671,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--router",
         help=(
             "explicit emuflow-native executable; defaults to the selected native installation"
-        ),
-    )
-    phase4.add_argument(
-        "--retain-candidate-pool",
-        action="store_true",
-        help=(
-            "write the complete diagnostic candidate-tree pool; the default "
-            "production path validates candidates online"
         ),
     )
 
@@ -2049,9 +1948,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     lower = subparsers.add_parser(
         "lower-placement-ir",
-        help="merge one partition with its synthesized transport EmuIR",
+        help="lower one indexed split partition with its synthesized transport EmuIR",
     )
-    lower.add_argument("--netlist", type=Path, required=True)
+    lower.add_argument("--split", type=Path, required=True, help="current split SQLite store")
+    lower.add_argument("--fpga", required=True, help="partition selector within the split store")
     lower.add_argument("--transport", type=Path, required=True)
     lower.add_argument("--transport-ir", type=Path, required=True)
     lower.add_argument("--output", "-o", type=Path, required=True)
@@ -2248,12 +2148,10 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.out,
                 tdm_plan_path=args.tdm_plan,
                 solution_path=args.solution,
-                new_topology_path=args.new_topology,
                 runtime_seconds=args.runtime_seconds,
                 expected_routes_sha256=args.expected_routes_sha256,
                 expected_tdm_plan_sha256=args.expected_tdm_plan_sha256,
                 expected_solution_sha256=args.expected_solution_sha256,
-                expected_topology_sha256=args.expected_topology_sha256,
             )
         elif args.contest_command == "validate-public-evaluation":
             report = validate_public_contest_evaluation(args.matrix, args.bundle)
@@ -2345,64 +2243,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 solution_path=args.solution,
                 runtime_seconds=args.runtime_seconds,
                 median_runtime_seconds=args.median_runtime_seconds,
-            )
-        elif args.contest_command == "eda2025-import":
-            report = import_eda2025_instance(
-                info_path=args.info,
-                net_path=args.net,
-                topology_path=args.topology,
-                assignment_path=args.assignment,
-                output_dir=args.out,
-                name=args.name,
-                alpha_ns=args.alpha_ns,
-                beta_ns=args.beta_ns,
-
-
-                topology_change_fraction=args.topology_change_fraction,
-            )
-        elif args.contest_command == "eda2025-evaluate":
-            report = evaluate_eda2025_routes(
-                instance_path=args.instance,
-                routes_path=args.routes,
-                output_path=args.output,
-                new_topology_path=args.new_topology,
-                runtime_seconds=args.runtime_seconds,
-                official_output_dir=args.official_out,
-            )
-        elif args.contest_command == "eda2025-optimize-topology":
-            report = optimize_eda2025_topology(
-                instance_path=args.instance,
-                routes_path=args.routes,
-                output_dir=args.out,
-                executable=args.optimizer,
-                max_changes=args.max_changes,
-                current_topology_path=args.topology,
-                enable_shortcuts=args.enable_shortcuts,
-            )
-        elif args.contest_command == "eda2025-optimize-routing":
-            report = optimize_eda2025_routing(
-                instance_path=args.instance,
-                routes_path=args.routes,
-                output_dir=args.out,
-                router=args.router,
-                topology_optimizer=args.topology_optimizer,
-                current_topology_path=args.topology,
-                enable_shortcut_portfolio=not args.capacity_only,
-                max_rounds=args.max_rounds,
-            )
-        elif args.contest_command == "eda2025-materialize-boarddb":
-            report = materialize_eda2025_rtl_boarddb(
-                instance_path=args.instance,
-                device_template_path=args.device_template,
-                output_path=args.output,
-                name=args.name,
-                topology_path=args.topology,
-                template_fpga_id=args.template_fpga,
-                lane_scale=args.lane_scale,
-                fabric_clock_mhz=args.fabric_clock_mhz,
-                latency_cycles=args.latency_cycles,
-                link_mode=args.link_mode,
-                route_constraints_path=args.route_constraints_output,
             )
         else:
             raise AssertionError(f"unhandled contest command {args.contest_command!r}")
@@ -2998,10 +2838,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             patron_refiner=args.patron_refiner,
             patron_max_moves=args.patron_max_moves,
             patron_algorithm_version=args.patron_algorithm_version,
-            patron_initial_assignment_path=(
-                args.patron_initial_assignment
-            ),
-            patron_initial_clusters_path=args.patron_initial_clusters,
             static_exact_candidate_policy=(
                 args.static_exact_candidate_policy
             ),
@@ -3063,7 +2899,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             timing_paths_path=args.timing_paths,
             router=args.router,
             candidate_workers=args.candidate_workers,
-            retain_candidate_pool=args.retain_candidate_pool,
         )
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
@@ -3312,8 +3147,9 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
 
     if args.command == "lower-placement-ir":
-        report = run_placement_ir_lowering(
-            netlist_path=args.netlist,
+        report = run_placement_ir_lowering_from_split(
+            split_path=args.split,
+            fpga=args.fpga,
             transport_path=args.transport,
             transport_ir_path=args.transport_ir,
             output_path=args.output,

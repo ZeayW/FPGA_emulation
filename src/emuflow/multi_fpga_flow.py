@@ -44,7 +44,6 @@ from .opensta import (
 from .openparf import validate_openparf_runtime
 from .phase1 import run_phase1
 from .phase3 import (
-    promote_patron_baseline,
     run_phase3,
     validate_phase3,
     validate_phase3_indexed,
@@ -1786,7 +1785,6 @@ def _compile_partition(ctx: _CompileContext):
         patron_max_moves=ctx.patron_max_moves,
         patron_algorithm_version=ctx.patron_algorithm_version,
         static_exact_candidate_policy=ctx.static_exact_candidate_policy,
-        retain_patron_baseline=False,
     )
     ctx.assignment_path = ctx.phase3_root / "assignment.json"
     phase3_validation = ctx.phase3_report.get("validation")
@@ -1860,6 +1858,17 @@ def _compile_route_policy(ctx: _CompileContext):
     ctx.phase4_root = ctx.output_dir / "system-route"
     ctx.phase5_root = ctx.output_dir / "tdm"
     ctx.frame_search_report = None
+    if ctx._native_mode:
+        from .phase4_native import prepare_policy
+        from .native_tools import native_file_generation
+        ctx.native_phase4_policy = prepare_policy(
+            ctx.output_dir / ".native-phase4-request", ctx.phase3_root / "assignment.sqlite",
+            ctx.platform_path, timing_paths=ctx.projected_timing_paths,
+            constraints_path=ctx.effective_route_constraints,
+            frame_slots=ctx.frame_slots, max_iterations=ctx.route_max_iterations,
+            candidate_workers=ctx.route_candidate_workers if ctx.has_inter_fpga_cuts else 1,
+            timing_driven=ctx.timing_driven)
+        ctx.native_phase4_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase4_policy))
     if ctx._native_mode and ctx.phase6_provider == "baseline":
         from .phase6_native import prepare_compile_policy
         from .native_tools import native_file_generation
@@ -2494,7 +2503,7 @@ def _compile_finalize(ctx: _CompileContext):
 
 def _compile_route(ctx: _CompileContext):
     ctx.phase4_report = ctx.measured("phase4", run_phase4,
-        ctx.assignment_path,
+        ctx.phase3_root / "assignment.sqlite",
         ctx.platform_path,
         ctx.phase4_root,
         constraints_path=ctx.effective_route_constraints,

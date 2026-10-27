@@ -86,15 +86,11 @@ def run_phase7c(
     global_sta_executable: Optional[str] = None,
     global_sta_results_dir: Optional[Path] = None,
     global_timing_engine: str = "opensta",
-    allow_legacy_phase5_generation: bool = False,
 ) -> Dict[str, Any]:
     if global_timing_engine != "opensta":
         raise ValidationError("only the OpenSTA global timing engine is supported")
-    generation_validation = validate_phase5_generation(
-        phase5_report_path,
-        allow_legacy=allow_legacy_phase5_generation,
-    )
-    if generation_validation.get("status") != "legacy" and Path(
+    validate_phase5_generation(phase5_report_path)
+    if Path(
         os.path.abspath(schedule_path)
     ) != Path(os.path.abspath(phase5_report_path.parent / "schedule.json")):
         raise ValidationError(

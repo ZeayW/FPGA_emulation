@@ -101,6 +101,23 @@ def _unpack(value, depth=0):
                 raise EmuFlowError("native partition report generation changed")
             from .multi_fpga_flow import _stage_summary
             return _stage_summary('partition', report)
+        if kind == "route-report":
+            if (type(body) is not dict or set(body)!={"schema","path","generation"}
+                    or body.get("schema")!="phase4-report-v1" or type(body.get("path")) is not str
+                    or not Path(body["path"]).is_absolute() or type(body.get("generation")) is not list
+                    or len(body["generation"])!=7 or any(type(item) is not int for item in body["generation"])):
+                raise EmuFlowError("invalid native route report reference")
+            path=Path(body['path']);generation=tuple(body['generation'])
+            if path.is_symlink() or native_file_generation(path)!=generation or path.stat().st_size>_LIMIT:
+                raise EmuFlowError('native route report generation changed')
+            report=json.loads(path.read_text())
+            if (report.get('schema')!='emuflow.phase4-report/v1' or report.get('status')!='pass'
+                    or report.get('stage_implementation_id')!='native-phase4-v1'):
+                raise EmuFlowError('native route report identity disagrees')
+            if native_file_generation(path)!=generation:
+                raise EmuFlowError('native route report generation changed')
+            from .multi_fpga_flow import _stage_summary
+            return _stage_summary('system_route',report)
         if kind == "split-report":
             if (type(body) is not dict or set(body)!={"schema","path","generation"}
                     or body.get("schema")!="phase6-report-v1" or type(body.get("path")) is not str
@@ -246,6 +263,8 @@ def _restore_control_state(state):
 
 
 def execute(stage, request_path, previous_path, output_path, run_id):
+    if stage == "route":
+        raise EmuFlowError("native compiler route is owned by the C++ Phase 4 stage")
     if stage == "tdm":
         raise EmuFlowError("native compiler TDM is owned by the C++ Phase 5 stage")
     if stage == "partition":
@@ -286,7 +305,7 @@ def execute(stage, request_path, previous_path, output_path, run_id):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stage", choices=[stage for stage in STAGES if stage not in {"tdm", "partition"}], required=True)
+    parser.add_argument("--stage", choices=[stage for stage in STAGES if stage not in {"tdm", "partition", "route"}], required=True)
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--previous", type=Path)
     parser.add_argument("--output", type=Path, required=True)

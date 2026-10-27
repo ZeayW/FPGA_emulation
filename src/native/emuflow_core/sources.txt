@@ -63,3 +63,4 @@ emuflow_core/split_overlay.cpp
 emuflow_core/transport.cpp
 emuflow_core/runtime_calendar.cpp
 emuflow_core/placement_lowering.cpp
+emuflow_core/phase4.cpp

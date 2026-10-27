@@ -29,19 +29,11 @@ from .contest_eda2024 import (
     import_eda2024_case,
     materialize_eda2024_rtl_boarddb,
 )
-from .contest_eda2025 import (
-    evaluate_eda2025_routes,
-    import_eda2025_instance,
-    materialize_eda2025_rtl_boarddb,
-)
 
 
 PUBLIC_CONTEST_FETCH_REPORT_SCHEMA = "emuflow.public-contest-fetch-report/v1"
 PUBLIC_CONTEST_IMPORT_REPORT_SCHEMA = "emuflow.public-contest-import-report/v1"
 PUBLIC_CONTEST_BOARDDB_REPORT_SCHEMA = "emuflow.public-contest-boarddb-report/v1"
-PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA_V1 = (
-    "emuflow.public-contest-evaluation-report/v1"
-)
 PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA = (
     "emuflow.public-contest-evaluation-report/v2"
 )
@@ -370,15 +362,6 @@ def import_public_contest_case(
         adapter = import_eda2023_case(source_dir, output_dir, name)
     elif case["suite"] == "eda2024-repart":
         adapter = import_eda2024_case(source_dir, output_dir, name)
-    elif case["suite"] == "eda2025":
-        adapter = import_eda2025_instance(
-            source_dir / "design.info",
-            source_dir / "design.net",
-            source_dir / "design.topo",
-            source_dir / "design.fpga.out",
-            output_dir,
-            name,
-        )
     else:
         raise ValidationError(
             f"public contest suite {case['suite']!r} has no public import adapter"
@@ -463,26 +446,21 @@ def _candidate_spec_for_suite(
     routes_path: Optional[Path],
     tdm_plan_path: Optional[Path],
     solution_path: Optional[Path],
-    new_topology_path: Optional[Path],
 ) -> Dict[str, Path]:
     supplied = {
         "routes.json": routes_path,
         "tdm_plan.json": tdm_plan_path,
         "design.fpga.out": solution_path,
-        "design.newtopo": new_topology_path,
     }
     required = {
         "eda2023": {"routes.json", "tdm_plan.json"},
         "eda2024-repart": {"design.fpga.out"},
-        "eda2025": {"routes.json"},
     }.get(suite)
     if required is None:
         raise ValidationError(
             f"public contest suite {suite!r} has no unified evaluate gate"
         )
     allowed = set(required)
-    if suite == "eda2025":
-        allowed.add("design.newtopo")
     missing = sorted(name for name in required if supplied[name] is None)
     unexpected = sorted(
         name for name, path in supplied.items()
@@ -519,11 +497,6 @@ def _candidate_summary(candidate_dir: Path) -> Dict[str, Optional[str]]:
         "solution_sha256": (
             _sha256_file(candidate_dir / "design.fpga.out")
             if (candidate_dir / "design.fpga.out").is_file()
-            else None
-        ),
-        "new_topology_sha256": (
-            _sha256_file(candidate_dir / "design.newtopo")
-            if (candidate_dir / "design.newtopo").is_file()
             else None
         ),
     }
@@ -565,16 +538,6 @@ def _run_frozen_public_evaluation(
             official_dir / "design.fpga.out",
         )
         return evaluation
-    if suite == "eda2025":
-        topology = candidate_dir / "design.newtopo"
-        return evaluate_eda2025_routes(
-            instance_path=import_dir / "contest_instance.json",
-            routes_path=candidate_dir / "routes.json",
-            output_path=evaluation_path,
-            new_topology_path=topology if topology.is_file() else None,
-            runtime_seconds=runtime_seconds,
-            official_output_dir=official_dir,
-        )
     raise ValidationError(f"public contest evaluation suite {suite!r} is unsupported")
 
 
@@ -588,12 +551,10 @@ def evaluate_public_contest_case(
     *,
     tdm_plan_path: Optional[Path] = None,
     solution_path: Optional[Path] = None,
-    new_topology_path: Optional[Path] = None,
     runtime_seconds: float = 0.0,
     expected_routes_sha256: Optional[str] = None,
     expected_tdm_plan_sha256: Optional[str] = None,
     expected_solution_sha256: Optional[str] = None,
-    expected_topology_sha256: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a self-contained, replayable public-contest evaluation bundle."""
 
@@ -617,13 +578,11 @@ def evaluate_public_contest_case(
         routes_path=routes_path,
         tdm_plan_path=tdm_plan_path,
         solution_path=solution_path,
-        new_topology_path=new_topology_path,
     )
     expected_by_name = {
         "routes.json": expected_routes_sha256,
         "tdm_plan.json": expected_tdm_plan_sha256,
         "design.fpga.out": expected_solution_sha256,
-        "design.newtopo": expected_topology_sha256,
     }
     for name, expected in expected_by_name.items():
         if name not in candidates and expected is not None:
@@ -738,11 +697,7 @@ def validate_public_contest_evaluation(
         raise ValidationError("public contest evaluation case id is invalid")
     case = _find_case(matrix, case_id)
     if (
-        report.get("schema")
-        not in {
-            PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA_V1,
-            PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA,
-        }
+        report.get("schema") != PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA
         or report.get("status") != "pass"
         or report.get("suite") != case["suite"]
         or report.get("case") != case["case"]
@@ -751,11 +706,6 @@ def validate_public_contest_evaluation(
         or report.get("matrix_sha256") != canonical_matrix_sha256(matrix)
     ):
         raise ValidationError("public contest evaluation report is invalid")
-    if (
-        report.get("schema") == PUBLIC_CONTEST_EVALUATION_REPORT_SCHEMA_V1
-        and case["suite"] != "eda2025"
-    ):
-        raise ValidationError("legacy public evaluation suite is unsupported")
     _validate_sealed_manifest(
         evaluation_dir,
         report.get("artifacts"),
@@ -776,9 +726,6 @@ def validate_public_contest_evaluation(
         else None,
         solution_path=(frozen_candidate / "design.fpga.out")
         if (frozen_candidate / "design.fpga.out").is_file()
-        else None,
-        new_topology_path=(frozen_candidate / "design.newtopo")
-        if (frozen_candidate / "design.newtopo").is_file()
         else None,
     )
     with tempfile.TemporaryDirectory() as temporary:
@@ -852,16 +799,6 @@ def validate_public_contest_evaluation(
         ).hexdigest(),
         "metrics": replay["metrics"],
     }
-    reported_candidate = report.get("candidate")
-    expected_candidate = expected_summary["candidate"]
-    if (
-        case["suite"] == "eda2025"
-        and isinstance(reported_candidate, dict)
-        and set(reported_candidate) == {"routes_sha256", "new_topology_sha256"}
-    ):
-        expected_summary["candidate"] = {
-            key: expected_candidate[key] for key in reported_candidate
-        }
     if any(report.get(key) != value for key, value in expected_summary.items()):
         raise ValidationError("public contest evaluation summary does not agree")
     return {
@@ -927,18 +864,6 @@ def materialize_public_contest_boarddb(
             route_constraints_path=output_dir / "route_constraints.json",
         )
         projection = {"unweighted_link_lanes": unweighted_link_lanes}
-    elif case["suite"] == "eda2025":
-        adapter = materialize_eda2025_rtl_boarddb(
-            import_dir / "contest_instance.json",
-            device_template_path,
-            output_path,
-            name=name,
-            lane_scale=lane_scale,
-            fabric_clock_mhz=fabric_clock_mhz,
-            latency_cycles=latency_cycles,
-            route_constraints_path=output_dir / "route_constraints.json",
-        )
-        projection = {"lane_scale": lane_scale}
     else:
         raise ValidationError(
             f"public contest suite {case['suite']!r} has no BoardDB adapter"

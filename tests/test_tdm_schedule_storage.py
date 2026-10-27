@@ -829,13 +829,3 @@ def test_retired_or_unknown_store_is_rejected_before_sidecar_access(tmp_path, mo
     with pytest.raises(ValidationError, match="schedule storage|manifest"):
         tdm_schedule_storage.copy_tdm_schedule_storage(path, destination)
     assert not destination.parent.exists()
-
-
-def test_production_writer_rejects_python_records_before_creating_output(tmp_path, monkeypatch):
-    def forbidden(*args, **kwargs):
-        raise AssertionError("reference data reached the native data plane")
-    monkeypatch.setattr(tdm_schedule_storage, "_publish_native_exact_generation", forbidden)
-    destination = tmp_path / "output/schedule.json"
-    with pytest.raises(ValidationError, match="requires a native exact schedule request"):
-        tdm_schedule_storage.write_tdm_schedule_storage(destination, _typed_exact_schedule(2))
-    assert not destination.parent.exists()

@@ -14,7 +14,7 @@ from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.multi_fpga_flow import run_multi_fpga_flow
 from emuflow.phase3 import run_phase3
-from emuflow.tritonpart import run_tritonpart
+from emuflow.partition_init_native import initialize
 from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints
 
@@ -194,7 +194,7 @@ class DefaultPlatformTest(unittest.TestCase):
         self.assertFalse(disabled.partition_repair_min_used_fpgas)
         for function, prefix in ((run_multi_fpga_flow, "partition_"),
                                  (run_phase3, "tritonpart_"),
-                                 (run_tritonpart, "")):
+                                 (initialize, "")):
             for suffix in ("repair_min_used_fpgas",):
                 self.assertIs(inspect.signature(function).parameters[prefix + suffix].default, True)
         self.assertEqual(

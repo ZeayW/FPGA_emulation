@@ -12,7 +12,7 @@ from emuflow.phase3 import run_phase3
 
 @pytest.mark.parametrize("provider", ["repart", "repart-replication", "mfspart", "greedy"])
 def test_retired_provider_rejected_before_phase_input(tmp_path, provider):
-    with patch("emuflow.phase3.load_partition_ir", side_effect=AssertionError("circuit loaded")):
+    with patch("emuflow.partition_ir.load_partition_ir", side_effect=AssertionError("circuit loaded")):
         with pytest.raises(ValidationError, match="unsupported Phase 3 provider"):
             run_phase3(tmp_path / "missing.ir", tmp_path / "missing.platform",
                        tmp_path / "partition", provider=provider)
@@ -56,7 +56,7 @@ def test_chimew_and_fixed_binding_entry_remain_available():
 @pytest.mark.parametrize("version", [6, 7, 8, 9, 10, 11])
 def test_retired_patron_version_is_rejected_before_any_frontend_or_graph_loading(tmp_path, entry, version):
     from emuflow.native_compile import _request
-    with patch("emuflow.phase3.load_partition_ir", side_effect=AssertionError("graph loaded")), patch(
+    with patch("emuflow.partition_ir.load_partition_ir", side_effect=AssertionError("graph loaded")), patch(
         "emuflow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend entered")
     ), pytest.raises(EmuFlowError, match="version|only PATRON"):
         if entry == "phase3":
@@ -83,3 +83,25 @@ def test_native_rejects_feedback_protocol_before_reading_a_graph(tmp_path, versi
                             text=True, capture_output=True, timeout=10)
     assert result.returncode != 0 and message in result.stderr
     assert output.read_bytes() == b"previous published result"
+
+
+@pytest.mark.parametrize('option', ['retain_diagnostics', 'retain_patron_baseline',
+                                  'patron_initial_assignment_path', 'patron_initial_clusters_path'])
+def test_retired_phase3_snapshot_routes_are_absent_from_public_api(tmp_path, option):
+    import inspect
+    assert option not in inspect.signature(run_phase3).parameters
+    with pytest.raises(TypeError, match=option):
+        run_phase3(tmp_path/'missing.ir', tmp_path/'missing.board', tmp_path/'partition', **{option: True})
+    assert not (tmp_path/'partition').exists()
+
+
+def test_plain_graph_phase3_has_no_python_fallback(tmp_path):
+    from emuflow.io import write_json
+    from emuflow.yosys import import_yosys_json
+    root = Path(__file__).parents[1]
+    graph = tmp_path/'design.json'
+    write_json(graph, import_yosys_json(root/'examples/yosys/counter.json', top='counter', clocks=['clk']).value)
+    with patch('emuflow.partition_ir.load_partition_ir', side_effect=AssertionError('Python graph route')):
+        with pytest.raises(ValidationError, match='compact EmuIR'):
+            run_phase3(graph, root/'platforms/virtual/xcvu3p_2fpga_p2p.json', tmp_path/'partition')
+    assert not (tmp_path/'partition/assignment.json').exists()

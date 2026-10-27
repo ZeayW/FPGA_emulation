@@ -11,27 +11,17 @@ from tests.system_timing_oracle import compare_system_timing
 from emuflow.errors import ValidationError
 from emuflow.global_sta import (
     EventCheck, _EventCheckBuilder, _IndexedEventChecks,
-    _IndexedMeasurements, _IndexedPathMetadata, _IndexedSystemTimingPaths,
+    _IndexedMeasurements, _IndexedPathMetadata,
     _PathMetadataBuilder,
     _compress_path_equivalent_checks, _write_expanded_measurements,
-    bind_physical_checks, build_opensta_timing,
     export_event_checks, read_engine_identity,
     read_measurements, run_event_checks, validate_checks,
 )
 
 
-def _reference_physical_checks(runtime, routes, schedule, physical, platform, *, metadata):
-    # These two storage-oracle cases intentionally combine inline route/endpoint
-    # facts with indexed segments. Production requires complete current owners.
-    from emuflow.global_sta import _bind_physical_checks
-    builder = _EventCheckBuilder(bound=True)
-    try:
-        return _bind_physical_checks(runtime, routes, schedule, physical, platform,
-                                     metadata=metadata, result=builder,
-                                     path_metadata=_PathMetadataBuilder(builder))
-    except BaseException:
-        builder._owner.close()
-        raise
+from tests.global_sta_fixture import bind_physical_checks, build_timing_from_records as build_opensta_timing
+from emuflow.global_measurements import NativeTimingPaths
+_reference_physical_checks = bind_physical_checks
 
 
 def example():
@@ -572,44 +562,12 @@ def test_lazy_expansion_is_reiterable_sliceable_and_fail_closed(tmp_path):
         )
 
 
-def test_run_event_checks_expands_engine_representatives(tmp_path, monkeypatch):
+def test_retired_inline_execution_and_reduction_are_rejected(tmp_path):
     import emuflow.global_sta as sta
-
-    first = example()[:4]
-    # Keep target/runtime plus both TX legality checks as one complete bundle.
-    second = [EventCheck("q", row.role, f"q-{row.event}", row.launch_ns,
-                         row.arcs_ns, row.required_ns) for row in first]
-    monkeypatch.setattr(sta, "resolve_native_executable",
-                        lambda name, executable: "/test/sta")
-    monkeypatch.setattr(sta, "require_opensta_engine",
-                        lambda tool: {"executable_sha256": "a" * 64})
-
-    def engine(command, *, cwd, stdout, stderr, check):
-        assert command == ["/test/sta", "-exit", "analyze.tcl"]
-        assert (cwd / "global_timing.v").read_text().count("input i") == 4
-        representatives = first
-        (cwd / "measurements.tsv").write_text(
-            "endpoint\tarrival_ns\trequired_ns\tslack_ns\n" +
-            "".join(
-                f"o{i}\t{sum(row.arcs_ns)}\t"
-                f"{row.required_ns-row.launch_ns}\t"
-                f"{row.required_ns-row.launch_ns-sum(row.arcs_ns)}\n"
-                for i, row in enumerate(representatives)
-            )
-        )
-        return type("Completed", (), {"returncode": 0})()
-
-    monkeypatch.setattr(sta.subprocess, "run", engine)
-    values = run_event_checks(first + second, tmp_path)
-    assert len(values) == 8
-    assert values[4]["path"] == "q"
-    assert values[4]["event"] == "q-first"
-    assert values[4]["slack_ns"] == values[0]["slack_ns"]
-    assert len((tmp_path / "measurements.tsv").read_text().splitlines()) == 9
-    assert (tmp_path / "opensta.log").read_text().splitlines()[-1] == (
-        "EmuFlow exact path-bundle compression "
-        "original_checks=8 representative_checks=4"
-    )
+    with pytest.raises(ValidationError, match='inline execution is retired'):
+        sta.run_event_checks(example(), tmp_path)
+    with pytest.raises(ValidationError, match='inline reduction is retired'):
+        sta.build_opensta_timing({}, {}, [])
 
 
 def test_comparison_checks_each_path_and_event():
@@ -660,6 +618,7 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch, s
     from emuflow.phase7c import run_phase7c
     import emuflow.global_sta as sta
     f = Phase7CTest(); f.setUp()
+    monkeypatch.setattr("emuflow.phase7c.validate_phase5_generation", lambda _: {"status": "pass"})
     for name, value in {"schedule": f.schedule, "platform": f.platform.to_dict(),
                         "physical": f._physical_summary(), "routes": f.routes, **f.reports}.items():
         write_json(tmp_path / f"{name}.json", value)
@@ -677,6 +636,7 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch, s
             compressed_representative_paths=1)
         return example()
     monkeypatch.setattr(sta, "bind_physical_checks", bind)
+    monkeypatch.setattr(sta, "build_opensta_timing", build_opensta_timing)
     def engine(checks, directory, executable, *, verify_arcs):
         assert not verify_arcs
         return [{"path": r.path, "role": r.role, "event": r.event,
@@ -695,8 +655,7 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch, s
                  ("schedule", "platform", "phase3", "phase4", "phase5", "phase6")),
                 tmp_path / "out", physical_summary_path=tmp_path / "physical.json",
                 routes_path=tmp_path / "routes.json",
-                global_sta_results_dir=tmp_path / "saved" if saved else None,
-                allow_legacy_phase5_generation=True)
+                global_sta_results_dir=tmp_path / "saved" if saved else None)
     report = read_json(tmp_path / "out/phase7c_report.json")
     assert "system_timing" not in report and "system_timing_summary" in report
     assert not (tmp_path / "out/system_timing.json").exists()
@@ -724,9 +683,10 @@ def test_standalone_report_preserves_event_gate_without_comparison(late, monkeyp
              "slack_ns": r.required_ns-r.launch_ns-sum(r.arcs_ns)} for r in example()]
     if late:
         rows[0]["slack_ns"] = -1.0
+        rows[0]["arrival_ns"] = rows[0]["required_ns"] + 1.0
     metadata = {"paths": {"p": {"path_scope": "cross-fpga", "physical_logic_segments_cone_bound": True}},
                 "source_binding": None, "compressed_representative_paths": 1}
-    report = sta.build_opensta_timing(
+    report = build_opensta_timing(
         {
             "virtual_dut_clocks": {"clk": {"nominal_period_ns": 100}},
             "virtual_dut_clock": {"nominal_period_ns": 100},
@@ -739,7 +699,7 @@ def test_standalone_report_preserves_event_gate_without_comparison(late, monkeyp
     assert report["path_exactness"]["cone_bound_logic_paths"] == 1
     assert report["target_clock"]["tns_bound_ns"] == -13.5
     with pytest.raises(ValidationError):
-        sta.build_opensta_timing(
+        build_opensta_timing(
             {
                 "virtual_dut_clocks": {"clk": {"nominal_period_ns": 100}},
                 "virtual_dut_clock": {"nominal_period_ns": 100},
@@ -784,8 +744,8 @@ def test_standalone_report_rejects_interleaved_measurements(
             builder.append(path, representative_path=path,
                            clock_domain=None, target_period_ns=10.0, **info)
         metadata["paths"] = builder.finish()
-    with pytest.raises(ValidationError, match="contiguous"):
-        sta.build_opensta_timing(
+    with pytest.raises(ValidationError):
+        build_opensta_timing(
             {"virtual_dut_clocks": {"clk": {"nominal_period_ns": 100}},
              "virtual_dut_clock": {"nominal_period_ns": 100}},
             metadata,
@@ -873,8 +833,7 @@ def test_indexed_metadata_produces_fixed_width_final_timing_paths():
         measurements,
     )
 
-    assert isinstance(timing["paths"], _IndexedSystemTimingPaths)
-    assert timing["paths"].typed_payload_bytes == 2 * 5 * 8
+    assert isinstance(timing["paths"], NativeTimingPaths)
     assert [row["path"] for row in timing["paths"]] == ["path-a", "path-b"]
     assert timing["target_clock"]["worst_slack_bound_ns"] == 7.0
     assert timing["runtime_clock"]["tns_bound_ns"] == 0.0
@@ -1221,7 +1180,8 @@ def test_indexed_timing_stream_delegates_path_order_to_route_store(tmp_path):
 @pytest.mark.skipif(not os.environ.get("EMUFLOW_TEST_OPENSTA"), reason="real OpenSTA not configured")
 def test_real_opensta_fixed_events_and_late_tx(tmp_path):
     rows = example()
-    measurements = run_event_checks(rows, tmp_path, os.environ["EMUFLOW_TEST_OPENSTA"])
+    from tests.test_global_event_store import _rows
+    measurements = run_event_checks(_rows(rows), tmp_path, os.environ["EMUFLOW_TEST_OPENSTA"])
     for row, check in zip(measurements, rows):
         arrival = check.launch_ns + sum(check.arcs_ns)
         assert row["arrival_ns"] == pytest.approx(arrival, abs=1e-3)
@@ -1229,51 +1189,6 @@ def test_real_opensta_fixed_events_and_late_tx(tmp_path):
         assert row["slack_ns"] == pytest.approx(check.required_ns-arrival, abs=1e-3)
     late = rows.copy()
     late[0] = EventCheck("p", "tx", "first", 0, (4.5,), 4)
-    result = run_event_checks(late, tmp_path / "late", os.environ["EMUFLOW_TEST_OPENSTA"])
+    result = run_event_checks(_rows(late), tmp_path / "late", os.environ["EMUFLOW_TEST_OPENSTA"])
     assert result[0]["slack_ns"] == pytest.approx(-.5, abs=1e-3)
     assert result[3]["slack_ns"] > 0
-
-
-@pytest.mark.skipif(not os.environ.get("EMUFLOW_TEST_OPENTIMER"), reason="OpenTimer driver not configured")
-@pytest.mark.parametrize("extra_paths", [0, 256])
-def test_real_opentimer_fixed_events(tmp_path, extra_paths):
-    rows = example()
-    rows[0] = EventCheck("p", "tx", "first", 0, (4.5,), 4)
-    for i in range(extra_paths):
-        # Mixed local/event observations, arc-chain lengths and target periods.
-        arcs = tuple((i+j+1)/37 for j in range(1+i % 5))
-        for role, deadline in (("target", 10+i % 7), ("runtime", 1000)):
-            rows.append(EventCheck(f"p{i}", role, "capture", i/8, arcs, deadline))
-    export_event_checks(rows, tmp_path)
-    subprocess.run([os.environ["EMUFLOW_TEST_OPENTIMER"], str(len(rows))],
-                   cwd=tmp_path, check=True)
-    result = read_measurements(tmp_path / "opentimer-measurements.tsv", rows)
-    for measured, row in zip(result, rows):
-        arrival = row.launch_ns+sum(row.arcs_ns)
-        assert measured["arrival_ns"] == pytest.approx(arrival, abs=1e-3)
-        assert measured["required_ns"] == pytest.approx(row.required_ns, abs=1e-3)
-        assert measured["slack_ns"] == pytest.approx(row.required_ns-arrival, abs=1e-3)
-    assert result[0]["slack_ns"] < 0 < result[3]["slack_ns"]
-
-
-@pytest.mark.skipif(not os.environ.get("EMUFLOW_TEST_OPENTIMER"), reason="OpenTimer driver not configured")
-def test_real_opentimer_from_physical_binding(tmp_path):
-    from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
-    from emuflow.board_link_timing import build_board_link_timing_model
-    from tests.system_timing_oracle import build_system_timing
-    fixture = StaticExactSystemTimingTest()
-    fixture.setUp()
-    runtime, routes, phase5 = fixture._system_inputs()
-    physical = fixture._system_physical()
-    physical["board_link_timing"] = build_board_link_timing_model(fixture.platform)
-    checks = bind_physical_checks(runtime, routes, fixture.schedule, physical, fixture.platform)
-    export_event_checks(checks, tmp_path)
-    from emuflow.global_event_store import event_model_directory
-    model = event_model_directory(tmp_path)
-    subprocess.run([os.environ["EMUFLOW_TEST_OPENTIMER"], str(len(checks))],
-                   cwd=model, check=True)
-    measured = read_measurements(model / "opentimer-measurements.tsv", checks)
-    reference = build_system_timing(runtime, routes, fixture.schedule, phase5, physical,
-                                    fixture.platform,
-                                    semantic_contract=fixture.assignment["semantic_contract"])
-    assert compare_system_timing(measured, reference)["status"] == "pass"

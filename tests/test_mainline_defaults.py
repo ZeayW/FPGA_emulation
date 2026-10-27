@@ -23,12 +23,8 @@ def test_cli_default_and_explicit_cut_do_not_choose_different_versions(command):
     parser = _build_parser()
     default = parser.parse_args(command)
     assert (default.patron_algorithm_version, default.cut_mode) == (14, "static-exact-combinational")
-    if command[:2] == ["multi-fpga", "compile"]:
-        with pytest.raises(SystemExit):
-            parser.parse_args([*command, "--cut-mode", "sequential-only"])
-    else:
-        old_cut = parser.parse_args([*command, "--cut-mode", "sequential-only"])
-        assert old_cut.patron_algorithm_version == 14
+    with pytest.raises(SystemExit):
+        parser.parse_args([*command, "--cut-mode", "sequential-only"])
     with pytest.raises(SystemExit) as error:
         parser.parse_args([*command, "--patron-flow-refinement"])
     assert error.value.code == 2
@@ -50,7 +46,7 @@ def test_api_and_native_request_share_the_same_defaults(tmp_path):
 
 
 def test_old_cut_without_an_explicit_version_does_not_downgrade(tmp_path):
-    with patch("emuflow.phase3.load_partition_ir", side_effect=AssertionError("graph loaded")):
+    with patch("emuflow.partition_ir.load_partition_ir", side_effect=AssertionError("graph loaded")):
         with pytest.raises(ValidationError, match="v14 requires generalized Static Exact"):
             run_phase3(tmp_path / "ir", tmp_path / "board", tmp_path / "phase3", cut_mode="sequential-only")
     assert not (tmp_path / "phase3/assignment.json").exists()

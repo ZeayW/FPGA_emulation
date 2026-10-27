@@ -240,10 +240,8 @@ class Sealer {
   SqliteDatabase& db_;std::array<Section,5>& sections_;Sha256 logical_;
 };
 }
-void SealSystemRoutes(const std::vector<ArtifactRef>& inputs,const std::string& output) {
-  Check(inputs.size()==2,"route seal source coverage disagrees");
-  SqliteStore store(inputs[0]);auto& db=store.database();db.Execute("PRAGMA temp_store=FILE; PRAGMA cache_size=-2048");
-  CheckedRequestReader request(inputs[1].path(),8*1024*1024);
+std::string SealSystemRouteDatabase(SqliteDatabase& db,const std::string& request_path) {
+  CheckedRequestReader request(request_path,8*1024*1024);
   Check(request.Read<std::uint64_t>()==UINT64_C(0x31515352464d5545) && request.Read<std::uint32_t>()==1,"route seal request version disagrees");
   std::array<bool,5> seen{};std::array<std::uint64_t,5> counts{};std::vector<std::string> path;unsigned nodes=0;
   auto tree=ReadTree(request,db,path,seen,counts,nodes);request.RequireEnd();
@@ -266,6 +264,12 @@ void SealSystemRoutes(const std::vector<ArtifactRef>& inputs,const std::string& 
     Object item{{"records",s.count},{"sha256",digest}};if(kind==4)item.emplace("batches",s.batches);result.emplace(names[kind],std::move(item));
   }
   const auto summary=JsonRecord(Object{{"schema","emuflow.system-route-seal/v1"},{"implementation_id","native-route-store-seal-v1"},{"logical_sha256",logical},{"sections",std::move(result)}}).Encode()+"\n";
+  return summary;
+}
+void SealSystemRoutes(const std::vector<ArtifactRef>& inputs,const std::string& output) {
+  Check(inputs.size()==2,"route seal source coverage disagrees");
+  SqliteStore store(inputs[0]);auto& db=store.database();db.Execute("PRAGMA temp_store=FILE; PRAGMA cache_size=-2048");
+  const auto summary=SealSystemRouteDatabase(db,inputs[1].path());
   AtomicBinaryWriter writer(output,inputs);writer.WriteBytes(summary.data(),summary.size());writer.Commit();
 }
 }

@@ -17,15 +17,6 @@
     },
     {
       "scope": [
-        "src/native/eda2025_topology_optimizer.cpp"
-      ],
-      "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",
-      "source_revision": "07ad187f34a049e7b3303ecf649abb9a0b4efac1",
-      "owner": "shared core",
-      "retirement": "Remove this entry when the source is core-owned or its provider is retired."
-    },
-    {
-      "scope": [
         "src/native/fpga_interchange_arch_importer.cpp"
       ],
       "reason": "Existing standalone native provider at the main baseline; move maintained algorithms into the shared core with their entry switch.",

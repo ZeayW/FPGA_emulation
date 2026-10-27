@@ -1,3 +1,4 @@
+from tests.native_route_fixture import route_system_native
 from tests.transport_reference import write_transport_storage as reference_transport
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 from tests.pin_plan_fixture import make_pin_plan_fixture
@@ -26,10 +27,6 @@ from emuflow.errors import ValidationError
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.ir import EmuIR
 from emuflow.io import file_sha256, read_json, write_json
-from emuflow.lowering import (
-    run_placement_ir_lowering_from_split,
-    run_placement_ir_lowering_from_value,
-)
 from emuflow.netlist import (
     build_split_artifacts,
     transport_endpoint_port,
@@ -91,7 +88,6 @@ from emuflow.transport_storage import (
     TransportView,
     write_transport_storage,
 )
-from emuflow.timing_routing import route_system_native
 from emuflow.yosys import import_yosys_json
 from tests.native_build import tlr_router
 
@@ -645,258 +641,6 @@ class Phase6Test(unittest.TestCase):
                 )
                 self.assertEqual(control["anchors"][fpga], old["anchors"][fpga])
 
-    def test_streaming_phase7_lowering_matches_legacy_exactly(self) -> None:
-        """The production SQLite handoff must preserve every EmuIR record."""
-
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            ir_path = root / "design.emuir.sqlite"
-            assignment_path = root / "assignment.sqlite"
-            split_path = root / "split.sqlite"
-            write_compact_emuir(ir_path, self.ir.to_dict())
-            write_phase3_assignment_index(
-                assignment_path, self.ir, self.assignment
-            )
-            write_split_netlists_sqlite(
-                split_path,
-                ir_path,
-                assignment_path,
-                _indexed_split_schedule(root,self.schedule),
-                expected_design=self.ir.value["design"]["name"],
-                expected_platform=self.platform.name,
-            )
-            control = build_streaming_split_metadata(
-                assignment_path,
-                self.schedule,
-                self.platform,
-                design=self.ir.value["design"],
-                clocks=self.ir.value["clocks"],
-            )
-            fpga = "fpga0"
-            transport = control["transports"][fpga]
-            transport_path = root / "transport.json"
-            write_json(transport_path, transport)
-            typed_transport_path = write_transport_storage(
-                root / "typed-transport",
-                assignment_path,
-                read_tdm_schedule(root/"split-schedule.json"),
-                self.platform,
-                design=self.ir.value["design"],
-                clocks=self.ir.value["clocks"],
-            )["transports"][fpga].manifest_path
-
-            ports = []
-            instances = []
-            nets = []
-            if transport["source_signals"]:
-                ports.append({
-                    "id": "source_values",
-                    "name": "source_values",
-                    "direction": "input",
-                    "width": len(transport["source_signals"]),
-                    "clock": False,
-                    "reset": False,
-                })
-            if transport["shadow_signals"]:
-                ports.append({
-                    "id": "shadow_values",
-                    "name": "shadow_values",
-                    "direction": "output",
-                    "width": len(transport["shadow_signals"]),
-                    "clock": False,
-                    "reset": False,
-                })
-            for index, _signal in enumerate(transport["source_signals"]):
-                identity = f"source_sink_{index}"
-                instances.append({
-                    "id": identity,
-                    "name": identity,
-                    "type": "LUT1",
-                    "resources": {"lut": 1},
-                    "parameters": {"INIT": "10"},
-                    "attributes": {},
-                    "constant_connections": [],
-                })
-                nets.append({
-                    "id": f"source_net_{index}",
-                    "name": f"source_net_{index}",
-                    "drivers": [{
-                        "instance": None,
-                        "port": "source_values",
-                        "bit": index,
-                    }],
-                    "sinks": [{
-                        "instance": identity,
-                        "port": "I0",
-                        "bit": 0,
-                    }],
-                    "fanout": 1,
-                    "cut_class": "combinational",
-                })
-            for index, _signal in enumerate(transport["shadow_signals"]):
-                identity = f"shadow_driver_{index}"
-                instances.append({
-                    "id": identity,
-                    "name": identity,
-                    "type": "FDRE",
-                    "resources": {"ff": 1},
-                    "parameters": {"INIT": "0"},
-                    "attributes": {},
-                    "constant_connections": [],
-                })
-                nets.append({
-                    "id": f"shadow_net_{index}",
-                    "name": f"shadow_net_{index}",
-                    "drivers": [{
-                        "instance": identity,
-                        "port": "Q",
-                        "bit": 0,
-                    }],
-                    "sinks": [{
-                        "instance": None,
-                        "port": "shadow_values",
-                        "bit": index,
-                    }],
-                    "fanout": 1,
-                    "cut_class": "register_output",
-                })
-            interface_ports = {}
-            for endpoint in transport["endpoints"]:
-                port_id = transport_endpoint_port(endpoint)
-                width = endpoint["lane"] + 1
-                record = interface_ports.setdefault(port_id, {
-                    "id": port_id,
-                    "name": port_id,
-                    "direction": (
-                        "output" if endpoint["kind"] == "tx" else "input"
-                    ),
-                    "width": width,
-                    "clock": False,
-                    "reset": False,
-                })
-                record["width"] = max(record["width"], width)
-                is_tx = endpoint["kind"] == "tx"
-                nets.append({
-                    "id": f"interface_{endpoint['id']}",
-                    "name": f"interface_{endpoint['id']}",
-                    "drivers": ([] if is_tx else [{
-                        "instance": None,
-                        "port": port_id,
-                        "bit": endpoint["lane"],
-                    }]),
-                    "sinks": ([{
-                        "instance": None,
-                        "port": port_id,
-                        "bit": endpoint["lane"],
-                    }] if is_tx else []),
-                    "fanout": int(is_tx),
-                    "cut_class": "combinational",
-                })
-            ports.extend(interface_ports.values())
-            transport_ir = EmuIR({
-                "schema": "emuflow.emuir/v1",
-                "design": {
-                    "name": "transport",
-                    "top": "transport",
-                    "source_format": "test",
-                },
-                "ports": ports,
-                "instances": instances,
-                "nets": nets,
-                "clocks": [],
-                "warnings": [],
-            })
-            transport_ir_path = root / "transport.emuir.sqlite"
-            write_compact_emuir(transport_ir_path, transport_ir.to_dict())
-
-            legacy_output = root / "legacy.emuir.sqlite"
-            direct_output = root / "native-lowering/direct.emuir.sqlite"
-            legacy_boundary = root / "legacy-boundary.json"
-            direct_boundary = direct_output.with_name("direct-boundary.json")
-            run_placement_ir_lowering_from_value(
-                read_split_netlist_sqlite(split_path, fpga),
-                transport_path,
-                transport_ir_path,
-                legacy_output,
-                boundary_identity_path=legacy_boundary,
-            )
-            with mock.patch(
-                "emuflow.lowering.read_split_netlist_sqlite",
-                side_effect=AssertionError(
-                    "streaming lowering must not materialize a split graph"
-                ),
-                create=True,
-            ), mock.patch.object(
-                SplitNetlistView,
-                "instances",
-                side_effect=AssertionError(
-                    "production lowering must not iterate DUT instances"
-                ),
-            ), mock.patch.object(
-                SplitNetlistView,
-                "nets",
-                side_effect=AssertionError(
-                    "production lowering must not iterate DUT nets"
-                ),
-            ), mock.patch.object(
-                SplitNetlistView,
-                "net_ids",
-                side_effect=AssertionError(
-                    "production lowering must not materialize net identities"
-                ),
-            ), mock.patch.object(
-                TransportView,
-                "iter_rx_signal_records",
-                side_effect=AssertionError(
-                    "production lowering must join typed RX signals"
-                ),
-            ), mock.patch.object(
-                TransportView,
-                "iter_expected_rx_bindings",
-                side_effect=AssertionError(
-                    "production lowering must join typed RX bindings"
-                ),
-            ), mock.patch(
-                "emuflow.lowering.EmuIR.load",
-                side_effect=AssertionError(
-                    "production lowering must not reconstruct transport EmuIR"
-                ),
-            ):
-                run_placement_ir_lowering_from_split(
-                    split_path,
-                    fpga,
-                    typed_transport_path,
-                    transport_ir_path,
-                    direct_output,
-                    boundary_identity_path=direct_boundary,
-                )
-            # Both lowering implementations have finished. The indexed result
-            # and its boundary owner must remain independent of this scratch.
-            from emuflow.multi_fpga_physical_flow import _retire_consumed_physical_input
-            _retire_consumed_physical_input(
-                transport_ir_path, {"status": "pass", "output": str(transport_ir_path)},
-                last_consumer="placement-ir-lowering-test",
-            )
-            self.assertEqual(
-                EmuIR.load(direct_output).to_dict(),
-                EmuIR.load(legacy_output).to_dict(),
-            )
-            from emuflow.boundary_identity_storage import (
-                read_boundary_identity_storage,
-            )
-
-            with read_boundary_identity_storage(direct_boundary) as direct_identity:
-                direct_value = {
-                    key: (
-                        list(direct_identity[key])
-                        if key == "endpoints"
-                        else direct_identity[key]
-                    )
-                    for key in direct_identity
-                }
-            self.assertEqual(direct_value, read_json(legacy_boundary))
-
-
     def test_large_sqlite_phase6_never_enters_python_graph_replay(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -1422,7 +1166,7 @@ class Phase6Test(unittest.TestCase):
             )
         self.assertEqual(validation["status"], "pass")
 
-    def test_round_barrier_register_input_cut_is_cycle_equivalent(self) -> None:
+    def test_retired_round_barrier_register_input_route_is_rejected(self) -> None:
         constraints = normalize_partition_constraints(
             None, self.ir, self.platform
         )
@@ -1448,35 +1192,11 @@ class Phase6Test(unittest.TestCase):
         route_constraints = normalize_route_constraints(
             None, self.platform, frame_slots=32
         )
-        routes = route_system_native(
-            assignment,
-            self.platform,
-            route_constraints,
-            executable=str(tlr_router()),
-        )
-        schedule = build_tdm_schedule(routes, self.platform)
-        artifacts = build_split_artifacts(
-            self.ir, assignment, schedule, self.platform
-        )
-        validation = validate_split_artifacts(
-            self.ir,
-            assignment,
-            schedule,
-            self.platform,
-            artifacts,
-        )
-        equivalence = simulate_partition_equivalence(
-            self.ir, assignment, schedule, cycles=12
-        )
-        cut_by_net = {
-            cut["net"]: cut for cut in assignment["cut_nets"]
-        }
-        self.assertEqual(cut_by_net["next_q[0]"]["transport_round"], 1)
-        self.assertEqual(validation["status"], "pass")
-        self.assertEqual(equivalence["register_input_cuts"], 1)
-        self.assertEqual(equivalence["transport_rounds"], 2)
-        self.assertEqual(equivalence["round_barrier_checks"], 1)
-        self.assertEqual(equivalence["mismatches"], 0)
+        with self.assertRaisesRegex(ValidationError, "round-barrier routing is retired"):
+            route_system_native(
+                assignment, self.platform, route_constraints,
+                executable=str(tlr_router()),
+            )
 
     def test_yosys_constant_connections_are_retained(self) -> None:
         constants = [

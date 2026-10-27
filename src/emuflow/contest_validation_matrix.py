@@ -16,7 +16,7 @@ CONTEST_VALIDATION_MATRIX_SCHEMA = "emuflow.contest-validation-matrix/v1"
 
 _ID_RE = re.compile(r"[a-z0-9][a-z0-9.-]*")
 _HEX_RE = re.compile(r"[0-9a-f]+")
-_SUITES = {"iccad2019", "eda2023", "eda2024-repart", "eda2025"}
+_SUITES = {"iccad2019", "eda2023", "eda2024-repart"}
 _TIERS = {"smoke", "small", "medium", "large"}
 _QUALIFICATIONS = {
     "catalogued",

@@ -49,11 +49,9 @@ from emuflow.partition_pressure import (
     validate_partition_pressure_model,
     validate_partition_pressure_native_bundle,
 )
-from emuflow.phase3 import promote_patron_baseline, run_phase3
-from emuflow.phase3 import (
-    PATRON_PATH_OBJECTIVE_SELECTION_PROVIDER,
-    _rebase_patron_initial_assignment,
-    _select_patron_timing_assignment,
+from emuflow.phase3 import run_phase3
+from tests.phase3_decision_reference import (
+    PATRON_PATH_OBJECTIVE_SELECTION_PROVIDER, _select_patron_timing_assignment,
 )
 from emuflow.phase3_storage import pack_phase3_assignment
 from emuflow.platform import Platform
@@ -1480,21 +1478,6 @@ class PartitionPressureTest(unittest.TestCase):
                 reference_logical[field] = list(model[field])
             self.assertEqual(compact_logical, reference_logical)
 
-    def test_frozen_assignment_rebase_reuses_identical_clusters(self) -> None:
-        with patch(
-            "emuflow.phase3.build_partition_assignment",
-            side_effect=AssertionError(
-                "identical frozen clusters rebuilt the full assignment"
-            ),
-        ):
-            rebased = _rebase_patron_initial_assignment(
-                self.ir,
-                self.platform,
-                self.clusters,
-                self.constraints,
-                self.initial,
-            )
-        self.assertEqual(rebased, self.initial)
 
     def test_v14_selects_changed_candidate_with_better_predictive_timing(self) -> None:
         initial = {
@@ -2162,169 +2145,6 @@ class PartitionPressureTest(unittest.TestCase):
 
 
 
-    def test_phase3_patron_consumes_generalized_static_exact_contract(
-        self,
-    ) -> None:
-        ir = _ir()
-        ir.value["nets"][0]["cut_class"] = "combinational"
-        ir.value["clocks"] = [
-            {
-                "id": "clk",
-                "name": "clk",
-                "source_port": "clk",
-                "period_ns": None,
-            }
-        ]
-        constraints = normalize_partition_constraints(
-            {
-                "schema": "emuflow.partition-constraints/v1",
-                "min_used_fpgas": 2,
-                "balance_tolerance": 1.0,
-                "fixed": [
-                    {"instance": "u0", "fpga": "a"},
-                    {"instance": "u1", "fpga": "b"},
-                ],
-            },
-            ir,
-            self.platform,
-        )
-        clusters = build_clusters(
-            ir,
-            constraints,
-            cut_mode=CUT_MODE_STATIC_EXACT,
-            max_cross_fpga_dependency_depth=8,
-            static_exact_candidate_policy=(
-                STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
-            ),
-        )
-        cluster_for = {
-            instance: cluster["id"]
-            for cluster in clusters["clusters"]
-            for instance in cluster["instances"]
-        }
-        initial = build_partition_assignment(
-            ir,
-            self.platform,
-            clusters,
-            constraints,
-            {
-                cluster_for["u0"]: "a",
-                cluster_for["u1"]: "b",
-                cluster_for["u2"]: "a",
-                cluster_for["u3"]: "b",
-            },
-            provider="fixture-static-exact-v2",
-            seed=7,
-        )
-        # Managed production inputs defer this large downstream payload until
-        # PATRON has selected the final assignment.
-        initial.pop("semantic_contract")
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            ir_path = root / "ir.json"
-            platform_path = root / "platform.json"
-            constraints_path = root / "constraints.json"
-            timing_path = root / "timing.json"
-            route_path = root / "routes.json"
-            initial_path = root / "initial.json"
-            initial_clusters_path = root / "initial-clusters.json"
-            write_json(ir_path, ir.value)
-            write_json(platform_path, self.platform.to_dict())
-            write_json(constraints_path, constraints)
-            write_json(timing_path, self.timing)
-            write_json(
-                route_path,
-                {
-                    "schema": "emuflow.system-route-constraints/v1",
-                    "frame_slots": 8,
-                    "tdm_ratio_quantum": 1,
-                },
-            )
-            write_json(initial_path, initial)
-            write_json(initial_clusters_path, clusters)
-            with patch(
-                "emuflow.phase3.build_clusters",
-                side_effect=AssertionError(
-                    "managed PATRON rebuilt validated initial clusters"
-                ),
-            ), patch(
-                "emuflow.phase3_pressure_native.supports_native_pressure_model",
-                side_effect=AssertionError(
-                    "explicit cluster input must bypass native primary-model selection"
-                ),
-            ):
-                report = run_phase3(
-                    ir_path,
-                    platform_path,
-                    root / "phase3",
-                    constraints_path=constraints_path,
-                    provider="patron",
-                    route_constraints_path=route_path,
-                    timing_database_path=timing_path,
-                    patron_refiner=str(emuflow_native()),
-                    patron_algorithm_version=14,
-                    patron_initial_assignment_path=initial_path,
-                    patron_initial_clusters_path=initial_clusters_path,
-                    cut_mode=CUT_MODE_STATIC_EXACT,
-                    max_cross_fpga_dependency_depth=8,
-                    static_exact_candidate_policy=(
-                        STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2
-                    ),
-                    retain_diagnostics=False,
-                )
-            assignment = read_json(root / "phase3/assignment.json")
-            runtime = read_json(root / "phase3/phase3-runtime.json")
-            self.assertEqual(report["status"], "pass")
-            self.assertTrue(report["patron_initial_clusters_reused"])
-            self.assertEqual(
-                report["cut_mode"], "static-exact-combinational"
-            )
-            self.assertEqual(
-                assignment["metrics"]["combinational_cut_nets"], 1
-            )
-            self.assertNotIn("_derived_records", assignment)
-            self.assertIn("semantic_contract", assignment)
-            self.assertEqual(
-                assignment["metrics"][
-                    "maximum_combinational_dependency_depth"
-                ],
-                1,
-            )
-            self.assertEqual(
-                report["algorithm_validation"]["status"], "pass"
-            )
-            self.assertEqual(report["patron_algorithm_version"], 14)
-            self.assertEqual(
-                report["algorithm_validation"][
-                    "candidate_selection"
-                ]["provider"],
-                PATRON_PATH_OBJECTIVE_SELECTION_PROVIDER,
-            )
-            step_names = [step["name"] for step in runtime["steps"]]
-            self.assertLess(
-                step_names.index("patron.release_pressure_model"),
-                step_names.index("patron.build_candidate_assignment"),
-            )
-            self.assertLess(
-                step_names.index("patron.release_post_selection_state"),
-                step_names.index("static_exact.build_semantic_contract"),
-            )
-            self.assertLess(
-                step_names.index("static_exact.build_semantic_contract"),
-                step_names.index("publish.write_assignment_index"),
-            )
-            self.assertEqual(
-                runtime["observations"][
-                    "pressure_model_released_before_candidate_assignment"
-                ],
-                1,
-            )
-            self.assertEqual(
-                runtime["observations"][
-                    "patron_candidate_derived_records_deferred"
-                ],
-                1,
-            )
 
     def test_phase3_patron_v14_initializes_on_selected_generalized_graph(
         self,
@@ -2379,10 +2199,18 @@ class PartitionPressureTest(unittest.TestCase):
             constraints_path = root / "constraints.json"
             timing_path = root / "timing.json"
             route_path = root / "routes.json"
-            write_json(ir_path, ir.value)
+            from emuflow.emuir_compact import write_compact_emuir
+            write_compact_emuir(ir_path, ir.value)
             write_json(platform_path, self.platform.to_dict())
             write_json(constraints_path, constraints)
-            write_json(timing_path, self.timing)
+            from emuflow.sta import import_sta_path_database_tsv_streaming, STA_PATH_DATABASE_TSV_HEADER
+            rows = [STA_PATH_DATABASE_TSV_HEADER]
+            for i, path in enumerate(self.timing['paths']):
+                identity = f"{path['startpoint']['instance']}/O->{path['endpoint']['instance']}/I#{i:08d}"
+                rows.append('\t'.join([identity.encode().hex(), 'clk'.encode().hex(), str(path['clock_period_ns']),
+                    str(path['slack_ns']), str(path['fixed_delay_ns']), ','.join(n.encode().hex() for n in path['path_nets'])]))
+            tsv = root/'paths.tsv'; tsv.write_text('\n'.join(rows)+'\n')
+            import_sta_path_database_tsv_streaming(tsv, ir_path, timing_path, provider=OPENSTA_PROVIDER)
             write_json(
                 route_path,
                 {
@@ -2412,7 +2240,6 @@ class PartitionPressureTest(unittest.TestCase):
                 patron_refiner=str(emuflow_native()),
                 patron_algorithm_version=14,
                 cut_mode=CUT_MODE_STATIC_EXACT,
-                retain_diagnostics=False,
                 patron_max_moves=0,
                 tritonpart_solution=solution_path,
             )
@@ -2422,12 +2249,7 @@ class PartitionPressureTest(unittest.TestCase):
                 report["patron_initialization"],
                 "caller-supplied-generalized-tritonpart-solution-v1",
             )
-            self.assertEqual(
-                runtime["observations"][
-                    "patron_initial_derived_records_deferred"
-                ],
-                1,
-            )
+            self.assertEqual(runtime['observations']['native_phase3_stage'], 1)
             self.assertNotIn("_derived_records", assignment)
             self.assertEqual(
                 assignment["instance_assignment"],
@@ -2498,10 +2320,18 @@ class PartitionPressureTest(unittest.TestCase):
             timing_path = root / "timing.json"
             route_path = root / "routes.json"
             solution_path = root / "static-exact.part.2"
-            write_json(ir_path, ir.value)
+            from emuflow.emuir_compact import write_compact_emuir
+            write_compact_emuir(ir_path, ir.value)
             write_json(platform_path, self.platform.to_dict())
             write_json(constraints_path, constraints)
-            write_json(timing_path, self.timing)
+            from emuflow.sta import import_sta_path_database_tsv_streaming, STA_PATH_DATABASE_TSV_HEADER
+            rows = [STA_PATH_DATABASE_TSV_HEADER]
+            for i, path in enumerate(self.timing['paths']):
+                identity = f"{path['startpoint']['instance']}/O->{path['endpoint']['instance']}/I#{i:08d}"
+                rows.append('\t'.join([identity.encode().hex(), 'clk'.encode().hex(), str(path['clock_period_ns']),
+                    str(path['slack_ns']), str(path['fixed_delay_ns']), ','.join(n.encode().hex() for n in path['path_nets'])]))
+            tsv = root/'paths.tsv'; tsv.write_text('\n'.join(rows)+'\n')
+            import_sta_path_database_tsv_streaming(tsv, ir_path, timing_path, provider=OPENSTA_PROVIDER)
             write_json(
                 route_path,
                 {
@@ -2531,7 +2361,6 @@ class PartitionPressureTest(unittest.TestCase):
                 patron_refiner=str(emuflow_native()),
                 patron_algorithm_version=14,
                 cut_mode=CUT_MODE_STATIC_EXACT,
-                retain_diagnostics=False,
             )
             assignment = read_json(root / "phase3/assignment.json")
             self.assertEqual(report["status"], "pass")
@@ -2539,10 +2368,9 @@ class PartitionPressureTest(unittest.TestCase):
                 report["patron_initialization"],
                 "caller-supplied-generalized-tritonpart-solution-v1",
             )
-            self.assertNotIn(
-                "cut_nets",
-                report["algorithm_validation"]["initial_assignment"],
-            )
+            self.assertNotIn('initial_assignment', report['algorithm_validation'])
+            self.assertEqual(report['algorithm_validation']['scope'],
+                             'production-source-native-independent-audit')
             self.assertEqual(
                 assignment["metrics"]["cut_nets"],
                 len(assignment["cut_nets"]),
