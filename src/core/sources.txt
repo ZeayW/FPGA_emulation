@@ -70,3 +70,6 @@ physical/physical_query_objects.cpp
 timing/logic_segment_query.cpp
 timing/local_path_query.cpp
 physical/vivado/vivado_timing_queries.cpp
+physical/device.cpp
+physical/handoff_audit.cpp
+physical/handoff.cpp

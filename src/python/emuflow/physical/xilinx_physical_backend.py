@@ -22,10 +22,8 @@ from emuflow.ir.resource_budget import validate_device_resource_usage, validate_
 from emuflow.timing.sta import iter_sta_path_database_paths
 from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
 from emuflow.physical.openparf.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source, run_xilinx_openparf_atomic_qualification
-from emuflow.physical.openparf.xilinx_openparf_bridge import materialize_xilinx_openparf_atomic_contract
+from emuflow.physical.handoff import materialize_xilinx_openparf_atomic_contract
 from emuflow.timing.xilinx_opensta import run_xilinx_routed_opensta
-from emuflow.physical.xilinx_packing import validate_xilinx_packing
-from emuflow.physical.xilinx_placement import validate_xilinx_placement
 from emuflow.physical.rapidwright.xilinx_rwroute import export_rwroute_input, run_rwroute, validate_xilinx_route_db
 from emuflow.timing.xilinx_segment_timing import build_xilinx_segment_timing_bundle
 from emuflow.timing.xilinx_timing import build_xilinx_routed_timing
@@ -813,10 +811,12 @@ def run_rapidwright_openparf_native_candidate_backend(
         provider_manifest_path=openparf_provider_manifest,
         mapped_value=mapped_value,
         mapped_sha256=mapped_sha256,
-        architecture=architecture,
         packed_value_sink=packed,
         placement_value_sink=placement,
     )
+    physical_handoff_path = Path(bridge["physical_handoff"])
+    packed_path = physical_handoff_path
+    placement_path = physical_handoff_path
     # The source view and shared physical handoff were already independently
     # validated before atomic publication. Reuse their lazy indexed views
     # instead of materializing either historical JSON contract.

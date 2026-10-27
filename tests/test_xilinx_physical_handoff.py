@@ -1,20 +1,21 @@
-from tests.physical_handoff_facts import physical_handoff_facts
 import shutil
+import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.physical_handoff_fixture import write_handoff_fixture
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import file_sha256
-from emuflow.physical.xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
+from emuflow.physical.contracts import PACKED_SITE_NETLIST_SCHEMA
 from emuflow.physical.xilinx_physical_handoff import (
-    XilinxPhysicalHandoffBuilder,
     open_xilinx_physical_handoff,
     validate_xilinx_physical_handoff,
     validate_xilinx_physical_handoff_pair,
 )
-from emuflow.physical.xilinx_placement import XILINX_PLACEMENT_SCHEMA
+from emuflow.physical.contracts import XILINX_PLACEMENT_SCHEMA
 
 
 def _contracts(identity: str = "cell0"):
@@ -56,6 +57,12 @@ def _contracts(identity: str = "cell0"):
 
 
 class XilinxPhysicalHandoffTest(unittest.TestCase):
+    def setUp(self):
+        from tests.native_build import emuflow_native
+        runtime=mock.patch.dict(os.environ,{'EMUFLOW_NATIVE_ROOT':str(emuflow_native().parent.parent)})
+        runtime.start()
+        self.addCleanup(runtime.stop)
+
     @staticmethod
     def _bridge_cluster(index: int):
         site = f"SLICEL_X{index}Y0"
@@ -77,7 +84,7 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "physical-handoff.sqlite"
             packed, placement = _contracts()
-            physical_handoff_facts(path, packed, placement)
+            write_handoff_fixture(path, packed, placement)
             report = validate_xilinx_physical_handoff(path)
             actual_packed, actual_placement = open_xilinx_physical_handoff(path)
 
@@ -96,7 +103,7 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
     def test_validated_digest_avoids_rehashing_published_database(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "physical-handoff.sqlite"
-            physical_handoff_facts(path, *_contracts())
+            write_handoff_fixture(path, *_contracts())
             digest = file_sha256(path)
 
             with mock.patch(
@@ -115,7 +122,7 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
             with self.assertRaisesRegex(ValidationError, "digest is invalid"):
                 open_xilinx_physical_handoff(path, validated_sha256="invalid")
 
-    def test_unordered_compatibility_views_remain_supported(self):
+    def test_lazy_reader_preserves_explicit_unmarked_current_row_order(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "physical-handoff.sqlite"
             first_packed, first_placement = _contracts("cell0")
@@ -133,7 +140,7 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
             first_packed["clusters"].reverse()
             first_placement["clusters"].extend(second_placement["clusters"])
 
-            physical_handoff_facts(
+            write_handoff_fixture(
                 path, first_packed, first_placement
             )
             packed, placement = open_xilinx_physical_handoff(path)
@@ -151,7 +158,7 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "source.sqlite"
-            physical_handoff_facts(source, *_contracts())
+            write_handoff_fixture(source, *_contracts())
             corrupt = root / "corrupt.sqlite"
             shutil.copyfile(source, corrupt)
             with corrupt.open("r+b") as stream:
@@ -174,7 +181,7 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             original = root / "first" / "physical-handoff.sqlite"
-            physical_handoff_facts(original, *_contracts("cell0"))
+            write_handoff_fixture(original, *_contracts("cell0"))
             relocated = root / "second" / original.name
             relocated.parent.mkdir()
             original.replace(relocated)
@@ -188,7 +195,7 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
             )
 
             other = root / "other.sqlite"
-            physical_handoff_facts(other, *_contracts("cell-other"))
+            write_handoff_fixture(other, *_contracts("cell-other"))
             packed_first, _ = open_xilinx_physical_handoff(relocated)
             _, placement_other = open_xilinx_physical_handoff(other)
             with self.assertRaisesRegex(ValidationError, "runs disagree"):
@@ -196,94 +203,121 @@ class XilinxPhysicalHandoffTest(unittest.TestCase):
                     packed_first, placement_other
                 )
 
-    def test_incremental_builder_streams_large_repeated_clusters(self):
+    def test_current_lazy_reader_keeps_large_repeated_cluster_population(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            path = root / "physical-handoff.sqlite"
-            packed, placement = _contracts()
-            packed["clusters"] = ()
-            packed["cascade_chains"] = []
-            packed["unplaced_constants"] = []
-            placement["clusters"] = ()
-            cluster_count = 2_048
+            path=Path(temporary)/'physical.sqlite'
+            packed,placement=_contracts()
+            packed['clusters']=[]
+            packed['cascade_chains']=[]
+            packed['unplaced_constants']=[]
+            placement['clusters']=[]
+            for i in reversed(range(2048)):
+                cluster=self._bridge_cluster(i)
+                packed['clusters'].append({key:value for key,value in cluster.items() if key!='_placement'})
+                packed['clusters'][-1]['assignments']=[{key:row[key] for key in ('instance','cell_type','bel')}
+                                                      for row in cluster['assignments']]
+                placement['clusters'].append(dict(cluster['_placement'],cluster=cluster['id'],physical_region=None,
+                    assignments=[dict(instance=row['instance'],cell_type=row['cell_type'],bel=row['bel'],
+                        placement_mode=row['_placement_mode'],site=row['_physical_site']) for row in cluster['assignments']]))
+            write_handoff_fixture(path,packed,placement,canonical=True)
+            report=validate_xilinx_physical_handoff(path)
+            actual_packed,actual_placement=open_xilinx_physical_handoff(path)
+            self.assertEqual(report['packed_clusters'],2048)
+            self.assertEqual(report['assignments'],2048)
+            self.assertEqual(len(actual_packed['clusters']),2048)
+            self.assertEqual(actual_packed['clusters'][0]['id'],'openparf:SLICEL_X0Y0')
+            self.assertEqual(actual_placement['clusters'][0]['cluster'],'openparf:SLICEL_X0Y0')
 
-            with XilinxPhysicalHandoffBuilder(path) as builder:
-                for index in range(cluster_count - 1, -1, -1):
-                    builder.append_bridge_cluster(self._bridge_cluster(index))
-                builder.seal(
-                    packed, placement, cascades=[], constants=[]
-                )
-                report = validate_xilinx_physical_handoff(
-                    builder.temporary_path
-                )
-                self.assertFalse(path.exists())
-                builder.publish()
+    def test_python_handoff_producer_routes_are_retired(self):
+        import emuflow.physical.xilinx_physical_handoff as handoff
+        self.assertFalse(hasattr(handoff,'XilinxPhysicalHandoffBuilder'))
+        self.assertFalse(hasattr(handoff,'write_xilinx_physical_handoff'))
 
-            actual_packed, actual_placement = open_xilinx_physical_handoff(path)
-            self.assertEqual(report["packed_clusters"], cluster_count)
-            self.assertEqual(report["assignments"], cluster_count)
-            self.assertEqual(len(actual_packed["clusters"]), cluster_count)
-            self.assertEqual(
-                actual_packed["clusters"][0]["id"],
-                "openparf:SLICEL_X0Y0",
-            )
-            self.assertEqual(
-                actual_placement["clusters"][0]["cluster"],
-                "openparf:SLICEL_X0Y0",
-            )
+    @staticmethod
+    def _repair_contracts():
+        packed, placement = _contracts('capture')
+        packed['cascade_chains'] = []
+        packed['unplaced_constants'] = []
+        packed['clusters'][0]['assignments'][0].update(cell_type='FDRE', bel='CFF')
+        placement['clusters'][0]['assignments'][0].update(cell_type='FDRE', bel='CFF')
+        repairs = [
+            {'cluster': packed['clusters'][0]['id'], 'instance': 'capture', 'from_bel': 'AFF', 'to_bel': 'BFF'},
+            {'cluster': packed['clusters'][0]['id'], 'instance': 'capture', 'from_bel': 'BFF', 'to_bel': 'CFF'},
+        ]
+        return packed, placement, repairs
 
-    def test_incremental_builder_failure_removes_unpublished_temporary(self):
+    def test_typed_repairs_are_ordered_source_bound_lazy_records(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            path = root / "physical-handoff.sqlite"
-            with mock.patch(
-                "emuflow.physical.xilinx_physical_handoff._BUILDER_COMMIT_ROWS", 1
-            ):
-                with self.assertRaisesRegex(
-                    ValidationError, "failed to append"
-                ):
-                    with XilinxPhysicalHandoffBuilder(path) as builder:
-                        builder.append_bridge_cluster(self._bridge_cluster(0))
-                        builder.append_bridge_cluster(self._bridge_cluster(0))
+            path = Path(temporary) / 'physical.sqlite'
+            packed, placement, repairs = self._repair_contracts()
+            write_handoff_fixture(path, packed, placement, repairs=repairs)
+            self.assertEqual(validate_xilinx_physical_handoff(path)['status'], 'pass')
+            actual, _ = open_xilinx_physical_handoff(path)
+            records = actual['policy']['site_pin_legalization']['repairs']
+            self.assertNotIsInstance(records, list)
+            self.assertEqual(len(records), 2)
+            self.assertEqual(records[0], repairs[0])
+            self.assertEqual(records[-1], repairs[-1])
+            self.assertEqual(list(records), repairs)
+            with sqlite3.connect(path) as db:
+                db.execute("UPDATE site_pin_repair SET from_bel='DFF' WHERE seq=0")
+            with self.assertRaisesRegex(ValidationError, 'generation changed'):
+                list(records)
 
-            self.assertFalse(path.exists())
-            self.assertEqual(list(root.glob(f".{path.name}.*.tmp")), [])
+    def test_typed_repair_seals_chains_and_feature_contract_fail_closed(self):
+        mutations = (
+            "UPDATE site_pin_repair SET from_bel='DFF' WHERE seq=0",
+            "UPDATE site_pin_repair SET from_bel='DFF' WHERE seq=1",
+            "UPDATE site_pin_repair SET to_bel='DFF' WHERE seq=1",
+            "UPDATE site_pin_repair SET seq=5 WHERE seq=1",
+            "DELETE FROM site_pin_repair WHERE seq=1",
+            "DELETE FROM feature WHERE name='typed-site-pin-repairs-v1'",
+            "INSERT INTO feature VALUES('unknown-feature-v99')",
+        )
+        for sql in mutations:
+            with self.subTest(sql=sql), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / 'physical.sqlite'
+                packed, placement, repairs = self._repair_contracts()
+                write_handoff_fixture(path, packed, placement, repairs=repairs)
+                with sqlite3.connect(path) as db:
+                    db.execute(sql)
+                with self.assertRaises(ValidationError):
+                    validate_xilinx_physical_handoff(path)
 
-    def test_incremental_builder_compares_source_ownership_in_sqlite(self):
+    def test_empty_typed_repairs_keep_feature_and_empty_lazy_sequence(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            path = root / "physical-handoff.sqlite"
-            packed, placement = _contracts()
-            packed["clusters"] = ()
-            packed["cascade_chains"] = []
-            packed["unplaced_constants"] = []
-            placement["clusters"] = ()
-            with XilinxPhysicalHandoffBuilder(path) as builder:
-                cluster = self._bridge_cluster(0)
-                cluster["assignments"][0]["_source_cluster"] = "source:0"
-                builder.append_source_assignment("cell0", "source:0")
-                builder.append_bridge_cluster(cluster)
-                builder.validate_source_ownership(1)
-                builder.seal(packed, placement, cascades=[], constants=[])
-                builder.publish()
-            self.assertTrue(path.is_file())
-            self.assertEqual(list(root.glob(f".{path.name}.source.*.tmp")), [])
+            path = Path(temporary) / 'physical.sqlite'
+            write_handoff_fixture(path, *_contracts(), repairs=[])
+            self.assertEqual(validate_xilinx_physical_handoff(path)['status'], 'pass')
+            packed, _ = open_xilinx_physical_handoff(path)
+            records = packed['policy']['site_pin_legalization']['repairs']
+            self.assertNotIsInstance(records, list)
+            self.assertEqual(list(records), [])
+            with self.assertRaises(IndexError):
+                records[0]
 
-    def test_incremental_builder_rejects_source_ownership_mismatch(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            path = root / "physical-handoff.sqlite"
-            with self.assertRaisesRegex(
-                ValidationError, "source cell ownership is invalid"
-            ):
-                with XilinxPhysicalHandoffBuilder(path) as builder:
-                    cluster = self._bridge_cluster(0)
-                    cluster["assignments"][0]["_source_cluster"] = "source:other"
-                    builder.append_source_assignment("cell0", "source:0")
-                    builder.append_bridge_cluster(cluster)
-                    builder.validate_source_ownership(1)
-            self.assertFalse(path.exists())
-            self.assertEqual(list(root.glob(f".{path.name}.*.tmp")), [])
+    def test_lazy_reader_rejects_unknown_features_and_unmarked_repair_references(self):
+        for mutation in (
+            "INSERT INTO feature VALUES('unknown-feature-v99')",
+            "DELETE FROM feature WHERE name='typed-site-pin-repairs-v1'; DROP TABLE site_pin_repair",
+        ):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / 'physical.sqlite'
+                write_handoff_fixture(path, *_contracts(), repairs=[])
+                with sqlite3.connect(path) as db:
+                    db.executescript(mutation)
+                with self.assertRaisesRegex(ValidationError, 'feature'):
+                    open_xilinx_physical_handoff(path)
+
+    def test_native_structure_gate_rejects_row_counts_owners_and_sequence_corruption(self):
+        import sqlite3
+        for sql in ("UPDATE manifest SET assignments=99", "UPDATE assignment SET cluster_ordinal=99",
+                    "UPDATE assignment SET packed_ordinal=99", "UPDATE document SET value_json='{}' WHERE name='packed'"):
+            with self.subTest(sql=sql),tempfile.TemporaryDirectory() as temporary:
+                path=Path(temporary)/'physical.sqlite'
+                write_handoff_fixture(path,*_contracts())
+                with sqlite3.connect(path) as db:db.execute(sql)
+                with self.assertRaises(ValidationError):validate_xilinx_physical_handoff(path)
 
 
 if __name__ == "__main__":

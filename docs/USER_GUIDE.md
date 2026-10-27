@@ -479,7 +479,7 @@ VTR artifacts require the corresponding historical Git revision; current
 commands reject the retired backend and options.
 RapidWright always uses native OpenPARF placement; the old placer-selection
 options and packed-cluster pack/guide/place commands are removed. Independent
-`arch validate-xilinx-packing` and `arch validate-xilinx-placement` remain.
+`arch validate-xilinx-physical --mapped-index MAPPED.sqlite --physical-handoff HANDOFF.sqlite --architecture ARCH.json` audits the typed owner through the shared core. The former separate JSON packing and placement validators are retired.
 
 - `--physical-backend rapidwright`: the default; Xilinx device facts and RWRoute
   with the native OpenPARF placer and `xilinx-ultrascaleplus-open-v1` mapping.

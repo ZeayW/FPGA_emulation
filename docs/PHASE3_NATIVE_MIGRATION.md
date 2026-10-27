@@ -1241,5 +1241,31 @@ Python production loops and private logic-identity spool are retired; Python
 retains bounded configuration and generation-bound artifact references.
 
 These owners do not complete physical implementation or signoff control. Mapped
-physical fact generation, remaining handoff and route validators, Chimew stage
+physical fact generation, remaining route validators, Chimew stage
 control and full NVDLA Phase 1–7/7C qualification remain separate closure gates.
+
+
+### Native physical handoff production and audit
+
+`physical build-handoff` consumes the original mapped index, typed atomic source,
+typed placement certificate and device inputs. It constructs final site/BEL
+records, repairs shared slice pins within their certified sites, and independently
+rejoins the final owner with mapped primitives and device facts before atomically
+publishing one generation directory. Optional native constraints and provider
+inputs must exactly match the certificate source catalog. Source generations
+remain bound through the final lazy reader adoption.
+
+`physical audit-handoff` provides the independent device/ownership check for
+existing typed handoffs; `physical validate-handoff-structure` checks the storage
+contract. The installed Python package retains bounded requests and generation-
+bound readers. The former Python bridge, handoff builder, packing/placement
+validators and JSON validation CLI routes are retired. Bounded independent
+packing/placement oracles remain only in tests. The canonical SQL is shared by
+the native producer and explicit test-fact encoders.
+
+Component regression and isolated installation qualify this boundary only.
+Mapped physical input generation, route connectivity/PIP validation, Chimew
+stage control and full physical/signoff orchestration remain W7 closure gates,
+alongside complete NVDLA qualification on the two retained physical backends.
+No whole-design performance or terminal acceptance result follows from these
+component tests.

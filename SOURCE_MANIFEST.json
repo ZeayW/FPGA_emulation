@@ -60,7 +60,7 @@
       "stage": "Route A single-FPGA physical backend",
       "source_paths": [
         "src/python/emuflow/physical/xilinx_packing.py",
-        "src/python/emuflow/physical/xilinx_placement.py",
+        "src/core/physical/handoff.cpp",
         "src/python/emuflow/physical/rapidwright/xilinx_rwroute.py",
         "src/python/emuflow/timing/xilinx_timing.py",
         "src/python/emuflow/timing/xilinx_opensta.py",
@@ -69,15 +69,22 @@
         "tests/test_xilinx_packing.py",
         "tests/test_xilinx_placement.py",
         "tests/test_xilinx_rwroute.py",
-        "tests/test_xilinx_opensta.py"
+        "tests/test_xilinx_opensta.py",
+        "src/core/physical/device.cpp",
+        "src/core/physical/handoff_audit.cpp",
+        "src/python/emuflow/physical/handoff.py",
+        "src/python/emuflow/data/schema/xilinx_physical_handoff.sql"
       ],
       "build_targets": [
+        "emuflow_core",
+        "emuflow_native",
         "emuflow_python"
       ],
       "runtime_products": [
+        "emuflow-native",
         "emuflow"
       ],
-      "integration": "in-tree-python"
+      "integration": "default-in-tree-build"
     },
     {
       "id": "logic-synthesis",

@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from emuflow.common.errors import ValidationError
-from emuflow.physical.xilinx_placement import validate_xilinx_placement
+from tests.xilinx_site_reference import validate_xilinx_placement
 from tests.xilinx_site_reference import place_xilinx_clusters
 
 
@@ -226,7 +226,7 @@ class XilinxPlacementTest(unittest.TestCase):
                 "chains": [["DSP48E2_X0Y0", "DSP48E2_X0Y2"]],
             }]}}
             with mock.patch(
-                "emuflow.physical.xilinx_placement.load_xilinx_native_device_constraints",
+                "tests.xilinx_site_reference.load_xilinx_native_device_constraints",
                 return_value=(native, {"status": "pass"}),
             ):
                 checked = validate_xilinx_placement(

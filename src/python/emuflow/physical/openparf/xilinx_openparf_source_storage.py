@@ -24,7 +24,9 @@ from emuflow.storage.store_publication import StoreSource, bind_store_source, pu
 from emuflow.common.io import file_sha256, read_json, write_json
 from emuflow.common.native_tools import native_file_generation
 from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index, is_xilinx_mapped_index
-from emuflow.physical.xilinx_packing import CONSTANT_TYPES, DUAL_OUTPUT_LUT_TYPE, LUT_TYPES
+from emuflow.physical.xilinx_packing import CONSTANT_TYPES
+from emuflow.physical.xilinx_packing import DUAL_OUTPUT_LUT_TYPE
+from emuflow.physical.xilinx_packing import LUT_TYPES
 
 
 OPENPARF_ATOMIC_SOURCE_SCHEMA = "emuflow.openparf-atomic-source/v1"

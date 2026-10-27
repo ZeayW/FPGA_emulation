@@ -19,8 +19,8 @@ from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Set, 
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import file_sha256, read_json
 from emuflow.storage.store_publication import StoreSource, bind_store_source, require_store_sources_unchanged
-from emuflow.physical.xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
-from emuflow.physical.xilinx_placement import XILINX_PLACEMENT_SCHEMA
+from emuflow.physical.contracts import PACKED_SITE_NETLIST_SCHEMA
+from emuflow.physical.contracts import XILINX_PLACEMENT_SCHEMA
 
 
 XILINX_ROUTE_DB_SCHEMA = "emuflow.xilinx-route-db/v1"

@@ -44,8 +44,6 @@ from emuflow.transport.chimew.chimew_pipeline import run_chimew_phase6_pipeline,
 from emuflow.transport.chimew.chimew_qualification import build_chimew_phase6_qualification
 from emuflow.partition.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2, STATIC_EXACT_DEFAULT_CANDIDATE_POLICY, STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
 from emuflow.physical.rapidwright.rapidwright_provider import load_rapidwright_provider_manifest, run_rapidwright_device_import, validate_rapidwright_architecture, validate_rapidwright_provider_manifest
-from emuflow.physical.xilinx_packing import validate_xilinx_packing
-from emuflow.physical.xilinx_placement import validate_xilinx_placement
 from emuflow.physical.rapidwright.xilinx_rwroute import export_rwroute_input, run_rwroute, validate_xilinx_route_db
 from emuflow.timing.xilinx_timing import build_xilinx_routed_timing, validate_xilinx_routed_timing
 from emuflow.timing.xilinx_opensta import run_xilinx_routed_opensta, validate_xilinx_routed_opensta_summary
@@ -787,30 +785,13 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_validate_rapidwright_device.add_argument(
         "--require-physical-regions", action="store_true"
     )
-    arch_validate_xilinx_packing = arch_subparsers.add_parser(
-        "validate-xilinx-packing",
-        help="independently validate UltraScale+ site packing and cascade chains",
+    arch_validate_physical = arch_subparsers.add_parser(
+        "validate-xilinx-physical", help="independently audit mapped cells and the typed physical handoff"
     )
-    arch_validate_xilinx_packing.add_argument(
-        "--mapped-json", type=Path, required=True
-    )
-    arch_validate_xilinx_packing.add_argument("--packed", type=Path, required=True)
-    arch_validate_xilinx_packing.add_argument("--architecture", type=Path)
-    arch_validate_xilinx_packing.add_argument("--top")
-    arch_validate_xilinx_placement = arch_subparsers.add_parser(
-        "validate-xilinx-placement",
-        help="independently validate exact UltraScale+ site/BEL placement",
-    )
-    arch_validate_xilinx_placement.add_argument(
-        "--packed", type=Path, required=True
-    )
-    arch_validate_xilinx_placement.add_argument(
-        "--architecture", type=Path, required=True
-    )
-    arch_validate_xilinx_placement.add_argument(
-        "--placement", type=Path, required=True
-    )
-    arch_validate_xilinx_placement.add_argument("--constraints", type=Path)
+    for field in ("mapped-index", "physical-handoff", "architecture"):
+        arch_validate_physical.add_argument("--" + field, type=Path, required=True)
+    for field in ("native-constraints", "provider-manifest", "constraints"):
+        arch_validate_physical.add_argument("--" + field, type=Path)
     arch_export_rwroute = arch_subparsers.add_parser(
         "export-xilinx-rwroute-input",
         help="export a sealed placed UltraScale+ netlist for RWRoute",
@@ -1580,18 +1561,12 @@ def _dispatch(args: argparse.Namespace) -> int:
                 manifest_path=args.provider_manifest,
                 require_physical_regions=args.require_physical_regions,
             )
-        elif args.arch_command == "validate-xilinx-packing":
-            report = validate_xilinx_packing(
-                args.mapped_json,
-                args.packed,
-                top=args.top,
-                architecture_path=args.architecture,
-            )
-        elif args.arch_command == "validate-xilinx-placement":
-            report = validate_xilinx_placement(
-                args.packed,
-                args.architecture,
-                args.placement,
+        elif args.arch_command == "validate-xilinx-physical":
+            from emuflow.physical.handoff import audit_physical_handoff
+            report = audit_physical_handoff(
+                args.mapped_index, args.physical_handoff, args.architecture,
+                native_constraints_path=args.native_constraints,
+                provider_manifest_path=args.provider_manifest,
                 constraints_path=args.constraints,
             )
         elif args.arch_command == "export-xilinx-rwroute-input":

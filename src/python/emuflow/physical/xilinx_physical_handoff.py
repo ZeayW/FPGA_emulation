@@ -14,83 +14,24 @@ import os
 from pathlib import Path
 import sqlite3
 import tempfile
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Optional
 
 from emuflow.common.errors import ValidationError
-from emuflow.storage.store_publication import StoreSource, bind_store_source, publish_sqlite_store, require_store_sources_unchanged, validate_store_destination
+from emuflow.storage.store_publication import (
+    StoreSource,
+    bind_store_source,
+    require_store_sources_unchanged,
+)
 from emuflow.common.io import file_sha256
 from emuflow.common.native_tools import native_file_generation
 from emuflow.storage.sqlite_artifacts import immutable_sqlite_uri
-from emuflow.physical.xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
-from emuflow.physical.xilinx_placement import XILINX_PLACEMENT_SCHEMA
 
 
 XILINX_PHYSICAL_HANDOFF_SCHEMA = "emuflow.xilinx-physical-handoff-sqlite/v1"
 _APPLICATION_ID = 0x454D5550  # EMUP
 _USER_VERSION = 1
-_BUILDER_COMMIT_ROWS = 65_536
 _CANONICAL_CLUSTER_ORDER_FEATURE = "canonical-cluster-id-order-v1"
-
-
-_HANDOFF_DDL = f"""
-    PRAGMA application_id = {_APPLICATION_ID};
-    PRAGMA user_version = {_USER_VERSION};
-    PRAGMA foreign_keys = ON;
-    PRAGMA journal_mode = MEMORY;
-    PRAGMA synchronous = FULL;
-    CREATE TABLE manifest (
-        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
-        schema TEXT NOT NULL,
-        packed_clusters INTEGER NOT NULL,
-        assignments INTEGER NOT NULL,
-        cascade_chains INTEGER NOT NULL,
-        constants INTEGER NOT NULL
-    );
-    CREATE TABLE document (
-        name TEXT PRIMARY KEY,
-        value_json TEXT NOT NULL
-    ) WITHOUT ROWID;
-    CREATE TABLE cluster (
-        ordinal INTEGER PRIMARY KEY,
-        cluster_id TEXT NOT NULL UNIQUE,
-        kind TEXT NOT NULL,
-        site_templates_json TEXT NOT NULL,
-        control_set_json TEXT,
-        control_sets_json TEXT,
-        site_mode TEXT,
-        site TEXT NOT NULL UNIQUE,
-        site_type TEXT NOT NULL,
-        x INTEGER NOT NULL,
-        y INTEGER NOT NULL,
-        fixed INTEGER NOT NULL CHECK(fixed IN (0, 1)),
-        physical_region_json TEXT
-    );
-    CREATE TABLE assignment (
-        cluster_ordinal INTEGER NOT NULL REFERENCES cluster(ordinal),
-        instance TEXT NOT NULL UNIQUE,
-        cell_type TEXT NOT NULL,
-        bel TEXT NOT NULL,
-        placement_mode TEXT NOT NULL,
-        physical_site TEXT NOT NULL,
-        packed_ordinal INTEGER NOT NULL,
-        placement_ordinal INTEGER NOT NULL,
-        PRIMARY KEY(cluster_ordinal, packed_ordinal)
-    ) WITHOUT ROWID;
-    CREATE INDEX assignment_placement_order
-        ON assignment(cluster_ordinal, placement_ordinal);
-    CREATE TABLE cascade (
-        ordinal INTEGER PRIMARY KEY,
-        value_json TEXT NOT NULL
-    );
-    CREATE TABLE constant (
-        ordinal INTEGER PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE
-    );
-"""
-
-
-def _json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+_TYPED_SITE_PIN_REPAIRS_FEATURE = "typed-site-pin-repairs-v1"
 
 
 def _decode(value: Optional[str]) -> Any:
@@ -104,6 +45,64 @@ def _connect(path: Path) -> sqlite3.Connection:
         raise ValidationError("Xilinx physical handoff cannot be opened") from error
     connection.row_factory = sqlite3.Row
     return connection
+
+
+class _RecordSequence(Sequence):
+    """Generation-bound ordered records without a Python population cache."""
+
+    def __init__(self, source, table, column, count, *, decode=False):
+        if (table, column) not in {("constant", "name"), ("cascade", "value_json")}:
+            raise ValueError("unsupported handoff record relation")
+        self._source, self._table, self._column = source, table, column
+        self._count, self._decode = count, decode
+
+    def __len__(self):
+        return self._count
+
+    def __iter__(self):
+        require_store_sources_unchanged((self._source,))
+        connection = _connect(self._source.path)
+        try:
+            count = 0
+            for ordinal, value in connection.execute(
+                f"SELECT ordinal,{self._column} FROM {self._table} ORDER BY ordinal"
+            ):
+                if ordinal != count:
+                    raise ValidationError("physical handoff record order disagrees")
+                count += 1
+                yield json.loads(value) if self._decode else value
+            if count != self._count:
+                raise ValidationError("physical handoff record count disagrees")
+        finally:
+            connection.close()
+            require_store_sources_unchanged((self._source,))
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[item] for item in range(*index.indices(self._count))]
+        if not isinstance(index, int):
+            raise TypeError("physical handoff record index must be an integer")
+        if index < 0:
+            index += self._count
+        if not 0 <= index < self._count:
+            raise IndexError(index)
+        require_store_sources_unchanged((self._source,))
+        connection = _connect(self._source.path)
+        try:
+            row = connection.execute(
+                f"SELECT {self._column} FROM {self._table} WHERE ordinal=?", (index,)
+            ).fetchone()
+            if row is None:
+                raise ValidationError("physical handoff record is missing")
+            return json.loads(row[0]) if self._decode else row[0]
+        finally:
+            connection.close()
+            require_store_sources_unchanged((self._source,))
+
+    def __eq__(self, other):
+        if not isinstance(other, Sequence) or isinstance(other, (str, bytes)):
+            return NotImplemented
+        return len(self) == len(other) and all(a == b for a, b in zip(self, other))
 
 
 class _ClusterSequence(Sequence[Mapping[str, Any]]):
@@ -211,6 +210,66 @@ class _ClusterSequence(Sequence[Mapping[str, Any]]):
         return values[index]
 
 
+class _SitePinRepairSequence(Sequence[Mapping[str, str]]):
+    """Ordered projections of repair facts; the native gate audits their seal."""
+
+    def __init__(self, source: StoreSource, count: int) -> None:
+        self._source = source
+        self._count = count
+
+    def bound_store_sources(self):
+        require_store_sources_unchanged((self._source,))
+        return (self._source,)
+
+    def __len__(self) -> int:
+        return self._count
+
+    @staticmethod
+    def _record(row):
+        return {"cluster": row["cluster_id"], "instance": row["instance"],
+                "from_bel": row["from_bel"], "to_bel": row["to_bel"]}
+
+    def __iter__(self):
+        self.bound_store_sources()
+        connection = _connect(self._source.path)
+        count = 0
+        try:
+            for row in connection.execute("SELECT * FROM site_pin_repair ORDER BY seq"):
+                if row["seq"] != count or count >= self._count:
+                    raise ValidationError("Xilinx physical handoff repair sequence disagrees")
+                count += 1
+                yield self._record(row)
+            if count != self._count:
+                raise ValidationError("Xilinx physical handoff repair count disagrees")
+        except sqlite3.Error as error:
+            raise ValidationError("Xilinx physical handoff repair rows are invalid") from error
+        finally:
+            connection.close()
+            self.bound_store_sources()
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(self._count))]
+        if not isinstance(index, int):
+            raise TypeError("repair index must be an integer or slice")
+        if index < 0:
+            index += self._count
+        if not 0 <= index < self._count:
+            raise IndexError(index)
+        self.bound_store_sources()
+        connection = _connect(self._source.path)
+        try:
+            row = connection.execute("SELECT * FROM site_pin_repair WHERE seq=?", (index,)).fetchone()
+            if row is None:
+                raise ValidationError("Xilinx physical handoff repair sequence disagrees")
+            return self._record(row)
+        except sqlite3.Error as error:
+            raise ValidationError("Xilinx physical handoff repair rows are invalid") from error
+        finally:
+            connection.close()
+            self.bound_store_sources()
+
+
 def iter_xilinx_physical_handoff_cluster_pairs(
     path: Path,
 ) -> Iterator[tuple[Mapping[str, Any], Mapping[str, Any]]]:
@@ -281,440 +340,56 @@ def iter_xilinx_physical_handoff_cluster_pairs(
         connection.close()
 
 
-class XilinxPhysicalHandoffBuilder:
-    """Build one physical handoff incrementally and publish it explicitly.
+def validate_xilinx_physical_handoff(path: Path, *, integrity_check: bool = False) -> Dict[str, Any]:
+    """Ask the source-bound native owner to audit current rows and accounting."""
+    from emuflow.common.native_protocol import CheckedRequestWriter
+    from emuflow.common.native_tools import resolve_native_executable
+    from emuflow.common.tool_runtime import NativeToolProcess
 
-    The builder owns a same-directory temporary SQLite file.  Callers may
-    stream validated bridge clusters into it, seal the metadata, independently
-    validate lazy views over ``temporary_path``, and only then call
-    :meth:`publish`.  ``close`` removes every unpublished temporary artifact.
-    """
-
-    def __init__(self, path: Path, *, sources: Iterable[Path] = ()) -> None:
-        self.path = path
-        self._bound_sources: Dict[Path, tuple[int, ...]] = {}
-        self._typed_sources = ()
-        self.bind_sources(sources)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-        )
-        os.close(descriptor)
-        self.temporary_path = Path(temporary_name)
-        self._connection: Optional[sqlite3.Connection] = None
-        self._clusters = 0
-        self._assignments = 0
-        self._sealed = False
-        self._published = False
-        self._rows_since_commit = 0
-        self._source_path: Optional[Path] = None
-        self._source_connection: Optional[sqlite3.Connection] = None
-        self._source_rows_since_commit = 0
+    if type(integrity_check) is not bool:
+        raise ValidationError('physical handoff integrity_check must be a boolean')
+    source = bind_store_source(Path(path), 'xilinx-physical-handoff-v1')
+    with tempfile.TemporaryDirectory(prefix='emuflow-handoff-structure-') as temporary:
+        root = Path(temporary)
+        request, summary, operation = root/'request.bin', root/'summary.json', root/'operation.json'
+        writer = CheckedRequestWriter(request)
         try:
-            self._connection = sqlite3.connect(self.temporary_path)
-            self._connection.executescript(_HANDOFF_DDL)
-            self._connection.execute(
-                "CREATE TABLE feature (name TEXT PRIMARY KEY) WITHOUT ROWID"
-            )
-            self._connection.execute(
-                "INSERT INTO feature(name) VALUES (?)",
-                (_CANONICAL_CLUSTER_ORDER_FEATURE,),
-            )
-        except (sqlite3.Error, OSError) as error:
-            self.close()
-            raise ValidationError(
-                "failed to initialize Xilinx physical handoff"
-            ) from error
-
-    def bind_sources(self, paths: Iterable[Path]) -> None:
-        """Bind source generations before reading or deriving their records."""
-
-        self._require_sources_unchanged()
-        for value in paths:
-            path = Path(value).absolute()
-            try:
-                if self.path.resolve() == path.resolve() or (
-                    self.path.exists() and os.path.samefile(self.path, path)
-                ):
-                    raise ValidationError("Xilinx physical handoff output aliases an input")
-                generation = native_file_generation(path)
-            except OSError as error:
-                raise ValidationError("Xilinx physical handoff source cannot be bound") from error
-            if path in self._bound_sources and self._bound_sources[path] != generation:
-                raise ValidationError("Xilinx physical handoff source generation changed")
-            self._bound_sources[path] = generation
-
-    def bind_store_sources(self, sources):
-        sources = validate_store_destination(self.path, sources)
-        self._require_sources_unchanged()
-        for source in sources:
-            old = self._bound_sources.get(source.path)
-            if old is not None and old != source.generation:
-                raise ValidationError(
-                    "Xilinx physical handoff source generation changed"
-                )
-            self._bound_sources[source.path] = source.generation
-        existing = {
-            (source.path, source.schema): source for source in self._typed_sources
-        }
-        for source in sources:
-            old = existing.get((source.path, source.schema))
-            if old is not None and old.generation != source.generation:
-                raise ValidationError(
-                    "Xilinx physical handoff source generation changed"
-                )
-            existing[(source.path, source.schema)] = source
-        self._typed_sources = tuple(existing.values())
-
-    def _require_sources_unchanged(self) -> None:
-        require_store_sources_unchanged(self._typed_sources)
-        for path, expected in self._bound_sources.items():
-            try:
-                if native_file_generation(path) != expected:
-                    raise ValidationError("Xilinx physical handoff source generation changed")
-                if self.path.resolve() == path.resolve() or (
-                    self.path.exists() and os.path.samefile(self.path, path)
-                ):
-                    raise ValidationError("Xilinx physical handoff output aliases an input")
-            except OSError as error:
-                raise ValidationError("Xilinx physical handoff source generation changed") from error
-
-    def append_bridge_cluster(self, cluster: Mapping[str, Any]) -> None:
-        """Append one normalized bridge-owned cluster without retaining it."""
-
-        if self._sealed or self._connection is None:
-            raise ValidationError("Xilinx physical handoff builder is sealed")
-        assignments = cluster.get("assignments")
-        placement = cluster.get("_placement")
-        if (
-            not isinstance(assignments, Sequence)
-            or isinstance(assignments, (str, bytes))
-            or not isinstance(placement, Mapping)
-        ):
-            raise ValidationError("Xilinx physical handoff bridge cluster is invalid")
-        ordinal = self._clusters
-        try:
-            self._connection.execute(
-                "INSERT INTO cluster VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    ordinal, cluster.get("id"), cluster.get("kind"),
-                    _json(cluster.get("site_templates")),
-                    _json(cluster.get("control_set")),
-                    (_json(cluster["control_sets"])
-                     if "control_sets" in cluster else None),
-                    cluster.get("site_mode"), placement.get("site"),
-                    placement.get("site_type"), placement.get("x"),
-                    placement.get("y"), int(bool(placement.get("fixed"))),
-                    _json(placement.get("physical_region")),
-                ),
-            )
-            self._rows_since_commit += 1
-            for packed_ordinal, assignment in enumerate(assignments):
-                if not isinstance(assignment, Mapping):
-                    raise ValidationError(
-                        "Xilinx physical handoff bridge assignment is invalid"
-                    )
-                self._connection.execute(
-                    "INSERT INTO assignment VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        ordinal, assignment.get("instance"),
-                        assignment.get("cell_type"), assignment.get("bel"),
-                        assignment.get("_placement_mode"),
-                        assignment.get("_physical_site"), packed_ordinal,
-                        assignment.get("_placement_ordinal"),
-                    ),
-                )
-                source_cluster = assignment.get("_source_cluster")
-                if source_cluster is not None:
-                    if self._source_connection is None:
-                        raise ValidationError(
-                            "OpenPARF atomic source cell ownership is invalid"
-                        )
-                    self._source_connection.execute(
-                        "INSERT INTO certificate(instance, cluster_id) VALUES (?, ?)",
-                        (assignment.get("instance"), source_cluster),
-                    )
-                    self._source_rows_since_commit += 1
-                    if self._source_rows_since_commit >= _BUILDER_COMMIT_ROWS:
-                        self._source_connection.commit()
-                        self._source_rows_since_commit = 0
-                self._assignments += 1
-                self._rows_since_commit += 1
-            if self._rows_since_commit >= _BUILDER_COMMIT_ROWS:
-                # The file is private until publish, so committing bounded
-                # batches cannot expose partial state.  It prevents an
-                # in-memory rollback journal from growing with the design.
-                self._connection.commit()
-                self._rows_since_commit = 0
-        except (sqlite3.Error, TypeError, ValueError) as error:
-            raise ValidationError(
-                "failed to append Xilinx physical handoff cluster"
-            ) from error
-        self._clusters += 1
-
-    def append_source_assignment(self, instance: str, cluster_id: str) -> None:
-        """Stage source ownership on disk for a later relational comparison."""
-
-        if self._sealed:
-            raise ValidationError("Xilinx physical handoff builder is sealed")
-        try:
-            if self._source_connection is None:
-                descriptor, name = tempfile.mkstemp(
-                    prefix=f".{self.path.name}.source.", suffix=".tmp",
-                    dir=self.path.parent,
-                )
-                os.close(descriptor)
-                self._source_path = Path(name)
-                self._source_connection = sqlite3.connect(self._source_path)
-                self._source_connection.execute(
-                    "CREATE TABLE ownership ("
-                    "instance TEXT PRIMARY KEY, cluster_id TEXT NOT NULL"
-                    ") WITHOUT ROWID"
-                )
-                self._source_connection.execute(
-                    "CREATE TABLE certificate ("
-                    "instance TEXT PRIMARY KEY, cluster_id TEXT NOT NULL"
-                    ") WITHOUT ROWID"
-                )
-            self._source_connection.execute(
-                "INSERT INTO ownership(instance, cluster_id) VALUES (?, ?)",
-                (instance, cluster_id),
-            )
-            self._source_rows_since_commit += 1
-            if self._source_rows_since_commit >= _BUILDER_COMMIT_ROWS:
-                self._source_connection.commit()
-                self._source_rows_since_commit = 0
-        except sqlite3.IntegrityError as error:
-            raise ValidationError(
-                "OpenPARF atomic source cell ownership is invalid"
-            ) from error
-        except (sqlite3.Error, OSError) as error:
-            raise ValidationError(
-                "failed to stage OpenPARF atomic source ownership"
-            ) from error
-
-    def validate_source_ownership(self, expected_count: int) -> None:
-        """Compare source and certificate ownership without Python owner maps."""
-
-        if self._connection is None or self._sealed:
-            raise ValidationError("Xilinx physical handoff builder is sealed")
-        try:
-            if self._source_connection is None:
-                return
-            assert self._source_path is not None
-            self._source_connection.commit()
-            source_count, certificate_count = self._source_connection.execute(
-                "SELECT (SELECT count(*) FROM ownership), "
-                "(SELECT count(*) FROM certificate)"
-            ).fetchone()
-            if source_count != expected_count or certificate_count != expected_count:
-                raise ValidationError(
-                    "OpenPARF atomic source cell coverage is incomplete"
-                )
-            cursor = self._source_connection.execute(
-                "SELECT 1 FROM certificate c LEFT JOIN ownership s "
-                "ON s.instance=c.instance WHERE s.instance IS NULL "
-                "OR c.cluster_id IS NOT s.cluster_id "
-                "UNION ALL "
-                "SELECT 1 FROM ownership s LEFT JOIN certificate c "
-                "ON c.instance=s.instance WHERE c.instance IS NULL LIMIT 1"
-            )
-            mismatch = cursor.fetchone()
-            cursor.close()
-            if mismatch is not None:
-                raise ValidationError(
-                    "OpenPARF atomic source cell ownership is invalid"
-                )
-        except sqlite3.Error as error:
-            raise ValidationError(
-                "failed to validate OpenPARF atomic source ownership"
-            ) from error
-
-    def update_assignment_bels(
-        self, clusters: Iterable[Mapping[str, Any]]
-    ) -> None:
-        """Persist bounded in-site legalization edits before sealing."""
-
-        if self._sealed or self._connection is None:
-            raise ValidationError("Xilinx physical handoff builder is sealed")
-        try:
-            for cluster in clusters:
-                for assignment in cluster.get("assignments", []):
-                    cursor = self._connection.execute(
-                        "UPDATE assignment SET bel=? WHERE instance=?",
-                        (assignment.get("bel"), assignment.get("instance")),
-                    )
-                    if cursor.rowcount != 1:
-                        raise ValidationError(
-                            "Xilinx physical handoff legalization coverage disagrees"
-                        )
-                    self._rows_since_commit += 1
-                    if self._rows_since_commit >= _BUILDER_COMMIT_ROWS:
-                        self._connection.commit()
-                        self._rows_since_commit = 0
-        except sqlite3.Error as error:
-            raise ValidationError(
-                "failed to update Xilinx physical handoff legalization"
-            ) from error
-
-    def seal(
-        self,
-        packed: Mapping[str, Any],
-        placement: Mapping[str, Any],
-        *,
-        cascades: Sequence[Mapping[str, Any]],
-        constants: Sequence[str],
-    ) -> None:
-        """Finalize documents and counts while keeping the file unpublished."""
-
-        if self._sealed or self._connection is None:
-            raise ValidationError("Xilinx physical handoff builder is sealed")
-        if packed.get("schema") != PACKED_SITE_NETLIST_SCHEMA:
-            raise ValidationError("Xilinx physical handoff packing header is invalid")
-        if placement.get("schema") != XILINX_PLACEMENT_SCHEMA:
-            raise ValidationError("Xilinx physical handoff placement header is invalid")
-        packed_document = {
-            key: value for key, value in packed.items()
-            if key not in {"clusters", "cascade_chains", "unplaced_constants"}
-        }
-        placement_document = {
-            key: value for key, value in placement.items() if key != "clusters"
-        }
-        placement_source = dict(placement_document.get("source", {}))
-        placement_source.pop("packed_sha256", None)
-        placement_document["source"] = placement_source
-        try:
-            self._connection.executemany(
-                "INSERT INTO document(name, value_json) VALUES (?, ?)",
-                (("packed", _json(packed_document)),
-                 ("placement", _json(placement_document))),
-            )
-            self._connection.executemany(
-                "INSERT INTO cascade(ordinal, value_json) VALUES (?, ?)",
-                ((index, _json(value)) for index, value in enumerate(cascades)),
-            )
-            self._connection.executemany(
-                "INSERT INTO constant(ordinal, name) VALUES (?, ?)",
-                ((index, value) for index, value in enumerate(constants)),
-            )
-            self._connection.execute(
-                "INSERT INTO manifest VALUES (1, ?, ?, ?, ?, ?)",
-                (
-                    XILINX_PHYSICAL_HANDOFF_SCHEMA, self._clusters,
-                    self._assignments, len(cascades), len(constants),
-                ),
-            )
-            self._connection.commit()
-            self._connection.close()
-            self._connection = None
-            self._sealed = True
-        except (sqlite3.Error, TypeError, ValueError) as error:
-            raise ValidationError("failed to seal Xilinx physical handoff") from error
-
-    def publish(self) -> None:
-        """Atomically replace the destination after caller-side validation."""
-
-        if not self._sealed or self._published:
-            raise ValidationError("Xilinx physical handoff is not ready to publish")
-        self._require_sources_unchanged()
-        try:
-            sources = (
-                tuple(
-                    StoreSource(
-                        path.resolve(), "physical-input-document-v1", generation
-                    )
-                    for path, generation in self._bound_sources.items()
-                )
-                + self._typed_sources
-            )
-            publish_sqlite_store(
-                self.temporary_path,
-                self.path,
-                "xilinx-physical-handoff-v1",
-                sources=sources,
-            )
-        except OSError as error:
-            raise ValidationError("failed to publish Xilinx physical handoff") from error
-        self._published = True
-
-    def close(self) -> None:
-        if self._connection is not None:
-            self._connection.close()
-            self._connection = None
-        if not self._published:
-            self.temporary_path.unlink(missing_ok=True)
-        if self._source_connection is not None:
-            self._source_connection.close()
-            self._source_connection = None
-        if self._source_path is not None:
-            self._source_path.unlink(missing_ok=True)
-            self._source_path = None
-
-    def __enter__(self) -> "XilinxPhysicalHandoffBuilder":
-        return self
-
-    def __exit__(self, _type: Any, _value: Any, _traceback: Any) -> None:
-        self.close()
-
-
-
-
-def validate_xilinx_physical_handoff(
-    path: Path, *, integrity_check: bool = False,
-) -> Dict[str, Any]:
-    """Validate schema and row accounting, with opt-in SQLite diagnostics."""
-
-    connection = _connect(path)
-    try:
-        if connection.execute("PRAGMA application_id").fetchone()[0] != _APPLICATION_ID:
-            raise ValidationError("Xilinx physical handoff application ID is invalid")
-        if connection.execute("PRAGMA user_version").fetchone()[0] != _USER_VERSION:
-            raise ValidationError("Xilinx physical handoff version is invalid")
-        if integrity_check:
-            result = connection.execute("PRAGMA quick_check").fetchone()
-            if result is None or result[0] != "ok":
-                raise ValidationError(
-                    "Xilinx physical handoff integrity check failed"
-                )
-        manifest = connection.execute("SELECT * FROM manifest WHERE singleton=1").fetchone()
-        if manifest is None or manifest["schema"] != XILINX_PHYSICAL_HANDOFF_SCHEMA:
-            raise ValidationError("Xilinx physical handoff schema is invalid")
-        counts = {
-            "packed_clusters": connection.execute("SELECT count(*) FROM cluster").fetchone()[0],
-            "assignments": connection.execute("SELECT count(*) FROM assignment").fetchone()[0],
-            "cascade_chains": connection.execute("SELECT count(*) FROM cascade").fetchone()[0],
-            "constants": connection.execute("SELECT count(*) FROM constant").fetchone()[0],
-        }
-        if any(manifest[name] != count for name, count in counts.items()):
-            raise ValidationError("Xilinx physical handoff row counts disagree")
-        if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
-            raise ValidationError("Xilinx physical handoff foreign keys disagree")
-        documents = {
-            row["name"]: json.loads(row["value_json"])
-            for row in connection.execute("SELECT * FROM document")
-        }
-        if (
-            set(documents) != {"packed", "placement"}
-            or documents["packed"].get("schema") != PACKED_SITE_NETLIST_SCHEMA
-            or documents["placement"].get("schema") != XILINX_PLACEMENT_SCHEMA
-        ):
-            raise ValidationError("Xilinx physical handoff documents are invalid")
-        feature_table = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='feature'"
-        ).fetchone()
-        if feature_table is not None and {
-            row[0] for row in connection.execute("SELECT name FROM feature")
-        } != {_CANONICAL_CLUSTER_ORDER_FEATURE}:
-            raise ValidationError("Xilinx physical handoff features are invalid")
-    except (sqlite3.Error, json.JSONDecodeError) as error:
-        raise ValidationError("Xilinx physical handoff is corrupt or truncated") from error
-    finally:
-        connection.close()
-    return {
-        "schema": "emuflow.xilinx-physical-handoff-validation/v1",
-        "status": "pass", "integrity_check": integrity_check, **counts,
-        "physical_handoff_sha256": file_sha256(path),
-    }
+            writer.put('QI', 0x31534850464D5545, 1)
+            writer.put('3Q4q', *source.generation)
+            writer.put('B', int(integrity_check))
+            writer.finish()
+        finally:
+            writer.close()
+        executable = resolve_native_executable('emuflow-native')
+        command = [executable, '--report', str(operation), 'physical', 'validate-handoff-structure',
+                   str(source.path), str(request), str(summary)]
+        with NativeToolProcess(executable, command, environment=dict(os.environ), scratch_parent=root) as process:
+            result = process.finish()
+        if result.returncode:
+            raise ValidationError('native physical handoff validation failed: '+result.stdout)
+        require_store_sources_unchanged((source,))
+        if summary.stat().st_size > 262144 or operation.stat().st_size > 262144:
+            raise ValidationError('physical handoff validation result exceeds bound')
+        proof = json.loads(operation.read_text())
+        outputs = proof.get('outputs', [])
+        if (proof.get('stage') != 'physical.validate-handoff-structure' or proof.get('status') != 'pass' or
+                len(outputs) != 1 or outputs[0].get('path') != str(summary.resolve()) or
+                outputs[0].get('schema') != 'physical-handoff-structure-report-v1'):
+            raise ValidationError('physical handoff validation producer identity disagrees')
+        fields = ('device','inode','bytes','mtime_seconds','mtime_nanoseconds','ctime_seconds','ctime_nanoseconds')
+        generation = tuple(outputs[0].get('generation', {}).get(field) for field in fields)
+        if any(type(value) is not int for value in generation) or generation != native_file_generation(summary):
+            raise ValidationError('physical handoff validation output generation changed')
+        value = json.loads(summary.read_text())
+        if (value.get('schema') != 'emuflow.xilinx-physical-handoff-validation/v1' or value.get('status') != 'pass' or
+                value.get('integrity_check') is not integrity_check or any(
+                    type(value.get(key)) is not int or value[key] < 0
+                    for key in ('packed_clusters','assignments','cascade_chains','constants')) or
+                not isinstance(value.get('physical_handoff_sha256'), str) or
+                len(value['physical_handoff_sha256']) != 64):
+            raise ValidationError('physical handoff validation summary disagrees')
+        require_store_sources_unchanged((source,))
+        return value
 
 
 def open_xilinx_physical_handoff(
@@ -741,29 +416,28 @@ def open_xilinx_physical_handoff(
             row["name"]: json.loads(row["value_json"])
             for row in connection.execute("SELECT * FROM document")
         }
-        cascades = [
-            json.loads(row[0]) for row in connection.execute(
-                "SELECT value_json FROM cascade ORDER BY ordinal"
-            )
-        ]
-        constants = [
-            row[0] for row in connection.execute(
-                "SELECT name FROM constant ORDER BY ordinal"
-            )
-        ]
+        cascades = _RecordSequence(source_binding, "cascade", "value_json", manifest["cascade_chains"], decode=True)
+        constants = _RecordSequence(source_binding, "constant", "name", manifest["constants"])
         feature_table = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='feature'"
         ).fetchone()
-        canonical_order = False
+        features = set()
         if feature_table is not None:
-            features = [
+            features = {
                 row[0] for row in connection.execute("SELECT name FROM feature")
-            ]
-            if features != [_CANONICAL_CLUSTER_ORDER_FEATURE]:
+            }
+            if (not features or _CANONICAL_CLUSTER_ORDER_FEATURE not in features or
+                    not features <= {_CANONICAL_CLUSTER_ORDER_FEATURE, _TYPED_SITE_PIN_REPAIRS_FEATURE}):
                 raise ValidationError(
                     "Xilinx physical handoff features are invalid"
                 )
-            canonical_order = True
+        canonical_order = _CANONICAL_CLUSTER_ORDER_FEATURE in features
+        typed_repairs = _TYPED_SITE_PIN_REPAIRS_FEATURE in features
+        repair_table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='site_pin_repair'"
+        ).fetchone() is not None
+        if repair_table != typed_repairs:
+            raise ValidationError("Xilinx physical handoff repair feature disagrees")
     except (sqlite3.Error, json.JSONDecodeError) as error:
         raise ValidationError("Xilinx physical handoff metadata is invalid") from error
     finally:
@@ -778,6 +452,20 @@ def open_xilinx_physical_handoff(
     require_store_sources_unchanged((source_binding,))
     packed = dict(documents["packed"])
     placement = dict(documents["placement"])
+    policy = packed.get("policy")
+    legalization = policy.get("site_pin_legalization") if isinstance(policy, dict) else None
+    descriptor = legalization.get("repairs") if isinstance(legalization, dict) else None
+    if isinstance(descriptor, dict) and not typed_repairs:
+        raise ValidationError("Xilinx physical handoff repair feature disagrees")
+    if typed_repairs:
+        if (not isinstance(descriptor, dict) or set(descriptor) != {"schema", "records", "sha256"} or
+                descriptor.get("schema") != "emuflow.xilinx-site-pin-repairs/v1" or
+                type(descriptor.get("records")) is not int or descriptor["records"] < 0 or
+                not isinstance(descriptor.get("sha256"), str) or len(descriptor["sha256"]) != 64 or
+                any(character not in "0123456789abcdef" for character in descriptor["sha256"])):
+            raise ValidationError("Xilinx physical handoff repair descriptor is invalid")
+        packed["policy"] = dict(policy, site_pin_legalization=dict(
+            legalization, repairs=_SitePinRepairSequence(source_binding, descriptor["records"])))
     packed_source = dict(packed.get("source", {}))
     packed_source["physical_handoff_sha256"] = identity
     packed["source"] = packed_source

@@ -95,7 +95,7 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/python/emuflow/physical/xilinx_primitives.py",
     "src/python/emuflow/physical/xilinx_packing.py",
     "src/python/emuflow/physical/xilinx_physical_macros.py",
-    "src/python/emuflow/physical/xilinx_placement.py",
+    "src/python/emuflow/physical/contracts.py",
     "src/python/emuflow/physical/rapidwright/xilinx_rwroute.py",
     "src/python/emuflow/timing/xilinx_timing.py",
     "src/python/emuflow/timing/xilinx_preplacement_timing.py",

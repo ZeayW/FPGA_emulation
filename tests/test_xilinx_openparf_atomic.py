@@ -38,9 +38,9 @@ from emuflow.physical.openparf.xilinx_openparf_atomic import (
 from emuflow.physical.openparf.xilinx_openparf_source_storage import (
     OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA,
 )
-from emuflow.physical.xilinx_packing import validate_xilinx_packing
+from tests.xilinx_site_reference import validate_xilinx_packing
 from tests.xilinx_site_reference import pack_xilinx_sites
-from emuflow.physical.xilinx_placement import validate_xilinx_placement
+from tests.xilinx_site_reference import validate_xilinx_placement
 from tests.openparf_runtime_fixture import (
     write_openparf_hardblock_cascade_fixture,
     write_openparf_ramb18_fixture,
@@ -1467,62 +1467,28 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             )
 
     def test_production_bridge_rejects_inline_legacy_certificate(self):
+        from tests.physical_handoff_native_fixture import prepare_native_handoff
+        from emuflow.physical.handoff import materialize_xilinx_openparf_atomic_contract as native_handoff
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            mapped, packed, architecture = _fixture(root)
-            output = root / "output"
-            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
-            placement = output / "placed.pl"
-            placement.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
-            certificate = validate_xilinx_openparf_atomic_placement(
-                placement, output / "name_map.json", mapped, architecture,
-            )
-            certificate_path = output / "legacy-certificate.json"
-            certificate_path.write_text(
-                json.dumps(certificate), encoding="utf-8"
-            )
-            with self.assertRaisesRegex(
-                ValidationError, "typed placement-certificate store"
-            ):
-                materialize_xilinx_openparf_atomic_contract(
-                    mapped, architecture, certificate_path,
-                    output / "unused-packed.json",
-                    output / "unused-placement.json",
-                    physical_handoff_path=output / "physical-handoff.sqlite",
-                )
+            facts = prepare_native_handoff(root / "sources")
+            certificate = json.loads(facts.certificate.read_text())
+            certificate["clusters"] = []
+            facts.certificate.write_text(json.dumps(certificate))
+            with self.assertRaisesRegex(ValidationError, "inline clusters are retired"):
+                native_handoff(facts.mapped, facts.architecture, facts.certificate,
+                    root / "handoff", source_packed_path=facts.source)
+
 
     def test_production_certificate_binds_packed_source_bytes(self):
+        from tests.physical_handoff_native_fixture import prepare_native_handoff, build_native_handoff
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            mapped, packed, architecture = _fixture(root)
-            output = root / "output"
-            export_xilinx_openparf_atomic(mapped, packed, architecture, output)
-            placement = output / "placed.pl"
-            placement.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
-            certificate_path = output / "placement-certificate.json"
-            validate_xilinx_openparf_atomic_placement(
-                placement, output / "name_map.json", mapped, architecture,
-                certificate_path, packed_path=packed,
-                materialize_result=False,
-            )
-            packed_value = json.loads(packed.read_text(encoding="utf-8"))
-            packed_value["source"] = {
-                "mapped_json_sha256": atomic_adapter._sha256(mapped),
-            }
-            packed.write_text(
-                packed.read_text(encoding="utf-8") + "\n", encoding="utf-8"
-            )
-            with self.assertRaisesRegex(
-                ValidationError, "packed-source identity"
-            ):
-                materialize_xilinx_openparf_atomic_contract(
-                    mapped, architecture, certificate_path,
-                    output / "unused-packed.json",
-                    output / "unused-placement.json",
-                    source_packed_path=packed,
-                    source_packed_value=packed_value,
-                    physical_handoff_path=output / "physical-handoff.sqlite",
-                )
+            facts = prepare_native_handoff(root / "sources")
+            facts.source.write_text(facts.source.read_text() + "\n")
+            with self.assertRaisesRegex(ValidationError, "source|seal"):
+                build_native_handoff(facts, root / "handoff")
+
 
     def test_certificate_publication_is_selector_last_and_reader_leased(self):
         with tempfile.TemporaryDirectory() as temporary:

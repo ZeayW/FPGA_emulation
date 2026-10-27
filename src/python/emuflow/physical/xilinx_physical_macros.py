@@ -15,7 +15,18 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import file_sha256, read_json, write_json
-from emuflow.physical.xilinx_packing import CASCADE_PORTS, DUAL_OUTPUT_LUT_TYPE, LUT_TYPES, MUX_TYPES, _bits, _cascade_cells_by_type, _cascade_signal, _derive_cascade_chains, _mux_input_driver, _net_drivers, _pack_mux_cone, _select_module
+from emuflow.physical.xilinx_packing import CASCADE_PORTS
+from emuflow.physical.xilinx_packing import DUAL_OUTPUT_LUT_TYPE
+from emuflow.physical.xilinx_packing import LUT_TYPES
+from emuflow.physical.xilinx_packing import MUX_TYPES
+from emuflow.physical.xilinx_packing import _bits
+from emuflow.physical.xilinx_packing import _cascade_cells_by_type
+from emuflow.physical.xilinx_packing import _cascade_signal
+from emuflow.physical.xilinx_packing import _derive_cascade_chains
+from emuflow.physical.xilinx_packing import _mux_input_driver
+from emuflow.physical.xilinx_packing import _net_drivers
+from emuflow.physical.xilinx_packing import _pack_mux_cone
+from emuflow.physical.xilinx_packing import _select_module
 from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE, audit_xilinx_mapped_json
 
 

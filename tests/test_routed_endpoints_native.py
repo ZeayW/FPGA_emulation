@@ -1,4 +1,4 @@
-from tests.physical_handoff_facts import physical_handoff_facts
+from tests.physical_handoff_fixture import write_handoff_fixture
 """Source-bound endpoint producer equivalence; not physical qualification."""
 import copy
 import hashlib
@@ -46,7 +46,7 @@ def case(root):
                                       "assignments": [{**assignment, "placement_mode": "fixed", "site": f"S{i}"}]})
     mapped_path, physical = root / "mapped.sqlite", root / "physical.sqlite"
     write_mapped(mapped_path, mapped)
-    physical_handoff_facts(physical, packed, placement)
+    write_handoff_fixture(physical, packed, placement)
     route = rwroute_fixture.XilinxRWRouteTest()._route()
     route["nets"][0]["net"] = "n2"
     digests = {"mapped_sha256": file_sha256(mapped_path), "packed_sha256": file_sha256(physical), "placement_sha256": file_sha256(physical)}
@@ -222,7 +222,7 @@ def test_binding_modes_and_metadata_match_independent_record_producer(tmp_path, 
         kept = next(row for row in c["placement"]["clusters"] if row["cluster"] == destination)
         kept["assignments"].extend([{**old["assignments"][0], "site": target, "bel": "BFF"}])
         c["placement"]["clusters"].remove(old)
-        physical_handoff_facts(c["physical"], c["packed"], c["placement"])
+        write_handoff_fixture(c["physical"], c["packed"], c["placement"])
         if feature == "shared-site":
             nets[0]["pins"][2]["site"] = target
         else:

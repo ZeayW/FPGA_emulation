@@ -1,4 +1,4 @@
-from tests.physical_handoff_facts import physical_handoff_facts
+from tests.physical_handoff_fixture import write_handoff_fixture
 import json
 import hashlib
 import sqlite3
@@ -337,7 +337,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             source.write_text(json.dumps(mapped), encoding="utf-8")
             import_yosys_json(source).save(ir_path)
             emit_xilinx_mapped_index(ir_path, index)
-            physical_handoff_facts(handoff, packed, placement)
+            write_handoff_fixture(handoff, packed, placement)
             with open_xilinx_mapped_index(index) as indexed:
                 rows = list(indexed.iter_physical_route_pins_by_net(
                     handoff, ordinal_offset=3

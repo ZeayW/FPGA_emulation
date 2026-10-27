@@ -234,15 +234,13 @@ def test_indexed_family_and_driver_queries_only_decode_the_requested_subgraph(tm
 def test_indexed_bridge_uses_native_population_and_keeps_local_control_checks(tmp_path):
     from tests.test_xilinx_openparf_bridge import _native_certificate
     from tests.test_rwroute_native import write_mapped
-    from emuflow.physical.openparf.xilinx_openparf_bridge import (
+    from emuflow.physical.handoff import (
         materialize_xilinx_openparf_atomic_contract,
     )
 
-    mapped_json, architecture, certificate = _native_certificate(
-        tmp_path, include_hard=False, split_ff_control_sets=True
-    )
-    index_path = tmp_path / "mapped.sqlite"
-    write_mapped(index_path, json.loads(mapped_json.read_text()))
+    from tests.physical_handoff_native_fixture import prepare_native_handoff
+    data=prepare_native_handoff(tmp_path,split_ff_control_sets=True)
+    index_path,architecture,certificate=data.mapped,data.architecture,data.certificate
     with (
         open_xilinx_mapped_index(index_path) as indexed,
         patch.object(
@@ -262,18 +260,18 @@ def test_indexed_bridge_uses_native_population_and_keeps_local_control_checks(tm
         ),
     ):
         result = materialize_xilinx_openparf_atomic_contract(
-            mapped_json,
+            index_path,
             architecture,
             certificate,
             tmp_path / "physical.sqlite",
-            mapped_value=indexed,
+            mapped_value=indexed, source_packed_path=data.source,
         )
     assert result["status"] == "pass"
     population = result["validation"]["packing"]["source_population_validation"]
     assert population["assignments"] == result["placed_cells"]
     assert (
         result["runtime_breakdown"]["dataflow"]["physical_contract_validation"]
-        == "native-typed-population-with-local-site-semantics-v1"
+        == "native-complete-source-and-device-audit-v1"
     )
     assert not list(tmp_path.glob(".*.drivers.*"))
 
@@ -349,18 +347,17 @@ def test_repeated_large_population_never_constructs_a_python_circuit(tmp_path):
 def test_bridge_binds_in_process_index_before_native_check_and_publication(tmp_path):
     from tests.test_xilinx_openparf_bridge import _native_certificate
     from tests.test_rwroute_native import write_mapped
-    from emuflow.physical.openparf.xilinx_openparf_bridge import (
+    from emuflow.physical.handoff import (
         materialize_xilinx_openparf_atomic_contract,
     )
 
-    mapped_json, architecture, certificate = _native_certificate(
-        tmp_path, include_hard=False
-    )
-    index_path = tmp_path / "mapped.sqlite"
-    write_mapped(index_path, json.loads(mapped_json.read_text()))
+    from tests.physical_handoff_native_fixture import prepare_native_handoff
+    data=prepare_native_handoff(tmp_path,split_ff_control_sets=True)
+    index_path,architecture,certificate=data.mapped,data.architecture,data.certificate
     output = tmp_path / "physical.sqlite"
     output.write_bytes(b"prior publication")
-    original = physical_cells_native.validate_native_physical_cells
+    from emuflow.physical import handoff as host
+    original = host._write_request
 
     def change_after_check(*args, **kwargs):
         result = original(*args, **kwargs)
@@ -378,14 +375,14 @@ def test_bridge_binds_in_process_index_before_native_check_and_publication(tmp_p
             return_value=str(emuflow_native()),
         ),
         patch.object(
-            physical_cells_native,
-            "validate_native_physical_cells",
+            host,
+            "_write_request",
             side_effect=change_after_check,
         ),
     ):
         with pytest.raises(ValidationError, match="source generation changed"):
             materialize_xilinx_openparf_atomic_contract(
-                mapped_json, architecture, certificate, output, mapped_value=indexed
+                index_path, architecture, certificate, output, mapped_value=indexed, source_packed_path=data.source
             )
     assert output.read_bytes() == b"prior publication"
     assert not list(tmp_path.glob(".physical.sqlite.*"))
@@ -394,15 +391,13 @@ def test_bridge_binds_in_process_index_before_native_check_and_publication(tmp_p
 def test_bridge_rejects_a_reader_leased_before_the_index_changed(tmp_path):
     from tests.test_xilinx_openparf_bridge import _native_certificate
     from tests.test_rwroute_native import write_mapped
-    from emuflow.physical.openparf.xilinx_openparf_bridge import (
+    from emuflow.physical.handoff import (
         materialize_xilinx_openparf_atomic_contract,
     )
 
-    mapped_json, architecture, certificate = _native_certificate(
-        tmp_path, include_hard=False
-    )
-    index_path = tmp_path / "mapped.sqlite"
-    write_mapped(index_path, json.loads(mapped_json.read_text()))
+    from tests.physical_handoff_native_fixture import prepare_native_handoff
+    data=prepare_native_handoff(tmp_path,split_ff_control_sets=True)
+    index_path,architecture,certificate=data.mapped,data.architecture,data.certificate
     output = tmp_path / "physical.sqlite"
     output.write_bytes(b"prior publication")
     with open_xilinx_mapped_index(index_path) as indexed:
@@ -412,7 +407,7 @@ def test_bridge_rejects_a_reader_leased_before_the_index_changed(tmp_path):
             )
         with pytest.raises(ValidationError, match="source generation changed"):
             materialize_xilinx_openparf_atomic_contract(
-                mapped_json, architecture, certificate, output, mapped_value=indexed
+                index_path, architecture, certificate, output, mapped_value=indexed, source_packed_path=data.source
             )
     assert output.read_bytes() == b"prior publication"
     assert not list(tmp_path.glob(".physical.sqlite.*"))

@@ -15,6 +15,8 @@
 #include "timing/logic_segment_query.hpp"
 #include "timing/local_path_query.hpp"
 #include "physical/vivado/vivado_timing_queries.hpp"
+#include "physical/handoff.hpp"
+#include "physical/handoff_audit.hpp"
 #include "partition/partition_init.hpp"
 #include "partition/partition_hops.hpp"
 #include "partition/partition_semantics.hpp"
@@ -36,6 +38,9 @@ constexpr const char* kUsage =
     "  compile REQUEST_JSON\n"
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
     "  phase2 run EMUIR POLICY OUTPUT_DIR\n"
+    "  physical build-handoff REQUEST OUTPUT_DIR\n"
+    "  physical validate-handoff-structure HANDOFF REQUEST SUMMARY\n"
+    "  physical audit-handoff MAPPED HANDOFF ARCHITECTURE [NATIVE PROVIDER] [CONSTRAINTS] REQUEST SUMMARY\n"
     "  phase3 run REQUEST OUTPUT_DIR\n"
     "  phase6 split EMUIR ASSIGNMENT SCHEDULE OUTPUT\n"
     "  phase6 run EMUIR ASSIGNMENT SCHEDULE REQUEST OUTPUT_DIR\n"
@@ -273,6 +278,27 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     return Finish(emuflow::core::RunPhase2(
       emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),
       emuflow::core::ArtifactRef::Bind(argv[4],"phase2-policy-v1"),argv[5],&tool_cancelled),report);
+  }
+  if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="build-handoff") {
+    ToolSignals signals;
+    return Finish(emuflow::core::BuildPhysicalHandoff(
+      emuflow::core::ArtifactRef::Bind(argv[3],"physical-handoff-bridge-request-v1"),
+      argv[4],&tool_cancelled),report);
+  }
+  if(argc==6 && std::string(argv[1])=="physical" && std::string(argv[2])=="validate-handoff-structure") {
+    std::vector<emuflow::core::ArtifactRef> inputs{
+      emuflow::core::ArtifactRef::Bind(argv[3],"xilinx-physical-handoff-v1"),
+      emuflow::core::ArtifactRef::Bind(argv[4],"physical-handoff-structure-request-v1")};
+    ToolSignals signals;
+    return Finish(emuflow::core::RunPhysicalHandoffStructure(inputs,argv[5],&tool_cancelled),report);
+  }
+  if(argc>=8 && argc<=11 && std::string(argv[1])=="physical" && std::string(argv[2])=="audit-handoff") {
+    std::vector<emuflow::core::ArtifactRef> inputs;
+    for(int i=3;i<argc-2;++i)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[i],
+      i==3?"xilinx-mapped-index-v2":i==4?"xilinx-physical-handoff-v1":"physical-input-document-v1"));
+    inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[argc-2],"physical-handoff-audit-request-v1"));
+    ToolSignals signals;
+    return Finish(emuflow::core::RunPhysicalHandoffAudit(inputs,argv[argc-1],&tool_cancelled),report);
   }
   if(argc==12 && std::string(argv[1])=="physical" && std::string(argv[2])=="prepare-local-paths") {
     const char* schemas[]={"emuir-compact-v2","assignment-index-v4","timing-path-store-v1",

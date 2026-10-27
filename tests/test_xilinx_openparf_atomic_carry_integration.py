@@ -15,8 +15,8 @@ from emuflow.physical.openparf.xilinx_openparf_atomic import (
     read_xilinx_openparf_atomic_name_map,
     validate_xilinx_openparf_atomic_placement,
 )
-from emuflow.physical.xilinx_packing import validate_xilinx_packing
-from emuflow.physical.xilinx_placement import validate_xilinx_placement
+from tests.xilinx_site_reference import validate_xilinx_packing
+from tests.xilinx_site_reference import validate_xilinx_placement
 from tests.xilinx_carry_fixture import _write_fixture
 
 

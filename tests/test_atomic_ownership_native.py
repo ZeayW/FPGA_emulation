@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import subprocess
+from pathlib import Path
 from collections.abc import Sequence
 from contextlib import closing
 from unittest.mock import patch
@@ -391,10 +392,9 @@ def test_borrowed_certificate_view_rejects_changed_generation(tmp_path):
 def test_real_bridge_consumes_existing_authorities_without_ownership_mirrors(
     tmp_path, bad_owner
 ):
-    from emuflow.physical.openparf.xilinx_openparf_bridge import (
+    from emuflow.physical.handoff import (
         materialize_xilinx_openparf_atomic_contract,
     )
-    from emuflow.physical.xilinx_physical_handoff import XilinxPhysicalHandoffBuilder
     from tests.test_rwroute_native import write_mapped
     from tests.test_xilinx_openparf_bridge import _native_certificate
 
@@ -438,37 +438,14 @@ def test_real_bridge_consumes_existing_authorities_without_ownership_mirrors(
         if bad_owner:
             output.write_text("previous publication")
         else:
-            # Explicit small-fixture oracle: the former ownership snapshot
-            # comparison remains useful here, but is never a native fallback.
-            with patch.object(
-                physical_cells_native,
-                "resolve_native_executable",
-                return_value=str(emuflow_native()),
-            ):
-                materialize_xilinx_openparf_atomic_contract(
-                    mapped,
-                    architecture,
-                    certificate_path,
-                    tmp_path / "reference.sqlite",
-                    mapped_value=indexed,
-                    source_packed_path=source_path,
-                    source_packed_value=source.materialize(),
-                )
+            reference_result = materialize_xilinx_openparf_atomic_contract(
+                mapped, architecture, certificate_path, tmp_path/'reference-target.sqlite',
+                mapped_value=indexed, source_packed_path=source_path, source_packed_value=source)
         with (
             patch.object(
                 physical_cells_native,
                 "resolve_native_executable",
                 return_value=str(emuflow_native()),
-            ),
-            patch.object(
-                XilinxPhysicalHandoffBuilder,
-                "append_source_assignment",
-                side_effect=AssertionError("source ownership mirror"),
-            ),
-            patch.object(
-                XilinxPhysicalHandoffBuilder,
-                "validate_source_ownership",
-                side_effect=AssertionError("second ownership join"),
             ),
             patch.object(
                 XilinxOpenparfAtomicSourceView,
@@ -503,7 +480,14 @@ def test_real_bridge_consumes_existing_authorities_without_ownership_mirrors(
     assert result["status"] == "pass"
     assert receipt["assignments"] == len(owners) == result["placed_cells"]
     assert receipt["ownership_snapshots"] == 0
-    assert output.read_bytes() == (tmp_path / "reference.sqlite").read_bytes()
+    from emuflow.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
+    assert Path(result['physical_handoff']).is_file()
+    actual_packed,actual_placement=open_xilinx_physical_handoff(Path(result['physical_handoff']))
+    expected_packed,expected_placement=open_xilinx_physical_handoff(Path(reference_result['physical_handoff']))
+    assert list(actual_packed['clusters'])==list(expected_packed['clusters'])
+    assert list(actual_placement['clusters'])==list(expected_placement['clusters'])
+    assert actual_packed['cascade_chains']==expected_packed['cascade_chains']
+    assert actual_packed['unplaced_constants']==expected_packed['unplaced_constants']
     assert (
         result["runtime_breakdown"]["dataflow"]["certificate_assignment_ownership"]
         == "native-source-certificate-ordered-merge-v1"

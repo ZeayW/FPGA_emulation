@@ -141,6 +141,37 @@ class NativeStageRuntimeTest(unittest.TestCase):
                         jsonschema.validate(status, schema)
             self.assertFalse(list(root.glob("*.tmp.*")))
 
+    def test_direct_handoff_entries_reject_missing_sources_without_publishing(self):
+        # These direct shared-core entries bind original inputs before RunStage,
+        # like the primary-hop entry. No new generation or success proof exists
+        # when that initial binding fails.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            missing = str(root / 'missing-source')
+            output, report = root / 'output', root / 'report'
+            cases = [
+                ["physical", "build-handoff", missing],
+                ["physical", "validate-handoff-structure", missing, missing],
+                ["physical", "audit-handoff", missing, missing, missing, missing],
+                ["physical", "audit-handoff", missing, missing, missing, missing, missing],
+                ["physical", "audit-handoff", missing, missing, missing, missing, missing, missing],
+                ["physical", "audit-handoff", missing, missing, missing, missing, missing, missing, missing],
+            ]
+            for args in cases:
+                with self.subTest(operation=args[:2], sources=len(args)-2):
+                    output.write_bytes(b'previous-generation')
+                    result = subprocess.run([str(emuflow_native()), '--report', str(report),
+                                             *args, str(output)], capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    status = json.loads(result.stderr.removeprefix('emuflow-native: '))
+                    self.assertEqual(status['stage'], 'native.request')
+                    self.assertEqual(status['error']['code'], 'missing-artifact')
+                    self.assertEqual(status['outputs'], [])
+                    self.assertIn(missing, status['error']['message'])
+                    self.assertFalse(report.exists())
+                    self.assertEqual(output.read_bytes(), b'previous-generation')
+                    self.assertEqual(sorted(p.name for p in root.iterdir()), ['output'])
+
     def test_direct_primary_hop_entry_rejects_missing_sources_without_replacing_output(self):
         # Direct library dispatch binds input before starting a stage. Its
         # early source error is structured stderr, with no published report.

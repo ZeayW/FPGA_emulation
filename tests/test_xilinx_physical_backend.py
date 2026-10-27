@@ -185,8 +185,9 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             root = Path(temporary)
             physical = root / "physical"
             physical_handoff_path = physical / "physical-handoff.sqlite"
-            packed_path = physical_handoff_path
-            placement_path = physical_handoff_path
+            published_handoff_path = physical / "handoff-generation/physical-handoff.sqlite"
+            packed_path = published_handoff_path
+            placement_path = published_handoff_path
             physical.mkdir(parents=True)
             (physical / "packed-sites.json").write_text("stale\n")
             (physical / "placement.json").write_text("stale\n")
@@ -226,12 +227,12 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     "provider_manifest_path": provider_manifest,
                     "mapped_value": mapped_value,
                     "mapped_sha256": "0" * 64,
-                    "architecture": architecture_object,
                 })
                 packed_value_sink.update({"summary": {"clusters": 2}})
                 placement_value_sink.update({"summary": {"clusters": 1}})
                 return {
                     "status": "pass",
+                    "physical_handoff": str(published_handoff_path),
                     "validation": {
                         "packing": {"status": "pass"},
                         "placement": {"status": "pass"},
@@ -315,14 +316,6 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     side_effect=materialize,
                 ) as bridge,
                 mock.patch(
-                    "emuflow.physical.xilinx_physical_backend.validate_xilinx_packing",
-                    return_value={"status": "pass"},
-                ) as validate_packing,
-                mock.patch(
-                    "emuflow.physical.xilinx_physical_backend.validate_xilinx_placement",
-                    return_value={"status": "pass"},
-                ) as validate_placement,
-                mock.patch(
                     "emuflow.physical.xilinx_physical_backend.export_rwroute_input",
                     side_effect=stop_at_export,
                 ) as export,
@@ -358,11 +351,9 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             bridge.assert_called_once()
             export.assert_called_once()
             self.assertEqual(
-                digest.call_args_list.count(mock.call(physical_handoff_path)),
+                digest.call_args_list.count(mock.call(published_handoff_path)),
                 1,
             )
-            validate_packing.assert_not_called()
-            validate_placement.assert_not_called()
             read.assert_not_called()
             self.assertIs(
                 build_source.call_args.kwargs["mapped_value"], mapped_value

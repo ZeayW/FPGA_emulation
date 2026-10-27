@@ -66,20 +66,17 @@ def case(tmp_path, fixed_case, request):
         if request.param == 'vivado':
             stages.update(mapped_verilog=report, vivado_implementation={'cell_coverage':coverage})
         else:
-            from emuflow.physical.xilinx_physical_handoff import XilinxPhysicalHandoffBuilder
+            from tests.physical_handoff_fixture import write_bridge_cluster_fixture
             from emuflow.physical.openparf.xilinx_openparf_atomic import _write_site_database
             handoff, sites = root/'handoff.sqlite', root/'site-map.sqlite3'
-            with XilinxPhysicalHandoffBuilder(handoff) as builder:
-                builder.append_bridge_cluster({'id':'c0','kind':'slice','site_templates':['SLICEL'],
+            write_bridge_cluster_fixture(handoff, {'id':'c0','kind':'slice','site_templates':['SLICEL'],
                     '_placement':{'site':'S0','site_type':'SLICEL','x':9999,'y':8888,'fixed':False},
                     'assignments':[{'instance':'launch' if index==0 else 'capture','cell_type':'FDRE',
-                        'bel':'AFF','_placement_mode':'direct','_physical_site':'certified-native-alias','_placement_ordinal':0}]})
-                builder.seal({'schema':'emuflow.packed-site-netlist/v1','top':'dut',
+                        'bel':'AFF','_placement_mode':'direct','_physical_site':'certified-native-alias','_placement_ordinal':0}]},
+                {'schema':'emuflow.packed-site-netlist/v1','top':'dut',
                     'source':{'mapped_json_sha256':report['mapped_index']['sha256'],
                               'architecture_sha256':file_sha256(architecture)}},
-                    {'schema':'emuflow.xilinx-placement/v1','part':platform.fpgas[0].part},
-                    cascades=[],constants=[])
-                builder.publish()
+                    {'schema':'emuflow.xilinx-placement/v1','part':platform.fpgas[0].part})
             _write_site_database(sites, {'coordinate_system':PLACEMENT_COORDINATE_SYSTEM,
                 'architecture_sha256':file_sha256(architecture), 'sites':[{
                     'dense_x':0,'dense_y':0,'physical_x':3+index*10,'physical_y':4+index*10,

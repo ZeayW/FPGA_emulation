@@ -17,8 +17,8 @@ from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Set, 
 
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json
-from emuflow.physical.xilinx_packing import PACKED_SITE_NETLIST_SCHEMA
-from emuflow.physical.xilinx_placement import XILINX_PLACEMENT_SCHEMA
+from emuflow.physical.contracts import PACKED_SITE_NETLIST_SCHEMA
+from emuflow.physical.contracts import XILINX_PLACEMENT_SCHEMA
 from emuflow.physical.xilinx_physical_handoff import validate_xilinx_physical_handoff_pair
 from emuflow.physical.rapidwright.xilinx_rwroute import _sha256, _select_module, _primitive_parameter, _is_clock_sink_pin
 

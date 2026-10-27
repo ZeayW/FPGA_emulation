@@ -9,12 +9,11 @@ import pytest
 from emuflow.common.errors import ValidationError
 from emuflow.storage.store_publication import bind_store_source
 
-KINDS = ("mapped", "name_map", "certificate", "handoff")
+KINDS = ("mapped", "name_map", "certificate")
 MODULES = {
     "mapped": "emuflow.physical.xilinx_netlist",
     "name_map": "emuflow.physical.openparf.xilinx_openparf_name_map_storage",
     "certificate": "emuflow.physical.openparf.xilinx_openparf_atomic",
-    "handoff": "emuflow.physical.xilinx_physical_handoff",
 }
 
 
@@ -86,18 +85,6 @@ def produce(kind, output, generation=0):
             source_bindings=sources,
         )
         return output.parent / value["cluster_storage"]["file"]
-    from tests.test_xilinx_physical_handoff import _contracts, XilinxPhysicalHandoffTest
-
-    packed, placement = _contracts()
-    with module.XilinxPhysicalHandoffBuilder(output) as builder:
-        builder.bind_store_sources(sources)
-        builder.append_bridge_cluster(
-            XilinxPhysicalHandoffTest._bridge_cluster(generation)
-        )
-        builder.seal(packed, placement, cascades=(), constants=())
-        module.validate_xilinx_physical_handoff(builder.temporary_path)
-        builder.publish()
-    return output
 
 
 @pytest.mark.parametrize("kind", KINDS)
@@ -192,21 +179,137 @@ def test_reader_cannot_rebind_the_generation_after_validation(tmp_path, kind, ch
         view.bound_store_sources()
 
 
-def test_handoff_rejects_active_sql_source_wal_after_independent_validation(tmp_path):
-    from emuflow.physical.xilinx_physical_handoff import XilinxPhysicalHandoffBuilder
-    from tests.test_xilinx_physical_handoff import _contracts, XilinxPhysicalHandoffTest
+@pytest.fixture
+def native_handoff(tmp_path, monkeypatch):
+    from tests.native_build import emuflow_native
+    from tests.physical_handoff_native_fixture import prepare_native_handoff
+    monkeypatch.setenv('EMUFLOW_NATIVE_ROOT',str(emuflow_native().parent.parent))
+    return prepare_native_handoff(tmp_path/'sources')
 
-    mapped = tmp_path / "mapped.sqlite"
-    produce("mapped", mapped)
-    source = bind_store_source(mapped, "xilinx-mapped-index-v2")
-    output = tmp_path / "handoff.sqlite"
-    packed, placement = _contracts()
-    with XilinxPhysicalHandoffBuilder(output) as builder:
-        builder.bind_store_sources((source,))
-        builder.append_bridge_cluster(XilinxPhysicalHandoffTest._bridge_cluster(0))
-        builder.seal(packed, placement, cascades=(), constants=())
-        Path(str(mapped) + "-wal").write_bytes(b"active input writer")
-        with pytest.raises(ValidationError, match="native SQLite publication failed"):
-            builder.publish()
-        assert not output.exists()
-    assert not list(tmp_path.glob("*.tmp"))
+
+def test_native_handoff_rejection_preserves_prior_generation(tmp_path,native_handoff):
+    from tests.physical_handoff_native_fixture import build_native_handoff
+    from emuflow.physical import handoff as native
+    first=build_native_handoff(native_handoff,tmp_path/'first.sqlite')
+    store=Path(first['physical_handoff'])
+    old=store.read_bytes()
+    write=native._write_request
+    def rejected(*args,**kwargs):
+        result=write(*args,**kwargs)
+        request=Path(args[0])
+        data=bytearray(request.read_bytes());data[-1]^=1;request.write_bytes(data)
+        return result
+    with patch.object(native,'_write_request',rejected),pytest.raises(ValidationError):
+        build_native_handoff(native_handoff,tmp_path/'rejected.sqlite')
+    assert store.read_bytes()==old
+    assert not (tmp_path/'rejected.sqlite').exists()
+    assert not list(tmp_path.glob('*.tmp'))
+
+
+def test_native_handoff_original_sources_remain_bound_until_request_execution(tmp_path,native_handoff):
+    from tests.physical_handoff_native_fixture import build_native_handoff
+    from emuflow.physical import handoff as native
+    first=build_native_handoff(native_handoff,tmp_path/'first.sqlite')
+    store=Path(first['physical_handoff']);old=store.read_bytes()
+    write=native._write_request
+    def changed(*args,**kwargs):
+        result=write(*args,**kwargs)
+        native_handoff.mapped.chmod(native_handoff.mapped.stat().st_mode ^ 0o100)
+        return result
+    with patch.object(native,'_write_request',changed),pytest.raises(ValidationError,match='generation'):
+        build_native_handoff(native_handoff,tmp_path/'changed.sqlite')
+    assert store.read_bytes()==old
+    assert not (tmp_path/'changed.sqlite').exists()
+    assert not list(tmp_path.glob('*.tmp'))
+
+
+def test_handoff_rejects_active_sql_source_wal_before_new_publication(tmp_path,native_handoff):
+    from tests.physical_handoff_native_fixture import build_native_handoff
+    first=build_native_handoff(native_handoff,tmp_path/'first.sqlite')
+    store=Path(first['physical_handoff']);old=store.read_bytes()
+    Path(str(native_handoff.mapped)+'-wal').write_bytes(b'active input writer')
+    with pytest.raises(ValidationError):
+        build_native_handoff(native_handoff,tmp_path/'active.sqlite')
+    assert store.read_bytes()==old
+    assert not (tmp_path/'active.sqlite').exists()
+
+
+@pytest.mark.parametrize('changed', ['mapped', 'certificate', 'output'])
+def test_handoff_source_lease_covers_final_lazy_sink_adoption(tmp_path, native_handoff, changed):
+    from emuflow.physical.handoff import materialize_xilinx_openparf_atomic_contract
+    from tests.physical_handoff_native_fixture import build_native_handoff
+    first = build_native_handoff(native_handoff, tmp_path / 'first')
+    prior = Path(first['physical_handoff'])
+    original = prior.read_bytes()
+
+    class MutatingSink(dict):
+        def update(self, value):
+            super().update(value)
+            path = (value['clusters']._path if changed == 'output' else
+                    getattr(native_handoff, changed))
+            path = Path(path)
+            path.chmod(path.stat().st_mode ^ 0o100)
+
+    with pytest.raises(ValidationError, match='generation'):
+        materialize_xilinx_openparf_atomic_contract(
+            native_handoff.mapped, native_handoff.architecture,
+            native_handoff.certificate, tmp_path / 'rejected',
+            source_packed_path=native_handoff.source, packed_value_sink=MutatingSink())
+    assert prior.read_bytes() == original
+    assert not list(tmp_path.glob('rejected.generation.*'))
+
+
+@pytest.mark.parametrize('field', ['name_map_sha256', 'native_placement_sha256'])
+def test_handoff_rejects_malformed_certificate_lineage(tmp_path, native_handoff, field):
+    from tests.physical_handoff_native_fixture import build_native_handoff
+    from emuflow.physical.openparf.xilinx_openparf_atomic import (
+        open_xilinx_openparf_atomic_placement,
+        write_xilinx_openparf_atomic_placement_certificate,
+    )
+    with open_xilinx_openparf_atomic_placement(native_handoff.certificate, allow_legacy=False) as view:
+        value = dict(view)
+        value['clusters'] = list(view.iter_clusters())
+    value['source'][field] = 'invalid'
+    write_xilinx_openparf_atomic_placement_certificate(native_handoff.certificate, value)
+    with pytest.raises(ValidationError, match='lineage digest'):
+        build_native_handoff(native_handoff, tmp_path / 'rejected')
+    assert not list(tmp_path.glob('rejected.generation.*'))
+
+
+def test_handoff_rejects_unclaimed_native_device_inputs(tmp_path, native_handoff):
+    from emuflow.physical.handoff import materialize_xilinx_openparf_atomic_contract
+    extra = tmp_path / 'unexpected.json'
+    extra.write_text('{}')
+    with pytest.raises(ValidationError, match='source catalog'):
+        materialize_xilinx_openparf_atomic_contract(
+            native_handoff.mapped, native_handoff.architecture, native_handoff.certificate,
+            tmp_path / 'rejected', source_packed_path=native_handoff.source,
+            native_constraints_path=extra, provider_manifest_path=extra)
+    assert not list(tmp_path.glob('rejected.generation.*'))
+
+
+def test_independent_native_audit_rejoins_original_device_semantics(tmp_path, native_handoff):
+    import sqlite3
+    from emuflow.physical.handoff import audit_physical_handoff
+    from emuflow.physical.xilinx_physical_handoff import validate_xilinx_physical_handoff
+    from tests.physical_handoff_native_fixture import build_native_handoff
+    report = build_native_handoff(native_handoff, tmp_path / 'owner')
+    handoff = Path(report['physical_handoff'])
+    checked = audit_physical_handoff(native_handoff.mapped, handoff, native_handoff.architecture)
+    assert checked['packing']['status'] == checked['placement']['status'] == 'pass'
+    with sqlite3.connect(handoff) as db:
+        db.execute("UPDATE assignment SET bel='UNKNOWN_BEL' WHERE instance=(SELECT min(instance) FROM assignment)")
+    assert validate_xilinx_physical_handoff(handoff)['status'] == 'pass'
+    with pytest.raises(ValidationError, match='BEL|bel'):
+        audit_physical_handoff(native_handoff.mapped, handoff, native_handoff.architecture)
+
+
+def test_cli_requires_typed_physical_owner_and_retires_json_validator_routes():
+    from emuflow.flow.cli import _build_parser
+    parser = _build_parser()
+    parsed = parser.parse_args(['arch', 'validate-xilinx-physical', '--mapped-index', 'mapped.sqlite',
+                                '--physical-handoff', 'handoff.sqlite', '--architecture', 'architecture.json'])
+    assert parsed.arch_command == 'validate-xilinx-physical'
+    for retired in ('validate-xilinx-packing', 'validate-xilinx-placement'):
+        with pytest.raises(SystemExit):
+            parser.parse_args(['arch', retired])

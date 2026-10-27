@@ -329,6 +329,10 @@ not extend the HPWL patience window; the solver restores the lowest-HPWL
 checkpoint instead of allowing density multipliers to destroy wirelength. The
 diagnostic path records legalization displacement and still requires exact
 site/BEL validation before any routing release.
+The shared core consumes typed placement certificates and atomic source owners
+to publish the physical handoff directly, then independently audits mapped
+primitive ownership, site/BEL legality, slice controls and dedicated cascades.
+The Python host passes source references and reads lazy typed views.
 The final route still requires zero
 overused nodes and complete source-to-sink connectivity.
 
