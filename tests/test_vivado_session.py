@@ -710,3 +710,29 @@ def test_routed_export_rejects_a_changed_retained_checkpoint(tmp_path):
     (prior/"routed.dcp").write_bytes(b"changed")
     with pytest.raises(ValidationError, match="checkpoint changed"):
         prepare_timing(load_session(config.with_suffix(".json")))
+
+
+def test_retained_checkpoint_can_measure_a_new_complete_query_library(tmp_path):
+    from emuflow.vivado_session import prepare_routed_timing_export, load_session
+    session, _, _ = session_fixture(tmp_path, require_constant=False)
+    prior = Path(session["output"])
+    session["source_hierarchy_prefix"] = ""
+    write_json(prior/"native-session.json", session)
+    (prior/"routed.dcp").write_bytes(b"retained physical design")
+    (prior/"clock-contract.tsv").write_text("clock_hex\tport_hex\tperiod_ns\n")
+    original_query = Path(session["queries"]["local_path_timing"])
+    complete = tmp_path/"complete-query.tsv"
+    complete.write_text(original_query.read_text().replace(b"path0".hex(), b"new-source-member".hex()))
+    parents = {p: file_sha256(p) for p in [prior/"native-session.json", prior/"routed.dcp", original_query, complete]}
+    out = tmp_path/"complete-export"
+    config = prepare_routed_timing_export(prior/"native-session.json", out,
+        query_overrides={"local_path_timing": complete})
+    recovered = load_session(config.with_suffix(".json"))
+    shutil.copyfile(prior/"routed_mapped_cells.tsv", out/"routed_mapped_cells.tsv")
+    assert prepare_timing(recovered)["timing_coverage"] == {
+        "status":"complete", "requested_queries":1, "measurable_queries":1, "unresolved_queries":0}
+    rows = list(csv.DictReader((out/"local_path_timing-resolved.tsv").open(), delimiter="\t"))
+    assert len(rows) == 1 and bytes.fromhex(rows[0]["endpoint_hex"]).decode() == "new-source-member"
+    assert recovered["routed_export"]["query_overrides"] == {
+        "local_path_timing":{"path":str(complete), "sha256":file_sha256(complete)}}
+    assert parents == {p: file_sha256(p) for p in parents}

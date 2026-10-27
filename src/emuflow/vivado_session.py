@@ -129,11 +129,13 @@ def load_session(path: Path):
     return value
 
 
-def prepare_routed_timing_export(manifest_path: Path, output: Path):
+def prepare_routed_timing_export(manifest_path: Path, output: Path, *, query_overrides=None):
     """Prepare read-only timing extraction from a session's retained DCP.
 
     Keep recovery outputs apart from the original implementation. The original
     constraints stay in the DCP; this operation never regenerates clocks or RTL.
+    New source-path libraries can replace selected query classes without
+    changing the original implementation session or its other queries.
     """
     import shutil
     manifest_path = manifest_path.resolve()
@@ -145,6 +147,15 @@ def prepare_routed_timing_export(manifest_path: Path, output: Path):
     output = output.resolve()
     if output == prior:
         raise ValidationError("routed timing extraction requires a fresh output directory")
+    replacements = {}
+    if query_overrides is not None:
+        if not isinstance(query_overrides, dict) or set(query_overrides)-{"boundary_timing", "logic_segment_timing", "local_path_timing"}:
+            raise ValidationError("invalid routed timing query overrides")
+        for kind, path in query_overrides.items():
+            path = Path(path).resolve()
+            if not path.is_file():
+                raise ValidationError("routed timing query override is missing")
+            replacements[kind] = {"path":str(path), "sha256":file_sha256(path)}
     checkpoint_sha = file_sha256(checkpoint)
     output.mkdir(parents=True)
     (output/".tmp").mkdir()
@@ -157,6 +168,9 @@ def prepare_routed_timing_export(manifest_path: Path, output: Path):
     session.update(output=str(output), routed_export={"checkpoint":str(checkpoint),
         "checkpoint_sha256":checkpoint_sha, "source_manifest":str(manifest_path),
         "source_manifest_sha256":file_sha256(manifest_path)})
+    if replacements:
+        session["queries"].update({kind:item["path"] for kind,item in replacements.items()})
+        session["routed_export"]["query_overrides"] = replacements
     if session.get("word_phy_directory") is not None:
         session["word_phy_directory"] = str(output)
     write_json(output/"native-session.json", session, compact=True)
