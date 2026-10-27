@@ -347,11 +347,6 @@ integration and extensions are mapped to implementation entry points in the
 [architecture and phase contracts](docs/FLOW_PLAN.md) and complete
 [source/license inventory](OPEN_SOURCE_COMPONENTS.md).
 
-New production data-plane work belongs in the shared C++ core; Python remains
-thin control and explicitly bounded host work. See the
-[ownership contract](docs/FLOW_PLAN.md#production-data-plane-ownership) and
-[contribution gates](docs/VALIDATION.md#cross-branch-integration-gates).
-
 ## Design documentation
 
 Detailed design material is kept outside this project entry point:

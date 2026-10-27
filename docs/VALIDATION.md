@@ -1,45 +1,5 @@
 # Validation requirements
 
-## Cross-branch integration gates
-
-Run `python3 scripts/check_data_plane_contract.py .` and
-`python3 -m unittest discover -s tests -p 'test_data_plane_contract.py'` on every
-change, alongside affected component tests. CI checks registered entrypoints,
-production imports of test/retired modules, registered native source ownership,
-retired-path reintroduction and explicit exception metadata. It deliberately
-does not attempt to infer algorithmic complexity from Python syntax. PR review
-must inspect data population, SQL iteration, FFI payloads, bounded controls,
-identity and lifecycle. New exceptions must be reviewed with a source revision,
-scope, reason, owner and concrete retirement condition; absence is not approval.
-
-1. Start new features from latest `main`. Shared governance lands on `main`
-   first, then is explicitly merged into active development branches.
-2. Inventory merge bases, unique commits, uncommitted work and live consumers.
-   Use an isolated branch from the intended consumer's exact committed head.
-   Do not switch, rewrite or edit a checkout used by another task or live job.
-3. Integrate shared infrastructure before stage producers/validators, then
-   backend adapters. Record prerequisites and unresolved overlap. A clean
-   textual merge is not proof of semantic compatibility.
-4. For a public contract change, update both physical consumers and exercise
-   their normal and rejection paths. Retire the old producer/entry with its
-   tested replacement; add an explicit tombstone to the structural registry.
-5. Run component/contract gates daily. Cross-stage semantics, physical behavior
-   or performance-critical changes additionally need corresponding NVDLA
-   qualification, with exact source/config/tool identities. Keep integration
-   status separate from real-design qualification and complete Phase 7/7C
-   acceptance. Small fixtures never stand in for those gates; documentation
-   changes alone do not trigger an expensive full flow.
-6. Preserve experimental labels for unaccepted Vivado capabilities. Preserve
-   active NVDLA/backend jobs and their immutable source/outputs. Remote tests
-   deploy an exact pushed Git SHA through the existing connection policy.
-7. Before retiring a branch, compare unique commits and verify all intended
-   consumers have switched and no live task uses it. Preserve unique work on a
-   reviewable branch; do not batch-delete branches or force-push active history.
-
-Before each push, update README when its entry-point meaning changes, check
-changed local Markdown links/anchors and `git diff --check`. Keep run-specific
-integration inventories and qualification results outside public source docs.
-
 Validation establishes a specific claim on a declared input population.
 A structural check, functional fixture, optimizer objective, and physical
 timing result answer different questions.
