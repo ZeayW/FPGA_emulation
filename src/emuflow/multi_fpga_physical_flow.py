@@ -1581,7 +1581,8 @@ def run_multi_fpga_physical_flow(
                 **({'dut_timing_io':dut_timing_io} if dut_timing_io is not None else {}),
                 **({'word_phy_plan_path':word_sources['plan'],
                     'word_wiring_path':word_sources['wiring'],
-                    'retain_routed_checkpoint':True} if word_sources is not None else {}),
+                    'retain_routed_checkpoint':True,
+                    'route_after_proof_failure':True} if word_sources is not None else {}),
             )
             if logic_query_report is not None:
                 vivado_report["logic_segment_timing"][
