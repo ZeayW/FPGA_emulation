@@ -435,4 +435,18 @@ std::vector<SourceLaunchFact> SourceLaunchClockView::Facts(const std::string& pi
   }
   Check(!result.empty(),"source launch original driver has no clock facts");return result;
 }
+std::vector<double> SourceLaunchClockView::TargetPeriods(const std::map<std::string,double>& targets) {
+  RequireUnchanged();
+  const auto references=ClockReferences();
+  auto rows=clocks_.database().Prepare("SELECT clock_seq,name FROM clocks ORDER BY clock_seq");
+  std::vector<double> result;
+  while(rows.Step()) {
+    Check(rows.TypedInteger(0)==static_cast<std::int64_t>(result.size()),"source target clock catalog is not dense");
+    const auto found=targets.find(rows.TypedText(1));
+    Check(found!=targets.end() && std::isfinite(found->second) && found->second>0,
+          "source target clock period is missing or invalid");
+    result.push_back(found->second);
+  }
+  Check(result.size()==references.size(),"source target clock catalog coverage differs");RequireUnchanged();return result;
+}
 }  // namespace emuflow::core

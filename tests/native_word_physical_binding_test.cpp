@@ -20,6 +20,8 @@ int main(int argc,char** argv) {
     WordPhysicalBindingContext context;
     context.design="counter";context.platform="board";context.word_period_ns=5.;context.epoch_ns=0.;
     context.frame_slots=1024;context.fixed_latency_words=6;context.implementation_clock_periods_ns={{"clk",100.}};
+    auto extra_clock=parser.Prepare("SELECT json_extract(?1,'$.extra_clock_period_ns')");extra_clock.BindText(1,json);
+    if(extra_clock.Step() && !extra_clock.IsNull(0))context.implementation_clock_periods_ns["extra"]=extra_clock.TypedReal(0);
     auto& identity=context.source;identity.original_ir_sha256=text("$.identity.original_ir_sha256");
     identity.path_database_sha256=text("$.identity.path_database_sha256");identity.routes_sha256=text("$.identity.routes_sha256");
     identity.schedule_sha256=text("$.identity.schedule_sha256");identity.semantic_sha256=text("$.identity.semantic_sha256");
@@ -49,6 +51,17 @@ int main(int argc,char** argv) {
     auto result=BindPhysicalWordModel(ArtifactRef::Bind(text("$.assignment"),"assignment-index-v4"),
         ArtifactRef::Bind(text("$.semantic"),"exact-semantic-binary-v2"),
         ArtifactRef::Bind(text("$.schedule"),"tdm-schedule-store-v4"),launches,context,parts);
+    auto capture=parser.Prepare("SELECT json_extract(?1,'$.capture_edge_ns'),json_extract(?1,'$.capture_period_ns')");capture.BindText(1,json);
+    if(capture.Step() && !capture.IsNull(0)) {
+      auto targets=context.implementation_clock_periods_ns;
+      if(!capture.IsNull(1))targets["clk"]=capture.TypedReal(1);
+      result=BindWordCaptureClockContext(result,launches,targets,capture.TypedReal(0));
+    }
+    if(argc==3 && std::string(argv[2])=="mix-capture-clock-owner") {
+      const auto other=ArtifactRef::Bind(text("$.other_clocks"),"source-launch-clock-store-v1");
+      SourceLaunchClockView alternate(other,source,identity.original_ir_sha256);
+      result=BindWordCaptureClockContext(result,alternate,context.implementation_clock_periods_ns,100.);
+    }
     auto selected=ProjectPhysicalWordEvents(result.model);
     auto choices=parser.Prepare("SELECT value FROM json_each(?1,'$.selected') ORDER BY key");choices.BindText(1,json);
     std::vector<std::uint32_t> override;
@@ -109,6 +122,8 @@ int main(int argc,char** argv) {
       }
       std::cout<<"]";
     }
+    std::cout<<"],\"context_launches\":[";
+    for(std::size_t i=0;i<result.model.root_launch_ns.size();++i){if(i)std::cout<<",";std::cout<<result.model.root_launch_ns[i];}
     std::cout<<"],\"inputs\":"<<result.inputs.size()<<"}\n";return 0;
   }catch(const std::exception& error){std::cerr<<error.what()<<"\n";return 1;}
 }

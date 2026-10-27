@@ -82,6 +82,8 @@ class SourceLaunchClockView {
   // Original engine periods, including clocks with no requested launch tags.
   // A missing raw period is never replaced by the displayed/declared period.
   SourceClockReferences ClockReferences();
+  // Dense clock-id catalog, retaining the existing clock artifact owner.
+  std::vector<double> TargetPeriods(const std::map<std::string,double>& targets);
   const ArtifactRef& artifact() const { return clocks_.artifact(); }
   const ArtifactRef& original_artifact() const { return source_.artifact(); }
   void RequireUnchanged() const;

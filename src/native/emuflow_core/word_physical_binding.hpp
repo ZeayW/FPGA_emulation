@@ -47,6 +47,7 @@ struct BoundPhysicalWordModel {
   // Complete physical source rows retain a typed proof instead of a fake
   // numerical data/check arc. Support-check indices enumerate active fanins.
   std::vector<std::vector<EliminatedFanin>> eliminated_fanins;
+  std::optional<double> capture_edge_ns;
   std::vector<ArtifactRef> inputs;
   void RequireUnchanged() const;
 };
@@ -74,4 +75,12 @@ BoundPhysicalWordModel BindPhysicalWordModel(const ArtifactRef& assignment,
     const ArtifactRef& semantic, const ArtifactRef& schedule,
     SourceLaunchClockView& launches, const WordPhysicalBindingContext& context,
     const std::vector<WordPhysicalPartition>& partitions);
+
+// A setup context uses the last source-clock event strictly before its ideal
+// capture edge. Coincident source events belong to hold/next-cycle analysis,
+// not the current setup snapshot. Preserve original source tags and every
+// measured data/check arc; select periodic word events separately per context.
+// This is an epoch-bounded projection, not a continuous-run/hold certificate.
+BoundPhysicalWordModel BindWordCaptureClockContext(const BoundPhysicalWordModel& original,
+    SourceLaunchClockView& launches,const std::map<std::string,double>& targets,double capture_edge_ns);
 }  // namespace emuflow::core

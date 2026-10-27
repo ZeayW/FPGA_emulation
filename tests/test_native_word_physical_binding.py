@@ -263,6 +263,60 @@ def test_native_interface_and_conservative_logic_measurements_keep_their_costs(p
     assert json.loads(result.stdout)['events']==[11,19,27]
 
 
+@pytest.mark.parametrize('edge,launches,events',[(100.,[0.,25.,50.],[11,19,27]),
+                                              (50.,[0.,25.,-50.],[7,15,23])])
+def test_capture_context_keeps_only_setup_launches_before_each_capture_edge(physical,edge,launches,events):
+    physical[0]['capture_edge_ns']=edge
+    result=run(physical);assert result.returncode==0,result.stderr
+    report=json.loads(result.stdout)
+    assert report['context_launches']==launches and report['events']==events
+    assert report['checks'][2][2]==launches[2]
+
+
+def test_half_cycle_capture_can_use_previous_negative_edge_after_uniform_clock_scaling(physical):
+    physical[0].update(capture_edge_ns=300.,capture_period_ns=600.)
+    result=run(physical);assert result.returncode==0,result.stderr
+    report=json.loads(result.stdout)
+    assert report['context_launches']==[0.,150.,-300.]
+    assert report['events']==[31,39,47]
+    # Complete final RX at 265 ns plus 3 ns capture logic fits the 300 ns
+    # half-cycle edge. Waiting for the coincident new negative launch at
+    # 300 ns would incorrectly make this feasible context impossible.
+    assert (report['events'][-1]+6)*5+3 < 300
+    physical[0]['slacks']=[c[4]-(c[2]+c[3])for c in report['checks']]
+    accepted=run(physical,'validate');assert accepted.returncode==0,accepted.stderr
+
+
+def test_capture_context_never_rounds_an_earlier_edge_into_a_previous_cycle(physical):
+    physical[0]['capture_edge_ns']=50.000000001
+    result=run(physical);assert result.returncode==0,result.stderr
+    report=json.loads(result.stdout)
+    assert report['context_launches'][-1]==50. and report['events']==[11,19,27]
+
+
+@pytest.mark.parametrize('edge,period',[(0.,100.),(-1.,100.),(50.,0.),(50.,-10.)])
+def test_capture_context_rejects_invalid_edge_and_clock_coordinates(physical,edge,period):
+    physical[0].update(capture_edge_ns=edge,capture_period_ns=period)
+    result=run(physical);assert result.returncode!=0 and not result.stdout
+
+
+def test_capture_context_cannot_replace_clock_owner_with_an_identical_copy(physical,tmp_path):
+    config,_=physical;copy=tmp_path/'other-clocks.sqlite'
+    shutil.copyfile(config['clocks'],copy);config['other_clocks']=str(copy)
+    result=run(physical,'mix-capture-clock-owner')
+    assert result.returncode!=0 and 'another artifact'in result.stderr
+
+
+def test_capture_context_preserves_clock_ratios_even_for_a_clock_without_fanins(physical):
+    config,_=physical
+    with closing(sqlite3.connect(config['clocks']))as db,db:
+        raw=db.execute('SELECT engine_period_ns FROM clocks WHERE clock_seq=0').fetchone()[0]
+        db.execute("INSERT INTO clocks VALUES(1,'extra',9.,?)",(raw*.9,))
+    config.update(extra_clock_period_ns=90.,capture_edge_ns=300.,capture_period_ns=600.)
+    result=run(physical)
+    assert result.returncode!=0 and 'uniform clock scaling'in result.stderr
+
+
 @pytest.mark.parametrize('kind',['schedule','semantic','timing_io','routes','path_database'])
 def test_source_clock_context_cannot_cross_runs(physical,kind):
     physical[0]['identity'][kind+'_sha256']='0'*64

@@ -62,6 +62,44 @@ struct Entry {
 void BoundPhysicalWordModel::RequireUnchanged() const {
   for(const auto& input:inputs)input.RequireUnchanged();
 }
+BoundPhysicalWordModel BindWordCaptureClockContext(const BoundPhysicalWordModel& original,
+    SourceLaunchClockView& launches,const std::map<std::string,double>& targets,double capture_edge_ns) {
+  Check(std::isfinite(capture_edge_ns) && capture_edge_ns>original.model.epoch_ns,
+        "word capture context requires an explicit edge after its epoch");
+  original.RequireUnchanged();launches.RequireSourceIdentity(original.context.source);
+  Check(targets.size()==original.context.implementation_clock_periods_ns.size(),"word capture target clock coverage differs");
+  std::optional<double> scale;
+  for(const auto& clock:original.context.implementation_clock_periods_ns) {
+    const auto target=targets.find(clock.first);
+    Check(target!=targets.end() && std::isfinite(target->second) && target->second>0,
+          "word capture target clock is missing or invalid");
+    const auto ratio=target->second/clock.second;
+    Check(std::isfinite(ratio) && ratio>0 && (!scale || std::abs(ratio-*scale)<=1e-7*std::max(ratio,*scale)),
+          "word capture requires uniform clock scaling");scale=ratio;
+  }
+  const auto periods=launches.TargetPeriods(targets);
+  Check(original.roots.size()==original.model.root_launch_ns.size(),"word capture root population differs");
+  auto result=original;result.context.implementation_clock_periods_ns=targets;result.capture_edge_ns=capture_edge_ns;
+  for(std::size_t i=0;i<original.roots.size();++i) {
+    const auto& root=original.roots[i];launches.RequireOwner(root);
+    Check(root.clock.sequence()<periods.size() && std::isfinite(root.engine_period_ns) && root.engine_period_ns>0 &&
+          std::isfinite(root.engine_phase_ns),"word capture root clock is invalid");
+    const auto period=periods[root.clock.sequence()];
+    const auto phase=(root.engine_phase_ns/root.engine_period_ns)*period;
+    const auto cycles=(capture_edge_ns-phase)/period;
+    Check(std::isfinite(phase) && std::isfinite(cycles) && std::abs(cycles)<4503599627370496.,
+          "word capture phase loses clock-cycle resolution");
+    // ceil(x)-1 retains a coincident edge in the preceding source cycle.
+    // Never round a near-but-earlier source event into coincidence.
+    const auto previous=std::ceil(cycles)-1.;
+    const auto launch=phase+previous*period;
+    Check(std::isfinite(launch) && launch<capture_edge_ns && launch+period>=capture_edge_ns,
+          "word capture source edge is not the last setup launch");
+    result.roots[i].launch_ns=phase;
+    result.model.root_launch_ns[i]=launch;
+  }
+  launches.RequireUnchanged();result.RequireUnchanged();return result;
+}
 void VisitPhysicalWordSupportChecks(const BoundPhysicalWordModel& binding,
     const std::vector<std::uint32_t>& selected,const std::function<void(const WordSupportCheck&)>& visitor) {
   const auto& model=binding.model;
