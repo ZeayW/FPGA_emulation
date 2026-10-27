@@ -1,12 +1,14 @@
 """Port resizing cannot discard a live wire or modify a retained pin."""
 import json
 from copy import deepcopy
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from emuflow.errors import ValidationError
-from emuflow.mapped_normalization import validate_mapped_normalization
+from emuflow.io import file_sha256
+from emuflow.mapped_normalization import validate_mapped_normalization, load_mapped_normalization_proof
 from emuflow.yosys import import_yosys_json
 from tests.native_build import emuflow_native
 
@@ -100,3 +102,58 @@ def test_net_aliases_survive_renumbering_without_changing_pin_connectivity(tmp_p
     module['netnames'].update({f'aaa_preferred_{i}':deepcopy(record)
         for i,record in enumerate(list(module['netnames'].values()))})
     assert validate(tmp_path,before,after,library)['status']=='pass'
+
+
+def bound_proof(tmp_path):
+    before, after, library = fixture(tmp_path)
+    report = validate(tmp_path, before, after, library)
+    parents = {role:record for role,record in report['source_artifacts'].items()}
+    arguments = {role:parents[role]['path'] for role in parents}
+    arguments.update({role+'_sha256':parents[role]['sha256'] for role in parents})
+    return tmp_path/'proof.json', report, arguments
+
+
+def test_normalization_admission_binds_all_sources_without_rehashing_graphs(tmp_path, monkeypatch):
+    path, report, arguments = bound_proof(tmp_path)
+    for record in report['source_artifacts'].values():
+        assert record['sha256'] == file_sha256(Path(record['path']))
+        assert record['bytes'] > 0 and len(record['generation']) == 7
+    def only_proof_digest(candidate):
+        assert candidate == path, 'proof admission rehashed an entire parent graph'
+        return file_sha256(candidate)
+    monkeypatch.setattr('emuflow.mapped_normalization.file_sha256', only_proof_digest)
+    owner = load_mapped_normalization_proof(path, **arguments)
+    assert owner.cells == report['cells'] and owner.removed_nonphysical_pins == 34
+    assert owner.artifact_sha256 == file_sha256(path)
+    owner.require_unchanged()
+
+
+@pytest.mark.parametrize('damage', ['counts-only', 'wrong-seal', 'another-source', 'changed-source', 'changed-library'])
+def test_normalization_proof_cannot_admit_unrelated_or_changed_source_views(tmp_path, damage):
+    path, report, arguments = bound_proof(tmp_path)
+    if damage == 'counts-only':
+        del report['source_artifacts']
+        path.write_text(json.dumps(report))
+    elif damage == 'wrong-seal':
+        arguments['normalized_sha256'] = '0'*64
+    elif damage == 'another-source':
+        original = tmp_path/'old.emuir.sqlite'
+        copied = tmp_path/'copied.emuir.sqlite'; copied.write_bytes(original.read_bytes())
+        arguments['original'] = str(copied)
+    elif damage == 'changed-source':
+        source = tmp_path/'new.emuir.sqlite'
+        with source.open('ab') as stream:
+            stream.write(b'changed-generation')
+    else:
+        library = tmp_path/'cells_xtra.v'; library.write_text(library.read_text()+'\n')
+    with pytest.raises(ValidationError, match='source-bound|parent seal or generation'):
+        load_mapped_normalization_proof(path, **arguments)
+
+
+def test_admitted_proof_retains_parent_generation_checks(tmp_path):
+    path, _, arguments = bound_proof(tmp_path)
+    owner = load_mapped_normalization_proof(path, **arguments)
+    with (tmp_path/'new.emuir.sqlite').open('ab') as stream:
+        stream.write(b'new source generation')
+    with pytest.raises(ValidationError, match='source generation changed'):
+        owner.require_unchanged()
