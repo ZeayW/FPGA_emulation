@@ -44,7 +44,7 @@ proc emuflow_read_source_net_map {map_path} {
     set emuir_by_mapped_net($mapped_name) $emuir_name
   }
   close $map_input
-  
+
   # Resolve only pins that actually occur on exported timing paths.  A complete
   # pin map duplicates every flattened instance/pin name and exceeded Tcl's 2 GiB
   # value limit on real Koios netlists.  The mapped Verilog is flat and every
@@ -147,4 +147,3 @@ proc emuflow_emit_timing_paths {
     incr emitted
   }
 }
-
