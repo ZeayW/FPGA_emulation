@@ -31,12 +31,14 @@ from emuflow.io import file_sha256, read_json, write_json
 from emuflow.sqlite_artifacts import immutable_sqlite_uri
 from emuflow.native_tools import native_file_generation, resolve_native_executable
 from emuflow.phase6 import run_phase6
+from emuflow.split_netlist_storage import open_split_netlists_sqlite
 from emuflow.store_publication import require_store_sources_unchanged
 from emuflow.stage_metrics import _tree_rss_kib
 
 
 PUBLICATION_MODULES = (
     "split_netlist_storage",
+    "split_overlay",
     "transport_storage",
     "position_hints_storage",
     "pin_plan_storage",
@@ -524,9 +526,7 @@ def qualify(request_path: Path, result_path: Path):
         "expected_fpgas"
     ):
         raise ValidationError("qualification design or FPGA coverage disagrees")
-    connection = sqlite3.connect(
-        immutable_sqlite_uri(output / "split-netlists.sqlite"), uri=True
-    )
+    connection = open_split_netlists_sqlite(output / "split-netlists.sqlite")
     try:
         source_instances = connection.execute(
             "SELECT count(*) FROM source_instances"
@@ -544,7 +544,7 @@ def qualify(request_path: Path, result_path: Path):
     }
     if {entry["schema"] for entry in publications} != {
         "transport-store-v1",
-        "split-netlists-v2",
+        "split-netlists-v3",
     }:
         raise ValidationError(
             "qualification did not exercise both baseline Phase 6 publishers"

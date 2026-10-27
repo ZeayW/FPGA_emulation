@@ -226,6 +226,7 @@ def run_phase6(
 ) -> Dict[str, Any]:
     source = read_compact_emuir_control_metadata(ir_path)
     require_native_schema("sqlite-publication-request-v1")
+    require_native_schema("split-netlists-v3")
     design_name = source["design"]["name"]
     declared_clocks = [item["id"] for item in source.get("clocks", [])]
     if clock_periods is None:
@@ -254,6 +255,10 @@ def run_phase6(
         )
     resource_reservations = read_split_resource_reservations(assignment_index_path)
     schedule = read_tdm_schedule(schedule_path)
+    if getattr(schedule, "store_path", None) is None:
+        raise ValidationError(
+            "Phase 6 requires the current typed ScheduleStore; rerun Phase 5"
+        )
     platform = Platform.load(platform_path)
     pin_plan = read_pin_plan(pin_plan_path) if pin_plan_path is not None else None
     position_hints = (

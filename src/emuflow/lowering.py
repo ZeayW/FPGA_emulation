@@ -23,6 +23,7 @@ from .indexed_physical_ir import IndexedPhysicalIR
 from .netlist import FPGA_NETLIST_SCHEMA, TRANSPORT_ENDPOINTS_SCHEMA
 from .placement_ir_storage import write_placement_emuir_from_split
 from .split_netlist_storage import SplitNetlistView
+from .split_overlay import SplitProjectionConnection,attach_split_projection
 from .transport_storage import read_transport
 
 
@@ -48,7 +49,7 @@ class _LoweringOverlaySpool:
         )
         os.close(descriptor)
         self.path = Path(name)
-        self.connection = sqlite3.connect(self.path, uri=True)
+        self.connection = sqlite3.connect(self.path, uri=True, factory=SplitProjectionConnection)
         self.connection.executescript(
             """
             PRAGMA journal_mode=OFF;
@@ -87,10 +88,7 @@ class _LoweringOverlaySpool:
         if self._has_split_store:
             if part_index is None:
                 raise ValueError("split part index is required")
-            self.connection.execute(
-                "ATTACH DATABASE ? AS split_store",
-                (f"{Path(split_path).resolve().as_uri()}?mode=ro",),
-            )
+            attach_split_projection(self.connection,split_path,"split_store")
         if transport_ir_path is not None:
             self.connection.execute(
                 "ATTACH DATABASE ? AS transport_ir_store",
@@ -876,7 +874,7 @@ def _run_placement_ir_lowering_from_split_indexed(
             fpga=fpga,
         ) as overlay,
     ):
-        if split.metadata.get("schema") != "emuflow.split-netlists-sqlite/v2":
+        if split.metadata.get("schema") not in {"emuflow.split-netlists-sqlite/v2","emuflow.split-netlists-sqlite/v3"}:
             raise ValidationError("invalid split-netlist storage schema")
         if split.fpga != transport.get("fpga"):
             raise ValidationError("netlist and transport target different FPGAs")

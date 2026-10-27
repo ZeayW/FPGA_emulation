@@ -59,3 +59,4 @@ emuflow_core/partition_decision.cpp
 emuflow_core/partition_config.cpp
 emuflow_core/partition_hops.cpp
 emuflow_core/phase3.cpp
+emuflow_core/split_overlay.cpp

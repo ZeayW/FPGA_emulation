@@ -379,7 +379,7 @@ def test_atomic_source_binds_mapped_input_and_source_seal_before_consumption(
         assert not list(tmp_path.glob("*.tmp"))
 
 
-@pytest.mark.parametrize("changed", ["split-netlists-v2", "emuir-compact-v2"])
+@pytest.mark.parametrize("changed", ["split-netlists-v3", "emuir-compact-v2"])
 def test_full_placement_lowering_refuses_source_change_at_native_publication(changed):
     from emuflow import placement_ir_storage
     from tests.test_phase6 import Phase6Test
@@ -403,4 +403,4 @@ def test_full_placement_lowering_refuses_source_change_at_native_publication(cha
     ):
         with pytest.raises(ValidationError, match="generation changed"):
             case.test_streaming_phase7_lowering_matches_legacy_exactly()
-    assert set(observed) == {"split-netlists-v2", "emuir-compact-v2"}
+    assert {"split-netlists-v3","emuir-compact-v2","assignment-index-v4","tdm-schedule-store-v4"} <= set(observed)

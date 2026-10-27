@@ -1,3 +1,4 @@
+#include "emuflow_core/split_overlay.hpp"
 #include "emuflow_core/store.hpp"
 #include "emuflow_core/json_record.hpp"
 
@@ -213,7 +214,7 @@ const ArtifactRef& AssignmentArtifact(const ArtifactRef& artifact) {
   return artifact;
 }
 const ArtifactRef& SplitArtifact(const ArtifactRef& artifact) {
-  RequireRecord(artifact.schema()=="split-netlists-v2","split view requires registered v2 storage");
+  RequireRecord((artifact.schema()=="split-netlists-v2" || artifact.schema()=="split-netlists-v3"),"split view requires registered storage");
   return artifact;
 }
 }  // namespace
@@ -261,8 +262,11 @@ void AssignmentView::VisitCopies(const std::function<void(const InstanceCopy&)>&
   RequireRecord(primary==source_cells_,"assignment primary coverage is incomplete");
   store_.RequireUnchanged();
 }
-SplitView::SplitView(const ArtifactRef& artifact):PartitionStoreView(SplitArtifact(artifact)) {}
+SplitView::SplitView(const ArtifactRef& artifact):PartitionStoreView(SplitArtifact(artifact)) {
+  if(artifact.schema()=="split-netlists-v3")sources_=PrepareSplitProjection(store_.database(),artifact);
+}
 void SplitView::VisitCopies(const FpgaId& partition,const std::function<void(const InstanceCopy&)>& visitor) {
+  for(const auto& source:sources_)source.RequireUnchanged();
   (void)PartitionName(partition);
   auto rows=store_.database().Prepare("SELECT c.source_instance_seq,coalesce(c.copy_id,s.original_id),c.is_replica,"
       "s.source_instance_seq FROM instance_copies c LEFT JOIN source_instances s "
@@ -273,9 +277,11 @@ void SplitView::VisitCopies(const FpgaId& partition,const std::function<void(con
     RequireRecord(source>=0 && !rows.IsNull(3) && !name.empty() && (replica==0 || replica==1),"split instance copy is invalid");
     visitor({store_.Id<CellTag>(source),partition,std::move(name),replica!=0});
   }
+  for(const auto& source:sources_)source.RequireUnchanged();
   store_.RequireUnchanged();
 }
 void SplitView::VisitEndpoints(const FpgaId& partition,const std::function<void(const SplitEndpoint&)>& visitor) {
+  for(const auto& source:sources_)source.RequireUnchanged();
   (void)PartitionName(partition);
   auto rows=store_.database().Prepare("SELECT e.source_net_seq,e.role,e.ordinal,e.source_instance_seq,"
       "e.synthetic_instance_id,e.port_seq,e.bit,e.synthetic,n.source_net_seq,s.source_instance_seq,p.seq "
@@ -302,6 +308,7 @@ void SplitView::VisitEndpoints(const FpgaId& partition,const std::function<void(
         std::move(cell),std::move(synthetic_cell),store_.Id<PinTag>(pin),static_cast<std::uint64_t>(bit)});
     previous=key;
   }
+  for(const auto& source:sources_)source.RequireUnchanged();
   store_.RequireUnchanged();
 }
 }  // namespace emuflow::core

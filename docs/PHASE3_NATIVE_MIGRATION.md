@@ -566,13 +566,33 @@ there is no silent implementation or provider fallback.
 | Phase 3 | Complete shared-core stage owns source-backed configuration, candidate/primary clustering, TritonPart initialization, v14 search, independent decision/hop audits, selected semantics and final-directory publication; native compiler executes it directly | Qualify whole-stage NVDLA equivalence and wall/process-tree RSS/I/O; retire replaced reference production scopes after acceptance |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
-| Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |
+| Phase 6 | Native source-bound split memberships; indexed transport/binding owner; streamed RTL/XDC | Complete native transport/binding and RTL/XDC producers, complete-stage ownership and real-design qualification while preserving electrical contracts |
 | Phase 7 | Indexed lowering; typed physical handoff and native Bookshelf pin export | Complete remaining backend/export/validation ownership and full physical qualification |
 | Global STA | Native typed physical-to-event binding, event validation/model export, measurement import, full-original-path reduction and typed QoR publication | Migrate remaining physical producers and orchestration; qualify complete real-design physical/global timing |
 
 Native computation does not eliminate algorithmic search cost. Compare search,
 imported-solution and frozen-output replay as separate execution modes. Porting
 an adapter must not change the algorithm budget or weaken independent legality.
+
+### Source-bound split ownership
+
+`phase6 split EMUIR ASSIGNMENT SCHEDULE OUTPUT` publishes split storage v3.
+It owns partition/net memberships, synthetic shadow coordinates, port
+memberships and resource summaries. Source cells, payloads, pin names and
+endpoints remain in the original compact EmuIR; copy ownership and exact
+semantics remain in the assignment owner; scheduled-hop identities remain in
+ScheduleStore. Those original artifact generations are bound into the split
+owner and checked by readers, validation and placement publication. The exact
+binary is borrowed directly, without a copy or hard link that would alter its
+generation.
+
+Shared SQL projections expose the logical split relations to both physical
+backends. The original owners must remain available until their last physical
+consumer closes. `phase6 validate-split SPLIT SUMMARY` independently checks
+ownership coverage and shadow/net/endpoint invariants through those sources.
+The v2 producer is retained only as a differential test oracle; v2 reading
+remains for identified published inputs. This closes repeated DUT storage at
+the split boundary, not the complete Phase 6 data plane or NVDLA qualification.
 
 ## Complete native partition stage
 

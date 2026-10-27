@@ -6,6 +6,7 @@ import os
 import pytest
 
 from emuflow import split_netlist_storage as split
+from emuflow import split_overlay as owner
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.errors import ValidationError
 from emuflow.phase3_assignment_index import write_phase3_assignment_index
@@ -42,8 +43,8 @@ def test_split_publication_keeps_prior_generation_when_an_input_changes(
 
     produce()
     previous = output.read_bytes()
-    validate = split.validate_split_netlists_sqlite
-    publish = split.publish_sqlite_store
+    validate = owner.bind_split_sources
+    publish = owner.publish_sqlite_store
     observed = []
 
     def change_after_validation(*args, **kwargs):
@@ -63,9 +64,9 @@ def test_split_publication_keeps_prior_generation_when_an_input_changes(
 
     with (
         patch.object(
-            split, "validate_split_netlists_sqlite", side_effect=change_after_validation
+            owner, "bind_split_sources", side_effect=change_after_validation
         ),
-        patch.object(split, "publish_sqlite_store", side_effect=native_publish),
+        patch.object(owner, "publish_sqlite_store", side_effect=native_publish),
     ):
         if changed == "none":
             produce()
@@ -85,76 +86,39 @@ def test_split_publication_keeps_prior_generation_when_an_input_changes(
     assert not list(tmp_path.glob(".split.sqlite.*.tmp"))
 
 
-@pytest.mark.parametrize("copy_only", [False, True])
 @pytest.mark.parametrize("touch_metadata", [False, True])
-def test_exact_binary_alias_publication_preserves_content_and_binds_its_final_generation(
-    tmp_path, copy_only, touch_metadata
-):
+def test_exact_owner_is_borrowed_without_alias_or_copy(tmp_path,touch_metadata):
     from tests.test_combinational_cut import StaticExactCombinationalCutPartitionTest
     from tests.schedule_reference import build_tdm_schedule
-
-    case = StaticExactCombinationalCutPartitionTest()
-    case.setUp()
-    _, value = case._exact_artifacts(dependent_return=True)
-    schedule_value = build_tdm_schedule(case._exact_routes(value), case.platform)
-    ir, assignment, selector = (
-        tmp_path / name for name in ("ir.sqlite", "assignment.sqlite", "schedule.json")
-    )
-    write_compact_emuir(ir, case.ir.to_dict())
-    write_phase3_assignment_index(assignment, case.ir, value)
-    write_tdm_schedule_storage(selector, schedule_value)
-    schedule = read_tdm_schedule(selector)
-    source = tmp_path / "assignment.exact.bin"
-    before = source.read_bytes()
-    output = tmp_path / "phase6" / "split.sqlite"
-    publish = split.publish_sqlite_store
-    observed = []
-
-    def record_sources(*args, **kwargs):
-        observed.extend(kwargs["sources"])
-        return publish(*args, **kwargs)
-
-    def link(source, target):
-        if copy_only:
-            raise OSError("fixture forces the declared cross-filesystem copy path")
-        return original_link(source, target)
-
-    original_link = os.link
-    validate = split.validate_split_netlists_sqlite
-
-    def validation(*args, **kwargs):
-        result = validate(*args, **kwargs)
+    from emuflow.native_tools import native_file_generation
+    case=StaticExactCombinationalCutPartitionTest();case.setUp()
+    _,value=case._exact_artifacts(dependent_return=True)
+    ir=tmp_path/'ir.sqlite';assignment=tmp_path/'assignment.sqlite';selector=tmp_path/'schedule.json'
+    write_compact_emuir(ir,case.ir.to_dict());write_phase3_assignment_index(assignment,case.ir,value)
+    write_tdm_schedule_storage(selector,build_tdm_schedule(case._exact_routes(value),case.platform))
+    schedule=read_tdm_schedule(selector);source=tmp_path/'assignment.exact.bin'
+    before=source.read_bytes();generation=native_file_generation(source)
+    output=tmp_path/'phase6/split.sqlite';observed=[]
+    bind=owner.bind_split_sources;publish=owner.publish_sqlite_store
+    def check(*args,**kwargs):
+        refs=bind(*args,**kwargs)
+        if touch_metadata:source.chmod(source.stat().st_mode ^ 0o100)
+        return refs
+    def commit(*args,**kwargs):
+        observed.extend(kwargs['sources']);return publish(*args,**kwargs)
+    with patch.object(owner,'bind_split_sources',side_effect=check), \
+         patch.object(owner,'publish_sqlite_store',side_effect=commit), \
+         patch.object(os,'link',side_effect=AssertionError('borrowed owner must not be linked')), \
+         patch.object(split.shutil,'copyfile',side_effect=AssertionError('borrowed owner must not be copied')):
+        def produce():return split.write_split_netlists_sqlite(output,ir,assignment,schedule,
+            expected_design=case.ir.value['design']['name'],expected_platform=case.platform.name)
         if touch_metadata:
-            source.chmod(source.stat().st_mode ^ 0o100)
-        return result
-
-    with (
-        patch.object(split, "publish_sqlite_store", side_effect=record_sources),
-        patch.object(split.os, "link", side_effect=link),
-        patch.object(split, "validate_split_netlists_sqlite", side_effect=validation),
-    ):
-
-        def produce():
-            return split.write_split_netlists_sqlite(
-                output,
-                ir,
-                assignment,
-                schedule,
-                expected_design=case.ir.value["design"]["name"],
-                expected_platform=case.platform.name,
-            )
-
-        if touch_metadata:
-            with pytest.raises(ValidationError, match="generation changed"):
-                produce()
-            assert source.read_bytes() == before and not output.exists()
-            assert not observed and not list(output.parent.glob(".*.tmp"))
-            return
-        produce()
-    target = output.with_name("assignment.exact.bin")
-    assert target.read_bytes() == before == source.read_bytes()
-    assert os.path.samefile(source, target) == (not copy_only)
-    exact = [item for item in observed if item.schema == "phase3-exact-data-v2"]
-    assert len(exact) == 1 and exact[0].path == source.resolve()
-    assert exact[0].generation == split.native_file_generation(source)
-    assert not list(output.parent.glob(".*.tmp"))
+            with pytest.raises(ValidationError,match='generation changed'):produce()
+            assert not output.exists() and not observed
+        else:
+            produce();assert native_file_generation(source)==generation
+            assert not output.with_name('assignment.exact.bin').exists()
+            exact=[item for item in observed if item.schema=='phase3-exact-data-v2']
+            assert len(exact)==1 and exact[0].path==source.resolve()
+    assert source.read_bytes()==before
+    assert not list(output.parent.glob('.*.tmp'))

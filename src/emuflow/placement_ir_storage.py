@@ -1,12 +1,13 @@
 """Set-oriented Phase 7 placement-IR materialization.
 
-Python prepares only the bounded transport overlay.  The complete DUT remains
-in the shared Phase 6 SQLite database and is copied, joined, and rewritten by
-SQLite itself; no iterator of Python cell/net/endpoint dictionaries is created
-on the production path.
+The source-bound Phase 6 owner supplies memberships over original source and
+assignment records. SQLite joins those owners into the selected placement IR;
+Python does not reconstruct a complete DUT cell/net/endpoint population.
 """
 
 from __future__ import annotations
+
+from .split_overlay import SplitProjectionConnection,attach_split_projection,bind_split_sources
 
 import json
 import sqlite3
@@ -65,7 +66,7 @@ def write_placement_emuir_from_split(
     source_bindings = validate_store_destination(
         output_path,
         (
-            bind_store_source(split_path, "split-netlists-v2"),
+            *bind_split_sources(split_path),
             bind_store_source(transport_ir_path, "emuir-compact-v2"),
         ),
     )
@@ -76,7 +77,7 @@ def write_placement_emuir_from_split(
     # URI mode is required for the attached immutable read-only Phase 6
     # database.  Some SQLite builds accept file: URIs for ATTACH implicitly,
     # while the Linux production build correctly requires SQLITE_OPEN_URI.
-    connection = sqlite3.connect(temporary, uri=True)
+    connection = sqlite3.connect(temporary, uri=True, factory=SplitProjectionConnection)
     try:
         connection.executescript(
             f"""
@@ -151,9 +152,7 @@ def write_placement_emuir_from_split(
             );
             """
         )
-        connection.execute(
-            "ATTACH DATABASE ? AS split", (_sqlite_uri(split_path),)
-        )
+        attach_split_projection(connection,split_path,"split")
         connection.execute(
             "ATTACH DATABASE ? AS transport_ir",
             (_sqlite_uri(transport_ir_path),),

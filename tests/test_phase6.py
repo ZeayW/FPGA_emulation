@@ -43,6 +43,13 @@ from emuflow.partition import (
 )
 from tests.partition_reference import assign_clusters
 from emuflow.phase6 import run_phase6, validate_phase6
+from emuflow.tdm_schedule_storage import read_tdm_schedule
+
+def _indexed_split_schedule(root,value):
+    path=Path(root)/"split-schedule.json"
+    write_tdm_schedule_storage(path,value)
+    return read_tdm_schedule(path)
+
 from emuflow.phase3_assignment_index import (
     write_phase3_assignment_index,
 )
@@ -597,7 +604,7 @@ class Phase6Test(unittest.TestCase):
                 split_path,
                 ir_path,
                 assignment_path,
-                self.schedule,
+                _indexed_split_schedule(root,self.schedule),
                 expected_design=self.ir.value["design"]["name"],
                 expected_platform=self.platform.name,
             )
@@ -612,7 +619,7 @@ class Phase6Test(unittest.TestCase):
             with closing(sqlite3.connect(split_path)) as connection, connection:
                 self.assertEqual(
                     connection.execute("PRAGMA user_version").fetchone()[0],
-                    2,
+                    3,
                 )
                 tables = {
                     row[0]
@@ -620,20 +627,10 @@ class Phase6Test(unittest.TestCase):
                         "SELECT name FROM sqlite_master WHERE type='table'"
                     )
                 }
-                self.assertIn("source_instances", tables)
-                self.assertIn("instance_copies", tables)
-                self.assertIn("endpoint_segments", tables)
-                self.assertNotIn("instances", tables)
-                self.assertNotIn("endpoints", tables)
-                copy_columns = {
-                    row[1]
-                    for row in connection.execute(
-                        "PRAGMA table_info(instance_copies)"
-                    )
-                }
-                self.assertNotIn("resources_json", copy_columns)
-                self.assertNotIn("parameters_json", copy_columns)
-                self.assertNotIn("extras_json", copy_columns)
+                self.assertEqual(tables,{'metadata','parts','net_segments','shadow_drivers','port_memberships','resources'})
+                self.assertNotIn('source_instances',tables)
+                self.assertNotIn('payloads',tables)
+                self.assertNotIn('endpoint_segments',tables)
             self.assertEqual(control["lane_map"], old["lane_map"])
             for fpga in ("fpga0", "fpga1"):
                 self.assertEqual(
@@ -661,7 +658,7 @@ class Phase6Test(unittest.TestCase):
                 split_path,
                 ir_path,
                 assignment_path,
-                self.schedule,
+                _indexed_split_schedule(root,self.schedule),
                 expected_design=self.ir.value["design"]["name"],
                 expected_platform=self.platform.name,
             )
@@ -951,21 +948,15 @@ class Phase6Test(unittest.TestCase):
             assignment_path = root / "assignment.sqlite"
             schedule_path = root / "schedule.json"
             output_path = root / "phase6"
-            write_compact_emuir(ir_path, self.ir.to_dict())
-            with closing(sqlite3.connect(ir_path)) as connection, connection:
-                connection.execute(
-                    "UPDATE metadata SET value=? "
-                    "WHERE key='record_counts_json'",
-                    (json.dumps({
-                        "cell_records": 4_000_000,
-                        "net_records": 4_000_000,
-                        "endpoint_records": 12_000_000,
-                    }),),
-                )
-            write_phase3_assignment_index(
-                assignment_path, self.ir, self.assignment
-            )
-            write_json(schedule_path, self.schedule)
+            value=self.ir.to_dict();assignment=copy.deepcopy(self.assignment)
+            template=next(item for item in value['instances'] if item.get('resources',{}).get('lut',0)>0)
+            for index in range(10001):
+                cell=copy.deepcopy(template);cell['id']=f'unconnected_lut_{index}'
+                value['instances'].append(cell);assignment['instance_assignment'][cell['id']]='fpga0'
+            large=EmuIR(value);large.validate()
+            write_compact_emuir(ir_path,large.to_dict())
+            write_phase3_assignment_index(assignment_path,large,assignment)
+            write_tdm_schedule_storage(schedule_path, self.schedule)
             with mock.patch(
                 "emuflow.phase6.EmuIR.load",
                 side_effect=AssertionError(
@@ -1208,7 +1199,7 @@ class Phase6Test(unittest.TestCase):
             )
             schedule = copy.deepcopy(self.schedule)
             schedule["metrics"]["frame_slots"] = 8
-            schedule_path.write_text(json.dumps(schedule), encoding="utf-8")
+            write_tdm_schedule_storage(schedule_path,schedule)
             feature_names = list(BASE_FEATURE_NAMES) + [
                 f"frame_slots_{slots}" for slots in FRAME_SLOTS[1:]
             ]
@@ -1311,6 +1302,7 @@ class Phase6Test(unittest.TestCase):
                 path.write_text(
                     json.dumps(documents[name]), encoding="utf-8"
                 )
+            write_tdm_schedule_storage(paths["schedule"],schedule)
             plan, binding = self._chimew_certificate(schedule, positions, plan)
             write_json(paths["plan"], plan)
             binding_path = root / "initial-electrical-binding.json"

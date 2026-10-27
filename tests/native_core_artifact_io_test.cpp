@@ -243,7 +243,7 @@ int main() {
         "openparf-atomic-source-store-v1", "openparf-placement-certificate-v3",
         "xilinx-physical-handoff-v1", "vivado-lineage-store-v2",
         "vivado-source-functions-v1", "emuir-compact-v2", "emuir-indexed-v1",
-        "assignment-index-v3", "assignment-index-v4", "split-netlists-v2",
+        "assignment-index-v3", "assignment-index-v4", "split-netlists-v2", "split-netlists-v3",
         "boundary-identity-store-v1", "boundary-timing-store-v1",
         "logic-segment-identity-store-v1", "logic-segment-timing-store-v1",
         "local-path-timing-store-v1", "xilinx-mapped-index-v2",

@@ -14,6 +14,7 @@
 #include "emuflow_core/partition_semantics.hpp"
 #include "emuflow_core/phase3_exact_binary.hpp"
 #include "emuflow_core/phase3.hpp"
+#include "emuflow_core/split_overlay.hpp"
 #include "emuflow_core/partition_publish.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/store_publication.hpp"
@@ -28,6 +29,8 @@ constexpr const char* kUsage =
     "  compile REQUEST_JSON\n"
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
     "  phase3 run REQUEST OUTPUT_DIR\n"
+    "  phase6 split EMUIR ASSIGNMENT SCHEDULE OUTPUT\n"
+    "  phase6 validate-split SPLIT SUMMARY\n"
     "  phase3 refine-hops-from-primary EMUIR PRIMARY REQUEST OUTPUT_DIR [OWNER [ORDER]] [WEIGHTS_SELECTOR WEIGHTS_STORE]\n"
     "  phase3 audit-hops-from-primary EMUIR PRIMARY REQUEST OUTPUT_DIR [OWNER [ORDER]]\n"
     "  phase3 initialize-tritonpart EMUIR PRIMARY REQUEST OUTPUT_DIR [WEIGHTS_SELECTOR WEIGHTS_STORE] [SOLUTION]\n"
@@ -168,6 +171,12 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if (argc == 4 && std::string(argv[1]) == "publish-store") {
     const auto request = emuflow::core::ArtifactRef::Bind(argv[2],"sqlite-publication-request-v1");
     return Finish(emuflow::core::PublishSqliteStore(request,argv[3],report),report);
+  }
+  if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="validate-split") {
+    return Finish(emuflow::core::AuditSplitOverlay(emuflow::core::ArtifactRef::Bind(argv[3],"split-netlists-v3"),argv[4]),report);
+  }
+  if(argc==7 && std::string(argv[1])=="phase6" && std::string(argv[2])=="split") {
+    return Finish(emuflow::core::BuildSplitOverlay({emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),emuflow::core::ArtifactRef::Bind(argv[4],"assignment-index-v4"),emuflow::core::ArtifactRef::Bind(argv[5],"tdm-schedule-store-v4")},argv[6]),report);
   }
   if(argc==5 && std::string(argv[1])=="phase3" && std::string(argv[2])=="run") {
     ToolSignals signals;return Finish(emuflow::core::RunPhase3(emuflow::core::ArtifactRef::Bind(argv[3],"phase3-stage-request-v1"),argv[4],&tool_cancelled),report);

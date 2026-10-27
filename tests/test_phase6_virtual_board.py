@@ -22,6 +22,7 @@ from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints
 from tests.schedule_reference import build_tdm_schedule
 from emuflow.timing_routing import route_system_native
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 from emuflow.transport_storage import (
     VIRTUAL_BINDING_STORAGE_SCHEMA,
     read_virtual_binding,
@@ -48,6 +49,18 @@ def inputs():
     assignment=assign_clusters(ir,platform,clusters,constraints,seed=20260727)
     routes=route_system_native(assignment,platform,normalize_route_constraints(None,platform,frame_slots=32),executable=str(tlr_router()))
     schedule=build_tdm_schedule(routes,platform)
+    # Keep this independent registered-transport oracle while publishing its
+    # completion facts in the current typed schema.
+    routes_by_id={route['id']:route for route in schedule['routes']}
+    for route in schedule['routes']:
+        route.pop('transport_round',None)
+    for completion in schedule['demand_completions']:
+        completion.pop('transport_round',None)
+        sinks=routes_by_id[completion['demand']]['sinks']
+        completion['sink_arrival_slots']={
+            entry['to']:entry['arrival_slot'] for entry in schedule['entries']
+            if entry['demand']==completion['demand'] and entry['to'] in sinks
+        }
     return ir.value,platform.to_dict(),assignment,schedule
 
 
@@ -58,6 +71,7 @@ def emit(tmp_path, inputs, *, enabled=True, managed=False):
         platform['platform'].pop('virtual_board_wiring')
     for name,value in [('ir',ir),('platform',platform),('assignment',assignment),('schedule',schedule)]:
         write_json(tmp_path/(name+'.json'),value)
+    write_tdm_schedule_storage(tmp_path/'schedule.json',schedule)
     write_compact_emuir(tmp_path/'design.emuir.sqlite', ir)
     write_phase3_assignment_index(tmp_path/'assignment.sqlite', EmuIR(ir), assignment)
     args=[tmp_path/'design.emuir.sqlite',tmp_path/'assignment.json',tmp_path/'schedule.json',tmp_path/'platform.json']

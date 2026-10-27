@@ -328,7 +328,7 @@ def test_workspace_measurement_deduplicates_aliases_and_excludes_borrowed_symlin
 
 
 def test_native_failure_never_selects_the_reference_publisher(tmp_path, monkeypatch):
-    from emuflow import split_netlist_storage
+    from emuflow import split_overlay as split_netlist_storage
 
     request = prepare(tmp_path, monkeypatch)
     path = tmp_path / "request.json"

@@ -16,6 +16,15 @@
 #include <stdexcept>
 
 int main(int argc,char** argv) {
+  if(argc==4 && std::string(argv[1])=="split-view") {
+    using namespace emuflow::core;
+    auto ref=ArtifactRef::Bind(argv[2],"split-netlists-v3");SplitView view(ref);
+    const auto partition=view.Partition(std::stoull(argv[3]));std::uint64_t copies=0,endpoints=0;
+    ArtifactScope owner(ref);
+    view.VisitCopies(partition,[&](const InstanceCopy& row){owner.RequireOwner(row.source);++copies;});
+    view.VisitEndpoints(partition,[&](const SplitEndpoint& row){owner.RequireOwner(row.net);++endpoints;});
+    std::cout<<"["<<copies<<","<<endpoints<<"]\n";return 0;
+  }
   if(argc==9 && std::string(argv[1])=="phase5-fault") {
     using namespace emuflow::core;
     const std::string mode=argv[2],point=argv[3];unsigned published=0;

@@ -155,5 +155,7 @@ class SplitView : public PartitionStoreView {
   explicit SplitView(const ArtifactRef& artifact);
   void VisitCopies(const FpgaId& partition,const std::function<void(const InstanceCopy&)>& visitor);
   void VisitEndpoints(const FpgaId& partition,const std::function<void(const SplitEndpoint&)>& visitor);
+ private:
+  std::vector<ArtifactRef> sources_;
 };
 }  // namespace emuflow::core

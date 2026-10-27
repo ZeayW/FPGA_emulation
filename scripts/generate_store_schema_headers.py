@@ -81,6 +81,21 @@ def generate(directory):
     if not output.exists() or output.read_text(encoding="utf-8") != hierarchy:
         output.write_text(hierarchy, encoding="utf-8")
 
+    split = "#pragma once\nnamespace emuflow::core {\n"
+    for symbol, filename in (
+        ("kSplitOverlayDDL", "phase6_split_overlay.sql"),
+        ("kSplitProjectionDDL", "phase6_split_projection.sql"),
+        ("kSplitOverlayBuildSQL", "phase6_split_build.sql"),
+    ):
+        ddl = (root / "src/emuflow/data/schema" / filename).read_text(encoding="utf-8")
+        if ')EMUFLOW_SQL"' in ddl:
+            raise ValueError("SQL schema contains the native raw-string delimiter")
+        split += f'inline constexpr const char* {symbol} = R"EMUFLOW_SQL({ddl})EMUFLOW_SQL";\n'
+    split += "}\n"
+    output = Path(directory) / "split_overlay_schema.hpp"
+    if not output.exists() or output.read_text(encoding="utf-8") != split:
+        output.write_text(split, encoding="utf-8")
+
     events = "#pragma once\nnamespace emuflow::core {\n"
     for symbol, filename in (
         ("kGlobalEventsDDL", "global_events.sql"),
