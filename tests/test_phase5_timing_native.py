@@ -19,7 +19,7 @@ from emuflow.errors import ValidationError
 from emuflow.io import read_json
 from emuflow.phase5_timing_native import project_native_schedule_timing
 from emuflow.system_route_storage import read_system_routes, write_system_route_storage
-from emuflow.tdm import reconstruct_tdm_schedule_timing
+from tests.tdm_timing_oracle import timing_summary as reconstruct_tdm_schedule_timing
 from emuflow.tdm_schedule_storage import read_tdm_schedule
 from tests.native_schedule_case import _case
 from tests.schedule_reference import build_tdm_schedule
@@ -118,12 +118,8 @@ def test_native_combined_summary_and_full_projection_match_independent_reference
                 side_effect=AssertionError("Python P population"),
             )
         )
-        patches.enter_context(
-            patch(
-                "emuflow.tdm._iter_tdm_schedule_timing_paths_from_routes",
-                side_effect=AssertionError("Python hop projection"),
-            )
-        )
+        import emuflow.tdm as tdm
+        assert not hasattr(tdm, "_iter_tdm_schedule_timing_paths_from_routes")
         patches.enter_context(
             patch(
                 "emuflow.cross_layer_timing._build_contract",
@@ -134,7 +130,7 @@ def test_native_combined_summary_and_full_projection_match_independent_reference
             routes, schedule, case.platform, bind=True, analyze=True
         )
         assert (
-            reconstruct_tdm_schedule_timing(routes, case.platform, schedule)
+            project_native_schedule_timing(routes, schedule, case.platform, bind=False, analyze=True)["timing_validation"]
             == expected_timing
         )
         assert (
@@ -193,7 +189,7 @@ def test_native_analysis_preserves_implicit_multicast_worst_sink_semantics(
         fresh, monkeypatch, case, value, semantic
     )
     expected = reconstruct_tdm_schedule_timing(value, case.platform, reference)
-    assert reconstruct_tdm_schedule_timing(routes, case.platform, schedule) == expected
+    assert project_native_schedule_timing(routes, schedule, case.platform, bind=False, analyze=True)["timing_validation"] == expected
     with pytest.raises(ValidationError, match="multicast"):
         project_native_schedule_timing(routes, schedule, bind=True)
 
@@ -307,7 +303,7 @@ def test_native_timing_preserves_absolute_multi_cut_event_composition(
     )
     expected = reconstruct_tdm_schedule_timing(value, case.platform, reference)
     assert (
-        project_native_schedule_timing(routes, schedule, case.platform, analyze=True)[
+        project_native_schedule_timing(routes, schedule, case.platform, bind=False, analyze=True)[
             "timing_validation"
         ]
         == expected
@@ -362,7 +358,7 @@ def test_timing_statistics_preserve_signed_zero_after_external_numeric_sort(
         fresh, monkeypatch, case, value, semantic
     )
     expected = reconstruct_tdm_schedule_timing(value, case.platform, reference)
-    actual = reconstruct_tdm_schedule_timing(routes, case.platform, schedule)
+    actual = project_native_schedule_timing(routes, schedule, case.platform, bind=False, analyze=True)["timing_validation"]
     assert json.dumps(actual, sort_keys=True) == json.dumps(expected, sort_keys=True)
     assert str(actual["worst_normalized_slack"]) == "-0.0"
 
@@ -390,7 +386,7 @@ def test_native_timing_request_ownership_and_atomic_summary(
         return original(process, executable, command, **kwargs)
 
     with patch.object(NativeToolProcess, "__init__", capture):
-        project_native_schedule_timing(routes, schedule, case.platform, analyze=True)
+        project_native_schedule_timing(routes, schedule, case.platform, bind=False, analyze=True)
     command, request_bytes, board_bytes = captured[0]
     request, board, output = (
         tmp_path / "request.bin",

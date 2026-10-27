@@ -1,3 +1,4 @@
+from tests.phase3_store_fixture import write_assignment_index_fixture
 from tests.native_route_fixture import route_system_native
 """Phase 6 materializes and independently replays the declared virtual board."""
 from contextlib import closing
@@ -14,7 +15,6 @@ from emuflow.default_platform import research_platform_path
 from emuflow.errors import ValidationError
 from emuflow.ir import EmuIR
 from emuflow.emuir_compact import write_compact_emuir
-from emuflow.phase3_assignment_index import write_phase3_assignment_index
 from emuflow.io import read_json, write_json
 from emuflow.partition import (build_clusters, normalize_partition_constraints)
 from tests.partition_reference import assign_clusters
@@ -73,7 +73,7 @@ def emit(tmp_path, inputs, *, enabled=True, managed=False):
         write_json(tmp_path/(name+'.json'),value)
     write_tdm_schedule_storage(tmp_path/'schedule.json',schedule)
     write_compact_emuir(tmp_path/'design.emuir.sqlite', ir)
-    write_phase3_assignment_index(tmp_path/'assignment.sqlite', EmuIR(ir), assignment)
+    write_assignment_index_fixture(tmp_path/'assignment.sqlite', EmuIR(ir), assignment)
     args=[tmp_path/'design.emuir.sqlite',tmp_path/'assignment.json',tmp_path/'schedule.json',tmp_path/'platform.json']
     out=tmp_path/'split'
     report=run_phase6(*args,out,equivalence_cycles=2,managed_storage=managed)

@@ -16,12 +16,6 @@ from unittest import mock
 from emuflow.architecture import ArchitectureDB
 from emuflow.errors import ImportError, ValidationError
 import emuflow.xilinx_openparf_atomic as atomic_adapter
-from emuflow.openparf_native_capabilities import (
-    probe_openparf_native_capabilities,
-)
-from emuflow.xilinx_placer_capability import (
-    qualify_xilinx_placer_capabilities,
-)
 from emuflow.yosys import import_yosys_json
 from emuflow.xilinx_openparf_atomic import (
     OPENPARF_ATOMIC_MANIFEST_SCHEMA,
@@ -1336,33 +1330,6 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                     even, output / "name_map.json", mapped, architecture
                 )
 
-    def test_capability_contract_qualifies_only_the_atomic_subset(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            mapped, packed, architecture = _fixture(root)
-            matrix = probe_openparf_native_capabilities(
-                mapped, packed, architecture
-            )
-        self.assertTrue(matrix["native_atomic_lut_ff"]["eligible"])
-        self.assertEqual(
-            matrix["native_atomic_lut_ff"]["adapter_validation"], "pass"
-        )
-        self.assertEqual(
-            matrix["stages"]["detailed_placement"], {
-                "status": "adapter_required",
-                "evidence": [
-                    "openparf/ops/ism_dp/ism_dp.py",
-                    "src/emuflow/xilinx_openparf_atomic.py",
-                ],
-                "adapter_validation": "pass",
-            }
-        )
-        decision = qualify_xilinx_placer_capabilities(
-            matrix,
-            required_primitives=("LUT6", "FDRE"),
-            required_constraints=("bel_site_mode",),
-        )
-        self.assertEqual(decision["status"], "pass")
 
     def test_export_enables_native_direct_legalization_and_ism(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -2193,31 +2160,6 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             "DSP48E2", "FDRE", "LUT6", "RAMB36E2", "URAM288",
         })
 
-    def test_mixed_capability_is_source_backed_and_adapter_qualified(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            mapped, packed, architecture = _fixture(root, mixed=True)
-            matrix = probe_openparf_native_capabilities(
-                mapped, packed, architecture
-            )
-        feature = next(
-            item for item in matrix["provider_features"]
-            if item["feature"] == "mixed_atomic_sssir_native_flow"
-        )
-        self.assertEqual(feature["status"], "native_supported")
-        for primitive in ("DSP48E2", "RAMB36E2", "URAM288"):
-            self.assertEqual(matrix["primitives"][primitive], {
-                "status": "adapter_required",
-                "evidence": [
-                    "src/emuflow/xilinx_openparf_atomic.py",
-                    "openparf/ops/mcf_lg/mcf_lg.py",
-                ],
-                "adapter_validation": "pass",
-                "reason": (
-                    "the atomic adapter preserves connectivity, LUT/FF control "
-                    "sets, discrete resource occupancy, and physical BEL compatibility"
-                ),
-            })
 
     def test_mixed_fixture_import_checks_hard_site_bel_and_coverage(self):
         with tempfile.TemporaryDirectory() as temporary:

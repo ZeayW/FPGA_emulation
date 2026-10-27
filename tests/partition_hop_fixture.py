@@ -9,7 +9,7 @@ from emuflow.emuir_compact import write_compact_emuir
 from emuflow.partition import (active_partition_fpgas, build_clusters,
     build_partition_assignment, normalize_partition_constraints,
     transported_cut_classes_for_clusters)
-from emuflow.partition_init_native import initialize
+from tests.native_partition_kernel_driver import initialize
 from emuflow.partition_ir import load_partition_ir
 from emuflow.platform import Platform
 from emuflow.yosys import import_yosys_json

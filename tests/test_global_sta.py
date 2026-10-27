@@ -1,8 +1,8 @@
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 import os
 import subprocess
-from array import array
 from collections.abc import Sequence
+from contextlib import closing
 from unittest import mock
 
 import pytest
@@ -11,18 +11,35 @@ from tests.system_timing_oracle import compare_system_timing
 from emuflow.errors import ValidationError
 from emuflow.global_sta import (
     EventCheck, _EventCheckBuilder, _IndexedEventChecks,
-    _IndexedMeasurements, _IndexedPathMetadata,
+    _IndexedPathMetadata,
     _PathMetadataBuilder,
-    _compress_path_equivalent_checks, _write_expanded_measurements,
     export_event_checks, read_engine_identity,
-    read_measurements, run_event_checks, validate_checks,
+    run_event_checks, validate_checks,
 )
 
-
 from tests.global_sta_fixture import bind_physical_checks, build_timing_from_records as build_opensta_timing
-from emuflow.global_measurements import NativeTimingPaths
+from emuflow.global_measurements import NativeTimingPaths, NativeMeasurements, import_measurements
+from emuflow.global_event_store import event_model_directory
 _reference_physical_checks = bind_physical_checks
 
+def _indexed(values):
+    builder = _EventCheckBuilder()
+    try:
+        for row in values:
+            builder.append(row)
+        return builder.finish()
+    except BaseException:
+        builder._owner.close()
+        raise
+
+def _engine_tsv(path, rows):
+    import math
+    with path.open("w") as stream:
+        stream.write("endpoint\tarrival_ns\trequired_ns\tslack_ns\n")
+        for index, row in enumerate(rows):
+            arrival = math.fsum(row.arcs_ns)
+            required = row.required_ns-row.launch_ns
+            stream.write(f"o{index}\t{arrival:.17g}\t{required:.17g}\t{required-arrival:.17g}\n")
 
 def example():
     # Two consecutive transported cuts: a missed first TX must not be hidden
@@ -33,84 +50,77 @@ def example():
             EventCheck("p", "runtime", "capture", 16, (8, .5, 7), 100),
             EventCheck("p", "commit", "capture", 16, (8, .5, 7), 96)]
 
-
 def test_exports_raw_arc_chain_and_absolute_events(tmp_path):
-    export_event_checks(example(), tmp_path)
-    sdc = (tmp_path / "global_timing.sdc").read_text()
-    assert "set_input_delay -clock epoch -max 0" in sdc
-    assert "set_output_delay -clock epoch -max -1 [get_ports o2]" in sdc
-    assert "find_port" in (tmp_path / "analyze.tcl").read_text()
-    assert "gets $constraints line" in (tmp_path / "analyze.tcl").read_text()
-    assert "31.5" not in (tmp_path / "global_timing.lib").read_text()
-    script = (tmp_path / "analyze.tcl").read_text()
-    assert "find_timing" in script
-    assert "$::emuflow_top find_pin o$i" in script
-    assert "sta::vertex_worst_slack_path $vertex max" in script
-    assert "find_timing_paths" not in script
-    assert "[$p arrival]" in script
-    assert 'sta::endpoint_slack $pin "epoch" max' in script
-    assert "[$p required]" not in script
-    assert "get_property $p points" not in (tmp_path / "analyze.tcl").read_text()
-
+    rows = _indexed(example())
+    try:
+        export_event_checks(rows, tmp_path)
+        model = event_model_directory(tmp_path)
+        sdc = (model / "global_timing.sdc").read_text()
+        assert "set_input_delay -clock epoch -max 0" in sdc
+        assert "set_output_delay -clock epoch -max -1 [get_ports o2]" in sdc
+        script = (model / "analyze.tcl").read_text()
+        assert "find_port" in script and "gets $constraints line" in script
+        assert "31.5" not in (model / "global_timing.lib").read_text()
+        assert "find_timing" in script
+        assert "$::emuflow_top find_pin o$i" in script
+        assert "sta::vertex_worst_slack_path $vertex max" in script
+        assert "find_timing_paths" not in script
+        assert "[$p arrival]" in script
+        assert 'sta::endpoint_slack $pin "epoch" max' in script
+        assert "[$p required]" not in script and "get_property $p points" not in script
+    finally:
+        rows.close()
 
 def test_reject_incomplete_duplicate_and_nan():
     rows = example()
     for bad in (rows[:-2]+rows[-1:], rows+rows[:1],
-                rows+[EventCheck("p", "tx", "bad", 0, (float("nan"),), 4)]):
+                rows+[EventCheck("p", "tx", "bad", 0, (float("nan"),), 4)],
+                rows+[EventCheck("p", "target", "second-capture", 16, (8, .5, 7), 18)]):
         with pytest.raises(ValidationError):
-            validate_checks(bad)
-
-    with pytest.raises(ValidationError, match="observe each original path once"):
-        validate_checks(example() + [
-            EventCheck("p", "target", "second-capture", 16, (8, .5, 7), 18)
-        ])
-
+            _indexed(bad)
 
 def test_measurement_requires_exact_endpoint_coverage(tmp_path):
+    rows = _indexed(example())
     path = tmp_path / "out"
     path.write_text("endpoint\tarrival_ns\trequired_ns\tslack_ns\no0\t3\t4\t1\n")
-    with pytest.raises(ValidationError, match="endpoints"):
-        read_measurements(path, example())
-
+    try:
+        with pytest.raises(ValidationError, match="coverage|endpoints|missing"):
+            import_measurements(path, rows)
+    finally:
+        rows.close()
 
 def test_measurement_requires_canonical_endpoint_order(tmp_path):
-    rows = example()[:2]
+    rows = _indexed(example())
     path = tmp_path / "out"
-    path.write_text(
-        "endpoint\tarrival_ns\trequired_ns\tslack_ns\n"
-        "o1\t11\t12\t1\n"
-        "o0\t3\t4\t1\n"
-    )
-    with pytest.raises(ValidationError, match="endpoint"):
-        read_measurements(path, rows, verify_arcs=False)
+    _engine_tsv(path, rows)
+    lines = path.read_text().splitlines(keepends=True)
+    lines[1], lines[2] = lines[2], lines[1]
+    path.write_text(''.join(lines))
+    try:
+        with pytest.raises(ValidationError, match="endpoint"):
+            import_measurements(path, rows, verify_arcs=False)
+    finally:
+        rows.close()
 
-
-def test_measurements_use_fixed_width_scalars(tmp_path):
-    rows = [
-        EventCheck(f"path-{index}", "target", "capture", 1.0, (2.0,), 4.0)
-        for index in range(20000)
-    ]
+def test_measurements_keep_representative_scalars_and_restore_every_identity(tmp_path):
+    rows = _indexed(EventCheck(f"path-{i}", role, "capture", 1.0, (2.0,), deadline)
+                    for i in range(20000)
+                    for role, deadline in (("target", 4.0), ("runtime", 40.0)))
+    representatives, _ = rows.compressed()
     path = tmp_path / "measurements.tsv"
-    with path.open("w") as stream:
-        stream.write("endpoint\tarrival_ns\trequired_ns\tslack_ns\n")
-        for index in range(len(rows)):
-            stream.write(f"o{index}\t2\t3\t1\n")
-
-    measurements = read_measurements(path, rows)
-
-    assert isinstance(measurements, _IndexedMeasurements)
-    assert len(measurements) == len(rows)
-    assert measurements.typed_payload_bytes == len(rows) * 3 * 8
-    assert measurements[0] == {
-        "path": "path-0",
-        "role": "target",
-        "event": "capture",
-        "arrival_ns": 3.0,
-        "required_ns": 4.0,
-        "slack_ns": 1.0,
-    }
-    assert measurements[-1]["path"] == "path-19999"
-
+    _engine_tsv(path, representatives)
+    try:
+        with closing(import_measurements(path, representatives)) as measurements:
+            assert isinstance(measurements, NativeMeasurements)
+            assert len(measurements) == 40000
+            assert measurements.header['representative_checks'] == 2
+            assert measurements[0] == {
+                "path": "path-0", "role": "target", "event": "capture",
+                "arrival_ns": 3.0, "required_ns": 4.0, "slack_ns": 1.0,
+            }
+            assert measurements[-1]["path"] == "path-19999"
+    finally:
+        rows.close()
 
 def test_engine_identity_from_existing_banner(tmp_path):
     log = tmp_path / "opensta.log"
@@ -120,7 +130,6 @@ def test_engine_identity_from_existing_banner(tmp_path):
     log.write_text("unidentified engine\n")
     with pytest.raises(ValidationError, match="engine version"):
         read_engine_identity(log)
-
 
 def test_engine_identity_uses_executable_seal_for_archive_build(tmp_path):
     log = tmp_path / "opensta.log"
@@ -137,7 +146,6 @@ def test_engine_identity_uses_executable_seal_for_archive_build(tmp_path):
         "executable_sha256": digest,
     }
 
-
 def test_engine_identity_retains_distinct_container_launcher_seal(tmp_path):
     log = tmp_path/"opensta.log"
     for revision in ("abcdef123456", "GITDIR-NOT"):
@@ -148,68 +156,49 @@ def test_engine_identity_retains_distinct_container_launcher_seal(tmp_path):
         assert identity["executable_sha256"] == "a"*64
         assert identity["launcher_sha256"] == "b"*64
 
-
 @pytest.mark.parametrize("field", [0, 1, 2])
 def test_measurement_rejects_corrupt_event_scalars(tmp_path, field):
-    rows = example()
-    values = [[sum(r.arcs_ns), r.required_ns-r.launch_ns,
-               r.required_ns-r.launch_ns-sum(r.arcs_ns)] for r in rows]
+    rows = _indexed(example())
     path = tmp_path / "out"
-    def write():
-        path.write_text("endpoint\tarrival_ns\trequired_ns\tslack_ns\n" +
-                        "".join(f"o{i}\t"+"\t".join(map(str, v))+"\n"
-                                for i, v in enumerate(values)))
-    write()
-    assert len(read_measurements(path, rows)) == len(rows)
-    values[0][field] += 2
-    write()
-    with pytest.raises(ValidationError, match="event binding"):
-        read_measurements(path, rows)
-
+    _engine_tsv(path, rows)
+    try:
+        measurements = import_measurements(path, rows)
+        assert len(measurements) == len(rows)
+        measurements.close()
+        lines = path.read_text().splitlines()
+        fields = lines[1].split('\t')
+        fields[field+1] = str(float(fields[field+1])+2)
+        lines[1] = '\t'.join(fields)
+        path.write_text('\n'.join(lines)+'\n')
+        with pytest.raises(ValidationError, match="event binding"):
+            import_measurements(path, rows)
+    finally:
+        rows.close()
 
 def test_reject_orphan_events_and_divergent_observation_chains():
-    with pytest.raises(ValidationError, match="no original-path"):
-        validate_checks(example()+[EventCheck("orphan", "tx", "tx", 0, (1,), 2)])
+    with pytest.raises(ValidationError, match="observation|population"):
+        _indexed(example()+[EventCheck("orphan", "tx", "tx", 0, (1,), 2)])
     rows = example()
     rows[3] = EventCheck("p", "runtime", "capture", 16, (1,), 100)
-    with pytest.raises(ValidationError, match="physical chains"):
-        validate_checks(rows)
+    with pytest.raises(ValidationError, match="physical chain"):
+        _indexed(rows)
 
+def test_check_population_validation_uses_native_owner_without_python_scan():
+    rows = _indexed(EventCheck(str(i), role, "end", 0, (1,), 2)
+                    for i in range(20000) for role in ("target", "runtime"))
+    try:
+        with mock.patch.object(type(rows), '__iter__', side_effect=AssertionError('Python check scan')):
+            assert len(validate_checks(rows)) == 40000
+    finally:
+        rows.close()
 
-def test_check_population_validation_is_linear():
-    # A quadratic original-member scan previously made global timing unusable.
-    rows = [EventCheck(str(i), role, "end", 0, (1,), 2)
-            for i in range(20000) for role in ("target", "runtime")]
-    assert len(validate_checks(rows)) == 40000
-
-
-def test_public_check_validation_preserves_list_snapshot_contract(tmp_path):
-    class MutableChecks(Sequence):
-        def __init__(self, rows):
-            self.rows = rows
-
-        def __len__(self):
-            return len(self.rows)
-
-        def __getitem__(self, index):
-            return self.rows[index]
-
-    expected = example()
-    for source in (expected, tuple(expected), MutableChecks(expected)):
-        validated = validate_checks(source)
-        assert isinstance(validated, list)
-        assert validated == expected
-        assert validated is not source
-
-    mutable = MutableChecks(list(expected))
-    snapshot = validate_checks(mutable)
-    mutable.rows.clear()
-    assert snapshot == expected
-
-    exported = export_event_checks(tuple(expected), tmp_path)
-    assert isinstance(exported, list)
-    assert exported == expected
-
+def test_inline_checks_cannot_enter_native_validation_or_export(tmp_path):
+    for source in (example(), tuple(example())):
+        with pytest.raises(ValidationError, match="inline checks are retired"):
+            validate_checks(source)
+        with pytest.raises(ValidationError, match="inline checks are retired"):
+            export_event_checks(source, tmp_path)
+    assert not list(tmp_path.iterdir())
 
 def test_indexed_check_builder_is_exact_compact_and_sealed(tmp_path):
     rows = [
@@ -245,7 +234,7 @@ def test_indexed_check_builder_is_exact_compact_and_sealed(tmp_path):
     assert compact._owner.header["representative_checks"] == 4
     assert compact[-1] == rows[-1]
     assert compact[3:7] == rows[3:7]
-    representatives, mapping = _compress_path_equivalent_checks(compact)
+    representatives, mapping = compact.compressed()
     assert len(representatives) == 4
     assert list(mapping[:8]) == list(range(4)) * 2
     assert validate_checks(compact) is compact
@@ -255,23 +244,18 @@ def test_indexed_check_builder_is_exact_compact_and_sealed(tmp_path):
     with pytest.raises(ValidationError, match="sealed"):
         builder.finish()
 
-    list_dir = tmp_path / "list"
     compact_dir = tmp_path / "compact"
-    small_builder = _EventCheckBuilder()
-    for row in rows[:8]:
-        small_builder.append(row)
-    small_compact = small_builder.finish()
-    export_event_checks(rows[:8], list_dir)
+    small_compact = _indexed(rows[:8])
     assert export_event_checks(small_compact, compact_dir) is small_compact
-    from emuflow.global_event_store import event_model_directory
-    for name in ("global_timing.lib", "global_timing.v", "global_timing.sdc", "analyze.tcl"):
-        assert (event_model_directory(compact_dir) / name).read_bytes() == (list_dir / name).read_bytes()
+    model = event_model_directory(compact_dir)
+    assert all((model / name).is_file() for name in
+               ("global_timing.lib", "global_timing.v", "global_timing.sdc", "analyze.tcl"))
+    small_compact.close()
     root = compact._owner.root
     compact.close()
     assert not root.exists()
     with pytest.raises(ValidationError, match="closed"):
         representatives[0]
-
 
 @pytest.mark.parametrize("file", ["primary", "index"])
 def test_indexed_check_view_rejects_changed_owner(file):
@@ -286,9 +270,8 @@ def test_indexed_check_view_rejects_changed_owner(file):
     with pytest.raises(ValidationError, match="generation changed"):
         compact[0]
     with pytest.raises(ValidationError, match="generation changed"):
-        _compress_path_equivalent_checks(compact)
+        compact.compressed()
     compact.close()
-
 
 def test_indexed_path_metadata_is_sorted_compact_mapping():
     from emuflow.local_path_timing import path_id_set_sha256
@@ -356,82 +339,36 @@ def test_indexed_path_metadata_is_sorted_compact_mapping():
             )
     duplicate._owner.close()
 
-
-@pytest.mark.parametrize("indexed", [False, True])
 @pytest.mark.parametrize("incomplete", [False, True])
-def test_check_validation_rejects_interleaved_bundles(indexed, incomplete):
-    canonical = [
-        EventCheck(path, role, "capture", 0, (1,), deadline)
-        for path in ("p", "q")
-        for role, deadline in (("target", 2), ("runtime", 20))
-    ]
-    rows = ([canonical[index] for index in (0, 2, 1, 3)]
-            if incomplete else canonical + canonical[:2])
+def test_check_validation_rejects_interleaved_bundles(incomplete):
+    canonical = [EventCheck(path, role, "capture", 0, (1,), deadline)
+                 for path in ("p", "q")
+                 for role, deadline in (("target", 2), ("runtime", 20))]
+    values = ([canonical[i] for i in (0, 2, 1, 3)]
+              if incomplete else canonical+canonical[:2])
     with pytest.raises(ValidationError, match="population|contiguous"):
-        if indexed:
-            builder = _EventCheckBuilder()
-            try:
-                for row in rows:
-                    builder.append(row)
-                builder.finish()
-            finally:
-                builder._owner.close()
-        else:
-            validate_checks(rows)
-
+        _indexed(values)
 
 def test_exact_compression_uses_complete_path_bundles(tmp_path):
     first = example()
-    second = [EventCheck("q", row.role, f"q-{row.event}", row.launch_ns,
-                         row.arcs_ns, row.required_ns) for row in first]
-    changed = [EventCheck("r", row.role, f"r-{row.event}", row.launch_ns,
-                          row.arcs_ns, row.required_ns) for row in first]
+    second = [EventCheck("q", r.role, "q-"+r.event, r.launch_ns, r.arcs_ns, r.required_ns) for r in first]
+    changed = [EventCheck("r", r.role, "r-"+r.event, r.launch_ns, r.arcs_ns, r.required_ns) for r in first]
     changed[0] = EventCheck("r", "tx", "r-first", 0, (3.25,), 4)
-    rows = validate_checks(first + second + changed)
-    representatives, mapping = _compress_path_equivalent_checks(rows)
-    assert representatives == first + changed
-    assert isinstance(mapping, array)
-    assert list(mapping) == list(range(5)) + list(range(5)) + list(range(5, 10))
-
-    values = [{"path": row.path, "role": row.role, "event": row.event,
-               "arrival_ns": row.launch_ns + sum(row.arcs_ns),
-               "required_ns": row.required_ns,
-               "slack_ns": row.required_ns-row.launch_ns-sum(row.arcs_ns)}
-              for row in representatives]
-    output = tmp_path / "measurements.tsv"
-    emitted = _write_expanded_measurements(output, rows, values, mapping)
-    expanded = read_measurements(output, rows)
-    assert not isinstance(emitted, list)
-    assert emitted == expanded
-    assert len(expanded) == len(rows)
-    assert expanded[5]["path"] == "q"
-    assert expanded[5]["event"] == "q-first"
-    assert expanded[5]["slack_ns"] == expanded[0]["slack_ns"]
-
-    damaged = array("I", mapping)
-    damaged[10] = 0
-    with pytest.raises(ValidationError, match="mapping disagrees"):
-        _write_expanded_measurements(
-            tmp_path / "damaged-mapping.tsv",
-            rows,
-            values,
-            damaged,
-            representatives,
-        )
-
-
-def test_exact_compression_does_not_trust_bundle_hash(monkeypatch):
-    import emuflow.global_sta as sta
-
-    rows = [
-        EventCheck(path, role, f"{path}-{role}", 0, (delay,), deadline)
-        for path, delay in (("p", 1.0), ("q", 2.0), ("r", 1.0))
-        for role, deadline in (("target", 4.0), ("runtime", 40.0))
-    ]
-    monkeypatch.setattr(sta, "_event_check_values_hash", lambda *args: 0)
-    representatives, mapping = _compress_path_equivalent_checks(validate_checks(rows))
-    assert representatives == rows[:4]
-    assert list(mapping) == [0, 1, 2, 3, 0, 1]
+    rows = _indexed(first+second+changed)
+    try:
+        representatives, mapping = rows.compressed()
+        assert list(representatives) == first+changed
+        assert list(mapping) == list(range(5))*2+list(range(5, 10))
+        output = tmp_path / "measurements.tsv"
+        _engine_tsv(output, representatives)
+        with closing(import_measurements(output, representatives)) as expanded:
+            assert len(expanded) == len(rows)
+            assert expanded[5]['path'] == 'q'
+            assert expanded[5]['event'] == 'q-first'
+            assert expanded[5]['slack_ns'] == expanded[0]['slack_ns']
+            assert expanded[10]['slack_ns'] == 0.75
+    finally:
+        rows.close()
 
 
 def test_native_check_index_compares_repeated_bundles_exactly():
@@ -443,10 +380,9 @@ def test_native_check_index_compares_repeated_bundles_exactly():
             rows.append(row)
             builder.append(row)
     compact = builder.finish()
-    representatives, mapping = _compress_path_equivalent_checks(compact)
+    representatives, mapping = compact.compressed()
     assert representatives == rows[:4]
     assert list(mapping) == [0, 1, 2, 3, 0, 1]
-
 
 def test_indexed_check_builder_bounds_live_identity_caches():
     builder = _EventCheckBuilder()
@@ -474,7 +410,6 @@ def test_indexed_check_builder_bounds_live_identity_caches():
     assert not hasattr(builder, "_path_ids")
     assert not hasattr(builder, "_event_ids")
 
-
 def test_native_check_index_distinguishes_bundle_counts():
     builder = _EventCheckBuilder()
     rows = [
@@ -487,80 +422,41 @@ def test_native_check_index_distinguishes_bundle_counts():
     for row in rows:
         builder.append(row)
     compact = builder.finish()
-    representatives, mapping = _compress_path_equivalent_checks(compact)
+    representatives, mapping = compact.compressed()
     assert representatives == rows
     assert list(mapping) == list(range(len(rows)))
 
-
 def test_exact_compression_scales_for_repeated_path_classes():
-    rows = [EventCheck(f"p{i}", role, f"{role}-{i}", 0, (1, 2), deadline)
-            for i in range(20000)
-            for role, deadline in (("target", 4), ("runtime", 40))]
-    rows = validate_checks(rows)
-    representatives, mapping = _compress_path_equivalent_checks(rows)
-    assert len(representatives) == 2
-    assert len(mapping) == len(rows)
-    assert set(mapping) == {0, 1}
+    rows = _indexed(EventCheck(f"p{i}", role, f"{role}-{i}", 0, (1, 2), deadline)
+                    for i in range(20000)
+                    for role, deadline in (("target", 4), ("runtime", 40)))
+    try:
+        representatives, mapping = rows.compressed()
+        assert len(representatives) == 2
+        assert len(mapping) == len(rows)
+        assert set(mapping) == {0, 1}
+    finally:
+        rows.close()
 
 
-def test_exact_compression_rejects_interleaved_bundles():
-    rows = [
-        EventCheck("p", "target", "p-target", 0, (1,), 4),
-        EventCheck("q", "target", "q-target", 0, (1,), 4),
-        EventCheck("p", "runtime", "p-runtime", 0, (1,), 40),
-        EventCheck("q", "runtime", "q-runtime", 0, (1,), 40),
-    ]
-    with pytest.raises(ValidationError, match="contiguous"):
-        _compress_path_equivalent_checks(rows)
-
-
-def test_lazy_expansion_is_reiterable_sliceable_and_fail_closed(tmp_path):
-    rows = validate_checks(example())
-    representatives, mapping = _compress_path_equivalent_checks(rows)
-    values = [
-        {
-            "path": row.path,
-            "role": row.role,
-            "event": row.event,
-            "arrival_ns": row.launch_ns + sum(row.arcs_ns),
-            "required_ns": row.required_ns,
-            "slack_ns": row.required_ns - row.launch_ns - sum(row.arcs_ns),
-        }
-        for row in representatives
-    ]
-    expanded = _write_expanded_measurements(
-        tmp_path / "measurements.tsv", rows, values, mapping
-    )
-    assert list(expanded) == list(expanded)
-    assert expanded[-1] == list(expanded)[-1]
-    assert expanded[1:3] == list(expanded)[1:3]
-    timing = build_opensta_timing(
-        {
-            "virtual_dut_clocks": {"clk": {"nominal_period_ns": 100}},
-            "virtual_dut_clock": {"nominal_period_ns": 100},
-        },
-        {
-            "paths": {
-                "p": {
-                    "path_scope": "cross-fpga",
-                    "physical_logic_segments_cone_bound": False,
-                }
-            },
-            "source_binding": None,
-            "compressed_representative_paths": 1,
-        },
-        expanded,
-    )
-    assert timing["summary"]["timing_paths"] == 1
-    assert timing["summary"]["maximum_system_delay_bound_ns"] == 31.5
-
-    damaged = array("q", mapping)
-    damaged[-1] = len(values)
-    with pytest.raises(ValidationError, match="missing representative"):
-        _write_expanded_measurements(
-            tmp_path / "damaged.tsv", rows, values, damaged
-        )
-
+def test_native_expansion_is_reiterable_sliceable_and_rejects_changed_owner(tmp_path):
+    rows = _indexed(example())
+    representatives, _ = rows.compressed()
+    output = tmp_path / 'measurements.tsv'
+    _engine_tsv(output, representatives)
+    expanded = import_measurements(output, representatives)
+    try:
+        assert list(expanded) == list(expanded)
+        assert expanded[-1] == list(expanded)[-1]
+        assert expanded[1:3] == list(expanded)[1:3]
+        assert expanded[2]['arrival_ns'] == 31.5
+        status = expanded.store_path.stat()
+        os.utime(expanded.store_path, ns=(status.st_atime_ns, status.st_mtime_ns+1_000_000))
+        with pytest.raises(ValidationError, match='generation changed'):
+            expanded[0]
+    finally:
+        expanded.close()
+        rows.close()
 
 def test_retired_inline_execution_and_reduction_are_rejected(tmp_path):
     import emuflow.global_sta as sta
@@ -568,7 +464,6 @@ def test_retired_inline_execution_and_reduction_are_rejected(tmp_path):
         sta.run_event_checks(example(), tmp_path)
     with pytest.raises(ValidationError, match='inline reduction is retired'):
         sta.build_opensta_timing({}, {}, [])
-
 
 def test_comparison_checks_each_path_and_event():
     reference = {"timing_scope": "cross-fpga-subset", "paths": [{
@@ -584,7 +479,6 @@ def test_comparison_checks_each_path_and_event():
     values[2]["arrival_ns"] += 1
     with pytest.raises(ValidationError, match="disagrees"):
         compare_system_timing(values, reference)
-
 
 @pytest.mark.parametrize("damage", ["nan", "duplicate", "orphan", "bad-reference"])
 def test_comparison_rejects_corrupt_evidence(damage):
@@ -606,8 +500,6 @@ def test_comparison_rejects_corrupt_evidence(damage):
         reference["paths"].append(reference["paths"][0])
     with pytest.raises(ValidationError):
         compare_system_timing(values, reference)
-
-
 
 
 @pytest.mark.parametrize("saved", [False, True])
@@ -679,7 +571,6 @@ def test_standalone_phase7c_never_calls_python_composer(tmp_path, monkeypatch, s
     assert timing["target_clock"]["worst_slack_bound_ns"] == -13.5
     assert timing["runtime_clock"]["tns_bound_ns"] == 0
 
-
 @pytest.mark.parametrize("late", [False, True])
 def test_standalone_report_preserves_event_gate_without_comparison(late, monkeypatch):
     import emuflow.global_sta as sta
@@ -715,7 +606,6 @@ def test_standalone_report_preserves_event_gate_without_comparison(late, monkeyp
             metadata,
             [r for r in rows if r["role"] != "runtime"],
         )
-
 
 @pytest.mark.parametrize("indexed_metadata", [False, True])
 @pytest.mark.parametrize("repeated_complete_bundle", [False, True])
@@ -760,7 +650,6 @@ def test_standalone_report_rejects_interleaved_measurements(
             rows,
         )
 
-
 def test_only_opensta_engine_is_exposed():
     import inspect
     from emuflow.cli import _build_parser
@@ -776,7 +665,6 @@ def test_only_opensta_engine_is_exposed():
         assert parser.parse_args(cmd).global_timing_engine == "opensta"
         with pytest.raises(SystemExit):
             parser.parse_args(cmd + ["--global-timing-engine", "python"])
-
 
 def test_physical_binding_uses_raw_measurements():
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
@@ -801,7 +689,6 @@ def test_physical_binding_uses_raw_measurements():
     del physical["board_link_timing"]
     assert bind_physical_checks(build_virtual_runtime(fixture.schedule, fixture.platform),
                                 routes, fixture.schedule, physical, fixture.platform) == checks
-
 
 def test_indexed_metadata_produces_fixed_width_final_timing_paths():
     builder = _PathMetadataBuilder()
@@ -845,7 +732,6 @@ def test_indexed_metadata_produces_fixed_width_final_timing_paths():
     assert [row["path"] for row in timing["paths"]] == ["path-a", "path-b"]
     assert timing["target_clock"]["worst_slack_bound_ns"] == 7.0
     assert timing["runtime_clock"]["tns_bound_ns"] == 0.0
-
 
 def test_indexed_logic_segments_are_exact_for_checks_and_system_timing(tmp_path):
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
@@ -957,7 +843,6 @@ def test_indexed_logic_segments_are_exact_for_checks_and_system_timing(tmp_path)
         min(0.0, value) for value in inline_slacks
     )
 
-
 def test_indexed_logic_segments_expand_compressed_members_exactly(tmp_path):
     import copy
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
@@ -1045,7 +930,6 @@ def test_indexed_logic_segments_expand_compressed_members_exactly(tmp_path):
         "tx", "target", "runtime", "commit",
     }
 
-
 def test_physical_binding_does_not_reindex_schedule_entries():
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
     from emuflow.board_link_timing import build_board_link_timing_model
@@ -1081,7 +965,6 @@ def test_physical_binding_does_not_reindex_schedule_entries():
 
     assert checks
     assert schedule["entries"].iterations == 1
-
 
 def test_indexed_physical_binding_streams_routes_paths_and_schedule(tmp_path):
     from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
@@ -1130,58 +1013,6 @@ def test_indexed_physical_binding_streams_routes_paths_and_schedule(tmp_path):
 
     assert actual == expected
     assert list.__len__(route_records) == 0
-    assert list.__len__(timing_records) == 0
-
-
-def test_indexed_timing_stream_delegates_path_order_to_route_store(tmp_path):
-    import copy
-    from tests.test_static_exact_system_timing import StaticExactSystemTimingTest
-    from emuflow.system_route_storage import (
-        SystemRouteSequence,
-        read_system_routes,
-        write_system_route_storage,
-    )
-    from emuflow.tdm import open_tdm_schedule_timing_path_stream
-    from emuflow.tdm_schedule_storage import (read_tdm_schedule)
-
-    fixture = StaticExactSystemTimingTest()
-    fixture.setUp()
-    _, routes, _ = fixture._system_inputs()
-    routes = copy.deepcopy(routes)
-    base = routes["timing"]["paths"][0]
-    routes["timing"]["paths"] = [
-        {**base, "path": "path-z"},
-        {**base, "path": "path-a"},
-    ]
-    route_path = tmp_path / "routes.json"
-    schedule_path = tmp_path / "schedule.json"
-    write_system_route_storage(route_path, routes)
-    write_tdm_schedule_storage(schedule_path, fixture.schedule)
-    indexed_routes = read_system_routes(route_path)
-    indexed_schedule = read_tdm_schedule(schedule_path)
-    timing_records = indexed_routes["timing"]["paths"]
-
-    assert timing_records.ordered("path")[0]["path"] == "path-a"
-    with mock.patch.object(
-        SystemRouteSequence,
-        "__iter__",
-        side_effect=AssertionError("decoded the complete route relation"),
-    ):
-        with open_tdm_schedule_timing_path_stream(
-            indexed_routes,
-            fixture.platform,
-            indexed_schedule,
-            path_order="path",
-        ) as records:
-            observed = [
-                (record["path"], record["_cut_demands"])
-                for record in records
-            ]
-
-    assert observed == [
-        ("path-a", ["d000001", "d000000"]),
-        ("path-z", ["d000001", "d000000"]),
-    ]
     assert list.__len__(timing_records) == 0
 
 

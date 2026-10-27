@@ -743,59 +743,6 @@ def reconstruct_system_route_timing(
     return result
 
 
-def annotate_system_route_timing(
-    assignment: Mapping[str, Any],
-    platform: Platform,
-    routes: Mapping[str, Any],
-    timing_paths: Mapping[str, Any],
-) -> Dict[str, Any]:
-    """Bind TimingPathDB evaluation to a timing-oblivious legal route.
-
-    The route tree is produced without timing criticality, then evaluated
-    against the complete normalized TimingPathDB. The global candidate engine
-    remains the route owner; a disabled ``timing-driven`` policy preserves
-    the path identities required by Phase 5 and whole-design Phase 7C timing.
-    """
-
-    evaluation = reconstruct_system_route_timing(
-        assignment,
-        platform,
-        routes,
-        timing_paths,
-        include_records=True,
-    )
-    records = evaluation.pop("_timing_records")
-    annotated = dict(routes)
-    annotated["provider"] = GLOBAL_CANDIDATE_PROVIDER
-    annotated["timing_evaluation"] = {
-        "mode": "post-route-evaluation-only",
-        "optimization_enabled": False,
-    }
-    annotated["timing"] = {
-        "schema": STA_PATHS_SCHEMA,
-        "normalization": timing_paths["normalization"],
-        "compression": timing_paths["compression"],
-        "paths": records,
-    }
-    annotated["metrics"] = {
-        **routes["metrics"],
-        "worst_slack_ns": evaluation["worst_slack_ns"],
-        "worst_normalized_slack": evaluation[
-            "worst_normalized_slack"
-        ],
-        "estimated_worst_tdm_slack_ns": evaluation[
-            "estimated_worst_tdm_slack_ns"
-        ],
-        "estimated_worst_tdm_normalized_slack": evaluation[
-            "estimated_worst_tdm_normalized_slack"
-        ],
-        "estimated_max_tdm_ratio": evaluation[
-            "estimated_max_tdm_ratio"
-        ],
-    }
-    return annotated
-
-
 def validate_native_system_routes(
     assignment: Mapping[str, Any],
     platform: Platform,

@@ -15,11 +15,11 @@ from emuflow.local_path_timing import (
     validate_local_path_timing,
 )
 from emuflow.platform import Platform
-from emuflow.static_exact_timing import (
+from tests.static_exact_deadline_oracle import (
     build_static_exact_segment_deadlines,
     validate_static_exact_segment_deadlines,
 )
-from emuflow.tdm import reconstruct_tdm_schedule_timing_paths
+from tests.tdm_timing_oracle import timing_paths as reconstruct_tdm_schedule_timing_paths
 
 
 from emuflow.physical_timing_inputs import (
@@ -515,14 +515,24 @@ def build_system_timing(
                 "sampled virtual-wire timing requires the Phase 3 semantic "
                 "contract"
             )
+        # The independent arithmetic oracle accepts only bounded explicit facts.
+        # Storage-reader equivalence is checked by the surrounding fixture tests.
+        deadline_facts = dict(physical_summary)
+        deadline_facts["logic_segment_timing"] = {}
+        for fpga, database in physical_summary.get("logic_segment_timing", {}).items():
+            if len(database["segments"]) > 4096:
+                raise ValidationError("system timing oracle requires a small fixture")
+            deadline_facts["logic_segment_timing"][fpga] = dict(
+                database, segments=list(database["segments"])
+            )
         exact_deadlines = build_static_exact_segment_deadlines(
-            schedule, semantic_contract, physical_summary, platform
+            schedule, semantic_contract, deadline_facts, platform
         )
         validate_static_exact_segment_deadlines(
             exact_deadlines,
             schedule,
             semantic_contract,
-            physical_summary,
+            deadline_facts,
             platform,
         )
     sampled_schedule = exact_deadlines is not None

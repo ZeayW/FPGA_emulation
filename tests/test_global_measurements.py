@@ -15,7 +15,7 @@ import pytest
 from emuflow.errors import ValidationError
 from emuflow.global_event_store import EventBuilder, MetadataBuilder
 from emuflow.global_measurements import NativeMeasurements, NativeTimingPaths, import_measurements, read_native_measurements
-from emuflow.global_sta import EventCheck, build_opensta_timing, read_measurements
+from emuflow.global_sta import EventCheck, build_opensta_timing
 from emuflow.qor_storage import write_qor_report, read_qor_report
 from tests.test_global_sta import example
 
@@ -46,8 +46,11 @@ def _case(tmp_path,count=24,*,large=False):
     file=tmp_path/'engine.tsv';_tsv(file,representatives)
     with patch.object(type(rows),'__iter__',side_effect=AssertionError('Python event population')):
         result=import_measurements(file,representatives,directory=tmp_path/'native')
-    original=tmp_path/'original.tsv';_tsv(original,all_rows)
-    reference=read_measurements(original,all_rows)
+    reference=[{'path':r.path,'role':r.role,'event':r.event,
+                'arrival_ns':r.launch_ns+math.fsum(r.arcs_ns),
+                'required_ns':r.required_ns,
+                'slack_ns':r.required_ns-r.launch_ns-math.fsum(r.arcs_ns)}
+               for r in all_rows]
     info={'paths':paths,'source_binding':None,'compressed_representative_paths':4}
     runtime={'virtual_dut_clocks':{'时钟':{'nominal_period_ns':100.0}},'virtual_dut_clock':{'nominal_period_ns':100.0}}
     return rows,info,runtime,result,reference
@@ -217,7 +220,7 @@ def test_saved_measurements_survive_owner_retirement_and_exact_reconstruction(tm
     rows,info,runtime,native,reference=_case(tmp_path,12)
     facts=list(rows);details=dict(info['paths']);namespace=rows._owner.header['logical_sha256']
     native.close();rows.close()
-    (tmp_path/'engine.tsv').unlink();(tmp_path/'original.tsv').unlink()
+    (tmp_path/'engine.tsv').unlink()
     builder=EventBuilder(bound=True);metadata=MetadataBuilder(builder);current=None
     for fact in facts:
         if fact.path!=current:

@@ -13,7 +13,7 @@ from emuflow.errors import ValidationError
 from emuflow.store_publication import bind_store_source
 
 ROOT = Path(__file__).resolve().parents[1]
-KINDS = ("emuir", "routes", "paths", "weights", "qor", "functions", "proofs", "sites")
+KINDS = ("emuir", "routes", "paths", "weights", "qor", "functions", "sites")
 
 
 def coordinates(generation=0):
@@ -55,7 +55,6 @@ def setup_case(kind, root):
         "weights": "sta",
         "qor": "qor_storage",
         "functions": "vivado_indexed_netlist",
-        "proofs": "vivado_optimization",
         "sites": "xilinx_openparf_atomic",
     }[kind]
     module = importlib.import_module("emuflow." + module_name)
@@ -90,13 +89,6 @@ def setup_case(kind, root):
         from tests.test_vivado_indexed_physical import fixture
 
         ir_path = fixture(root)
-    if kind == "proofs":
-        from tests.test_vivado_optimization import VivadoOptimizationTests
-
-        case = VivadoOptimizationTests()
-        mapped, lineage, digest, _ = case.prepare(root)
-        output = root / "proofs.sqlite"
-
     def produce(generation=0):
         if kind == "emuir":
             value = ir.to_dict()
@@ -133,11 +125,6 @@ def setup_case(kind, root):
         if kind == "functions":
             module.emit_indexed_vivado_verilog(ir_path, root / "design.v")
             return root / "design.functions.sqlite"
-        if kind == "proofs":
-            module.build_optimization_proofs(
-                mapped, lineage, output, mapped_sha256=digest
-            )
-            return output
         module._write_site_database(
             output, coordinates(generation), source_bindings=sources
         )
@@ -149,12 +136,12 @@ def setup_case(kind, root):
 
 
 @pytest.mark.parametrize("kind", KINDS)
-def test_native_rejection_keeps_prior_primary_or_no_incomplete_new_owner(
+def test_native_rejection_keeps_prior_primary_owner(
     tmp_path, kind
 ):
     module, output, produce = setup_case(kind, tmp_path)
-    previous = produce() if kind != "proofs" else None
-    old = (output.read_bytes(), previous.read_bytes()) if previous is not None else None
+    previous = produce()
+    old = (output.read_bytes(), previous.read_bytes())
     with patch.object(
         module, "publish_derived_outputs" if kind == "functions" else "publish_sqlite_store",
         side_effect=ValidationError("native rejected")
@@ -162,15 +149,12 @@ def test_native_rejection_keeps_prior_primary_or_no_incomplete_new_owner(
         with pytest.raises(ValidationError, match="native rejected"):
             produce(1)
     native.assert_called_once()
-    if previous is None:
-        assert not output.exists()
-    else:
-        assert output.read_bytes() == old[0] and previous.read_bytes() == old[1]
+    assert output.read_bytes() == old[0] and previous.read_bytes() == old[1]
     assert not list(tmp_path.glob("*.tmp")) and not list(tmp_path.glob("*.previous"))
 
 
 @pytest.mark.parametrize(
-    "kind", [kind for kind in KINDS if kind not in ("routes", "proofs")]
+    "kind", [kind for kind in KINDS if kind != "routes"]
 )
 def test_changed_source_after_row_build_rejects_publication(tmp_path, kind):
     module, output, produce = setup_case(kind, tmp_path)

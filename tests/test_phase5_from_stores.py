@@ -1,11 +1,11 @@
 """Native configuration ownership; no Python scheduling/configuration bridge."""
+from tests.phase3_store_fixture import write_assignment_index_fixture
 import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from emuflow.phase3_assignment_index import write_phase3_assignment_index
 from emuflow.phase5_native import run_native_phase5
 from emuflow.tdm_schedule_storage import read_tdm_schedule
 from emuflow.phase5 import validate_phase5_generation
@@ -17,7 +17,7 @@ from tests.test_native_schedule_generation import install_runtime
 def native_inputs(tmp_path, affine=False, repeated=False):
     case, routes, producer = current_case(tmp_path, affine, repeated)
     assignment = tmp_path / "assignment.sqlite"
-    write_phase3_assignment_index(assignment, case.ir, case._phase5_assignment)
+    write_assignment_index_fixture(assignment, case.ir, case._phase5_assignment)
     board = tmp_path / "platform.normalized.json"
     board.write_text(json.dumps(case.platform.to_dict(), ensure_ascii=False))
     return case, routes, producer, [tmp_path / "current/routes.json", assignment, board]

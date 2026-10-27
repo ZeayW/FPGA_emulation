@@ -1,12 +1,12 @@
 """Small input facts written with current typed-store fixture writers."""
 from __future__ import annotations
+from tests.phase3_store_fixture import write_assignment_index_fixture
 import copy
 from pathlib import Path
 from types import SimpleNamespace
 
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.ir import EmuIR
-from emuflow.phase3_assignment_index import write_phase3_assignment_index
 from emuflow.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
 from emuflow.opensta import OPENSTA_PROVIDER
 from emuflow.system_route_storage import write_system_route_storage
@@ -41,7 +41,7 @@ def sources(root, *, value=None, owners=None, paths=None, cross=()):
     owners = owners or {cell['id']: 'fpga0' for cell in value['instances']}
     parts = sorted(set(owners.values()) | {'fpga0', 'fpga1'})
     assignment = root/'assignment.sqlite'
-    write_phase3_assignment_index(assignment, ir, {
+    write_assignment_index_fixture(assignment, ir, {
         'schema': 'emuflow.partition-assignment/v1', 'design': value['design']['name'],
         'platform': 'fixture', 'provider': 'fixture', 'seed': 0, 'constraints': {},
         'partitions': [{'fpga': part} for part in parts],

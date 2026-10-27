@@ -176,7 +176,6 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/emuflow/vivado_physical.py",
     "src/emuflow/vivado_indexed_netlist.py",
     "src/emuflow/vivado_lineage.py",
-    "src/emuflow/vivado_optimization.py",
     "src/emuflow/vivado_physical_timing.py",
     "src/emuflow/vivado_physical_top.py",
     "src/emuflow/vivado_source.py",

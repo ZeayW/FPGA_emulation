@@ -1,4 +1,5 @@
 """Source-owned DUT split equivalence and downstream projection contracts."""
+from tests.phase3_store_fixture import write_assignment_index_fixture
 from contextlib import closing
 import json
 from pathlib import Path
@@ -22,13 +23,12 @@ def owners(tmp_path,request):
     # The scheduler's tree case adds a relay-only FPGA. Its source assignment
     # must declare that empty partition before testing a complete split.
     from copy import deepcopy
-    from emuflow.phase3_assignment_index import write_phase3_assignment_index
     assignment=deepcopy(case._phase5_assignment)
     declared={row['fpga'] for row in assignment['partitions']}
     for fpga in case.platform.fpgas:
         if fpga.id not in declared:
             assignment['partitions'].append({'fpga':fpga.id,'resources':{}})
-    write_phase3_assignment_index(inputs[1],case.ir,assignment)
+    write_assignment_index_fixture(inputs[1],case.ir,assignment)
     source=tmp_path/'source.sqlite';write_compact_emuir(source,case.ir.value)
     run_native_phase5(producer,tmp_path/'schedule')
     schedule=read_tdm_schedule(tmp_path/'schedule/schedule.json')

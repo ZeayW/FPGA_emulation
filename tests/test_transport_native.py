@@ -1,4 +1,5 @@
 """Complete transport records, physical binding and engine-input equivalence."""
+from tests.phase3_store_fixture import write_assignment_index_fixture
 from contextlib import closing
 from pathlib import Path
 import sqlite3
@@ -134,12 +135,11 @@ from tests.test_phase6_virtual_board import inputs as board_inputs
 def test_native_fixed_pin_binding_and_all_engine_inputs_match(board_inputs,tmp_path):
     from emuflow.ir import EmuIR
     from emuflow.platform import Platform
-    from emuflow.phase3_assignment_index import write_phase3_assignment_index
     from tests.schedule_store_fixture import write_tdm_schedule_storage
     from emuflow.tdm_schedule_storage import read_tdm_schedule
     value,board,assignment,schedule=board_inputs
     platform=Platform.from_dict(board)
-    path=tmp_path/'assignment.sqlite';write_phase3_assignment_index(path,EmuIR(value),assignment)
+    path=tmp_path/'assignment.sqlite';write_assignment_index_fixture(path,EmuIR(value),assignment)
     write_tdm_schedule_storage(tmp_path/'schedule.json',schedule)
     current=read_tdm_schedule(tmp_path/'schedule.json')
     runtime=build_virtual_runtime(current,platform,{'clk':1.0})

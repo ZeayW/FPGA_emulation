@@ -16,9 +16,10 @@ from emuflow.global_event_store import (
     export_event_model,
 )
 from emuflow.global_sta import (
-    EventCheck, _compress_path_equivalent_checks, bind_physical_checks,
-    export_event_checks, read_measurements, run_event_checks,
+    EventCheck, bind_physical_checks,
+    export_event_checks, run_event_checks,
 )
+from emuflow.global_measurements import import_measurements
 from emuflow.native_tools import resolve_native_executable
 from tests.test_global_sta import example
 
@@ -106,7 +107,7 @@ def test_bound_events_share_metadata_owner_and_unicode_identity(tmp_path):
     assert list(info) == sorted(names)
     assert info.path_id_set_sha256() == path_id_set_sha256(names)
     assert rows._owner.header['numeric_bytes'] == 6 * 16
-    selected, mapping = _compress_path_equivalent_checks(rows)
+    selected, mapping = rows.compressed()
     assert len(selected) == 2
     assert list(mapping) == [0, 1] * 3
     assert rows[-1].path == names[-1]
@@ -118,23 +119,35 @@ def test_bound_events_share_metadata_owner_and_unicode_identity(tmp_path):
 
 
 @pytest.mark.parametrize('count', [1, 37])
-def test_native_export_matches_reference_bytes_and_hashes(tmp_path, count):
+def test_native_export_preserves_all_arcs_constraints_and_file_seals(tmp_path, count):
     import hashlib
-    reference = [EventCheck(name, role, name+'-capture', -0.0, tuple(i / 7.0 for i in range(count)), deadline)
-                 for name in ('路径', 'second') for role, deadline in [('target', -2.0), ('runtime', 100.0)]]
+    reference = [EventCheck(name, role, name+'-capture', -0.0,
+                           tuple(i / 7.0 for i in range(count)), deadline)
+                 for name in ('路径', 'second')
+                 for role, deadline in [('target', -2.0), ('runtime', 100.0)]]
     rows = _rows(reference)
     try:
-        native, python = tmp_path / 'native', tmp_path / 'reference'
-        export_event_checks(reference, python)
-        with patch('emuflow.global_sta.render_opensta_liberty', side_effect=AssertionError('Python model')), \
-             patch.object(type(rows), '__iter__', side_effect=AssertionError('Python event scan')):
+        native = tmp_path / 'native'
+        with patch.object(type(rows), '__iter__', side_effect=AssertionError('Python event scan')):
             export_event_checks(rows, native)
         model, sources = event_model_sources(native)
         manifest = json.loads((native / 'model.json').read_text())
         assert len(sources) == 4
+        verilog = (model / 'global_timing.v').read_text()
+        sdc = (model / 'global_timing.sdc').read_text()
+        liberty = (model / 'global_timing.lib').read_text()
+        for i, row in enumerate(reference):
+            assert f'input i{i};' in verilog and f'output o{i};' in verilog
+            for j, delay in enumerate(row.arcs_ns):
+                previous = f'i{i}' if j == 0 else f'n{i}_{j-1}'
+                following = f'o{i}' if j == count-1 else f'n{i}_{j}'
+                assert f'D{j} a{i}_{j} (.A({previous}), .Y({following}));' in verilog
+                assert f'values ("{delay:.12g}");' in liberty
+            assert f'set_input_delay -clock epoch -max 0 [get_ports i{i}]' in sdc
+            assert f'set_output_delay -clock epoch -max {1-row.required_ns:.17g} [get_ports o{i}]' in sdc
+        assert verilog.count(' a') == len(reference)*count
         for item in manifest['files']:
             actual = (model / item['name']).read_bytes()
-            assert actual == (python / item['name']).read_bytes()
             assert hashlib.sha256(actual).hexdigest() == item['sha256']
             assert len(actual) == item['bytes']
         assert not (native / '.event-export-request.bin').exists()
@@ -218,7 +231,7 @@ def test_measurement_import_binds_generations_at_iteration_boundaries(tmp_path):
     try:
         original = global_event_store.require_store_sources_unchanged
         with patch.object(global_event_store, 'require_store_sources_unchanged', wraps=original) as guard:
-            measured = read_measurements(tsv, rows)
+            measured = import_measurements(tsv, rows)
             assert len(measured) == 200
             assert list(measured)[-1]['path'] == 'p99'
             assert guard.call_count <= 10

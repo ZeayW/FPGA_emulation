@@ -1,4 +1,5 @@
 """Bounded test inputs and views around the current complete native split stage."""
+from tests.phase3_store_fixture import write_assignment_index_fixture
 import copy
 import json
 from pathlib import Path
@@ -8,7 +9,6 @@ import tempfile
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
-from emuflow.phase3_assignment_index import write_phase3_assignment_index
 from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.split_netlist_storage import SplitNetlistView, validate_split_netlists_sqlite
 from emuflow.transport_storage import read_lane_map, read_transport
@@ -32,7 +32,7 @@ class NativeSplitFixture:
         value = copy.deepcopy(assignment)
         declared = {row['fpga'] for row in value['partitions']}
         value['partitions'].extend({'fpga': fpga.id, 'resources': {}} for fpga in platform.fpgas if fpga.id not in declared)
-        write_phase3_assignment_index(self.assignment, ir, value)
+        write_assignment_index_fixture(self.assignment, ir, value)
         (self.root/'assignment.json').write_text(json.dumps(value))
         write_tdm_schedule_storage(self.schedule, schedule)
         self.board.write_text(json.dumps(platform.to_dict()))

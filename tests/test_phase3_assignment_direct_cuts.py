@@ -1,4 +1,5 @@
 """Typed native cut publication, independently compared with the SQL writer."""
+from tests.phase3_store_fixture import write_assignment_index_fixture
 
 import sqlite3
 import struct
@@ -14,7 +15,6 @@ from emuflow.partition import (
     _PackedClusterAssignment,
     build_partition_assignment,
 )
-from emuflow.phase3_assignment_index import write_phase3_assignment_index
 from emuflow.phase3_exact_binary import EXACT_BINARY_ARTIFACT
 from emuflow.phase3_assignment_native import native_assignment_cut_source
 from tests.test_phase3_assignment_native import prepare, _published_rows
@@ -76,7 +76,7 @@ def test_native_cut_publication_matches_reference_without_host_records(
             tmp_path / "reference/index.sqlite",
             tmp_path / "native/index.sqlite",
         )
-        reference_result = write_phase3_assignment_index(expected, ir, reference)
+        reference_result = write_assignment_index_fixture(expected, ir, reference)
         publish = producer.publish_native_assignment_index
         calls = []
 
@@ -96,7 +96,7 @@ def test_native_cut_publication_matches_reference_without_host_records(
         with patch.object(
             producer, "publish_native_assignment_index", side_effect=guarded
         ):
-            result = write_phase3_assignment_index(actual, ir, assignment)
+            result = write_assignment_index_fixture(actual, ir, assignment)
         assert calls == [True]
         assert _published_rows(actual) == _published_rows(expected)
         assert (actual.parent / EXACT_BINARY_ARTIFACT).read_bytes() == (
@@ -150,7 +150,7 @@ def test_native_cut_source_rejection_preserves_existing_pair(source, tmp_path, k
         binary = tmp_path / EXACT_BINARY_ARTIFACT
         binary.write_bytes(b"prior-binary")
         with pytest.raises(ValidationError):
-            write_phase3_assignment_index(index, ir, assignment)
+            write_assignment_index_fixture(index, ir, assignment)
         assert (
             index.read_bytes() == b"prior-index"
             and binary.read_bytes() == b"prior-binary"
@@ -216,7 +216,7 @@ def test_native_request_rejection_is_atomic_and_never_imports_host_cuts(
 
         with patch.object(producer, "NativeToolProcess", side_effect=corrupt):
             with pytest.raises(ValidationError):
-                write_phase3_assignment_index(index, ir, assignment)
+                write_assignment_index_fixture(index, ir, assignment)
         assert observed == [True]
         assert (
             index.read_bytes() == b"prior-index"
@@ -308,7 +308,7 @@ def test_native_node_decoder_rejects_bound_malformed_records(source, tmp_path, k
             with pytest.raises(
                 ValidationError, match="native assignment publication failed"
             ):
-                write_phase3_assignment_index(index, ir, assignment)
+                write_assignment_index_fixture(index, ir, assignment)
         assert observed == [True]
         assert typed.paths[0].read_bytes() == original
         assert (
@@ -341,7 +341,7 @@ def test_original_semantic_bindings_survive_independent_index_validation(
             index_module, "validate_phase3_assignment_index", side_effect=changed
         ):
             with pytest.raises(ValidationError):
-                write_phase3_assignment_index(index, ir, assignment)
+                write_assignment_index_fixture(index, ir, assignment)
         assert (
             index.read_bytes() == b"prior-index"
             and binary.read_bytes() == b"prior-binary"

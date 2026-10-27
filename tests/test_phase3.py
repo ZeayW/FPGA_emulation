@@ -1,3 +1,4 @@
+from tests.phase3_store_fixture import write_assignment_index_fixture
 from tests.partition_fixture import run_phase3_fixture
 from contextlib import closing
 import copy
@@ -25,10 +26,7 @@ from emuflow.partition import (
 from tests.partition_reference import assign_clusters
 from emuflow.partition_ir import load_partition_ir
 from emuflow.phase3 import run_phase3, validate_phase3_indexed
-from emuflow.phase3_assignment_index import (
-    validate_phase3_assignment_index,
-    write_phase3_assignment_index,
-)
+from emuflow.phase3_assignment_index import (validate_phase3_assignment_index)
 from emuflow.phase3_exact_records import StaticExactRecordSequence
 from emuflow.platform import BoardLink, FpgaNode, Platform
 from emuflow.resources import RESOURCE_FIELDS, ResourceVector
@@ -290,9 +288,6 @@ class Phase3Test(unittest.TestCase):
                 side_effect=AssertionError(
                     "Static Exact Phase 3 must stream compact EmuIR"
                 ),
-            ), patch(
-                "emuflow.phase3_publication_native.publish",
-                side_effect=AssertionError("Python final publication entered"),
             ):
                 run_phase3_fixture(
                     ir_path,
@@ -624,7 +619,6 @@ class Phase3Test(unittest.TestCase):
                     encoding="utf-8",
                 )
                 with (
-                    patch("emuflow.partition_init_native.initialize") as tritonpart,
                     patch(
                         "emuflow.phase3_pressure_native.NativePressureModel.execute"
                     ) as patron,
@@ -637,7 +631,6 @@ class Phase3Test(unittest.TestCase):
                         provider="patron",
                         seed=19,
                     )
-                tritonpart.assert_not_called()
                 patron.assert_not_called()
                 self.assertEqual(
                     report["provider"],

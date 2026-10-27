@@ -1,4 +1,5 @@
 """Independent split validation precedes source-bound native publication."""
+from tests.phase3_store_fixture import write_assignment_index_fixture
 
 from unittest.mock import patch
 import os
@@ -9,7 +10,6 @@ from emuflow import split_netlist_storage as split
 from emuflow import split_overlay as owner
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.errors import ValidationError
-from emuflow.phase3_assignment_index import write_phase3_assignment_index
 from emuflow.tdm_schedule_storage import read_tdm_schedule
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 
@@ -26,7 +26,7 @@ def test_split_publication_keeps_prior_generation_when_an_input_changes(
         tmp_path / name for name in ("ir.sqlite", "assignment.sqlite", "schedule.json")
     )
     write_compact_emuir(ir, case.ir.to_dict())
-    write_phase3_assignment_index(assignment, case.ir, case.assignment)
+    write_assignment_index_fixture(assignment, case.ir, case.assignment)
     write_tdm_schedule_storage(selector, case.schedule)
     schedule = read_tdm_schedule(selector)
     output = tmp_path / "split.sqlite"
@@ -94,7 +94,7 @@ def test_exact_owner_is_borrowed_without_alias_or_copy(tmp_path,touch_metadata):
     case=StaticExactCombinationalCutPartitionTest();case.setUp()
     _,value=case._exact_artifacts(dependent_return=True)
     ir=tmp_path/'ir.sqlite';assignment=tmp_path/'assignment.sqlite';selector=tmp_path/'schedule.json'
-    write_compact_emuir(ir,case.ir.to_dict());write_phase3_assignment_index(assignment,case.ir,value)
+    write_compact_emuir(ir,case.ir.to_dict());write_assignment_index_fixture(assignment,case.ir,value)
     write_tdm_schedule_storage(selector,build_tdm_schedule(case._exact_routes(value),case.platform))
     schedule=read_tdm_schedule(selector);source=tmp_path/'assignment.exact.bin'
     before=source.read_bytes();generation=native_file_generation(source)

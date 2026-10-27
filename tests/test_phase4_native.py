@@ -1,4 +1,5 @@
 """Whole-stage records, source binding and publication failures for Phase 4."""
+from tests.phase3_store_fixture import write_assignment_index_fixture
 import json
 import sqlite3
 from contextlib import closing
@@ -10,7 +11,6 @@ import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
-from emuflow.phase3_assignment_index import write_phase3_assignment_index
 from emuflow.phase4 import run_phase4
 from emuflow.phase4_native import prepare_policy, run_native_phase4
 from emuflow.routing import demands_from_assignment
@@ -36,7 +36,7 @@ GOLDEN = {
 def inputs(root, mode=False):
     case, _ = _case(root, mode, False)
     assignment = root / 'assignment.sqlite'
-    write_phase3_assignment_index(assignment, case.ir, case._phase5_assignment)
+    write_assignment_index_fixture(assignment, case.ir, case._phase5_assignment)
     board = root / 'board.json'
     board.write_text(json.dumps(case.platform.to_dict()))
     demands = demands_from_assignment(case._phase5_assignment, case.platform)

@@ -1,4 +1,5 @@
 """Independent typed cut validation, canonical identity and rejection gates."""
+from tests.phase3_store_fixture import write_assignment_index_fixture
 
 import hashlib
 import json
@@ -11,11 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.errors import ValidationError
-from emuflow.phase3_assignment_index import (
-    _iter_cut_records,
-    validate_phase3_assignment_index,
-    write_phase3_assignment_index,
-)
+from emuflow.phase3_assignment_index import (_iter_cut_records, validate_phase3_assignment_index)
 from emuflow.phase3_assignment_native import validate_native_assignment_cuts
 from tests.native_build import emuflow_native
 from tests.test_phase3_assignment_direct_cuts import _assignment
@@ -48,7 +45,7 @@ def published(source, tmp_path, mode="normal"):
                 for row in assignment["cut_nets"]
             ]
         path = tmp_path / "published #?雪" / "assignment.sqlite"
-        write_phase3_assignment_index(path, ir, assignment)
+        write_assignment_index_fixture(path, ir, assignment)
         return path
 
 

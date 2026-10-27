@@ -4,7 +4,7 @@ import tempfile
 import unittest
 
 from emuflow.errors import ValidationError
-from emuflow.xilinx_clock_capacity import audit_xilinx_clock_capacity
+from scripts.validation.audit_xilinx_clock_capacity import audit_xilinx_clock_capacity
 
 
 class ClockCapacityAuditTest(unittest.TestCase):

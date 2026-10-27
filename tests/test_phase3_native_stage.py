@@ -1,5 +1,6 @@
 """Complete native stage validation, source binding and host-entry parity."""
 import json
+import importlib.util
 from pathlib import Path
 from unittest.mock import patch
 import pytest
@@ -9,6 +10,12 @@ from emuflow.io import read_json
 from emuflow.phase3 import run_phase3, validate_phase3, validate_phase3_indexed
 from emuflow.phase3_native import run as native_run
 from tests.test_phase3_pressure_native import inputs
+
+
+@pytest.mark.parametrize('name', ['partition_init_native', 'partition_hops_native',
+    'phase3_publication_native', 'route_seal_native', 'partition_inputs'])
+def test_retired_stage_wrappers_are_not_production_imports(name):
+    assert importlib.util.find_spec('emuflow.'+name) is None
 
 
 def options(inputs, tmp_path):
@@ -26,8 +33,7 @@ def options(inputs, tmp_path):
 def test_native_phase3_runs_complete_stage_with_independent_record_validation(inputs, tmp_path):
     ir, board, config = options(inputs, tmp_path)
     actual = tmp_path/'native-stage'
-    with patch('emuflow.partition_init_native.initialize', side_effect=AssertionError('Python initializer')), \
-         patch('emuflow.partition.build_clusters', side_effect=AssertionError('Python stage clusters')):
+    with patch('emuflow.partition.build_clusters', side_effect=AssertionError('Python stage clusters')):
         report = native_run(actual, ir.path, board, **config)
     generated = read_json(actual/'assignment.json')
     assert report['stage_implementation_id'] == 'native-phase3-v1'
@@ -78,7 +84,7 @@ def test_public_compact_api_uses_complete_native_stage_without_python_phase_bodi
     from emuflow.phase3 import run_phase3 as public
     ir, board, config = options(inputs, tmp_path)
     with ExitStack() as guards:
-        for name in ('partition.build_clusters', 'partition_init_native.initialize', 'phase3_pressure_native.NativePressureModel.execute',
+        for name in ('partition.build_clusters', 'phase3_pressure_native.NativePressureModel.execute',
                      'partition.build_partition_assignment', 'partition.validate_partition_artifacts_online'):
             guards.enter_context(patch('emuflow.'+name, side_effect=AssertionError('Python phase body: '+name)))
         output = tmp_path/'public'

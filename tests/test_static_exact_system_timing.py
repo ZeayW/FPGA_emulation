@@ -14,9 +14,10 @@ from emuflow.errors import ValidationError
 from tests.physical_coverage_fixture import build_cross_layer_physical_binding, validate_cross_layer_physical_binding
 from emuflow.combinational_cut import semantic_contract_sha256
 from emuflow.phase5 import validate_phase5
+from emuflow.phase5_timing_native import project_native_schedule_timing
 from emuflow.platform import Platform
 from emuflow.routing import normalize_route_constraints
-from emuflow.static_exact_timing import (
+from tests.static_exact_deadline_oracle import (
     build_static_exact_segment_deadlines,
     validate_static_exact_segment_deadlines,
 )
@@ -26,11 +27,11 @@ from tests.system_timing_oracle import (
     build_system_timing,
 )
 from emuflow.system_route_storage import read_system_routes, write_system_route_storage
-from emuflow.tdm import reconstruct_tdm_schedule_timing, validate_tdm_schedule
+from emuflow.tdm import validate_tdm_schedule
+from tests.tdm_timing_oracle import timing_summary as reconstruct_tdm_schedule_timing
 from tests.schedule_reference import build_tdm_schedule
 from emuflow.tdm_schedule_storage import (
     ScheduleRecordSequence,
-    TypedScheduleEntrySequence,
     read_tdm_schedule,
 )
 from tests import test_combinational_cut as combinational_fixture
@@ -474,9 +475,7 @@ class StaticExactSystemTimingTest(unittest.TestCase):
                         ),
                     ):
                         self.assertEqual(
-                            reconstruct_tdm_schedule_timing(
-                                routes, platform, indexed
-                            ),
+                            project_native_schedule_timing(routes, indexed, platform, bind=False, analyze=True)["timing_validation"],
                             legacy_timing,
                         )
                 else:
@@ -540,42 +539,18 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         )
         self.assertEqual(validation["status"], "pass")
 
-    def test_indexed_deadline_build_and_validation_do_not_decode_hop_rows(
-        self,
-    ):
-        expected = build_static_exact_segment_deadlines(
-            self.schedule,
-            self.assignment["semantic_contract"],
-            self.physical,
-            self.platform,
-        )
+    def test_deadline_oracle_rejects_typed_and_large_production_inputs(self):
+        # The former production SQLite adapter is retired. This oracle must
+        # remain an explicit small-fixture arithmetic check.
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "schedule.json"
+            path = Path(temporary)/"schedule.json"
             write_tdm_schedule_storage(path, self.schedule)
             indexed = read_tdm_schedule(path)
-            with mock.patch.object(
-                TypedScheduleEntrySequence,
-                "__iter__",
-                side_effect=AssertionError(
-                    "static exact deadline path decoded all schedule hops"
-                ),
-            ):
-                actual = build_static_exact_segment_deadlines(
-                    indexed,
-                    self.assignment["semantic_contract"],
-                    self.physical,
-                    self.platform,
-                )
-                validation = validate_static_exact_segment_deadlines(
-                    actual,
-                    indexed,
-                    self.assignment["semantic_contract"],
-                    self.physical,
-                    self.platform,
-                )
-
-        self.assertEqual(actual, expected)
-        self.assertEqual(validation["status"], "pass")
+            with self.assertRaisesRegex(ValidationError, "small in-memory fixture"):
+                build_static_exact_segment_deadlines(indexed, self.assignment["semantic_contract"], self.physical, self.platform)
+        oversized = {**self.schedule, "entries": self.schedule["entries"]*4097}
+        with self.assertRaisesRegex(ValidationError, "small in-memory fixture"):
+            build_static_exact_segment_deadlines(oversized, self.assignment["semantic_contract"], self.physical, self.platform)
 
     def test_schedule_references_semantics_without_duplicating_contract(self):
         self.assertNotIn("semantic_contract", self.schedule)
@@ -627,24 +602,6 @@ class StaticExactSystemTimingTest(unittest.TestCase):
         self.assertEqual(bound["measured_max_delay_ns"], 3.5)
         self.assertEqual(bound["measurement"], "routed-endpoint-exact")
 
-    def test_deadline_schema_tracks_the_complete_producer_contract(self):
-        result = build_static_exact_segment_deadlines(
-            self.schedule,
-            self.assignment["semantic_contract"],
-            self.physical,
-            self.platform,
-        )
-        schema_path = (
-            Path(__file__).resolve().parents[1]
-            / "schemas/static-exact-segment-deadlines-v2.schema.json"
-        )
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
-        self.assertEqual(schema["properties"]["schema"]["const"], result["schema"])
-        self.assertEqual(set(schema["required"]), set(result))
-        self.assertEqual(set(schema["properties"]), set(result))
-        segment_schema = schema["properties"]["segments"]["items"]
-        self.assertTrue(set(segment_schema["required"]).issubset(result["segments"][0]))
-        self.assertFalse(set(result["segments"][0]) - set(segment_schema["properties"]))
 
     def test_source_ready_fails_even_when_aggregate_period_is_large(self):
         physical = copy.deepcopy(self.physical)

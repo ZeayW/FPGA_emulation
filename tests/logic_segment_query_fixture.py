@@ -1,10 +1,10 @@
 """Current typed owners plus small physical source facts, never an old query flow."""
+from tests.phase3_store_fixture import write_assignment_index_fixture
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
 from emuflow.emuir_compact import write_compact_emuir
-from emuflow.phase3_assignment_index import write_phase3_assignment_index
 from emuflow.phase5_native import run_native_phase5
 from emuflow.system_route_storage import read_system_routes, write_system_route_storage
 from emuflow.tdm import build_native_exact_schedule_request
@@ -58,7 +58,7 @@ def sources(root, *, members=1, extra_launch=False, wrong_owner=False, paths=Tru
         case._phase5_assignment=assignment
     assignment=deepcopy(case._phase5_assignment)
     original=root/'original.sqlite';write_compact_emuir(original,case.ir.value)
-    assignment_path=root/'assignment.sqlite';write_phase3_assignment_index(assignment_path,case.ir,assignment)
+    assignment_path=root/'assignment.sqlite';write_assignment_index_fixture(assignment_path,case.ir,assignment)
     contract=assignment['semantic_contract']
     route_value=deepcopy(__import__('emuflow.io',fromlist=['read_json']).read_json(root/'current/routes.json'))
     route_value['semantic_contract_sha256']=assignment['semantic_contract_sha256']

@@ -1,3 +1,4 @@
+from tests.phase3_store_fixture import assignment_selector_fixture, cluster_document_fixture, write_cluster_fixture
 from contextlib import closing
 import hashlib
 import json
@@ -9,20 +10,7 @@ from unittest import mock
 
 from tests.phase3_index_fixture import write_assignment_v3_fixture
 from emuflow.io import read_json, write_json
-from emuflow.phase3_storage import (
-    CLUSTERS_SQLITE_APPLICATION_ID,
-    COMPRESSED_CLUSTERS_SCHEMA,
-    INDEXED_CLUSTERS_SCHEMA,
-    PACKED_CLUSTERS_SCHEMA,
-    PREVIOUS_PACKED_ASSIGNMENT_SCHEMA,
-    compress_phase3_clusters,
-    pack_phase3_assignment,
-    pack_phase3_clusters,
-    read_phase3_assignment_view,
-    read_phase3_cut_timing_view,
-    write_compressed_phase3_clusters,
-    write_indexed_phase3_clusters,
-)
+from emuflow.phase3_storage import (CLUSTERS_SQLITE_APPLICATION_ID, INDEXED_CLUSTERS_SCHEMA, read_phase3_assignment_view, read_phase3_cut_timing_view)
 
 
 def _large_artifacts(count: int = 1000):
@@ -97,7 +85,7 @@ class Phase3StorageTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             selector_path = root / "clusters.json"
-            selector = write_indexed_phase3_clusters(selector_path, clusters)
+            selector = write_cluster_fixture(selector_path, clusters)
             stored = json.loads(selector_path.read_text())
             self.assertEqual(stored, selector)
             self.assertEqual(stored["schema"], INDEXED_CLUSTERS_SCHEMA)
@@ -137,7 +125,7 @@ class Phase3StorageTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             selector_path = root / "clusters.json"
-            selector = write_indexed_phase3_clusters(selector_path, clusters)
+            selector = write_cluster_fixture(selector_path, clusters)
             store = root / selector["artifact"]
             with closing(sqlite3.connect(store)) as connection, connection:
                 connection.execute(
@@ -155,71 +143,8 @@ class Phase3StorageTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "section counts disagree"):
                 read_json(selector_path)
 
-    def test_compressed_clusters_round_trip_without_column_copy(self) -> None:
-        clusters, _ = _large_artifacts()
-        compressed = compress_phase3_clusters(clusters)
-        self.assertEqual(compressed["schema"], COMPRESSED_CLUSTERS_SCHEMA)
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            path = Path(temporary_directory) / "clusters.json"
-            write_json(path, compressed, compact=True)
-            self.assertEqual(read_json(path), clusters)
 
-    def test_direct_compressed_cluster_writer_is_byte_exact_and_atomic(self) -> None:
-        clusters, _ = _large_artifacts()
-        clusters["design"] = "large-设计-µ"
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            reference = root / "reference.json"
-            direct = root / "direct.json"
-            write_json(
-                reference,
-                compress_phase3_clusters(clusters),
-                compact=True,
-            )
-            write_compressed_phase3_clusters(direct, clusters)
-            self.assertEqual(direct.read_bytes(), reference.read_bytes())
-            self.assertEqual(read_json(direct), clusters)
 
-            prior = direct.read_bytes()
-            with mock.patch(
-                "emuflow.phase3_storage.os.replace",
-                side_effect=OSError("injected replace failure"),
-            ):
-                with self.assertRaisesRegex(OSError, "injected replace failure"):
-                    write_compressed_phase3_clusters(direct, clusters)
-            self.assertEqual(direct.read_bytes(), prior)
-            self.assertEqual(
-                list(root.glob(f".{direct.name}.*.tmp")),
-                [],
-            )
-
-    def test_round_trip_is_lossless_and_materially_smaller(self) -> None:
-        clusters, assignment = _large_artifacts()
-        packed_clusters = pack_phase3_clusters(clusters)
-        packed_assignment = pack_phase3_assignment(assignment, clusters)
-        self.assertEqual(packed_clusters["schema"], PACKED_CLUSTERS_SCHEMA)
-        self.assertEqual(
-            packed_assignment["schema"], PREVIOUS_PACKED_ASSIGNMENT_SCHEMA
-        )
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            write_json(root / "clusters.json", packed_clusters, compact=True)
-            write_json(root / "assignment.json", packed_assignment, compact=True)
-            self.assertEqual(read_json(root / "clusters.json"), clusters)
-            self.assertEqual(read_json(root / "assignment.json"), assignment)
-            raw_clusters = len(
-                json.dumps(clusters, sort_keys=True, separators=(",", ":"))
-            )
-            raw_assignment = len(
-                json.dumps(assignment, sort_keys=True, separators=(",", ":"))
-            )
-            self.assertLess(
-                (root / "clusters.json").stat().st_size, raw_clusters * 0.70
-            )
-            self.assertLess(
-                (root / "assignment.json").stat().st_size,
-                raw_assignment * 0.20,
-            )
 
     def test_assignment_requires_its_exact_cluster_dependency(self) -> None:
         clusters, assignment = _large_artifacts(4)
@@ -227,7 +152,7 @@ class Phase3StorageTest(unittest.TestCase):
             root = Path(temporary_directory)
             write_json(
                 root / "assignment.json",
-                pack_phase3_assignment(assignment, clusters),
+                assignment_selector_fixture(assignment, clusters),
                 compact=True,
             )
             with self.assertRaisesRegex(ValueError, "requires sibling"):
@@ -250,40 +175,26 @@ class Phase3StorageTest(unittest.TestCase):
             root = Path(temporary_directory)
             write_json(
                 root / "clusters.json",
-                pack_phase3_clusters(clusters),
+                cluster_document_fixture(clusters),
                 compact=True,
             )
             write_json(
                 root / "assignment.json",
-                pack_phase3_assignment(assignment, clusters),
+                assignment_selector_fixture(assignment, clusters),
                 compact=True,
             )
             self.assertEqual(read_json(root / "assignment.json"), assignment)
 
-    def test_previous_v2_assignment_storage_remains_readable(self) -> None:
-        clusters, assignment = _large_artifacts(4)
-        packed = pack_phase3_assignment(assignment, clusters)
-        packed["schema"] = "emuflow.phase3-assignment-storage/v2"
-        packed.pop("semantic_contract_index", None)
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            write_json(
-                root / "clusters.json",
-                pack_phase3_clusters(clusters),
-                compact=True,
-            )
-            write_json(root / "assignment.json", packed, compact=True)
-            self.assertEqual(read_json(root / "assignment.json"), assignment)
 
     def test_corrupt_cluster_vector_is_rejected(self) -> None:
         clusters, assignment = _large_artifacts(4)
-        packed = pack_phase3_assignment(assignment, clusters)
+        packed = assignment_selector_fixture(assignment, clusters)
         packed["cluster_parts"]["data"] = "not-valid-base64!"
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             write_json(
                 root / "clusters.json",
-                pack_phase3_clusters(clusters),
+                cluster_document_fixture(clusters),
                 compact=True,
             )
             write_json(root / "assignment.json", packed, compact=True)
@@ -299,13 +210,13 @@ class Phase3StorageTest(unittest.TestCase):
                 for index in range(100)
             ],
         }
-        packed = pack_phase3_assignment(assignment, clusters)
+        packed = assignment_selector_fixture(assignment, clusters)
         packed["semantic_contract"]["data"] = "not-valid-base64!"
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             write_json(
                 root / "clusters.json",
-                pack_phase3_clusters(clusters),
+                cluster_document_fixture(clusters),
                 compact=True,
             )
             write_json(root / "assignment.json", packed, compact=True)
@@ -332,7 +243,7 @@ class Phase3StorageTest(unittest.TestCase):
             root = Path(temporary_directory)
             write_json(
                 root / "assignment.json",
-                pack_phase3_assignment(assignment, clusters),
+                assignment_selector_fixture(assignment, clusters),
                 compact=True,
             )
             view = read_phase3_assignment_view(root / "assignment.json")
@@ -355,7 +266,7 @@ class Phase3StorageTest(unittest.TestCase):
             root = Path(temporary_directory)
             write_json(
                 root / "assignment.json",
-                pack_phase3_assignment(assignment, clusters),
+                assignment_selector_fixture(assignment, clusters),
                 compact=True,
             )
             with closing(sqlite3.connect(root / "assignment.sqlite")) as connection, connection:
@@ -434,7 +345,7 @@ class Phase3StorageTest(unittest.TestCase):
         assignment["semantic_contract_sha256"] = "a" * 64
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            packed = pack_phase3_assignment(assignment, clusters)
+            packed = assignment_selector_fixture(assignment, clusters)
             packed["semantic_contract"] = {
                 "codec": "zlib-level-1-base64-canonical-json",
                 "uncompressed_bytes": 1,

@@ -12,7 +12,8 @@ from emuflow.io import read_json
 from emuflow.platform import Platform
 from emuflow.phase5 import run_phase5, validate_phase5
 from emuflow.routing import normalize_route_constraints
-from emuflow.tdm import _bank_direction_allocations, reconstruct_tdm_schedule_timing, reconstruct_tdm_schedule_timing_paths, reconstruct_tdm_schedule_timing_paths_from_routes, schedule_to_systemverilog_testbench, tdm_hop_latency_cycles, validate_tdm_schedule
+from emuflow.tdm import _bank_direction_allocations, schedule_to_systemverilog_testbench, tdm_hop_latency_cycles, validate_tdm_schedule
+from tests.tdm_timing_oracle import timing_summary as reconstruct_tdm_schedule_timing, timing_paths as reconstruct_tdm_schedule_timing_paths, timing_paths as reconstruct_tdm_schedule_timing_paths_from_routes
 from tests.schedule_reference import build_tdm_schedule
 from tests.test_phase5 import _platform_value, _link
 

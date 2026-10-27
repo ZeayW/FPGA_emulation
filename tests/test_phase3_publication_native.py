@@ -8,7 +8,7 @@ import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.io import read_json
-from emuflow.phase3_publication_native import publish
+from tests.native_partition_kernel_driver import publish_partition as publish
 from emuflow.phase3_assignment_index import validate_phase3_assignment_index_against_emuir
 from emuflow.phase3_semantics_native import close_published_semantics
 from tests.test_phase3_semantics_native import selected, build
@@ -24,9 +24,7 @@ def report(assignment):
 
 def test_complete_directory_uses_native_transaction_and_reloads_without_private_sources(selected,tmp_path):
     actual=build(selected);output=tmp_path/'published'
-    with (patch('emuflow.phase3_assignment_index.write_phase3_assignment_index',side_effect=AssertionError('host index publisher')),
-          patch('emuflow.phase3_assignment_native.publish_native_assignment_descriptor',side_effect=AssertionError('host descriptor publisher')),
-          patch('emuflow.phase3_storage.write_indexed_phase3_clusters',side_effect=AssertionError('host cluster publisher')),
+    with (patch('emuflow.phase3_assignment_native.publish_native_assignment_descriptor',side_effect=AssertionError('host descriptor publisher')),
           patch('emuflow.phase3_exact_binary.write_phase3_exact_binary',side_effect=AssertionError('host binary publisher'))):
         final=publish(output,selected[0],selected[2],actual,report(actual))
     assert final['finalization_implementation_id']=='native-partition-publication-v1'

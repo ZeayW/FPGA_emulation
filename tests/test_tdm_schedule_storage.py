@@ -673,29 +673,6 @@ def test_schedule_store_publishes_large_section_in_one_pass(tmp_path):
         assert list(view["entries"]) == expected["entries"]
 
 
-@pytest.mark.parametrize("has_route_net_index", [True, False])
-def test_static_exact_timing_index_queries_typed_relations(tmp_path, has_route_net_index):
-    expected = _typed_exact_schedule(3)
-    path = tmp_path / "schedule.json"
-    write_tdm_schedule_storage(path, expected)
-    if not has_route_net_index:
-        # Published current-v4 inputs can predate this optional lookup index.
-        _reseal_typed_store(path, lambda db: db.execute("DROP INDEX schedule_routes_net"))
-    with open_tdm_schedule_view(path) as view:
-        with view.open_static_exact_timing_index() as index:
-            assert index._route_relation == (
-                "schedule_routes" if has_route_net_index else "static_exact_routes"
-            )
-            temp_tables = {row[0] for row in index._connection.execute(
-                "SELECT name FROM sqlite_temp_master WHERE type='table'"
-            )}
-            assert temp_tables == (set() if has_route_net_index else {"static_exact_routes"})
-            assert list(index.iter_link_ids()) == ["ab"]
-            assert index.source("n1", "a") == (1, "s000001")
-            assert index.arrival("n1", "b") == ("s000001", 2)
-            assert index.arrival("unknown", "b") is None
-
-
 def test_validation_index_spools_and_compares_complete_completion_relation(
     tmp_path, monkeypatch,
 ):

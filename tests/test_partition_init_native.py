@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.partition import build_clusters, CUT_MODE_STATIC_EXACT
-from emuflow.partition_init_native import initialize
+from tests.native_partition_kernel_driver import initialize
 from tests.partition_init_reference import facts, cut_score
 from tests.test_phase3_clusters_native import source
 from tests import partition_pressure_fixture as fixture
@@ -155,8 +155,7 @@ def test_native_initializer_never_loads_the_weight_population_or_expands_primary
     args = prepare(source); ir, platform, constraints, clusters = args
     imported = solution(tmp_path, len(clusters['clusters']), (0, 1))
     selector = weights(tmp_path, [('critical', .5, 1, 3.0)])
-    with patch('emuflow.partition_inputs.load_partition_net_weights', side_effect=AssertionError('Python net-weight map loaded')), \
-         patch.object(type(clusters['clusters']), '_record', side_effect=AssertionError('primary records expanded')):
+    with patch.object(type(clusters['clusters']), '_record', side_effect=AssertionError('primary records expanded')):
         actual, summary = call(args, solution_input=imported, weights_path=selector)
     assert summary['implementation_id'] == 'native-tritonpart-initialization-v1'
     assert actual.part_indices.readonly

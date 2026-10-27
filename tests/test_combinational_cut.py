@@ -1,3 +1,4 @@
+from tests.phase3_store_fixture import assignment_selector_fixture, cluster_document_fixture, write_assignment_index_fixture
 from tests.native_split_fixture import NativeSplitFixture
 from tests.native_route_fixture import route_system_native
 from tests.schedule_store_fixture import write_tdm_schedule_storage
@@ -55,17 +56,7 @@ from tests.partition_reference import assign_clusters
 from emuflow.platform import Platform
 from emuflow.phase6 import run_phase6, validate_phase6
 from emuflow.split_netlist_storage import SplitNetlistView
-from emuflow.phase3_assignment_index import (
-    ASSIGNMENT_INDEX_APPLICATION_ID,
-    open_phase3_assignment_index,
-    phase3_exact_semantic_counts,
-    phase3_exact_relation_counts,
-    read_phase3_exact_split_relations,
-    read_phase3_exact_semantic_contract,
-    read_phase3_exact_semantic_partition,
-    validate_phase3_assignment_index,
-    write_phase3_assignment_index,
-)
+from emuflow.phase3_assignment_index import (ASSIGNMENT_INDEX_APPLICATION_ID, open_phase3_assignment_index, phase3_exact_semantic_counts, phase3_exact_relation_counts, read_phase3_exact_split_relations, read_phase3_exact_semantic_contract, read_phase3_exact_semantic_partition, validate_phase3_assignment_index)
 from emuflow.phase3_exact_records import (
     StaticExactCutNodeSequence,
     StaticExactRecordSequence,
@@ -78,12 +69,7 @@ from emuflow.phase3_exact_binary import (
     validate_phase3_exact_binary,
     write_phase3_exact_binary,
 )
-from emuflow.phase3_storage import (
-    PACKED_ASSIGNMENT_SCHEMA,
-    pack_phase3_assignment,
-    pack_phase3_clusters,
-    read_phase3_assignment_view,
-)
+from emuflow.phase3_storage import (PACKED_ASSIGNMENT_SCHEMA, read_phase3_assignment_view)
 from emuflow.routing import (
     build_directed_graph,
     demands_from_assignment,
@@ -2665,10 +2651,10 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         clusters, assignment = self._exact_artifacts(dependent_return=True)
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            index_summary = write_phase3_assignment_index(
+            index_summary = write_assignment_index_fixture(
                 root / "assignment.sqlite", self.ir, assignment
             )
-            packed = pack_phase3_assignment(
+            packed = assignment_selector_fixture(
                 assignment,
                 clusters,
                 cut_nets_index={
@@ -2691,7 +2677,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             )
             write_json(
                 root / "clusters.json",
-                pack_phase3_clusters(clusters),
+                cluster_document_fixture(clusters),
                 compact=True,
             )
             write_json(root / "assignment.json", packed, compact=True)
@@ -2741,11 +2727,11 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         assignment.pop("semantic_contract_sha256", None)
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            summary = write_phase3_assignment_index(
+            summary = write_assignment_index_fixture(
                 root / "assignment.sqlite", self.ir, assignment
             )
             self.assertEqual(summary["cut_records"], 0)
-            packed = pack_phase3_assignment(
+            packed = assignment_selector_fixture(
                 assignment,
                 clusters,
                 cut_nets_index={
@@ -2757,7 +2743,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             )
             write_json(
                 root / "clusters.json",
-                pack_phase3_clusters(clusters),
+                cluster_document_fixture(clusters),
                 compact=True,
             )
             write_json(root / "assignment.json", packed, compact=True)
@@ -2794,7 +2780,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 assignment, capture_id, fpga = self._exact_assignment_with_bit(bit)
                 with tempfile.TemporaryDirectory() as temporary:
                     index = Path(temporary) / "assignment.sqlite"
-                    summary = write_phase3_assignment_index(index, self.ir, assignment)
+                    summary = write_assignment_index_fixture(index, self.ir, assignment)
                     self.assertEqual(summary["status"], "pass")
                     partition = read_phase3_exact_semantic_partition(index, fpga)
                     capture = next(r for r in partition["capture_requirements"] if r["id"] == capture_id)
@@ -2809,7 +2795,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             index = Path(temporary) / "assignment.sqlite"
             with self.assertRaisesRegex(ValidationError, "at most 8192 bits"):
-                write_phase3_assignment_index(index, self.ir, assignment)
+                write_assignment_index_fixture(index, self.ir, assignment)
             self.assertEqual(list(index.parent.iterdir()), [])
 
     def test_retired_assignment_versions_rejected_by_all_readers(self):
@@ -2850,7 +2836,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
                 "production publication must not rehash the resident contract"
             ),
         ):
-            write_phase3_assignment_index(
+            write_assignment_index_fixture(
                 Path(temporary_directory) / "assignment.sqlite",
                 self.ir,
                 assignment,
@@ -4450,7 +4436,7 @@ class StaticExactCombinationalCutPartitionTest(unittest.TestCase):
             output = root / "phase6"
             self.ir.save(ir_path)
             assignment_path.write_text(json.dumps(assignment), encoding="utf-8")
-            write_phase3_assignment_index(
+            write_assignment_index_fixture(
                 root / "assignment.sqlite", self.ir, assignment
             )
             indexed_segments = []

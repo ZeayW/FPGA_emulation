@@ -1,4 +1,5 @@
 """Whole-assignment physical coverage has one native typed owner."""
+from tests.phase3_store_fixture import write_assignment_index_fixture
 import json
 import os
 import shutil
@@ -13,7 +14,6 @@ from emuflow.physical_coverage import (
     PhysicalCoverageView, build_physical_coverage, audit_physical_coverage,
     read_physical_coverage_certificate, replay_physical_coverage,
 )
-from emuflow.phase3_assignment_index import write_phase3_assignment_index
 from tests.test_global_binding_native import physical_case
 
 
@@ -30,7 +30,7 @@ def case(tmp_path, *, mutate=None, members=1):
         tmp_path, mutate=mutate, members=members)
     original = StaticExactCombinationalCutPartitionTest(); original.setUp()
     assignment = tmp_path/'assignment.sqlite'
-    write_phase3_assignment_index(assignment, original.ir, f.assignment)
+    write_assignment_index_fixture(assignment, original.ir, f.assignment)
     contract = build_cross_layer_timing_contract(
         iroutes, ischedule, {**f.assignment['semantic_contract'], 'indexed': True})
     return f, contract, ischedule, indexed, assignment, physical, schedule

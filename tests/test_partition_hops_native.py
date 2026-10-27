@@ -7,8 +7,8 @@ import pytest
 
 from emuflow.errors import ValidationError
 from emuflow.partition import build_partition_assignment, validate_partition_artifacts_online
-from emuflow.partition_hops_native import run
-from emuflow.partition_init_native import initialize
+from tests.native_partition_kernel_driver import run_hops as run
+from tests.native_partition_kernel_driver import initialize
 from emuflow.partition_topology import _shortest_hop_distances
 from emuflow.routing import load_route_constraints, normalize_route_constraints
 from emuflow.store_publication import bind_store_source
@@ -176,7 +176,7 @@ def test_audit_request_rejects_malformed_board_or_fixed_identity(case, tmp_path,
     import struct
     import subprocess
     import zlib
-    import emuflow.partition_hops_native as host
+    import tests.native_partition_kernel_driver as host
     from emuflow.native_tools import resolve_native_executable
     f = case
     ir, constraints, clusters, assignment, route_path = f.ir, f.constraints, f.clusters, f.assignment, f.route_path

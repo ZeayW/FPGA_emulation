@@ -29,7 +29,7 @@ from emuflow.runtime import (
     virtual_runtime_controller_to_systemverilog,
 )
 from emuflow.tdm import TDM_SCHEDULE_SCHEMA
-from emuflow.tdm import reconstruct_tdm_schedule_timing
+from tests.tdm_timing_oracle import timing_summary as reconstruct_tdm_schedule_timing
 
 
 def aggregate_qor(runtime, phase3, phase4, phase5, phase6, physical, platform, **kwargs):

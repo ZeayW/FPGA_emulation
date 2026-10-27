@@ -1,4 +1,5 @@
 """Whole native stage qualification, record identity and failure boundaries."""
+from tests.phase3_store_fixture import write_assignment_index_fixture
 
 import importlib.util
 import json
@@ -14,7 +15,6 @@ import pytest
 
 from emuflow.emuir_compact import write_compact_emuir
 from emuflow.errors import ValidationError
-from emuflow.phase3_assignment_index import write_phase3_assignment_index
 from tests.native_build import emuflow_native
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 
@@ -43,7 +43,7 @@ def prepare(root, monkeypatch):
         )
     )
     write_compact_emuir(ir, case.ir.to_dict())
-    write_phase3_assignment_index(assignment, case.ir, case.assignment)
+    write_assignment_index_fixture(assignment, case.ir, case.assignment)
     (root / "assignment.json").write_text(json.dumps(case.assignment))
     write_tdm_schedule_storage(schedule, case.schedule)
     platform.write_text(json.dumps(case.platform.to_dict()))

@@ -304,7 +304,7 @@ The host retains bounded identity checks and the separate exact-binary gate.
 | Pin plans, position hints, electrical binding, Chimew bank input/report | Retained Phase 6 adapters and their shared selector commit | Transport/runtime generation and independent electrical/Chimew validators |
 | Placement EmuIR and mapped index | Lowering and Xilinx mapping adapters | OpenPARF, Vivado, physical ownership checks and timing export |
 | Atomic source, name map, site geometry, certificate and physical handoff | OpenPARF adapters/bridge and shared ownership helpers | OpenPARF host, native RWRoute export and Java implementation |
-| Vivado source functions, lineage and optimization proofs | Indexed exporter, shared lineage import and proof adapter | Vivado implementation, physical timing and source coverage validation |
+| Vivado source functions and lineage | Indexed exporter and shared lineage import | Vivado implementation, physical timing and source coverage validation |
 | Boundary identity/timing, logic-segment identity/timing, local-path timing | Physical measurement/query adapters | Global STA and terminal physical/timing checks |
 | QoR report | Typed report writer | Report consumers and terminal evidence validation |
 
@@ -387,9 +387,10 @@ filename. Failed selector publication restores the previous selector and removes
 only a newly created uncommitted payload; an incomplete backup never replaces a
 valid prior selector. Prior payloads remain ephemeral within their owning run
 until process-aware terminal retirement, not a persistent checkpoint cache.
-Vivado source-function and optimization-proof stores and the final QoR SQL owner
-also use common adoption; their independent semantic validators remain required.
-Separate Verilog, proof/report and selector files are not an atomic multi-file
+Vivado source-function stores and the final QoR SQL owner also use common
+adoption; their independent semantic validators remain required. The unused
+optimization-proof producer has been retired. Separate Verilog, report and
+selector files are not an atomic multi-file
 transaction, and consumers still require successful stage completion.
 
 OpenPARF site geometry is built once into private SQL staging and adopted through

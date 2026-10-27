@@ -375,10 +375,7 @@ def build_tdm_schedule(
         "route_constraints": constraints,
         **({"bank_allocations": _tdm._bank_allocation_records(bank_allocations)} if bank_allocations else {}),
         "routes": (
-            _tdm._ScheduleRouteProjection(raw_routes.ordered("demand"))
-            if exact_contract is not None
-            and callable(getattr(raw_routes, "ordered", None))
-            else [
+            [
                 {
                     "id": route["id"],
                     "net": route["net"],

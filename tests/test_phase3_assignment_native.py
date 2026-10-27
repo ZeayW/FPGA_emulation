@@ -1,4 +1,5 @@
 """Independent load reduction and final assignment consumers over typed columns."""
+from tests.phase3_store_fixture import write_assignment_index_fixture
 from array import array
 import json
 import os
@@ -176,7 +177,6 @@ def _published_rows(path):
 def test_native_index_matches_reference_without_host_instance_records(source, tmp_path, exact, mode):
     import sqlite3
     from contextlib import closing
-    from emuflow.phase3_assignment_index import write_phase3_assignment_index
     if mode in ('unicode', 'sparse'):
         with closing(sqlite3.connect(source[0].path)) as db, db:
             if mode == 'unicode':
@@ -193,9 +193,9 @@ def test_native_index_matches_reference_without_host_instance_records(source, tm
     # this small fixture may expand identities for its reference relation.
     reference = dict(assignment, instance_assignment=dict(assignment['instance_assignment'].items()))
     expected, actual = tmp_path/'reference/index.sqlite', tmp_path/'native/index.sqlite'
-    reference_summary = write_phase3_assignment_index(expected, ir, reference)
+    reference_summary = write_assignment_index_fixture(expected, ir, reference)
     with patch.object(_CompactInstanceAssignment, 'iter_source_assignments', side_effect=AssertionError('host instance row')):
-        summary = write_phase3_assignment_index(actual, ir, assignment)
+        summary = write_assignment_index_fixture(actual, ir, assignment)
     assert summary['writer_implementation'] == 'native-primary-assignment-index-v1'
     assert reference_summary['writer_implementation'] == 'python-reference-v1'
     assert {k:v for k,v in summary.items() if k not in ('writer_implementation','native_writer_metrics')} == {
@@ -209,7 +209,6 @@ def test_native_index_matches_reference_without_host_instance_records(source, tm
 @pytest.mark.parametrize('kind', ['checksum', 'truncated', 'version', 'ownership', 'generation', 'source-count', 'dangling-predecessor'])
 def test_native_index_failure_preserves_published_pair_without_retry(source, tmp_path, kind):
     import struct
-    from emuflow.phase3_assignment_index import write_phase3_assignment_index
     from emuflow.phase3_exact_binary import EXACT_BINARY_ARTIFACT
     from emuflow.tool_runtime import NativeToolProcess
     import emuflow.phase3_assignment_native as publication
@@ -244,13 +243,13 @@ def test_native_index_failure_preserves_published_pair_without_retry(source, tmp
     with patch.object(publication, 'NativeToolProcess', side_effect=corrupted_process), patch.object(
             _CompactInstanceAssignment, 'iter_source_assignments', side_effect=AssertionError('reference retry')):
         with pytest.raises(ValidationError):
-            write_phase3_assignment_index(path, ir, assignment)
+            write_assignment_index_fixture(path, ir, assignment)
     assert path.read_bytes()==b'prior-index' and binary.read_bytes()==b'prior-exact'
     assert not list(tmp_path.glob('.*.tmp*'))
     assert not list(tmp_path.glob('emuflow-assignment-publish-*'))
 
 
-@pytest.mark.parametrize('kind', ['lost-primary', 'stale-primary', 'stale-source', 'validator', 'backup-rename', 'index-rename', 'post-validation-source', 'post-validation-primary'])
+@pytest.mark.parametrize('kind', ['lost-primary', 'stale-primary', 'stale-source', 'validator', 'post-validation-source', 'post-validation-primary'])
 def test_native_publication_rejection_preserves_existing_index_and_exact_data(source, tmp_path, kind):
     import emuflow.phase3_assignment_index as index
     from emuflow.phase3_exact_binary import EXACT_BINARY_ARTIFACT
@@ -265,11 +264,6 @@ def test_native_publication_rejection_preserves_existing_index_and_exact_data(so
     elif kind in ('stale-primary', 'stale-source'):
         changed=instance._native_primary_artifact if kind=='stale-primary' else ir.path
         with Path(changed).open('ab') as out: out.write(b'changed')
-    replace=os.replace
-    def fail_selected_rename(src, dst):
-        if (kind=='backup-rename' and Path(src)==binary) or (kind=='index-rename' and Path(dst)==path):
-            raise OSError('injected publication failure')
-        return replace(src,dst)
     with ExitStack() as patches:
         patches.enter_context(patch.object(_CompactInstanceAssignment, 'iter_source_assignments', side_effect=AssertionError('reference fallback')))
         if kind.startswith('post-validation-'):
@@ -282,12 +276,8 @@ def test_native_publication_rejection_preserves_existing_index_and_exact_data(so
             patches.enter_context(patch.object(index, 'validate_phase3_assignment_index', side_effect=change_validated_source))
         elif kind=='validator':
             patches.enter_context(patch.object(index, 'validate_phase3_assignment_index', side_effect=ValidationError('injected validator rejection')))
-        elif kind == 'index-rename':
-            patches.enter_context(patch.object(index, 'publish_sqlite_store', side_effect=OSError('injected publication failure')))
-        elif kind.endswith('rename'):
-            patches.enter_context(patch.object(index.os, 'replace', side_effect=fail_selected_rename))
         with pytest.raises((ValidationError,OSError)):
-            index.write_phase3_assignment_index(path, ir, assignment)
+            write_assignment_index_fixture(path, ir, assignment)
     assert path.read_bytes()==b'old-index' and binary.read_bytes()==b'old-exact'
     assert not list(tmp_path.glob('.*.tmp*'))
     assert not list(tmp_path.glob('.*.previous'))

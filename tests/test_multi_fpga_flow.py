@@ -31,7 +31,8 @@ from emuflow.open_transport_characterization import (
     OPEN_TRANSPORT_PROVENANCE,
 )
 from emuflow.platform import Platform
-from emuflow.tdm import TDM_EXACT_DEPENDENCY_PROVIDER, reconstruct_tdm_schedule_timing_paths
+from emuflow.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
+from tests.tdm_timing_oracle import timing_paths as reconstruct_tdm_schedule_timing_paths
 from emuflow.timing_routing import (
     GLOBAL_CANDIDATE_PROVIDER,
 )

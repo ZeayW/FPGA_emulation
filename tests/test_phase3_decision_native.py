@@ -10,7 +10,7 @@ import pytest
 from emuflow.errors import ValidationError
 from emuflow.partition import (build_partition_assignment,
     validate_partition_artifacts_online, _cluster_assignment_summary)
-from emuflow.partition_init_native import initialize
+from tests.native_partition_kernel_driver import initialize
 from emuflow.phase3_pressure_native import build_native_pressure_model
 from tests.phase3_decision_reference import _select_patron_timing_assignment
 from emuflow.phase3_decision_native import select_assignment, audit_assignment

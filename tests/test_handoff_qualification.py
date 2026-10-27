@@ -4,7 +4,7 @@ import pytest
 from pathlib import Path
 
 from emuflow.emuir_storage import _write_emuir_sqlite_v1
-from emuflow.handoff_qualification import main
+from scripts.validation.qualify_handoffs import main
 from emuflow.ir import EmuIR
 from emuflow.yosys import import_yosys_json
 from emuflow.errors import ValidationError

@@ -25,8 +25,9 @@ def test_whole_native_query_preserves_every_member_and_exact_semantic(tmp_path,b
     value=sources(tmp_path/'input',members=members)
     with (patch('emuflow.ir.EmuIR.load',side_effect=AssertionError('Python full source graph')),
           patch('emuflow.sta.iter_sta_path_database_paths',side_effect=AssertionError('Python path records')),
-          patch('emuflow.phase3_assignment_index.read_phase3_exact_semantic_partition',side_effect=AssertionError('Python semantic tree')),
-          patch('emuflow.tdm.reconstruct_tdm_schedule_timing_paths',side_effect=AssertionError('Python hop/path list'))):
+          patch('emuflow.phase3_assignment_index.read_phase3_exact_semantic_partition',side_effect=AssertionError('Python semantic tree'))):
+        import emuflow.tdm as tdm
+        assert not hasattr(tdm, 'reconstruct_tdm_schedule_timing_paths')
         prepared=prepare(value)
         try:
             reports=[query(value,tmp_path/f'{backend}-{fpga}',backend=backend,fpga=fpga,prepared=prepared)

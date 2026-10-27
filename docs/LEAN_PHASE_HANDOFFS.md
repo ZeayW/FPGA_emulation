@@ -67,7 +67,7 @@ Storage and adapter measurements alone do not qualify that endpoint.
   top-level and escaped-pin checks plus reported endpoint validation retain
   ambiguity rejection. A repeated escaped-name regression bounds SQL query
   count and compares emitted bytes against the reference writer.
-- `python -m emuflow.handoff_qualification` measures `repack`, `scan`,
+- `PYTHONPATH=src python scripts/validation/qualify_handoffs.py` measures `repack`, `scan`,
   `export` and actual-engine `timing` in separate processes. Explicit repack
   supports either storage version, with the old writer's engine audits removed.
   It records bytes, elapsed/CPU time, separate parent/child peak RSS,
@@ -81,6 +81,26 @@ Storage and adapter measurements alone do not qualify that endpoint.
   substitutes for that requested large-design gate. Yosys normalization still
   needs temporary staging before the compact owner is published; this remaining
   conversion must be measured rather than labelled zero-copy.
+
+## Retired Python execution paths
+
+The current native stage implementations are the only stage producers for the
+following boundaries. Their former Python execution paths have been removed:
+
+| Boundary | Removed | Retained |
+| --- | --- | --- |
+| Phase 3 | Complete compressed/packed cluster publishers, assignment-index publisher and unused initializer/hop/publication wrappers | Current native whole-stage entry, typed readers and independent semantic checks |
+| Phase 4 | Unused Python RouteStore-seal wrapper | Native routing and seal kernels |
+| Phase 5 | Python route/schedule timing reconstruction and obsolete deadline-index execution chain | Native schedule/timing projection, current typed readers and schedule legality checks |
+| Global STA | Inline model exporter, Python bundle compression/expansion and scalar-result reader | Native event owner/model export/measurement import and full original-path reduction |
+| Physical support | Unused source-marker capability matrix and unintegrated Vivado optimization-proof producer | OpenPARF/RWRoute and Vivado implementation backends |
+
+Small test fixtures encode explicit facts for retained readers and kernels.
+Independent timing arithmetic stays bounded in tests; it has no stage entry,
+store adapter or large-design mode. Historical implementations remain in Git.
+The useful handoff and clock-capacity diagnostics are standalone scripts in
+`scripts/validation`. Chimew remains supported. These retirements do not establish
+completion of the remaining native migration or real NVDLA terminal validation.
 
 ## Testing from existing Phase 1
 

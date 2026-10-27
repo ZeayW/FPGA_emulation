@@ -213,7 +213,7 @@ def prepare_native(root, reference, platform, constraints, timing, routes, origi
     from types import SimpleNamespace
     from emuflow.emuir_compact import write_compact_emuir
     from emuflow.partition_ir import load_partition_ir
-    from emuflow.partition_init_native import initialize
+    from tests.native_partition_kernel_driver import initialize
     from emuflow.sta import STA_PATH_DATABASE_TSV_HEADER, import_sta_path_database_tsv_streaming
     from emuflow.opensta import OPENSTA_PROVIDER
     from emuflow.io import read_json

@@ -83,8 +83,9 @@ def test_native_complete_event_namespace_matches_reference(tmp_path,members,regi
     f,runtime,routes,schedule,physical,ir,ischedule,ip=physical_case(tmp_path,members=members,registered=registered)
     expected_meta={}; actual_meta={}
     expected=fixture_bind(runtime,routes,schedule,physical,f.platform,metadata=expected_meta)
-    with patch('emuflow.physical_timing_inputs._endpoint_delay_database',side_effect=AssertionError('Python endpoint dictionary')), \
-         patch('emuflow.tdm.open_tdm_schedule_timing_path_stream',side_effect=AssertionError('Python path/hop binding')):
+    import emuflow.tdm as tdm
+    assert not hasattr(tdm, 'open_tdm_schedule_timing_path_stream')
+    with patch('emuflow.physical_timing_inputs._endpoint_delay_database',side_effect=AssertionError('Python endpoint dictionary')):
         actual=bind_physical_checks(runtime,ir,ischedule,ip,f.platform,metadata=actual_meta)
     try:
         assert list(actual)==list(expected)
@@ -191,7 +192,7 @@ def test_native_rejects_wrong_full_original_source_coverage(tmp_path):
 @pytest.mark.parametrize('kind',[False, True, 'tree', 'banks', 'wide-ratio'])
 def test_native_multicast_relay_and_affine_physical_chains(tmp_path,monkeypatch,kind):
     from tests.test_phase5_timing_native import _timed_case
-    from emuflow.tdm import open_tdm_schedule_timing_path_stream
+    from tests.tdm_timing_oracle import path_facts
     from emuflow.runtime import build_virtual_runtime
     from emuflow.board_link_timing import build_board_link_timing_model
     with patch('tests.test_phase5_timing_native.install_runtime'):
@@ -224,21 +225,20 @@ def test_native_multicast_relay_and_affine_physical_chains(tmp_path,monkeypatch,
             'system_routes_sha256':pretty_system_routes_sha256(ir),
             'tdm_schedule_sha256':ischedule.manifest['logical_pretty_sha256'],
             'semantic_contract_sha256':schedule['semantic_contract_sha256'], 'unsupported_member_paths':[], 'segments':[]}
-    with open_tdm_schedule_timing_path_stream(routes,platform,schedule,path_order='path') as stream:
-        for path in stream:
-            for member in path['compressed_path_ids']:
-                last=None
-                for index,demand in enumerate(path['_cut_demands']):
-                    hops=[h for h in path['scheduled_hops'] if h['demand']==demand]
-                    row={'id':f'{member}:{index}','kind':'launch' if index==0 else 'transition',
-                         'system_path':path['path'],'member_path':member,'cut_index':index,
-                         'fpga':hops[0]['from'],'replace_tx_endpoint':hops[0]['tx_endpoint'],
-                         'start_pin':'start','end_pin':'end','delay_ns':.625,'measurement':'endpoint-exact',
-                         'static_exact_segment_id':f'segment-{index}'}
-                    physical['logic_segment_timing'][row['fpga']]['segments'].append(row)
-                    last=hops[-1]['to']
-                row={**row,'id':f'{member}:capture','kind':'capture','cut_index':index+1,'fpga':last,'replace_tx_endpoint':None,'delay_ns':1.375}
-                physical['logic_segment_timing'][last]['segments'].append(row)
+    for path in sorted(path_facts(routes,platform,schedule),key=lambda row:row["path"]):
+        for member in path['compressed_path_ids']:
+            last=None
+            for index,demand in enumerate(path['_cut_demands']):
+                hops=[h for h in path['scheduled_hops'] if h['demand']==demand]
+                row={'id':f'{member}:{index}','kind':'launch' if index==0 else 'transition',
+                     'system_path':path['path'],'member_path':member,'cut_index':index,
+                     'fpga':hops[0]['from'],'replace_tx_endpoint':hops[0]['tx_endpoint'],
+                     'start_pin':'start','end_pin':'end','delay_ns':.625,'measurement':'endpoint-exact',
+                     'static_exact_segment_id':f'segment-{index}'}
+                physical['logic_segment_timing'][row['fpga']]['segments'].append(row)
+                last=hops[-1]['to']
+            row={**row,'id':f'{member}:capture','kind':'capture','cut_index':index+1,'fpga':last,'replace_tx_endpoint':None,'delay_ns':1.375}
+            physical['logic_segment_timing'][last]['segments'].append(row)
     indexed={k:v for k,v in physical.items() if k not in {'boundary_timing','boundary_identities','logic_segment_timing'}}
     for key,writer in [('boundary_timing',write_boundary_timing_storage),('boundary_identities',write_boundary_identity_storage)]:
         indexed[key]={}

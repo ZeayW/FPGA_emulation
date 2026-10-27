@@ -1,3 +1,4 @@
+from tests.phase3_store_fixture import write_assignment_index_fixture
 from tests.native_split_fixture import NativeSplitFixture
 from tests.native_route_fixture import route_system_native
 from tests.transport_reference import write_transport_storage as reference_transport
@@ -45,9 +46,6 @@ def _indexed_split_schedule(root,value):
     write_tdm_schedule_storage(path,value)
     return read_tdm_schedule(path)
 
-from emuflow.phase3_assignment_index import (
-    write_phase3_assignment_index,
-)
 from emuflow.split_netlist_storage import (
     SplitNetlistView,
     _schedule_incoming_rows,
@@ -239,7 +237,7 @@ class Phase6Test(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             assignment_path = root / "assignment.sqlite"
-            write_phase3_assignment_index(
+            write_assignment_index_fixture(
                 assignment_path, self.ir, self.assignment
             )
             link = self.platform.links[0]
@@ -330,7 +328,7 @@ class Phase6Test(unittest.TestCase):
             root = Path(temporary_directory)
             assignment_path = root / "assignment.sqlite"
             schedule_path = root / "schedule.json"
-            write_phase3_assignment_index(
+            write_assignment_index_fixture(
                 assignment_path, self.ir, self.assignment
             )
             write_tdm_schedule_storage(schedule_path, self.schedule)
@@ -465,7 +463,7 @@ class Phase6Test(unittest.TestCase):
             root = Path(temporary_directory)
             assignment_path = root / "assignment.sqlite"
             schedule_path = root / "schedule.json"
-            write_phase3_assignment_index(
+            write_assignment_index_fixture(
                 assignment_path, self.ir, self.assignment
             )
             schedule = copy.deepcopy(self.schedule)
@@ -595,7 +593,7 @@ class Phase6Test(unittest.TestCase):
                 value['instances'].append(cell);assignment['instance_assignment'][cell['id']]='fpga0'
             large=EmuIR(value);large.validate()
             write_compact_emuir(ir_path,large.to_dict())
-            write_phase3_assignment_index(assignment_path,large,assignment)
+            write_assignment_index_fixture(assignment_path,large,assignment)
             write_tdm_schedule_storage(schedule_path, self.schedule)
             with mock.patch(
                 "emuflow.phase6.EmuIR.load",
@@ -697,7 +695,7 @@ class Phase6Test(unittest.TestCase):
             assignment_path.write_text(
                 json.dumps(self.assignment), encoding="utf-8"
             )
-            write_phase3_assignment_index(
+            write_assignment_index_fixture(
                 root / "assignment.sqlite", self.ir, self.assignment
             )
             write_tdm_schedule_storage(schedule_path, self.schedule)
@@ -834,7 +832,7 @@ class Phase6Test(unittest.TestCase):
             assignment_path.write_text(
                 json.dumps(self.assignment), encoding="utf-8"
             )
-            write_phase3_assignment_index(
+            write_assignment_index_fixture(
                 root / "assignment.sqlite", self.ir, self.assignment
             )
             schedule = copy.deepcopy(self.schedule)
@@ -933,7 +931,7 @@ class Phase6Test(unittest.TestCase):
                 "plan": plan,
             }
             write_compact_emuir(paths["ir"], self.ir.to_dict())
-            write_phase3_assignment_index(
+            write_assignment_index_fixture(
                 root / "assignment.sqlite", self.ir, self.assignment
             )
             for name, path in paths.items():

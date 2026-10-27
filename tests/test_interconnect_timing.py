@@ -134,8 +134,7 @@ def test_physical_path_keeps_local_delays_and_separate_readiness_gate(monkeypatc
             'coverage':{'segments':len(logic),'system_paths':int(bool(logic)),'member_paths':int(bool(logic)),'unsupported_member_paths':0},
             'unsupported_member_paths':[],'segments':logic}
     import emuflow.tdm as tdm
-    monkeypatch.setattr(tdm, 'open_tdm_schedule_timing_path_stream',
-                        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('Python hop reconstruction')))
+    assert not hasattr(tdm, 'open_tdm_schedule_timing_path_stream')
     def bind():
         return bind_physical_checks(
             {'virtual_dut_clocks':{'clk':{'nominal_period_ns':164,'target_period_ns':100}}},

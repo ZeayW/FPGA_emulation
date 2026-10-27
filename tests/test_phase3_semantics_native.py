@@ -13,8 +13,8 @@ from emuflow.errors import ValidationError
 from emuflow.partition import (build_clusters,build_partition_assignment,
     normalize_partition_constraints,CUT_MODE_STATIC_EXACT)
 from emuflow.partition_ir import load_partition_ir
-from emuflow.partition_init_native import initialize
-from emuflow.phase3_assignment_index import write_phase3_assignment_index
+from tests.native_partition_kernel_driver import initialize
+from tests.phase3_store_fixture import write_assignment_index_fixture
 from emuflow.phase3_assignment_native import publish_native_assignment_descriptor
 from emuflow.phase3_exact_records import StaticExactRecordSequence
 from emuflow.platform import Platform
@@ -80,7 +80,7 @@ def test_complete_selected_semantic_generation_and_publication_match_reference(s
     for key in arrays:assert list(actual['semantic_contract'][key])==list(expected['semantic_contract'][key])
     assert actual['semantic_contract_sha256']==expected['semantic_contract_sha256']
     old=tmp_path/'reference/assignment.sqlite';new=tmp_path/'native/assignment.sqlite'
-    write_phase3_assignment_index(old,ir,expected)
+    write_assignment_index_fixture(old,ir,expected)
     from emuflow.native_protocol import CheckedRequestWriter
     original_bytes=CheckedRequestWriter.bytes
     def bounded_bytes(writer,value):
@@ -89,7 +89,7 @@ def test_complete_selected_semantic_generation_and_publication_match_reference(s
         return original_bytes(writer,value)
     with (patch('emuflow.phase3_assignment_index._normalized_cut_record',side_effect=AssertionError('host cut serialization')),
           patch.object(CheckedRequestWriter,'bytes',bounded_bytes)):
-        summary=write_phase3_assignment_index(new,ir,actual)
+        summary=write_assignment_index_fixture(new,ir,actual)
     assert summary['native_writer_metrics']['host_ownership_records']==0
     assert old.with_name('assignment.exact.bin').read_bytes()==new.with_name('assignment.exact.bin').read_bytes()
     with closing(sqlite3.connect(old)) as a,closing(sqlite3.connect(new)) as b:
@@ -97,14 +97,13 @@ def test_complete_selected_semantic_generation_and_publication_match_reference(s
             columns=len(a.execute('PRAGMA table_info('+table+')').fetchall())
             order=','.join(str(index+1) for index in range(columns))
             assert a.execute('SELECT * FROM '+table+' ORDER BY '+order).fetchall()==b.execute('SELECT * FROM '+table+' ORDER BY '+order).fetchall()
-    from emuflow.phase3_storage import pack_phase3_assignment
+    from tests.phase3_store_fixture import assignment_selector_fixture
     from emuflow.io import write_json
-    expected_selector=pack_phase3_assignment(expected,selected[2],cut_nets_index={
+    expected_selector=assignment_selector_fixture(expected,selected[2],cut_nets_index={
         'artifact':'assignment.sqlite','schema':'emuflow.phase3-cut-records/v1',
         'records':summary['cut_records'],'sha256':summary['cut_records_sha256']})
     reference=old.with_name('assignment.json');write_json(reference,expected_selector,compact=True)
-    with (patch('emuflow.phase3_storage._compress_indices',side_effect=AssertionError('host compression')),
-          patch('emuflow.partition._CompactInstanceAssignment.__iter__',side_effect=AssertionError('host instance population'))):
+    with (patch('emuflow.partition._CompactInstanceAssignment.__iter__',side_effect=AssertionError('host instance population'))):
         metrics=publish_native_assignment_descriptor(new.with_name('assignment.json'),ir,actual,selected[2],summary)
     assert metrics['request_bytes']<32768
     assert reference.read_bytes()==new.with_name('assignment.json').read_bytes()
@@ -113,7 +112,7 @@ def test_complete_selected_semantic_generation_and_publication_match_reference(s
 @pytest.mark.parametrize('invalid',['cut-seal','source-copy','partition-count'])
 def test_invalid_final_descriptor_preserves_previous_selector(selected,tmp_path,invalid):
     actual=build(selected);index=tmp_path/'assignment.sqlite'
-    summary=write_phase3_assignment_index(index,selected[0],actual)
+    summary=write_assignment_index_fixture(index,selected[0],actual)
     selector=tmp_path/'assignment.json';selector.write_bytes(b'previous-selector')
     if invalid=='cut-seal':summary['cut_records_sha256']='0'*64
     elif invalid=='partition-count':actual['partitions'][0]['instance_count']+=1
@@ -138,7 +137,7 @@ def test_changed_count_generation_preserves_the_previous_index_and_binary(select
     path=counts.native_source.path;path.chmod(path.stat().st_mode^0o100)
     target=tmp_path/'preserved/assignment.sqlite';target.parent.mkdir()
     target.write_bytes(b'previous-index');binary=target.with_name('assignment.exact.bin');binary.write_bytes(b'previous-binary')
-    with pytest.raises(ValidationError):write_phase3_assignment_index(target,selected[0],actual)
+    with pytest.raises(ValidationError):write_assignment_index_fixture(target,selected[0],actual)
     assert target.read_bytes()==b'previous-index' and binary.read_bytes()==b'previous-binary'
     assert not list(target.parent.glob('.*.tmp*'))
 

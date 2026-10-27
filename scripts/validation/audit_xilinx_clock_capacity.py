@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Independent, offline clock-sink capacity audit of a placed RWRoute input."""
 
 from __future__ import annotations
@@ -9,9 +10,9 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-from .errors import ValidationError
-from .io import file_sha256, read_json, write_json
-from .xilinx_rwroute import _is_clock_sink_pin
+from emuflow.errors import ValidationError
+from emuflow.io import file_sha256, read_json, write_json
+from emuflow.xilinx_rwroute import _is_clock_sink_pin
 
 
 ULTRASCALE_CLOCKS_PER_REGION = 24

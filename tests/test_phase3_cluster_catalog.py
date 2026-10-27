@@ -1,5 +1,7 @@
 """Final production records use primary columns, not expanded host clusters."""
 
+from tests.phase3_store_fixture import write_cluster_fixture
+
 from contextlib import closing
 from pathlib import Path
 import json
@@ -89,7 +91,7 @@ def test_native_final_sections_match_reference_without_python_record_or_name_exp
     source, tmp_path, mode
 ):
     actual, expected = catalogs(source, mode)
-    storage.write_indexed_phase3_clusters(
+    write_cluster_fixture(
         tmp_path / "reference/clusters.json", expected
     )
     rows = actual["clusters"]
@@ -98,11 +100,6 @@ def test_native_final_sections_match_reference_without_python_record_or_name_exp
         patch.object(
             type(rows), "_record", side_effect=AssertionError("host cluster expansion")
         ),
-        patch.object(
-            storage,
-            "_build_reference_cluster_store",
-            side_effect=AssertionError("reference retry"),
-        ),
     ):
         if getattr(eligible, "_source", None) is not None:
             with patch.object(
@@ -110,11 +107,11 @@ def test_native_final_sections_match_reference_without_python_record_or_name_exp
                 "__iter__",
                 side_effect=AssertionError("host candidate names"),
             ):
-                result = storage.write_indexed_phase3_clusters(
+                result = write_cluster_fixture(
                     tmp_path / "native/clusters.json", actual
                 )
         else:
-            result = storage.write_indexed_phase3_clusters(
+            result = write_cluster_fixture(
                 tmp_path / "native/clusters.json", actual
             )
     assert result["counts"]["instances"] == actual["instances"]
@@ -151,76 +148,6 @@ def test_native_final_sections_match_reference_without_python_record_or_name_exp
     assert stores[0] == stores[1]
 
 
-@pytest.mark.parametrize(
-    "failure",
-    [
-        "native",
-        "source",
-        "primary",
-        "candidate",
-        "selector-before",
-        "selector-after",
-        "backup",
-    ],
-)
-def test_failed_catalog_adoption_or_selector_keeps_previous_generation(
-    source, tmp_path, failure
-):
-    actual, expected = catalogs(source)
-    output = tmp_path / "clusters.json"
-    previous = storage.write_indexed_phase3_clusters(
-        output, {**expected, "design": "previous"}
-    )
-    payload = tmp_path / previous["artifact"]
-    before = output.read_bytes(), payload.read_bytes()
-    publish, write, copy = (
-        storage.publish_sqlite_store,
-        store_publication.write_json,
-        store_publication.shutil.copyfile,
-    )
-
-    def adopt(*args, **kwargs):
-        if failure == "native":
-            raise ValidationError("native rejected")
-        if failure in {"source", "primary", "candidate"}:
-            assert len(kwargs["sources"]) == 3
-            changed = kwargs["sources"][
-                {"source": 0, "primary": 1, "candidate": 2}[failure]
-            ].path
-            changed.chmod(changed.stat().st_mode ^ 0o100)
-        return publish(*args, **kwargs)
-
-    def commit(path, *args, **kwargs):
-        if failure == "selector-before":
-            raise OSError("selector rejected")
-        result = write(path, *args, **kwargs)
-        if failure == "selector-after":
-            raise OSError("selector rejected")
-        return result
-
-    def backup(*args):
-        if failure == "backup":
-            Path(args[1]).write_bytes(b"partial")
-            raise OSError("backup rejected")
-        return copy(*args)
-
-    with (
-        patch.object(storage, "publish_sqlite_store", side_effect=adopt),
-        patch.object(store_publication, "write_json", side_effect=commit),
-        patch.object(store_publication.shutil, "copyfile", side_effect=backup),
-        patch.object(
-            storage,
-            "_build_reference_cluster_store",
-            side_effect=AssertionError("reference retry"),
-        ),
-    ):
-        with pytest.raises(
-            (ValidationError, OSError), match="rejected|generation changed"
-        ):
-            storage.write_indexed_phase3_clusters(output, actual)
-    assert output.read_bytes() == before[0] and payload.read_bytes() == before[1]
-    assert list(tmp_path.glob("clusters.*.sqlite")) == [payload]
-    assert not list(tmp_path.glob("*.tmp")) and not list(tmp_path.glob("*.previous"))
 
 
 @pytest.mark.parametrize("corruption", ["duplicate-member", "name"])
@@ -229,7 +156,7 @@ def test_resealed_primary_semantic_corruption_cannot_publish_catalog(
 ):
     actual, expected = catalogs(source, "groups")
     output = tmp_path / "clusters.json"
-    previous = storage.write_indexed_phase3_clusters(output, expected)
+    previous = write_cluster_fixture(output, expected)
     before = output.read_bytes(), (tmp_path / previous["artifact"]).read_bytes()
     primary = actual["clusters"]
     path = primary.native_artifact
@@ -248,20 +175,15 @@ def test_resealed_primary_semantic_corruption_cannot_publish_catalog(
     struct.pack_into("<I", data, len(data) - 4, zlib.crc32(data[:-4]))
     path.write_bytes(data)
     primary.native_generation = native_file_generation(path)
-    with patch.object(
-        storage,
-        "_build_reference_cluster_store",
-        side_effect=AssertionError("reference retry"),
-    ):
-        with pytest.raises(ValidationError, match="native cluster publication failed"):
-            storage.write_indexed_phase3_clusters(output, actual)
+    with pytest.raises(ValidationError, match="native cluster publication failed"):
+        write_cluster_fixture(output, actual)
     assert output.read_bytes() == before[0]
     assert (tmp_path / previous["artifact"]).read_bytes() == before[1]
 
 
 def test_historical_fixed_name_catalog_remains_readable(source, tmp_path):
     _actual, expected = catalogs(source)
-    selector = storage.write_indexed_phase3_clusters(
+    selector = write_cluster_fixture(
         tmp_path / "clusters.json", expected
     )
     (tmp_path / selector["artifact"]).rename(tmp_path / "clusters.sqlite")
@@ -294,23 +216,18 @@ def test_missing_or_foreign_native_owners_cannot_retry_reference(
         actual["policy"][
             "eligible_combinational_cut_nets"
         ] = eligible.streaming_ordered_names()
-    with patch.object(
-        storage,
-        "_build_reference_cluster_store",
-        side_effect=AssertionError("reference retry"),
+    with pytest.raises(
+        ValidationError,
+        match="ownership is missing|generation changed|another source artifact",
     ):
-        with pytest.raises(
-            ValidationError,
-            match="ownership is missing|generation changed|another source artifact",
-        ):
-            storage.write_indexed_phase3_clusters(tmp_path / "clusters.json", actual)
+        write_cluster_fixture(tmp_path / "clusters.json", actual)
     assert not (tmp_path / "clusters.json").exists()
 
 
 def test_resealed_candidate_names_cannot_disagree_with_source_bitmap(source, tmp_path):
     actual, expected = catalogs(source, "positive")
     output = tmp_path / "clusters.json"
-    previous = storage.write_indexed_phase3_clusters(output, expected)
+    previous = write_cluster_fixture(output, expected)
     before = output.read_bytes(), (tmp_path / previous["artifact"]).read_bytes()
     candidate = actual["policy"]["eligible_combinational_cut_nets"]._source
     data = bytearray(candidate.native_artifact.read_bytes())
@@ -322,44 +239,13 @@ def test_resealed_candidate_names_cannot_disagree_with_source_bitmap(source, tmp
     with pytest.raises(
         ValidationError, match="candidate name/source identity disagrees"
     ):
-        storage.write_indexed_phase3_clusters(output, actual)
+        write_cluster_fixture(output, actual)
     assert (
         output.read_bytes() == before[0]
         and (tmp_path / previous["artifact"]).read_bytes() == before[1]
     )
 
 
-def test_packed_assignment_reads_native_ordinals_without_expanding_clusters(source):
-    from tests.test_phase3_assignment_native import prepare
-    from emuflow.partition import build_partition_assignment
-
-    ir, platform, constraints, clusters, parts = prepare(source)
-    assignment = build_partition_assignment(
-        ir,
-        platform,
-        clusters,
-        constraints,
-        parts,
-        "fixture",
-        0,
-        _include_semantic_contract=False,
-        _stream_semantic_records=True,
-        _defer_derived_records=True,
-    )
-    plain_clusters = {**clusters, "clusters": list(clusters["clusters"])}
-    plain_assignment = {
-        **assignment,
-        "instance_assignment": dict(assignment["instance_assignment"]),
-        "cluster_assignment": dict(assignment["cluster_assignment"]),
-    }
-    expected = storage.pack_phase3_assignment(plain_assignment, plain_clusters)
-    with patch.object(
-        type(clusters["clusters"]),
-        "_record",
-        side_effect=AssertionError("host cluster expansion"),
-    ):
-        actual = storage.pack_phase3_assignment(assignment, clusters)
-    assert actual == expected
 
 
 def test_failed_selector_rollback_retains_recovery_and_both_payloads(tmp_path):
@@ -410,7 +296,7 @@ def test_bad_native_catalog_requests_leave_previous_commit(source, tmp_path, kin
 
     actual, expected = catalogs(source, "positive")
     output = tmp_path / "clusters.json"
-    previous = storage.write_indexed_phase3_clusters(output, expected)
+    previous = write_cluster_fixture(output, expected)
     payload = tmp_path / previous["artifact"]
     before = output.read_bytes(), payload.read_bytes()
     run = catalog.NativeToolProcess
@@ -446,14 +332,9 @@ def test_bad_native_catalog_requests_leave_previous_commit(source, tmp_path, kin
 
     with (
         patch.object(catalog, "NativeToolProcess", mutate_request),
-        patch.object(
-            storage,
-            "_build_reference_cluster_store",
-            side_effect=AssertionError("reference retry"),
-        ),
     ):
         with pytest.raises(ValidationError, match="native cluster publication failed"):
-            storage.write_indexed_phase3_clusters(output, actual)
+            write_cluster_fixture(output, actual)
     assert output.read_bytes() == before[0] and payload.read_bytes() == before[1]
     assert list(tmp_path.glob("clusters.*.sqlite")) == [payload]
 

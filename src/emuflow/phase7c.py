@@ -235,7 +235,7 @@ def run_phase7c(
                 raise ValidationError("global OpenSTA requires physical Phase 7 inputs")
             from .global_sta import (
                 bind_physical_checks, build_opensta_timing, read_engine_identity,
-                read_measurements, run_event_checks,
+                run_event_checks,
             )
             metadata = {}
             checks = bind_physical_checks(runtime, routes, schedule, physical_summary, platform,

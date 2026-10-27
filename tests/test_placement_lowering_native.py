@@ -1,4 +1,5 @@
 """Native lowering ownership, source preservation, connectivity and identities."""
+from tests.phase3_store_fixture import write_assignment_index_fixture
 from contextlib import closing
 from copy import deepcopy
 import json
@@ -70,7 +71,6 @@ def prepare(owners,root,shared=False,fpga_index=0):
     case,source,assignment,schedule=owners
     if fpga_index>=len(case.platform.fpgas):pytest.skip('partition is absent')
     if shared:
-        from emuflow.phase3_assignment_index import write_phase3_assignment_index
         value=deepcopy(case.ir.value)
         for net in value['nets']:
             net['attributes'] = {'opaque_dut': ['保留', 11]}
@@ -84,7 +84,7 @@ def prepare(owners,root,shared=False,fpga_index=0):
         assigned=deepcopy(case._phase5_assignment)
         declared={row['fpga'] for row in assigned['partitions']}
         assigned['partitions'].extend({'fpga':f.id,'resources':{}} for f in case.platform.fpgas if f.id not in declared)
-        write_phase3_assignment_index(assignment,case.ir,assigned)
+        write_assignment_index_fixture(assignment,case.ir,assigned)
     split=root/'split.sqlite'
     build_native_split(split,source,assignment,schedule,expected_design=case.ir.value['design']['name'],expected_platform=case.platform.name)
     artifacts=write_transport_storage(root/'transport',assignment,schedule,case.platform,
