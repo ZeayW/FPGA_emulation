@@ -272,6 +272,9 @@ def _publish_fixture_records(
         ("logical_schema", _canonical(TDM_SCHEDULE_LOGICAL_SCHEMA)),
         ("header", _canonical(header)),
         ("logical_sha256", _canonical(compact_digest.hexdigest())),
+        # Current consumers bind selector sections to this in-store seal. The
+        # fixture computes every section above; it does not claim a solver run.
+        ("native_publication_summary", _canonical({"sections": section_summaries})),
     ]
     metadata.extend(
         (

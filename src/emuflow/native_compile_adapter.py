@@ -101,6 +101,23 @@ def _unpack(value, depth=0):
                 raise EmuFlowError("native partition report generation changed")
             from .multi_fpga_flow import _stage_summary
             return _stage_summary('partition', report)
+        if kind == "split-report":
+            if (type(body) is not dict or set(body)!={"schema","path","generation"}
+                    or body.get("schema")!="phase6-report-v1" or type(body.get("path")) is not str
+                    or not Path(body["path"]).is_absolute() or type(body.get("generation")) is not list
+                    or len(body["generation"])!=7 or any(type(item) is not int for item in body["generation"])):
+                raise EmuFlowError("invalid native split report reference")
+            path=Path(body['path']);generation=tuple(body['generation'])
+            if path.is_symlink() or native_file_generation(path)!=generation or path.stat().st_size>_LIMIT:
+                raise EmuFlowError('native split report generation changed')
+            report=json.loads(path.read_text())
+            if (report.get('schema')!='emuflow.phase6-report/v1' or report.get('status')!='pass'
+                    or report.get('stage_implementation_id')!='native-baseline-phase6-v1'):
+                raise EmuFlowError('native split report identity disagrees')
+            if native_file_generation(path)!=generation:
+                raise EmuFlowError('native split report generation changed')
+            from .multi_fpga_flow import _stage_summary
+            return _stage_summary('split',report)
         if kind == "frontend-report":
             if (type(body) is not dict or set(body) != {"schema", "path", "generation"}
                     or body.get("schema") != "phase1-summary-v1" or not isinstance(body.get("path"), str)
@@ -253,6 +270,8 @@ def execute(stage, request_path, previous_path, output_path, run_id):
             _restore_control_state(_unpack(previous["state"])), native_mode=True
         )
     function = getattr(flow, "_compile_" + {"tdm": "schedule"}.get(stage, stage.replace("-", "_")))
+    if stage=="split" and ctx.phase6_provider=="baseline":
+        raise EmuFlowError('native compiler baseline Phase 6 is owned by the C++ stage')
     function(ctx)
     value = {"schema": "emuflow.native-compile-state/v1", "run_id": run_id,
              "stage": stage, "status": "pass", "request_generation": generation,

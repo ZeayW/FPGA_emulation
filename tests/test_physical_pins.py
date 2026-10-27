@@ -22,6 +22,7 @@ from emuflow.physical_pins import (
 from emuflow.io import read_json, write_json
 from tests.pin_plan_fixture import make_pin_plan_fixture
 from emuflow.platform import Platform
+from tests.schedule_store_fixture import write_tdm_schedule_storage
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -356,9 +357,22 @@ class PhysicalPinBindingTest(unittest.TestCase):
         schedule = {
             "design": "mps4_serial_binding_fixture",
             "platform": platform.name,
+            "schema":"emuflow.tdm-schedule/v1",
+            "provider":"physical-binding-fixture-v1",
+            "metrics":{"frame_slots":16,"completion_slot":7},
+            "routes":[{"id":f"d{index}","net":f"net{index}","source":"mps4_1",
+                       "sinks":["mps4_2"],"tree_edges":[{"link":"mps4_b2b_1","from":"mps4_1","to":"mps4_2"}]}
+                      for index in range(4)],
+            "demand_completions":[{"demand":f"d{index}","net":f"net{index}",
+                "source_ready_slot":0,"completion_slot":index+4,"sink_arrival_slots":{"mps4_2":index+4}}
+                for index in range(4)],
+            "domain_schedules":[],
             "entries": [
                 {
                     "id": f"serial-entry-{index}",
+                    "demand":f"d{index}","net":f"net{index}","hop":0,
+                    "ready_slot":0,"arrival_slot":index+4,
+                    "capacity_key":"mps4_b2b_1:mps4_1-to-mps4_2",
                     "link": "mps4_b2b_1",
                     "from": "mps4_1",
                     "to": "mps4_2",
@@ -497,11 +511,8 @@ class PhysicalPinBindingTest(unittest.TestCase):
                 "positions": root / "positions.json",
                 "plan": root / "pin_plan.json",
             }
-            for key, document in (
-                ("schedule", schedule),
-                ("platform", platform.to_dict()),
-            ):
-                write_json(paths[key], document)
+            write_tdm_schedule_storage(paths['schedule'],schedule)
+            write_json(paths['platform'],platform.to_dict())
             anchor_paths = {}
             for fpga, document in default_anchors.items():
                 path = root / f"{fpga}.anchors.json"

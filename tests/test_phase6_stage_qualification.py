@@ -75,18 +75,19 @@ def prepare(root, monkeypatch):
     }
 
 
-def test_complete_native_stage_qualification_repeats_all_records(tmp_path, monkeypatch):
+@pytest.mark.parametrize('entries',[('phase-api','phase-api'),('native-compile','native-compile'),('phase-api','native-compile')])
+def test_complete_native_stage_qualification_repeats_all_records(tmp_path, monkeypatch, entries):
     request = prepare(tmp_path, monkeypatch)
     results = []
     for run in (0, 1):
         output = tmp_path / f"native-{run}"
         path = tmp_path / f"native-{run}.request.json"
-        path.write_text(json.dumps({**request, "mode": "native", "output": str(output)}))
+        path.write_text(json.dumps({**request, "mode": "native", "entry": entries[run], "output": str(output)}))
         result = QUALIFY.qualify(path, tmp_path / f"native-{run}.result.json")
         assert result["status"] == "pass" and result["inputs_unchanged"]
         assert result["api_wall_seconds"] > 0
         assert result["stage_implementation_id"] == "native-baseline-phase6-v1"
-        assert result['native_stage_operation']['stage']=='phase6.run'
+        assert result['native_stage_operation']['stage']==('phase6.run' if entries[run]=='phase-api' else 'phase6.compile')
         assert result['native_stage_operation']['metrics']['wall_seconds']>0
         assert result['children_user_cpu_seconds']>=0
         assert result["design"] == request["expected_design"]

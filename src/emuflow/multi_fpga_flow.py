@@ -1422,6 +1422,7 @@ def _compile_preflight(ctx: _CompileContext):
     require_native_schema("split-netlists-v3")
     require_native_schema("transport-stage-request-v1")
     require_native_schema("phase6-stage-request-v1")
+    require_native_schema("phase6-compile-policy-v1")
     require_native_schema("boarddb-v1")
     ctx.output_dir.mkdir(parents=True, exist_ok=True)
     if ctx._native_mode and ctx.prepared_frontend is None and ctx.yosys_json is None and ctx.sources:
@@ -1857,6 +1858,14 @@ def _compile_route_policy(ctx: _CompileContext):
     ctx.phase4_root = ctx.output_dir / "system-route"
     ctx.phase5_root = ctx.output_dir / "tdm"
     ctx.frame_search_report = None
+    if ctx._native_mode and ctx.phase6_provider == "baseline":
+        from .phase6_native import prepare_compile_policy
+        from .native_tools import native_file_generation
+        ctx.native_phase6_policy = prepare_compile_policy(
+            ctx.output_dir / ".native-phase6-request", ctx.ir_path, ctx.platform_path,
+            clock_periods=ctx.clock_periods, transport_cost_path=ctx.transport_cost_db,
+            equivalence_cycles=ctx.equivalence_cycles, equivalence_seed=ctx.equivalence_seed)
+        ctx.native_phase6_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase6_policy))
 
 def _compile_routing_schedule(ctx: _CompileContext):
     if ctx.effective_optimize_frame_slots:

@@ -349,6 +349,9 @@ def qualify(request_path: Path, result_path: Path):
     mode = request.get("mode")
     if mode != "native":
         raise ValidationError("whole-stage qualification requires native mode")
+    entry = request.get("entry", "phase-api")
+    if entry not in {"phase-api", "native-compile"}:
+        raise ValidationError("qualification entry is unsupported")
     root = Path(__file__).resolve().parents[2]
     commit = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=root, text=True
@@ -460,15 +463,45 @@ def qualify(request_path: Path, result_path: Path):
         children_before = resource.getrusage(resource.RUSAGE_CHILDREN)
         started = time.perf_counter()
         try:
-            report = run_phase6(
-                sources["ir"],
-                sources["assignment"],
-                sources["schedule"],
-                sources["platform"],
-                output,
-                managed_storage=True,
-                clock_periods=clocks,
-            )
+            if entry == "phase-api":
+                report = run_phase6(
+                    sources["ir"], sources["assignment"], sources["schedule"],
+                    sources["platform"], output, managed_storage=True,
+                    clock_periods=clocks,
+                )
+            else:
+                from emuflow.phase6_native import prepare_compile_policy
+                from emuflow.tool_runtime import NativeToolProcess
+
+                with tempfile.TemporaryDirectory(prefix="native-compile-", dir=scratch) as temporary:
+                    policy = prepare_compile_policy(Path(temporary) / "policy",
+                        sources["ir"], sources["platform"], clock_periods=clocks)
+                    operation = Path(temporary) / "operation.json"
+                    argv = [str(native), "--report", str(operation), "phase6", "compile",
+                        *(str(sources[name]) for name in ("ir", "assignment", "schedule", "platform")),
+                        str(policy), str(output)]
+                    with NativeToolProcess(str(native), argv, environment=dict(os.environ),
+                            scratch_parent=Path(temporary)) as process:
+                        result = process.finish()
+                    if result.returncode:
+                        raise ValidationError("native Phase 6 compile failed: " + result.stdout)
+                    if operation.stat().st_size > 262144:
+                        raise ValidationError("native Phase 6 operation exceeds bound")
+                    proof = json.loads(operation.read_text())
+                    fields = ('device','inode','bytes','mtime_seconds','mtime_nanoseconds','ctime_seconds','ctime_nanoseconds')
+                    outputs = proof.get('outputs', [])
+                    if len(outputs) != 3:
+                        raise ValidationError('native Phase 6 output coverage disagrees')
+                    for row, (name, schema) in zip(outputs, (
+                        ('phase6_report.json','phase6-report-v1'),
+                        ('split-netlists.sqlite','split-netlists-v3'),
+                        ('transport.sqlite','transport-store-v2'))):
+                        path = output / name
+                        if (row.get('path') != str(path.resolve()) or row.get('schema') != schema or
+                            tuple(row.get('generation', {}).get(key) for key in fields) != native_file_generation(path)):
+                            raise ValidationError('native Phase 6 output generation changed')
+                    operations.append(proof)
+                report = read_json(output / 'phase6_report.json')
             elapsed = time.perf_counter() - started
             after = resource.getrusage(resource.RUSAGE_SELF)
             children_after = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -478,7 +511,8 @@ def qualify(request_path: Path, result_path: Path):
             sample_once()
     if report.get("status") != "pass" or report.get("stage_implementation_id") != "native-baseline-phase6-v1":
         raise ValidationError("Phase 6 production API did not pass")
-    if len(operations)!=1 or operations[0].get('stage')!='phase6.run' or operations[0].get('status')!='pass':
+    expected_stage = 'phase6.run' if entry == 'phase-api' else 'phase6.compile'
+    if len(operations)!=1 or operations[0].get('stage')!=expected_stage or operations[0].get('status')!='pass':
         raise ValidationError('qualification requires one complete native stage operation')
     manifest_path = output / "manifest.json"
     if manifest_path.stat().st_size > 1048576:
@@ -542,7 +576,8 @@ def qualify(request_path: Path, result_path: Path):
         "semantic_contract_sha256": manifest.get("semantic_contract_sha256"),
         "fpgas": request["expected_fpgas"],
         "mode": mode,
-        "scope": "complete native baseline Phase6 API; repeated-run identity and stage measurements; no old-publisher comparison or complete-flow/physical/timing claim",
+        "entry": entry,
+        "scope": "complete native baseline Phase6; phase API/native compiler entry identity and stage measurements; no old-publisher comparison or complete-flow/physical/timing claim",
         "clock_periods": clocks,
         "api_wall_seconds": elapsed,
         "sampled_peak_process_tree_rss_kib": peaks[0],

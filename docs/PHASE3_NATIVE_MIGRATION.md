@@ -482,9 +482,10 @@ does not call the Python compiler. TDM consumes the current route selector, assi
 directly in C++; it has no Python phase adapter. Partitioning uses `phase3 run`
 directly, with no Python partition phase adapter. The ordinary RTL frontend also
 executes directly in C++, using a checked configuration prepared by preflight.
-Each remaining transitional
-Python adapter invokes one shared phase body and exits, releasing its working population before the next
-phase starts. The existing Python controller uses the same phase bodies and
+Baseline Phase 6 also executes directly through `phase6 compile`, constructing
+its runtime from the typed ScheduleStore and original BoardDB. The remaining
+transitional Python adapters invoke one shared phase body and exit, releasing
+their working population before the next phase starts. The existing Python controller uses the same phase bodies and
 retains advanced modes. Current defaults resolve from the shared phase API
 signature: PATRON v14 and generalized Static Exact. Cut mode does not infer an
 algorithm version, and the redundant flow-refinement selector is retired;
@@ -566,7 +567,7 @@ there is no silent implementation or provider fallback.
 | Phase 3 | Complete shared-core stage owns source-backed configuration, candidate/primary clustering, TritonPart initialization, v14 search, independent decision/hop audits, selected semantics and final-directory publication; native compiler executes it directly | Qualify whole-stage NVDLA equivalence and wall/process-tree RSS/I/O; retire replaced reference production scopes after acceptance |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
-| Phase 6 | Native baseline stage owns source-bound split, typed-hop transport/binding, independent audits, RTL/XDC, cost aggregation, manifest/report and atomic directory publication | Native-control direct integration, retained Chimew qualification/report ownership and real-design acceptance remain; bounded configuration/calendar and the small independent behavioral oracle remain in the API host |
+| Phase 6 | Native baseline stage owns source-bound split, typed-hop transport/binding, independent audits, RTL/XDC, cost aggregation, manifest/report and atomic directory publication | Retained Chimew qualification/report ownership and real-design acceptance remain; bounded board-policy preparation stays in the transitional route-policy adapter. Baseline runtime/calendar and stage invocation are native, with independent size-limited behavioral replay preserved |
 | Phase 7 | Indexed lowering; typed physical handoff and native Bookshelf pin export | Complete remaining backend/export/validation ownership and full physical qualification |
 | Global STA | Native typed physical-to-event binding, event validation/model export, measurement import, full-original-path reduction and typed QoR publication | Migrate remaining physical producers and orchestration; qualify complete real-design physical/global timing |
 
@@ -620,9 +621,26 @@ board/cost/exact generations remain checked through the final directory rename.
 A late split or source failure exposes no partial phase; an existing output is
 rejected. The baseline API supplies bounded configuration and returns the report;
 it no longer adopts individual phase files. Small independent behavioral replay
-retains its existing size limit. The retained Chimew adapter, direct compiler
-integration and actual NVDLA acceptance remain unfinished, so this does not
+retains its existing size limit. The retained Chimew adapter and actual NVDLA acceptance remain unfinished, so this does not
 establish complete Phase 6 or W7 qualification.
+
+`phase6 compile EMUIR ASSIGNMENT SCHEDULE_SELECTOR BOARD POLICY OUTPUT_DIR`
+constructs the current transport request and runtime in the core. It verifies the
+original source/board generations and the schedule selector/file/section seals.
+The clock calendar uses reduced decimal ratios and retains empty ticks, the
+4096-tick bound, completion/barrier and relative-rate semantics. Supplied periods
+must exactly cover the original EmuIR clock identities. The controller
+passes the generation-bound board policy prepared by route-policy; no hop rows
+or runtime graph cross that adapter boundary. Baseline split state and its
+report reference are published by native control. Chimew retains its explicit
+adapter and is never selected after a baseline native failure.
+
+Small-design behavioral replay remains an independent oracle with its existing
+cell/endpoint limits. Native control owns its interpreter/source generations,
+process lifecycle and failure; a failed replay cannot publish the phase. Large
+production designs use the independent constructive certificates and do not
+launch this graph-level Python oracle. Common operation metrics remain distinct
+from enclosing `wait4` CPU/RSS and sampled process-tree qualification metrics.
 
 `phase6 audit-transport STORE SUMMARY` independently merges stored hop facts
 against the original schedule and pin-plan owners in identity order, then

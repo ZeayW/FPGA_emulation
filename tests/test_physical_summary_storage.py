@@ -435,7 +435,7 @@ class PhysicalSummaryStorageTest(unittest.TestCase):
                 "store_bytes": replacement.stat().st_size,
             })
             write_json(selector_path, selector, compact=True)
-            with self.assertRaisesRegex(ValidationError, "unsupported"):
+            with self.assertRaisesRegex(ValidationError, '"code":"invalid-artifact"'):
                 read_logic_segment_timing_storage(selector_path)
 
             _, selector_path, _ = self._write_logic_store(root, "fpga0", 2)

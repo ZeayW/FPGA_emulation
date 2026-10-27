@@ -1,11 +1,13 @@
 import json
 import sys
+import pytest
 from pathlib import Path
 
 from emuflow.emuir_storage import _write_emuir_sqlite_v1
 from emuflow.handoff_qualification import main
 from emuflow.ir import EmuIR
 from emuflow.yosys import import_yosys_json
+from emuflow.errors import ValidationError
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -39,7 +41,13 @@ def test_separate_process_protocol_preserves_graph_inputs_and_timing(tmp_path, m
         assert all(report[name] >= 0 for name in (
             "load_seconds", "model_seconds", "verilog_write_seconds", "net_map_write_seconds"))
     extra = ("--clock", "clk=10", "--sta-executable", str(ROOT / "tests/fixtures/fake_opensta_paths.py"))
-    previous = run("timing", old, tmp_path / "old-paths.json", *extra)
+    # Production STA consumes compact v2; the identified v1 artifact remains a
+    # repack/export oracle rather than a second timing production route.
+    with pytest.raises(ValidationError,match='compact EmuIR v2'):
+        run("timing", old, tmp_path / "rejected-old-paths.json", *extra)
+    repeated=tmp_path/'repeat.emuir.sqlite'
+    run('repack',old,repeated)
+    previous = run("timing", repeated, tmp_path / "repeat-paths.json", *extra)
     candidate = run("timing", new, tmp_path / "new-paths.json", *extra)
     assert previous["path_records_sha256"] == candidate["path_records_sha256"]
     assert previous["records"] == candidate["records"]

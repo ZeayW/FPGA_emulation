@@ -4,6 +4,8 @@
 #include "emuflow_core/json_record.hpp"
 #include "emuflow_core/emuir_view.hpp"
 #include "emuflow_core/split_overlay.hpp"
+#include "emuflow_core/runtime_calendar.hpp"
+#include "emuflow_core/tool_runtime.hpp"
 #include "emuflow_core/store.hpp"
 #include "emuflow_core/transport_schema.hpp"
 #include <algorithm>
@@ -14,6 +16,7 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <tuple>
 #include <unistd.h>
@@ -161,6 +164,8 @@ struct Producer {
   SqliteStore assignment,schedule;
   std::unique_ptr<SqliteStore> pin_plan;
   std::map<std::string,Link> links;
+  std::map<std::tuple<std::string,std::string,std::string>,std::pair<I,I>> bank_budgets;
+  std::set<std::string> bank_links;
   std::map<std::string,std::string> parts;
   std::map<std::pair<std::string,I>,Raw> wires;
   std::map<std::string,std::pair<std::string,std::string>> directions;
@@ -184,6 +189,27 @@ struct Producer {
     for(const auto& token:Values(Get(request,"fpgas"))){auto f=Fields(token);const auto id=Text(f,"id");Check(!id.empty() && id!="." && id!=".." && fs::path(id).filename()==id && id.find('\0')==std::string::npos,"FPGA identity escapes stage directory");Check(parts.emplace(id,Text(f,"part")).second,"duplicate FPGA");}
     auto declared=assignment.database().Prepare("SELECT fpga FROM parts ORDER BY fpga");std::size_t count=0;while(declared.Step()){++count;Check(parts.count(declared.TypedText(0)),"unknown assigned FPGA");}Check(count==parts.size() && count>0,"FPGA inventory disagrees");
     for(const auto& token:Values(Get(request,"links"))){auto f=Fields(token);Link link{Text(f,"mode"),Int(Get(f,"width")),Int(Get(f,"payload"))};Check(link.width>0 && link.payload>0 && links.emplace(Text(f,"id"),link).second,"invalid link");}
+    if(header.count("bank_allocations"))for(const auto& token:Values(Get(header,"bank_allocations"))){
+      const auto row=Fields(token);const auto link=Text(row,"link"),from=Text(row,"from"),to=Text(row,"to");
+      Check(links.count(link) && parts.count(from) && parts.count(to) && from!=to,"invalid bank direction");
+      const I count=Int(Get(row,"bank_count")),width=Int(Get(row,"wires_per_bank")),
+              offset=Int(Get(row,"lane_offset")),lanes=Int(Get(row,"lanes"));
+      Check(count>=0 && width>0 && offset>=0 && lanes>=0 && offset%width==0 &&
+            count<=INT64_MAX/width && lanes==count*width &&
+            offset<=links.at(link).width && lanes<=links.at(link).width-offset,
+            "invalid allocated direction banks");
+      Check(bank_budgets.emplace(std::make_tuple(link,from,to),std::make_pair(offset,offset+lanes)).second,
+            "duplicate bank direction");bank_links.insert(link);
+    }
+    for(const auto& link:bank_links){
+      std::vector<std::pair<I,I>> ranges;
+      for(const auto& item:bank_budgets)if(std::get<0>(item.first)==link){
+        Check(bank_budgets.count({link,std::get<2>(item.first),std::get<1>(item.first)}),"incomplete bank direction coverage");
+        ranges.push_back(item.second);
+      }
+      Check(ranges.size()==2 && (ranges[0].second<=ranges[1].first || ranges[1].second<=ranges[0].first),
+            "bank direction allocations overlap");
+    }
     board=Get(request,"virtual_board");has_board=board!="null";if(has_board){const auto fields=Fields(board);Check(Text(fields,"schema")=="emuflow.virtual-board-wiring/v1" && Text(fields,"platform")==platform,"virtual board disagrees");standard=Text(Fields(Get(fields,"assumptions")),"iostandard");for(const auto& token:Values(Get(fields,"wires"))){auto wire=Fields(token);Check(wires.emplace(std::make_pair(Text(wire,"link"),Int(Get(wire,"wire"))),wire).second,"duplicate physical wire");}}
     if(refs.size()==4){pin_plan=std::make_unique<SqliteStore>(refs[3]);auto pin=Fields(Meta(pin_plan->database(),"header"));Check(Text(pin,"schema")=="emuflow.placement-aware-pin-plan/v1" && Text(pin,"provider")=="chimew-paper-plus-emuflow-electrical-slot-v1","unsupported pin plan");}
   }
@@ -201,6 +227,12 @@ struct Producer {
     while(rows.Step()){
       const auto id=rows.TypedText(0),demand=rows.TypedText(1),net=rows.TypedText(2),link=rows.TypedText(3),from=rows.TypedText(4),to=rows.TypedText(5),route_source=rows.TypedText(10);const I slot=rows.TypedInteger(6),arrival=rows.TypedInteger(7),logical=rows.TypedInteger(8),wire=rows.TypedInteger(11);
       Check(!id.empty() && !demand.empty() && !net.empty() && parts.count(from) && parts.count(to) && links.count(link) && from!=to,"invalid scheduled endpoint");Check(slot>=0 && arrival>=slot && arrival<frame && logical>=0 && wire>=0 && wire<links.at(link).width,"invalid slot/lane");
+      if(bank_links.count(link)){
+        const auto budget=bank_budgets.find({link,from,to});
+        Check(budget!=bank_budgets.end() && budget->second.first<=logical && logical<budget->second.second &&
+              budget->second.first<=wire && wire<budget->second.second,
+              "pin assignment leaves the schedule's allocated direction banks");
+      }
       const std::array<std::string,6> identity{id,demand,net,link,from,to};for(unsigned n=0;n<identity.size();++n)hop.BindText(n+1,identity[n]);hop.BindInteger(7,slot);hop.BindInteger(8,arrival);hop.BindInteger(9,wire);hop.BindInteger(10,logical);hop.BindText(11,route_source);if(rows.IsNull(9))hop.BindNull(12);else hop.BindInteger(12,rows.TypedInteger(9));hop.Execute();
       if(has_board){
         const auto found=wires.find({link,wire});Check(found!=wires.end(),"scheduled wire has no virtual board connection");const auto& connection=found->second;const auto wire_id=Text(connection,"id");const auto direction=std::make_pair(from,to);const auto previous=directions.emplace(wire_id,direction);Check(previous.second || previous.first->second==direction,"one physical wire cannot change direction within the schedule");
@@ -249,7 +281,18 @@ std::string AuditRecords(const ArtifactRef& artifact){
   for(const auto& value:Raw{{"design",JsonQuote(expected.design)},{"platform",JsonQuote(expected.platform)},{"frame_slots",std::to_string(expected.frame)},{"virtual_clock_order",expected.clock_order},{"semantic_contract_sha256",expected.semantic}})Check(Meta(db,value.first)==value.second,"audit store namespace disagrees");
   auto attach=[&](const ArtifactRef& ref,const std::string& name){auto q=db.Prepare("ATTACH DATABASE ? AS "+name);q.BindText(1,SqliteImmutableUri(ref.path()));q.Execute();};attach(controls[1],"audit_schedule");if(controls.size()==4)attach(controls[3],"audit_pins");
   const auto scalar=[&](const std::string& sql){auto q=db.Prepare(sql);Check(q.Step(),"audit scalar missing");return q.TypedInteger(0);};
-  const auto projected="SELECT e.entry_id,e.demand,e.net,e.link_id,e.source_fpga,e.sink_fpga,e.slot,e.arrival_slot,"+std::string(controls.size()==4?"p.physical_lane":"e.lane")+",e.lane,r.source_fpga,e.tdm_ratio FROM audit_schedule.schedule_entries e JOIN audit_schedule.schedule_routes r ON r.demand=e.demand "+(controls.size()==4?"LEFT JOIN audit_pins.entries p ON p.schedule_entry=e.entry_id ":"");
+  const auto projected="SELECT e.entry_id,e.demand,e.net,e.link_id,e.source_fpga,e.sink_fpga,e.slot,e.arrival_slot,"+std::string(controls.size()==4?"p.physical_lane":"e.lane")+" AS lane,e.lane AS logical_lane,r.source_fpga AS route_source,e.tdm_ratio FROM audit_schedule.schedule_entries e JOIN audit_schedule.schedule_routes r ON r.demand=e.demand "+(controls.size()==4?"LEFT JOIN audit_pins.entries p ON p.schedule_entry=e.entry_id ":"");
+  // Rejoin the original schedule policy, independently of producer decisions
+  // and matching transport/pin-plan records. No hop population is materialized.
+  Check(scalar("WITH budgets AS (SELECT json_extract(b.value,'$.link') AS link,"
+      "json_extract(b.value,'$.from') AS source,json_extract(b.value,'$.to') AS sink,"
+      "json_extract(b.value,'$.lane_offset') AS low,json_extract(b.value,'$.lane_offset')+json_extract(b.value,'$.lanes') AS high "
+      "FROM audit_schedule.metadata m,json_each(json_extract(m.value,'$.bank_allocations')) b WHERE m.key='header'),"
+      "assigned AS ("+projected+") SELECT count(*) FROM assigned e "
+      "WHERE EXISTS (SELECT 1 FROM budgets b WHERE b.link=e.link_id) "
+      "AND NOT EXISTS (SELECT 1 FROM budgets b WHERE b.link=e.link_id AND b.source=e.source_fpga AND b.sink=e.sink_fpga "
+      "AND e.logical_lane>=b.low AND e.logical_lane<b.high AND e.lane>=b.low AND e.lane<b.high)")==0,
+      "audit pin assignment leaves the schedule's allocated direction banks");
   const auto columns="entry_id,demand,net,link_id,source_fpga,sink_fpga,slot,arrival_slot,lane,logical_lane,route_source,tdm_ratio";
   using Key=std::tuple<std::string,std::string,I,std::string>;
   struct Membership{I count=0;Sha256 hash;};std::map<Key,Membership> members;
@@ -297,7 +340,9 @@ StageResult AuditTransportArtifacts(const ArtifactRef& artifact,const std::strin
   std::vector<ArtifactRef> sources{artifact};
   return RunStage("phase6.audit-transport",[&]{Check(artifact.schema()=="transport-store-v2","audit requires current hop owner");SqliteStore store(artifact);for(const auto& token:Values(Get(Fields(Meta(store.database(),"configuration")),"sources"))){const auto value=Fields(token);sources.push_back(ArtifactRef::Bind(Text(value,"path"),Text(value,"schema")));}return sources;},[&](const auto& refs){auto text=AuditRecords(artifact);PublishTextArtifact(summary,refs,[&](std::ostream& out){out<<text<<'\n';});},[&]{return std::vector<ArtifactRef>{ArtifactRef::Bind(summary,"transport-audit-summary-v1")};});
 }
-StageResult RunPhase6(const std::vector<ArtifactRef>& original,const std::string& directory){
+StageResult RunPhase6(const std::vector<ArtifactRef>& original,const std::string& directory,
+                      const std::vector<ArtifactRef>& enclosing_sources,
+                      const volatile std::sig_atomic_t* cancelled){
   std::vector<ArtifactRef> sources=original;
   return RunStage("phase6.run",[&]{
     Check(original.size()==4 && original[0].schema()=="emuir-compact-v2" &&
@@ -331,6 +376,7 @@ StageResult RunPhase6(const std::vector<ArtifactRef>& original,const std::string
       sources.push_back(ArtifactRef::Bind((fs::path(original[1].path()).parent_path()/artifact).string(),
           schema=="emuflow.phase3-static-exact-binary/v1"?"phase3-exact-data-v1":"phase3-exact-data-v2"));
     }
+    sources.insert(sources.end(),enclosing_sources.begin(),enclosing_sources.end());
     return sources;
   },[&](const auto& bound){
     const auto destination=fs::absolute(directory);
@@ -564,8 +610,132 @@ StageResult RunPhase6(const std::vector<ArtifactRef>& original,const std::string
     PublishText(root/"phase6_report.json",Object(report)+'\n',bound);
     // Readers/mappings close before retirement on both success and failure.
     // They borrow only original stores, which outlive the stage workspace.
+    if(cancelled && *cancelled)throw StageError(ErrorCode::kExecutionFailed,"Phase 6 stage cancelled before publication");
     PublishNewDirectory(root.string(),destination.string(),bound);
     generation.root.clear();
+  },[&]{return std::vector<ArtifactRef>{
+    ArtifactRef::Bind((fs::path(directory)/"phase6_report.json").string(),"phase6-report-v1"),
+    ArtifactRef::Bind((fs::path(directory)/"split-netlists.sqlite").string(),"split-netlists-v3"),
+    ArtifactRef::Bind((fs::path(directory)/"transport.sqlite").string(),"transport-store-v2")};});
+}
+StageResult CompilePhase6(const std::vector<ArtifactRef>& original,const std::string& directory,
+                         const volatile std::sig_atomic_t* cancelled){
+  std::vector<ArtifactRef> sources=original;Raw policy;
+  const auto reference=[](const ArtifactRef& ref){const auto& g=ref.generation();
+    return Object({{"path",JsonQuote(ref.path())},{"schema",JsonQuote(ref.schema())},
+      {"generation",Array({std::to_string(g.device),std::to_string(g.inode),std::to_string(g.bytes),
+        std::to_string(g.modified_seconds),std::to_string(g.modified_nanoseconds),
+        std::to_string(g.changed_seconds),std::to_string(g.changed_nanoseconds)})}});};
+  const auto bind=[&](const std::string& token,const std::string& schema){
+    const auto row=Fields(token);Check(row.size()==3 && Text(row,"schema")==schema,"policy source role disagrees");
+    auto ref=ArtifactRef::Bind(Text(row,"path"),schema);const auto g=Values(Get(row,"generation"));
+    Check(g.size()==7,"policy source generation coverage disagrees");
+    const FileGeneration expected{UInt(g[0]),UInt(g[1]),UInt(g[2]),Int(g[3]),Int(g[4]),Int(g[5]),Int(g[6])};
+    if(!(ref.generation()==expected))throw StageError(ErrorCode::kMixedGeneration,"Phase 6 policy source changed");
+    return ref;
+  };
+  std::optional<ArtifactRef> schedule_ref,python,oracle,assignment_json;
+  return RunStage("phase6.compile",[&]{
+    Check(original.size()==5 && original[0].schema()=="emuir-compact-v2" &&
+          original[1].schema()=="assignment-index-v4" && original[2].schema()=="tdm-schedule-selector-v4" &&
+          original[3].schema()=="boarddb-v1" && original[4].schema()=="phase6-compile-policy-v1","compile source roles disagree");
+    policy=Fields(Canonical(Read(original[4].path())));
+    Check(policy.size()==7 && Text(policy,"schema")=="emuflow.phase6-compile-policy/v1","unsupported compile policy");
+    Check(reference(bind(Get(policy,"source"),"emuir-compact-v2"))==reference(original[0]),"compile policy circuit namespace disagrees");
+    const auto configured=Values(Get(policy,"configuration_sources"));
+    Check(configured.size()==1 || configured.size()==2,"compile configuration source coverage disagrees");
+    Check(reference(bind(configured[0],"boarddb-v1"))==reference(original[3]),"compile policy board namespace disagrees");
+    if(configured.size()==2)sources.push_back(bind(configured[1],"transport-cost-input-v1"));
+    const auto selector=Fields(Canonical(Read(original[2].path())));
+    Check(Text(selector,"schema")=="emuflow.tdm-schedule-storage/v4" &&
+          Text(selector,"logical_schema")=="emuflow.tdm-schedule/v1" &&
+          Int(Get(selector,"application_id"))==0x454d5554 && Int(Get(selector,"user_version"))==3,
+          "unsupported compile ScheduleStore selector");
+    const auto hash=Text(selector,"store_sha256"),artifact=Text(selector,"artifact");
+    Check(hash.size()==64 && hash.find_first_not_of("0123456789abcdef")==std::string::npos &&
+          artifact=="schedule."+hash+".sqlite","invalid schedule file identity");
+    schedule_ref=ArtifactRef::Bind((fs::path(original[2].path()).parent_path()/artifact).string(),"tdm-schedule-store-v4");
+    Check(schedule_ref->generation().bytes==UInt(Get(selector,"store_bytes")) &&
+          FileHash(schedule_ref->path())==hash,"compile schedule file seal disagrees");
+    sources.push_back(*schedule_ref);SqliteStore schedule(*schedule_ref);auto& db=schedule.database();
+    const auto publication=Fields(Canonical(Meta(db,"native_publication_summary")));
+    Check(Get(publication,"sections")==Get(selector,"sections") &&
+          Canonical(Meta(db,"logical_sha256"))==Get(selector,"logical_sha256"),"compile schedule envelope disagrees");
+    const auto sections=Fields(Get(selector,"sections"));Check(sections.size()==4,"unknown schedule sections");
+    for(const auto& table:std::vector<std::pair<std::string,std::string>>{
+        {"schedule_routes","routes"},{"schedule_entries","entries"},
+        {"schedule_completions","demand_completions"},{"records WHERE section='domain_schedules'","domain_schedules"}}){
+      const auto count=Int(Get(Fields(Get(sections,table.second)),"records"));
+      auto q=db.Prepare("SELECT count(*) FROM "+table.first);Check(q.Step() && q.TypedInteger(0)==count,"compile schedule record count disagrees");
+    }
+    EmuirView circuit(original[0]);
+    if(circuit.counts().cells<=10000 && circuit.counts().endpoints<=100000){
+      const auto spec=Fields(Get(policy,"small_oracle"));
+      Check(spec.size()==4,"small-design qualification policy disagrees");
+      python=bind(Get(spec,"python"),"external-tool-executable-v1");
+      oracle=bind(Get(spec,"source"),"phase6-oracle-source-v1");
+      assignment_json=ArtifactRef::Bind((fs::path(original[1].path()).parent_path()/"assignment.json").string(),"assignment-selector-v4");
+      sources.push_back(*python);sources.push_back(*oracle);sources.push_back(*assignment_json);
+    }
+    return sources;
+  },[&](const auto& refs){
+    const auto destination=fs::absolute(directory);
+    Check(!fs::exists(destination) && !fs::is_symlink(destination),"compile output directory exists");
+    fs::create_directories(destination.parent_path());
+    Workspace work(destination.parent_path());const auto board=Fields(Canonical(Read(original[3].path())));
+    EmuirView circuit(original[0]);
+    Raw transport{{"schema",JsonQuote("emuflow.transport-stage/v1")},
+      {"sources",Array({reference(original[1]),reference(*schedule_ref)})},
+      {"design",Canonical(Meta(circuit.store().database(),"design_json"))},
+      {"platform",Get(Fields(Get(board,"platform")),"name")},
+      {"virtual_board",Get(policy,"virtual_board")},{"emit_rtl","true"}};
+    std::vector<std::string> fpgas,links,clocks;
+    for(const auto& token:Values(Get(board,"fpgas"))){const auto row=Fields(token);
+      fpgas.push_back(Object({{"id",Get(row,"id")},{"part",Get(row,"part")}}));}
+    for(const auto& token:Values(Get(board,"links"))){const auto row=Fields(token);
+      const auto payload=row.count("payload_bits_per_lane_per_cycle")?Int(Get(row,"payload_bits_per_lane_per_cycle")):1;
+      const auto lanes=Int(Get(row,"data_lanes_per_direction"));
+      Check(lanes>0 && payload>0 && payload<=INT64_MAX/lanes,"invalid compile link width");
+      links.push_back(Object({{"id",Get(row,"id")},{"mode",Get(row,"mode")},
+        {"width",std::to_string(lanes*payload)},{"payload",std::to_string(payload)}}));}
+    auto rows=circuit.store().database().Prepare("SELECT record_json FROM clocks ORDER BY seq");
+    const auto periods=Fields(Get(policy,"clock_periods"));std::set<std::string> declared_clocks;
+    while(rows.Step()){
+      Check(clocks.size()<16384,"source clock catalog exceeds bound");
+      const auto record=Canonical(rows.TypedText(0));const auto id=Text(Fields(record),"id");
+      Check(periods.count(id) && declared_clocks.insert(id).second,"clock periods must exactly cover declared EmuIR clocks");
+      clocks.push_back(record);
+    }
+    Check(declared_clocks.size()==periods.size(),"clock periods must exactly cover declared EmuIR clocks");
+    transport["runtime"]=BuildVirtualRuntime(*schedule_ref,original[3],Get(policy,"clock_periods"));
+    transport["fpgas"]=Array(fpgas);transport["links"]=Array(links);transport["clocks"]=Array(clocks);
+    std::string equivalence="null";
+    if(python){const auto spec=Fields(Get(policy,"small_oracle"));std::vector<std::string> bindings;
+      for(const auto& ref:refs)bindings.push_back(reference(ref));
+      const auto request=work.root/"oracle.json",output=work.root/"oracle-result.json";
+      PublishText(request,Object({{"schema",JsonQuote("emuflow.phase6-small-oracle/v1")},
+        {"sources",Array(bindings)},{"ir",JsonQuote(original[0].path())},
+        {"assignment",JsonQuote(assignment_json->path())},{"schedule",JsonQuote(original[2].path())},
+        {"clock_periods",Get(policy,"clock_periods")},{"cycles",Get(spec,"cycles")},{"seed",Get(spec,"seed")}})+'\n',refs);
+      ToolRequest tool;tool.argv={python->path(),"-m","emuflow.phase6_oracle",request.string(),output.string()};
+      tool.working_directory=work.root.string();tool.tail_bytes=32768;
+      tool.environment={{"PYTHONPATH",fs::path(oracle->path()).parent_path().parent_path().string()}};
+      auto inputs=refs;inputs.push_back(ArtifactRef::Bind(request.string(),"phase6-oracle-request-v1"));
+      const auto result=RunExternalTool(tool,cancelled,inputs);
+      if(!result.operation.ok())throw StageError(result.operation.error,"small-design qualification: "+result.operation.message+"\n"+result.diagnostic_tail);
+      equivalence=Canonical(Read(output));const auto proof=Fields(equivalence);
+      Check(Text(proof,"status")=="pass" && Int(Get(proof,"mismatches"))==0,"small-design qualification failed");
+    }
+    if(cancelled && *cancelled)throw StageError(ErrorCode::kExecutionFailed,"Phase 6 compilation cancelled");
+    const auto request=work.root/"phase6-request.json";
+    PublishText(request,Object({{"schema",JsonQuote("emuflow.phase6-stage/v1")},
+      {"transport",Object(transport)},{"configuration_sources",Get(policy,"configuration_sources")},
+      {"small_design_equivalence",equivalence},{"managed_storage","false"},
+      {"transport_cost",Get(policy,"transport_cost")}})+'\n',refs);
+    const auto result=RunPhase6({original[0],original[1],*schedule_ref,
+        ArtifactRef::Bind(request.string(),"phase6-stage-request-v1")},directory,refs,cancelled);
+    if(!result.ok())throw StageError(result.error,result.stage+": "+result.message);
+    for(const auto& ref:refs)ref.RequireUnchanged();
   },[&]{return std::vector<ArtifactRef>{
     ArtifactRef::Bind((fs::path(directory)/"phase6_report.json").string(),"phase6-report-v1"),
     ArtifactRef::Bind((fs::path(directory)/"split-netlists.sqlite").string(),"split-netlists-v3"),

@@ -24,7 +24,8 @@
     "phase_implementation": {
       "enum": [
         "native-rtl-frontend-phase5-and-isolated-python-adapters-v1",
-        "native-rtl-frontend-phase3-phase5-and-isolated-python-adapters-v1"
+        "native-rtl-frontend-phase3-phase5-and-isolated-python-adapters-v1",
+        "native-rtl-frontend-phase3-phase5-baseline-phase6-and-isolated-python-adapters-v1"
       ]
     },
     "native_data_plane_complete": {
@@ -90,7 +91,8 @@
               "isolated-python-adapter-v1",
               "native-exact-phase5-v1",
               "native-rtl-frontend-v1",
-              "native-phase3-v1"
+              "native-phase3-v1",
+              "native-baseline-phase6-v1"
             ]
           },
           "status": {

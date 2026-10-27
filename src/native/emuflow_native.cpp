@@ -32,6 +32,7 @@ constexpr const char* kUsage =
     "  phase3 run REQUEST OUTPUT_DIR\n"
     "  phase6 split EMUIR ASSIGNMENT SCHEDULE OUTPUT\n"
     "  phase6 run EMUIR ASSIGNMENT SCHEDULE REQUEST OUTPUT_DIR\n"
+    "  phase6 compile EMUIR ASSIGNMENT SCHEDULE_SELECTOR BOARD POLICY OUTPUT_DIR\n"
     "  phase6 build-transport ASSIGNMENT SCHEDULE REQUEST OUTPUT_DIR [PIN_PLAN]\n"
     "  phase6 audit-transport STORE SUMMARY\n"
     "  phase6 validate-split SPLIT SUMMARY\n"
@@ -176,11 +177,20 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     const auto request = emuflow::core::ArtifactRef::Bind(argv[2],"sqlite-publication-request-v1");
     return Finish(emuflow::core::PublishSqliteStore(request,argv[3],report),report);
   }
+  if(argc==9 && std::string(argv[1])=="phase6" && std::string(argv[2])=="compile") {
+    ToolSignals signals;
+    return Finish(emuflow::core::CompilePhase6({emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),
+      emuflow::core::ArtifactRef::Bind(argv[4],"assignment-index-v4"),
+      emuflow::core::ArtifactRef::Bind(argv[5],"tdm-schedule-selector-v4"),
+      emuflow::core::ArtifactRef::Bind(argv[6],"boarddb-v1"),
+      emuflow::core::ArtifactRef::Bind(argv[7],"phase6-compile-policy-v1")},argv[8],&tool_cancelled),report);
+  }
   if(argc==8 && std::string(argv[1])=="phase6" && std::string(argv[2])=="run") {
+    ToolSignals signals;
     return Finish(emuflow::core::RunPhase6({emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),
       emuflow::core::ArtifactRef::Bind(argv[4],"assignment-index-v4"),
       emuflow::core::ArtifactRef::Bind(argv[5],"tdm-schedule-store-v4"),
-      emuflow::core::ArtifactRef::Bind(argv[6],"phase6-stage-request-v1")},argv[7]),report);
+      emuflow::core::ArtifactRef::Bind(argv[6],"phase6-stage-request-v1")},argv[7],{},&tool_cancelled),report);
   }
   if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="audit-transport") {
     return Finish(emuflow::core::AuditTransportArtifacts(emuflow::core::ArtifactRef::Bind(argv[3],"transport-store-v2"),argv[4]),report);

@@ -102,15 +102,18 @@ cache is not a phase publication.
 [native-compile-result.json](../schemas/native-compile-result-v2.schema.json)
 uses result v2 and records each stage implementation explicitly. TDM uses
 `native-exact-phase5-v1`; partitioning uses `native-phase3-v1`; the ordinary RTL
-frontend uses `native-rtl-frontend-v1`.
-Supplied JSON/prepared frontend modes and remaining phases use
+frontend uses `native-rtl-frontend-v1`; baseline Phase 6 uses
+`native-baseline-phase6-v1`.
+Supplied JSON/prepared frontend modes, retained Chimew and remaining phases use
 `isolated-python-adapter-v1`. Native RTL preparation retains the current mapping
 script and defaults. The stage requires successful Yosys exit and resource/clock
 checks before atomically exposing Phase 1; it never retries a rejected import
 through a Python frontend. Only a sealed bounded frontend summary crosses the
 next control boundary.
-Its native TDM RSS is the single native process high-water value from `wait4`,
-not the older sampled Python/child tree scope. The retired result v1 is read
+Native TDM RSS is the native process high-water value from `wait4`. Baseline
+Phase 6 reports the native owner high-water measurement; small-design oracle
+children are reaped by that owner. These are kernel high-water measurements,
+not sampled simultaneous process-tree peaks. The retired result v1 is read
 with its matching historical Git revision. This result
 retains requested and resolved configuration, common operation status and stage
 wall/CPU/RSS metrics. Its `native_data_plane_complete` is explicitly false.

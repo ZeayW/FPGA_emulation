@@ -6,6 +6,7 @@
 #include "emuflow_core/routed_opensta.hpp"
 #include "emuflow_core/json_record.hpp"
 #include "emuflow_core/phase5.hpp"
+#include "emuflow_core/runtime_calendar.hpp"
 #include <iostream>
 #include <unistd.h>
 #include <sqlite3.h>
@@ -16,6 +17,13 @@
 #include <stdexcept>
 
 int main(int argc,char** argv) {
+  if(argc==5 && std::string(argv[1])=="runtime") {
+    using namespace emuflow::core;
+    try {
+      std::cout<<BuildVirtualRuntime(ArtifactRef::Bind(argv[2],"tdm-schedule-store-v4"),
+        ArtifactRef::Bind(argv[3],"boarddb-v1"),argv[4])<<'\n';return 0;
+    } catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
+  }
   if(argc==4 && std::string(argv[1])=="split-view") {
     using namespace emuflow::core;
     auto ref=ArtifactRef::Bind(argv[2],"split-netlists-v3");SplitView view(ref);

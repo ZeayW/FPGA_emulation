@@ -155,13 +155,16 @@ def test_native_compile_executes_whole_frontend_without_starting_its_python_adap
         'native_frontend_generation':['tuple',[str(v) for v in native_file_generation(config)]]}))
     adapter=tmp_path/'source/emuflow/native_compile_adapter.py'
     text=adapter.read_text()
-    text=text.replace("if a.stage=='tdm':raise AssertionError('Python TDM adapter started')", "if a.stage in ('tdm','frontend'):raise AssertionError('Python migrated stage adapter started')")
-    text=text.replace("if a.stage=='split':", "if a.stage=='preflight':state.update(json.loads(pathlib.Path("+repr(str(fields))+").read_text()))\nif a.stage=='timing':\n assert state['frontend_report'][0]=='frontend-report'\n assert 'native_frontend_request' not in state\nif a.stage=='split':")
+    # This fixture qualifies the complete frontend boundary. Its later graph
+    # test doubles use a different tiny input, so stop before joining them.
+    marker='# FIXTURE_CONTROL_STATE_READY';assert marker in text
+    text=text.replace(marker, "if a.stage=='preflight':state.update(json.loads(pathlib.Path("+repr(str(fields))+").read_text()))\nif a.stage=='frontend':raise AssertionError('Python migrated frontend started')\nif a.stage=='timing':\n assert state['frontend_report'][0]=='frontend-report'\n assert 'native_frontend_request' not in state\n raise RuntimeError('FRONTEND_BOUNDARY_OBSERVED')\n"+marker)
     adapter.write_text(text)
     result=subprocess.run([native,'compile',str(compile_request)],capture_output=True,text=True,timeout=20)
-    assert result.returncode==0,result.stderr
+    assert result.returncode!=0 and 'FRONTEND_BOUNDARY_OBSERVED' in result.stderr,result.stderr
     report=json.loads((tmp_path/'out/native-compile-result.json').read_text())
     assert next(row for row in report['stages'] if row['stage']=='frontend')['implementation_id']=='native-rtl-frontend-v1'
+    assert [row['stage'] for row in report['stages']]==['preflight','frontend','timing']
     assert 'frontend' not in (tmp_path/'out/calls').read_text().splitlines()
     assert not config.exists()
     assert (root/'phase1_report.json').is_file()
@@ -188,7 +191,8 @@ def test_raw_rtl_control_rejects_a_missing_native_request_instead_of_starting_py
     fields=tmp_path/'raw-fields.json'
     fields.write_text(json.dumps({'sources':['tuple',[['path',str(tmp_path/'rtl.v')]]], 'yosys_json':None, 'prepared_frontend':None}))
     adapter=tmp_path/'source/emuflow/native_compile_adapter.py'
-    text=adapter.read_text().replace("if a.stage=='split':", "if a.stage=='preflight':state.update(json.loads(pathlib.Path("+repr(str(fields))+").read_text()))\nif a.stage=='frontend':raise AssertionError('Python fallback started')\nif a.stage=='split':")
+    text=adapter.read_text();marker='# FIXTURE_CONTROL_STATE_READY';assert marker in text
+    text=text.replace(marker, "if a.stage=='preflight':state.update(json.loads(pathlib.Path("+repr(str(fields))+").read_text()))\nif a.stage=='frontend':raise AssertionError('Python fallback started')\n"+marker)
     adapter.write_text(text)
     result=subprocess.run([native,'compile',str(compile_request)],capture_output=True,text=True,timeout=10)
     assert result.returncode!=0 and 'Python fallback is forbidden' in result.stderr

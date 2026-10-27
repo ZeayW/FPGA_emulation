@@ -56,18 +56,77 @@ def test_native_transport_joins_the_original_chimew_lane_owner(owners,tmp_path):
     from emuflow.pin_plan_storage import write_pin_plan_storage
     case,source,assignment,schedule=owners
     widths={link.id:link.transport_bits_per_cycle_per_direction for link in case.platform.links}
+    budgets={(r['link'],r['from'],r['to']):r for r in schedule.get('bank_allocations',[])}
+    def next_lane(entry):
+        budget=budgets.get((entry['link'],entry['from'],entry['to']))
+        if budget is None:return (entry['lane']+1)%widths[entry['link']]
+        return budget['lane_offset']+(entry['lane']-budget['lane_offset']+1)%budget['lanes']
     pin_plan=write_pin_plan_storage(tmp_path/'pin-plan.json',{
         'schema':'emuflow.placement-aware-pin-plan/v1',
         'provider':'chimew-paper-plus-emuflow-electrical-slot-v1',
         'design':case.ir.value['design'],'platform':case.platform.name,
         'entries':[{'schedule_entry':entry['id'],'group':index,
-                    'logical_lane':entry['lane'],'physical_lane':(entry['lane']+1)%widths[entry['link']]}
+                    'logical_lane':entry['lane'],'physical_lane':next_lane(entry)}
                    for index,entry in enumerate(schedule['entries'])],
     })
     kwargs={'design':case.ir.value['design'],'clocks':case.ir.value['clocks'],'pin_plan':pin_plan}
     expected=reference(tmp_path/'reference',assignment,schedule,case.platform,**kwargs)
     actual=write_transport_storage(tmp_path/'native',assignment,schedule,case.platform,emit_rtl=True,**kwargs)
     compare(expected,actual,case.platform,tmp_path)
+
+
+@pytest.mark.parametrize('boundary',['producer','independent-audit'])
+def test_transport_preserves_phase5_direction_banks_after_pin_remapping(owners,tmp_path,boundary):
+    from emuflow.errors import ValidationError
+    from emuflow.native_tools import native_file_generation
+    from emuflow.pin_plan_storage import write_pin_plan_storage
+    from emuflow.pin_planning import validate_bank_pin_assignment
+
+    case,source,assignment,schedule=owners
+    if not any(link.bank_count is not None for link in case.platform.links):
+        pytest.skip('requires a banked link')
+    entries=list(schedule['entries'])
+    budgets={(r['link'],r['from'],r['to']):r for r in schedule['bank_allocations']}
+    selected=entries[0];budget=budgets[selected['link'],selected['from'],selected['to']]
+    link=next(link for link in case.platform.links if link.id==selected['link'])
+    outside=(budget['lane_offset']+budget['lanes'])%link.transport_bits_per_cycle_per_direction
+    assert not budget['lane_offset']<=outside<budget['lane_offset']+budget['lanes']
+    remap={entry['id']:entry['lane'] for entry in entries}
+    remap[selected['id']]=outside
+    with pytest.raises(ValidationError,match='allocated direction banks'):
+        validate_bank_pin_assignment(schedule,case.platform,remap)
+    plan=write_pin_plan_storage(tmp_path/'pin-plan.json',{
+        'schema':'emuflow.placement-aware-pin-plan/v1',
+        'provider':'chimew-paper-plus-emuflow-electrical-slot-v1',
+        'design':case.ir.value['design'],'platform':case.platform.name,
+        'entries':[{'schedule_entry':entry['id'],'group':index,
+                    'logical_lane':entry['lane'],
+                    'physical_lane':remap[entry['id']] if boundary=='producer' else entry['lane']}
+                   for index,entry in enumerate(entries)],
+    })
+    output=tmp_path/'native'
+    kwargs={'design':case.ir.value['design'],'clocks':case.ir.value['clocks'],'pin_plan':plan}
+    if boundary=='producer':
+        with pytest.raises(ValidationError,match='allocated direction banks'):
+            write_transport_storage(output,assignment,schedule,case.platform,**kwargs)
+        assert not (output/'transport.sqlite').exists()
+    else:
+        write_transport_storage(output,assignment,schedule,case.platform,**kwargs)
+        # Matching two corrupted representations must not bypass the direction
+        # policy retained in the original schedule owner.
+        with closing(sqlite3.connect(plan.store_path)) as db,db:
+            db.execute('UPDATE entries SET physical_lane=? WHERE schedule_entry=?',
+                       (outside,selected['id']))
+        changed=tmp_path/'changed-banks.sqlite'
+        shutil.copyfile(output/'transport.sqlite',changed)
+        with closing(sqlite3.connect(changed)) as db,db:
+            db.execute('UPDATE hops SET lane=? WHERE entry_id=?',(outside,selected['id']))
+            configuration=json.loads(db.execute("SELECT value FROM metadata WHERE key='configuration'").fetchone()[0])
+            configuration['sources'][2]['generation']=list(native_file_generation(plan.store_path))
+            db.execute("UPDATE metadata SET value=? WHERE key='configuration'",(json.dumps(configuration),))
+        result=subprocess.run([str(emuflow_native()),'phase6','audit-transport',str(changed),str(tmp_path/'rejected-banks.json')],capture_output=True,text=True)
+        assert result.returncode!=0 and 'allocated direction banks' in result.stderr+result.stdout
+        assert not (tmp_path/'rejected-banks.json').exists()
 
 
 from tests.test_phase6_virtual_board import inputs as board_inputs
