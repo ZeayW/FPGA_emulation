@@ -261,15 +261,64 @@ def prepare_timing(session):
     return {"status": "pass", "query_classes": len(resolutions)}
 
 
+def prepare_diagnostic_timing(session):
+    """Save measurable routed queries without certifying missing endpoints.
+
+    A failed source check must not prevent observing the implemented design.
+    These exports have their own directory and retain every unresolved request;
+    they cannot replace the complete, qualified physical result.
+    """
+    mapped, functions, out = _paths(session)
+    diagnostic = out/"timing-diagnostic"
+    diagnostic.mkdir()
+    lineage = diagnostic/"cell-lineage.sqlite"
+    coverage = import_cell_lineage(mapped, functions, {"routed": out/"routed_mapped_cells.tsv"},
+        lineage, mapped_sha256=session["mapped_index_sha256"], retain_stage="routed")
+    resolutions = {}
+    with (diagnostic/"timing-exports.tsv").open("w") as plan:
+        exports = csv.writer(plan, delimiter="\t", lineterminator="\n")
+        exports.writerow(["kind", "query_hex", "output_hex"])
+        for kind, source in session["queries"].items():
+            raw = diagnostic/(kind+"-all.tsv")
+            result = resolve_timing_query(mapped, functions, lineage, Path(source), raw,
+                boundary=kind == "boundary_timing", stage="routed",
+                diagnostic_unresolved_path=diagnostic/(kind+"-unassociated.sqlite"))
+            query = diagnostic/(kind+"-resolved.tsv")
+            unresolved = diagnostic/(kind+"-unresolved.tsv")
+            counts = [0, 0]
+            with raw.open(newline="") as incoming, query.open("w", newline="") as ready, unresolved.open("w", newline="") as missing:
+                reader = csv.reader(incoming, delimiter="\t")
+                writers = [csv.writer(stream, delimiter="\t", lineterminator="\n") for stream in (ready, missing)]
+                header = next(reader)
+                for writer in writers:
+                    writer.writerow(header)
+                hints = 1 if kind == "boundary_timing" else 3
+                for row in reader:
+                    index = int("unresolved-source" in row[-hints:])
+                    writers[index].writerow(row)
+                    counts[index] += 1
+            if sum(counts) != result["queries"] or counts[1] != result["unresolved_query_rows"]:
+                raise ValidationError("diagnostic timing query coverage differs")
+            raw.unlink()
+            result.update(output=str(query), measurable_queries=counts[0], unresolved_queries=str(unresolved))
+            resolutions[kind] = result
+            exports.writerow([kind, str(query).encode().hex(), str(diagnostic/(kind+".tsv")).encode().hex()])
+    result = {"status": "diagnostic", "qualified_physical_result": False,
+        "coverage": coverage, "resolutions": resolutions}
+    write_json(diagnostic/"preparation.json", result, compact=True)
+    # Keep the original tool inventories and checkpoints for complete recovery.
+    return {"status": "diagnostic", "query_classes": len(resolutions)}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("stage", choices=("prepare-frontiers", "confirm-frontiers", "prepare-timing"))
+    parser.add_argument("stage", choices=("prepare-frontiers", "confirm-frontiers", "prepare-timing", "prepare-timing-diagnostic"))
     parser.add_argument("manifest", type=Path)
     args = parser.parse_args()
     started = time.monotonic()
     session = load_session(args.manifest)
     result = {"prepare-frontiers": prepare_frontiers, "confirm-frontiers": confirm_frontiers,
-              "prepare-timing": prepare_timing}[args.stage](session)
+              "prepare-timing": prepare_timing, "prepare-timing-diagnostic": prepare_diagnostic_timing}[args.stage](session)
     print(json.dumps({"stage": args.stage, **result, "runtime_seconds": time.monotonic()-started}), flush=True)
 
 

@@ -58,14 +58,20 @@ proc emuflow_session_require_proof {failure} {
     error "source proof failed; routed snapshots are diagnostic only: [lindex $failure 1]"
   }
 }
-proc emuflow_session_timings {directory prefix fixed_io_map} {
+proc emuflow_session_timings {directory prefix fixed_io_map {diagnostic false}} {
   global emuflow_session_out emuflow_timing_query_mode
   if {$emuflow_timing_query_mode ni {datapath-only clock-aware-reference}} {
     error "unsupported native timing query mode"
   }
-  emuflow_session_child prepare-timing
+  set plan_directory $emuflow_session_out
+  if {$diagnostic} {
+    emuflow_session_child prepare-timing-diagnostic
+    set plan_directory "$emuflow_session_out/timing-diagnostic"
+  } else {
+    emuflow_session_child prepare-timing
+  }
   set ::emuflow_native_export_stage routed
-  set stream [open "$emuflow_session_out/timing-exports.tsv" r]
+  set stream [open "$plan_directory/timing-exports.tsv" r]
   if {[gets $stream header] < 0 || $header ne "kind\tquery_hex\toutput_hex"} {error "invalid native timing export plan"}
   set seen [dict create]
   while {[gets $stream row] >= 0} {
@@ -83,7 +89,7 @@ proc emuflow_session_timings {directory prefix fixed_io_map} {
     if {$fixed_io_map ne "" || $emuflow_timing_query_mode eq "clock-aware-reference"} {lappend arguments $fixed_io_map}
     if {$emuflow_timing_query_mode eq "clock-aware-reference"} {lappend arguments $emuflow_timing_query_mode}
     emuflow_session_source "$directory/$script" $arguments
-    file delete $query
+    if {!$diagnostic} {file delete $query}
   }
   close $stream
   unset ::emuflow_native_export_stage

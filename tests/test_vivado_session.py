@@ -10,7 +10,7 @@ import pytest
 from emuflow.errors import ValidationError
 from emuflow.io import file_sha256, read_json, write_json
 from emuflow.vivado_session import (
-    SCHEMA, prepare_frontiers, confirm_frontiers, prepare_timing, prepare_manifest, _tcl_word,
+    SCHEMA, prepare_frontiers, confirm_frontiers, prepare_timing, prepare_diagnostic_timing, prepare_manifest, _tcl_word,
 )
 from emuflow.vivado_optimization import OptimizationProofView
 from emuflow.vivado_physical import validate_synthesized_continuation
@@ -179,6 +179,37 @@ def test_unrequired_conditional_states_remain_unproved(tmp_path):
     assert "optimized-away" not in (out/"local_path_timing-resolved.tsv").read_text()
 
 
+def test_diagnostic_queries_preserve_missing_endpoints_without_inventing_removal(tmp_path):
+    session, _, _ = session_fixture(tmp_path)
+    out = Path(session["output"])
+    source = Path(session["queries"]["local_path_timing"])
+    with source.open("a") as stream:
+        stream.write("\t".join([b"kept-path".hex(), "local", "pin", b"kept/Q".hex(),
+            "pin", b"front/I1".hex(), "", ""])+"\n")
+    parents = {path: file_sha256(path) for path in
+        (source, out/"mapped_cells.tsv", out/"routed_mapped_cells.tsv", out/"synthesized.dcp")}
+    assert prepare_diagnostic_timing(session)["status"] == "diagnostic"
+    diagnostic = out/"timing-diagnostic"
+    preparation = read_json(diagnostic/"preparation.json")
+    assert preparation["qualified_physical_result"] is False
+    counts = preparation["resolutions"]["local_path_timing"]
+    assert (counts["queries"], counts["measurable_queries"], counts["unresolved_query_rows"]) == (2, 1, 1)
+    assert Path(counts["output"]).is_file()
+    with (diagnostic/"local_path_timing-resolved.tsv").open() as stream:
+        rows = list(csv.DictReader(stream, delimiter="\t"))
+    assert len(rows) == 1 and bytes.fromhex(rows[0]["endpoint_hex"]).decode() == "kept-path"
+    missing = (diagnostic/"local_path_timing-unresolved.tsv").read_text()
+    assert "unresolved-source" in missing and "optimized-away" not in missing
+    with sqlite3.connect(diagnostic/"local_path_timing-unassociated.sqlite") as db:
+        assert db.execute("SELECT role FROM unresolved_sources").fetchall() == [("end",)]
+    assert not (out/"timing-exports.tsv").exists()
+    assert not (out/"optimization-proofs.sqlite").exists()
+    assert not (out/"routed-query-preparation.json").exists()
+    assert parents == {path: file_sha256(path) for path in parents}
+    with pytest.raises(FileExistsError):
+        prepare_diagnostic_timing(session)
+
+
 def test_unassociated_nonconstant_endpoint_fails_before_placement(tmp_path):
     session, _, _ = session_fixture(tmp_path)
     inventory = Path(session["output"])/"mapped_cells.tsv"
@@ -325,35 +356,39 @@ def test_native_word_session_selects_sampling_costs_and_rejects_downgrades(tmp_p
 @pytest.mark.skipif(TCL86 is None, reason="native timing bridge requires Tcl 8.6")
 @pytest.mark.parametrize("mode", ["datapath-only", "clock-aware-reference"])
 @pytest.mark.parametrize("fixed_map", ["", "fixed map.tsv"])
-def test_native_timing_bridge_forwards_measurement_policy_for_all_query_classes(tmp_path, mode, fixed_map):
+@pytest.mark.parametrize("diagnostic", [False, True])
+def test_native_timing_bridge_forwards_measurement_policy_for_all_query_classes(tmp_path, mode, fixed_map, diagnostic):
     kinds = ("boundary_timing", "logic_segment_timing", "local_path_timing")
+    output = tmp_path/"timing-diagnostic" if diagnostic else tmp_path
+    output.mkdir(exist_ok=True)
     plan = ["kind\tquery_hex\toutput_hex"]
     for kind in kinds:
-        query, output = tmp_path/f"{kind}.query.tsv", tmp_path/f"{kind}.result.tsv"
+        query, result = output/f"{kind}.query.tsv", output/f"{kind}.result.tsv"
         query.write_text("bounded resolved query")
-        plan.append("\t".join((kind, str(query).encode().hex(), str(output).encode().hex())))
-    (tmp_path/"timing-exports.tsv").write_text("\n".join(plan)+"\n")
+        plan.append("\t".join((kind, str(query).encode().hex(), str(result).encode().hex())))
+    (output/"timing-exports.tsv").write_text("\n".join(plan)+"\n")
     script = f"source {_tcl_word(ROOT/'scripts/vivado/native_session.tcl')}\n"
     script += f"set emuflow_session_out {_tcl_word(tmp_path)}\nset emuflow_timing_query_mode {_tcl_word(mode)}\n"
+    script += "set expected_stage "+("prepare-timing-diagnostic" if diagnostic else "prepare-timing")+"\n"
     script += r'''
 proc emuflow_session_child {stage} {
- if {$stage ne "prepare-timing"} {error "unexpected stage"}
+ if {$stage ne $::expected_stage} {error "unexpected stage"}
 }
 proc emuflow_session_source {script arguments} {
  if {$::emuflow_native_export_stage ne "routed"} {error "wrong native snapshot"}
  puts [join [linsert $arguments 0 [file tail $script]] "\t"]
 }
 '''
-    script += f"emuflow_session_timings scripts partition {_tcl_word(fixed_map)}\n"
+    script += f"emuflow_session_timings scripts partition {_tcl_word(fixed_map)} {str(diagnostic).lower()}\n"
     result = subprocess.run([TCL86], input=script, text=True, capture_output=True, check=True)
     assert not result.stderr
     observed = [row.split("\t") for row in result.stdout.splitlines()]
     suffix = [fixed_map, mode] if mode == "clock-aware-reference" else ([fixed_map] if fixed_map else [])
     for kind, row in zip(kinds, observed):
         exporter = "export_boundary_timing.tcl" if kind == "boundary_timing" else "export_logic_segment_timing.tcl"
-        assert row == [exporter, "@current-design", str(tmp_path/f"{kind}.query.tsv"),
-                       str(tmp_path/f"{kind}.result.tsv"), "partition", *suffix]
-        assert not (tmp_path/f"{kind}.query.tsv").exists()
+        assert row == [exporter, "@current-design", str(output/f"{kind}.query.tsv"),
+                       str(output/f"{kind}.result.tsv"), "partition", *suffix]
+        assert (output/f"{kind}.query.tsv").exists() is diagnostic
     assert len(observed) == len(kinds)
 
 
@@ -480,6 +515,8 @@ set env(PYTHONPATH) /invalid-vendor-package
         if proof_mode != "pass-diagnostic":
             assert "diagnostic only" in completed.stderr
             assert (out/"source-proof-failure.txt").is_file()
+            assert "EMUFLOW_TIMING_DIAGNOSTIC status=exported acceptance=pending" in completed.stdout
+            assert read_json(out/"timing-diagnostic/preparation.json")["qualified_physical_result"] is False
     elif proof_mode == "pass":
         assert trace[-4:] == ["opt", "place", "phys_opt", "route"]
     else:

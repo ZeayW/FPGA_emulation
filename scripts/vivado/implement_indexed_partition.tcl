@@ -160,6 +160,17 @@ if {[catch {
     puts $metrics "native_word_infrastructure_wns_ns\t[lindex $word_checks 1]"
   }
   close $metrics
+  if {[lindex $proof_failure 0] eq "failed" && $emuflow_route_after_proof_failure} {
+    if {[catch {emuflow_session_timings $emuflow_script_directory $prefix $emuflow_io_timing_map true} diagnostic_message diagnostic_options]} {
+      unset -nocomplain ::emuflow_native_export_stage
+      set stream [open "$out/timing-diagnostic-failure.txt" w]
+      puts $stream [dict get $diagnostic_options -errorinfo]
+      close $stream
+      puts "EMUFLOW_TIMING_DIAGNOSTIC status=failed acceptance=pending"
+    } else {
+      puts "EMUFLOW_TIMING_DIAGNOSTIC status=exported acceptance=pending"
+    }
+  }
   emuflow_session_require_proof $proof_failure
   emuflow_session_timings $emuflow_script_directory $prefix $emuflow_io_timing_map
   puts "EMUFLOW_INDEXED_VIVADO status=pass part=$part fixed_pairs=$pairs"
