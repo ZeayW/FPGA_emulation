@@ -404,57 +404,6 @@ class Phase3Test(unittest.TestCase):
             ir_path = root / "design.emuir.sqlite"
             output = root / "phase3"
             write_compact_emuir(ir_path, self.ir.to_dict())
-            observed_streams = []
-
-            from emuflow.phase3_publication_native import publish as publish_native
-
-            def publish_index(path, ir, clusters, assignment, report):
-                contract = assignment["semantic_contract"]
-                materialized_assignment = dict(
-                    assignment["instance_assignment"]
-                )
-                expected_assignment_digest = hashlib.sha256(
-                    (
-                        json.dumps(
-                            {"instance_assignment": materialized_assignment},
-                            indent=2,
-                            sort_keys=True,
-                        )
-                        + "\n"
-                    ).encode("utf-8")
-                ).hexdigest()
-                observed_streams.append(
-                    (
-                        isinstance(
-                            contract["dependency_edges"],
-                            StaticExactRecordSequence,
-                        ),
-                        isinstance(
-                            contract["logic_segments"],
-                            StaticExactRecordSequence,
-                        ),
-                        isinstance(
-                            contract["capture_requirements"],
-                            StaticExactRecordSequence,
-                        ),
-                        not isinstance(
-                            assignment["instance_assignment"], dict
-                        ),
-                        isinstance(assignment["cut_nets"], list),
-                        list.__len__(assignment["cut_nets"]) == 0,
-                        assignment["cut_nets"].packed_payload_bytes > 0,
-                        assignment["cut_nets"][0]
-                        in assignment["cut_nets"],
-                        list(reversed(assignment["cut_nets"]))
-                        == list(assignment["cut_nets"])[::-1],
-                        contract["source_identity"][
-                            "instance_assignment_sha256"
-                        ]
-                        == expected_assignment_digest,
-                    )
-                )
-                return publish_native(path, ir, clusters, assignment, report)
-
             with patch(
                 "emuflow.partition_ir.EmuIR.load",
                 side_effect=AssertionError(
@@ -462,7 +411,7 @@ class Phase3Test(unittest.TestCase):
                 ),
             ), patch(
                 "emuflow.phase3_publication_native.publish",
-                side_effect=publish_index,
+                side_effect=AssertionError("Python final publication entered"),
             ):
                 run_phase3_fixture(
                     ir_path,
@@ -472,24 +421,10 @@ class Phase3Test(unittest.TestCase):
                     seed=7,
                     cut_mode="static-exact-combinational",
                 )
-            self.assertEqual(
-                observed_streams,
-                [
-                    (
-                        True,
-                        True,
-                        True,
-                        True,
-                        True,
-                        True,
-                        True,
-                        True,
-                        True,
-                        True,
-                    )
-                ],
-            )
             assignment = read_json(output / "assignment.json")
+            expected_assignment_digest = hashlib.sha256((json.dumps({'instance_assignment': dict(assignment['instance_assignment'])}, indent=2, sort_keys=True)+'\n').encode()).hexdigest()
+            self.assertEqual(assignment['semantic_contract']['source_identity']['instance_assignment_sha256'], expected_assignment_digest)
+            self.assertEqual(read_json(output/'phase3_report.json')['stage_implementation_id'], 'native-phase3-v1')
             packed_assignment = json.loads(
                 (output / "assignment.json").read_text(encoding="utf-8")
             )

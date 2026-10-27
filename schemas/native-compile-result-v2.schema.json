@@ -3,33 +3,124 @@
   "title": "EmuFlow one-shot native compile result v2",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "implementation_id", "phase_implementation", "native_data_plane_complete", "operation", "output_directory", "request_configuration", "effective_configuration", "stages"],
+  "required": [
+    "schema",
+    "implementation_id",
+    "phase_implementation",
+    "native_data_plane_complete",
+    "operation",
+    "output_directory",
+    "request_configuration",
+    "effective_configuration",
+    "stages"
+  ],
   "properties": {
-    "schema": {"const": "emuflow.native-compile-result/v2"},
-    "implementation_id": {"const": "native-orchestration-v1"},
-    "phase_implementation": {"const": "native-rtl-frontend-phase5-and-isolated-python-adapters-v1"},
-    "native_data_plane_complete": {"const": false},
-    "operation": {"$ref": "native-stage-result-v1.schema.json"},
-    "output_directory": {"type": "string"},
-    "request_configuration": {"oneOf": [{"$ref": "native-compile-request-v1.schema.json"}, {"type": "null"}]},
-    "effective_configuration": {"type": ["object", "null"]},
+    "schema": {
+      "const": "emuflow.native-compile-result/v2"
+    },
+    "implementation_id": {
+      "const": "native-orchestration-v1"
+    },
+    "phase_implementation": {
+      "enum": [
+        "native-rtl-frontend-phase5-and-isolated-python-adapters-v1",
+        "native-rtl-frontend-phase3-phase5-and-isolated-python-adapters-v1"
+      ]
+    },
+    "native_data_plane_complete": {
+      "const": false
+    },
+    "operation": {
+      "$ref": "native-stage-result-v1.schema.json"
+    },
+    "output_directory": {
+      "type": "string"
+    },
+    "request_configuration": {
+      "oneOf": [
+        {
+          "$ref": "native-compile-request-v1.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "effective_configuration": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
     "stages": {
       "type": "array",
       "maxItems": 11,
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["stage", "status", "wall_seconds", "user_cpu_seconds", "system_cpu_seconds", "maximum_process_rss_kib", "cpu_scope", "rss_scope", "implementation_id"],
+        "required": [
+          "stage",
+          "status",
+          "wall_seconds",
+          "user_cpu_seconds",
+          "system_cpu_seconds",
+          "maximum_process_rss_kib",
+          "cpu_scope",
+          "rss_scope",
+          "implementation_id"
+        ],
         "properties": {
-          "stage": {"enum": ["preflight", "frontend", "timing", "partition", "route-policy", "route", "tdm", "split", "physical", "signoff", "finalize"]},
-          "implementation_id": {"enum": ["isolated-python-adapter-v1", "native-exact-phase5-v1", "native-rtl-frontend-v1"]},
-          "status": {"enum": ["pass", "fail"]},
-          "wall_seconds": {"type": "number", "minimum": 0},
-          "user_cpu_seconds": {"type": "number", "minimum": 0},
-          "system_cpu_seconds": {"type": "number", "minimum": 0},
-          "maximum_process_rss_kib": {"type": "integer", "minimum": 0},
-          "cpu_scope": {"const": "wait4-child-and-reaped-descendants"},
-          "rss_scope": {"const": "wait4-maximum-process-high-water"}
+          "stage": {
+            "enum": [
+              "preflight",
+              "frontend",
+              "timing",
+              "partition",
+              "route-policy",
+              "route",
+              "tdm",
+              "split",
+              "physical",
+              "signoff",
+              "finalize"
+            ]
+          },
+          "implementation_id": {
+            "enum": [
+              "isolated-python-adapter-v1",
+              "native-exact-phase5-v1",
+              "native-rtl-frontend-v1",
+              "native-phase3-v1"
+            ]
+          },
+          "status": {
+            "enum": [
+              "pass",
+              "fail"
+            ]
+          },
+          "wall_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "user_cpu_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "system_cpu_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "maximum_process_rss_kib": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cpu_scope": {
+            "const": "wait4-child-and-reaped-descendants"
+          },
+          "rss_scope": {
+            "const": "wait4-maximum-process-high-water"
+          }
         }
       }
     }

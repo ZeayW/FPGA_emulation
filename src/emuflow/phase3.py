@@ -337,7 +337,7 @@ def _single_active_hop_audit_report(
 
 
 @measure_phase3_runtime
-def run_phase3(
+def _run_phase3_reference(
     ir_path: Path,
     platform_path: Path,
     output_dir: Path,
@@ -1503,3 +1503,51 @@ def validate_phase3_indexed(
             "Phase 3 sequential assignment claims exact validation status"
         )
     return validation
+
+
+# Explicit diagnostic/frozen owners retain the reference coordinator until the
+# current real-design qualification retires those consumers. Native production
+# never retries it after a native failure.
+from functools import wraps as _wraps
+import inspect as _inspect
+
+
+@measure_phase3_runtime
+@_wraps(_run_phase3_reference)
+def run_phase3(*args, **kwargs):
+    bound = _inspect.signature(_run_phase3_reference).bind(*args, **kwargs)
+    bound.apply_defaults()
+    values = bound.arguments
+    for name in ('retain_diagnostics', 'retain_patron_baseline'):
+        if type(values[name]) is not bool:
+            raise ValidationError('Phase 3 '+name+' flag is invalid')
+    if type(values['seed']) is not int or values['seed'] < 0:
+        raise ValidationError('partition seed: expected a non-negative integer')
+    if values['patron_algorithm_version'] != 14 or type(values['patron_algorithm_version']) is not int:
+        raise ValidationError('PATRON algorithm version is invalid')
+    from .emuir_compact import is_compact_emuir
+    from .emuir_storage import is_emuir_sqlite
+    from .native_tools import resolve_native_executable
+    selected_tool = Path(resolve_native_executable('emuflow-native')).resolve()
+    native = (values['cut_mode'] == CUT_MODE_STATIC_EXACT
+        and not values['retain_diagnostics'] and not values['retain_patron_baseline']
+        and values['patron_initial_assignment_path'] is None and values['patron_initial_clusters_path'] is None
+        and not os.environ.get('EMUFLOW_PATRON_INPUT_COPY')
+        and all(value is None or Path(value).expanduser().resolve() == selected_tool
+                for value in (values['patron_refiner'], values['hop_refiner']))
+        and is_emuir_sqlite(Path(values['ir_path'])) and is_compact_emuir(Path(values['ir_path'])))
+    if not native:
+        return _run_phase3_reference.__wrapped__(*args, **kwargs)
+    from .phase3_native import run
+    options = {name: value for name, value in values.items() if name not in {
+        'ir_path', 'platform_path', 'output_dir', 'cut_mode', 'patron_algorithm_version',
+        'retain_diagnostics', 'retain_patron_baseline', 'patron_initial_assignment_path',
+        'patron_initial_clusters_path', 'patron_refiner', 'hop_refiner'}}
+    report = phase3_runtime_call('native.run', run, values['output_dir'], values['ir_path'], values['platform_path'], **options)
+    phase3_runtime_observe(static_exact_native=1, native_phase3_stage=1,
+        instances=report['validation']['instances'], clusters=report['validation']['clusters'],
+        cut_nets=report['validation']['cut_nets'])
+    return report
+
+
+run_phase3.__name__ = 'run_phase3'

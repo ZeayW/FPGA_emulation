@@ -161,6 +161,7 @@ _STAGE_SUMMARY_FIELDS = {
         "static_exact_candidate_policy",
         "semantic_implementation_id",
         "finalization_implementation_id",
+        "stage_implementation_id",
         "configuration_implementation_id",
         "configuration_pattern_policy",
         "assignment_descriptor_writer_implementation_id",
@@ -1409,6 +1410,7 @@ def _compile_preflight(ctx: _CompileContext):
     require_native_schema("partition-decision-request-v1")
     require_native_schema("partition-configuration-request-v1")
     require_native_schema("partition-hop-request-v1")
+    require_native_schema("phase3-stage-request-v1")
     require_native_schema("partition-load-request-v2")
     require_native_schema("partition-finalization-request-v1")
     require_native_schema("assignment-publication-request-v3")
@@ -1717,6 +1719,29 @@ def _compile_timing(ctx: _CompileContext):
                 "partition_weight_consumers": consumers,
             }
         )
+
+    if ctx._native_mode:
+        from .phase3_native import write_request
+        from .native_tools import native_file_generation
+        ctx.phase3_root = ctx.output_dir / "partition"
+        configuration_root = ctx.output_dir / ".native-phase3-request"
+        ctx.native_phase3_request = write_request(configuration_root, ctx.ir_path, ctx.platform_path,
+            constraints_path=ctx.partition_constraints, seed=ctx.seed,
+            min_used_fpgas=ctx.min_used_fpgas, balance_tolerance=ctx.balance_tolerance,
+            provider=ctx.partition_provider, openroad=ctx.openroad,
+            tritonpart_solution=ctx.tritonpart_solution,
+            net_weights_path=ctx.net_weights_path if ctx.timing_driven else None,
+            tritonpart_timeout_seconds=ctx.partition_timeout_seconds,
+            tritonpart_seed_attempts=ctx.partition_seed_attempts,
+            tritonpart_num_initial_solutions=ctx.partition_num_initial_solutions,
+            tritonpart_num_best_initial_solutions=ctx.partition_num_best_initial_solutions,
+            tritonpart_repair_min_used_fpgas=ctx.partition_repair_min_used_fpgas,
+            route_constraints_path=ctx.effective_route_constraints,
+            max_cross_fpga_dependency_depth=ctx.max_cross_fpga_dependency_depth,
+            static_exact_candidate_policy=ctx.static_exact_candidate_policy,
+            timing_database_path=ctx.path_database_path if ctx.partition_provider == "patron" else None,
+            patron_max_moves=ctx.patron_max_moves)
+        ctx.native_phase3_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase3_request))
 
 def _compile_partition(ctx: _CompileContext):
     ctx.phase3_root = ctx.output_dir / "partition"

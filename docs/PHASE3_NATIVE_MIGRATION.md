@@ -10,7 +10,7 @@ A native command that only invokes the Python compiler is not this target.
 
 The current native executable links real Phase 3, 4, 5 and 6 kernels through a
 shared typed operation API, including PATRON search. An opt-in native controller
-now owns the ordinary one-shot phase sequence with native RTL frontend/TDM execution and
+now owns the ordinary one-shot phase sequence with native RTL frontend, Phase 3 and TDM execution and
 isolated shared Python adapters for remaining phases. Advanced orchestration and
 remaining native data-plane ownership are unfinished. W0 supplies the shared
 infrastructure contract; complete-stage ownership and native compilation are W7
@@ -41,7 +41,7 @@ The initial topology hop legalizer also links into this core and uses the
 shared stage/error/metrics/source-binding and atomic output contracts. Its old
 standalone build, deployment and test entry are retired. The existing algorithm
 and independent final hop audit remain; summary output retains counters without
-a Python move trace. Current primary ownership also supports the direct source-to-kernel hop model described below; complete stage ownership remains W7 work.
+a Python move trace. Current primary ownership also supports the direct source-to-kernel hop model described below. The complete maintained Phase 3 stage is owned by the shared core; whole-flow ownership and real-design qualification remain W7 work.
 
 The [W0 contract](FLOW_PLAN.md#shared-native-core-w0) specifies shared interfaces,
 compatibility and acceptance separately from the later phase algorithm migrations.
@@ -479,7 +479,8 @@ preflight → frontend → timing → partition → route-policy → route → T
 physical → signoff → finalize sequence. The opt-in CLI bridge is
 `multi-fpga compile --compile-implementation native-control-v1`. The native owner
 does not call the Python compiler. TDM consumes the current route selector, assignment index and normalized BoardDB
-directly in C++; it has no Python phase adapter. The ordinary RTL frontend also
+directly in C++; it has no Python phase adapter. Partitioning uses `phase3 run`
+directly, with no Python partition phase adapter. The ordinary RTL frontend also
 executes directly in C++, using a checked configuration prepared by preflight.
 Each remaining transitional
 Python adapter invokes one shared phase body and exits, releasing its working population before the next
@@ -562,7 +563,7 @@ there is no silent implementation or provider fallback.
 | Stage | Existing native/indexed foundation | Remaining delivery obligation |
 | --- | --- | --- |
 | Phase 1–2 | Complete native ordinary RTL frontend under native control, including engine/import/clock/resource/report publication; native OpenSTA input export, indexed path-result import, timing-weight generation and independent validators | Migrate supplied/prepared/other indexed-source adapters and complete timing-stage lifecycle; qualify the whole current-design frontend |
-| Phase 3 | Native source-backed constraint normalization, candidate eligibility/primary clustering, complete TritonPart initialization/native v14 search; original-owner decision and independent audit; selected semantics and final-directory publication | Complete option assembly and stage lifecycle/controller integration; qualify complete stage costs |
+| Phase 3 | Complete shared-core stage owns source-backed configuration, candidate/primary clustering, TritonPart initialization, v14 search, independent decision/hop audits, selected semantics and final-directory publication; native compiler executes it directly | Qualify whole-stage NVDLA equivalence and wall/process-tree RSS/I/O; retire replaced reference production scopes after acceptance |
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
 | Phase 6 | Indexed split/transport/binding owner; streamed RTL/XDC | Complete native producers and adapter queries while preserving electrical contracts |
@@ -572,6 +573,34 @@ there is no silent implementation or provider fallback.
 Native computation does not eliminate algorithmic search cost. Compare search,
 imported-solution and frozen-output replay as separate execution modes. Porting
 an adapter must not change the algorithm budget or weaken independent legality.
+
+## Complete native partition stage
+
+`phase3 run REQUEST OUTPUT_DIR` executes the maintained generalized Static Exact
+partition stage through `core::RunPhase3`. Its bounded
+`emuflow.phase3-stage/v1` request contains original source/generation references
+and board-sized policy. Configuration normalization, candidate eligibility,
+primary clusters, TritonPart initialization, optional initial hop repair, PATRON
+v14 search, independent candidate selection and final hop audit, semantic
+records, assignment/catalog/report construction and final directory publication
+all execute in C++. Search budgets, seeds, capacities and provider identities
+remain the existing algorithm contract. The supervised native PATRON child and
+OpenROAD process preserve deadlines, cancellation and reaping.
+
+The ordinary compact-input Python API prepares the request and checks the
+returned bounded report and original output generations. A native failure does
+not retry the Python coordinator. Explicit diagnostic/reference inputs retain
+their separate path pending replacement qualification. The native compiler
+executes this stage directly, passes only a generation-bound partition report
+reference to routing, and retires the private configuration after consumption.
+Stage failure preserves an existing complete output directory and removes private
+unpublished workspace. Nested native runtime breakdown remains separate from
+the enclosing compiler's process wall/CPU/high-water RSS scope.
+
+This closes the maintained stage execution boundary, not complete NVDLA
+qualification or W7. Full source/record equivalence and whole-stage sampled tree
+RSS, runtime and disk evidence remain required before performance claims and
+retirement of replaced reference scopes.
 
 ## Source-owned hard-hop generation and audit
 

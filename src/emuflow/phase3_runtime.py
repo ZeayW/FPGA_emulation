@@ -203,6 +203,8 @@ def measure_phase3_runtime(
                 "retain_diagnostics": arguments.arguments["retain_diagnostics"],
             },
         )
+        prior_output_exists = profiler.output_dir.exists()
+        result = None
         token = _ACTIVE_PROFILER.set(profiler)
         profiler.start()
         status = "failed"
@@ -213,11 +215,14 @@ def measure_phase3_runtime(
         finally:
             runtime = profiler.finish(status)
             try:
-                write_json(
-                    profiler.output_dir / "phase3-runtime.json",
-                    runtime,
-                    compact=True,
-                )
+                if status == 'pass' and isinstance(result, dict) and result.get('stage_implementation_id') == 'native-phase3-v1':
+                    import json
+                    path = profiler.output_dir/'phase3-runtime.json'
+                    if path.stat().st_size > 8*1024*1024:
+                        raise ValueError('native Phase 3 runtime exceeds bound')
+                    runtime['native_stage'] = json.loads(path.read_text())
+                if status == 'pass' or not prior_output_exists:
+                    write_json(profiler.output_dir/'phase3-runtime.json', runtime, compact=True)
             except Exception:
                 # Preserve the original Phase 3 failure if measurement
                 # publication also encounters a broken output directory.

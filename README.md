@@ -276,9 +276,10 @@ indexed TimingPathDB. The shared core owns result import, timing-weight generati
 and their independent validators; hosts carry file references and bounded
 summaries. See the [migration contract](docs/PHASE3_NATIVE_MIGRATION.md).
 An opt-in `multi-fpga compile --compile-implementation native-control-v1` uses
-the C++ one-shot `emuflow-native compile` controller. Ordinary RTL frontend and
-TDM execute directly in isolated native processes. Preflight carries only bounded
-frontend configuration; the frontend returns a sealed summary reference. Other
+the C++ one-shot `emuflow-native compile` controller. Ordinary RTL frontend,
+Phase 3 partitioning and TDM execute directly in isolated native processes. Hosts
+prepare bounded configuration and original artifact references; native stages
+return sealed summary references. Other
 stages and supplied/prepared frontend modes retain shared Python adapters. Baseline and retained Chimew comparison are supported with
 either Xilinx physical backend; fixed wiring and full physical/global timing
 checks remain required. The default remains `python-control-v1`; provider and

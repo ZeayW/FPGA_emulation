@@ -281,8 +281,9 @@ source endpoint/resource audit does not trust projected nets or kernel counters.
 `phase3 audit-hops-from-primary` checks selected ownership without building a
 second search model or executing another optimizer. The numeric `refine-hops`
 protocol remains an explicit reference/diagnostic input, not a production model
-exchange for current native owners. Complete Phase 3 stage/controller ownership
-is still a separate W7 delivery obligation.
+exchange for current native owners. The complete Phase 3 stage/controller now
+uses those owners directly; current-design equivalence and performance
+qualification remain required W7 evidence.
 
 `EmuirView` reads indexed v1 and compact v2 directly. Explicit v1 reads derive
 counts because that historical format has no count manifest; compact production

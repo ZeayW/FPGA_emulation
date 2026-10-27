@@ -680,3 +680,20 @@ fixed infeasibility, zero-move ownership reuse, deterministic replay and corrupt
 ownership/weight rejection. Production Phase 3 tests also exercise the direct
 initializer → hop owner → PATRON → selected source audit → final transaction.
 These are component gates; complete NVDLA acceptance remains separate.
+
+### Complete native Phase 3 validation
+
+The complete stage must compare final assignment, cut/semantic identities,
+cluster records, resources and independent legality against the separate
+reference coordinator with identical inputs and effective policy. Preserve the
+initializer provider when it wins candidate selection, including a zero-move
+search budget, and preserve the PATRON initialization identity when its candidate
+wins. Exercise direct initializer selection as well as default search effort.
+Wrong versions, changed original generations, board-capacity disagreement,
+changed timing payload seals, malformed imported solutions and an occupied
+output destination must reject without publishing a new stage. Engine failure
+and search deadlines must stop the stage, reap supervised children and remove
+private workspace. Native compiler tests must execute the real partition stage
+and reject a Python partition adapter rather than simulate that boundary.
+These are component and control gates; only real complete NVDLA runs establish
+whole-design Phase 7/7C correctness and runtime/RSS/disk acceptance.

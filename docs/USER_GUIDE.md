@@ -101,7 +101,8 @@ cache is not a phase publication.
 `multi-fpga-flow-report.json` remains the usual flow result. The separate
 [native-compile-result.json](../schemas/native-compile-result-v2.schema.json)
 uses result v2 and records each stage implementation explicitly. TDM uses
-`native-exact-phase5-v1`; the ordinary RTL frontend uses `native-rtl-frontend-v1`.
+`native-exact-phase5-v1`; partitioning uses `native-phase3-v1`; the ordinary RTL
+frontend uses `native-rtl-frontend-v1`.
 Supplied JSON/prepared frontend modes and remaining phases use
 `isolated-python-adapter-v1`. Native RTL preparation retains the current mapping
 script and defaults. The stage requires successful Yosys exit and resource/clock

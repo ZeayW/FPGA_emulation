@@ -295,7 +295,7 @@ def test_real_chimew_kernels_survive_split_physical_signoff_control_boundaries(
 def test_native_cpp_controller_carries_real_device_state_across_processes(
     case, tmp_path, tamper
 ):
-    """The C++ owner and real state codec run; phase bodies are process doubles."""
+    """The C++ owner, Phase 3/5 and real codec run; other phase bodies are doubles."""
     import subprocess
     from tests.native_build import emuflow_native
     from tests.test_native_compile import fixture_request
@@ -327,8 +327,7 @@ if a.stage=='preflight':
  state=codec._unpack(value['state'])
  state.update(output_dir=out,phase6_provider='chimew',chimew_package_geometry=XilinxPackageGeometry.open(pathlib.Path(ARCHITECTURE),PART))
 else:
- old=json.loads(pathlib.Path(a.previous).read_text())
- state=codec._restore_control_state(codec._unpack(old['state']))
+ state=codec._restore_control_state(codec._unpack(value['state']))
 assert state['phase6_provider']=='chimew'
 assert state['chimew_package_geometry'].pins
 if a.stage=='split':
@@ -358,12 +357,15 @@ value['state']=codec._pack(codec._control_snapshot(_CompileContext(state,native_
     calls = (root / "out/calls").read_text().splitlines()
     if tamper:
         assert result.returncode != 0
-        assert calls == [stage for stage in STAGES[: STAGES.index(tamper) + 1] if stage != "tdm"]
+        assert calls == [stage for stage in STAGES[: STAGES.index(tamper) + 1] if stage not in {"tdm", "partition"}]
         assert "geometry generation changed" in result.stderr
         assert not (root / "out/multi-fpga-flow-report.json").exists()
     else:
         assert result.returncode == 0, result.stderr
-        assert calls == [stage for stage in STAGES if stage != "tdm"]
+        assert calls == [stage for stage in STAGES if stage not in {"tdm", "partition"}]
         report = json.loads((root / "out/native-compile-result.json").read_text())
         assert report["effective_configuration"]["phase6_provider"] == "chimew"
         assert report["native_data_plane_complete"] is False
+        partition = next(step for step in report["stages"] if step["stage"] == "partition")
+        assert partition["implementation_id"] == "native-phase3-v1"
+        assert (root / "out/native-partition-reference.json").is_file()

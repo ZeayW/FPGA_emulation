@@ -48,6 +48,10 @@ class ControlJson {
     Require(value.find('\0') == std::string::npos,"NUL in native compiler field");
     return value;
   }
+  std::uint64_t Unsigned(const std::string& path) {
+    auto row=db_.Prepare("SELECT json_type(?1,?2),json_extract(?1,?2)");row.BindText(1,data_);row.BindText(2,path);
+    Require(row.Step() && row.Text(0)=="integer" && row.TypedInteger(1)>=0,"native compiler requires nonnegative count "+path);return row.Integer(1);
+  }
   bool Has(const std::string& path) {
     auto row=db_.Prepare("SELECT json_type(?1,?2)");row.BindText(1,data_);row.BindText(2,path);
     return row.Step() && !row.IsNull(0) && row.Text(0)!="null";
@@ -58,6 +62,19 @@ class ControlJson {
     Require(String("$.state[1].native_frontend_generation[0]")=="tuple","native frontend request binding is invalid");
     for(unsigned i=0;i<7;++i)Require(String("$.state[1].native_frontend_generation[1]["+std::to_string(i)+"]")==fields[i],"native frontend request generation changed");
     return result;
+  }
+  ArtifactRef PartitionRequest() {
+    auto result=ArtifactRef::Bind(StatePath("native_phase3_request"),"phase3-stage-request-v1");
+    const auto& g=result.generation();const std::string fields[]={std::to_string(g.device),std::to_string(g.inode),std::to_string(g.bytes),std::to_string(g.modified_seconds),std::to_string(g.modified_nanoseconds),std::to_string(g.changed_seconds),std::to_string(g.changed_nanoseconds)};
+    Require(String("$.state[1].native_phase3_generation[0]")=="tuple","native partition request binding is invalid");
+    for(unsigned i=0;i<7;++i)Require(String("$.state[1].native_phase3_generation[1]["+std::to_string(i)+"]")==fields[i],"native partition request generation changed");
+    return result;
+  }
+  std::string PartitionState(const std::string& reference,const fs::path& root,std::uint64_t cuts) {
+    auto option=db_.Prepare("SELECT json_type(?1,'$.state[1].optimize_frame_slots')");option.BindText(1,data_);Require(option.Step() && (option.Text(0)=="true" || option.Text(0)=="false"),"invalid frame search policy");
+    const auto frame=cuts && option.Text(0)=="true"?"true":"false";
+    auto row=db_.Prepare("SELECT json_remove(json_set(?1,'$.stage','partition','$.state[1].phase3_report',json(?2),'$.state[1].phase3_root',json(?3),'$.state[1].assignment_path',json(?4),'$.state[1].has_inter_fpga_cuts',json(?5),'$.state[1].effective_optimize_frame_slots',json(?6)),'$.state[1].native_phase3_request','$.state[1].native_phase3_generation')");
+    row.BindText(1,data_);row.BindText(2,reference);row.BindText(3,"[\"path\","+JsonQuote(root.string())+"]");row.BindText(4,"[\"path\","+JsonQuote((root/"assignment.json").string())+"]");row.BindText(5,cuts?"true":"false");row.BindText(6,frame);Require(row.Step(),"cannot construct native partition compiler state");return row.TypedText(0);
   }
   std::string FrontendState(const std::string& reference,const fs::path& root) {
     auto row=db_.Prepare("SELECT json_remove(json_set(?1,'$.stage','frontend','$.state[1].frontend_report',json(?2),'$.state[1].phase1_root',json(?3),'$.state[1].ir_path',json(?4)),'$.state[1].native_frontend_request','$.state[1].native_frontend_generation')");
@@ -202,23 +219,36 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
       if (result.owns_output) RequireOwner(result);
       for (const auto& input : inputs) input.RequireUnchanged();
       Require(fs::canonical(python) == inputs[2].path(),"native compiler executable alias changed");
+      if(std::string(stage)=="route-policy") {
+        const auto private_configuration=output/".native-phase3-request";
+        Require(!fs::is_symlink(private_configuration),"native partition configuration directory was replaced");
+        std::error_code cleanup_error;fs::remove_all(private_configuration,cleanup_error);Require(!cleanup_error,"cannot retire native partition configuration");
+      }
       const auto next = scratch.root / (std::string(stage) + ".json");
       const auto temporary = scratch.root / "tmp" / stage;
       fs::create_directory(temporary);
       ToolRequest tool;
       const bool native_phase5=std::string(stage)=="tdm";
+      const bool native_phase3=std::string(stage)=="partition";
       const bool native_frontend=std::string(stage)=="frontend" && ControlJson(previous.string()).Has("$.state[1].native_frontend_request");
       if(std::string(stage)=="frontend") {
         ControlJson prior(previous.string());
         const bool raw_rtl=prior.Has("$.state[1].sources[1][0]") && !prior.Has("$.state[1].yosys_json") && !prior.Has("$.state[1].prepared_frontend");
         Require(!raw_rtl || native_frontend,"native RTL frontend request is missing; Python fallback is forbidden");
       }
-      std::string phase5_report,frontend_summary;
-      std::optional<ArtifactRef> frontend_request;
+      std::string phase5_report,phase3_report,frontend_summary;
+      std::optional<ArtifactRef> frontend_request,partition_request;
       if(native_frontend) {
         ControlJson prior(previous.string());Require(prior.String("$.stage")=="preflight","invalid native frontend predecessor");
         frontend_request=prior.FrontendRequest();frontend_summary=(output/"frontend/phase1/frontend-summary.json").string();
         tool.argv={inputs[3].path(),"--report",(temporary/"native-result.json").string(),"phase1","run",frontend_request->path(),(output/"frontend/phase1").string()};
+      } else if(native_phase3) {
+        ControlJson prior(previous.string());Require(prior.String("$.stage")=="timing","invalid native partition predecessor");
+        partition_request=prior.PartitionRequest();
+        Require(fs::path(partition_request->path())==output/".native-phase3-request/phase3-request.json","native partition configuration escapes compiler ownership");
+        Require(fs::weakly_canonical(prior.StatePath("phase3_root"))==output/"partition","native partition output escapes compiler ownership");
+        phase3_report=(output/"partition/phase3_report.json").string();
+        tool.argv={inputs[3].path(),"--report",(temporary/"native-result.json").string(),"phase3","run",partition_request->path(),(output/"partition").string()};
       } else if(native_phase5) {
         ControlJson prior(previous.string());
         Require(prior.String("$.stage")=="route" && prior.String("$.state[1].effective_tdm_provider")=="deterministic-dependency-earliest-slot-v1","invalid native Phase 5 compiler predecessor/provider");
@@ -244,13 +274,23 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
       auto step_inputs = inputs;
       if (!previous.empty()) step_inputs.push_back(ArtifactRef::Bind(previous.string(),"native-compile-state-v1"));
       if(frontend_request)step_inputs.push_back(*frontend_request);
+      if(partition_request)step_inputs.push_back(*partition_request);
       const auto step = RunExternalTool(tool,cancelled,step_inputs);
-      result.steps.push_back({stage,step.operation.ok(),native_phase5?"native-exact-phase5-v1":native_frontend?"native-rtl-frontend-v1":"isolated-python-adapter-v1",step.wall_seconds,step.user_cpu_seconds,
+      result.steps.push_back({stage,step.operation.ok(),native_phase5?"native-exact-phase5-v1":native_phase3?"native-phase3-v1":native_frontend?"native-rtl-frontend-v1":"isolated-python-adapter-v1",step.wall_seconds,step.user_cpu_seconds,
                              step.system_cpu_seconds,step.maximum_process_rss_kib});
       if (!step.operation.ok())
         throw StageError(ErrorCode::kExecutionFailed,"native compile " + std::string(stage) + ": " +
                          step.operation.message + "\n" + step.diagnostic_tail);
-      if(native_frontend) {
+      if(native_phase3) {
+        ControlJson producer((temporary/"native-result.json").string());auto summary=ArtifactRef::Bind(phase3_report,"phase3-report-v1");
+        Require(producer.String("$.schema")=="emuflow.native-stage-result/v1" && producer.String("$.stage")=="phase3.run" && producer.String("$.status")=="pass" && producer.OutputGeneration(summary),"native partition producer binding disagrees");
+        ControlJson report(phase3_report);Require(report.String("$.stage_implementation_id")=="native-phase3-v1" && report.String("$.status")=="pass","native partition report identity disagrees");
+        const auto& g=summary.generation();std::vector<JsonRecord> generation{g.device,g.inode,g.bytes,g.modified_seconds,g.modified_nanoseconds,g.changed_seconds,g.changed_nanoseconds};
+        const auto reference=JsonRecord(std::vector<JsonRecord>{JsonRecord("partition-report"),JsonRecord(std::map<std::string,JsonRecord>{{"schema",summary.schema()},{"path",summary.path()},{"generation",generation}})}).Encode();
+        ControlJson prior(previous.string());auto bindings=step_inputs;bindings.push_back(summary);
+        const auto state=prior.PartitionState(reference,output/"partition",report.Unsigned("$.validation.cut_nets"));
+        PublishTextArtifact(next.string(),bindings,[&](std::ostream& out){out<<state<<'\n';});partition_request->RequireUnchanged();
+      } else if(native_frontend) {
         ControlJson producer((temporary/"native-result.json").string());auto summary=ArtifactRef::Bind(frontend_summary,"phase1-summary-v1");
         Require(producer.String("$.schema")=="emuflow.native-stage-result/v1" && producer.String("$.stage")=="phase1.run" && producer.String("$.status")=="pass" && producer.OutputGeneration(summary),"native frontend producer binding disagrees");
         const auto& g=summary.generation();std::vector<JsonRecord> generation;
@@ -312,7 +352,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
 std::string CompileResultJson(const CompileResult& result) {
   std::ostringstream out; out << std::setprecision(17);
   out << "{\"schema\":\"emuflow.native-compile-result/v2\",\"implementation_id\":\"native-orchestration-v1\","
-      << "\"phase_implementation\":\"native-rtl-frontend-phase5-and-isolated-python-adapters-v1\",\"native_data_plane_complete\":false,"
+      << "\"phase_implementation\":\"native-rtl-frontend-phase3-phase5-and-isolated-python-adapters-v1\",\"native_data_plane_complete\":false,"
       << "\"operation\":" << StageResultJson(result.operation) << ",\"output_directory\":" << JsonQuote(result.output_directory)
       << ",\"request_configuration\":" << (result.request_configuration.empty() ? "null" : result.request_configuration)
       << ",\"effective_configuration\":" << (result.effective_configuration.empty() ? "null" : result.effective_configuration)

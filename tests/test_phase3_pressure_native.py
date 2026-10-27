@@ -269,15 +269,20 @@ def test_phase3_production_selects_native_model_and_keeps_independent_validation
                          patron_refiner=str(emuflow_native()) if explicit_unified else None)
     assert report['status']=='pass'
     assert report['cluster_implementation_id']=='native-primary-clusters-v1'
-    assert report['native_cluster_metrics']['wall_seconds']>0
     assert report['candidate_implementation_id']=='native-candidate-ids-v1'
-    assert report['native_candidate_metrics']['wall_seconds']>0
     assert report['semantic_implementation_id']=='native-selected-partition-semantics-v1'
     assert report['assignment_descriptor_writer_implementation_id']=='native-indexed-assignment-descriptor-v1'
     assert report['native_assignment_index_metrics']['host_ownership_records']==0
-    assert report['algorithm_validation']['native_input_transport']=='native-primary-store-model-v2'
+    assert report['stage_implementation_id']=='native-phase3-v1'
+    assert report['algorithm_validation']['model']['implementation_id']=='native-primary-store-model-v2'
     assert report['algorithm_validation']['model']['nets']==2
-    assert report['algorithm_validation']['native_model_metrics']['model_build']['wall_seconds']>0
+    assert report['algorithm_validation']['model']['model_build']['metrics']['wall_seconds']>0
+    runtime=__import__('json').loads((tmp_path/'phase3/phase3-runtime.json').read_text())['native_stage']
+    stages={step['stage']:step for step in runtime['steps']}
+    for name in ('phase3.clusters','phase3.candidates','phase3.patron','phase3.decision','phase3.publish-partition'):
+        assert stages[name]['status']=='pass'
+        assert stages[name]['metrics']['wall_seconds']>0
+    assert report['algorithm_validation']['candidate_selection']['initial_provider']=='tritonpart-openroad-hypergraph-v1'
 
 
 @pytest.mark.parametrize('corruption',['checksum','owner','source','path-order'])
