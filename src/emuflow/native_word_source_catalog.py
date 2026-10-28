@@ -124,6 +124,13 @@ def prepare_native_word_sources(fpga,schedule_path,boundary_path,mapped_path,out
                 for period in sorted(periods):
                     repeat=repeat*period//math.gcd(repeat,period)
                     _require(repeat<=maximum_repeat_words,'native word serializer recurrence exceeds its source bound')
+                    if period==1:
+                        # A one-word calendar has only phase zero. There is
+                        # no phase choice to project onto native state. The
+                        # RTL producer owns the counter behavior; synthesis
+                        # may retain a feedback FF, fold it or remove its name.
+                        roles.append((1,0,'constant:0'))
+                        continue
                     for bit in range(max(1,(period-1).bit_length())):
                         alias=f'__emuflow_transport__/payload_phase_{period}[{bit}]'
                         row=mapped.connection.execute('SELECT record_json FROM netnames WHERE id=?',(alias,)).fetchone()
@@ -134,11 +141,8 @@ def prepare_native_word_sources(fpga,schedule_path,boundary_path,mapped_path,out
                             row=mapped.connection.execute('SELECT record_json FROM netnames WHERE id=?',(alias,)).fetchone()
                         _require(row is not None,'native word counter role is absent from its source recipe')
                         values=json.loads(row[0])['bits'];_require(len(values)==1,'native word counter alias is not scalar')
-                        if period==1:
-                            _require(values==['0'],'native word unit-period counter is not constant zero');roles.append((period,bit,'constant:0'))
-                        else:
-                            _require(type(values[0])is int,'native word counter source bit is not a mapped net')
-                            bits.setdefault(values[0],[]).append((period,bit))
+                        _require(type(values[0])is int,'native word counter source bit is not a mapped net')
+                        bits.setdefault(values[0],[]).append((period,bit))
                 for net,coordinates in bits.items():
                     rows=list(mapped.connection.execute("SELECT cell_seq FROM cell_pins WHERE port='Q'AND direction=1 "
                         "AND value_kind=0 AND net_bit=?",(net,)))

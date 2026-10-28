@@ -110,6 +110,20 @@ def test_compatible_shared_counter_bit_and_unit_period(source):
     assert(Path(result['directory'])/'counter-roles.tsv').read_text()=='period\tbit\tsource_origin\n1\t0\tconstant:0\n'
 
 
+@pytest.mark.parametrize('representation',['literal','feedback-register','removed-alias'])
+def test_single_word_calendar_has_no_native_phase_selector(source,representation):
+    for item in source.entries:item.tdm_ratio=8
+    with closing(sqlite3.connect(source.mapped['fpga0']))as db,db:
+        if representation=='feedback-register':
+            db.execute("UPDATE netnames SET record_json=?WHERE id='__emuflow_transport__/payload_phase_1[0]'",
+                       (json.dumps({'bits':[100]}),))
+        if representation=='removed-alias':db.execute("DELETE FROM netnames WHERE id LIKE '%payload_phase_1%'")
+    result=prepare(source);out=Path(result['directory'])
+    assert result['calendar_periods']==[1]and result['repeat_words']==1and result['tx_contexts']==1
+    assert(out/'counter-roles.tsv').read_text()=='period\tbit\tsource_origin\n1\t0\tconstant:0\n'
+    assert(out/'targets.tsv').read_text()=='phase_word\tquery_hex\n0\t'+b'tx_ab[0]'.hex()+'\n'
+
+
 @pytest.mark.parametrize('option',[{'maximum_repeat_words':2},{'maximum_contexts':2}])
 def test_execution_bounds_are_checked_before_source_publication(source,option):
     with pytest.raises(ValidationError,match='bound'):prepare(source,**option)

@@ -26,8 +26,8 @@ proc emuflow_word_phase_bind {path} {
       if {[dict exists $roles $key]} {error "word phase role repeats"}
       dict set periods $period 1
       if {$origin eq "constant:0" && $period==1 && $bit==0} {
-        # A source-bound mapped literal supplies the ratio-eight invariant.
-        # No vanished register is reconstructed or protected for this role.
+        # A single-word calendar has only phase zero. This coordinate does
+        # not require a native counter or a particular source representation.
         dict set roles $key [list]
         continue
       }
