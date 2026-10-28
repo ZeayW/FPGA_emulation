@@ -67,7 +67,7 @@ def main(source_root: Path, install_root: Path) -> None:
     from emuflow.flow.cli import _build_parser
     _build_parser().parse_args(["run", "top.sv", "--top", "top", "--clock", "clk=10"])
     _build_parser().parse_args(["run", "design.run.json", "--out", "unused", "--backend", "vivado"])
-    _build_parser().parse_args(["design", "prepare", "design.json", "--environment", "environment.json", "--out", "design.run.json"])
+    _build_parser().parse_args(["design", "prepare", "design.json", "--out", "design.run.json"])
     from emuflow.flow.designs.nvdla import CATALOG_PATH, COMPAT_PATH
     assert CATALOG_PATH.is_file() and COMPAT_PATH.is_file()
     assert OPENSTA_RUNTIME_CHECK_SCRIPT.resolve() == (

@@ -1,67 +1,34 @@
 # Running a design
 
-The preparation and execution commands accept user RTL; they do not require a
-benchmark catalog or a design-specific script. The maintained target is Xilinx
-UltraScale+ with the registered device data and BoardDB, using either
-OpenPARF/RWRoute or Vivado. Machine registration is reusable across designs.
+EmuFlow accepts ordinary RTL directly. It does not require a benchmark catalog,
+a design-specific script or machine-specific configuration.
 
-## Register the machine once
+## Install once
 
-Build and install the [complete runtime](USER_GUIDE.md#complete-build). Make its
-`bin` directory available in the shell used for setup and execution. A Python-only
-installation does not supply Yosys, OpenSTA, OpenROAD, OpenPARF or the native core.
-
-For the default source-checkout installation, select the built launcher once
-in the setup shell (or register its absolute location in your shell profile):
+The complete runtime currently targets Linux x86-64. Install a JDK, CMake,
+GNU Make and the compiler/development packages listed in the
+[complete build requirements](USER_GUIDE.md#complete-build), then run:
 
 ```bash
-export PATH="$PWD/build/native/install/bin:$PATH"
+./install.sh
 ```
 
-Copy [the environment template](../examples/environments/xcvu19p.example.json)
-to a machine-local file and replace its example paths with real inputs:
+The installer performs the remaining setup itself. It builds the native runtime
+and bundled engines, downloads and verifies the pinned RapidWright standalone
+release, obtains the required device data, generates the XCVU19P architecture,
+fixed-resource and timing contracts, and checks the resulting installation. If
+the selected Python lacks NumPy, PyYAML or PyTorch, the installer creates a
+private build environment and installs them. The generated runtime manifest
+lives under `build/native/install/share/emuflow`; users do not edit or register
+it.
 
-- `native_root`: the complete root-build installation, with `emuflow-native`,
-  `yosys`, `sta` and `openroad` under `bin`.
-- `timing_data_dir`: the pinned RapidWright delay-model data used by the current
-  pre-placement model. `intrasite_delay_terms.txt` and
-  `intersite_delay_terms.txt` must match the source hashes in the timing contract.
-- `architecture`, `native_constraints`, `provider_manifest`: the matching,
-  source-qualified XCVU19P device exports. Follow the existing
-  [device-data preparation](XILINX_PHYSICAL_FLOW.md); arbitrary files with these
-  names are insufficient.
-- `backends.rapidwright`: the actual RapidWright standalone JAR, JDK `java`
-  (with sibling `javac`), device-data directory, compiled OpenPARF installation
-  and its matching Python/PyTorch interpreter. The root build installs the
-  maintained Java adapter source; `java_source` can explicitly select a qualified
-  alternative snapshot.
-- `backends.vivado.executable`: the actual external Vivado executable. An
-  installed Vivado and a valid license are the user's responsibility.
+The commands are linked into `~/.local/bin`. If that directory is not already on
+`PATH`, the installer prints the one path change needed by the shell. Re-running
+`./install.sh` reuses verified downloads and generated device artifacts.
 
-Register either or both backends. Remove a backend section when it is not
-installed. Device data, external executables and vendor licenses are not supplied
-by an example profile. License variables and required loader paths may be
-inherited from the launching shell, or explicitly registered under `environment`
-(`LM_LICENSE_FILE`, `XILINXD_LICENSE_FILE`, `LD_LIBRARY_PATH`,
-`EMUFLOW_OPENPARF_RUNTIME_LIBRARY_PATH`). Keep profiles with machine or license
-information local.
-
-```bash
-emuflow environment prepare machine.json
-emuflow environment check
-```
-
-Preparation reports missing inputs before starting EDA work, loads the native
-runtime and selected OpenPARF host, checks OpenSTA and vendor/JDK identities, and builds the
-internal source-sealed pre-placement TimingDB once. Subsequent runs consume its
-checked reference. By default the checked profile is registered at
-`$XDG_CONFIG_HOME/emuflow/environment.json` (or
-`~/.config/emuflow/environment.json`) so `emuflow run` finds it automatically.
-Use `--out` during registration or `EMUFLOW_ENVIRONMENT` during execution only
-when a managed installation needs a different location. Relative paths in
-profiles resolve from the profile directory.
-Changing the source timing revision requires preparing a new environment.
-Vendor license availability is enforced by the vendor tool during execution.
+Vivado remains an optional external backend because it cannot be redistributed.
+When `vivado` is on `PATH` during installation, it is included automatically;
+its license is still managed by the vendor installation.
 
 ## Run a design
 
@@ -71,8 +38,8 @@ For ordinary RTL, no design or run configuration file is required:
 emuflow run rtl/top.sv --top top --clock clk=10
 ```
 
-The command reads the environment registered during installation, validates the
-source and tool inventory, and submits the complete Phase 1–7/7C request to the
+The command reads the installation-owned runtime, validates the source and tool
+inventory, and submits the complete Phase 1–7/7C request to the
 native controller. Output defaults to `runs/top`. Multiple sources retain command
 line order:
 
@@ -114,7 +81,7 @@ requiring those constraints. Provide synthesizable implementations for memories
 and other modules; preparation does not synthesize black boxes into missing IP.
 
 ```bash
-emuflow design prepare design.json --environment environment.json --out design.run.json
+emuflow design prepare design.json --out design.run.json
 emuflow run design.run.json --backend rapidwright --out runs/design-openparf
 ```
 
@@ -124,7 +91,7 @@ and a sibling benchmark descriptor used internally by the existing frontend;
 no manual hashes or internal TimingDB conversion are needed. Keep both files.
 Use a new output path outside the source tree. Intentional source or constraint
 changes require preparing a new run configuration. Tool availability is checked
-at environment registration and again before execution.
+by the installer and again before execution.
 
 The optional [NVDLA preset](RUNNING_NVDLA.md) handles that qualification design's
 pinned archive and physical memory models. It is not required for user RTL.

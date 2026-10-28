@@ -38,7 +38,32 @@ owners and source seals. The phase contracts are described in
 [the flow architecture](docs/FLOW_PLAN.md); algorithm definitions and method
 references are in [the algorithm overview](docs/ALGORITHMS.md).
 
-## Build
+## Quick start
+
+Install once, then give EmuFlow the RTL, top module and clock period:
+
+```bash
+git clone https://github.com/ZeayW/FPGA_emulation.git
+cd FPGA_emulation
+./install.sh
+emuflow run rtl/top.sv --top top --clock clk=10
+```
+
+The installer builds the complete runtime, downloads the pinned RapidWright
+release, prepares the supported XCVU19P device data and stores the resulting
+runtime manifest inside the installation. There is no machine profile to edit or
+register. See [installation and run details](docs/RUNNING.md).
+
+The run command executes the complete flow with the installed OpenPARF/RWRoute backend and writes
+`runs/top`. Add more RTL files as positional arguments. Select the other physical
+backend with `--backend vivado`, or choose a different output with `--out`.
+Stage progress is printed by the native controller. Each output directory contains
+`stage-metrics/`, `multi-fpga-flow-report.json`, and terminal
+`runtime/phase7c_report.json` and `runtime/qor_report.json` evidence.
+Use a new output directory for each run. Both backends remain under NVDLA
+qualification; launching a run does not establish successful physical closure.
+
+## Developer build
 
 Use the root CMake build for a complete runtime. Installing the Python package
 alone does not build the native core or EDA engines.
@@ -59,27 +84,9 @@ ctest --preset release
 
 The build installs commands, libraries and runtime data under
 `build/native/install/`. The installed commands are `emuflow` and
-`emuflow-native`. RapidWright runtime/device data and an optional Vivado
-installation have separate setup requirements; see
+`emuflow-native`. `./install.sh` additionally prepares RapidWright and its
+device contracts. An optional Vivado installation remains external; see
 [physical implementation](docs/USER_GUIDE.md#physical-implementation).
-
-## Quick start
-
-After the [one-time installation and machine registration](docs/RUNNING.md),
-give EmuFlow the RTL, top module and clock period:
-
-```bash
-emuflow run rtl/top.sv --top top --clock clk=10
-```
-
-This runs the complete flow with the installed OpenPARF/RWRoute backend and writes
-`runs/top`. Add more RTL files as positional arguments. Select the other physical
-backend with `--backend vivado`, or choose a different output with `--out`.
-Stage progress is printed by the native controller. Each output directory contains
-`stage-metrics/`, `multi-fpga-flow-report.json`, and terminal
-`runtime/phase7c_report.json` and `runtime/qor_report.json` evidence.
-Use a new output directory for each run. Both backends remain under NVDLA
-qualification; launching a run does not establish successful physical closure.
 
 ## Configuration
 

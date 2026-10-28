@@ -1,16 +1,14 @@
-"""Machine-local tool/data registration for the single native controller."""
+"""Installation-owned tool and device data for the native controller."""
 
 from __future__ import annotations
 from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
-import tempfile
 
 from emuflow.common.errors import EmuFlowError
-from emuflow.common.io import file_sha256, write_json
+from emuflow.common.io import file_sha256
 from emuflow.timing.xilinx_preplacement_timing import (
-    build_xilinx_preplacement_timing_db,
     validate_xilinx_preplacement_timing_db,
     RAPIDWRIGHT_TIMING_DATA_SHA256,
 )
@@ -44,18 +42,23 @@ _PATH_KEYS = {
 
 
 def default_environment_path():
-    """Return the environment registered during installation.
+    """Return the installation-owned runtime manifest.
 
-    An explicit variable supports managed installations.  The ordinary user
-    path follows XDG without requiring it to be set.
+    The launcher sets EMUFLOW_NATIVE_ROOT.  An explicit variable remains only
+    for managed/developer installations and tests.
     """
     configured = os.environ.get(ENVIRONMENT_VARIABLE)
     if configured:
         return Path(configured).expanduser().resolve()
-    config_root = Path(
-        os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
-    ).expanduser()
-    return (config_root / "emuflow" / "environment.json").resolve()
+    native_root = os.environ.get("EMUFLOW_NATIVE_ROOT")
+    if native_root:
+        return (
+            Path(native_root).expanduser().resolve()
+            / "share/emuflow/environment.json"
+        )
+    raise EmuFlowError(
+        "EmuFlow was not launched from a complete installation; run ./install.sh"
+    )
 
 
 def resolve_environment_path(path=None):
@@ -109,7 +112,7 @@ def load_environment(path):
             result[key] = str(resolve_path(path.parent, value[key]))
     backends = value.get("backends", {})
     if type(backends) is not dict or not backends or set(backends) - set(_BACKEND_KEYS):
-        raise EmuFlowError("environment must register rapidwright and/or vivado")
+        raise EmuFlowError("installation must contain rapidwright and/or vivado")
     result["backends"] = {}
     for name, settings in backends.items():
         if type(settings) is not dict or set(settings) - _BACKEND_KEYS[name]:
@@ -192,7 +195,7 @@ def inspect_environment(profile, backend=None, *, prepared=True):
     for name in selected:
         settings = profile["backends"].get(name)
         if settings is None:
-            issues.append({"item": name, "required": "registered backend"})
+            issues.append({"item": name, "required": "installed backend"})
             continue
         keys = _BACKEND_KEYS[name] - (
             {"java_source"} if name == "rapidwright" else set()
@@ -260,7 +263,7 @@ def _probe_tool(native, arguments):
         result = process.finish()
     if result.returncode:
         raise EmuFlowError(
-            "registered engine version probe failed: " + result.stdout[-4096:]
+            "installed engine version probe failed: " + result.stdout[-4096:]
         )
     return result.stdout
 
@@ -282,10 +285,10 @@ def probe_environment(profile, backend=None):
                 timeout=30,
             )
         except (OSError, subprocess.TimeoutExpired) as error:
-            raise EmuFlowError("registered native runtime cannot load") from error
+            raise EmuFlowError("installed native runtime cannot load") from error
         if process.returncode:
             raise EmuFlowError(
-                "registered native runtime rejected its installation: "
+                "native runtime rejected its installation: "
                 + process.stderr[-4096:]
             )
         check_opensta_engine_version(str(Path(profile["native_root"]) / "bin/sta"))
@@ -296,14 +299,14 @@ def probe_environment(profile, backend=None):
                 )
                 if "Vivado" not in identity:
                     raise EmuFlowError(
-                        "registered Vivado executable did not identify itself"
+                        "installed Vivado executable did not identify itself"
                     )
             if name == "rapidwright":
                 settings = profile["backends"][name]
                 identity = _probe_tool(executable, [settings["java"], "-version"])
                 if "version" not in identity.lower():
                     raise EmuFlowError(
-                        "registered Java executable did not identify itself"
+                        "installed Java executable did not identify itself"
                     )
                 validate_openparf_runtime(
                     install_root=Path(settings["openparf_install"]),
@@ -313,52 +316,6 @@ def probe_environment(profile, backend=None):
         **report,
         "engine_load": "pass",
         "license": "inherited-or-profile-environment;vendor-enforces-at-execution",
-    }
-
-
-def prepare_environment(input_path, output_path):
-    profile = load_environment(input_path)
-    require_environment(profile, prepared=False)
-    output_path = Path(output_path).expanduser().resolve()
-    for key in _PATH_KEYS:
-        if profile.get(key):
-            source = Path(profile[key])
-            if output_path == source or (
-                source.is_dir() and source in output_path.parents
-            ):
-                raise EmuFlowError("environment output aliases registered source data")
-    for settings in profile["backends"].values():
-        if any(
-            output_path == Path(value)
-            or (Path(value).is_dir() and Path(value) in output_path.parents)
-            for value in settings.values()
-        ):
-            raise EmuFlowError("environment output aliases a registered backend source")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    # A generated timing store has one source and is prepared once per registered
-    # data revision. No manually supplied coefficients are invented here.
-    with tempfile.TemporaryDirectory(
-        prefix=".environment-", dir=output_path.parent
-    ) as temporary:
-        staged = Path(temporary) / "preplacement.json"
-        build_xilinx_preplacement_timing_db(Path(profile["timing_data_dir"]), staged)
-        digest = file_sha256(staged)
-        destination = output_path.parent / (
-            "xilinx-preplacement-timing." + digest + ".json"
-        )
-        if destination.exists() and file_sha256(destination) != digest:
-            raise EmuFlowError("prepared timing content-addressed collision")
-        profile["preplacement_timing"] = {"path": str(staged), "sha256": digest}
-        probe_environment(profile)
-        if not destination.exists():
-            os.replace(staged, destination)
-        profile["preplacement_timing"] = {"path": str(destination), "sha256": digest}
-        write_json(output_path, profile)
-    return {
-        "status": "pass",
-        "environment": str(output_path),
-        "preplacement_timing": profile["preplacement_timing"],
-        "backends": sorted(profile["backends"]),
     }
 
 

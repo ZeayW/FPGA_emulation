@@ -218,7 +218,7 @@ def _require_physical_design(benchmark):
         )
 
 
-def prepare_design_run(design_path, environment_path, output_path):
+def prepare_design_run(design_path, output_path, *, environment_path=None):
     """Seal user RTL and constraints without requiring a benchmark preset."""
     path, value = read_control(design_path)
     required = {
@@ -233,7 +233,7 @@ def prepare_design_run(design_path, environment_path, output_path):
     allowed = required | {"include_dirs", "defines", "platform", "options"}
     if value.get("schema") != DESIGN_SCHEMA or not required <= set(value) <= allowed:
         raise EmuFlowError("unsupported design configuration schema or fields")
-    environment_path = Path(environment_path).expanduser().resolve()
+    environment_path = resolve_environment_path(environment_path)
     profile = load_environment(environment_path)
     source_root = resolve_path(path.parent, value["source_root"])
     platform = (
@@ -382,7 +382,6 @@ def execute_sources(
     top,
     clock_periods,
     output_dir,
-    environment_path=None,
     backend="rapidwright",
     include_dirs=(),
     defines=(),
@@ -429,7 +428,7 @@ def execute_sources(
             },
         }
     )
-    profile = load_environment(resolve_environment_path(environment_path))
+    profile = load_environment(resolve_environment_path())
     return _execute_benchmark(
         benchmark,
         source_root,
@@ -458,13 +457,17 @@ def execute_run(config_path, output_dir, *, backend="rapidwright", check_only=Fa
 
 
 def prepare_nvdla_run(
-    source_root, environment_path, output_path, *, platform_path=DEFAULT_PLATFORM_PATH
+    source_root,
+    output_path,
+    *,
+    platform_path=DEFAULT_PLATFORM_PATH,
+    environment_path=None,
 ):
     from emuflow.flow.designs.nvdla import prepare_nvdla_holdout
     from emuflow.flow.designs.nvdla_memory import PHYSICAL_MEMORY_POLICY
 
     source_root = Path(source_root).expanduser().resolve()
-    environment_path = Path(environment_path).expanduser().resolve()
+    environment_path = resolve_environment_path(environment_path)
     profile = load_environment(environment_path)
     platform_path = Path(platform_path).expanduser().resolve()
     from emuflow.platform.platform import Platform

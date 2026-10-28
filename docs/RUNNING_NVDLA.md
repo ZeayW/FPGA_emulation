@@ -7,9 +7,9 @@ or replace NVDLA with a small example. Completing these setup steps establishes
 inputs and a runnable invocation; successful routed/timing closure still requires
 the resulting full NVDLA evidence.
 
-Register the machine using the shared [environment preparation](RUNNING.md#register-the-machine-once).
-The steps below add the pinned NVDLA sources and complete memory models to that
-same runtime; other RTL designs use the generic `emuflow design prepare` entry.
+Install the shared runtime with [`./install.sh`](RUNNING.md#install-once).
+The steps below add the pinned NVDLA sources and complete memory models; other
+RTL designs can run directly from their source files.
 
 ## Prepare the pinned NVDLA design once
 
@@ -20,7 +20,6 @@ python3 scripts/benchmarks/fetch.py fetch nvdla --destination build/rtl
 
 emuflow design prepare-nvdla \
   --source-root build/rtl/nvdla \
-  --environment environment.json \
   --out nvdla.run.json
 ```
 

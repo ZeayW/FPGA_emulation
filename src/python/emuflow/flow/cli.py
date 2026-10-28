@@ -110,16 +110,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    environment = subparsers.add_parser("environment", help="register tools/device data once")
-    environment_commands = environment.add_subparsers(dest="environment_command", required=True)
-    prepare_environment = environment_commands.add_parser("prepare", help="validate registration and generate internal pre-placement timing")
-    prepare_environment.add_argument("input", type=Path)
-    prepare_environment.add_argument(
-        "--out", type=Path, help="registered profile (default: user configuration directory)"
+    environment = subparsers.add_parser(
+        "environment", help="inspect the installation-owned runtime"
     )
-    check_environment = environment_commands.add_parser("check", help="report all missing registered runtime inputs")
+    environment_commands = environment.add_subparsers(dest="environment_command", required=True)
+    check_environment = environment_commands.add_parser(
+        "check", help="check the installed tools and device data"
+    )
     check_environment.add_argument(
-        "profile", type=Path, nargs="?", help="default: registered user profile"
+        "profile", type=Path, nargs="?", help="default: installation runtime"
     )
     check_environment.add_argument("--backend", choices=("rapidwright", "vivado"))
     design = subparsers.add_parser("design", help="prepare reproducible design inputs once")
@@ -128,11 +127,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "prepare", help="prepare RTL from its source, clock and I/O configuration"
     )
     prepare_design.add_argument("config", type=Path)
-    prepare_design.add_argument("--environment", type=Path, required=True)
     prepare_design.add_argument("--out", type=Path, required=True)
     nvdla = designs.add_parser("prepare-nvdla", help="prepare pinned NV_nvdla and complete physical memory models")
     nvdla.add_argument("--source-root", type=Path, required=True)
-    nvdla.add_argument("--environment", type=Path, required=True)
     nvdla.add_argument("--platform", type=Path, default=DEFAULT_PLATFORM_PATH)
     nvdla.add_argument("--out", type=Path, required=True)
     run = subparsers.add_parser(
@@ -148,7 +145,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--include-dir", action="append", default=[], type=Path)
     run.add_argument("--define", action="append", default=[])
-    run.add_argument("--environment", type=Path, help="override the installed environment")
     run.add_argument("--platform", type=Path, default=DEFAULT_PLATFORM_PATH)
     run.add_argument(
         "--phase6-provider", choices=("baseline", "chimew"), default="baseline"
@@ -1434,28 +1430,24 @@ def _build_parser() -> argparse.ArgumentParser:
 def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "environment":
         from emuflow.flow.environment import (
-            prepare_environment,
             load_environment,
             inspect_environment,
             probe_environment,
             resolve_environment_path,
         )
-        profile_path = resolve_environment_path(
-            args.out if args.environment_command == "prepare" else args.profile
-        )
-        report = (prepare_environment(args.input, profile_path) if args.environment_command == "prepare"
-                  else inspect_environment(load_environment(profile_path), args.backend))
-        if args.environment_command == "check" and report["status"] == "pass":
+        profile_path = resolve_environment_path(args.profile)
+        report = inspect_environment(load_environment(profile_path), args.backend)
+        if report["status"] == "pass":
             report = probe_environment(load_environment(profile_path), args.backend)
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
     if args.command == "design":
         from emuflow.flow.run_config import prepare_design_run, prepare_nvdla_run
         if args.design_command == "prepare":
-            report = prepare_design_run(args.config, args.environment, args.out)
+            report = prepare_design_run(args.config, args.out)
         else:
             report = prepare_nvdla_run(
-                args.source_root, args.environment, args.out, platform_path=args.platform
+                args.source_root, args.out, platform_path=args.platform
             )
         _print_json(report)
         return 0
@@ -1485,7 +1477,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 top=args.top,
                 clock_periods=parse_clock_definitions(args.clock),
                 output_dir=output,
-                environment_path=args.environment,
                 backend=args.backend,
                 include_dirs=args.include_dir,
                 defines=args.define,

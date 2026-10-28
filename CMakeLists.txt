@@ -377,6 +377,7 @@ file(
   GLOB_RECURSE EMUFLOW_RUNTIME_DATA
   CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/resources/timing/*"
+  "${CMAKE_SOURCE_DIR}/resources/rapidwright/*.json"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/platforms/*.json"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/io/*.json"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/rapidwright/*.json"
@@ -433,6 +434,13 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/rapidwright"
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/rapidwright"
+  COMMAND
+    "${CMAKE_COMMAND}" -E make_directory
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/device"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/resources/rapidwright/xcvu19p-fsva3824-2-e.provider.json"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/device/xcvu19p.provider.json"
   COMMAND
     "${CMAKE_COMMAND}" -E rm -f
     "${EMUFLOW_INSTALL_ROOT}/scripts/yosys/nvdla_compat.v"

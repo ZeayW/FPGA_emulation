@@ -104,7 +104,7 @@ it cannot accept private kernel-output callbacks or retry a failed stage.
 
 ## Run RTL with the installed environment
 
-Use [Running a design](RUNNING.md) to register the machine once. Afterwards,
+Run [`./install.sh`](RUNNING.md#install-once) once. Afterwards,
 `emuflow run rtl/top.sv --top top --clock clk=10` starts the complete
 physical/global timing flow through the native controller. The installed
 OpenPARF/RWRoute environment is the default; select `--backend vivado` for the

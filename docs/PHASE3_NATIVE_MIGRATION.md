@@ -1364,16 +1364,17 @@ backends and original-path global timing still require terminal acceptance.
 `native_data_plane_complete` remains false until those owners and remaining
 production data-plane responsibilities are closed.
 
-### Prepared environment and complete design invocation
+### Installed environment and complete design invocation
 
-`environment prepare/check`, `design prepare-nvdla` and `run` are bounded
-configuration frontends to the same native compiler. They separate one-time
-machine registration, internal pre-placement timing generation and source
-preparation from each full physical run. They introduce no alternate execution
-order or implementation fallback. The existing NVDLA generator and SRAM models
-are moved into installed design preparation; the former script entries are
-removed. The root runtime and wheel install the compatibility RTL/catalog and
-the maintained RapidWright Java source.
+The root `install.sh` owns tool, device-data and pre-placement-timing setup and
+publishes an internal runtime manifest below the installation. Users do not
+prepare or register a machine profile. `environment check`,
+`design prepare-nvdla` and `run` are bounded frontends to the same native
+compiler. They introduce no alternate execution order or implementation
+fallback. The existing NVDLA generator and SRAM models are installed with the
+design preparation support; the former script entries are removed. The root
+runtime installs the compatibility RTL/catalog and the maintained RapidWright
+Java source.
 
 Prepared NVDLA runs bind the pinned upstream revision, actual `NV_nvdla` top,
 both DUT clocks, complete physical SRAM models, grouped I/O timing, BoardDB and

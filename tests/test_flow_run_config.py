@@ -87,7 +87,7 @@ def design(tmp_path, profile):
         },
     )
     output = tmp_path / "nvdla.run.json"
-    run.prepare_nvdla_run(source, profile, output)
+    run.prepare_nvdla_run(source, output, environment_path=profile)
     return output, source
 
 
@@ -113,39 +113,8 @@ def test_environment_reports_every_missing_input_without_launching_tools(tmp_pat
     } <= names
 
 
-def test_environment_prepare_generates_internal_timing_once_and_preserves_old_profile_on_failure(
-    profile, tmp_path
-):
-    target = tmp_path / "registered.json"
-
-    def build(directory, output):
-        assert directory == tmp_path / "timing_data_dir"
-        write_json(output, {"fixture": "source-bound builder"})
-
-    with (
-        patch.object(
-            env, "build_xilinx_preplacement_timing_db", side_effect=build
-        ) as builder,
-        patch.object(env, "probe_environment", return_value={"status": "pass"}),
-    ):
-        result = env.prepare_environment(profile, target)
-    assert result["status"] == "pass" and builder.call_count == 1
-    original = target.read_bytes()
-    with patch.object(
-        env,
-        "build_xilinx_preplacement_timing_db",
-        side_effect=EmuFlowError("source data differs"),
-    ):
-        with pytest.raises(EmuFlowError, match="source data differs"):
-            env.prepare_environment(profile, target)
-    assert target.read_bytes() == original
-    assert not list(tmp_path.glob(".environment-*"))
-
-
-def test_environment_rejects_output_aliases_and_tampered_internal_timing(profile):
+def test_environment_rejects_tampered_internal_timing(profile):
     p = env.load_environment(profile)
-    with pytest.raises(EmuFlowError, match="aliases"):
-        env.prepare_environment(profile, Path(p["architecture"]))
     Path(p["preplacement_timing"]["path"]).write_text("changed")
     assert env.inspect_environment(p)["status"] == "fail"
 
@@ -163,16 +132,46 @@ def test_profile_scope_restores_license_and_tool_context_even_after_failure(
     assert os.environ["EMUFLOW_NATIVE_ROOT"] == "original-root"
 
 
-def test_registered_environment_path_prefers_explicit_then_xdg(tmp_path, monkeypatch):
+def test_environment_path_prefers_explicit_then_installation(tmp_path, monkeypatch):
     monkeypatch.delenv(env.ENVIRONMENT_VARIABLE, raising=False)
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    native_root = tmp_path / "native"
+    monkeypatch.setenv("EMUFLOW_NATIVE_ROOT", str(native_root))
     assert (
         env.default_environment_path()
-        == (tmp_path / "xdg/emuflow/environment.json").resolve()
+        == (native_root / "share/emuflow/environment.json").resolve()
     )
     explicit = tmp_path / "managed/environment.json"
     monkeypatch.setenv(env.ENVIRONMENT_VARIABLE, str(explicit))
     assert env.default_environment_path() == explicit.resolve()
+
+
+def test_environment_path_requires_complete_installation(monkeypatch):
+    monkeypatch.delenv(env.ENVIRONMENT_VARIABLE, raising=False)
+    monkeypatch.delenv("EMUFLOW_NATIVE_ROOT", raising=False)
+    with pytest.raises(EmuFlowError, match=r"run ./install\.sh"):
+        env.default_environment_path()
+
+
+def test_manual_environment_registration_cli_is_retired():
+    from emuflow.flow.cli import _build_parser
+
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(
+            ["environment", "prepare", "machine.json"]
+        )
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(
+            [
+                "run",
+                "top.sv",
+                "--top",
+                "top",
+                "--clock",
+                "clk=10",
+                "--environment",
+                "machine.json",
+            ]
+        )
 
 
 @pytest.mark.parametrize("backend", ["rapidwright", "vivado"])
@@ -220,7 +219,9 @@ def test_repeated_design_preparation_does_not_rewrite_live_generated_rtl(
         for item in benchmark.value["preparation"]["generated_files"]
     ]
     before = [p.stat().st_mtime_ns for p in generated]
-    run.prepare_nvdla_run(source, profile, tmp_path / "another.run.json")
+    run.prepare_nvdla_run(
+        source, tmp_path / "another.run.json", environment_path=profile
+    )
     assert [p.stat().st_mtime_ns for p in generated] == before
 
 
@@ -444,19 +445,18 @@ def test_direct_cli_run_does_not_treat_an_rtl_file_as_a_prepared_config(
 
 @pytest.mark.parametrize("backend", ["rapidwright", "vivado"])
 def test_generic_cli_prepare_and_run_preserve_user_inputs(
-    generic_design, profile, tmp_path, backend
+    generic_design, profile, tmp_path, backend, monkeypatch
 ):
     from emuflow.flow.cli import _build_parser, _dispatch
 
     config, root, description = generic_design
+    monkeypatch.setenv(env.ENVIRONMENT_VARIABLE, str(profile))
     output = tmp_path / "prepared/design.run.json"
     args = _build_parser().parse_args(
         [
             "design",
             "prepare",
             str(config),
-            "--environment",
-            str(profile),
             "--out",
             str(output),
         ]
@@ -528,7 +528,7 @@ def test_generic_prepare_rejects_invalid_inputs_without_publishing(
     write_json(config, value)
     output = tmp_path / "rejected.run.json"
     with pytest.raises(EmuFlowError):
-        run.prepare_design_run(config, profile, output)
+        run.prepare_design_run(config, output, environment_path=profile)
     assert not output.exists()
     assert not output.with_name(output.stem + ".benchmark.json").exists()
 
@@ -538,12 +538,12 @@ def test_generic_prepare_rejects_overwrites_and_source_tree_outputs(
 ):
     config, root, _ = generic_design
     with pytest.raises(EmuFlowError, match="outside"):
-        run.prepare_design_run(config, profile, root / "run.json")
+        run.prepare_design_run(config, root / "run.json", environment_path=profile)
     output = tmp_path / "ready.json"
-    run.prepare_design_run(config, profile, output)
+    run.prepare_design_run(config, output, environment_path=profile)
     before = output.read_bytes()
     with pytest.raises(EmuFlowError, match="new run"):
-        run.prepare_design_run(config, profile, output)
+        run.prepare_design_run(config, output, environment_path=profile)
     assert output.read_bytes() == before
     (root / "include/config.vh").write_text("changed\n")
     with pytest.raises(EmuFlowError, match="bytes differ"):
@@ -563,6 +563,8 @@ def test_generic_template_is_a_valid_design_description(profile, tmp_path):
     value["source_root"] = str(root)
     config = tmp_path / "template.json"
     write_json(config, value)
-    report = run.prepare_design_run(config, profile, tmp_path / "template.run.json")
+    report = run.prepare_design_run(
+        config, tmp_path / "template.run.json", environment_path=profile
+    )
     assert report["source_files"] == 2
     assert report["terminal_qualification"] is False

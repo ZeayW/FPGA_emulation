@@ -527,6 +527,7 @@ def audit(repo_root: Path) -> list[str]:
                         f"{disallowed!r}"
                     )
             for required in (
+                "./install.sh",
                 "emuflow run rtl/top.sv --top top --clock clk=10",
                 "runs/top",
             ):
@@ -536,9 +537,9 @@ def audit(repo_root: Path) -> list[str]:
             if (
                 "docs/RUNNING.md" not in quick_start
                 or not setup.is_file()
-                or "build/native/install/bin" not in setup.read_text(encoding="utf-8")
+                or "./install.sh" not in setup.read_text(encoding="utf-8")
             ):
-                errors.append("README Quick start lacks linked root-build environment preparation")
+                errors.append("README Quick start lacks linked automatic installation")
 
     for relative_file in REQUIRED_FIRST_PARTY_NATIVE_FILES:
         if not (repo_root / relative_file).is_file():
