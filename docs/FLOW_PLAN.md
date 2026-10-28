@@ -153,7 +153,7 @@ not language line counts or the presence of typed storage:
 | --- | --- | --- |
 | Phase 1–6 baseline | Complete frontend, pre-placement timing, partition, route, schedule and split stage owners | Bounded configuration, tool discovery, reports and explicit prepared-input control |
 | Phase 6 Chimew | Grouping/refinement/RUDY kernels and indexed baseline split | Lookahead and pin-planning orchestration, independent grouping/bank qualification and adapter generation |
-| Mapped physical inputs | Indexed Bookshelf pin/net writers and placement lowering | Mapped-index SQL projection, atomic/macro fact generation, geometry and window policy |
+| Mapped physical inputs | Indexed Bookshelf writers, placement lowering, Vivado runtime XDC and fixed-I/O top/query generation | Mapped-index SQL projection, atomic/macro fact generation, geometry and window policy |
 | Placement and routing handoff | Typed certificate/handoff ownership checks and RWRoute exporter | Site/BEL/primitive checks, handoff record production and independent route connectivity/PIP validation |
 | Physical timing | Complete local-path and logic-segment query generation, shared physical object resolution, Vivado boundary/descendant association, indexed evidence import and OpenSTA staging | Bounded backend configuration and tool supervision |
 | Global timing | Runtime generation/signoff, full-assignment physical coverage, event binding, measurement import, original-path reduction, Chimew comparison and final flow-report sealing | Bounded tool configuration |

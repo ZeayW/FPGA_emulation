@@ -86,3 +86,4 @@ physical/rapidwright/route_validation.cpp
 physical/openparf/source.cpp
 physical/openparf/geometry.cpp
 physical/openparf/prepare.cpp
+physical/vivado/vivado_inputs.cpp

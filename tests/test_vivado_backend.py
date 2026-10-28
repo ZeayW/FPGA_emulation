@@ -8,10 +8,11 @@ from emuflow.common.io import write_json
 from emuflow.ir.ir import EmuIR
 from emuflow.frontend.yosys import import_yosys_json
 from emuflow.physical.vivado.vivado_backend import (
-    vivado_runtime_xdc,
     write_vivado_boundary_timing_query,
 )
 from emuflow.physical.vivado.vivado_physical import execute_vivado
+from emuflow.physical.vivado.vivado_inputs import prepare_vivado_inputs
+from emuflow.ir.emuir_compact import write_compact_emuir
 from emuflow.physical.vivado.vivado_physical_timing import import_indexed_vivado_boundary
 from emuflow.physical.vivado.vivado_netlist import (
     emit_vivado_mapped_verilog,
@@ -377,9 +378,10 @@ class VivadoBackendTest(unittest.TestCase):
 
     def test_runtime_xdc_uses_the_common_clock_contract(self):
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "ir.json"
-            write_json(path, _ir().to_dict())
-            xdc = vivado_runtime_xdc(path, RUNTIME)
+            path = Path(temporary) / "ir.sqlite"
+            write_compact_emuir(path, _ir().to_dict())
+            report = prepare_vivado_inputs(path, Path(temporary), RUNTIME)
+            xdc = Path(report["runtime_xdc"]).read_text()
         self.assertIn("emuflow_dut_clk_0 -period 100.000000000", xdc)
         self.assertIn("emuflow_fabric_clk -period 4.000000000", xdc)
         self.assertIn("set_max_delay -datapath_only 8.000000000", xdc)
@@ -390,14 +392,15 @@ class VivadoBackendTest(unittest.TestCase):
 
     def test_runtime_xdc_allows_a_combinational_dut_partition(self):
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "ir.json"
+            path = Path(temporary) / "ir.sqlite"
             value = _ir().to_dict()
             value["ports"] = [
                 port for port in value["ports"] if port["id"] != "clk"
             ]
             value["nets"] = []
-            write_json(path, value)
-            xdc = vivado_runtime_xdc(path, RUNTIME)
+            write_compact_emuir(path, value)
+            report = prepare_vivado_inputs(path, Path(temporary), RUNTIME)
+            xdc = Path(report["runtime_xdc"]).read_text()
         self.assertNotIn("emuflow_dut_clk", xdc)
         self.assertIn("emuflow_fabric_clk", xdc)
 

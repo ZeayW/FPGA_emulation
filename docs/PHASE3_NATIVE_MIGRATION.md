@@ -1429,3 +1429,18 @@ The transient comparison input is retired after successful compiler signoff.
 Full physical implementation control, configuration/prepared-input adapters and
 Chimew orchestration remain W7 work. NVDLA terminal acceptance is
 required before claiming complete migration.
+
+
+### Vivado fixed-I/O and runtime input owner
+
+`physical prepare-vivado-inputs` reads the compact EmuIR port index and current
+runtime/fixed-I/O contract. It publishes runtime clocks, the physical wrapper,
+fixed-pin query and logical-to-physical timing map as one fresh directory. Bus
+width, direction, bit ownership, P/N port collisions, physical port/pair census,
+and adapter/XDC source seals must agree before publication. Every output is
+returned with its generation. Existing input generations are never overwritten.
+The Python wrapper submits bounded configuration and artifact locations only;
+the replaced XDC/top/query generation loops and separate physical-top module
+are retired. Both source ports and fixed bus membership are consumed in the
+native owner. Vivado tool execution, measurement orchestration and whole-backend
+control remain separate W7 completion work.

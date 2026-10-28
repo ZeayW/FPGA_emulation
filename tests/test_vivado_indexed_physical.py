@@ -13,11 +13,10 @@ from unittest.mock import patch
 
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import file_sha256
-from emuflow.physical.vivado.vivado_backend import vivado_runtime_xdc
+from emuflow.physical.vivado.vivado_inputs import prepare_vivado_inputs
 from emuflow.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
 from emuflow.physical.vivado.vivado_physical import parse_timing_summary
 from emuflow.physical.vivado.vivado_physical_timing import write_vivado_local_query, import_vivado_local_timing
-from emuflow.physical.vivado.vivado_physical_top import write_vivado_physical_top
 from emuflow.frontend.yosys import import_yosys_json
 
 
@@ -286,10 +285,11 @@ puts pass
             ir = fixture(root)
             with patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("whole graph")):
                 report = emit_vivado_mapped_verilog(ir, root / "dut.v")
-                xdc = vivado_runtime_xdc(ir, {
+                inputs = prepare_vivado_inputs(ir, root, {
                     "fabric_clock": {"period_ns": 4.0},
                     "virtual_dut_clocks": {"clk": {"nominal_period_ns": 20.0}},
                     "timing_model": {"dut_clock_ports": ["clk"], "fabric_clock_port": "fabric_clk", "fabric_to_dut_max_delay_ns": 8.0}})
+                xdc = Path(inputs["runtime_xdc"]).read_text()
             self.assertEqual(report["emitted_instances"], 2)
             self.assertTrue(Path(report["mapped_index"]["path"]).is_file())
             self.assertIn("emuflow_dut_clk_0", xdc)
@@ -348,13 +348,15 @@ puts pass
             contract = {"status": "pass", "adapter": {"path": str(adapter), "sha256": file_sha256(adapter), "module": "adapter"},
                 "xdc": {"path": str(xdc), "sha256": file_sha256(xdc)}, "metrics": {"physical_ports": 2},
                 "entries": [{"direction": "tx", "logical_port": "q", "logical_bit": 0, "logical_port_width": 1,
-                             "p": {"port": "link_p"}, "n": {"port": "link_n"}}]}
-            report = write_vivado_physical_top(ir, root / "top.sv", contract)
+                             "p": {"port": "link_p", "package_pin": "P1"}, "n": {"port": "link_n", "package_pin": "P2"}, "iostandard": "LVDS"}]}
+            from tests.test_vivado_backend import RUNTIME
+            inputs = prepare_vivado_inputs(ir, root, RUNTIME, contract)
+            report = inputs["fixed_io"]["top"]
             self.assertEqual(report["hierarchy_prefix"], "mapped_partition")
-            self.assertNotIn("output wire \\q ", (root / "top.sv").read_text())
+            self.assertNotIn("output wire \\q ", Path(report["output"]).read_text())
             xdc.write_text("# changed\n")
             with self.assertRaises(ValidationError):
-                write_vivado_physical_top(ir, root / "bad.sv", contract)
+                prepare_vivado_inputs(ir, root, RUNTIME, contract)
 
 
 if __name__ == "__main__":

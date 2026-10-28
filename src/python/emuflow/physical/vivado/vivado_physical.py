@@ -21,11 +21,10 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.ir.indexed_physical_ir import IndexedPhysicalIR
 from emuflow.common.io import file_sha256, write_json
 from emuflow.physical.physical_backend import PHYSICAL_PARTITION_RESULT_SCHEMA, validate_physical_partition_result
 from emuflow.ir.resource_budget import validate_device_resource_usage
-from emuflow.physical.vivado.vivado_physical_top import write_vivado_physical_top
+from emuflow.physical.vivado.vivado_inputs import prepare_vivado_inputs
 from emuflow.physical.vivado.vivado_lineage import LINEAGE_POLICY, import_cell_lineage, resolve_timing_query
 
 _ROOT = REPOSITORY_ROOT
@@ -98,7 +97,7 @@ def run_indexed_vivado_partition(
     local_query_path: Path | None = None, virtual_io_contract: Mapping[str, Any] | None = None,
     executable: str | None = None, place_directive: str = "Default", route_directive: str = "Default",
 ) -> dict[str, Any]:
-    from emuflow.physical.vivado.vivado_backend import _resolve_vivado, _read_metrics, _integer, _number, vivado_runtime_xdc, write_vivado_boundary_timing_query
+    from emuflow.physical.vivado.vivado_backend import _resolve_vivado, _read_metrics, _integer, _number, write_vivado_boundary_timing_query
     from emuflow.physical.vivado.vivado_physical_timing import import_indexed_vivado_boundary, import_vivado_local_timing
     from emuflow.timing.logic_segment_timing import import_vivado_logic_segment_timing
 
@@ -123,41 +122,16 @@ def run_indexed_vivado_partition(
         raise ValidationError("indexed Vivado requires the current optimization/lineage policy")
     functions_path = Path(mapped_report["source_functions"]["path"])
     expected = original_cells + transport_cells
-    with IndexedPhysicalIR(ir_path) as ir:
-        if len(ir.instances) != expected or mapped_report["emitted_instances"] != expected:
-            raise ValidationError("Vivado input mapped cell accounting disagrees")
-        top = ir.value["design"]["top"]
-        ports = {port["id"] for port in ir.value["ports"]}
-    dut_count = sum(clock in ports for clock in runtime["timing_model"]["dut_clock_ports"])
-    xdc = output_dir / "runtime.xdc"
-    xdc.write_text(vivado_runtime_xdc(ir_path, runtime), encoding="utf-8")
-    prefix, adapter, wrapper, io_xdc, io_query = "", "", "", "", ""
-    top_report = None
-    if virtual_io_contract is not None:
-        wrapper_path = output_dir / "physical_top.sv"
-        top_report = write_vivado_physical_top(ir_path, wrapper_path, virtual_io_contract)
-        top, prefix = top_report["top"], top_report["hierarchy_prefix"]
-        adapter = str(Path(virtual_io_contract["adapter"]["path"]).resolve())
-        wrapper, io_xdc = str(wrapper_path), str(Path(virtual_io_contract["xdc"]["path"]).resolve())
-        query_path = output_dir / "fixed-io-query.tsv"
-        with query_path.open("w", encoding="utf-8") as stream:
-            stream.write("direction\tp_hex\tn_hex\tp_pin_hex\tn_pin_hex\tiostandard_hex\n")
-            for entry in virtual_io_contract["entries"]:
-                values = [entry["p"]["port"], entry["n"]["port"], entry["p"]["package_pin"], entry["n"]["package_pin"], entry["iostandard"]]
-                stream.write("\t".join([entry["direction"], *(value.encode("utf-8").hex() for value in values)]) + "\n")
-        io_query = str(query_path)
-    io_timing_map = output_dir / "fixed-io-timing-map.tsv"
-    if virtual_io_contract is not None:
-        with io_timing_map.open("w", encoding="utf-8") as stream:
-            stream.write("logical_hex\tphysical_hex\n")
-            for entry in virtual_io_contract["entries"]:
-                logical = f"{entry['logical_port']}[{entry['logical_bit']}]"
-                names = [logical]
-                if entry["logical_port_width"] == 1:
-                    names.append(entry["logical_port"])
-                for name in names:
-                    stream.write(name.encode().hex() + "\t" + entry["p"]["port"].encode().hex() + "\n")
-    timing_arguments = [prefix] + ([str(io_timing_map)] if virtual_io_contract is not None else [])
+    inputs = prepare_vivado_inputs(ir_path, output_dir, runtime, virtual_io_contract)
+    if inputs["instances"] != expected or mapped_report["emitted_instances"] != expected:
+        raise ValidationError("Vivado input mapped cell accounting disagrees")
+    top, prefix = inputs["top"], inputs["hierarchy_prefix"]
+    dut_count = inputs["dut_clock_count"]
+    xdc = Path(inputs["runtime_xdc"])
+    fixed = inputs.get("fixed_io", {})
+    adapter, wrapper, io_xdc, io_query = (fixed.get(field, "") for field in ("adapter", "wrapper", "xdc", "query"))
+    top_report = fixed.get("top")
+    timing_arguments = [prefix] + ([fixed["timing_map"]] if fixed else [])
     threads = int(os.environ.get("EMUFLOW_VIVADO_THREADS", "2"))
     if threads < 1:
         raise ValidationError("Vivado thread count must be positive")
