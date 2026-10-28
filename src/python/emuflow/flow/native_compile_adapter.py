@@ -210,13 +210,6 @@ def _initial_context(request):
 
 
 def _control_snapshot(ctx, stage, flow):
-    if stage == "finalize":
-        # Source bindings remain live through terminal publication even though
-        # no following phase needs another serialized copy of the final report.
-        catalog = getattr(ctx, "chimew_package_geometry", None)
-        if catalog is not None:
-            catalog.require_unchanged()
-        return {}
     state = {key: item for key, item in vars(ctx).items() if not key.startswith("_")}
     catalog = state.get("chimew_package_geometry")
     if catalog is not None:
@@ -279,6 +272,8 @@ def _restore_control_state(state):
 
 
 def execute(stage, request_path, previous_path, output_path, run_id):
+    if stage == "finalize":
+        raise EmuFlowError("native compiler finalize is owned by the C++ controller")
     if stage == "route":
         raise EmuFlowError("native compiler route is owned by the C++ Phase 4 stage")
     if stage == "tdm":
@@ -321,7 +316,7 @@ def execute(stage, request_path, previous_path, output_path, run_id):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stage", choices=[stage for stage in STAGES if stage not in {"tdm", "partition", "route"}], required=True)
+    parser.add_argument("--stage", choices=[stage for stage in STAGES if stage not in {"tdm", "partition", "route", "finalize"}], required=True)
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--previous", type=Path)
     parser.add_argument("--output", type=Path, required=True)

@@ -21,6 +21,7 @@ routing/route_view.cpp
 scheduling/schedule_ingress.cpp
 common/tool_runtime.cpp
 flow/compile.cpp
+flow/finalize.cpp
 physical/openparf/bookshelf.cpp
 physical/rapidwright/rwroute_export.cpp
 partition/patron_ingress.cpp

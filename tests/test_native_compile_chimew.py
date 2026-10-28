@@ -291,7 +291,7 @@ def test_real_chimew_kernels_survive_split_physical_signoff_control_boundaries(
     assert (root / "phase6-comparison/comparison-report.json").is_file()
 
 
-@pytest.mark.parametrize("tamper", [None, "split", "finalize"])
+@pytest.mark.parametrize("tamper", [None, "split", "physical"])
 def test_native_cpp_controller_carries_real_device_state_across_processes(
     case, tmp_path, tamper
 ):
@@ -335,7 +335,11 @@ if a.stage=='split':
  physical={'status':'pass','device-facts-only':True};runtime={'status':'pass'}
  state.update(baseline_physical_report=physical,baseline_runtime_report=runtime,
               phase6_comparison={'baseline':{'physical':physical,'runtime':runtime}})
-if a.stage in ('physical','signoff','finalize'):
+ partition=json.loads((out/'partition/phase3_report.json').read_text())
+ split=out/'split';split.mkdir(exist_ok=True)
+ (split/'phase6_report.json').write_text(json.dumps({'schema':'emuflow.phase6-report/v1','phase':6,'status':'pass','design':partition['design'],'platform':partition['platform'],'provider':'chimew','validation':{'status':'pass','scheduled_hops':0},'equivalence':{'status':'pass','mismatches':0}}))
+ (split/'manifest.json').write_text('{}')
+if a.stage in ('physical','signoff'):
  assert state['baseline_physical_report'] is state['phase6_comparison']['baseline']['physical']
  assert state['baseline_runtime_report'] is state['phase6_comparison']['baseline']['runtime']
 if a.stage==TAMPER:
@@ -363,12 +367,12 @@ value['state']=codec._pack(codec._control_snapshot(_CompileContext(state),a.stag
     assert route_store.read_bytes().startswith(b"SQLite format 3")
     if tamper:
         assert result.returncode != 0
-        assert calls == [stage for stage in STAGES[: STAGES.index(tamper) + 1] if stage not in {"tdm", "partition", "route"}]
+        assert calls == [stage for stage in STAGES[: STAGES.index(tamper) + 1] if stage not in {"tdm", "partition", "route", "finalize"}]
         assert "geometry generation changed" in result.stderr
         assert not (root / "out/multi-fpga-flow-report.json").exists()
     else:
         assert result.returncode == 0, result.stderr
-        assert calls == [stage for stage in STAGES if stage not in {"tdm", "partition", "route"}]
+        assert calls == [stage for stage in STAGES if stage not in {"tdm", "partition", "route", "finalize"}]
         report = json.loads((root / "out/native-compile-result.json").read_text())
         assert report["effective_configuration"]["phase6_provider"] == "chimew"
         assert report["native_data_plane_complete"] is False

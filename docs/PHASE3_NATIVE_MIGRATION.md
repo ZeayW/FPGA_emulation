@@ -483,7 +483,10 @@ directly in C++; it has no Python phase adapter. Partitioning uses `phase3 run`
 directly, with no Python partition phase adapter. The ordinary RTL frontend also
 executes directly in C++, using a checked configuration prepared by preflight.
 Baseline Phase 6 also executes directly through `phase6 compile`, constructing
-its runtime from the typed ScheduleStore and original BoardDB. The remaining
+its runtime from the typed ScheduleStore and original BoardDB. Terminal
+finalization is native: it projects bounded stage summaries, checks cross-stage
+identities, seals referenced typed stores and publishes the final flow report
+without a Python finalize process. The remaining
 transitional Python adapters invoke one shared phase body and exit, releasing
 their working population before the next phase starts. The existing Python controller uses the same phase bodies and
 retains advanced modes. Current defaults resolve from the shared phase API

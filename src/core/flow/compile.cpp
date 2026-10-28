@@ -1,4 +1,5 @@
 #include "flow/compile.hpp"
+#include "flow/finalize.hpp"
 #include "common/artifact_io.hpp"
 #include "common/json_record.hpp"
 #include "storage/sqlite.hpp"
@@ -277,6 +278,19 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
         Require(!fs::is_symlink(policy_root),"native Phase 6 policy directory was replaced");
         std::error_code error;fs::remove_all(policy_root,error);Require(!error,"cannot retire native Phase 6 policy");
       }
+      if(std::string(stage)=="finalize") {
+        auto prior=ArtifactRef::Bind(previous.string(),"native-compile-state-v1");
+        const auto step=RunStage("finalize",[&]{return std::vector<ArtifactRef>{prior};},
+          [&](const auto& sources){FinalizeFlow(output);for(const auto& source:sources)source.RequireUnchanged();},
+          [&]{return std::vector<ArtifactRef>{ArtifactRef::Bind(
+              (output/"multi-fpga-flow-report.json").string(),"multi-fpga-flow-report-v2")};});
+        result.steps.push_back({stage,step.ok(),"native-flow-finalize-v1",step.metrics.wall_seconds,
+          step.metrics.user_cpu_seconds,step.metrics.system_cpu_seconds,step.metrics.process_peak_rss_kib});
+        if(!step.ok())throw StageError(step.error,"native compile finalize: "+step.message);
+        fs::remove(previous);previous.clear();
+        std::cout<<"COMPILE_STAGE_COMPLETE finalize "<<step.metrics.wall_seconds<<"s\n"<<std::flush;
+        continue;
+      }
       const auto next = scratch.root / (std::string(stage) + ".json");
       const auto temporary = scratch.root / "tmp" / stage;
       fs::create_directory(temporary);
@@ -477,7 +491,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
 std::string CompileResultJson(const CompileResult& result) {
   std::ostringstream out; out << std::setprecision(17);
   out << "{\"schema\":\"emuflow.native-compile-result/v2\",\"implementation_id\":\"native-orchestration-v1\","
-      << "\"phase_implementation\":\"native-rtl-frontend-phase2-phase3-phase4-phase5-baseline-phase6-and-isolated-python-adapters-v1\",\"native_data_plane_complete\":false,"
+      << "\"phase_implementation\":\"native-rtl-frontend-phase2-phase3-phase4-phase5-baseline-phase6-finalize-and-isolated-python-adapters-v2\",\"native_data_plane_complete\":false,"
       << "\"operation\":" << StageResultJson(result.operation) << ",\"output_directory\":" << JsonQuote(result.output_directory)
       << ",\"request_configuration\":" << (result.request_configuration.empty() ? "null" : result.request_configuration)
       << ",\"effective_configuration\":" << (result.effective_configuration.empty() ? "null" : result.effective_configuration)

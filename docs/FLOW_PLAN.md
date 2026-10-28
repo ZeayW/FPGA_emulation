@@ -128,6 +128,7 @@ Explicit prepared boundaries reuse their sealed indexed inputs; a missing native
 policy for new timing extraction is an error.
 
 Chimew, physical implementation and Phase 7C still have explicit stage adapters.
+Final report assembly is native and no longer has a Python stage adapter.
 Configuration preparation and detailed stage ownership are distinct: bounded
 Python configuration is not a circuit data plane, and isolated execution alone
 does not complete migration. The compiler continues to report
@@ -145,7 +146,7 @@ not language line counts or the presence of typed storage:
 | Mapped physical inputs | Indexed Bookshelf pin/net writers and placement lowering | Mapped-index SQL projection, atomic/macro fact generation, geometry and window policy |
 | Placement and routing handoff | Typed certificate/handoff ownership checks and RWRoute exporter | Site/BEL/primitive checks, handoff record production and independent route connectivity/PIP validation |
 | Physical timing | Complete local-path and logic-segment query generation, shared physical object resolution, Vivado boundary/descendant association, indexed evidence import and OpenSTA staging | Bounded backend configuration and tool supervision |
-| Global timing | Full-assignment physical coverage, event binding, measurement import and original-path reduction | Runtime generation, engine supervision, complete signoff stage and final report assembly |
+| Global timing | Full-assignment physical coverage, event binding, measurement import, original-path reduction and final flow-report sealing | Runtime generation, engine supervision and the signoff stage |
 
 Indexed atoms and ordinal safe names already avoid complete in-memory lists or
 name dictionaries. Local-path evidence already has a typed owner. These are not

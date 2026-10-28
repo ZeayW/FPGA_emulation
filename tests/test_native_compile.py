@@ -49,8 +49,6 @@ def test_controller_transfers_report_projection_without_graph_diagnostics():
     del ctx.report
     assert _unpack(_pack(_control_snapshot(ctx, "partition", flow))) == {
         "phase3_report": {"status": "pass", "design": "fixture", "validation": {"cut_nets": 2}}}
-    ctx.report = GraphView()
-    assert _control_snapshot(ctx, "finalize", flow) == {}
 
 
 def test_adapter_uses_actual_compile_defaults_and_rejects_relative_bindings(tmp_path):
@@ -217,7 +215,7 @@ def fixture_request(tmp_path, *, fail=None, corrupt=None, waiting=False, tempora
     (source / "flow/__init__.py").write_text("")
     (source / "__init__.py").write_text("")
     (source / "flow/native_compile_adapter.py").write_text('''
-import argparse,json,os,pathlib,signal,time
+import argparse,json,os,pathlib,signal,time,shutil
 p=argparse.ArgumentParser()
 for name in ('stage','request','previous','output','run-id'):p.add_argument('--'+name)
 a=p.parse_args();request=pathlib.Path(a.request);v=json.loads(request.read_text());out=pathlib.Path(v['options']['output_dir']);out.mkdir(exist_ok=True)
@@ -260,6 +258,17 @@ if a.stage=='physical' and v['options'].get('phase6_provider','baseline')=='base
  (out/'native-tdm-reference.json').write_text(json.dumps(state['phase5_report']))
  assert state['phase6_report'][0]=='split-report'
  (out/'native-split-reference.json').write_text(json.dumps(state['phase6_report']))
+if a.stage=='signoff':
+ partition=json.loads((out/'partition/phase3_report.json').read_text());design=partition['design'];platform=partition['platform']
+ frontend=out/'frontend/phase1';frontend.mkdir(parents=True,exist_ok=True)
+ shutil.copy2(state['platform_path'][1],frontend/'platform.normalized.json')
+ shutil.copy2(state['ir_path'][1],frontend/'design.emuir.sqlite')
+ (frontend/'phase1_report.json').write_text(json.dumps({'schema':'emuflow.phase1-report/v1','phase':1,'status':'pass','design':design,'platform':platform,'synthesis':{'mode':'fixture'}}))
+ runtime=out/'runtime';runtime.mkdir(exist_ok=True)
+ validation={'status':'pass','frame_slots':16,'nominal_virtual_frequency_mhz':100.0}
+ (runtime/'phase7c_report.json').write_text(json.dumps({'schema':'emuflow.phase7c-report/v1','status':'pass','design':design,'platform':platform,'validation':validation}))
+ (runtime/'runtime_contract.json').write_text(json.dumps({'schema':'fixture-runtime/v1','status':'pass'}))
+ (runtime/'qor_report.json').write_text(json.dumps({'schema':'fixture-qor/v1','status':'pass'}))
 # FIXTURE_CONTROL_STATE_READY
 value={'schema':'emuflow.native-compile-state/v1','run_id':a.run_id,'stage':a.stage,'status':'pass','request_generation':generation,'state':['map',state],'effective_options':v['options']}
 if TEMPORARY_REFERENCE and a.stage=='frontend':
@@ -269,7 +278,6 @@ if TEMPORARY_REFERENCE and a.stage=='frontend':
  value['state']=['map',{'next_input':['path',str(path)]}]
 if a.stage=='preflight' and CORRUPT:value[CORRUPT]='invalid'
 pathlib.Path(a.output).write_text(json.dumps(value))
-if a.stage=='finalize':(out/'multi-fpga-flow-report.json').write_text(json.dumps({'schema':'emuflow.multi-fpga-flow/v2','status':'pass'}))
 '''.replace("FAIL", repr(fail)).replace("CORRUPT", repr(corrupt)).replace("WAITING", repr(waiting))
        .replace("TEMPORARY_REFERENCE", repr(temporary_reference)).replace("STATE_FIELDS", repr(state_fields)).replace("PARTITION_REQUEST", repr(str(partition_request))).replace("PHASE6_POLICY",repr(str(phase6_policy))).replace("PHASE4_POLICY",repr(str(phase4_policy))))
     request = tmp_path / "request.json"
@@ -284,7 +292,7 @@ def test_native_controller_executes_fixed_order_and_publishes_metrics(tmp_path):
     request = fixture_request(tmp_path)
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "out/calls").read_text().splitlines() == [stage for stage in STAGES if stage not in {"tdm", "partition", "route", "split"}]
+    assert (tmp_path / "out/calls").read_text().splitlines() == [stage for stage in STAGES if stage not in {"tdm", "partition", "route", "split", "finalize"}]
     report = json.loads((tmp_path / "out/native-compile-result.json").read_text())
     assert report["operation"]["status"] == "pass"
     assert report["native_data_plane_complete"] is False
@@ -298,6 +306,8 @@ def test_native_controller_executes_fixed_order_and_publishes_metrics(tmp_path):
     assert native_step["implementation_id"] == "native-exact-phase5-v1"
     split_step=next(step for step in report['stages'] if step['stage']=='split')
     assert split_step['implementation_id']=='native-baseline-phase6-v1'
+    finalize_step=next(step for step in report['stages'] if step['stage']=='finalize')
+    assert finalize_step['implementation_id']=='native-flow-finalize-v1'
     split=_unpack(json.loads((tmp_path/'out/native-split-reference.json').read_text()))
     assert split['status']=='pass' and split['equivalence']['mismatches']==0
     assert split['equivalence']['cycles']>0
@@ -335,6 +345,11 @@ def test_python_tdm_adapter_entry_is_retired_before_execution(tmp_path):
         execute("tdm", tmp_path / "missing", None, tmp_path / "unused", "run")
 
 
+def test_python_finalize_adapter_entry_is_retired_before_execution(tmp_path):
+    with pytest.raises(EmuFlowError, match=r"owned by the C\+\+ controller"):
+        execute("finalize", tmp_path / "missing", None, tmp_path / "unused", "run")
+
+
 def test_baseline_split_never_executes_a_python_phase_adapter(tmp_path):
     from emuflow.common.native_tools import native_file_generation
     request=tmp_path/'request.json';request.write_text('{}')
@@ -361,7 +376,7 @@ temporary=pathlib.Path(os.environ['TMPDIR'])""")
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     roots = (tmp_path / "out/temporary-paths").read_text().splitlines()
-    assert len(set(roots)) == len(STAGES)-4
+    assert len(set(roots)) == len(STAGES)-5
     assert all(not Path(root).exists() for root in roots)
 
 

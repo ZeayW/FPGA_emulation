@@ -43,8 +43,8 @@ from emuflow.transport.transport_cost import validate_transport_cost_database
 from emuflow.transport.runtime import validate_virtual_runtime
 from emuflow.routing.routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
 from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
-from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule, tdm_schedule_store_path
-from emuflow.routing.system_route_storage import read_system_routes, system_route_store_path
+from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
+from emuflow.routing.system_route_storage import read_system_routes
 from emuflow.scheduling.timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from emuflow.timing.sta import partition_net_weights_payload_path, project_sta_path_database, sta_path_database_payload_path
 from emuflow.frontend.synthesis import VALID_XILINX_MAPPING_STRATEGIES
@@ -1383,6 +1383,10 @@ def _compile_frontend(ctx: _CompileContext):
             },
         }
     ctx.ir_path = ctx.phase1_root / "design.emuir.sqlite"
+    write_json(
+        frontend_root / "orchestration-summary.json",
+        _stage_summary("frontend", ctx.frontend_report),
+    )
 
 
 def _timing_paths(ctx: _CompileContext):
@@ -1475,6 +1479,10 @@ def _compile_partition_policy(ctx: _CompileContext):
                 ]
             ),
         }
+        write_json(
+            ctx.timing_root / "board-link-timing-report.json",
+            ctx.link_timing_report,
+        )
 
     if ctx.timing_report is not None:
         provider_consumes_weights = ctx.timing_driven
@@ -1598,6 +1606,11 @@ def _compile_route_policy(ctx: _CompileContext):
             clock_periods=ctx.clock_periods, transport_cost_path=ctx.transport_cost_db,
             equivalence_cycles=ctx.equivalence_cycles, equivalence_seed=ctx.equivalence_seed)
         ctx.native_phase6_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase6_policy))
+    if ctx.timing_report is not None:
+        write_json(
+            ctx.timing_root / "orchestration-summary.json",
+            _timing_report_summary(ctx.timing_report),
+        )
 
 def _run_selected_physical(ctx, split_root, schedule_path, output_dir):
     catalog = getattr(ctx,"chimew_package_geometry",None)
@@ -1902,257 +1915,6 @@ def _compile_signoff(ctx: _CompileContext):
             ctx.output_dir / "phase6-comparison/comparison-report.json",
             ctx.phase6_comparison,
         )
-
-def _compile_finalize(ctx: _CompileContext):
-    resolved_schedule_store = tdm_schedule_store_path(ctx.schedule_path)
-    if resolved_schedule_store is None:
-        raise ValidationError("Phase 5 schedule has no indexed store")
-    resolved_route_store = system_route_store_path(ctx.routes_path)
-    if resolved_route_store is None:
-        raise ValidationError("Phase 4 routes have no indexed store")
-
-    ctx.report = {
-        "schema": MULTI_FPGA_FLOW_SCHEMA,
-        "status": "pass",
-        "provider": MULTI_FPGA_FLOW_PROVIDER,
-        "architecture_policy": "provider-neutral",
-        **(
-            {"timing": _timing_report_summary(ctx.timing_report)}
-            if ctx.timing_report is not None
-            else {}
-        ),
-        **(
-            {"board_link_timing": ctx.link_timing_report}
-            if ctx.link_timing_report is not None
-            else {}
-        ),
-        **(
-            {"frame_search": ctx.frame_search_report}
-            if ctx.frame_search_report is not None
-            else {}
-        ),
-        "runtime": ctx.runtime_report,
-        **(
-            {"physical": _physical_report_summary(ctx.physical_report)}
-            if ctx.physical_report is not None
-            else {}
-        ),
-        **(
-            {"phase6_comparison": ctx.phase6_comparison}
-            if ctx.phase6_comparison is not None
-            else {}
-        ),
-        "stages": {
-            "frontend": _stage_summary("frontend", ctx.frontend_report),
-            "partition": _stage_summary("partition", ctx.phase3_report),
-            "system_route": _stage_summary("system_route", ctx.phase4_report),
-            "tdm": _stage_summary("tdm", ctx.phase5_report),
-            "split": _stage_summary("split", ctx.phase6_report),
-        },
-        "artifacts": {
-            "platform": {
-                "path": "frontend/phase1/platform.normalized.json",
-                "sha256": _sha256(
-                    ctx.phase1_root / "platform.normalized.json"
-                ),
-            },
-            "emuir": {
-                "path": "frontend/phase1/design.emuir.sqlite",
-                "sha256": _sha256(ctx.ir_path),
-            },
-            "partition_constraints": {
-                "path": "partition/constraints.normalized.json",
-                "sha256": _sha256(
-                    ctx.phase3_root / "constraints.normalized.json"
-                ),
-            },
-            "route_constraints": {
-                "path": "system-route/route_constraints.normalized.json",
-                "sha256": _sha256(
-                    ctx.phase4_root / "route_constraints.normalized.json"
-                ),
-            },
-            "assignment": {
-                "path": "partition/assignment.json",
-                "sha256": _sha256(ctx.assignment_path),
-            },
-            "routes": {
-                "path": "system-route/routes.json",
-                "sha256": _sha256(ctx.routes_path),
-            },
-            "route_store": {
-                "path": (
-                    Path("system-route") / resolved_route_store.name
-                ).as_posix(),
-                "sha256": _sha256(resolved_route_store),
-            },
-            "schedule": {
-                "path": "tdm/schedule.json",
-                "sha256": _sha256(ctx.schedule_path),
-            },
-            "schedule_store": {
-                "path": (
-                    Path("tdm") / resolved_schedule_store.name
-                ).as_posix(),
-                "sha256": _sha256(resolved_schedule_store),
-            },
-            "split_manifest": {
-                "path": "split/manifest.json",
-                "sha256": _sha256(ctx.phase6_root / "manifest.json"),
-            },
-            **(
-                {
-                    "transport_cost": {
-                        "path": "split/transport-cost.json",
-                        "sha256": _sha256(
-                            ctx.phase6_root / "transport-cost.json"
-                        ),
-                    }
-                }
-                if ctx.transport_cost_db is not None
-                else {}
-            ),
-            "runtime_contract": {
-                "path": "runtime/runtime_contract.json",
-                "sha256": _sha256(ctx.runtime_root / "runtime_contract.json"),
-            },
-            "qor_report": {
-                "path": "runtime/qor_report.json",
-                "sha256": _sha256(ctx.runtime_root / "qor_report.json"),
-            },
-            **(
-                {
-                    "physical_flow_report": {
-                        "path": "physical/multi-fpga-physical-flow-report.json",
-                        "sha256": _sha256(
-                            ctx.output_dir
-                            / "physical/multi-fpga-physical-flow-report.json"
-                        ),
-                    },
-                    "physical_summary": {
-                        "path": "physical/physical-summary.json",
-                        "sha256": _sha256(
-                            ctx.output_dir / "physical/physical-summary.json"
-                        ),
-                    },
-                }
-                if ctx.physical_report is not None
-                else {}
-            ),
-            **(
-                {
-                    "phase6_comparison_report": {
-                        "path": "phase6-comparison/comparison-report.json",
-                        "sha256": _sha256(
-                            ctx.output_dir
-                            / "phase6-comparison/comparison-report.json"
-                        ),
-                    }
-                }
-                if ctx.phase6_comparison is not None
-                else {}
-            ),
-            **(
-                {
-                    "board_link_timing": {
-                        "path": "timing/board-link-timing.json",
-                        "sha256": _sha256(ctx.copied_link_timing_path),
-                    },
-                    "board_link_route_constraints": {
-                        "path": "timing/board-link-route-constraints.json",
-                        "sha256": _sha256(
-                            ctx.effective_route_constraints_path
-                        ),
-                    },
-                }
-                if ctx.copied_link_timing_path is not None
-                and ctx.effective_route_constraints_path is not None
-                else {}
-            ),
-            **(
-                {
-                    "frame_search_report": {
-                        "path": "frame-search/frame-search-report.json",
-                        "sha256": _sha256(
-                            ctx.output_dir
-                            / "frame-search/frame-search-report.json"
-                        ),
-                    }
-                }
-                if ctx.frame_search_report is not None
-                else {}
-            ),
-            **(
-                {
-                    "timing_path_database": {
-                        "path": "timing/path-database.json",
-                        "sha256": _sha256(ctx.path_database_path),
-                    },
-                    **(
-                        {
-                            "timing_path_database_payload": {
-                                "path": str(
-                                    Path("timing")
-                                    / ctx.path_database_payload.name
-                                ),
-                                "sha256": _sha256(ctx.path_database_payload),
-                            }
-                        }
-                        if ctx.path_database_payload is not None
-                        else {}
-                    ),
-                    **(
-                        {
-                            "cut_segment_qualification": {
-                                "path": "timing/cut-segment-qualification.json",
-                                "sha256": _sha256(ctx.cut_segment_qualification_path),
-                            }
-                        }
-                        if ctx.cut_segment_qualification_path is not None
-                        else {}
-                    ),
-                    **(
-                        {
-                            "partition_net_weights": {
-                                "path": "timing/partition-net-weights.json",
-                                "sha256": _sha256(ctx.net_weights_path),
-                            }
-                        }
-                        if ctx.net_weights_path.is_file()
-                        else {}
-                    ),
-                    **(
-                        {
-                            "partition_net_weights_payload": {
-                                "path": str(
-                                    Path("timing")
-                                    / ctx.net_weights_payload.name
-                                ),
-                                "sha256": _sha256(ctx.net_weights_payload),
-                            }
-                        }
-                        if ctx.net_weights_payload is not None
-                        else {}
-                    ),
-                    **(
-                        {
-                            "cut_timing_paths": {
-                                "path": "timing/cut-timing-paths.json",
-                                "sha256": _sha256(ctx.projected_timing_paths),
-                            }
-                        }
-                        if ctx.projected_timing_paths is not None
-                        else {}
-                    ),
-                }
-                if ctx.internal_timing_database
-                else {}
-            ),
-        },
-    }
-    ctx.report["summary"] = validate_multi_fpga_flow_report(ctx.report)
-    write_json(ctx.output_dir / "multi-fpga-flow-report.json", ctx.report)
-    return ctx.report
 
 def run_multi_fpga_flow(
     platform_path: Path = DEFAULT_PLATFORM_PATH,
