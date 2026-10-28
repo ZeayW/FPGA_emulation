@@ -594,6 +594,10 @@ class XilinxRWRouteTest(unittest.TestCase):
             route_path.write_text(json.dumps(self._route()), encoding="utf-8")
             import_yosys_json(mapped_json).save(mapped_ir)
             emit_xilinx_mapped_index(mapped_ir, mapped_index)
+            route = json.loads(route_path.read_text())
+            route['source'].update(mapped_sha256=hashlib.sha256(mapped_index.read_bytes()).hexdigest(),
+                                   packed_sha256=hashlib.sha256(packed_path.read_bytes()).hexdigest())
+            route_path.write_text(json.dumps(route))
             with (
                 open_xilinx_mapped_index(mapped_index) as indexed,
                 mock.patch.object(
@@ -675,7 +679,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                 path = Path(temporary) / "route.json"
                 path.write_text(json.dumps(value), encoding="utf-8")
                 original = path.read_bytes()
-                report = validate_xilinx_route_db(path, _value=value)
+                report = validate_xilinx_route_db(path)
                 self.assertEqual(path.read_bytes(), original)
                 self.assertEqual(report["status"], "pass")
                 self.assertNotIn("source_sha256", report)
@@ -1152,7 +1156,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             )
             self.assertEqual(
                 [call.args[0] for call in rwroute_sha256.call_args_list],
-                [mapped_path, packed_path, placement_path, route_path],
+                [],
             )
             self.assertEqual(
                 [call.args[0] for call in timing_sha256.call_args_list],

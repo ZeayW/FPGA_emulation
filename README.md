@@ -333,6 +333,9 @@ The shared core consumes typed placement certificates and atomic source owners
 to publish the physical handoff directly, then independently audits mapped
 primitive ownership, site/BEL legality, slice controls and dedicated cascades.
 The Python host passes source references and reads lazy typed views.
+Compact-to-mapped physical input generation and independent RWRoute
+connectivity/PIP validation also run in the shared core. The original source
+owners and sealed route streams stay authoritative across these boundaries.
 The final route still requires zero
 overused nodes and complete source-to-sink connectivity.
 

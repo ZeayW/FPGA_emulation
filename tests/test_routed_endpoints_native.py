@@ -56,7 +56,7 @@ def case(root):
     with IndexedXilinxMappedNetlist(mapped_path) as view:
         p, q = open_xilinx_physical_handoff(physical, validated_sha256=digests["packed_sha256"])
         validation = validate_xilinx_route_db(route_path, mapped_path=mapped_path, packed_path=physical, placement_path=physical,
-                                             mapped_value=view, packed_value=p, source_sha256=digests, _value=route)
+                                             mapped_value=view, packed_value=p, source_sha256=digests)
     return dict(root=root, mapped=mapped, packed=packed, placement=placement, mapped_path=mapped_path, physical=physical,
                 route_path=route_path, nets=nets, pips=pips, route=route, validation=validation, digests=digests)
 

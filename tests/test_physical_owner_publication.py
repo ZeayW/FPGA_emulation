@@ -9,9 +9,8 @@ import pytest
 from emuflow.common.errors import ValidationError
 from emuflow.storage.store_publication import bind_store_source
 
-KINDS = ("mapped", "name_map", "certificate")
+KINDS = ("name_map", "certificate")
 MODULES = {
-    "mapped": "emuflow.physical.xilinx_netlist",
     "name_map": "emuflow.physical.openparf.xilinx_openparf_name_map_storage",
     "certificate": "emuflow.physical.openparf.xilinx_openparf_atomic",
 }
@@ -22,21 +21,6 @@ def produce(kind, output, generation=0):
     from emuflow.storage.store_publication import bind_store_source
 
     module = importlib.import_module(MODULES[kind])
-    if kind == "mapped":
-        from emuflow.frontend.yosys import import_yosys_json
-        from tests.test_xilinx_netlist import XilinxMappedNetlistTests
-
-        value = XilinxMappedNetlistTests._fixture()
-        value["modules"]["top"]["cells"]["lut"]["parameters"]["INIT"] = (
-            "10" if generation == 0 else "01"
-        )
-        raw, ir = output.with_suffix(".input.json"), output.with_suffix(
-            ".input.emuir.sqlite"
-        )
-        write_json(raw, value)
-        import_yosys_json(raw).save(ir)
-        module.emit_xilinx_mapped_index(ir, output)
-        return output
     upstream = output.parent / "input.txt"
     upstream.write_text("immutable upstream")
     sources = (bind_store_source(upstream, "physical-input-document-v1"),)

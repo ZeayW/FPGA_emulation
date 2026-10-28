@@ -296,7 +296,7 @@ def _run_rapidwright_routed_backend_tail(
                 packed_value=packed_value,
                 source_sha256=source_sha256,
                 virtual_io_contract=virtual_io_contract,
-                _value=route_value,
+
             ),
             "output": str(route_path),
             "log": str(route_log_path) if route_log_path.is_file() else None,

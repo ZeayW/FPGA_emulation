@@ -150,7 +150,6 @@ def build_xilinx_routed_timing(
                 mapped_value=mapped,
                 packed_value=packed,
                 source_sha256=source_sha256,
-                _value=route,
                 _route_source=route_source,
             )
             route_sha256 = route_validation.get("route_sha256")

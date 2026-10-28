@@ -151,6 +151,8 @@ class NativeStageRuntimeTest(unittest.TestCase):
             output, report = root / 'output', root / 'report'
             cases = [
                 ["physical", "build-handoff", missing],
+                ["physical", "build-mapped-index", missing, missing, missing, missing],
+                ["physical", "validate-route", missing],
                 ["physical", "validate-handoff-structure", missing, missing],
                 ["physical", "audit-handoff", missing, missing, missing, missing],
                 ["physical", "audit-handoff", missing, missing, missing, missing, missing],

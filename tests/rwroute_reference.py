@@ -20,7 +20,7 @@ from emuflow.common.io import read_json
 from emuflow.physical.contracts import PACKED_SITE_NETLIST_SCHEMA
 from emuflow.physical.contracts import XILINX_PLACEMENT_SCHEMA
 from emuflow.physical.xilinx_physical_handoff import validate_xilinx_physical_handoff_pair
-from emuflow.physical.rapidwright.xilinx_rwroute import _sha256, _select_module, _primitive_parameter, _is_clock_sink_pin
+from emuflow.physical.rapidwright.xilinx_rwroute import _sha256
 
 class _TsvSpool:
     """Append a large route contract without retaining its text in memory."""
@@ -853,3 +853,50 @@ def _export_rwroute_python_reference(
             },
         },
     }
+
+
+def _select_module(mapped: Mapping[str, Any], top: str) -> Mapping[str, Any]:
+    modules = mapped.get("modules")
+    module = modules.get(top) if isinstance(modules, Mapping) else None
+    if not isinstance(module, Mapping) or not isinstance(
+        module.get("cells"), Mapping
+    ):
+        raise ValidationError(f"mapped JSON has no valid top module {top!r}")
+    return module
+
+
+def _is_clock_sink_pin(pin: str) -> bool:
+    """Return whether a physical primitive pin consumes a clock net."""
+    return pin in _CLOCK_SINK_PINS
+
+
+def _primitive_parameter(parameters: Mapping[str, Any], name: str) -> Optional[str]:
+    """Return a compact RapidWright property value for a routed hard primitive.
+
+    Yosys JSON writes integer parameters as binary strings.  RWRoute needs the
+    decoded width/register value before the primitive is placed because the
+    physical pin expansion of a RAMB36 write-enable depends on TDP versus SDP
+    mode.  Large INIT payloads are deliberately excluded from this hot path.
+    """
+    value = parameters.get(name)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, int):
+        return str(value)
+    if not isinstance(value, str):
+        raise ValidationError(f"primitive parameter {name!r} has invalid type")
+    if value and set(value) <= {"0", "1"}:
+        return str(int(value, 2))
+    if any(character in value for character in "\t\r\n"):
+        raise ValidationError(f"primitive parameter {name!r} is not TSV-safe")
+    return value
+
+
+_CLOCK_SINK_PINS = frozenset({
+    "C",
+    "CLK",
+    "CLKARDCLK",
+    "CLKBWRCLK",
+})

@@ -12,7 +12,9 @@ from typing import Any, Dict
 
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import file_sha256, read_json, write_json
-from emuflow.physical.rapidwright.xilinx_rwroute import _is_clock_sink_pin
+def _is_clock_sink_pin(pin: str) -> bool:
+    return pin in {"C", "CLK", "CLKARDCLK", "CLKBWRCLK"}
+
 
 
 ULTRASCALE_CLOCKS_PER_REGION = 24

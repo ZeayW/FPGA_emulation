@@ -17,6 +17,10 @@
 namespace emuflow::core {
 namespace {
 constexpr RegisteredSchema schemas[] = {
+    {"xilinx-route-validation-request-v1", ArtifactEncoding::kBinary, 0x31565250464d5545ULL, 1},
+    {"xilinx-route-validation-report-v1", ArtifactEncoding::kText, 0, 1},
+    {"xilinx-mapped-index-request-v1", ArtifactEncoding::kBinary, 0x31584d50464d5545ULL, 1},
+    {"xilinx-mapped-index-report-v1", ArtifactEncoding::kText, 0, 1},
     {"sqlite-publication-request-v1", ArtifactEncoding::kBinary, 0x31505351464d5545ULL, 1},
     {"boundary-identity-selector-v1", ArtifactEncoding::kText, 0, 1},
     {"placement-lowering-request-v1", ArtifactEncoding::kText, 0, 1},

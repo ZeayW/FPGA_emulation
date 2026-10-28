@@ -1,0 +1,21 @@
+{
+  "schema": "emuflow.rapidwright-timing-contract/v1",
+  "provider": "rapidwright-rwroute-2026.1.0",
+  "timing": {
+    "provider": "rapidwright-lightweight",
+    "family": "UltraScalePlus",
+    "units": "ps",
+    "setup_route_delays": "available",
+    "hold_analysis": "unavailable",
+    "hard_block_clock_timing": "unqualified",
+    "source_revision": "127f55cd704c277372697e699f1559e1cdc91f34",
+    "source_data_sha256": {
+      "intersite_delay_terms.txt": "3b122837c4a1b5f3c212fc6353bee3a0854a204f2f69e2bc1cac4a2a1f9d7333",
+      "intrasite_delay_terms.txt": "ff08ce9041da649f2bf886d900f033dd23de8ad54eb4db55d37ce032dc0ec0a0"
+    },
+    "device_data_md5": {
+      "data/parts.db": "58dd6f20c37798322b6904a8a786a3de",
+      "data/devices/virtexuplus/xcvu19p_db.dat": "5ad01490fe442f360aa67d7dfe0fa1c3"
+    }
+  }
+}

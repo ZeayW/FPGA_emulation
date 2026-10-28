@@ -568,7 +568,7 @@ there is no silent implementation or provider fallback.
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
 | Phase 6 | Native baseline stage owns source-bound split, typed-hop transport/binding, independent audits, RTL/XDC, cost aggregation, manifest/report and atomic directory publication | Retained Chimew qualification/report ownership and real-design acceptance remain; bounded board-policy preparation stays in the transitional route-policy adapter. Baseline runtime/calendar and stage invocation are native, with independent size-limited behavioral replay preserved |
-| Phase 7 | Complete native lowering publishes compact PlacementIR and typed boundary identities together; typed physical handoff and native Bookshelf/RWRoute input export | Complete remaining backend preparation, bridge/site semantics, validation ownership and full physical qualification on both retained backends |
+| Phase 7 | Native lowering, compact-to-mapped physical input generation, certificate-to-handoff production/audit, Bookshelf/RWRoute input export and independent RWRoute connectivity/PIP validation | Complete OpenPARF atomic-source/device-geometry preparation, physical/signoff orchestration and NVDLA qualification on both retained backends |
 | Global STA | Native typed physical-to-event binding, event validation/model export, measurement import, full-original-path reduction and typed QoR publication | Migrate remaining physical producers and orchestration; qualify complete real-design physical/global timing |
 
 Native computation does not eliminate algorithmic search cost. Compare search,
@@ -1269,3 +1269,38 @@ stage control and full physical/signoff orchestration remain W7 closure gates,
 alongside complete NVDLA qualification on the two retained physical backends.
 No whole-design performance or terminal acceptance result follows from these
 component tests.
+
+
+### Native mapped physical inputs and RWRoute validation
+
+`physical build-mapped-index` consumes compact EmuIR and the original primitive
+library. Native primitive projection keeps the existing SQLite set operations;
+generic LUT and positive/negative edge FF lowering uses native ordered cursors.
+Final cell/pin population and values are independently rejoined with source
+records before publication. Sparse net identities, unconnected port identities,
+constants, parameters, resource accounting and both retained backends keep the
+current mapped v2 contract. The primitive classifier is shared with the native
+frontend. The replaced Python projection, lowering and writer are deleted.
+
+`physical validate-route` reads the sealed route manifest and net/PIP streams
+directly. A private bounded-cache SQLite workspace owns global normalized PIP
+identities, per-net directed reachability, exclusions, physical clock-gate and
+fixed-I/O coverage. It checks hashes, record counts, truncated/unbound payloads,
+static roots, alternate sources, delays, transformations and summary accounting.
+Original mapped/physical/input files remain authoritative even when callers
+have cached hashes. Timing-data expectations have one installed, source-bound
+contract. The route evidence is immutable; only a small validation report is
+published. The Python graph validator and PIP ownership implementation are
+deleted, and the complete-route-object validation argument is retired.
+
+Current production consumes typed mapped owners and v2 route streams. Small
+inline historical/test evidence has an explicit 8 MiB / 4096-record native
+read bound; it has no producer, solver or large-design fallback. Reader-only
+Python net streaming remains for timing evidence consumption.
+
+These changes close the mapped-input producer and the RWRoute certificate
+validator, not every physical preparation step. OpenPARF atomic-source and
+device/site geometry preparation, Chimew stage control, complete physical and
+signoff orchestration, and NVDLA terminal qualification remain W7 work. Neither
+component regression nor source reorganization changes algorithm selection or
+establishes full-design physical/timing acceptance.

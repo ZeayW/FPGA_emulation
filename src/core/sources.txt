@@ -73,3 +73,5 @@ physical/vivado/vivado_timing_queries.cpp
 physical/device.cpp
 physical/handoff_audit.cpp
 physical/handoff.cpp
+physical/mapped_index.cpp
+physical/rapidwright/route_validation.cpp

@@ -16,6 +16,8 @@
 #include "timing/local_path_query.hpp"
 #include "physical/vivado/vivado_timing_queries.hpp"
 #include "physical/handoff.hpp"
+#include "physical/mapped_index.hpp"
+#include "physical/rapidwright/route_validation.hpp"
 #include "physical/handoff_audit.hpp"
 #include "partition/partition_init.hpp"
 #include "partition/partition_hops.hpp"
@@ -39,6 +41,8 @@ constexpr const char* kUsage =
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
     "  phase2 run EMUIR POLICY OUTPUT_DIR\n"
     "  physical build-handoff REQUEST OUTPUT_DIR\n"
+    "  physical validate-route REQUEST SUMMARY\n"
+    "  physical build-mapped-index EMUIR PRIMITIVES REQUEST OUTPUT SUMMARY\n"
     "  physical validate-handoff-structure HANDOFF REQUEST SUMMARY\n"
     "  physical audit-handoff MAPPED HANDOFF ARCHITECTURE [NATIVE PROVIDER] [CONSTRAINTS] REQUEST SUMMARY\n"
     "  phase3 run REQUEST OUTPUT_DIR\n"
@@ -278,6 +282,18 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     return Finish(emuflow::core::RunPhase2(
       emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),
       emuflow::core::ArtifactRef::Bind(argv[4],"phase2-policy-v1"),argv[5],&tool_cancelled),report);
+  }
+  if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="validate-route") {
+    ToolSignals signals;
+    return Finish(emuflow::core::ValidateRouteCertificate(
+      emuflow::core::ArtifactRef::Bind(argv[3],"xilinx-route-validation-request-v1"),argv[4],&tool_cancelled),report);
+  }
+  if(argc==8 && std::string(argv[1])=="physical" && std::string(argv[2])=="build-mapped-index") {
+    ToolSignals signals;
+    return Finish(emuflow::core::BuildMappedIndex({
+      emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),
+      emuflow::core::ArtifactRef::Bind(argv[4],"physical-input-document-v1"),
+      emuflow::core::ArtifactRef::Bind(argv[5],"xilinx-mapped-index-request-v1")},argv[6],argv[7],&tool_cancelled),report);
   }
   if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="build-handoff") {
     ToolSignals signals;

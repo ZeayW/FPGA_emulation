@@ -65,7 +65,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             source_hash = hashlib.sha256(ir_path.read_bytes()).hexdigest()
             source_mtime = ir_path.stat().st_mtime_ns
             report = emit_xilinx_mapped_index(ir_path, index)
-            self.assertEqual(report["index_builder"], "sqlite-native-primitive-v1")
+            self.assertEqual(report["index_builder"], "native-primitive-projection-v1")
             with open_xilinx_mapped_index(index) as indexed:
                 module = indexed["modules"]["top"]
                 self.assertEqual(indexed.cell_type_counts(), {"FDRE": 1, "LUT1": 1})
@@ -109,7 +109,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             finally:
                 connection.close()
             report = emit_xilinx_mapped_index(ir_path, index)
-            self.assertEqual(report["index_builder"], "sqlite-native-primitive-v1")
+            self.assertEqual(report["index_builder"], "native-primitive-projection-v1")
             self.assertEqual(report["unconnected_input_bits"], 1)
             with open_xilinx_mapped_index(index) as indexed:
                 module = indexed["modules"]["top"]
@@ -153,7 +153,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             source.write_text(json.dumps(mapped), encoding="utf-8")
             import_yosys_json(source, clocks=("clk",)).save(ir_path)
             report = emit_xilinx_mapped_index(ir_path, index)
-            self.assertEqual(report["index_builder"], "sqlite-native-primitive-v1")
+            self.assertEqual(report["index_builder"], "native-primitive-projection-v1")
             self.assertEqual(report["audit"]["hard_block_cells"], {"RAMB18E2": 1})
             with open_xilinx_mapped_index(index) as indexed:
                 module = indexed["modules"]["top"]
@@ -161,7 +161,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
                 self.assertEqual(module["ports"]["memory_data"]["bits"], memory_bits)
                 self.assertEqual(indexed.cell_type_counts(), {"FDRE": 1, "LUT1": 1, "RAMB18E2": 1})
 
-    def test_generic_lut_keeps_python_lowering_fallback(self) -> None:
+    def test_generic_lut_uses_native_lowering(self) -> None:
         mapped = self._fixture()
         lut = mapped["modules"]["top"]["cells"]["lut"]
         lut["type"] = "$lut"
@@ -181,7 +181,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
                     indexed.cell_type_and_parameters("lut"),
                     ("LUT1", {"INIT": "10"}),
                 )
-        self.assertEqual(report["index_builder"], "python-lowering-v2")
+        self.assertEqual(report["index_builder"], "native-primitive-lowering-v1")
 
     def test_native_projection_rejects_one_pin_on_two_nets(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -492,7 +492,7 @@ class XilinxMappedNetlistTests(unittest.TestCase):
             self.assertEqual(pin_count, 2)
             self.assertTrue(index.is_file())
             self.assertFalse(absent_json.exists())
-            self.assertEqual(report["output"], str(index))
+            self.assertEqual(report["output"], str(index.resolve()))
             self.assertEqual(
                 report["audit"]["mapped_representation"], "sqlite-index"
             )
