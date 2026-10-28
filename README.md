@@ -71,14 +71,8 @@ emuflow run rtl/top.sv --top top --clock clk=10 --backend vivado
 The installer builds and configures EmuFlow. The [step-by-step guide](docs/RUNNING.md)
 explains each command and argument.
 
-The run command executes the complete flow and writes `runs/top`. The physical
-route is selected per run: use `--backend rapidwright` for OpenPARF/RWRoute or
-`--backend vivado` for Vivado. Add more RTL files as positional arguments, or
-choose a different output with `--out`.
-Stage progress is printed by the native controller. Each output directory contains
-`stage-metrics/`, `multi-fpga-flow-report.json`, and terminal
-`runtime/phase7c_report.json` and `runtime/qor_report.json` evidence.
-Use a new output directory for each run.
+Results are written to `runs/top` by default. Use `--out` to choose another
+output directory.
 
 ## Developer build
 
