@@ -1338,3 +1338,28 @@ installed production package.
 This closes the OpenPARF input-generation ownership boundary. It does not claim
 completed physical/signoff orchestration, Chimew stage closure, native-default
 entry retirement or current-source NVDLA physical/global-timing acceptance.
+
+### Sole native production controller
+
+The public `multi-fpga compile` CLI and `run_multi_fpga_flow` Python API now
+submit bounded requests to `emuflow-native compile`. The optional orchestration
+selector and the complete Python top-level execution sequence are retired.
+The duplicate Python launch paths for partitioning, routing, scheduling,
+ordinary RTL synthesis and baseline splitting are deleted in the same change.
+Provider, algorithm, seed, constraints and physical-policy defaults stay fixed.
+
+Configuration preparation, supplied/prepared input binding, Chimew comparison,
+physical execution, signoff and final reporting remain explicit isolated stage
+adapters. They cannot choose another top-level controller or silently retry
+failed native stages. Native execution owns order, predecessor validation,
+artifact-generation handoffs, cancellation and process cleanup. Frame-length
+search remains unsupported by this controller and rejects before synthesis.
+
+Regression fixtures now submit actual requests to the native controller;
+single-stage preflight tests invoke only their retained adapter responsibility.
+No Python copy of the former whole-flow order is retained as a test runner.
+The existing small fixtures are component evidence, not an alternative design
+qualification. The full qualification design remains NVDLA, and both physical
+backends and original-path global timing still require terminal acceptance.
+`native_data_plane_complete` remains false until those owners and remaining
+production data-plane responsibilities are closed.

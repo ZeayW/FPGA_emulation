@@ -1,3 +1,4 @@
+from tests.compile_adapter_fixture import preflight as run_preflight
 """Native lineage/placement contract tests; not a routed design qualification."""
 import csv
 import hashlib
@@ -132,7 +133,7 @@ def test_compile_rejects_incomplete_native_installation_before_frontend(tmp_path
     ), patch(
         "emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend started")
     ), pytest.raises(EmuFlowError, match="missing lineage capability"):
-        run_multi_fpga_flow(sources=[tmp_path / "missing.v"], top="dut", clocks=["clk"],
+        run_preflight(sources=[tmp_path / "missing.v"], top="dut", clocks=["clk"],
             clock_periods={"clk": 10.0}, physical=True, physical_backend="vivado",
             output_dir=tmp_path / "flow")
     assert not (tmp_path / "flow").exists()

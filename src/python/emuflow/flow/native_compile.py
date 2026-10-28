@@ -79,7 +79,7 @@ def _request(args, kwargs):
 
 
 def run_native_multi_fpga_flow(*args, **kwargs):
-    """Select native orchestration explicitly; never retry the Python compiler.
+    """Execute the sole production controller; never select another control chain.
 
     The C++ controller owns RTL frontend, pre-placement timing, partitioning,
     routing, TDM and baseline splitting; retained physical/Chimew adapters are

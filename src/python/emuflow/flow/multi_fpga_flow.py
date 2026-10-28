@@ -1,4 +1,9 @@
-"""Checked, board-independent multi-FPGA compilation orchestration."""
+"""Public compile request API, bounded stage adapters and flow validation.
+
+The sole production stage order and process lifecycle belong to the native
+controller. Functions below execute one adapter responsibility, never a second
+Python controller.
+"""
 
 from __future__ import annotations
 
@@ -17,15 +22,15 @@ from emuflow.transport.chimew.chimew_pipeline import read_chimew_phase6_pipeline
 from emuflow.validation.cut_segment_qualification import build_cut_segment_qualification
 from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH
 from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.scheduling.frame_search import run_frame_length_search, validate_frame_search_report
+from emuflow.scheduling.frame_search import validate_frame_search_report
 from emuflow.common.io import read_json, write_json
 from emuflow.flow.multi_fpga_physical_flow import run_multi_fpga_physical_flow, validate_multi_fpga_physical_report
 from emuflow.timing.opensta import DEFAULT_TIMING_MODEL, check_opensta_engine_version
 from emuflow.physical.openparf.openparf import validate_openparf_runtime
 from emuflow.frontend.phase1 import run_phase1
-from emuflow.partition.phase3 import run_phase3, validate_phase3_indexed
-from emuflow.routing.phase4 import run_phase4, validate_phase4
-from emuflow.scheduling.phase5 import run_phase5, validate_phase5
+from emuflow.partition.phase3 import validate_phase3_indexed
+from emuflow.routing.phase4 import validate_phase4
+from emuflow.scheduling.phase5 import validate_phase5
 from emuflow.transport.phase6 import run_phase6, validate_phase6
 from emuflow.timing.phase7c import run_phase7c
 from emuflow.transport.pin_plan_storage import read_pin_plan
@@ -42,9 +47,9 @@ from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule, tdm_sched
 from emuflow.routing.system_route_storage import read_system_routes, system_route_store_path
 from emuflow.scheduling.timing_routing import GLOBAL_CANDIDATE_PROVIDER
 from emuflow.timing.sta import partition_net_weights_payload_path, project_sta_path_database, sta_path_database_payload_path
-from emuflow.frontend.synthesis import DEFAULT_XILINX_MAPPING_STRATEGY, VALID_XILINX_MAPPING_STRATEGIES, run_xilinx_ultrascaleplus_yosys_stream
+from emuflow.frontend.synthesis import VALID_XILINX_MAPPING_STRATEGIES
 from emuflow.timing.xilinx_preplacement_timing import XILINX_PREPLACEMENT_TIMING_SCHEMA
-from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE, audit_xilinx_mapped_json, normalize_xilinx_indexed_staging
+from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE, audit_xilinx_mapped_json
 
 MULTI_FPGA_FLOW_SCHEMA = "emuflow.multi-fpga-flow/v2"
 MULTI_FPGA_FLOW_PROVIDER = (
@@ -1111,9 +1116,8 @@ class _CompileContext:
     design graphs remain in their phase artifacts, not in this controller.
     """
 
-    def __init__(self, values, *, native_mode=False):
+    def __init__(self, values):
         self.__dict__.update(values)
-        self._native_mode = native_mode
 
     def measured(self, stage, function, *args, **kwargs):
         from emuflow.common.stage_metrics import measure_stage
@@ -1128,7 +1132,7 @@ def _compile_preflight(ctx: _CompileContext):
         raise EmuFlowError("only PATRON v14 is supported")
     if ctx.partition_provider not in {"patron", "tritonpart"}:
         raise EmuFlowError(f"unsupported Phase 3 provider {ctx.partition_provider!r}")
-    if ctx._native_mode and ctx.optimize_frame_slots:
+    if ctx.optimize_frame_slots:
         raise EmuFlowError("native compile does not yet support frame search")
     if ctx.output_dir is None:
         raise EmuFlowError("multi-FPGA compilation requires an output directory")
@@ -1327,32 +1331,18 @@ def _compile_preflight(ctx: _CompileContext):
     require_native_schema("phase6-compile-policy-v1")
     require_native_schema("boarddb-v1")
     ctx.output_dir.mkdir(parents=True, exist_ok=True)
-    if ctx._native_mode and ctx.prepared_frontend is None and ctx.yosys_json is None and ctx.sources:
+    if ctx.prepared_frontend is None and ctx.yosys_json is None and ctx.sources:
         from emuflow.frontend.frontend_native import prepare_frontend
         prepare_frontend(ctx)
 
 def _compile_frontend(ctx: _CompileContext):
-    if (getattr(ctx, "native_frontend_request", None) is not None or
-            (ctx._native_mode and ctx.prepared_frontend is None and ctx.yosys_json is None and ctx.sources)):
+    """Bind prepared boundaries or import supplied JSON; RTL runs natively."""
+    if getattr(ctx, "native_frontend_request", None) is not None:
         raise EmuFlowError("native compiler RTL frontend is owned by the C++ stage")
     source_list = [path.resolve() for path in ctx.sources]
-    include_dir_list = [path.resolve() for path in ctx.include_dirs]
-    define_list = list(ctx.defines)
     frontend_root = ctx.output_dir / "frontend"
     frontend_root.mkdir(parents=True, exist_ok=True)
     ctx.phase1_root = frontend_root / "phase1"
-    synthesized_json = frontend_root / (
-        "synthesized.json.gz"
-        if (
-            ctx.mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE
-            and (ctx.yosys_json is None or ctx.yosys_json.suffix == ".gz")
-        )
-        else "synthesized.json"
-    )
-    synthesis_mode: str
-    indexed_staging_transform = None
-    ctx.frontend_report: Optional[Dict[str, Any]] = None
-    synthesized_json_sha256: Optional[str] = None
     if ctx.prepared_frontend is not None or ctx.prepared_timing is not None:
         if ctx.prepared_frontend is None or ctx.prepared_timing is None or source_list or ctx.yosys_json is not None:
             raise EmuFlowError("prepared continuation requires both Phase 1 and Phase 2 boundaries and no synthesis inputs")
@@ -1362,132 +1352,36 @@ def _compile_frontend(ctx: _CompileContext):
             ctx.output_dir / "timing", ctx.platform_path, ctx.clock_periods, ctx.mapping_profile,
         )
     else:
-        if ctx.yosys_json is not None:
-            if source_list:
-                raise EmuFlowError(
-                    "provide RTL sources or --yosys-json, not both"
-                )
-            if include_dir_list or define_list:
-                raise EmuFlowError(
-                    "Verilog include directories and defines apply only when "
-                    "compiling RTL sources"
-                )
-            source_json = ctx.yosys_json.resolve()
-            if not source_json.is_file():
-                raise EmuFlowError(f"Yosys JSON does not exist: {source_json}")
-            shutil.copyfile(source_json, synthesized_json)
-            synthesis_mode = "provided-yosys-json"
-            if ctx.mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
-                synthesis_report = {
-                    "status": "pass",
-                    "provider": "provided-yosys-json",
-                    "mapping_profile": ctx.mapping_profile,
-                    "primitive_audit": audit_xilinx_mapped_json(
-                        synthesized_json, top=ctx.top
-                    ),
-                }
-        else:
-            if not source_list:
-                raise EmuFlowError(
-                    "multi-FPGA compilation requires RTL sources or --yosys-json"
-                )
-            if ctx.top is None:
-                raise EmuFlowError("--top is required when compiling RTL sources")
-            if ctx.mapping_profile == XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
-                indexed_staging_transform = normalize_xilinx_indexed_staging
-                synthesis_report, ctx.frontend_report = (
-                    run_xilinx_ultrascaleplus_yosys_stream(
-                        source_list,
-                        ctx.top,
-                        lambda stream: run_phase1(
-                            Path("<yosys-stdout>"),
-                            ctx.platform_path,
-                            ctx.phase1_root,
-                            top=ctx.top,
-                            clocks=ctx.clocks,
-                            indexed_staging_transform=(
-                                normalize_xilinx_indexed_staging
-                            ),
-                            yosys_stream=stream,
-                            yosys_hierarchical_stream=True,
-                        ),
-                        executable=ctx.yosys,
-                        log_path=frontend_root / "yosys.log",
-                        include_dirs=include_dir_list,
-                        defines=define_list,
-                        mapping_strategy=(
-                            ctx.xilinx_mapping_strategy or DEFAULT_XILINX_MAPPING_STRATEGY
-                        ),
-                    )
-                )
-                normalization_report = None
-                synthesis_mode = "xilinx-ultrascaleplus-open"
-            else:
-                raise ValidationError("frontend mapping profile is invalid")
-
-        # Explicit user-supplied JSON is imported once and its staging copy is
-        # removed. RTL synthesis above streams directly into indexed Phase 1.
-        if ctx.frontend_report is None:
-            synthesized_json_sha256 = _sha256(synthesized_json)
-            try:
-                ctx.frontend_report = run_phase1(
-                    synthesized_json,
-                    ctx.platform_path,
-                    ctx.phase1_root,
-                    top=ctx.top,
-                    clocks=ctx.clocks,
-                    indexed_staging_transform=indexed_staging_transform,
-                )
-            finally:
-                synthesized_json.unlink(missing_ok=True)
+        if ctx.yosys_json is None:
+            raise EmuFlowError("native compiler RTL frontend is owned by the C++ stage")
+        if source_list:
+            raise EmuFlowError("provide RTL sources or --yosys-json, not both")
+        if ctx.include_dirs or ctx.defines:
+            raise EmuFlowError("Verilog include directories and defines apply only when compiling RTL sources")
+        source = ctx.yosys_json.resolve()
+        if not source.is_file():
+            raise EmuFlowError(f"Yosys JSON does not exist: {source}")
+        staging = frontend_root / ("synthesized.json.gz" if source.suffix == ".gz" else "synthesized.json")
+        shutil.copyfile(source, staging)
+        try:
+            audit_xilinx_mapped_json(staging, top=ctx.top)
+            digest = _sha256(staging)
+            ctx.frontend_report = run_phase1(staging, ctx.platform_path, ctx.phase1_root, top=ctx.top, clocks=ctx.clocks)
+        finally:
+            staging.unlink(missing_ok=True)
         if ctx.frontend_report["status"] != "pass":
-            raise EmuFlowError(
-                "multi-FPGA frontend failed capacity or clock-topology checks"
-            )
-        if indexed_staging_transform is not None:
-            indexed_normalization = ctx.frontend_report["indexed_staging_transform"]
-            synthesis_report = {
-                **synthesis_report,
-                "normalization": indexed_normalization,
-                "primitive_audit": indexed_normalization["primitive_audit"],
-            }
+            raise EmuFlowError("multi-FPGA frontend failed capacity or clock-topology checks")
         ctx.frontend_report = {
             **ctx.frontend_report,
             "synthesis": {
-                "provider": "yosys",
-                "mode": synthesis_mode,
-                "mapping_profile": (
-                    "provided-yosys-json"
-                    if synthesis_mode == "provided-yosys-json"
-                    else ctx.mapping_profile
-                ),
-                "sources": [str(path) for path in source_list],
-                "include_dirs": [str(path) for path in include_dir_list],
-                "defines": define_list,
-                **(
-                    {"yosys_json_sha256": synthesized_json_sha256}
-                    if synthesized_json_sha256 is not None
-                    else {}
-                ),
-                "interchange_retention": (
-                    "never-materialized-stream"
-                    if synthesis_mode == "xilinx-ultrascaleplus-open"
-                    else "deleted-after-phase1-import"
-                ),
-                **(
-                    {"tool_report": synthesis_report}
-                    if ctx.yosys_json is None
-                    else {}
-                ),
-                **(
-                    {"normalization": normalization_report}
-                    if ctx.yosys_json is None
-                    and normalization_report is not None
-                    else {}
-                ),
+                "provider": "yosys", "mode": "provided-yosys-json",
+                "mapping_profile": "provided-yosys-json", "sources": [],
+                "include_dirs": [], "defines": [], "yosys_json_sha256": digest,
+                "interchange_retention": "deleted-after-phase1-import",
             },
         }
     ctx.ir_path = ctx.phase1_root / "design.emuir.sqlite"
+
 
 def _timing_paths(ctx: _CompileContext):
     ctx.timing_root = ctx.output_dir / "timing"
@@ -1500,7 +1394,7 @@ def _timing_paths(ctx: _CompileContext):
 
 def _compile_timing_policy(ctx: _CompileContext):
     _timing_paths(ctx)
-    if ctx._native_mode and ctx.internal_timing_database and ctx.prepared_timing is None:
+    if ctx.internal_timing_database and ctx.prepared_timing is None:
         from emuflow.timing.phase2_native import prepare_policy
         from emuflow.common.native_tools import native_file_generation
         ctx.native_phase2_policy = prepare_policy(
@@ -1517,18 +1411,7 @@ def _compile_timing_policy(ctx: _CompileContext):
 
 def _compile_timing(ctx: _CompileContext):
     if ctx.internal_timing_database and ctx.prepared_timing is None:
-        if ctx._native_mode:
-            raise EmuFlowError("native compiler timing is owned by the C++ Phase 2 stage")
-        from emuflow.timing.phase2_native import run_native_phase2
-        ctx.timing_report = run_native_phase2(
-            ctx.ir_path, ctx.timing_root,
-            clocks=ctx.clock_periods, timing_io=ctx.timing_io,
-            timing_model_path=ctx.timing_model,
-            architecture_timing_db_path=ctx.architecture_timing_db,
-            executable=ctx.opensta, max_paths=ctx.sta_max_paths,
-            optimization_enabled=ctx.timing_driven,
-            criticality_scale=ctx.timing_criticality_scale,
-            criticality_exponent=ctx.timing_criticality_exponent)
+        raise EmuFlowError("native compiler timing is owned by the C++ Phase 2 stage")
 
 
 def _compile_partition_policy(ctx: _CompileContext):
@@ -1621,86 +1504,27 @@ def _compile_partition_policy(ctx: _CompileContext):
             }
         )
 
-    if ctx._native_mode:
-        from emuflow.partition.phase3_native import write_request
-        from emuflow.common.native_tools import native_file_generation
-        ctx.phase3_root = ctx.output_dir / "partition"
-        configuration_root = ctx.output_dir / ".native-phase3-request"
-        ctx.native_phase3_request = write_request(configuration_root, ctx.ir_path, ctx.platform_path,
-            constraints_path=ctx.partition_constraints, seed=ctx.seed,
-            min_used_fpgas=ctx.min_used_fpgas, balance_tolerance=ctx.balance_tolerance,
-            provider=ctx.partition_provider, openroad=ctx.openroad,
-            tritonpart_solution=ctx.tritonpart_solution,
-            net_weights_path=ctx.net_weights_path if ctx.timing_driven else None,
-            tritonpart_timeout_seconds=ctx.partition_timeout_seconds,
-            tritonpart_seed_attempts=ctx.partition_seed_attempts,
-            tritonpart_num_initial_solutions=ctx.partition_num_initial_solutions,
-            tritonpart_num_best_initial_solutions=ctx.partition_num_best_initial_solutions,
-            tritonpart_repair_min_used_fpgas=ctx.partition_repair_min_used_fpgas,
-            route_constraints_path=ctx.effective_route_constraints,
-            max_cross_fpga_dependency_depth=ctx.max_cross_fpga_dependency_depth,
-            static_exact_candidate_policy=ctx.static_exact_candidate_policy,
-            timing_database_path=ctx.path_database_path if ctx.partition_provider == "patron" else None,
-            patron_max_moves=ctx.patron_max_moves)
-        ctx.native_phase3_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase3_request))
-
-def _compile_partition(ctx: _CompileContext):
+    from emuflow.partition.phase3_native import write_request
+    from emuflow.common.native_tools import native_file_generation
     ctx.phase3_root = ctx.output_dir / "partition"
-    ctx.phase3_report = ctx.measured("phase3", run_phase3,
-        ctx.ir_path,
-        ctx.platform_path,
-        ctx.phase3_root,
-        constraints_path=ctx.partition_constraints,
-        seed=ctx.seed,
-        min_used_fpgas=ctx.min_used_fpgas,
-        balance_tolerance=ctx.balance_tolerance,
-        provider=ctx.partition_provider,
-        openroad=ctx.openroad,
+    configuration_root = ctx.output_dir / ".native-phase3-request"
+    ctx.native_phase3_request = write_request(configuration_root, ctx.ir_path, ctx.platform_path,
+        constraints_path=ctx.partition_constraints, seed=ctx.seed,
+        min_used_fpgas=ctx.min_used_fpgas, balance_tolerance=ctx.balance_tolerance,
+        provider=ctx.partition_provider, openroad=ctx.openroad,
         tritonpart_solution=ctx.tritonpart_solution,
+        net_weights_path=ctx.net_weights_path if ctx.timing_driven else None,
         tritonpart_timeout_seconds=ctx.partition_timeout_seconds,
         tritonpart_seed_attempts=ctx.partition_seed_attempts,
         tritonpart_num_initial_solutions=ctx.partition_num_initial_solutions,
-        tritonpart_num_best_initial_solutions=(
-            ctx.partition_num_best_initial_solutions
-        ),
-        tritonpart_repair_min_used_fpgas=(
-            ctx.partition_repair_min_used_fpgas
-        ),
-        net_weights_path=(
-            ctx.net_weights_path
-            if ctx.timing_driven
-            else None
-        ),
+        tritonpart_num_best_initial_solutions=ctx.partition_num_best_initial_solutions,
+        tritonpart_repair_min_used_fpgas=ctx.partition_repair_min_used_fpgas,
         route_constraints_path=ctx.effective_route_constraints,
-        cut_mode=ctx.cut_mode,
         max_cross_fpga_dependency_depth=ctx.max_cross_fpga_dependency_depth,
-        timing_database_path=(
-            ctx.path_database_path if ctx.partition_provider == "patron" else None
-        ),
-        patron_refiner=ctx.patron_refiner,
-        patron_max_moves=ctx.patron_max_moves,
-        patron_algorithm_version=ctx.patron_algorithm_version,
         static_exact_candidate_policy=ctx.static_exact_candidate_policy,
-    )
-    ctx.assignment_path = ctx.phase3_root / "assignment.json"
-    phase3_validation = ctx.phase3_report.get("validation")
-    inter_fpga_cut_count = (
-        phase3_validation.get("cut_nets")
-        if isinstance(phase3_validation, dict)
-        else None
-    )
-    if (
-        isinstance(inter_fpga_cut_count, bool)
-        or not isinstance(inter_fpga_cut_count, int)
-        or inter_fpga_cut_count < 0
-    ):
-        raise ValidationError(
-            "Phase 3 report has an invalid inter-FPGA cut-net count"
-        )
-    ctx.has_inter_fpga_cuts = inter_fpga_cut_count > 0
-    ctx.effective_optimize_frame_slots = (
-        ctx.optimize_frame_slots if ctx.has_inter_fpga_cuts else False
-    )
+        timing_database_path=ctx.path_database_path if ctx.partition_provider == "patron" else None,
+        patron_max_moves=ctx.patron_max_moves)
+    ctx.native_phase3_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase3_request))
 
 def _compile_route_policy(ctx: _CompileContext):
     ctx.projected_timing_paths = ctx.timing_paths
@@ -1754,18 +1578,17 @@ def _compile_route_policy(ctx: _CompileContext):
     ctx.phase4_root = ctx.output_dir / "system-route"
     ctx.phase5_root = ctx.output_dir / "tdm"
     ctx.frame_search_report = None
-    if ctx._native_mode:
-        from emuflow.routing.phase4_native import prepare_policy
-        from emuflow.common.native_tools import native_file_generation
-        ctx.native_phase4_policy = prepare_policy(
-            ctx.output_dir / ".native-phase4-request", ctx.phase3_root / "assignment.sqlite",
-            ctx.platform_path, timing_paths=ctx.projected_timing_paths,
-            constraints_path=ctx.effective_route_constraints,
-            frame_slots=ctx.frame_slots, max_iterations=ctx.route_max_iterations,
-            candidate_workers=ctx.route_candidate_workers if ctx.has_inter_fpga_cuts else 1,
-            timing_driven=ctx.timing_driven)
-        ctx.native_phase4_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase4_policy))
-    if ctx._native_mode and ctx.phase6_provider == "baseline":
+    from emuflow.routing.phase4_native import prepare_policy
+    from emuflow.common.native_tools import native_file_generation
+    ctx.native_phase4_policy = prepare_policy(
+        ctx.output_dir / ".native-phase4-request", ctx.phase3_root / "assignment.sqlite",
+        ctx.platform_path, timing_paths=ctx.projected_timing_paths,
+        constraints_path=ctx.effective_route_constraints,
+        frame_slots=ctx.frame_slots, max_iterations=ctx.route_max_iterations,
+        candidate_workers=ctx.route_candidate_workers if ctx.has_inter_fpga_cuts else 1,
+        timing_driven=ctx.timing_driven)
+    ctx.native_phase4_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase4_policy))
+    if ctx.phase6_provider == "baseline":
         from emuflow.transport.phase6_native import prepare_compile_policy
         from emuflow.common.native_tools import native_file_generation
         ctx.native_phase6_policy = prepare_compile_policy(
@@ -1773,35 +1596,6 @@ def _compile_route_policy(ctx: _CompileContext):
             clock_periods=ctx.clock_periods, transport_cost_path=ctx.transport_cost_db,
             equivalence_cycles=ctx.equivalence_cycles, equivalence_seed=ctx.equivalence_seed)
         ctx.native_phase6_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase6_policy))
-
-def _compile_routing_schedule(ctx: _CompileContext):
-    if ctx.effective_optimize_frame_slots:
-        if ctx.frame_slots is None:
-            raise EmuFlowError(
-                "--optimize-frame-slots requires --frame-slots as its "
-                "feasible upper bound"
-            )
-        ctx.frame_search_report = run_frame_length_search(
-            ctx.assignment_path,
-            ctx.platform_path,
-            ctx.projected_timing_paths,
-            ctx.output_dir / "frame-search",
-            ctx.phase4_root,
-            ctx.phase5_root,
-            max_frame_slots=ctx.frame_slots,
-            route_constraints=ctx.effective_route_constraints,
-            route_max_iterations=ctx.route_max_iterations,
-            router=ctx.router,
-            route_provider=ctx.route_provider,
-            candidate_workers=ctx.route_candidate_workers,
-            tdm_provider=ctx.tdm_provider,
-
-        )
-        ctx.phase4_report = read_json(ctx.phase4_root / "phase4_report.json")
-        ctx.phase5_report = read_json(ctx.phase5_root / "phase5_report.json")
-    else:
-        _compile_route(ctx)
-        _compile_schedule(ctx)
 
 def _run_selected_physical(ctx, split_root, schedule_path, output_dir):
     catalog = getattr(ctx,"chimew_package_geometry",None)
@@ -1843,6 +1637,8 @@ def _run_selected_physical(ctx, split_root, schedule_path, output_dir):
     )
 
 def _compile_split(ctx: _CompileContext):
+    if ctx.phase6_provider != "chimew":
+        raise EmuFlowError("native compiler baseline Phase 6 is owned by the C++ stage")
     ctx.routes_path = ctx.phase4_root / "routes.json"
     ctx.schedule_path = ctx.phase5_root / "schedule.json"
 
@@ -2001,18 +1797,6 @@ def _compile_split(ctx: _CompileContext):
             "chimew_pipeline": pipeline,
             "chimew_phase6_runtime_seconds": chimew_phase6_seconds,
         }
-    else:
-        ctx.phase6_report = ctx.measured("phase6", run_phase6,
-            ctx.ir_path,
-            ctx.assignment_path,
-            ctx.schedule_path,
-            ctx.platform_path,
-            ctx.phase6_root,
-            equivalence_cycles=ctx.equivalence_cycles,
-            equivalence_seed=ctx.equivalence_seed,
-            transport_cost_path=ctx.transport_cost_db,
-            clock_periods=ctx.clock_periods,
-        )
 
 def _compile_physical(ctx: _CompileContext):
     ctx.physical_report = None
@@ -2368,34 +2152,6 @@ def _compile_finalize(ctx: _CompileContext):
     write_json(ctx.output_dir / "multi-fpga-flow-report.json", ctx.report)
     return ctx.report
 
-def _compile_route(ctx: _CompileContext):
-    ctx.phase4_report = ctx.measured("phase4", run_phase4,
-        ctx.phase3_root / "assignment.sqlite",
-        ctx.platform_path,
-        ctx.phase4_root,
-        constraints_path=ctx.effective_route_constraints,
-        frame_slots=ctx.frame_slots,
-        max_iterations=ctx.route_max_iterations,
-        timing_paths_path=ctx.projected_timing_paths,
-        router=ctx.router,
-        provider=ctx.effective_route_provider,
-        timing_driven=ctx.timing_driven,
-        candidate_workers=(
-            ctx.route_candidate_workers if ctx.has_inter_fpga_cuts else 1
-        ),
-    )
-
-def _compile_schedule(ctx: _CompileContext):
-    ctx.phase5_report = ctx.measured("phase5", run_phase5,
-        ctx.phase4_root / "routes.json",
-        ctx.platform_path,
-        ctx.phase5_root,
-        assignment_path=ctx.assignment_path,
-
-        provider=ctx.effective_tdm_provider,
-
-    )
-
 def run_multi_fpga_flow(
     platform_path: Path = DEFAULT_PLATFORM_PATH,
     output_dir: Optional[Path] = None,
@@ -2483,18 +2239,12 @@ def run_multi_fpga_flow(
     global_sta_executable: Optional[str] = None,
     global_timing_engine: str = "opensta",
 ) -> Dict[str, Any]:
-    """Compile RTL/EmuIR using the shared phase adapters and current defaults."""
-    ctx = _CompileContext(locals())
-    _compile_preflight(ctx)
-    _compile_frontend(ctx)
-    _compile_timing_policy(ctx)
-    _compile_timing(ctx)
-    _compile_partition_policy(ctx)
-    _compile_partition(ctx)
-    _compile_route_policy(ctx)
-    _compile_routing_schedule(ctx)
-    _compile_split(ctx)
-    _compile_physical(ctx)
-    _compile_signoff(ctx)
-    _compile_finalize(ctx)
-    return ctx.report
+    """Submit a bounded request to the sole native production controller.
+
+    Physical, signoff and Chimew adapters remain explicit transitional owners;
+    selecting this entry does not assert complete native data-plane migration.
+    """
+    options = locals()
+    from emuflow.flow.native_compile import run_native_multi_fpga_flow
+
+    return run_native_multi_fpga_flow(**options)

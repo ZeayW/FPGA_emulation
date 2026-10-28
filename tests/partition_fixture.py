@@ -4,10 +4,8 @@ Generate a legal small .part file and exercise the real TritonPart import and
 shared phase pipeline. NVDLA acceptance must use algorithm-selected native
 initialization and cannot use this fixture.
 """
-from contextlib import contextmanager
 from pathlib import Path
 import tempfile
-from unittest.mock import Mock, patch
 
 
 def write_fixture_solution(ir, platform_path, path, *, cut_mode="sequential-only",
@@ -49,28 +47,24 @@ def run_phase3_fixture(*args, **kwargs):
         return run_phase3(**options)
 
 
-@contextmanager
-def _fixture_initializer(target):
-    import importlib
-    module = importlib.import_module(target)
-    if isinstance(module.run_phase3, Mock):
-        yield
-    else:
-        with patch(target + ".run_phase3", side_effect=run_phase3_fixture):
-            yield
-
-
 def run_multi_fpga_flow_fixture(*args, **kwargs):
+    """Exercise the actual native controller with a bounded initializer input."""
     from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
-    assert kwargs["partition_provider"] == "tritonpart"
-    # The .part file is generated at the phase boundary from the actual
-    # frontend artifact. This unit fixture never starts OpenROAD.
+    from emuflow.frontend.yosys import import_yosys_json
     from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract
-    with tempfile.TemporaryDirectory(prefix="mock-xilinx-timing-") as timing_root, _fixture_initializer("emuflow.flow.multi_fpga_flow"), patch(
-        "emuflow.flow.multi_fpga_flow._resolve_partition_openroad", return_value=None
-    ):
+    from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH
+    assert not args and kwargs["partition_provider"] == "tritonpart"
+    assert kwargs.get("yosys_json") is not None
+    with tempfile.TemporaryDirectory(prefix="native-compile-fixture-") as directory:
+        root = Path(directory)
         if kwargs.get("architecture_timing_db") is None:
-            kwargs["architecture_timing_db"] = write_mock_xilinx_timing_contract(
-                Path(timing_root) / "mock-timing.json"
-            )
-        return run_multi_fpga_flow(*args, **kwargs)
+            kwargs["architecture_timing_db"] = write_mock_xilinx_timing_contract(root / "timing.json")
+        ir = import_yosys_json(kwargs["yosys_json"], top=kwargs.get("top"), clocks=kwargs.get("clocks", ()))
+        solution = root / "initial.part"
+        write_fixture_solution(ir, kwargs.get("platform_path", DEFAULT_PLATFORM_PATH), solution,
+            constraints_path=kwargs.get("partition_constraints"), seed=kwargs.get("seed",0),
+            cut_mode=kwargs.get("cut_mode", "static-exact-combinational"),
+            min_used_fpgas=kwargs.get("min_used_fpgas"), balance_tolerance=kwargs.get("balance_tolerance"),
+            max_cross_fpga_dependency_depth=kwargs.get("max_cross_fpga_dependency_depth",0),
+            static_exact_candidate_policy=kwargs.get("static_exact_candidate_policy","assignment-derived-acyclic-v2"))
+        return run_multi_fpga_flow(**dict(kwargs, tritonpart_solution=solution))

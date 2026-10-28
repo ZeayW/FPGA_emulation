@@ -229,12 +229,6 @@ def _build_parser() -> argparse.ArgumentParser:
             "and per-FPGA split generation"
         ),
     )
-    multi_fpga_compile.add_argument(
-        "--compile-implementation",
-        choices=("python-control-v1", "native-control-v1"),
-        default="python-control-v1",
-        help="select orchestration; native control uses isolated shared phase adapters",
-    )
     multi_fpga_validate = multi_fpga_subparsers.add_parser(
         "validate",
         help="rehash and independently replay a complete flow directory",
@@ -1778,11 +1772,7 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
             mapping_profile = args.mapping_profile or XILINX_ULTRASCALEPLUS_OPEN_PROFILE
             timing_io = None
-        compiler = run_multi_fpga_flow
-        if args.compile_implementation == "native-control-v1":
-            from emuflow.flow.native_compile import run_native_multi_fpga_flow
-            compiler = run_native_multi_fpga_flow
-        report = compiler(
+        report = run_multi_fpga_flow(
             platform_path=args.platform,
             output_dir=args.out,
             prepared_frontend=args.prepared_frontend,

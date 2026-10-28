@@ -106,21 +106,10 @@ class DefaultPlatformTest(unittest.TestCase):
                     self.assertEqual(fpga.capacity[board_unit], resources[provider_unit])
 
 
-    def test_python_omitted_platform_reaches_frontend_with_bundled_model(self):
-        class FrontendReached(Exception):
-            pass
-
-        with tempfile.TemporaryDirectory() as directory:
-            with patch("emuflow.flow.multi_fpga_flow.run_phase1", side_effect=FrontendReached) as frontend, patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"), patch("emuflow.flow.multi_fpga_flow._resolve_partition_openroad", return_value=None), patch("emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract"):
-                with self.assertRaises(FrontendReached):
-                    run_multi_fpga_flow(
-                        output_dir=Path(directory) / "run",
-                        yosys_json=ROOT / "examples/yosys/counter.json",
-                        top="counter", clocks=["clk"], clock_periods={"clk": 10.0},
-                        mapping_profile="xilinx-ultrascaleplus-open-v1",
-                        timing_driven=False, opensta="/usr/bin/true",
-                    )
-                self.assertEqual(frontend.call_args.args[1], DEFAULT_PLATFORM_PATH)
+    def test_python_omitted_platform_submits_the_bundled_model(self):
+        with patch("emuflow.flow.native_compile.run_native_multi_fpga_flow", return_value={"status": "pass"}) as controller:
+            run_multi_fpga_flow(output_dir=Path("run"), yosys_json=ROOT / "examples/yosys/counter.json", top="counter")
+        self.assertEqual(controller.call_args.kwargs["platform_path"], DEFAULT_PLATFORM_PATH)
 
     def test_cli_materializes_both_models_without_source_relative_paths(self):
         with tempfile.TemporaryDirectory() as directory:

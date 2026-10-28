@@ -111,16 +111,61 @@ def test_bridge_preserves_invocation_directory_defaults_and_path_bindings(tmp_pa
     _initial_context(options)
 
 
-def test_cli_selects_native_control_without_calling_python_compiler():
+def test_cli_uses_the_sole_native_controller_by_default():
     from emuflow.flow.cli import _build_parser, _dispatch
-    args = _build_parser().parse_args(["multi-fpga", "compile", "--out", "unused",
-                                      "--compile-implementation", "native-control-v1"])
-    with (patch("emuflow.flow.native_compile.run_native_multi_fpga_flow", return_value={"status": "pass"}) as native,
-          patch("emuflow.flow.cli.run_multi_fpga_flow", side_effect=AssertionError("Python compiler called")),
-          patch("emuflow.flow.cli._print_json")):
+    args = _build_parser().parse_args(["multi-fpga", "compile", "--out", "unused"])
+    assert not hasattr(args, "compile_implementation")
+    with patch("emuflow.flow.native_compile.run_native_multi_fpga_flow", return_value={"status": "pass"}) as native, patch("emuflow.flow.cli._print_json"):
         assert _dispatch(args) == 0
-    assert "slot_refinement_iterations" not in native.call_args.kwargs
     assert native.call_args.kwargs["partition_provider"] == "patron"
+    assert native.call_args.kwargs["phase6_provider"] == "baseline"
+    assert native.call_args.kwargs["physical_seed"] == 1
+    assert native.call_args.kwargs["global_timing_engine"] == "opensta"
+
+
+@pytest.mark.parametrize("implementation", ["python-control-v1", "native-control-v1"])
+def test_compile_has_no_second_control_selector(implementation):
+    from emuflow.flow.cli import _build_parser
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["multi-fpga", "compile", "--out", "unused", "--compile-implementation", implementation])
+
+
+def test_retired_python_order_and_native_stage_launchers_are_absent():
+    import ast
+    from emuflow.flow import multi_fpga_flow as flow
+    source = ast.parse(inspect.getsource(flow.run_multi_fpga_flow))
+    assert not any(isinstance(node, ast.Name) and node.id.startswith("_compile_") for node in ast.walk(source))
+    for name in ("_compile_partition", "_compile_route", "_compile_schedule", "_compile_routing_schedule"):
+        assert not hasattr(flow, name)
+    assert set(inspect.signature(flow._CompileContext).parameters) == {"values"}
+
+
+@pytest.mark.parametrize("backend", ["rapidwright", "vivado"])
+@pytest.mark.parametrize("phase6", ["baseline", "chimew"])
+def test_public_api_submits_retained_configuration_once_without_fallback(tmp_path, backend, phase6):
+    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
+    failure = EmuFlowError("terminal native failure")
+    with patch("emuflow.flow.native_compile.run_native_multi_fpga_flow", side_effect=failure) as controller:
+        with pytest.raises(EmuFlowError, match="terminal native failure"):
+            run_multi_fpga_flow(output_dir=tmp_path / "flow", physical=True, physical_backend=backend,
+                                phase6_provider=phase6, prepared_frontend=tmp_path / "front",
+                                prepared_timing=tmp_path / "timing", clock_periods={"dla_core_clk": 10.0, "dla_csb_clk": 20.0})
+    controller.assert_called_once()
+    options = controller.call_args.kwargs
+    assert options["physical_backend"] == backend
+    assert options["phase6_provider"] == phase6
+    assert options["prepared_frontend"] == tmp_path / "front"
+    assert options["clock_periods"] == {"dla_core_clk": 10.0, "dla_csb_clk": 20.0}
+    assert not (tmp_path / "flow").exists()
+
+
+def test_missing_native_install_does_not_start_another_controller(tmp_path):
+    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
+    with patch("emuflow.common.native_tools.require_native_schema"), patch("emuflow.flow.native_compile.resolve_native_executable", side_effect=EmuFlowError("missing native installation")) as resolver:
+        with pytest.raises(EmuFlowError, match="missing native installation"):
+            run_multi_fpga_flow(output_dir=tmp_path / "flow")
+    resolver.assert_called_once_with("emuflow-native")
+    assert not (tmp_path / "flow").exists()
 
 
 def fixture_request(tmp_path, *, fail=None, corrupt=None, waiting=False, temporary_reference=None, prepared_timing=True):
@@ -286,9 +331,8 @@ def test_native_phase_report_reference_rejects_changed_generation_and_unknown_sc
 
 
 def test_python_tdm_adapter_entry_is_retired_before_execution(tmp_path):
-    with patch("emuflow.flow.multi_fpga_flow._compile_schedule", side_effect=AssertionError("Python schedule started")):
-        with pytest.raises(EmuFlowError, match=r"owned by the C\+\+ Phase 5 stage"):
-            execute("tdm", tmp_path / "missing", None, tmp_path / "unused", "run")
+    with pytest.raises(EmuFlowError, match=r"owned by the C\+\+ Phase 5 stage"):
+        execute("tdm", tmp_path / "missing", None, tmp_path / "unused", "run")
 
 
 def test_baseline_split_never_executes_a_python_phase_adapter(tmp_path):
@@ -392,7 +436,8 @@ def test_actual_shared_phase_adapters_complete_existing_nonphysical_contract_fix
         max_cross_fpga_dependency_depth=2,
     )
     from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract
-    report = run_native_multi_fpga_flow(
+    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
+    report = run_multi_fpga_flow(
         tritonpart_solution=solution,
         platform_path=root / "platforms/virtual/static_exact_acceptance_2fpga.json",
         output_dir=output, yosys_json=root / "examples/yosys/static_exact_chain.json",
@@ -567,8 +612,7 @@ def test_native_partition_report_reference_rejects_changes_and_python_partition_
     path = Path(reference[1]['path']);path.write_text(path.read_text()+'\n')
     with pytest.raises(EmuFlowError, match='partition report generation changed'):
         _unpack(reference)
-    with patch('emuflow.flow.multi_fpga_flow._compile_partition', side_effect=AssertionError('Python partition started')):
-        with pytest.raises(EmuFlowError, match=r'owned by the C\+\+ Phase 3 stage'):
-            execute('partition', tmp_path/'missing', None, tmp_path/'unused', 'run')
+    with pytest.raises(EmuFlowError, match=r'owned by the C\+\+ Phase 3 stage'):
+        execute('partition', tmp_path/'missing', None, tmp_path/'unused', 'run')
     control = json.loads((tmp_path/'out/native-compile-result.json').read_text())
     assert next(row for row in control['stages'] if row['stage'] == 'partition')['implementation_id'] == 'native-phase3-v1'

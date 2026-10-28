@@ -1,3 +1,4 @@
+from tests.compile_adapter_fixture import preflight as run_preflight
 """Shared-core timing export; fixture gates do not qualify NVDLA."""
 from contextlib import closing
 import json
@@ -150,7 +151,7 @@ def test_missing_native_export_is_rejected_before_frontend_work(tmp_path):
          patch("emuflow.common.native_tools.require_native_schema", side_effect=require), \
          patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("synthesis started")), \
          pytest.raises(EmuFlowError, match="missing native timing export"):
-        run_multi_fpga_flow(sources=[tmp_path/"absent.v"], top="dut", clocks=["clk"],
+        run_preflight(sources=[tmp_path/"absent.v"], top="dut", clocks=["clk"],
                            clock_periods={"clk": 10.0}, output_dir=tmp_path/"flow")
     assert not (tmp_path/"flow").exists()
 

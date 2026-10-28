@@ -134,22 +134,19 @@ def test_saved_device_identity_still_enforced(tmp_path, boundaries, part):
                              DEFAULT_PLATFORM_PATH, {"clk": 10.0}, PROFILE)
 
 
-def test_full_flow_continuation_reaches_phase3_without_synthesis_or_sta(tmp_path, boundaries):
-    class ReachedPartition(Exception):
-        pass
-    timing_model = tmp_path / "architecture-timing.json"
-    write_json(timing_model, {"schema": "emuflow.xilinx-preplacement-timing-db/v1"})
-    with patch("emuflow.flow.multi_fpga_flow.run_phase3", side_effect=ReachedPartition), \
-         patch("emuflow.flow.multi_fpga_flow.run_phase1", side_effect=AssertionError("synthesis")), \
-         patch("emuflow.timing.phase2_native.run_native_phase2", side_effect=AssertionError("Phase 2")), \
-         patch("emuflow.timing.opensta.run_opensta_path_database", side_effect=AssertionError("shared timing extraction")), \
-         patch("emuflow.flow.multi_fpga_flow.resolve_native_executable", return_value="/usr/bin/true"), \
-         patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"):
-        with pytest.raises(ReachedPartition):
-            run_multi_fpga_flow(output_dir=tmp_path / "continued", prepared_frontend=boundaries[0],
-                               prepared_timing=boundaries[1], clock_periods={"clk": 10.0},
-                               architecture_timing_db=timing_model)
-    assert read_json(tmp_path / "continued/stage-metrics/phase3.json")["status"] == "failed"
+def test_prepared_frontend_adapter_binds_without_synthesis_or_sta(tmp_path, boundaries):
+    from tests.compile_adapter_fixture import preflight
+    from emuflow.flow.multi_fpga_flow import _compile_frontend, _compile_timing_policy, _compile_timing
+    with patch("emuflow.flow.multi_fpga_flow.resolve_native_executable", return_value="/usr/bin/true"), patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"), patch("emuflow.flow.multi_fpga_flow._resolve_partition_openroad", return_value=None):
+        context = preflight(output_dir=tmp_path / "continued", prepared_frontend=boundaries[0],
+                            prepared_timing=boundaries[1], clock_periods={"clk": 10.0})
+    with patch("emuflow.flow.multi_fpga_flow.run_phase1", side_effect=AssertionError("synthesis")), patch("emuflow.timing.phase2_native.run_native_phase2", side_effect=AssertionError("Phase 2")):
+        _compile_frontend(context)
+        _compile_timing_policy(context)
+        _compile_timing(context)
+    assert context.ir_path.resolve() == boundaries[0] / "design.emuir.sqlite"
+    assert context.timing_report["status"] == "pass"
+    assert not hasattr(context, "native_phase2_policy")
 
 
 def test_native_published_phase2_checks_clocks_and_counts_without_standalone_report(tmp_path, boundaries):

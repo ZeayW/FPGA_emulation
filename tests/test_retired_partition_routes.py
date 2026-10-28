@@ -1,3 +1,4 @@
+from tests.compile_adapter_fixture import preflight as run_preflight
 """Retired providers fail before loading a circuit or invoking an engine."""
 from pathlib import Path
 from unittest.mock import patch
@@ -23,7 +24,7 @@ def test_retired_provider_rejected_before_phase_input(tmp_path, provider):
 def test_retired_provider_rejected_before_compile_frontend(tmp_path, provider):
     with patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend entered")):
         with pytest.raises(EmuFlowError, match="unsupported Phase 3 provider"):
-            run_multi_fpga_flow(output_dir=tmp_path / "flow", partition_provider=provider)
+            run_preflight(output_dir=tmp_path / "flow", partition_provider=provider)
     assert not (tmp_path / "flow").exists()
 
 

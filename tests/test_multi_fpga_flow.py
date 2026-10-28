@@ -1,3 +1,4 @@
+from tests.compile_adapter_fixture import preflight as run_preflight
 from contextlib import contextmanager
 from tests.partition_fixture import run_multi_fpga_flow_fixture
 from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract
@@ -87,10 +88,10 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 patch("emuflow.flow.multi_fpga_flow.resolve_native_executable", return_value=str(FAKE_OPENSTA)),
                 patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"),
                 patch("emuflow.common.native_tools.require_native_schema", side_effect=require),
-                patch("emuflow.flow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream") as mapper,
+                patch("emuflow.frontend.frontend_native.prepare_frontend") as mapper,
             ):
                 with self.assertRaisesRegex(EmuFlowError, "missing native frontend contract"):
-                    run_multi_fpga_flow_fixture(
+                    run_preflight(
                         platform_path=PLATFORM, output_dir=root / "flow",
                         sources=[ROOT / "examples/rtl/counter.v"], top="counter",
                         clocks=["clk"], clock_periods={"clk": 10},
@@ -115,12 +116,12 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 ),
                 patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"),
                 patch(
-                    "emuflow.flow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream",
+                    "emuflow.frontend.frontend_native.prepare_frontend",
                     side_effect=RuntimeError("reached multi-clock mapper"),
                 ) as mapper,
             ):
                 with self.assertRaisesRegex(RuntimeError, "reached multi-clock mapper"):
-                    run_multi_fpga_flow_fixture(
+                    run_preflight(
                         platform_path=PLATFORM, output_dir=root / "flow",
                         sources=[ROOT / "examples/rtl/counter.v"], top="counter",
                         clocks=["dla_core_clk", "dla_csb_clk"],
@@ -140,11 +141,11 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 with (
                     patch("emuflow.flow.multi_fpga_flow.resolve_native_executable", return_value=str(FAKE_OPENSTA)),
                     patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"),
-                    patch("emuflow.flow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream",
+                    patch("emuflow.frontend.frontend_native.prepare_frontend",
                           side_effect=RuntimeError("reached mapper")) as frontend,
                 ):
                     with self.assertRaisesRegex(RuntimeError, "reached mapper"):
-                        run_multi_fpga_flow_fixture(
+                        run_preflight(
                             cut_mode="static-exact-combinational",
                             platform_path=PLATFORM, output_dir=root / "flow",
                             sources=[ROOT / "examples/rtl/counter.v"], top="counter",
@@ -153,7 +154,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                             architecture_timing_db=timing, clock_periods={"clk": 10},
                             partition_provider="tritonpart",
                         )
-                    self.assertEqual(frontend.call_args.kwargs["mapping_strategy"],
+                    self.assertEqual(frontend.call_args.args[0].xilinx_mapping_strategy or "hierarchical-abc9-v1",
                                      strategy or "hierarchical-abc9-v1")
 
     def test_mapper_override_rejects_invalid_context_before_frontend(self):
@@ -167,7 +168,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as tmp:
                     out = Path(tmp) / "flow"
                     with self.assertRaisesRegex(EmuFlowError, message):
-                        run_multi_fpga_flow(
+                        run_preflight(
                             platform_path=PLATFORM, output_dir=out,
                             mapping_profile=profile, yosys_json=supplied,
                             xilinx_mapping_strategy=strategy,
@@ -251,7 +252,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 EmuFlowError,
                 "unsupported multi-FPGA mapping profile",
             ):
-                run_multi_fpga_flow(
+                run_preflight(
                     platform_path=PLATFORM,
                     output_dir=output,
                     yosys_json=ROOT / "examples/yosys/counter.json",
@@ -520,7 +521,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             with self.assertRaisesRegex(
                 EmuFlowError, "requires at least one --clock-period"
             ):
-                run_multi_fpga_flow(
+                run_preflight(
                     platform_path=PLATFORM,
                     output_dir=Path(temporary_directory) / "exact",
                     yosys_json=ROOT / "examples/yosys/counter.json",
@@ -535,161 +536,50 @@ class MultiFpgaFlowTest(unittest.TestCase):
     def test_compile_rejects_retired_cut_mode_before_frontend(self):
         with patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend started")):
             with self.assertRaisesRegex(EmuFlowError, "requires static-exact-combinational"):
-                run_multi_fpga_flow(output_dir=Path("unused"), cut_mode="sequential-only")
+                run_preflight(output_dir=Path("unused"), cut_mode="sequential-only")
 
 
-    def test_physical_baseline_still_materializes_timing_contract(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            fake_sta = root / "sta"
-            fake_sta.write_text(
-                """#!/usr/bin/env python3
-import os
-import sys
-from pathlib import Path
-
-if sys.argv[1:] == ["-version"]:
-    print("3.1.0")
-    raise SystemExit(0)
-if "-no_init" in sys.argv:
-    print("EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16")
-    raise SystemExit(0)
-
-rows = Path(os.environ["EMUFLOW_STA_NET_MAP"]).read_text().splitlines()[1:]
-header = (
-    "path_id_hex\\tclock_domain_hex\\tclock_period_ns\\t"
-    "slack_ns\\tfixed_delay_ns\\tpath_nets_hex"
-)
-records = [header]
-clock = "clk".encode().hex()
-for index, row in enumerate(rows):
-    _, emuir_hex = row.split("\\t")
-    records.append(
-        f"{'path-' + str(index):s}".encode().hex()
-        + f"\\t{clock}\\t10\\t9.5\\t0.5\\t{emuir_hex}"
-    )
-Path(os.environ["EMUFLOW_STA_OUTPUT"]).write_text(
-    "\\n".join(records) + "\\n"
-)
-if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
-    requested = Path(os.environ["EMUFLOW_STA_THROUGH_NETS"]).read_text().splitlines()[1:]
-    coverage = ["emuir_net_hex\\tdriver_count\\tqueried_paths\\temitted_paths"]
-    for row in requested:
-        _, emuir_hex = row.split("\\t")
-        coverage.append(f"{emuir_hex}\\t1\\t1\\t1")
-    Path(os.environ["EMUFLOW_STA_THROUGH_COVERAGE"]).write_text(
-        "\\n".join(coverage) + "\\n"
-    )
-""",
-                encoding="utf-8",
-            )
-            fake_sta.chmod(fake_sta.stat().st_mode | stat.S_IXUSR)
-            platform_name = Platform.load(PLATFORM).name
-
-            def fake_physical(*args, **kwargs):
-                self.assertIsNotNone(kwargs["original_ir_path"])
-                self.assertIsNotNone(kwargs["assignment_path"])
-                self.assertIsNotNone(kwargs["routes_path"])
-                self.assertIsNotNone(kwargs["path_database_path"])
-                output = args[3]
-                output.mkdir(parents=True)
-                report = {
-                    "schema": "emuflow.multi-fpga-physical-flow/v1",
-                    "status": "pass",
-                    "provider": "phase6-emuir+physical-backend-v1",
-                    "backend": {"id": "vivado"},
-                    "design": "counter",
-                    "platform": platform_name,
-                    "execution": {"requested_workers": 1},
-                    "expected_fpgas": ["fpga0"],
-                    "fpgas": [{"fpga": "fpga0"}],
-                    "physical_summary_ref": "physical-summary.json",
-                    "summary": {"status": "pass"},
-                }
-                write_json(
-                    output / "multi-fpga-physical-flow-report.json", report
-                )
-                write_json(output / "physical-summary.json", {"status": "pass"})
-                return report
-
-            def fake_phase7c(*args, **kwargs):
-                routes = read_json(kwargs["routes_path"])
-                self.assertEqual(
-                    routes["provider"], GLOBAL_CANDIDATE_PROVIDER
-                )
-                self.assertTrue(routes["timing"]["paths"])
-                phase5 = read_json(args[4])
-                self.assertEqual(phase5["provider"], TDM_EXACT_DEPENDENCY_PROVIDER)
-                self.assertIn("timing_validation", phase5)
-                output = args[6]
-                output.mkdir(parents=True)
-                write_json(output / "runtime_contract.json", {})
-                write_json(output / "qor_report.json", {})
-                return {
-                    "status": "pass",
-                    "design": "counter",
-                    "platform": platform_name,
-                    "validation": {"status": "pass"},
-                    "physical": {"status": "pass"},
-                    "system_timing": {"status": "pass"},
-                }
-
-            with (
-                patch(
-                    "emuflow.flow.multi_fpga_flow.run_multi_fpga_physical_flow",
-                    side_effect=fake_physical,
-                ),
-                patch(
-                    "emuflow.flow.multi_fpga_flow.validate_openparf_runtime",
-                    return_value={"status": "pass"},
-                ),
-                patch(
-                    "emuflow.flow.multi_fpga_flow.run_phase7c",
-                    side_effect=fake_phase7c,
-                ),
-                patch(
-                    "emuflow.flow.multi_fpga_flow.validate_multi_fpga_flow_report",
-                    return_value={"status": "pass"},
-                ),
-            ):
-                report = run_multi_fpga_flow_fixture(
-                    platform_path=PLATFORM,
-                    output_dir=root / "flow",
-                    yosys_json=ROOT / "examples/yosys/counter.json",
-                    top="counter",
-                    clocks=["clk"],
-                    partition_provider="tritonpart",
-                    cut_mode="static-exact-combinational",
-                    timing_driven=False,
-                    clock_periods={"clk": 10.0},
-                    opensta=str(FAKE_OPENSTA),
-                    global_sta_executable=str(fake_sta),
-                    router=str(tlr_router()),
-                    frame_slots=32,
-                    phase6_provider="baseline",
-                    physical=True,
-                    equivalence_cycles=2,
-                    mapping_profile="xilinx-ultrascaleplus-open-v1",
-                    physical_backend="vivado",
-                )
+    def test_physical_baseline_still_materializes_timing_contract(self):
+        from emuflow.flow.native_compile_adapter import _initial_context, _control_snapshot
+        from emuflow.flow import multi_fpga_flow as flow
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "flow"
+            options = dict(platform_path=PLATFORM, output_dir=root,
+                yosys_json=ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"],
+                partition_provider="tritonpart", timing_driven=False, clock_periods={"clk": 10.0},
+                opensta=str(FAKE_OPENSTA), router=str(tlr_router()), frame_slots=32,
+                physical_backend="vivado")
+            report = run_multi_fpga_flow_fixture(**options)
+            ctx = _initial_context({"options": {"output_dir": str(root)}})
+            for name, value in options.items():
+                setattr(ctx, name, value)
+            ctx.physical = True
+            ctx.phase6_root = root / "split"
+            ctx.phase3_root = root / "partition"
+            ctx.phase4_root = root / "system-route"
+            ctx.ir_path = root / "frontend/phase1/design.emuir.sqlite"
+            ctx.assignment_path = root / "partition/assignment.json"
+            ctx.routes_path = root / "system-route/routes.json"
+            ctx.schedule_path = root / "tdm/schedule.json"
+            ctx.path_database_path = root / "timing/path-database.json"
+            ctx.effective_physical_architecture = None
+            ctx.phase6_comparison = ctx.baseline_physical_report = None
+            physical = {"schema": "emuflow.multi-fpga-physical-flow/v1", "status": "pass",
+                "design": "counter", "platform": Platform.load(PLATFORM).name,
+                "fpgas": [{"fpga": "fpga0"}], "summary": {"status": "pass"},
+                "physical_summary_ref": "physical-summary.json"}
+            with patch("emuflow.flow.multi_fpga_flow.run_multi_fpga_physical_flow", return_value=physical) as backend:
+                flow._compile_physical(ctx)
+            kwargs = backend.call_args.kwargs
+            for key in ("original_ir_path", "assignment_path", "routes_path", "path_database_path"):
+                self.assertIsNotNone(kwargs[key])
             self.assertFalse(report["timing"]["optimization_enabled"])
-            self.assertNotIn("fpgas", report["physical"])
-            self.assertEqual(
-                report["physical"]["physical_summary_ref"],
-                "physical-summary.json",
-            )
-            self.assertIn(
-                "fpgas",
-                read_json(
-                    root
-                    / "flow/physical/multi-fpga-physical-flow-report.json"
-                ),
-            )
-            self.assertTrue((root / "flow/timing/path-database.json").is_file())
-            self.assertTrue((root / "flow/timing/cut-timing-paths.json").is_file())
-            self.assertFalse(
-                (root / "flow/timing/partition-net-weights.json").exists()
-            )
+            self.assertTrue(ctx.path_database_path.is_file())
+            self.assertTrue((root / "timing/cut-timing-paths.json").is_file())
+            self.assertFalse((root / "timing/partition-net-weights.json").exists())
+            snapshot = _control_snapshot(ctx, "physical", flow)
+            self.assertNotIn("fpgas", snapshot["physical_report"])
+            self.assertEqual(snapshot["physical_report"]["physical_summary_ref"], "physical-summary.json")
 
     def test_rapidwright_runtime_preflight_precedes_frontend(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -701,7 +591,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 with self.assertRaisesRegex(
                     EmuFlowError, "missing PyTorch runtime"
                 ):
-                    run_multi_fpga_flow_fixture(
+                    run_preflight(
                         platform_path=PLATFORM,
                         output_dir=root,
                         yosys_json=ROOT / "examples/yosys/counter.json",
@@ -736,7 +626,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 with self.assertRaisesRegex(
                     EmuFlowError, "missing PyTorch runtime"
                 ):
-                    run_multi_fpga_flow_fixture(
+                    run_preflight(
                         platform_path=PLATFORM,
                         output_dir=root,
                         yosys_json=ROOT / "examples/yosys/counter.json",
@@ -775,11 +665,11 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 path = root / "board-link-timing.json"
                 write_json(path, database)
                 output = root / "flow"
-                with patch("emuflow.flow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream") as synthesis, patch(
+                with patch("emuflow.frontend.frontend_native.prepare_frontend") as synthesis, patch(
                     "emuflow.flow.multi_fpga_flow.check_opensta_engine_version"
                 ) as engine_check:
                     with self.assertRaisesRegex(ValidationError, "board link timing"):
-                        run_multi_fpga_flow_fixture(
+                        run_preflight(
                             platform_path=PLATFORM,
                             output_dir=output,
                             sources=[ROOT / "examples/rtl/counter.v"],
@@ -812,11 +702,11 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 "provenance": {"class": OPEN_TRANSPORT_PROVENANCE, "fit_sha256": "1" * 64},
             })
             output = root / "flow"
-            with patch("emuflow.flow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream") as synthesis, patch(
+            with patch("emuflow.frontend.frontend_native.prepare_frontend") as synthesis, patch(
                 "emuflow.flow.multi_fpga_flow.check_opensta_engine_version"
             ) as engine_check:
                 with self.assertRaisesRegex(ValidationError, "transport cost platform disagrees"):
-                    run_multi_fpga_flow_fixture(
+                    run_preflight(
                         platform_path=PLATFORM,
                         output_dir=output,
                         sources=[ROOT / "examples/rtl/counter.v"],
@@ -841,7 +731,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
             with self.assertRaisesRegex(
                 ValidationError, "requires 3.1.0 or newer"
             ):
-                run_multi_fpga_flow_fixture(
+                run_preflight(
                     platform_path=PLATFORM, mapping_profile="xilinx-ultrascaleplus-open-v1",
                     output_dir=root,
                     yosys_json=ROOT / "examples/yosys/counter.json",
@@ -1179,7 +1069,6 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
                 router=str(tlr_router()),
 
 
-                optimize_frame_slots=True,
                 frame_slots=32,
 
                 equivalence_cycles=2,
@@ -1287,7 +1176,6 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
 
 
                 frame_slots=32,
-                optimize_frame_slots=True,
 
 
                 partition_seed_attempts=1,
@@ -1363,28 +1251,15 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
             self.assertIn(
                 "timing_validation", report["stages"]["tdm"]
             )
-            self.assertLess(
-                report["frame_search"]["selected_frame_slots"], 32
-            )
-            self.assertEqual(
-                report["summary"]["frame_slots"],
-                report["frame_search"]["selected_frame_slots"],
-            )
+            self.assertEqual(report["summary"]["frame_slots"], 32)
             self.assertNotIn("cross_stage", report)
             self.assertEqual(report["runtime"]["validation"]["status"], "pass")
-            broken = copy.deepcopy(report)
-            broken["frame_search"]["selected_frame_slots"] = 31
-            with self.assertRaisesRegex(
-                ValidationError, "selected frame-search candidate"
-            ):
-                validate_multi_fpga_flow_report(broken)
             for relative in (
                 "timing/path-database.json",
                 "timing/partition-net-weights.json",
                 "timing/cut-timing-paths.json",
                 "timing/board-link-timing.json",
                 "timing/board-link-route-constraints.json",
-                "frame-search/frame-search-report.json",
                 "runtime/runtime_contract.json",
             ):
                 self.assertTrue((output / relative).is_file(), relative)

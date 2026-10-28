@@ -1,3 +1,4 @@
+from tests.compile_adapter_fixture import preflight as run_preflight
 """Research defaults must reach the selected tools without a VTR fallback."""
 
 import inspect
@@ -56,7 +57,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
         ) as frontend, patch("emuflow.flow.multi_fpga_flow.resolve_native_executable") as tool:
             out = Path(temporary) / "flow"
             with self.assertRaisesRegex(EmuFlowError, "unsupported multi-FPGA mapping profile"):
-                run_multi_fpga_flow(output_dir=out, mapping_profile="vtr-hard-blocks")
+                run_preflight(output_dir=out, mapping_profile="vtr-hard-blocks")
             frontend.assert_not_called()
             tool.assert_not_called()
             self.assertFalse(out.exists())
@@ -85,7 +86,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
         ):
             root = Path(temporary)
             with self.assertRaisesRegex(EmuFlowError, "unsupported physical backend"):
-                run_multi_fpga_flow(output_dir=root / "compile", physical_backend="open")
+                run_preflight(output_dir=root / "compile", physical_backend="open")
             with self.assertRaisesRegex(ValidationError, "physical backend"):
                 run_multi_fpga_physical_flow(root / "split", root / "board", root / "schedule",
                     root / "physical", backend="open")
@@ -121,20 +122,11 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
             with self.subTest(function=function.__name__, parameter=parameter):
                 self.assertEqual(inspect.signature(function).parameters[parameter].default, expected)
 
-    def test_compile_uses_xilinx_synthesis_without_profile_override(self):
-        with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.flow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream",
-            side_effect=EmuFlowError("selected Xilinx synthesis"),
-        ) as xilinx, patch("emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract"), patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"), patch("emuflow.flow.multi_fpga_flow.resolve_native_executable", return_value="/usr/bin/true"):
-            with self.assertRaisesRegex(EmuFlowError, "selected Xilinx synthesis"):
-                run_multi_fpga_flow(
-                    ROOT / "platforms/virtual/academic_vtr_2fpga_p2p.json",
-                    Path(temporary) / "flow",
-                    sources=[ROOT / "examples/rtl/counter.v"],
-                    top="counter", clocks=["clk"], clock_periods={"clk": 10.0},
-                )
-            xilinx.assert_called_once()
-
+    def test_compile_submits_xilinx_policy_without_profile_override(self):
+        with patch("emuflow.flow.native_compile.run_native_multi_fpga_flow", return_value={"status": "pass"}) as controller:
+            run_multi_fpga_flow(output_dir=Path("out"), sources=[ROOT / "examples/rtl/counter.v"], top="counter", clocks=["clk"], clock_periods={"clk": 10.0})
+        self.assertEqual(controller.call_args.kwargs["mapping_profile"], XILINX_PROFILE)
+        self.assertEqual(controller.call_args.kwargs["sources"], [ROOT / "examples/rtl/counter.v"])
 
     def test_retired_generic_upstream_is_rejected_before_any_work(self):
         from contextlib import redirect_stderr
@@ -154,7 +146,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
         ) as tool:
             out = Path(temporary) / "flow"
             with self.assertRaisesRegex(EmuFlowError, "unsupported multi-FPGA mapping profile"):
-                run_multi_fpga_flow(output_dir=out, mapping_profile="generic-soft")
+                run_preflight(output_dir=out, mapping_profile="generic-soft")
             frontend.assert_not_called()
             tool.assert_not_called()
             self.assertFalse(out.exists())

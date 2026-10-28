@@ -158,7 +158,7 @@ def test_real_chimew_kernels_survive_split_physical_signoff_control_boundaries(
         k: p.default
         for k, p in inspect.signature(flow.run_multi_fpga_flow).parameters.items()
     }
-    ctx = flow._CompileContext(defaults, native_mode=True)
+    ctx = flow._CompileContext(defaults)
     ctx.output_dir = root
     ctx.platform_path = research_platform_path(2)
     ctx.phase6_provider = "chimew"
@@ -340,7 +340,7 @@ if a.stage in ('physical','signoff','finalize'):
  assert state['baseline_runtime_report'] is state['phase6_comparison']['baseline']['runtime']
 if a.stage==TAMPER:
  target=pathlib.Path(ARCHITECTURE);target.write_text(target.read_text()+'\\n')
-value['state']=codec._pack(codec._control_snapshot(_CompileContext(state,native_mode=True),a.stage,flow))
+value['state']=codec._pack(codec._control_snapshot(_CompileContext(state),a.stage,flow))
 """.replace(
             "REAL_CODEC", repr(str(real_source / "flow/native_compile_adapter.py"))
         )

@@ -206,7 +206,7 @@ def _initial_context(request):
                     raise EmuFlowError(f"native compile {name} requires absolute paths")
                 return Path(item)
             bound.arguments[name] = tuple(path(item) for item in value) if "Iterable" in annotation else path(value)
-    return _CompileContext(dict(bound.arguments), native_mode=True)
+    return _CompileContext(dict(bound.arguments))
 
 
 def _control_snapshot(ctx, stage, flow):
@@ -302,7 +302,7 @@ def execute(stage, request_path, previous_path, output_path, run_id):
                 previous.get("request_generation") != generation):
             raise EmuFlowError("mixed or out-of-order native compiler state")
         ctx = flow._CompileContext(
-            _restore_control_state(_unpack(previous["state"])), native_mode=True
+            _restore_control_state(_unpack(previous["state"]))
         )
     function = getattr(flow, "_compile_" + {"tdm": "schedule"}.get(stage, stage.replace("-", "_")))
     if stage=="split" and ctx.phase6_provider=="baseline":

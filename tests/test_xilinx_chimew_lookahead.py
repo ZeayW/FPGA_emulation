@@ -1,3 +1,4 @@
+from tests.compile_adapter_fixture import preflight as run_preflight
 """Native/SQL contract fixtures, not placement, QoR or NVDLA qualification."""
 
 from tests.schedule_store_fixture import write_tdm_schedule_storage
@@ -228,7 +229,7 @@ def test_chimew_preflight_accepts_both_xilinx_backends_before_frontend(case, tmp
         out=tmp_path/f'preflight-{backend}'
         with patch('emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract',side_effect=PreflightReached):
             with pytest.raises(PreflightReached):
-                run_multi_fpga_flow(platform_path=research_platform_path(2),output_dir=out,
+                run_preflight(platform_path=research_platform_path(2),output_dir=out,
                     phase6_provider='chimew',physical=True,physical_backend=backend,
                     physical_architecture=architecture)
         assert not out.exists()

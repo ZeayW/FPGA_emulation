@@ -1,3 +1,4 @@
+from tests.compile_adapter_fixture import preflight as run_preflight
 """Direct graph/model staging contracts; unit fixtures are not NVDLA qualification."""
 import json
 from contextlib import closing
@@ -238,7 +239,7 @@ def test_missing_staging_capability_fails_before_synthesis(tmp_path):
          patch("emuflow.common.native_tools.require_native_schema", side_effect=require), \
          patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("synthesis started")), \
          pytest.raises(EmuFlowError, match="missing native routed staging"):
-        run_multi_fpga_flow(sources=[tmp_path / "absent.v"], top="dut", clocks=["clk"], clock_periods={"clk": 10.0},
+        run_preflight(sources=[tmp_path / "absent.v"], top="dut", clocks=["clk"], clock_periods={"clk": 10.0},
                            physical=True, physical_backend="rapidwright", output_dir=tmp_path / "flow")
     assert not (tmp_path / "flow").exists()
 

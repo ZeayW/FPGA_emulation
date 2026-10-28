@@ -104,17 +104,17 @@ it cannot accept private kernel-output callbacks or retry a failed stage.
 
 ## Native compile control
 
-Add `--compile-implementation native-control-v1` to the normal
-`emuflow multi-fpga compile` invocation to select the C++ one-shot controller.
-The CLI still resolves benchmark/BoardDB inputs, then sends bounded configuration
-to `emuflow-native compile REQUEST_JSON`. The controller chooses the phase order;
-it never calls the Python compile function. Ordinary RTL preparation, pre-placement timing, partitioning, system routing,
-exact scheduling and baseline splitting run in native phase processes. Bounded
-configuration preparation remains separate from those stage owners. Chimew and
-physical/signoff stage control retain isolated Python adapters while their complete
-stage ownership is migrated.
-The default remains `python-control-v1`, with the same provider, algorithm,
-seed and physical-policy defaults in both modes.
+`emuflow multi-fpga compile` always uses the C++ one-shot controller.
+The CLI resolves benchmark/BoardDB inputs and sends a bounded request to
+`emuflow-native compile REQUEST_JSON`. The public Python `run_multi_fpga_flow`
+API submits the same request. There is no control-implementation selector,
+alternate Python controller or fallback after failure. The controller chooses
+the stage order and owns cancellation, subprocess cleanup and handoffs.
+Ordinary RTL preparation, pre-placement timing, partitioning, system routing,
+exact scheduling and baseline splitting run in native phase processes.
+Supplied/prepared input binding, configuration preparation, Chimew and
+physical/signoff/final reporting remain explicit isolated adapters. Existing
+provider, algorithm, seed and physical-policy defaults are unchanged.
 
 The native controller supports baseline splitting and retained Chimew comparison,
 with either OpenPARF/RWRoute or Vivado physical implementation and global timing.
@@ -125,10 +125,12 @@ bound control data; no placement or endpoint population is embedded in it.
 Baseline reports have one owner within the comparison and are restored as
 references within each phase, rather than serialized twice. This control state
 is private to the live invocation and cannot be used as an old-artifact reader.
-Frame-length search still rejects before native synthesis and remains available
-through the Python controller. Serial-BSP continuation is retired from both controllers. No rejected or failed native
-run retries through Python or changes providers. This entry does not establish
-large-design qualification or completion of the C++ data-plane migration.
+Frame-length search is not integrated into the production controller; requesting
+`optimize_frame_slots=True` rejects before synthesis. Serial-BSP continuation is
+retired. No rejected or failed run retries through Python or changes providers.
+The result continues to report `native_data_plane_complete=false`; this entry
+change does not establish NVDLA terminal qualification or completion of the C++
+data-plane migration.
 
 The [request envelope](../schemas/native-compile-request-v1.schema.json) contains
 the interpreter invocation, Python source directory, invocation working directory

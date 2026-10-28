@@ -1,3 +1,4 @@
+from tests.compile_adapter_fixture import preflight as run_preflight
 """Native routed graph equivalence and scale gates; not device qualification."""
 import hashlib
 import importlib
@@ -326,7 +327,7 @@ def test_native_routed_graph_capability_is_required_before_synthesis(tmp_path):
         "emuflow.common.native_tools.require_native_schema", side_effect=capability
     ), patch("emuflow.flow.multi_fpga_flow._compile_frontend", side_effect=AssertionError("frontend started")), \
          pytest.raises(EmuFlowError, match="missing native routed graph"):
-        run_multi_fpga_flow(sources=[tmp_path / "missing.v"], top="dut", clocks=["clk"], clock_periods={"clk": 10.0},
+        run_preflight(sources=[tmp_path / "missing.v"], top="dut", clocks=["clk"], clock_periods={"clk": 10.0},
                            physical=True, physical_backend="rapidwright", output_dir=tmp_path / "flow")
     assert not (tmp_path / "flow").exists()
 
