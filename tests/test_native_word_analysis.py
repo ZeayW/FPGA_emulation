@@ -1,0 +1,138 @@
+"""Production native entry consumes indexed owners and immutable native exports."""
+import json
+import os
+from pathlib import Path
+import subprocess
+
+import pytest
+
+from emuflow.errors import EmuFlowError, ValidationError
+from emuflow.native_word_analysis import (
+    INDEX_SCHEMA, ROW_SCHEMA, ROLES, _write_projection_request,
+    analyze_native_word_network, write_native_word_index,
+)
+from emuflow.store_publication import bind_store_source
+from tests.native_build import emuflow_native
+from tests.test_native_word_costs import HEADER
+from tests.test_native_word_tx_binding import row
+
+
+@pytest.fixture(scope='module')
+def native():
+    supplied=os.environ.get('EMUFLOW_TEST_NATIVE_WORD_DRIVER')
+    program=Path(supplied)if supplied else emuflow_native()
+    assert subprocess.run([str(program),'check-runtime',INDEX_SCHEMA],capture_output=True).returncode==0
+    return program
+
+
+@pytest.fixture(autouse=True)
+def runtime(native,monkeypatch):
+    monkeypatch.setenv('EMUFLOW_NATIVE_ROOT',str(native.parent.parent))
+
+
+def fixture(tmp_path,*,ratio=8,calendar=(1,),observed=('fpga0','fpga1'),root=1.,capture=2.):
+    index=tmp_path/'index.sqlite'
+    parts=[dict(fpga='fpga0',clocks={'native_clk':'core'},calendar_periods=calendar,
+                tx_entries=[('transfer','word[0]')],rx_entries=[]),
+           dict(fpga='fpga1',clocks={'native_clk':'core'},calendar_periods=calendar,
+                tx_entries=[],rx_entries=[('s7','transfer')])]
+    write_native_word_index(index,transfers=[('transfer','fpga0','fpga1',0,ratio,6)],partitions=parts,
+        clock_windows=[('core',a,'core',b,100000 if a==b else 50000)for a in(1,2)for b in(1,2)],
+        source_context={'scope':'routed-provider interface fixture'})
+    observations={}
+    for fpga in observed:
+        directory=tmp_path/fpga;directory.mkdir()
+        record={role:directory/(role+'.tsv')for role in ROLES}
+        tx=[row(0,source='native_clk',cost=root),row(0,source='native_clk',edge='fall',measured=False)]if fpga=='fpga0'else[]
+        record['tx_costs'].write_text(HEADER+'\n'+''.join('\t'.join(r)+'\n'for r in tx))
+        fanin='phase_word\tquery_hex\tnative_startpoints\trx_sources\tdut_cells\tinfrastructure_cells\tports\tunclassified\n'
+        if tx:fanin+='0\t'+('word[0]'.encode().hex())+'\t1\t0\t1\t0\t0\t0\n'
+        record['fanins'].write_text(fanin)
+        cap=[]
+        for target in('rise','fall'):
+            query=f'dut-capture:native_clk:{target}'
+            for source_edge in('rise','fall'):
+                r=row(-1,query,source='native_clk',edge=source_edge,measured=False);cap.append(r)
+            if fpga=='fpga1':
+                r=row(-1,query,kind='rx',source='s7',edge='',cost=capture,measured=target=='rise')
+                if target=='rise':r[13]='native_clk'.encode().hex()
+                cap.append(r)
+        record['captures'].write_text(HEADER+'\n'+''.join('\t'.join(r)+'\n'for r in cap))
+        record['missing_rx'].write_text('source_origin\n')
+        observations[fpga]=record
+    return index,observations,tmp_path/'analysis.json'
+
+
+def test_production_command_projects_actual_stream_roles_and_clock_windows(tmp_path):
+    index,observations,out=fixture(tmp_path)
+    analyze_native_word_network(index,observations,out)
+    result=json.loads(out.read_text())
+    assert result['status']=='setup-model-projected'
+    assert result['maximum_sampling_cost_ps']==result['required_reference_period_ps']==38000
+    assert result['setup_model_frequency_mhz']==pytest.approx(1000./38.)
+    assert result['observed_partitions']==result['expected_partitions']==2
+    assert result['transfer_order']==['transfer']
+    assert result['original_path_sta_acceptance']==result['physical_acceptance']=='pending'
+
+
+def test_missing_partition_preserves_the_full_requested_population(tmp_path):
+    index,observations,out=fixture(tmp_path,observed=('fpga0',))
+    analyze_native_word_network(index,observations,out)
+    result=json.loads(out.read_text())
+    assert result['status']=='awaiting-observations'
+    assert result['expected_partitions']==2 and result['observed_partitions']==1
+    assert result['maximum_sampling_cost_ps']is result['setup_model_frequency_mhz']is None
+    assert result['partitions'][1]['observed']is False
+
+
+def test_no_observations_requires_no_fake_empty_measurements(tmp_path):
+    index,_,out=fixture(tmp_path,observed=())
+    analyze_native_word_network(index,{},out)
+    result=json.loads(out.read_text())
+    assert result['status']=='awaiting-observations' and result['observed_tx_contexts']==0
+    assert result['expected_tx_contexts']==1 and result['incomplete_entries']==1
+
+
+def test_receive_only_periods_keep_incomplete_calendar_records_pending(tmp_path):
+    index,observations,out=fixture(tmp_path,ratio=16,calendar=(2,3))
+    analyze_native_word_network(index,observations,out)
+    result=json.loads(out.read_text())
+    assert result['expected_tx_contexts']==3 and result['observed_tx_contexts']==1
+    assert result['status']=='awaiting-observations' and result['incomplete_entries']==1
+
+
+def test_bind_only_mode_does_not_publish_a_frequency(tmp_path):
+    index,observations,out=fixture(tmp_path)
+    analyze_native_word_network(index,observations,out,project=False)
+    result=json.loads(out.read_text())
+    assert result['status']=='observations-bound' and result['setup_model_frequency_mhz']is None
+
+
+@pytest.mark.parametrize('kind',['fanin','missing','capture'])
+def test_bad_native_streams_preserve_the_previous_output(tmp_path,kind):
+    index,observations,out=fixture(tmp_path)
+    out.write_text('previous qualified result\n')
+    if kind=='fanin':observations['fpga0']['fanins'].write_text('invalid header\n')
+    elif kind=='missing':observations['fpga1']['missing_rx'].write_text('source_origin\ns999\n')
+    else:
+        p=observations['fpga1']['captures'];lines=p.read_text().splitlines();p.write_text('\n'.join(lines[:-1])+'\n')
+    with pytest.raises(EmuFlowError):analyze_native_word_network(index,observations,out)
+    assert out.read_text()=='previous qualified result\n'
+
+
+def test_request_generation_guard_rejects_replaced_input_before_publication(tmp_path,native):
+    index,observations,out=fixture(tmp_path)
+    files=[observations[name][role]for name in('fpga0','fpga1')for role in ROLES]
+    parents=[bind_store_source(index,INDEX_SCHEMA),*(bind_store_source(p,ROW_SCHEMA)for p in files)]
+    request=tmp_path/'request.bin';_write_projection_request(request,sources=parents,covered=[(0,()),(1,())],project=True)
+    observations['fpga0']['tx_costs'].write_text('changed after source seal\n');out.write_text('old\n')
+    done=subprocess.run([str(native),'phase7','analyze-word-network',str(index),str(request),str(out),
+                         *(str(p)for p in files)],capture_output=True,text=True)
+    assert done.returncode!=0 and 'generation differs' in done.stderr
+    assert out.read_text()=='old\n'
+
+
+def test_output_alias_and_unknown_partition_are_rejected(tmp_path):
+    index,observations,out=fixture(tmp_path)
+    with pytest.raises(ValidationError,match='aliases'):analyze_native_word_network(index,observations,index)
+    with pytest.raises(ValidationError,match='unknown partition'):analyze_native_word_network(index,{'wrong':{}},out)

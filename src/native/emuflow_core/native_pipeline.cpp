@@ -22,6 +22,7 @@
 #include "emuflow_core/source_communication.hpp"
 #include "emuflow_core/mapped_normalization.hpp"
 #include "emuflow_core/source_lut_models.hpp"
+#include "emuflow_core/native_word_analysis.hpp"
 
 #include <filesystem>
 #include <iostream>
@@ -37,6 +38,7 @@ const char* StageName(Stage stage) {
     case Stage::kMergePatronWitnessPaths: return "phase3.merge-witness-paths";
     case Stage::kValidateMappedNormalization: return "phase1.validate-mapped-normalization";
     case Stage::kBuildSourceLutModels: return "phase2.build-lut-models";
+    case Stage::kAnalyzeNativeWordNetwork: return "phase7.analyze-word-network";
     case Stage::kBuildSourceLaunchClocks: return "phase7.build-launch-clocks";
     case Stage::kBuildSourceCaptureClocks: return "phase7.build-capture-clocks";
     case Stage::kRefinePartitionHops: return "phase3.refine-hops";
@@ -81,6 +83,13 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
       return {"emuir-compact-v2","partition-cluster-columns-v2","patron-initial-columns-v1","patron-source-board-request-v1"};
     case Stage::kValidateMappedNormalization: return {"emuir-compact-v2","emuir-compact-v2","yosys-source-document-v1","mapped-normalization-request-v1"};
     case Stage::kBuildSourceLutModels: return {"emuir-compact-v2"};
+    case Stage::kAnalyzeNativeWordNetwork: {
+      const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
+      if(count<2 || count>258 || (count-2)%4)
+        throw core::StageError(core::ErrorCode::kInvalidRequest,"native word observation input coverage differs");
+      std::vector<std::string> schemas{"native-word-observation-index-v1","native-word-projection-request-v1"};
+      schemas.resize(count,"native-word-observation-rows-v1");return schemas;
+    }
     case Stage::kMergePatronWitnessPaths: {
       const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
       if(count<3 || count>11)throw core::StageError(core::ErrorCode::kInvalidRequest,"witness owner count differs");
@@ -293,6 +302,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kMergePatronWitnessPaths: core::MergePatronWitnessPaths(inputs,output); break;
       case Stage::kValidateMappedNormalization: core::ValidateMappedNormalization(inputs,output); break;
       case Stage::kBuildSourceLutModels: core::BuildSourceLutModels(inputs,output); break;
+      case Stage::kAnalyzeNativeWordNetwork: core::AnalyzeNativeWordNetwork(inputs,output); break;
       case Stage::kBuildSourceLaunchClocks: core::BuildSourceLaunchClocksFromRequest(inputs,output,request.cancelled); break;
       case Stage::kBuildSourceCaptureClocks: core::BuildSourceCaptureClocksFromRequest(inputs,output,request.cancelled); break;
       case Stage::kRefinePartitionHops:
@@ -343,6 +353,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kMergePatronWitnessPaths: schema="patron-witness-paths-tsv-v1"; break;
       case Stage::kValidateMappedNormalization: schema="mapped-normalization-proof-v1"; break;
       case Stage::kBuildSourceLutModels: schema="source-lut-model-store-v1"; break;
+      case Stage::kAnalyzeNativeWordNetwork: schema="native-word-network-analysis-v1"; break;
       case Stage::kBuildSourceLaunchClocks: schema="source-launch-clock-store-v1"; break;
       case Stage::kBuildSourceCaptureClocks: schema="source-capture-clock-store-v1"; break;
       case Stage::kRefinePartitionHops: schema = "hop-refiner-output-v1"; break;

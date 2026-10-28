@@ -53,6 +53,11 @@ constexpr RegisteredSchema schemas[] = {
     {"source-lut-model-store-v1", ArtifactEncoding::kSqlite, 0, 1, true,
      "SELECT json_extract(value,'$.schema') FROM metadata WHERE key='header'", "emuflow.source-lut-models/v1"},
     {"source-net-map-request-v1", ArtifactEncoding::kBinary, 0x31514d4e534d5545ULL, 1},
+    {"native-word-observation-index-v1", ArtifactEncoding::kSqlite, 0x454d574e, 1, true,
+     "SELECT value FROM metadata WHERE key='schema'","emuflow.native-word-observation-index/v1"},
+    {"native-word-projection-request-v1", ArtifactEncoding::kBinary, 0x315150574e4d5545ULL, 1},
+    {"native-word-observation-rows-v1", ArtifactEncoding::kText, 0, 1},
+    {"native-word-network-analysis-v1", ArtifactEncoding::kText, 0, 1},
     {"sta-path-selector-v1", ArtifactEncoding::kText, 0, 1},
     {"net-weight-store-v1", ArtifactEncoding::kSqlite, 0, 1, true,
      "SELECT 'net-weight-store-v1' WHERE (SELECT count(*) FROM pragma_table_info('net_weights') "
