@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 
 from emuflow.common.errors import EmuFlowError
+from emuflow.common.io import file_sha256
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.common.native_tools import native_file_generation, require_native_schema, resolve_native_executable
 from emuflow.platform.platform import Platform
@@ -30,7 +31,25 @@ def prepare_frontend(ctx):
         include_dirs=includes, defines=defines, mapping_profile=XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
         mapping_strategy=strategy, stream_json=True, hierarchical_interchange=True)
     library = DEFAULT_XILINX_PRIMITIVE_LIBRARY.resolve()
-    bindings = tuple((path, native_file_generation(path)) for path in (library, *sources, ctx.platform_path.resolve(), Path(tool)))
+    checksums = getattr(ctx, "source_checksums", None)
+    declared = []
+    if checksums is not None:
+        if type(checksums) is not dict or not checksums or len(checksums) > 16384:
+            raise EmuFlowError("invalid design source checksum inventory")
+        for raw, digest in checksums.items():
+            path = Path(raw)
+            if not path.is_absolute() or not path.is_file() or not isinstance(digest, str) or len(digest) != 64:
+                raise EmuFlowError("invalid design source checksum reference")
+            generation = native_file_generation(path)
+            if file_sha256(path) != digest or native_file_generation(path) != generation:
+                raise EmuFlowError("design RTL/include changed after run preparation")
+            declared.append((path, generation))
+        if any(str(path) not in checksums for path in sources):
+            raise EmuFlowError("design source checksum coverage is incomplete")
+    bindings = tuple((path, native_file_generation(path)) for path in dict.fromkeys((library, *sources, ctx.platform_path.resolve(), Path(tool), *(path for path, _ in declared))))
+    bound_by_path = dict(bindings)
+    if any(bound_by_path[path] != generation for path, generation in declared):
+        raise EmuFlowError("design source generation changed during request preparation")
     board = json.dumps(Platform.load(ctx.platform_path).to_dict(), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     synthesis = json.dumps({
         "provider": "yosys", "mode": "xilinx-ultrascaleplus-open", "mapping_profile": XILINX_ULTRASCALEPLUS_OPEN_PROFILE,

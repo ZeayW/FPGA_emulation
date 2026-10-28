@@ -2,7 +2,6 @@
 
 """Generate FPGA-safe declarations or models for NVDLA ASIC SRAM wrappers."""
 
-import argparse
 import re
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -40,8 +39,7 @@ def _parse_wrapper(path: Path) -> Tuple[str, str, List[Tuple[str, str, str]]]:
     if parameter_match is None:
         raise ValueError(f"{path}: expected an SRAM wrapper parameter")
     parameter = (
-        f"parameter {parameter_match.group(1)}="
-        f"{parameter_match.group(2).strip()}"
+        f"parameter {parameter_match.group(1)}=" f"{parameter_match.group(2).strip()}"
     )
     declarations: Dict[str, Tuple[str, str, str]] = {}
     for direction, width, port_name in PORT.findall(text):
@@ -100,8 +98,7 @@ def _emit_synthesizable_model(
     data_width = int(match.group(3))
     address_width = max(1, (depth - 1).bit_length())
     actual_ports = {
-        port_name: (direction, width)
-        for direction, width, port_name in ports
+        port_name: (direction, width) for direction, width, port_name in ports
     }
     expected_widths = _expected_ports(kind, address_width, data_width)
     if set(actual_ports) != set(expected_widths):
@@ -209,30 +206,3 @@ def generate(
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(blocks), encoding="utf-8")
     return len(wrappers), modeled
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Generate explicit NVDLA ASIC-SRAM abstraction models."
-    )
-    parser.add_argument("source_dir", type=Path)
-    parser.add_argument("output", type=Path)
-    parser.add_argument(
-        "--memory-policy",
-        choices=sorted(MEMORY_POLICIES),
-        default=BLACKBOX_MEMORY_POLICY,
-    )
-    arguments = parser.parse_args()
-    count, modeled = generate(
-        arguments.source_dir.resolve(),
-        arguments.output.resolve(),
-        arguments.memory_policy,
-    )
-    print(
-        f"generated_nvdla_ram_wrappers={count} "
-        f"modeled_memories={modeled} output={arguments.output.resolve()}"
-    )
-
-
-if __name__ == "__main__":
-    main()

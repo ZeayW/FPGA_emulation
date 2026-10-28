@@ -40,7 +40,7 @@ def main(source_root: Path, install_root: Path) -> None:
     assert Path(emuflow.__file__).resolve().parent == package.resolve()
     for retired in ("cli", "phase3", "native_compile_adapter", "xilinx_rwroute"):
         assert importlib.util.find_spec("emuflow." + retired) is None, retired
-    data = [p for p in (source / "data").rglob("*") if p.suffix in {".json", ".sql", ".tcl"}]
+    data = [p for p in (source / "data").rglob("*") if p.suffix in {".json", ".sql", ".tcl", ".v"}]
     for path in data:
         installed = package / path.relative_to(source)
         assert installed.is_file(), f"installed runtime data missing: {installed}"
@@ -62,6 +62,12 @@ def main(source_root: Path, install_root: Path) -> None:
         installed = prefix / relative
         assert installed.is_file(), f"installed adapter resource missing: {installed}"
         assert digest(installed) == digest(path), f"installed adapter resource changed: {installed}"
+    assert digest(install_root / "share/emuflow/scripts/rapidwright/EmuFlowRWRoute.java") == digest(source_root / "scripts/rapidwright/EmuFlowRWRoute.java")
+    assert not (install_root / "scripts/yosys/nvdla_compat.v").exists()
+    from emuflow.flow.cli import _build_parser
+    _build_parser().parse_args(["run", "nvdla.run.json", "--out", "unused", "--backend", "vivado"])
+    from emuflow.flow.designs.nvdla import CATALOG_PATH, COMPAT_PATH
+    assert CATALOG_PATH.is_file() and COMPAT_PATH.is_file()
     assert OPENSTA_RUNTIME_CHECK_SCRIPT.resolve() == (
         install_root / "share/emuflow/scripts/opensta/validate_runtime.tcl"
     ).resolve()

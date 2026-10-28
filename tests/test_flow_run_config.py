@@ -1,0 +1,333 @@
+"""Source/configuration and entry integration; not NVDLA terminal qualification."""
+
+import json
+import os
+from pathlib import Path
+from unittest.mock import patch
+import pytest
+from emuflow.common.errors import EmuFlowError
+from emuflow.common.io import file_sha256, write_json
+from emuflow.flow import environment as env
+from emuflow.flow import run_config as run
+
+
+@pytest.fixture
+def profile(tmp_path):
+    root = tmp_path / "runtime"
+    for name in ("emuflow-native", "yosys", "sta", "openroad"):
+        p = root / "bin" / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("#!/bin/sh\nexit 0\n")
+        p.chmod(0o755)
+    files = {}
+    for name in ("architecture", "native_constraints", "provider_manifest", "jar"):
+        p = tmp_path / (name + ".json")
+        p.write_text("{}\n")
+        files[name] = str(p)
+    for name in ("timing_data_dir", "device_data", "openparf_install"):
+        p = tmp_path / name
+        p.mkdir()
+        files[name] = str(p)
+    for name in ("java", "javac", "openparf_python", "vivado"):
+        p = tmp_path / name
+        p.write_text("#!/bin/sh\nexit 0\n")
+        p.chmod(0o755)
+        files[name] = str(p)
+    source = root / "share/emuflow/scripts/rapidwright/EmuFlowRWRoute.java"
+    source.parent.mkdir(parents=True)
+    source.write_text("// explicit runtime fixture\n")
+    timing = tmp_path / "preplacement.json"
+    timing.write_text("{}\n")
+    value = {
+        "schema": env.SCHEMA,
+        "native_root": str(root),
+        **{k: files[k] for k in env._PATH_KEYS if k != "native_root"},
+        "backends": {
+            "rapidwright": {
+                k: files[k]
+                for k in env._BACKEND_KEYS["rapidwright"]
+                if k != "java_source"
+            },
+            "vivado": {"executable": files["vivado"]},
+        },
+        "preplacement_timing": {"path": str(timing), "sha256": file_sha256(timing)},
+        "environment": {"LM_LICENSE_FILE": "explicit-fixture-license"},
+    }
+    path = tmp_path / "environment.json"
+    write_json(path, value)
+    data = tmp_path / "timing_data_dir" / "source.txt"
+    data.write_text("pinned source fixture")
+    with (
+        patch.object(
+            env, "RAPIDWRIGHT_TIMING_DATA_SHA256", {data.name: file_sha256(data)}
+        ),
+        patch.object(
+            env,
+            "validate_xilinx_preplacement_timing_db",
+            return_value={"status": "pass"},
+        ),
+    ):
+        yield path
+
+
+@pytest.fixture
+def design(tmp_path, profile):
+    from tests.test_nvdla import NvdlaRamStubTest
+    from emuflow.flow.designs.nvdla import _catalog_entry, CATALOG_PATH
+
+    source, _, _ = NvdlaRamStubTest()._prepared_fixture(tmp_path)
+    catalog = _catalog_entry(CATALOG_PATH)
+    write_json(
+        source / ".emuflow-source.json",
+        {
+            "schema": "emuflow.source-archive/v1",
+            "design_id": "nvdla",
+            "revision": catalog["revision"],
+            "archive_sha256": catalog["archive_sha256"],
+        },
+    )
+    output = tmp_path / "nvdla.run.json"
+    run.prepare_nvdla_run(source, profile, output)
+    return output, source
+
+
+def test_environment_reports_every_missing_input_without_launching_tools(tmp_path):
+    profile = {"schema": env.SCHEMA, "backends": {"rapidwright": {}, "vivado": {}}}
+    with patch("subprocess.run", side_effect=AssertionError("engine launched")):
+        report = env.inspect_environment(profile)
+    names = {item["item"] for item in report["missing"]}
+    assert report["status"] == "fail"
+    assert {
+        "native_root",
+        "emuflow-native",
+        "yosys",
+        "sta",
+        "openroad",
+        "architecture",
+        "native_constraints",
+        "provider_manifest",
+        "timing_data_dir",
+        "rapidwright.jar",
+        "vivado.executable",
+        "preplacement_timing",
+    } <= names
+
+
+def test_environment_prepare_generates_internal_timing_once_and_preserves_old_profile_on_failure(
+    profile, tmp_path
+):
+    target = tmp_path / "registered.json"
+
+    def build(directory, output):
+        assert directory == tmp_path / "timing_data_dir"
+        write_json(output, {"fixture": "source-bound builder"})
+
+    with (
+        patch.object(
+            env, "build_xilinx_preplacement_timing_db", side_effect=build
+        ) as builder,
+        patch.object(env, "probe_environment", return_value={"status": "pass"}),
+    ):
+        result = env.prepare_environment(profile, target)
+    assert result["status"] == "pass" and builder.call_count == 1
+    original = target.read_bytes()
+    with patch.object(
+        env,
+        "build_xilinx_preplacement_timing_db",
+        side_effect=EmuFlowError("source data differs"),
+    ):
+        with pytest.raises(EmuFlowError, match="source data differs"):
+            env.prepare_environment(profile, target)
+    assert target.read_bytes() == original
+    assert not list(tmp_path.glob(".environment-*"))
+
+
+def test_environment_rejects_output_aliases_and_tampered_internal_timing(profile):
+    p = env.load_environment(profile)
+    with pytest.raises(EmuFlowError, match="aliases"):
+        env.prepare_environment(profile, Path(p["architecture"]))
+    Path(p["preplacement_timing"]["path"]).write_text("changed")
+    assert env.inspect_environment(p)["status"] == "fail"
+
+
+def test_profile_scope_restores_license_and_tool_context_even_after_failure(
+    profile, monkeypatch
+):
+    monkeypatch.setenv("LM_LICENSE_FILE", "original")
+    monkeypatch.setenv("EMUFLOW_NATIVE_ROOT", "original-root")
+    with pytest.raises(RuntimeError):
+        with env.environment_scope(env.load_environment(profile)):
+            assert os.environ["LM_LICENSE_FILE"] == "explicit-fixture-license"
+            raise RuntimeError()
+    assert os.environ["LM_LICENSE_FILE"] == "original"
+    assert os.environ["EMUFLOW_NATIVE_ROOT"] == "original-root"
+
+
+@pytest.mark.parametrize("backend", ["rapidwright", "vivado"])
+def test_complete_run_configuration_uses_the_same_native_controller(
+    design, backend, tmp_path
+):
+    config, _ = design
+    with patch(
+        "emuflow.flow.native_compile.run_native_multi_fpga_flow",
+        return_value={"status": "pass"},
+    ) as native:
+        assert (
+            run.execute_run(config, tmp_path / "flow", backend=backend)["status"]
+            == "pass"
+        )
+    native.assert_called_once()
+    options = native.call_args.kwargs
+    assert options["top"] == "NV_nvdla"
+    assert options["clocks"] == ["dla_core_clk", "dla_csb_clk"]
+    assert options["clock_periods"] == {"dla_core_clk": 10.0, "dla_csb_clk": 10.0}
+    assert options["physical"] is True and options["physical_backend"] == backend
+    assert (
+        options["partition_provider"] == "patron"
+        and options["patron_algorithm_version"] == 14
+    )
+    assert len(options["sources"]) >= 250
+    assert set(str(path) for path in options["sources"]) <= set(
+        options["source_checksums"]
+    )
+    if backend == "vivado":
+        assert options["physical_vivado"] == str(tmp_path / "vivado")
+        assert options["physical_openparf_python"] is None
+    else:
+        assert options["physical_openparf_python"] == tmp_path / "openparf_python"
+        assert options["physical_rapidwright_java_source"].is_file()
+
+
+def test_repeated_design_preparation_does_not_rewrite_live_generated_rtl(
+    design, profile, tmp_path
+):
+    config, source = design
+    _, v, benchmark, _ = run.load_run(config)
+    generated = [
+        source / item["path"]
+        for item in benchmark.value["preparation"]["generated_files"]
+    ]
+    before = [p.stat().st_mtime_ns for p in generated]
+    run.prepare_nvdla_run(source, profile, tmp_path / "another.run.json")
+    assert [p.stat().st_mtime_ns for p in generated] == before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["rtl", "include", "generated", "benchmark", "memory", "revision", "option"],
+)
+def test_source_or_policy_changes_reject_before_native_execution(
+    design, tmp_path, mutation
+):
+    config, source = design
+    value = json.loads(config.read_text())
+    benchmark_path = Path(value["benchmark_run"])
+    benchmark = json.loads(benchmark_path.read_text())
+    if mutation == "rtl":
+        next((source / "vmod/nvdla/top").glob("rtl_*.v")).write_text("changed RTL")
+    elif mutation == "include":
+        (source / "vmod/include/config.vh").write_text("changed include")
+    elif mutation == "generated":
+        (source / benchmark["preparation"]["generated_files"][0]["path"]).write_text(
+            "changed generated"
+        )
+    elif mutation == "benchmark":
+        benchmark_path.write_text(benchmark_path.read_text() + "\n")
+    elif mutation == "option":
+        value["options"]["sources"] = ["different-design.v"]
+        write_json(config, value)
+    else:
+        key = "memory_policy" if mutation == "memory" else "upstream_revision"
+        benchmark["preparation"][key] = (
+            "black-box" if mutation == "memory" else "unknown-revision"
+        )
+        write_json(benchmark_path, benchmark)
+        value["benchmark_sha256"] = file_sha256(benchmark_path)
+        write_json(config, value)
+    with patch(
+        "emuflow.flow.native_compile.run_native_multi_fpga_flow",
+        side_effect=AssertionError("native started"),
+    ):
+        with pytest.raises(EmuFlowError):
+            run.execute_run(config, tmp_path / "out")
+    assert not (tmp_path / "out").exists()
+
+
+def test_cli_configuration_check_is_explicitly_not_terminal_qualification(
+    design, tmp_path
+):
+    from emuflow.flow.cli import _build_parser, _dispatch
+
+    config, _ = design
+    args = _build_parser().parse_args(
+        [
+            "run",
+            str(config),
+            "--backend",
+            "vivado",
+            "--out",
+            str(tmp_path / "out"),
+            "--check",
+        ]
+    )
+    with (
+        patch("emuflow.flow.cli._print_json") as output,
+        patch(
+            "emuflow.flow.native_compile.run_native_multi_fpga_flow",
+            side_effect=AssertionError("design started"),
+        ),
+    ):
+        assert _dispatch(args) == 0
+    assert output.call_args.args[0]["terminal_qualification"] is False
+    assert not (tmp_path / "out").exists()
+
+
+def test_profile_rejects_unknown_fields_and_duplicate_keys(tmp_path):
+    path = tmp_path / "bad.json"
+    path.write_text('{"schema":"x","schema":"y"}')
+    with pytest.raises(EmuFlowError, match="duplicate"):
+        env.load_environment(path)
+
+
+def test_registered_solver_probes_use_the_selected_backend_and_restore_environment(
+    profile,
+):
+    p = env.load_environment(profile)
+    from types import SimpleNamespace
+
+    original = os.environ.get("LM_LICENSE_FILE")
+    with (
+        patch("subprocess.run", return_value=SimpleNamespace(returncode=0, stderr="")),
+        patch("emuflow.timing.opensta.check_opensta_engine_version"),
+        patch(
+            "emuflow.physical.openparf.openparf.validate_openparf_runtime"
+        ) as openparf,
+        patch.object(env, "_probe_tool", return_value="Vivado v2024.2") as tool,
+    ):
+        assert env.probe_environment(p, "vivado")["engine_load"] == "pass"
+        assert tool.call_args.args[1] == [
+            p["backends"]["vivado"]["executable"],
+            "-version",
+        ]
+        openparf.assert_not_called()
+    assert os.environ.get("LM_LICENSE_FILE") == original
+
+
+@pytest.mark.parametrize("channel", ["stdout", "stderr"])
+def test_version_probe_uses_real_native_tool_supervision(channel):
+    import sys
+    from tests.native_build import emuflow_native
+
+    assert "version-fixture" in env._probe_tool(
+        str(emuflow_native()), [sys.executable, "-c", "import sys; print('version-fixture', file=sys." + channel + ")"]
+    )
+
+
+def test_installed_nvdla_pin_matches_the_fetch_catalog():
+    from emuflow.flow.designs.nvdla import CATALOG_PATH
+
+    root = Path(__file__).resolve().parents[1]
+    canonical = json.loads((root / "benchmarks/rtl_catalog.json").read_text())
+    selected = next(item for item in canonical["designs"] if item["id"] == "nvdla")
+    installed = json.loads(CATALOG_PATH.read_text())
+    assert installed["designs"] == [selected]

@@ -317,6 +317,25 @@
         "emuflow-ppro-calibration"
       ],
       "integration": "in-tree-python"
+    },
+    {
+      "id": "maintained-run-configuration",
+      "stage": "Environment and NVDLA source preparation",
+      "source_paths": [
+        "src/python/emuflow/flow/environment.py",
+        "src/python/emuflow/flow/run_config.py",
+        "src/python/emuflow/flow/designs",
+        "src/python/emuflow/data/designs"
+      ],
+      "build_targets": [
+        "emuflow_python"
+      ],
+      "runtime_products": [
+        "emuflow environment",
+        "emuflow design",
+        "emuflow run"
+      ],
+      "integration": "default-in-tree-build"
     }
   ],
   "open_path_blockers": [

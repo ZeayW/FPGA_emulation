@@ -110,6 +110,27 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    environment = subparsers.add_parser("environment", help="register tools/device data once")
+    environment_commands = environment.add_subparsers(dest="environment_command", required=True)
+    prepare_environment = environment_commands.add_parser("prepare", help="validate registration and generate internal pre-placement timing")
+    prepare_environment.add_argument("input", type=Path)
+    prepare_environment.add_argument("--out", type=Path, required=True)
+    check_environment = environment_commands.add_parser("check", help="report all missing registered runtime inputs")
+    check_environment.add_argument("profile", type=Path)
+    check_environment.add_argument("--backend", choices=("rapidwright", "vivado"))
+    design = subparsers.add_parser("design", help="prepare reproducible design inputs once")
+    designs = design.add_subparsers(dest="design_command", required=True)
+    nvdla = designs.add_parser("prepare-nvdla", help="prepare pinned NV_nvdla and complete physical memory models")
+    nvdla.add_argument("--source-root", type=Path, required=True)
+    nvdla.add_argument("--environment", type=Path, required=True)
+    nvdla.add_argument("--platform", type=Path, default=DEFAULT_PLATFORM_PATH)
+    nvdla.add_argument("--out", type=Path, required=True)
+    run = subparsers.add_parser("run", help="run complete Phase 1–7/7C from one prepared configuration")
+    run.add_argument("config", type=Path)
+    run.add_argument("--backend", choices=("rapidwright", "vivado"), default="rapidwright")
+    run.add_argument("--out", type=Path, required=True)
+    run.add_argument("--check", action="store_true", help="check input/configuration inventory without executing the design")
+
     platform_parser = subparsers.add_parser("platform", help="BoardDB operations")
     platform_subparsers = platform_parser.add_subparsers(
         dest="platform_command", required=True
@@ -1385,6 +1406,24 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 def _dispatch(args: argparse.Namespace) -> int:
+    if args.command == "environment":
+        from emuflow.flow.environment import prepare_environment, load_environment, inspect_environment, probe_environment
+        report = (prepare_environment(args.input, args.out) if args.environment_command == "prepare"
+                  else inspect_environment(load_environment(args.profile), args.backend))
+        if args.environment_command == "check" and report["status"] == "pass":
+            report = probe_environment(load_environment(args.profile), args.backend)
+        _print_json(report)
+        return 0 if report["status"] == "pass" else 2
+    if args.command == "design":
+        from emuflow.flow.run_config import prepare_nvdla_run
+        report = prepare_nvdla_run(args.source_root, args.environment, args.out, platform_path=args.platform)
+        _print_json(report)
+        return 0
+    if args.command == "run":
+        from emuflow.flow.run_config import execute_run
+        report = execute_run(args.config, args.out, backend=args.backend, check_only=args.check)
+        _print_json(report.get("summary", report))
+        return 0 if report["status"] == "pass" else 2
 
 
 

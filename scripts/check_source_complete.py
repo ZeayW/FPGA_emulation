@@ -526,10 +526,12 @@ def audit(repo_root: Path) -> list[str]:
                         "README Quick start bypasses the root-build CLI with "
                         f"{disallowed!r}"
                     )
-            if "build/native/install/bin" not in quick_start:
-                errors.append(
-                    "README Quick start does not expose the root-build CLI"
-                )
+            for required in ("emuflow run nvdla.run.json", "--backend rapidwright", "--backend vivado", "--require-physical"):
+                if required not in quick_start:
+                    errors.append("README Quick start omits the maintained complete-flow entry: " + required)
+            setup = repo_root / "docs/RUNNING_NVDLA.md"
+            if "docs/RUNNING_NVDLA.md" not in quick_start or not setup.is_file() or "build/native/install/bin" not in setup.read_text(encoding="utf-8"):
+                errors.append("README Quick start lacks linked root-build environment preparation")
 
     for relative_file in REQUIRED_FIRST_PARTY_NATIVE_FILES:
         if not (repo_root / relative_file).is_file():

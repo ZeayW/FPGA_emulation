@@ -1,0 +1,21 @@
+{
+  "schema": "emuflow.environment/v1",
+  "native_root": "/opt/emuflow/runtime",
+  "timing_data_dir": "/opt/emuflow/device/rapidwright-timing",
+  "architecture": "/opt/emuflow/device/xcvu19p.architecture.json",
+  "native_constraints": "/opt/emuflow/device/xcvu19p.native-device-constraints.json",
+  "provider_manifest": "/opt/emuflow/device/xcvu19p.provider.json",
+  "backends": {
+    "rapidwright": {
+      "jar": "/opt/emuflow/rapidwright/rapidwright-standalone.jar",
+      "java": "/opt/emuflow/jdk/bin/java",
+      "device_data": "/opt/emuflow/rapidwright/data",
+      "openparf_install": "/opt/emuflow/runtime/openparf",
+      "openparf_python": "/opt/emuflow/openparf-venv/bin/python"
+    },
+    "vivado": {
+      "executable": "/opt/Xilinx/Vivado/2024.2/bin/vivado"
+    }
+  },
+  "environment": {}
+}

@@ -10,17 +10,16 @@ different designs.
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List
 
-from emuflow_tools.benchmark import BenchmarkRun
+from emuflow.flow.benchmark_inputs import BenchmarkRun
 from emuflow.common.io import write_json
 from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
-from scripts.benchmarks.nvdla_ram_stubs import (
+from emuflow.flow.designs.nvdla_memory import (
     BLACKBOX_MEMORY_POLICY,
     MEMORY_POLICIES,
     PHYSICAL_MEMORY_POLICY,
@@ -28,9 +27,10 @@ from scripts.benchmarks.nvdla_ram_stubs import (
 )
 
 
-ROOT = Path(__file__).resolve().parents[2]
-CATALOG_PATH = ROOT / "benchmarks" / "rtl_catalog.json"
-COMPAT_PATH = ROOT / "scripts" / "yosys" / "nvdla_compat.v"
+from emuflow.common.paths import DATA_ROOT
+
+CATALOG_PATH = DATA_ROOT / "designs/nvdla-catalog.json"
+COMPAT_PATH = DATA_ROOT / "designs/nvdla_compat.v"
 PREPARATION_SCHEMA = "emuflow.nvdla-preparation/v1"
 GENERATOR_ID = "nvdla-shared-frontend-v2"
 DEFINES = [
@@ -117,9 +117,7 @@ def _sha256(path: Path) -> str:
 
 
 def _canonical_sha256(value: Any) -> str:
-    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -127,9 +125,7 @@ def _catalog_entry(catalog_path: Path) -> Dict[str, Any]:
     value = json.loads(catalog_path.read_text(encoding="utf-8"))
     if value.get("schema") != "emuflow.rtl-catalog/v1":
         raise ValueError("RTL catalog schema is invalid")
-    matches = [
-        item for item in value.get("designs", []) if item.get("id") == "nvdla"
-    ]
+    matches = [item for item in value.get("designs", []) if item.get("id") == "nvdla"]
     if len(matches) != 1:
         raise ValueError("RTL catalog must contain exactly one NVDLA entry")
     return matches[0]
@@ -210,9 +206,7 @@ def prepare_nvdla_holdout(
     if replacement_count == 0 or _CPP_DIRECTIVE.search(normalized_text):
         raise ValueError("NVDLA partition_o directive normalization did not complete")
     normalized_partition.write_text(normalized_text, encoding="utf-8")
-    compat_copy.write_text(
-        compat_path.read_text(encoding="utf-8"), encoding="utf-8"
-    )
+    compat_copy.write_text(compat_path.read_text(encoding="utf-8"), encoding="utf-8")
     wrapper_count, modeled_count = generate_ram_wrappers(
         ram_root, ram_wrappers, memory_policy
     )
@@ -247,9 +241,7 @@ def prepare_nvdla_holdout(
         "generated_files": generated_records,
         "source_list_sha256": _canonical_sha256(relative_sources),
     }
-    memory_variant = (
-        "physical" if memory_policy == PHYSICAL_MEMORY_POLICY else "scale"
-    )
+    memory_variant = "physical" if memory_policy == PHYSICAL_MEMORY_POLICY else "scale"
     benchmark = {
         "schema": "emuflow.benchmark-run/v1",
         "id": f"nvdla_nvdlav1_l7_shared_frontend_{memory_variant}",
@@ -306,36 +298,3 @@ def prepare_nvdla_holdout(
         "generated_file_count": len(generated_records),
         "memory_policy": preparation["memory_policy"],
     }
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Prepare the shared PPro/EmuFlow NVDLA frontend contract."
-    )
-    parser.add_argument("--source-root", type=Path, required=True)
-    parser.add_argument("--generated-dir", type=Path, required=True)
-    parser.add_argument("--benchmark", type=Path, required=True)
-    parser.add_argument("--platform", required=True)
-    parser.add_argument(
-        "--memory-policy",
-        choices=sorted(MEMORY_POLICIES),
-        default=BLACKBOX_MEMORY_POLICY,
-    )
-    parser.add_argument("--catalog", type=Path, default=CATALOG_PATH)
-    parser.add_argument("--compat", type=Path, default=COMPAT_PATH)
-    args = parser.parse_args()
-    report = prepare_nvdla_holdout(
-        source_root=args.source_root,
-        generated_dir=args.generated_dir,
-        benchmark_path=args.benchmark,
-        platform=args.platform,
-        memory_policy=args.memory_policy,
-        catalog_path=args.catalog,
-        compat_path=args.compat,
-    )
-    print(json.dumps(report, sort_keys=True))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

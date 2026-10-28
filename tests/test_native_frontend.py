@@ -197,3 +197,24 @@ def test_raw_rtl_control_rejects_a_missing_native_request_instead_of_starting_py
     result=subprocess.run([native,'compile',str(compile_request)],capture_output=True,text=True,timeout=10)
     assert result.returncode!=0 and 'Python fallback is forbidden' in result.stderr
     assert (tmp_path/'out/calls').read_text().splitlines()==['preflight']
+
+
+@pytest.mark.parametrize('damage', ['none','rtl','include'])
+def test_prepared_source_checksums_bind_original_rtl_and_include_files(tmp_path, monkeypatch, damage):
+    from emuflow.frontend import frontend_native as host
+    from emuflow.common.io import file_sha256
+    rtl=tmp_path/'source.v';rtl.write_text('module top; endmodule')
+    header=tmp_path/'config.vh';header.write_text('`define MODEL 1\n')
+    checksums={str(p):file_sha256(p) for p in (rtl,header)}
+    monkeypatch.setattr(host,'require_native_schema',lambda _:None)
+    monkeypatch.setattr(host,'resolve_native_executable',lambda *a:sys.executable)
+    ctx=SimpleNamespace(sources=(rtl,),include_dirs=(tmp_path,),defines=(),top='top',yosys=None,clocks=('clk',),
+        xilinx_mapping_strategy=None,platform_path=PLATFORM,output_dir=tmp_path/'out',source_checksums=checksums)
+    if damage!='none':
+        (rtl if damage=='rtl' else header).write_text('changed')
+        with pytest.raises(Exception,match='changed after run preparation'):prepare_frontend(ctx)
+        assert not ctx.output_dir.exists()
+    else:
+        prepare_frontend(ctx)
+        assert str(header).encode() in ctx.native_frontend_request.read_bytes()
+        assert str(rtl).encode() in ctx.native_frontend_request.read_bytes()

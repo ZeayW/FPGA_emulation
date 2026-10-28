@@ -1132,6 +1132,8 @@ def _compile_preflight(ctx: _CompileContext):
         raise EmuFlowError("only PATRON v14 is supported")
     if ctx.partition_provider not in {"patron", "tritonpart"}:
         raise EmuFlowError(f"unsupported Phase 3 provider {ctx.partition_provider!r}")
+    if getattr(ctx, "source_checksums", None) is not None and (ctx.yosys_json is not None or ctx.prepared_frontend is not None or ctx.prepared_timing is not None):
+        raise EmuFlowError("source checksums apply only to original RTL compilation")
     if ctx.optimize_frame_slots:
         raise EmuFlowError("native compile does not yet support frame search")
     if ctx.output_dir is None:
@@ -2159,6 +2161,7 @@ def run_multi_fpga_flow(
     sources: Iterable[Path] = (),
     include_dirs: Iterable[Path] = (),
     defines: Iterable[str] = (),
+    source_checksums: Optional[Dict[str, str]] = None,
     top: Optional[str] = None,
     clocks: Iterable[str] = (),
     yosys_json: Optional[Path] = None,

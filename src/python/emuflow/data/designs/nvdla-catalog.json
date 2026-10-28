@@ -1,0 +1,45 @@
+{
+  "schema": "emuflow.rtl-catalog/v1",
+  "updated": "2026-07-25",
+  "designs": [
+    {
+      "id": "nvdla",
+      "name": "NVDLA nvdlav1",
+      "repository": "https://github.com/nvdla/hw.git",
+      "revision": "8e06b1b9d85aab65b40d43d08eec5ea4681ff715",
+      "archive_url": "https://codeload.github.com/nvdla/hw/tar.gz/8e06b1b9d85aab65b40d43d08eec5ea4681ff715",
+      "archive_sha256": "3dc7270c8975acd439959120ec22ea6c968c06e822f169b0ec3899d74f7fa1b8",
+      "license": "NVIDIA Open NVDLA License and Agreement v1.0",
+      "language": "Verilog",
+      "tops": [
+        "NV_nvdla",
+        "NV_NVDLA_partition_a",
+        "NV_NVDLA_partition_c"
+      ],
+      "sparse_paths": [
+        "/LICENSE",
+        "/README.md",
+        "/Makefile",
+        "/VERSION",
+        "/spec",
+        "/syn",
+        "/tools",
+        "/vmod"
+      ],
+      "scale": "very-large",
+      "upstream_size": "Full-precision nvdlav1 implements 2048 8-bit MACs or 1024 16-bit MACs, plus memories and control",
+      "priority": 8,
+      "validation_tier": "L7",
+      "feature_tags": [
+        "dsp",
+        "memory",
+        "deep-learning",
+        "multi-clock",
+        "generated-rtl",
+        "very-large"
+      ],
+      "flow_readiness": "final-stress-only",
+      "notes": "Final frontend, hierarchy, memory, partition-capacity, and runtime stress test. NV_nvdla is the genuine connected top over the five upstream synthesis partitions. The shared frontend offers an explicitly labeled black-box SRAM scale screen and a separate fail-closed inferred-block-RAM model covering every pinned rws/rwsp/rwst/rwsthp wrapper for physical holdout validation; proprietary ASIC DFT logic is never expanded into LUTs. The nvdlav1 branch is deliberately pinned and its custom license must be preserved."
+    }
+  ]
+}

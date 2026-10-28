@@ -1363,3 +1363,21 @@ qualification. The full qualification design remains NVDLA, and both physical
 backends and original-path global timing still require terminal acceptance.
 `native_data_plane_complete` remains false until those owners and remaining
 production data-plane responsibilities are closed.
+
+### Prepared environment and complete design invocation
+
+`environment prepare/check`, `design prepare-nvdla` and `run` are bounded
+configuration frontends to the same native compiler. They separate one-time
+machine registration, internal pre-placement timing generation and source
+preparation from each full physical run. They introduce no alternate execution
+order or implementation fallback. The existing NVDLA generator and SRAM models
+are moved into installed design preparation; the former script entries are
+removed. The root runtime and wheel install the compatibility RTL/catalog and
+the maintained RapidWright Java source.
+
+Prepared NVDLA runs bind the pinned upstream revision, actual `NV_nvdla` top,
+both DUT clocks, complete physical SRAM models, grouped I/O timing, BoardDB and
+source/include bytes. The native frontend binds checked include files as well
+as RTL through tool completion. Both physical backends and Chimew remain
+available; no numerical placement/scheduling policy is changed by this entry.
+Checks and source preparation explicitly exclude terminal qualification.

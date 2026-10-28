@@ -779,10 +779,10 @@ def run_multi_fpga_physical_flow(
                 + ", ".join(sorted(set(missing_runtime)))
             )
         if rapidwright_java_source is None:
-            rapidwright_java_source = (
-                REPOSITORY_ROOT
-                / "scripts/rapidwright/EmuFlowRWRoute.java"
-            )
+            from emuflow.common.native_tools import native_install_roots
+            candidates = (REPOSITORY_ROOT / "scripts/rapidwright/EmuFlowRWRoute.java",
+                *(root / "share/emuflow/scripts/rapidwright/EmuFlowRWRoute.java" for root in native_install_roots()))
+            rapidwright_java_source = next((path for path in candidates if path.is_file()), candidates[0])
         if not rapidwright_java_source.is_file():
             raise ValidationError("RapidWright Java adapter source is missing")
         if rapidwright_classes is None:

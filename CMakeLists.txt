@@ -381,6 +381,8 @@ file(
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/io/*.json"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/rapidwright/*.json"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/openparf/*.json"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/designs/*"
+  "${CMAKE_SOURCE_DIR}/scripts/rapidwright/EmuFlowRWRoute.java"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/*.sql"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/*.tcl"
   "${CMAKE_SOURCE_DIR}/platforms/virtual/*.wires.csv"
@@ -431,6 +433,20 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/rapidwright"
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/rapidwright"
+  COMMAND
+    "${CMAKE_COMMAND}" -E rm -f
+    "${EMUFLOW_INSTALL_ROOT}/scripts/yosys/nvdla_compat.v"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/designs"
+    "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/designs"
+  COMMAND
+    "${CMAKE_COMMAND}" -E make_directory
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts/rapidwright"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/scripts/rapidwright/EmuFlowRWRoute.java"
+    "${EMUFLOW_INSTALL_ROOT}/share/emuflow/scripts/rapidwright/EmuFlowRWRoute.java"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/openparf"
