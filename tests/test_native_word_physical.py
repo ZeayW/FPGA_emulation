@@ -20,7 +20,12 @@ def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(sou
     functions=root/'functions.sqlite';functions.write_text('mapped source functions')
     netlist=root/'partition.v';netlist.write_text('module partition; endmodule\n')
     plan=root/'word-plan.json';wiring=root/'wiring.json'
-    plan.write_text('{}\n');wiring.write_text('{}\n')
+    from emuflow.lvds_word_plan import WORD_PHY_PLAN_SCHEMA
+    from emuflow.tdm_word import WORD_EVENT_POLICY
+    plan.write_text(json.dumps(dict(schema=WORD_PHY_PLAN_SCHEMA,status='pass',word_event_policy=WORD_EVENT_POLICY,
+        fpgas=[dict(fpga='fpga0',banks=[dict(bank=19,direction='rx',link='link10',peer='fpga1',logical_lsb=0),
+                                    dict(bank=20,direction='tx',link='link01',peer='fpga1',logical_lsb=0)])])))
+    wiring.write_text('{}\n')
     mapped=source.mapped['fpga0']
     mapped_report=dict(optimization_policy=LINEAGE_POLICY,emitted_instances=5,output_sha256=file_sha256(netlist),
         mapped_index=dict(path=str(mapped),sha256=file_sha256(mapped)),
@@ -65,6 +70,11 @@ def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(sou
             manifest=json.loads((out/'native-session.json').read_text())
             assert manifest['queries']=={}and manifest['word_source_directory']==str(out/'native-word-sources')
             assert 'set emuflow_native_word_observation "true"'in(out/'native-session.tcl').read_text()
+            from emuflow.native_bank_placement import POLICY
+            assert manifest['native_bank_placement']['policy']==POLICY
+            assert manifest['native_bank_placement']['directory']==str(out/'native-bank-placement')
+            (out/'bank-affinity.tsv').write_text('bank\tdirection\tslr\tnative_movable_cells\n')
+            (out/'bank-placement-metrics.tsv').write_text('metric\tvalue\ntarget_cells\t0\nmissing_rx_roles\t1\n')
             metrics=dict(part=part,vivado_version='2024.2',dut_clock_count=1,mapped_cells=5,
                 routed_cells=6,physical_cells=8,infrastructure_cells=2,optimization_cells=0,
                 lut=0,ff=8,carry8=0,dsp48=0,uram288=0,ramb18_cells=0,ramb36_cells=0,
@@ -113,6 +123,8 @@ def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(sou
     assert set(report['native_word_observation']['source_context'])=={'runtime_constraints','capture_census','source_properties'}
     assert report['result']['cell_accounting']['unretained_source_cells']==1
     assert report['implementation_options']['retain_routed_checkpoint']is True
+    assert report['native_bank_placement']['directory']==str(output/'native-bank-placement')
+    assert 'bank-placement-metrics.tsv'in report['result']['artifacts']
     assert not{'boundary_timing','local_path_timing','logic_segment_timing'}&set(report)
     assert not(output/'routed-query-preparation.json').exists()
     from emuflow.multi_fpga_physical_flow import _require_native_word_evidence
@@ -150,6 +162,7 @@ def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(sou
     assert retained['result']['artifacts']['routed.dcp']==report['result']['artifacts']['routed.dcp']
     assert retained['native_word_observation']['files']==report['native_word_observation']['files']
     assert retained['native_word_observation']['source_context']==report['native_word_observation']['source_context']
+    assert retained['native_bank_placement']==report['native_bank_placement']
     assert retained['result']['timing']==report['result']['timing']
     assert not(adopted/'routed.dcp').exists()
     record['stages']={'vivado_implementation':retained,'word_phy_implementation':retained['word_phy_implementation']}

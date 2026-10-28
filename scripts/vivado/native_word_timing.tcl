@@ -7,6 +7,12 @@ source [file join [file dirname [info script]] timing_contract.tcl]
 
 proc emuflow_native_word_sources {rx_roles} {
   emuflow_word_phase_readonly
+  return [emuflow_native_word_source_roles $rx_roles]
+}
+
+# Structural role lookup is also used after opt_design to place transport
+# logic. Conditional timing queries retain their routed-snapshot guard.
+proc emuflow_native_word_source_roles {rx_roles} {
   if {[file size $rx_roles]>16777216} {error "native RX role catalog exceeds its bounded transport scope"}
   set requested [dict create]
   set input [open $rx_roles r]

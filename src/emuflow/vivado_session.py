@@ -80,7 +80,8 @@ def _child_command(output):
 def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mapped_sha256,
                      queries, runtime, ports, synthesized_checkpoint=None, synthesized_checkpoint_sha256=None,
                      dut_frequency_mhz=None,word_phy_directory=None,retain_routed_checkpoint=False,
-                     route_after_proof_failure=False,source_hierarchy_prefix="",word_source_directory=None):
+                     route_after_proof_failure=False,source_hierarchy_prefix="",word_source_directory=None,
+                     bank_placement_request=None):
     """Prepare small native/child contracts after all source views have closed."""
     output = output.resolve()
     if not isinstance(retain_routed_checkpoint,bool):raise ValidationError('routed checkpoint retention must be Boolean')
@@ -92,6 +93,8 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
         raise ValidationError('native word session requires its explicit mapped source hierarchy')
     if word_source_directory is not None and (word_phy_directory is None or not retain_routed_checkpoint):
         raise ValidationError('native word observations require a word top and retained routed snapshot')
+    if bank_placement_request is not None and word_source_directory is None:
+        raise ValidationError('native bank placement requires canonical word source roles')
     checkpoint = Path(synthesized_checkpoint).resolve() if synthesized_checkpoint is not None else output/"synthesized.dcp"
     reserved = {str((output/(kind+suffix)).resolve()) for kind in queries for suffix in ("-synthesis.tsv","-resolved.tsv",".tsv")}
     if any(str(value.resolve()) in reserved for value in queries.values()):
@@ -139,6 +142,11 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
                 'sha256':file_sha256(path),'mapped_index_sha256':mapped_sha256,
                 'rx_queries':len(rows)-1,'source_origins':len(rows)-1,'source_roles':str(source)}
             manifest['word_source_directory']=str(Path(word_source_directory).resolve())
+    if bank_placement_request is not None:
+        from .native_bank_placement import read_native_bank_placement_request
+        placement, _ = read_native_bank_placement_request(bank_placement_request, fpga)
+        manifest['native_bank_placement'] = dict(policy=placement['policy'], directory=placement['directory'],
+            request=dict(path=str(Path(bank_placement_request).resolve()), sha256=file_sha256(Path(bank_placement_request))))
     write_json(output/"native-session.json",manifest,compact=True)
     with (output/"clock-contract.tsv").open("w") as stream:
         stream.write("clock_hex\tport_hex\tperiod_ns\n")
@@ -150,6 +158,7 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
     settings = {"emuflow_session_out":str(output),"emuflow_session_manifest":str(output/"native-session.json"),
         "emuflow_word_phy_directory":str(Path(word_phy_directory).resolve())if word_phy_directory is not None else "",
         "emuflow_native_word_observation":"true"if word_source_directory is not None else"false",
+        "emuflow_bank_placement_directory":manifest.get('native_bank_placement', {}).get('directory', ''),
         "emuflow_word_data_source_origins":manifest.get("word_data_budget", {}).get("path", ""),
         "emuflow_word_data_target_period":min(manifest["implementation_timing"]["dut_clock_periods_ns"].values()),
         "emuflow_timing_query_mode":manifest["timing_query_mode"],
@@ -194,6 +203,14 @@ def load_session(path: Path):
                 not isinstance(budget.get("path"), str) or not Path(budget["path"]).is_file() or
                 file_sha256(Path(budget["path"])) != budget.get("sha256")):
             raise ValidationError("native word data budget source contract differs")
+    placement = value.get('native_bank_placement')
+    if placement is not None:
+        from .native_bank_placement import read_native_bank_placement_request
+        request = Path(placement['request']['path'])
+        observed, _ = read_native_bank_placement_request(request, value['fpga'])
+        if (file_sha256(request) != placement['request']['sha256'] or
+                observed['directory'] != placement['directory'] or observed['policy'] != placement['policy']):
+            raise ValidationError('native bank placement session source differs')
     return value
 
 

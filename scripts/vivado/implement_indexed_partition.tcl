@@ -1,4 +1,4 @@
-# Current indexed Phase6 -> native Vivado implementation. No placement is fixed.
+# Current indexed Phase6 -> native Vivado implementation.
 # All tool products are scratch; the Python consumer validates inventories,
 # resource budgets, fixed I/O and complete source-bound timing separately.
 # Source tags never impose KEEP/DONT_TOUCH constraints.
@@ -22,6 +22,7 @@ if {[catch {
   lassign $argv part netlist top timing_xdc out expected prefix adapter wrapper io_xdc io_query place_directive route_directive dut_count threads session_config
   source $session_config
   if {![info exists emuflow_native_word_observation]} {set emuflow_native_word_observation false}
+  if {![info exists emuflow_bank_placement_directory]} {set emuflow_bank_placement_directory ""}
   if {![info exists emuflow_word_data_target_period]} {set emuflow_word_data_target_period ""}
   file mkdir $out
   set_param general.maxThreads $threads
@@ -90,6 +91,12 @@ if {[catch {
     close $stream
   }
   emuflow_inventory "$out/optimized_mapped_cells.tsv" $prefix
+  if {$emuflow_bank_placement_directory ne ""} {
+    source [file join $emuflow_script_directory native_word_timing.tcl]
+    source [file join $emuflow_script_directory native_bank_placement.tcl]
+    set placement_sources [emuflow_native_word_source_roles $emuflow_word_data_source_origins]
+    emuflow_native_bank_placement $emuflow_bank_placement_directory $placement_sources $out $prefix
+  }
   emuflow_session_preplacement $emuflow_script_directory $out \
       $emuflow_retain_routed_checkpoint $emuflow_route_after_proof_failure
   place_design -directive $place_directive

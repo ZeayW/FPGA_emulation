@@ -295,6 +295,7 @@ def run_indexed_vivado_partition(
     top_report = None
     word_sources=()
     word_source_preparation=None
+    bank_placement_request=None
     if word_mode:
         from .vivado_word_top import write_vivado_word_top
         for path in (word_phy_plan_path,word_wiring_path):
@@ -314,6 +315,11 @@ def run_indexed_vivado_partition(
             from .native_word_source_catalog import prepare_native_word_sources
             word_source_preparation=prepare_native_word_sources(fpga,word_schedule_path,boundary_identity_path,
                 index_path,output_dir/'native-word-sources')
+            if routed_snapshot is None:
+                from .native_bank_placement import write_native_bank_placement_request
+                write_native_bank_placement_request(fpga,word_phy_plan_path,output_dir/'native-word-sources',
+                    output_dir/'native-bank-placement')
+                bank_placement_request=output_dir/'native-bank-placement/request.json'
     if virtual_io_contract is not None:
         wrapper_path = output_dir / "physical_top.sv"
         top_report = write_vivado_physical_top(ir_path, wrapper_path, virtual_io_contract)
@@ -360,7 +366,8 @@ def run_indexed_vivado_partition(
         synthesized_checkpoint=synthesized_checkpoint,synthesized_checkpoint_sha256=synthesized_checkpoint_sha256,
         dut_frequency_mhz=dut_frequency_mhz,word_phy_directory=output_dir if word_mode else None,
         retain_routed_checkpoint=retain_routed_checkpoint,route_after_proof_failure=route_after_proof_failure,
-        source_hierarchy_prefix=prefix,word_source_directory=output_dir/'native-word-sources'if native_word_mode else None)
+        source_hierarchy_prefix=prefix,word_source_directory=output_dir/'native-word-sources'if native_word_mode else None,
+        bank_placement_request=bank_placement_request)
     threads = int(os.environ.get("EMUFLOW_VIVADO_THREADS", "2"))
     if threads < 1:
         raise ValidationError("Vivado thread count must be positive")
@@ -417,6 +424,8 @@ def run_indexed_vivado_partition(
             retained_artifacts['retained/'+name]=dict(path=str(path),sha256=file_sha256(path),bytes=path.stat().st_size)
         current['synthesis']['mode']='retained-routed'
         current['execution_mode']='retained-routed-analysis-only'
+        if prior.get('native_bank_placement') is not None:
+            current['native_bank_placement']=prior['native_bank_placement']
         current['retained_snapshot']=dict(directory=str(retained),checkpoint_sha256=routed_snapshot['checkpoint_sha256'],
             source_session=retained_artifacts['retained/native-session.json'])
         write_json(output_dir/'native-session.json',current,compact=True)
@@ -544,6 +553,21 @@ def run_indexed_vivado_partition(
             for name in ('native-word-sources/source-catalog.json','native-word-observation/native-observation.json'):
                 path=output_dir/name
                 artifacts[name]={'path':str(path),'sha256':file_sha256(path),'bytes':path.stat().st_size}
+    placement=read_json(output_dir/'native-session.json').get('native_bank_placement')
+    if placement is not None:
+        from .native_bank_placement import read_native_bank_placement_request
+        request=Path(placement['request']['path'])
+        observed,bindings=read_native_bank_placement_request(request,fpga)
+        retained_parents.extend(bindings)
+        if file_sha256(request)!=placement['request']['sha256']:
+            raise ValidationError('native bank placement request changed during implementation')
+        placement_root=retained if routed_snapshot is not None else output_dir
+        placement_files={'native-bank-placement/request.json':request,
+                         **{'native-bank-placement/'+name:Path(reference['path'])for name,reference in observed['files'].items()},
+                         **{name:placement_root/name for name in ('bank-affinity.tsv','bank-placement-metrics.tsv')}}
+        for name,path in placement_files.items():
+            retained_parents.append(bind_store_source(path,'physical-input-document-v1'))
+            artifacts[name]={'path':str(path),'sha256':file_sha256(path),'bytes':path.stat().st_size}
     if retain_routed_checkpoint:
         path=routed_checkpoint
         if not path.is_file():raise ValidationError('requested routed debug checkpoint is missing')
@@ -582,6 +606,7 @@ def run_indexed_vivado_partition(
     native_scripts=("native_session.tcl","source_inventory.tcl","resource_inventory.tcl","timing_contract.tcl",
         "export_boundary_timing.tcl","export_logic_segment_timing.tcl")
     if word_mode:native_scripts+=("word_native_physical.tcl","word_data_budgets.tcl","selectio_ip.tcl")
+    if placement is not None:native_scripts+=("native_bank_placement.tcl","native_word_timing.tcl","word_phase_context.tcl")
     report = {"schema": "emuflow.vivado-partition-report/v1", "status": "pass", "provider": ("indexed-phase6-vivado-word-physical-v5"if native_word_mode else "indexed-phase6-vivado-word-physical-v4")if word_mode else "indexed-phase6-vivado-physical-v2",
         "tool": {"executable": executable, "version": metrics["vivado_version"], "threads": threads,
             "invoked_for_implementation":routed_snapshot is None},
@@ -596,6 +621,7 @@ def run_indexed_vivado_partition(
             "planner_sha256":file_sha256(Path(__file__).with_name("vivado_session.py"))},
         "cell_coverage": coverage, "timing_coverage": timing_coverage, **stages,
         **({'native_word_observation':native_observation,'native_word_sources':word_source_preparation}if native_word_mode else{}),
+        **({'native_bank_placement':placement}if placement is not None else{}),
         **({"optimization_proofs":source_dispositions} if source_dispositions is not None else {}),
         **({"virtual_io_implementation": virtual_io} if virtual_io is not None else {}),
         **({'word_phy_implementation':{'status':'pass','preparation':top_report,

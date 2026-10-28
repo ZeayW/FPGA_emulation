@@ -445,7 +445,7 @@ proc emuflow_session_source {script arguments} {
 
 @pytest.mark.skipif(TCL86 is None, reason="native stage bridge requires Tcl 8.6")
 @pytest.mark.parametrize("resume", [False, True])
-@pytest.mark.parametrize("proof_mode", ["pass", "fail", "pass-diagnostic", "fail-diagnostic", "empty-diagnostic", "inventory-fail-diagnostic", "native-word", "native-word-diagnostic"])
+@pytest.mark.parametrize("proof_mode", ["pass", "fail", "pass-diagnostic", "fail-diagnostic", "empty-diagnostic", "inventory-fail-diagnostic", "native-word", "native-word-diagnostic", "native-word-placement"])
 def test_native_stage_bridge_does_not_run_source_shape_checks(tmp_path, resume, proof_mode):
     session, _, _ = session_fixture(tmp_path, require_constant=False)
     out = Path(session["output"])
@@ -461,16 +461,26 @@ def test_native_stage_bridge_does_not_run_source_shape_checks(tmp_path, resume, 
     diagnostic = proof_mode.endswith("-diagnostic")
     native_word=proof_mode.startswith('native-word')
     roles=None
+    placement=None
     if native_word:
         roles=tmp_path/'native-roles';roles.mkdir();(roles/'rx-roles.tsv').write_text('source_origin\ns0\n')
         (out/'native-word-clocks.tsv').write_text('clock_hex\tport_hex\tperiod_ns\n')
+    if proof_mode=='native-word-placement':
+        from emuflow.native_bank_placement import POLICY
+        placement=out/'native-bank-placement';placement.mkdir()
+        for name,header in [('banks.tsv','bank\tdirection\tinstance\n'),('rx-bank-roles.tsv','source_origin\tbank\n')]:
+            (placement/name).write_text(header)
+        write_json(placement/'request.json',dict(schema='emuflow.native-bank-placement-request/v1',status='complete',
+            fpga='fpga0',policy=POLICY,directory=str(placement),input_sha256={},files={
+                name:dict(path=str(placement/name),sha256=file_sha256(placement/name))for name in('banks.tsv','rx-bank-roles.tsv')}))
     config = prepare_manifest(out, fpga="fpga0", part="xcpart", mapped_index=Path(session["mapped_index"]),
         functions=Path(session["functions"]), mapped_sha256=session["mapped_index_sha256"], queries={}, runtime=runtime,
         ports={"clk", "fabric_clk"}, synthesized_checkpoint=prior if resume else None,
         synthesized_checkpoint_sha256=file_sha256(prior) if resume else None,
         retain_routed_checkpoint=diagnostic or native_word,route_after_proof_failure=diagnostic,
         word_phy_directory=out if native_word else None,word_source_directory=roles,
-        source_hierarchy_prefix='mapped_partition'if native_word else'')
+        source_hierarchy_prefix='mapped_partition'if native_word else'',
+        bank_placement_request=placement/'request.json'if placement is not None else None)
     native = ROOT/"scripts/vivado/implement_indexed_partition.tcl"
     arguments = ["xcpart", "netlist.v", "dut", "runtime.xdc", str(out), "3", "", "", "", "", "", "Default", "Default", "1", "2", str(config)]
     script = "set argv [list "+" ".join(_tcl_word(v) for v in arguments)+"]\nset argc [llength $argv]\n"
@@ -514,6 +524,16 @@ proc source {path} {
     proc emuflow_word_write_control_metrics {args} {error "legacy control scope invoked"}
   } elseif {[string match native-word* $::proof_mode] && [file tail $path] eq "word_data_budgets.tcl"} {
     proc emuflow_word_data_budgets {args} {return {100.0 1}}
+  } elseif {$::proof_mode eq "native-word-placement" && [file tail $path] eq "native_word_timing.tcl"} {
+    proc emuflow_native_word_source_roles {path} {
+      if {[info exists ::emuflow_native_export_stage]} {error "placement masqueraded as a routed measurement"}
+      return structural_roles
+    }
+  } elseif {$::proof_mode eq "native-word-placement" && [file tail $path] eq "native_bank_placement.tcl"} {
+    proc emuflow_native_bank_placement {directory sources output prefix} {
+      if {$sources ne "structural_roles" || [lindex $::trace end] ne "opt"} {error "placement policy ran before optimization"}
+      lappend ::trace bank_placement
+    }
   } else {uplevel 1 [list original_source $path]}
 }
 rename exit process_exit
@@ -581,6 +601,8 @@ set env(PYTHONPATH) /invalid-vendor-package
         assert read_json(out/'native-session.json')['word_data_budget']['source_origins']==1
         assert 'EMUFLOW_INDEXED_VIVADO status=pass'in completed.stdout
         assert trace[-4:]==['place','phys_opt','route','routed.dcp']
+        if placement is not None:
+            assert trace.index('opt')<trace.index('bank_placement')<trace.index('place')
         return
     if proof_mode == "inventory-fail-diagnostic":
         assert completed.returncode != 0
