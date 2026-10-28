@@ -151,6 +151,7 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
         "emuflow_word_phy_directory":str(Path(word_phy_directory).resolve())if word_phy_directory is not None else "",
         "emuflow_native_word_observation":"true"if word_source_directory is not None else"false",
         "emuflow_word_data_source_origins":manifest.get("word_data_budget", {}).get("path", ""),
+        "emuflow_word_data_target_period":min(manifest["implementation_timing"]["dut_clock_periods_ns"].values()),
         "emuflow_timing_query_mode":manifest["timing_query_mode"],
         "emuflow_retain_routed_checkpoint":"true"if retain_routed_checkpoint else"false",
         "emuflow_route_after_proof_failure":"true"if route_after_proof_failure else"false",
@@ -264,6 +265,7 @@ def prepare_routed_timing_export(manifest_path: Path, output: Path, *, query_ove
         "emuflow_clock_contract":str(output/"clock-contract.tsv"),
         "emuflow_allow_generated_clocks":"true" if session.get("word_phy_directory") else "false",
         "emuflow_word_data_source_origins":session.get("word_data_budget", {}).get("path", ""),
+        "emuflow_word_data_target_period":min(session.get("implementation_timing",{}).get("dut_clock_periods_ns",{}).values(),default=""),
         "emuflow_export_word_control_timing":"true" if session.get("word_phy_directory") and "boundary_timing" in session["queries"] else "false",
         "emuflow_io_timing_map":str(output/"fixed-io-timing-map.tsv") if (output/"fixed-io-timing-map.tsv").is_file() else ""}
     lines = [f"set {key} {_tcl_word(value)}" for key,value in settings.items()]

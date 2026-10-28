@@ -82,7 +82,7 @@ NativeWordNetworkProjection ProjectNativeWordNetwork(
       phases.insert({c.logical_clock,NativeWordLaunchEdge::kRise});
       phases.insert({c.logical_clock,NativeWordLaunchEdge::kFall});
     }
-    Check(!clocks.empty(),"native network partition has no clock families");
+    // Empty local clock families are valid for a pure RX -> TX relay.
     const auto incoming=[&](const std::string& origin) {
       const auto role=part.rx_entries.find(origin);
       Check(role!=part.rx_entries.end(),"native network RX source has no canonical entry");

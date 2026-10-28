@@ -22,6 +22,7 @@ if {[catch {
   lassign $argv part netlist top timing_xdc out expected prefix adapter wrapper io_xdc io_query place_directive route_directive dut_count threads session_config
   source $session_config
   if {![info exists emuflow_native_word_observation]} {set emuflow_native_word_observation false}
+  if {![info exists emuflow_word_data_target_period]} {set emuflow_word_data_target_period ""}
   file mkdir $out
   set_param general.maxThreads $threads
   if {[llength [get_parts -quiet $part]] != 1} {error "target part is not installed: $part"}
@@ -80,7 +81,7 @@ if {[catch {
   opt_design
   if {[info exists emuflow_word_data_source_origins] && $emuflow_word_data_source_origins ne ""} {
     source [file join $emuflow_script_directory word_data_budgets.tcl]
-    lassign [emuflow_word_data_budgets $emuflow_word_data_source_origins] data_budget rx_launches
+    lassign [emuflow_word_data_budgets $emuflow_word_data_source_origins true $emuflow_word_data_target_period] data_budget rx_launches
     set stream [open "$out/word-data-budget-metrics.tsv" w]
     puts $stream "metric\tvalue"
     puts $stream "policy\tscheduled-dut-data-local-period-v1"
@@ -181,7 +182,7 @@ if {[catch {
   close $metrics
   if {[info exists emuflow_word_data_source_origins] && $emuflow_word_data_source_origins ne ""} {
     # Physical optimization may add replicas after the preplacement budget.
-    emuflow_word_data_budgets $emuflow_word_data_source_origins false
+    emuflow_word_data_budgets $emuflow_word_data_source_origins false $emuflow_word_data_target_period
   }
   if {!$emuflow_native_word_observation} {
     emuflow_session_timings $emuflow_script_directory $prefix $emuflow_io_timing_map false \

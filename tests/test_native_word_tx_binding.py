@@ -70,6 +70,24 @@ def test_canonical_rx_join_signed_grid_and_missing_path_survive(tx_binder):
     assert bound[1]['cost_ps'] is None
 
 
+def test_transit_partition_binds_rx_without_invented_dut_launches(tx_binder):
+    rows=[row(kind='rx',source='s7',edge='',cost=3.781)]
+    result=bind(tx_binder,rows,clocks=(),rx={'s7':'incoming'},fanins=[(0,'word[0]',1,0,0,0)])
+    assert result['expected_contexts']==result['observed_contexts']==1
+    assert result['entries'][0]['data_phase_invariant']is True
+    assert result['entries'][0]['rows']==[dict(phase=0,source='s7',incoming_entry='incoming',cost_ps=3781)]
+    bind(tx_binder,context(),clocks=(),fail='undeclared DUT clock')
+
+
+def test_clockless_empty_fanin_is_a_complete_absent_path_context(tx_binder):
+    result=bind(tx_binder,[],clocks=(),fanins=[(0,'word[0]',0,0,0,0)])
+    assert result['expected_contexts']==result['observed_contexts']==1
+    assert result['entries'][0]['rows']==[]
+    assert result['entries'][0]['data_phase_invariant']is True
+    bind(tx_binder,[],clocks=(),fanins=[(0,'word[0]',1,0,0,0)],fail='no timing dispositions')
+    bind(tx_binder,[],fanins=[(0,'word[0]',0,0,0,0)],fail='no timing dispositions')
+
+
 def test_complete_joint_calendar_and_shared_bit_members(tx_binder):
     entries=[('even','bit[0]',0,16),('odd','bit[0]',1,16),('third','bit[1]',1,24)]
     rows=[]

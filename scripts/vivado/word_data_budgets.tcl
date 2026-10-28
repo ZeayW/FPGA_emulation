@@ -1,6 +1,6 @@
 # Local implementation budgets for DUT data carried by the periodic word PHY.
 # Native TDM/PHY control launches retain their original clock requirements.
-proc emuflow_word_data_budgets {origins {apply true}} {
+proc emuflow_word_data_budgets {origins {apply true} {target_period ""}} {
   set input [open $origins r]
   if {[gets $input header] < 0 || $header ne "source_origin"} {error "invalid word data source header"}
   set sources [dict create]
@@ -19,14 +19,23 @@ proc emuflow_word_data_budgets {origins {apply true}} {
       lappend dut $clock
     } else {lappend infrastructure $clock}
   }
-  if {![llength $dut]} {error "word data budget has no DUT clock"}
   set periods [list]
   foreach clock $dut {
     set period [get_property PERIOD $clock]
     if {![string is double -strict $period] || $period <= 0 || $period == Inf} {error "invalid DUT data budget"}
     lappend periods $period
   }
-  set budget [lindex [lsort -real $periods] 0]
+  # A transit partition can have no local DUT clock. Its RX -> TX logic
+  # still uses the explicitly shared DUT implementation target.
+  if {$target_period ne ""} {
+    if {![string is double -strict $target_period] || !($target_period > 0 && $target_period < Inf)} {
+      error "invalid shared DUT data budget"
+    }
+    set budget $target_period
+  } else {
+    if {![llength $periods]} {error "word data budget requires a shared target or a local DUT clock"}
+    set budget [lindex [lsort -real $periods] 0]
+  }
   set rx [dict create]
   foreach clock $infrastructure {
     foreach pin [all_registers -clock [get_property NAME $clock] -clock_pins] {

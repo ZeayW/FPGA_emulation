@@ -93,6 +93,47 @@ def test_rx_role_catalog_survives_independent_local_export_and_detects_tampering
     recovered = prepare_routed_timing_export(original, tmp_path/"local", query_kinds=["local_path_timing"])
     assert load_session(recovered.with_suffix(".json"))["word_data_budget"] == role
     assert 'set emuflow_word_data_source_origins ' in recovered.read_text()
+    assert 'set emuflow_word_data_target_period "100.0"' in config.read_text()
+    assert 'set emuflow_word_data_target_period "100.0"' in recovered.read_text()
     Path(role["path"]).write_text("source_origin\ns999999\n")
     with pytest.raises(ValidationError, match="data budget source contract"):
         load_session(original)
+
+
+@pytest.mark.skipif(TCL86 is None, reason="Tcl 8.6 required")
+@pytest.mark.parametrize('target', ['100', '', '0', 'Inf', 'NaN'])
+def test_transit_data_budget_uses_global_target_without_creating_a_dut_clock(tmp_path, target):
+    origins=tmp_path/'rx.tsv';origins.write_text('source_origin\ns7\n')
+    program=f'source {_tcl_word(ROOT/"scripts/vivado/word_data_budgets.tcl")}\n'+r'''
+set constraints {}
+proc get_clocks {args} {return emuflow_tdm_clk}
+proc get_property {args} {
+ lassign [lrange $args end-1 end] key object
+ switch $key {IS_GENERATED {return 0} NAME {return $object} EMUFLOW_SOURCE {return s7}}
+ error "unexpected property"
+}
+proc all_registers {args} {return rx/C}
+proc get_cells {args} {return rx}
+proc set_max_delay {args} {lappend ::constraints $args}
+proc create_clock {args} {error "invented DUT clock"}
+'''
+    program+=f'if {{[catch {{emuflow_word_data_budgets {_tcl_word(origins)} true {_tcl_word(target)}}} message]}} {{puts stderr $message;exit 2}}\nputs $message\nputs $constraints\n'
+    done=subprocess.run([TCL86],input=program,text=True,capture_output=True)
+    if target!='100':
+        assert done.returncode==2 and ('budget'in done.stderr)
+    else:
+        assert done.returncode==0 and not done.stderr
+        assert done.stdout.splitlines()==['100 1','{100 -from rx/C -to emuflow_tdm_clk}']
+
+
+def test_clockless_partition_session_keeps_shared_budget_and_only_real_local_clocks(tmp_path):
+    session,_,_=session_fixture(tmp_path);output=Path(session['output'])
+    (output/'native-word-clocks.tsv').write_text('clock_hex\tport_hex\tperiod_ns\n')
+    runtime={'fabric_clock':{'period_ns':5},'virtual_dut_clocks':{'clk':{'target_period_ns':10}},
+             'timing_model':{'fabric_clock_port':'fabric_clk','dut_clock_ports':['clk']}}
+    config=prepare_manifest(output,fpga='fpga0',part='part',mapped_index=Path(session['mapped_index']),
+        functions=Path(session['functions']),mapped_sha256=session['mapped_index_sha256'],queries={},
+        runtime=runtime,ports={'fabric_clk'},word_phy_directory=output,source_hierarchy_prefix='p',dut_frequency_mhz=10.)
+    assert 'set emuflow_word_data_target_period "100.0"'in config.read_text()
+    with(output/'clock-contract.tsv').open(newline='')as stream:clocks=list(csv.DictReader(stream,delimiter='\t'))
+    assert [(bytes.fromhex(c['clock_hex']).decode(),float(c['period_ns']))for c in clocks]==[('emuflow_tdm_clk',5.)]

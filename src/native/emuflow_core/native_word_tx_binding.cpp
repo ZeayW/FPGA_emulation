@@ -37,7 +37,7 @@ NativeWordTxBinding BindNativeWordTxCosts(const NativeWordTxCatalog& catalog,
   std::set<std::string> ids,clocks;
   for (const auto& clock:catalog.dut_clocks)
     Check(!clock.empty() && clocks.insert(clock).second,"native TX DUT clock is empty or repeated");
-  Check(!clocks.empty(),"native TX catalog has no DUT launch clocks");
+  // A transit partition launches only from RX sources, without DUT clocks.
   std::set<std::uint32_t> calendar;
   for (auto period:catalog.calendar_period_words) {
     Check(period>=1 && period<=32 && calendar.insert(period).second,
@@ -113,8 +113,10 @@ NativeWordTxBinding BindNativeWordTxCosts(const NativeWordTxCatalog& catalog,
   for (auto& item:contexts) {
     auto& context = item.second;
     if (context.observations.empty()) {
-      Check(!context.fanin,"native TX completed fanin context has no timing dispositions");
-      continue;
+      if (!context.fanin) continue;
+      const auto& f=*context.fanin;
+      Check(clocks.empty() && !f.rx && !f.infrastructure && !f.ports && !f.unclassified,
+          "native TX completed fanin context has no timing dispositions");
     }
     std::map<NativeWordSourceKind,std::uint64_t> counts;
     for (const auto& observation:context.observations) ++counts[observation.observation.source_kind];

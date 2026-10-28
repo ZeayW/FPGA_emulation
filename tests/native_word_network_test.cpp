@@ -59,7 +59,8 @@ int main() {
     std::vector<NativeWordPartitionCosts> partitions;
     for(unsigned p=0;p<part_count;++p){
       NativeWordTxCatalog catalog;catalog.maximum_contexts=1000000;catalog.maximum_repeat_words=bound;
-      catalog.dut_clocks={Clock(p,0),Clock(p,1)};
+      const bool transit=(flags&32) && p==1;
+      if(!transit)catalog.dut_clocks={Clock(p,0),Clock(p,1)};
       std::set<std::uint32_t> periods;
       for(unsigned i=0;i<nodes.size();++i){
         const auto& n=nodes[i];
@@ -77,7 +78,7 @@ int main() {
         for(std::uint64_t phase=n.phase;phase<repeat;phase+=n.ratio/8){
           if((flags&1) && i==0 && phase==n.phase)continue;
           const auto query="word"+std::to_string(i);
-          for(unsigned family:{0,1})for(unsigned edge:{1,2}){
+          if(!transit)for(unsigned family:{0,1})for(unsigned edge:{1,2}){
             std::optional<std::int64_t> cost;
             if(n.has_root && n.root_family==family && n.root_edge==edge)cost=n.root;
             Row(tx,phase,query,"dut-clock",Clock(p,family),edge,cost);
@@ -88,7 +89,7 @@ int main() {
       }
       std::istringstream tx_stream(tx.str());bindings[p]=BindNativeWordTxCosts(catalog,fanins,tx_stream);
       std::ostringstream cap;cap<<header;
-      for(unsigned cf:{0,1})for(unsigned ce:{1,2}){
+      if(!transit)for(unsigned cf:{0,1})for(unsigned ce:{1,2}){
         const auto query="dut-capture:"+Clock(p,cf)+(ce==1?":rise":":fall");
         for(unsigned sf:{0,1})for(unsigned se:{1,2}){
           std::optional<std::int64_t> cost;
@@ -105,7 +106,9 @@ int main() {
         }
       }
       captures[p].str(cap.str());
-      partitions.push_back({"p"+std::to_string(p),&bindings[p],{{Clock(p,0),"core"},{Clock(p,1),"csb"}},catalog.rx_entries,{}, {},&captures[p]});
+      std::vector<NativeWordClockAlias> aliases;
+      if(!transit)aliases={{Clock(p,0),"core"},{Clock(p,1),"csb"}};
+      partitions.push_back({"p"+std::to_string(p),&bindings[p],aliases,catalog.rx_entries,{}, {},&captures[p]});
     }
     if(flags&8)owners[0].sink_partition="p"+std::to_string(nodes[0].source);
     const auto result=ProjectNativeWordNetwork(owners,partitions,windows,period,reference,bound);

@@ -100,7 +100,7 @@ def observe_native_word_checkpoint(fpga,checkpoint,source_directory,boundaries,o
         metrics[row['metric']]=value
     if(set(metrics)!={'dut_clocks','infrastructure_clocks','observed_rx_origins','requested_rx_origins',
                       'missing_rx_origins','repeat_words','capture_queries','tx_contexts'}or
-       metrics['dut_clocks']<1 or metrics['repeat_words']!=preparation['repeat_words']or
+       metrics['repeat_words']!=preparation['repeat_words']or
        metrics['tx_contexts']!=preparation['tx_contexts']or
        metrics['observed_rx_origins']+metrics['missing_rx_origins']!=metrics['requested_rx_origins']or
        metrics['capture_queries']!=2*metrics['dut_clocks']*(2*metrics['dut_clocks']+metrics['observed_rx_origins'])):

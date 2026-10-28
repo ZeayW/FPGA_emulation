@@ -65,6 +65,16 @@ def test_three_crossings_across_four_partitions_preserve_actual_schedule_order(n
     assert len(result['windows'][0]['words'])==3
 
 
+def test_clockless_transit_partition_keeps_end_to_end_rx_relay_cost(network):
+    nodes=[transfer(0,1,ratio=24,root=1000),
+           transfer(1,2,ratio=24,phase=1,fanins=[(0,2000)],capture=2000)]
+    baseline=project(network,nodes,parts=3)
+    transit=project(network,nodes,parts=3,flags=32)
+    assert transit['maximum_cost_ps']==baseline['maximum_cost_ps']
+    assert transit['required_period_ps']==baseline['required_period_ps']
+    assert transit['capture_rows']==baseline['capture_rows']-20
+
+
 def test_half_cycle_local_path_can_require_more_period_than_longer_cross_path(network):
     result=project(network,[transfer(root=1000,capture=2000)],
         windows=[(0,1,0,1,100000),(0,2,0,1,50000)],direct=[(3,0,2,0,1,30000)])

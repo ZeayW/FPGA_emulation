@@ -499,6 +499,7 @@ def run_indexed_vivado_partition(
             "virtual_runtime_dut_clock_periods_ns": {port: runtime["virtual_dut_clocks"][port]["nominal_period_ns"]
                 for port in implementation_timing["dut_clock_periods_ns"]}},
         "timing": {**aggregate, "timing_met": aggregate["wns_ns"] >= 0,
+            "clock_domain_presence": {"fabric":True,"dut":dut_count>0,"cross":dut_count>0},
             **{name: _number(metrics, name) for name in ("dut_wns_ns", "fabric_wns_ns", "fabric_to_dut_wns_ns", "critical_path_ns")},
             "clock_domain_delays_ns": {domain: _number(metrics, name) for domain, name in (("overall", "critical_path_ns"), ("dut", "dut_delay_ns"), ("fabric", "fabric_delay_ns"), ("cross", "fabric_to_dut_delay_ns"))}},
         "resource_usage": usage, "hard_resources": counts, "artifacts": artifacts}

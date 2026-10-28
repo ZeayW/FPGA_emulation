@@ -47,7 +47,8 @@ proc emuflow_native_word_sources {rx_roles} {
       }
     }
   }
-  if {![llength $dut]} {error "native word timing has no declared DUT clock"}
+  # Transit partitions have RX -> TX timing without local DUT state/clocks.
+  # Preserve their real RX/control sources and an empty capture population.
   set rx [dict create]
   set rx_pins [dict create]
   set infrastructure_pins [dict create]
