@@ -246,7 +246,10 @@ class Phase5Test(unittest.TestCase):
             output = root / "phase5"
             report = run_phase5(routes_path, platform_path, output, assignment_path)
             self.assertEqual(report["phase_implementation"], "native-exact-phase5-v1")
-            self.assertEqual(set(report["artifacts"]), {"schedule", "schedule_store", "cross_layer_timing", "report"})
+            self.assertEqual(
+                set(report["artifacts"]),
+                {"schedule", "schedule_board", "schedule_store", "cross_layer_timing", "report"},
+            )
             self.assertEqual(validate_phase5(routes_path, platform_path, output / "schedule.json", assignment_path)["status"], "pass")
             with read_tdm_schedule(output / "schedule.json") as schedule:
                 entries = list(schedule['entries'])
@@ -282,7 +285,7 @@ class Phase5Test(unittest.TestCase):
             initial = run_phase5(old, platform, output, assignment)
             before = {name: (output / name).read_bytes() for name in initial["artifacts"].values()}
             inventory = {path.name for path in output.iterdir()}
-            for position in range(1, 5):
+            for position in range(1, 6):
                 failed = interrupt_native_phase5(changed, platform, changed_assignment, output, position)
                 self.assertEqual(failed.returncode, 71, failed.stderr)
                 self.assertEqual({name: (output / name).read_bytes() for name in before}, before)
@@ -295,7 +298,7 @@ class Phase5Test(unittest.TestCase):
             root = Path(temporary_directory)
             old, platform, assignment = write_native_phase5_fixture(root, prefix="old-")
             changed, _, changed_assignment = write_native_phase5_fixture(root, dependent_return=True, prefix="changed-")
-            for position in range(1, 5):
+            for position in range(1, 6):
                 output = root / ("phase5-" + str(position))
                 run_phase5(old, platform, output, assignment)
                 before = (output / "phase5_report.json").read_bytes()
@@ -303,7 +306,7 @@ class Phase5Test(unittest.TestCase):
                 self.assertEqual(stopped.returncode, 72, stopped.stderr)
                 if position == 1:
                     self.assertEqual(validate_phase5(old, platform, output / "schedule.json", assignment)["status"], "pass")
-                elif position < 4:
+                elif position < 5:
                     self.assertEqual((output / "phase5_report.json").read_bytes(), before)
                     with self.assertRaises(ValidationError):
                         validate_phase5(old, platform, output / "schedule.json", assignment)

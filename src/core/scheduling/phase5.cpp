@@ -307,14 +307,19 @@ void RunPhase5(const std::vector<ArtifactRef>& inputs,const std::string& report_
     {"route_relation",Object{{"schema","emuflow.tdm-schedule-route-relation/v1"},{"records",Record(json,Field(json,sections,"$.routes.records"))},{"sink_records",Record(json,Field(json,relations,"$.route_sinks"))},{"edge_records",Record(json,Field(json,relations,"$.route_edges"))}}},
     {"completion_relation",Object{{"schema","emuflow.tdm-schedule-completion-relation/v1"},{"records",Record(json,Field(json,sections,"$.demand_completions.records"))},{"arrival_records",Record(json,Field(json,relations,"$.completion_arrivals"))}}}};
   WriteJson(work.path/"schedule.json",JsonRecord(manifest),sources);WriteJson(work.path/"cross_layer_timing.json",contract,sources);
+  // The board request is the typed, route-generation-bound authority used by
+  // both schedule validation and physical Phase 7C event binding.  Publish it
+  // with the Phase 5 generation instead of forcing the downstream owner to
+  // reconstruct the same board topology and allocation facts in Python.
+  fs::copy_file(inputs[1].path(),work.path/"schedule-board.bin");
   fs::rename(store_path,work.path/name);
   Object records;for(const auto* key:{"routes","entries","demand_completions","domain_schedules"})records.emplace(key,Record(json,Field(json,sections,std::string("$.")+key+".records")));
   Object report{{"schema","emuflow.phase5-report/v1"},{"phase",5},{"status","pass"},{"design",header.at("design")},{"platform",header.at("platform")},{"provider",header.at("provider")},{"validation",JsonRecord(validation)},{"cross_layer_timing_validation",JsonRecord(cross_validation)},{"timing_dataflow",timing.at("implementation_id")},{"phase_implementation","native-exact-phase5-v1"},
-    {"artifacts",Object{{"schedule","schedule.json"},{"cross_layer_timing","cross_layer_timing.json"},{"report","phase5_report.json"},{"schedule_store",name}}},{"cut_mode","static-exact-combinational"},{"qualification","dependency-schedule-readiness-pass"},
+    {"artifacts",Object{{"schedule","schedule.json"},{"schedule_board","schedule-board.bin"},{"cross_layer_timing","cross_layer_timing.json"},{"report","phase5_report.json"},{"schedule_store",name}}},{"cut_mode","static-exact-combinational"},{"qualification","dependency-schedule-readiness-pass"},
     {"schedule_storage",Object{{"schema","emuflow.tdm-schedule-storage/v4"},{"implementation_id","native-exact-schedule-store-v1"},{"producer_implementation_id","native-exact-phase5-producer-v1"},{"dataflow","typed-sqlite-route-entry-completion-relations-v1"},{"wall_seconds",storage_seconds},{"wall_scope","native-model-schedule-certificate-publication-and-store-seal"},{"bytes",bytes},{"logical_sha256",logical},{"records",JsonRecord(records)}}}};
   if(analyze)report.emplace("timing_validation",timing.at("timing_validation"));
-  Array members;const std::vector<std::string> names{name,"schedule.json","cross_layer_timing.json","phase5_report.json"};
-  for(std::size_t i=0;i<3;++i)members.emplace_back(Object{{"path",names[i]},{"bytes",fs::file_size(work.path/names[i])},{"sha256",i?HashFile(work.path/names[i]):store_hash}});
+  Array members;const std::vector<std::string> names{name,"schedule.json","schedule-board.bin","cross_layer_timing.json","phase5_report.json"};
+  for(std::size_t i=0;i<4;++i)members.emplace_back(Object{{"path",names[i]},{"bytes",fs::file_size(work.path/names[i])},{"sha256",i?HashFile(work.path/names[i]):store_hash}});
   auto publish_names=names;
   if(fs::exists(root/name) || fs::is_symlink(root/name)) {
     Check(!fs::is_symlink(root/name),"Phase 5 immutable store destination is a symlink");

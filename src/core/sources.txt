@@ -68,6 +68,7 @@ physical/placement_lowering.cpp
 routing/phase4.cpp
 timing/phase2.cpp
 physical/physical_coverage.cpp
+physical/evidence_catalog.cpp
 physical/physical_query_objects.cpp
 timing/logic_segment_query.cpp
 timing/local_path_query.cpp

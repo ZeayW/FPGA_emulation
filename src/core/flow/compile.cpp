@@ -1,6 +1,7 @@
 #include "flow/compile.hpp"
 #include "flow/finalize.hpp"
 #include "flow/signoff.hpp"
+#include "physical/evidence_catalog.hpp"
 #include "common/artifact_io.hpp"
 #include "common/json_record.hpp"
 #include "storage/sqlite.hpp"
@@ -526,6 +527,13 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
                 state.String("$.stage") == stage && state.String("$.run_id") == run_id &&
                 state.String("$.status") == "pass" && state.StateShape() && state.Generation(configuration.generation()),
                 "mixed or invalid native compiler phase result");
+        if(std::string(stage)=="physical" && state.Boolean("$.state[1].physical")) {
+          const auto summary=fs::path(state.StatePath("physical_summary_path"));
+          Require(fs::weakly_canonical(summary)==output/"physical/physical-summary.json",
+                  "physical summary escapes compiler ownership");
+          (void)ResolvePhysicalEvidenceCatalog(
+              ArtifactRef::Bind(summary.string(),"physical-summary-v1"));
+        }
         state.RequirePublishedPaths(temporary);
         state_ref.RequireUnchanged();
         if (std::string(stage) == "preflight") result.effective_configuration = state.Object("$.effective_options");

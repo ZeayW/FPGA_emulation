@@ -65,6 +65,7 @@ constexpr RegisteredSchema schemas[] = {
     {"routed-segment-summary-v1", ArtifactEncoding::kText, 0, 1},
 
     {"physical-input-document-v1", ArtifactEncoding::kText, 0, 1},
+    {"physical-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"openparf-name-map-selector-v1", ArtifactEncoding::kText, 0, 1},
     {"openparf-placement-selector-v2", ArtifactEncoding::kText, 0, 2},
     {"openparf-name-map-store-v1", ArtifactEncoding::kSqlite, 0x454d554e, 1, true,
