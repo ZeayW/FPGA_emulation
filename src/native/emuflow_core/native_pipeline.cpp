@@ -24,6 +24,7 @@
 #include "emuflow_core/source_lut_models.hpp"
 #include "emuflow_core/native_word_analysis.hpp"
 #include "emuflow_core/original_endpoint_index.hpp"
+#include "emuflow_core/original_lineage_index.hpp"
 
 #include <filesystem>
 #include <iostream>
@@ -42,6 +43,7 @@ const char* StageName(Stage stage) {
     case Stage::kAnalyzeNativeWordNetwork: return "phase7.analyze-word-network";
     case Stage::kExportNativeWordChecks: return "phase7.export-word-checks";
     case Stage::kIndexOriginalEndpoints: return "phase7.index-original-endpoints";
+    case Stage::kIndexOriginalLineage: return "phase7.index-original-lineage";
     case Stage::kBuildSourceLaunchClocks: return "phase7.build-launch-clocks";
     case Stage::kBuildSourceCaptureClocks: return "phase7.build-capture-clocks";
     case Stage::kRefinePartitionHops: return "phase3.refine-hops";
@@ -86,6 +88,14 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
       return {"emuir-compact-v2","partition-cluster-columns-v2","patron-initial-columns-v1","patron-source-board-request-v1"};
     case Stage::kValidateMappedNormalization: return {"emuir-compact-v2","emuir-compact-v2","yosys-source-document-v1","mapped-normalization-request-v1"};
     case Stage::kBuildSourceLutModels: return {"emuir-compact-v2"};
+    case Stage::kIndexOriginalLineage: {
+      const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
+      if(count<4 || count>130 || (count-2)%2)
+        throw core::StageError(core::ErrorCode::kInvalidRequest,"original lineage partition input coverage differs");
+      std::vector<std::string> schemas{"native-original-endpoint-index-v1","native-original-lineage-request-v1"};
+      for(std::size_t i=2;i<count;i+=2){schemas.push_back("xilinx-mapped-index-v2");schemas.push_back("vivado-lineage-store-v2");}
+      return schemas;
+    }
     case Stage::kIndexOriginalEndpoints: {
       const auto& paths=request.input_paths;const auto& refs=request.input_artifacts;
       if((refs.empty()?paths.size():refs.size())<6)
@@ -315,6 +325,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kAnalyzeNativeWordNetwork: core::AnalyzeNativeWordNetwork(inputs,output); break;
       case Stage::kExportNativeWordChecks: core::AnalyzeNativeWordNetwork(inputs,output,true); break;
       case Stage::kIndexOriginalEndpoints: core::BuildOriginalEndpointIndex(inputs,output); break;
+      case Stage::kIndexOriginalLineage: core::BuildOriginalLineageIndex(inputs,output); break;
       case Stage::kBuildSourceLaunchClocks: core::BuildSourceLaunchClocksFromRequest(inputs,output,request.cancelled); break;
       case Stage::kBuildSourceCaptureClocks: core::BuildSourceCaptureClocksFromRequest(inputs,output,request.cancelled); break;
       case Stage::kRefinePartitionHops:
@@ -368,6 +379,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kAnalyzeNativeWordNetwork: schema="native-word-network-analysis-v1"; break;
       case Stage::kExportNativeWordChecks: schema="native-word-verification-events-v1"; break;
       case Stage::kIndexOriginalEndpoints: schema="native-original-endpoint-index-v1"; break;
+      case Stage::kIndexOriginalLineage: schema="native-original-lineage-index-v1"; break;
       case Stage::kBuildSourceLaunchClocks: schema="source-launch-clock-store-v1"; break;
       case Stage::kBuildSourceCaptureClocks: schema="source-capture-clock-store-v1"; break;
       case Stage::kRefinePartitionHops: schema = "hop-refiner-output-v1"; break;

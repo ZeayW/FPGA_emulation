@@ -62,6 +62,9 @@ constexpr RegisteredSchema schemas[] = {
     {"native-original-endpoint-request-v1", ArtifactEncoding::kBinary, 0x3151454f4e4d5545ULL, 1},
     {"native-original-endpoint-index-v1", ArtifactEncoding::kSqlite, 0x454d4f45, 1, true,
      "SELECT value FROM metadata WHERE key='schema'","emuflow.native-original-endpoint-index/v1"},
+    {"native-original-lineage-request-v1", ArtifactEncoding::kBinary, 0x31514c4f4e4d5545ULL, 1},
+    {"native-original-lineage-index-v1", ArtifactEncoding::kSqlite, 0x454d4f4c, 1, true,
+     "SELECT value FROM metadata WHERE key='schema'","emuflow.native-original-lineage-index/v1"},
     {"sta-path-selector-v1", ArtifactEncoding::kText, 0, 1},
     {"net-weight-store-v1", ArtifactEncoding::kSqlite, 0, 1, true,
      "SELECT 'net-weight-store-v1' WHERE (SELECT count(*) FROM pragma_table_info('net_weights') "

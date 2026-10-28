@@ -52,4 +52,5 @@ hop_partition_refiner.cpp
 emuflow_core/optimization_proofs.cpp
 emuflow_core/original_physical_captures.cpp
 emuflow_core/original_endpoint_index.cpp
+emuflow_core/original_lineage_index.cpp
 emuflow_core/mapped_normalization.cpp
