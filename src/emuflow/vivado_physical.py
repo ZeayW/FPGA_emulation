@@ -127,21 +127,27 @@ def parse_timing_summary(path: Path) -> dict[str, Any]:
 
 def validate_synthesized_continuation(checkpoint: Path, expected_sha256: str, source_report: Path,
                                      mapped_report, mapped_verilog: Path, prepared_output: Path):
-    """Bind one explicitly requested active-run continuation to frozen inputs."""
+    return _validate_snapshot_inputs(checkpoint,expected_sha256,source_report,mapped_report,
+        mapped_verilog,prepared_output,stage='synthesized')
+
+
+def _validate_snapshot_inputs(checkpoint: Path, expected_sha256: str, source_report: Path,
+                                     mapped_report, mapped_verilog: Path, prepared_output: Path, *, stage):
+    """Prove a retained implementation stage has the same compiled inputs."""
     if (not isinstance(expected_sha256,str) or not re.fullmatch(r"[0-9a-f]{64}",expected_sha256)
             or file_sha256(checkpoint) != expected_sha256):
-        raise ValidationError("synthesized continuation checkpoint digest differs")
+        raise ValidationError(f"{stage} continuation checkpoint digest differs")
     prior = read_json(source_report)
     for key in ("schema","status","provider","optimization_policy","top","emitted_instances","output_sha256"):
         if prior.get(key) != mapped_report.get(key):
-            raise ValidationError(f"synthesized continuation source report differs: {key}")
+            raise ValidationError(f"{stage} continuation source report differs: {key}")
     for key in ("mapped_index","source_functions"):
         if prior.get(key,{}).get("sha256") != mapped_report.get(key,{}).get("sha256"):
-            raise ValidationError("synthesized continuation mapped/function identity differs")
+            raise ValidationError(f"{stage} continuation mapped/function identity differs")
         if file_sha256(Path(mapped_report[key]["path"])) != mapped_report[key]["sha256"]:
-            raise ValidationError("synthesized continuation source payload digest differs")
+            raise ValidationError(f"{stage} continuation source payload digest differs")
     if file_sha256(mapped_verilog) != mapped_report["output_sha256"]:
-        raise ValidationError("synthesized continuation Verilog digest differs")
+        raise ValidationError(f"{stage} continuation Verilog digest differs")
     expected_files = ["runtime.xdc"]
     if (prepared_output/"physical_top.sv").is_file():
         expected_files.extend(["physical_top.sv","fixed-io-query.tsv","fixed-io-timing-map.tsv"])
@@ -167,10 +173,10 @@ def validate_synthesized_continuation(checkpoint: Path, expected_sha256: str, so
     for name in expected_files:
         old, new = checkpoint.parent/name, prepared_output/name
         if not old.is_file() or file_sha256(old) != file_sha256(new):
-            raise ValidationError(f"synthesized continuation runtime/fixed-I/O contract differs: {name}")
-    return {"status":"pass","synthesized_checkpoint_sha256":expected_sha256,
+            raise ValidationError(f"{stage} continuation runtime/fixed-I/O contract differs: {name}")
+    return {"status":"pass",stage+"_checkpoint_sha256":expected_sha256,
             "source_report_sha256":file_sha256(source_report),"mapped_index_sha256":mapped_report["mapped_index"]["sha256"],
-            "input_contracts":expected_files,"scope":"active-experiment synthesized-boundary continuation only"}
+            "input_contracts":expected_files,"scope":f"retained {stage} snapshot with identical compiled inputs"}
 
 
 def _import_routed_measurement(*, kind, output, identity, resolution, importer, export,
@@ -210,6 +216,7 @@ def run_indexed_vivado_partition(
     retain_routed_checkpoint:bool=False,
     route_after_proof_failure:bool=False,
     dut_timing_io:Mapping[str,Any]|None=None,
+    routed_snapshot:Mapping[str,Any]|None=None,
 ) -> dict[str, Any]:
     from .vivado_backend import _resolve_vivado, _read_metrics, _integer, _number, vivado_runtime_xdc, write_vivado_boundary_timing_query
     from .vivado_physical_timing import import_indexed_vivado_boundary, import_vivado_local_timing
@@ -230,6 +237,10 @@ def run_indexed_vivado_partition(
     if not isinstance(route_after_proof_failure,bool) or (route_after_proof_failure and not retain_routed_checkpoint):
         raise ValidationError('proof-failure routing requires explicit retained snapshots')
     if native_word_mode:retain_routed_checkpoint=True
+    if routed_snapshot is not None and (not native_word_mode or any(value is not None for value in continuation)):
+        raise ValidationError('retained routed adoption requires native word mode without synthesized continuation')
+    if routed_snapshot is not None and set(routed_snapshot)!={'directory','checkpoint_sha256','source_report','native_observation'}:
+        raise ValidationError('retained routed adoption requires directory, checkpoint digest, mapped report and closed observation')
     if any(value is not None for value in continuation) and not all(value is not None for value in continuation):
         raise ValidationError("synthesized continuation requires checkpoint, digest and source report together")
     from .emuir_storage import is_emuir_sqlite
@@ -253,7 +264,7 @@ def run_indexed_vivado_partition(
     output_dir.mkdir(parents=True, exist_ok=True)
     if any((output_dir/name).exists() for name in ("native-session.json","mapped_cells.tsv","vivado-implementation.log")):
         raise ValidationError("indexed Vivado implementation requires a fresh native output directory")
-    executable = _resolve_vivado(executable)
+    executable = _resolve_vivado(executable) if routed_snapshot is None else None
     index_path = Path(mapped_report["mapped_index"]["path"])
     if mapped_report.get("optimization_policy") != LINEAGE_POLICY:
         raise ValidationError("indexed Vivado requires the current optimization/lineage policy")
@@ -351,24 +362,73 @@ def run_indexed_vivado_partition(
                               ("mapped_verilog",mapped_report["output_sha256"])):
         if input_identity[key]["sha256"] != expected_sha:
             raise ValidationError("Vivado mapped source identity differs before native execution")
-    implementation = execute_vivado(executable, _vivado_script("implement_indexed_partition.tcl"),
-        [part, str(mapped_verilog_path.resolve()), top, str(xdc), str(output_dir), str(expected), prefix,
-         adapter, wrapper, io_xdc, io_query, place_directive, route_directive, str(dut_count), str(threads), str(configuration)],
-        output_dir, "vivado-implementation.log")
+    routed_checkpoint=output_dir/'routed.dcp'
+    optimized_checkpoint=output_dir/'optimized.dcp'
+    inventory_root=output_dir
+    retained_parents=[]
+    retained_artifacts={}
+    if routed_snapshot is None:
+        implementation = execute_vivado(executable, _vivado_script("implement_indexed_partition.tcl"),
+            [part, str(mapped_verilog_path.resolve()), top, str(xdc), str(output_dir), str(expected), prefix,
+             adapter, wrapper, io_xdc, io_query, place_directive, route_directive, str(dut_count), str(threads), str(configuration)],
+            output_dir, "vivado-implementation.log")
+    else:
+        import shutil
+        retained=Path(routed_snapshot['directory']).resolve()
+        if retained==output_dir:raise ValidationError('retained routed adoption requires a fresh output directory')
+        routed_checkpoint=retained/'routed.dcp';optimized_checkpoint=retained/'optimized.dcp'
+        inventory_root=retained
+        continuation_validation=_validate_snapshot_inputs(routed_checkpoint,routed_snapshot['checkpoint_sha256'],
+            Path(routed_snapshot['source_report']),mapped_report,mapped_verilog_path,output_dir,stage='routed')
+        old_session=retained/'native-session.json'
+        prior=read_json(old_session);current=read_json(output_dir/'native-session.json')
+        for key in ('schema','fpga','part','mapped_index_sha256','source_hierarchy_prefix','implementation_timing','synthesis'):
+            if prior.get(key)!=current.get(key):
+                raise ValidationError('retained routed session differs: '+key)
+        if file_sha256(retained/'clock-contract.tsv')!=file_sha256(output_dir/'clock-contract.tsv'):
+            raise ValidationError('retained routed clock contract differs')
+        copied=('implementation_metrics.tsv','timing_summary.rpt','route_status.rpt','drc.rpt',
+            'utilization.rpt','word-data-budget-metrics.tsv')
+        inventories=('mapped_cells.tsv','optimized_mapped_cells.tsv','routed_mapped_cells.tsv')
+        for name in copied+inventories+('native-session.json','vivado-implementation.log','word-data-source-origins.tsv'):
+            path=retained/name
+            if not path.is_file()or path.stat().st_size==0:
+                raise ValidationError('retained routed implementation artifact is missing: '+name)
+            retained_parents.append(bind_store_source(path,'physical-input-document-v1'))
+        if file_sha256(retained/'word-data-source-origins.tsv')!=file_sha256(output_dir/'word-data-source-origins.tsv'):
+            raise ValidationError('retained routed RX budget source roles differ')
+        retained_parents.append(bind_store_source(routed_checkpoint,'physical-input-document-v1'))
+        for name in copied:shutil.copyfile(retained/name,output_dir/name)
+        require_store_sources_unchanged(retained_parents)
+        for name in ('native-session.json','vivado-implementation.log'):
+            path=retained/name
+            retained_artifacts['retained/'+name]=dict(path=str(path),sha256=file_sha256(path),bytes=path.stat().st_size)
+        current['synthesis']['mode']='retained-routed'
+        current['execution_mode']='retained-routed-analysis-only'
+        current['retained_snapshot']=dict(directory=str(retained),checkpoint_sha256=routed_snapshot['checkpoint_sha256'],
+            source_session=retained_artifacts['retained/native-session.json'])
+        write_json(output_dir/'native-session.json',current,compact=True)
+        implementation=dict(status='reused',invoked_tool=False,log=str(retained/'vivado-implementation.log'),
+            source_session=str(old_session),scope='completed routed snapshot; original log may include later legacy export failures')
     metrics = _read_metrics(output_dir / "implementation_metrics.tsv")
     if metrics.get("part") != part or _integer(metrics, "dut_clock_count") != dut_count:
         raise ValidationError("Vivado part/clock identity differs from Phase6")
     native_observation=None
     if native_word_mode:
         from .vivado_lineage import import_cell_lineage
-        from .native_word_observation import observe_native_word_checkpoint
+        from .native_word_observation import observe_native_word_checkpoint,reuse_native_word_observation
         coverage=import_cell_lineage(index_path,functions_path,
-            {stage:output_dir/name for stage,name in [('synthesized','mapped_cells.tsv'),
+            {stage:inventory_root/name for stage,name in [('synthesized','mapped_cells.tsv'),
                 ('optimized','optimized_mapped_cells.tsv'),('routed','routed_mapped_cells.tsv')]},
             output_dir/'cell-lineage.sqlite',mapped_sha256=mapped_report['mapped_index']['sha256'])
-        native_observation=observe_native_word_checkpoint(fpga,output_dir/'routed.dcp',
-            output_dir/'native-word-sources',output_dir/'native-word-boundaries.tsv',
-            output_dir/'native-word-observation',executable=executable,threads=threads)
+        if routed_snapshot is None:
+            native_observation=observe_native_word_checkpoint(fpga,routed_checkpoint,
+                output_dir/'native-word-sources',output_dir/'native-word-boundaries.tsv',
+                output_dir/'native-word-observation',executable=executable,threads=threads)
+        else:
+            native_observation=reuse_native_word_observation(fpga,routed_checkpoint,
+                output_dir/'native-word-sources',output_dir/'native-word-boundaries.tsv',
+                Path(routed_snapshot['native_observation']),output_dir/'native-word-observation')
         preparation={'status':'pass','coverage':coverage,'timing_coverage':{
             'status':'native-observations-complete','policy':'native-clock-and-interface-v1',
             'original_member_accounting':'pending-independent-phase7c',**native_observation['counts']}}
@@ -449,7 +509,7 @@ def run_indexed_vivado_partition(
             word_timing=_word_infrastructure_timing(metrics,active_banks=top_report['active_banks'])
         require_store_sources_unchanged(word_sources)
     require_store_sources_unchanged((lineage_binding,))
-    artifacts = {"cell-lineage.sqlite":lineage_artifact}
+    artifacts = {"cell-lineage.sqlite":lineage_artifact,**retained_artifacts}
     if source_dispositions is not None:
         path = Path(source_dispositions["output"])
         artifacts[path.name] = {"path":str(path), "sha256":file_sha256(path), "bytes":path.stat().st_size}
@@ -473,11 +533,11 @@ def run_indexed_vivado_partition(
                 path=output_dir/name
                 artifacts[name]={'path':str(path),'sha256':file_sha256(path),'bytes':path.stat().st_size}
     if retain_routed_checkpoint:
-        path=output_dir/'routed.dcp'
+        path=routed_checkpoint
         if not path.is_file():raise ValidationError('requested routed debug checkpoint is missing')
         artifacts[path.name]={'path':str(path),'sha256':file_sha256(path),'bytes':path.stat().st_size}
     if route_after_proof_failure:
-        path=output_dir/'optimized.dcp'
+        path=optimized_checkpoint
         if not path.is_file():raise ValidationError('requested optimized debug snapshot is missing')
         artifacts[path.name]={'path':str(path),'sha256':file_sha256(path),'bytes':path.stat().st_size}
     result = {"schema": PHYSICAL_PARTITION_RESULT_SCHEMA, "status": "pass",
@@ -503,12 +563,16 @@ def run_indexed_vivado_partition(
             **{name: _number(metrics, name) for name in ("dut_wns_ns", "fabric_wns_ns", "fabric_to_dut_wns_ns", "critical_path_ns")},
             "clock_domain_delays_ns": {domain: _number(metrics, name) for domain, name in (("overall", "critical_path_ns"), ("dut", "dut_delay_ns"), ("fabric", "fabric_delay_ns"), ("cross", "fabric_to_dut_delay_ns"))}},
         "resource_usage": usage, "hard_resources": counts, "artifacts": artifacts}
+    require_store_sources_unchanged(retained_parents)
+    if routed_snapshot is not None and file_sha256(routed_checkpoint)!=routed_snapshot['checkpoint_sha256']:
+        raise ValidationError('retained routed snapshot changed during finalization')
     validation = validate_physical_partition_result(result, backend="vivado", fpga=fpga, part=part, original_cells=original_cells, transport_cells=transport_cells)
     native_scripts=("native_session.tcl","source_inventory.tcl","resource_inventory.tcl","timing_contract.tcl",
         "export_boundary_timing.tcl","export_logic_segment_timing.tcl")
     if word_mode:native_scripts+=("word_native_physical.tcl","word_data_budgets.tcl","selectio_ip.tcl")
     report = {"schema": "emuflow.vivado-partition-report/v1", "status": "pass", "provider": ("indexed-phase6-vivado-word-physical-v5"if native_word_mode else "indexed-phase6-vivado-word-physical-v4")if word_mode else "indexed-phase6-vivado-physical-v2",
-        "tool": {"executable": executable, "version": metrics["vivado_version"], "threads": threads},
+        "tool": {"executable": executable, "version": metrics["vivado_version"], "threads": threads,
+            "invoked_for_implementation":routed_snapshot is None},
         "implementation": implementation, "continuation": continuation_validation, "input_identity": input_identity,
         "implementation_timing": implementation_timing,
         "implementation_options": {"place_directive": place_directive, "route_directive": route_directive,

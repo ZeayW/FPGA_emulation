@@ -145,3 +145,43 @@ def test_partial_or_mixed_observations_never_publish_completion(observation,monk
     monkeypatch.setattr('emuflow.vivado_physical.execute_vivado',damaged)
     with pytest.raises(ValidationError):observe_native_word_checkpoint('fpga0',checkpoint,roles,boundary,out)
     assert not(out/'native-observation.json').exists()
+
+
+@pytest.mark.parametrize('damage',[None,'checkpoint','stream','upstream','canonical','roles'])
+def test_reuse_preserves_closed_streams_and_requires_the_same_source_request(observation,monkeypatch,damage):
+    from emuflow.native_word_observation import reuse_native_word_observation
+    from emuflow.native_word_source_catalog import prepare_native_word_sources
+    from emuflow.io import file_sha256
+    import sqlite3
+    source,roles,checkpoint,boundary,_=observation
+    original=observe_native_word_checkpoint('fpga0',checkpoint,roles,boundary,source.root/'observed')
+    fresh=source.root/'fresh-roles'
+    prepare_native_word_sources('fpga0',source.schedule_path,source.boundaries['fpga0'],source.mapped['fpga0'],fresh)
+    def unexpected(*args,**kwargs):raise AssertionError('retained observation must not launch Vivado')
+    monkeypatch.setattr('emuflow.vivado_physical.execute_vivado',unexpected)
+    if damage=='checkpoint':checkpoint.write_bytes(b'other routed snapshot')
+    if damage=='stream':Path(original['files']['native-costs.tsv']['path']).write_text('modified timing stream')
+    if damage=='upstream':source.schedule_path.write_text('different schedule')
+    if damage in ('canonical','roles'):
+        if damage=='canonical':
+            with sqlite3.connect(fresh/'catalog.sqlite')as db:db.execute('UPDATE entries SET lane=3')
+            name='catalog.sqlite'
+        else:
+            name='targets.tsv';(fresh/name).write_text((fresh/name).read_text().replace('0\t','1\t',1))
+        path=fresh/name;descriptor=fresh/'source-catalog.json';report=json.loads(descriptor.read_text())
+        report['files'][name]=dict(sha256=file_sha256(path),bytes=path.stat().st_size)
+        descriptor.write_text(json.dumps(report))
+    destination=source.root/'reused'
+    if damage:
+        with pytest.raises(ValidationError):reuse_native_word_observation('fpga0',checkpoint,fresh,boundary,
+            source.root/'observed/native-observation.json',destination)
+        assert not(destination/'native-observation.json').exists()
+        return
+    report=reuse_native_word_observation('fpga0',checkpoint,fresh,boundary,
+        source.root/'observed/native-observation.json',destination)
+    assert report['execution']['invoked_tool']is False
+    assert report['source_directory']==str(fresh)
+    assert report['files']==original['files']and report['counts']==original['counts']
+    assert report['physical_checks']==original['physical_checks']
+    assert report['fixed_clock_control_timing_met']is False
+    assert list(destination.iterdir())==[destination/'native-observation.json']

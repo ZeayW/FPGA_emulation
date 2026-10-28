@@ -13,7 +13,8 @@ from emuflow.vivado_physical import run_indexed_vivado_partition
 from tests.test_native_word_source_catalog import source
 
 
-def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(source,monkeypatch):
+@pytest.mark.parametrize('retained_damage',[None,'clock','checkpoint','compiled-input','routing'])
+def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(source,monkeypatch,retained_damage):
     root=source.root;output=root/'physical';part='xcvu19p-fsva3824-2-e'
     ir=root/'physical-ir.sqlite';ir.write_text('indexed IR owned by the lowering stage')
     functions=root/'functions.sqlite';functions.write_text('mapped source functions')
@@ -41,11 +42,13 @@ def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(sou
     monkeypatch.setattr('emuflow.vivado_physical._import_routed_measurement',old_query)
     monkeypatch.setattr('emuflow.vivado_physical._word_infrastructure_timing',old_query)
     def word_top(ir,output,**kwargs):
-        for name in ('native-word-banks.sv','physical_top.sv','native-word-fixed-io.xdc','fixed-io-query.tsv','native-word-boundaries.tsv'):
+        from emuflow.vivado_word_top import SCHEMA,WORD_TOP_FILES
+        for name in WORD_TOP_FILES:
             (output/name).write_text('native word physical preparation\n')
         (output/'native-word-clocks.tsv').write_text('clock_hex\tport_hex\tperiod_ns\n')
-        return dict(part=part,top='physical_top',hierarchy_prefix='mapped_partition',active_banks=2,
-            fpga='fpga0',data_pairs=40,forwarded_clock_pairs=2)
+        return dict(schema=SCHEMA,status='pass',part=part,top='physical_top',hierarchy_prefix='mapped_partition',active_banks=2,
+            fpga='fpga0',data_pairs=40,forwarded_clock_pairs=2,
+            artifacts={name:dict(sha256=file_sha256(output/name))for name in WORD_TOP_FILES})
     monkeypatch.setattr('emuflow.vivado_word_top.write_vivado_word_top',word_top)
     def lineage(mapped,functions,inventories,path,**kwargs):
         assert set(inventories)=={'synthesized','optimized','routed'}
@@ -105,6 +108,40 @@ def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(sou
     from emuflow.multi_fpga_physical_flow import _require_native_word_evidence
     record=dict(fpga='fpga0',part=part,stages={'vivado_implementation':report,'word_phy_implementation':report['word_phy_implementation']})
     hashes={key:report['input_identity'][key]['sha256']for key in ('word_phy_plan','word_wiring')}
+    assert _require_native_word_evidence(record,hashes)
+    source_report=root/'mapped-report.json';source_report.write_text(json.dumps(mapped_report))
+    snapshot=dict(directory=str(output),checkpoint_sha256=file_sha256(output/'routed.dcp'),
+        source_report=str(source_report),native_observation=str(output/'native-word-observation/native-observation.json'))
+    if retained_damage=='clock':
+        path=output/'native-session.json';session=json.loads(path.read_text())
+        session['implementation_timing']['tdm_clock']['period_ns']=10.;path.write_text(json.dumps(session))
+    if retained_damage=='checkpoint':(output/'routed.dcp').write_text('different routed design')
+    if retained_damage=='compiled-input':(output/'runtime.xdc').write_text('different physical constraints')
+    if retained_damage=='routing':(output/'route_status.rpt').write_text('unrouted nets : 1\n')
+    # A legacy endpoint export can fail after the router retained valid results.
+    (output/'vivado-implementation.log').write_text('route_design completed\nERROR: legacy endpoint export failed\n')
+    def unexpected(*args,**kwargs):raise AssertionError('adoption must not launch or resolve Vivado')
+    monkeypatch.setattr('emuflow.vivado_physical.execute_vivado',unexpected)
+    monkeypatch.setattr('emuflow.vivado_backend._resolve_vivado',unexpected)
+    adopted=root/'adopted'
+    def adopt():
+        return run_indexed_vivado_partition(fpga='fpga0',part=part,ir_path=ir,mapped_verilog_path=netlist,
+            mapped_report=mapped_report,runtime=runtime,original_cells=2,transport_cells=3,output_dir=adopted,
+            boundary_identity_path=source.boundaries['fpga0'],word_phy_plan_path=plan,word_wiring_path=wiring,
+            word_schedule_path=source.schedule_path,dut_frequency_mhz=10.,routed_snapshot=snapshot)
+    if retained_damage:
+        with pytest.raises(ValidationError):adopt()
+        assert not(adopted/'vivado-partition-report.json').exists()
+        return
+    retained=adopt()
+    assert calls==['implement_indexed_partition.tcl','observe_native_word.tcl']
+    assert retained['implementation']['status']=='reused'and retained['implementation']['invoked_tool']is False
+    assert retained['tool']['invoked_for_implementation']is False
+    assert retained['result']['artifacts']['routed.dcp']==report['result']['artifacts']['routed.dcp']
+    assert retained['native_word_observation']['files']==report['native_word_observation']['files']
+    assert retained['result']['timing']==report['result']['timing']
+    assert not(adopted/'routed.dcp').exists()
+    record['stages']={'vivado_implementation':retained,'word_phy_implementation':retained['word_phy_implementation']}
     assert _require_native_word_evidence(record,hashes)
     (output/'native-word-observation/native-costs.tsv').write_text('changed observations\n')
     with pytest.raises(ValidationError,match='stream changed'):_require_native_word_evidence(record,hashes)
