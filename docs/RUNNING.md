@@ -35,7 +35,11 @@ its license is still managed by the vendor installation.
 For ordinary RTL, no design or run configuration file is required:
 
 ```bash
-emuflow run rtl/top.sv --top top --clock clk=10
+# OpenPARF placement and RapidWright/RWRoute routing
+emuflow run rtl/top.sv --top top --clock clk=10 --backend rapidwright
+
+# Or the Vivado physical route
+emuflow run rtl/top.sv --top top --clock clk=10 --backend vivado
 ```
 
 The command reads the installation-owned runtime, validates the source and tool
@@ -51,8 +55,10 @@ emuflow run rtl/packages.sv rtl/core.sv rtl/top.sv \
 Repeat `--clock NAME=NS` for every clock. The direct entry applies no external
 input/output delay groups; designs that need explicit I/O timing, custom compile
 options, or a source-sealed reproducibility record can use the advanced
-configuration below. Select Vivado with `--backend vivado`; OpenPARF/RWRoute is
-the default.
+configuration below. The backend choice applies only to that run; one
+installation can support both routes. RapidWright is always installed. Vivado
+is available when its executable was on `PATH` during installation; rerun
+`./install.sh` after adding Vivado to make that route available.
 
 ## Advanced reproducible configuration
 

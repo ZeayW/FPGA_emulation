@@ -1,5 +1,6 @@
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -113,3 +114,47 @@ def test_build_runtime_uses_one_python_for_launcher_and_openparf(monkeypatch):
     assert "-DPython3_EXECUTABLE=/runtime/python" in calls[0]
     assert "-DEMUFLOW_OPENPARF_PYTHON=/runtime/python" in calls[0]
     assert calls[1][-2:] == ["--parallel", "3"]
+
+
+def test_environment_contains_and_checks_both_available_backends(tmp_path, monkeypatch):
+    installation = tmp_path / "install"
+    (installation / "bin").mkdir(parents=True)
+    (installation / "share/emuflow/device").mkdir(parents=True)
+    (installation / "bin/emuflow").write_text("launcher")
+    monkeypatch.setattr(INSTALLER, "INSTALL", installation)
+    real_which = INSTALLER.shutil.which
+    monkeypatch.setattr(
+        INSTALLER.shutil,
+        "which",
+        lambda name: "/tools/vivado" if name == "vivado" else real_which(name),
+    )
+    calls = []
+
+    def fake_command(arguments, *, cwd=INSTALLER.ROOT, environment=None):
+        arguments = [str(item) for item in arguments]
+        calls.append(arguments)
+        if "build-xilinx-preplacement-timing" in arguments:
+            Path(arguments[arguments.index("--output") + 1]).write_text("timing")
+
+    monkeypatch.setattr(INSTALLER, "command", fake_command)
+    runtime = tmp_path / "rapidwright"
+    timing = runtime / "data/timing"
+    timing.mkdir(parents=True)
+    inputs = {}
+    for name in ("provider", "architecture", "constraints", "rapidwright.jar"):
+        inputs[name] = tmp_path / name
+        inputs[name].write_text(name)
+    manifest = INSTALLER.publish_environment(
+        python=Path("/python"),
+        java=Path("/java"),
+        jar=inputs["rapidwright.jar"],
+        rapidwright_root=runtime,
+        timing_data=timing,
+        provider=inputs["provider"],
+        architecture=inputs["architecture"],
+        constraints=inputs["constraints"],
+    )
+    profile = json.loads(manifest.read_text())
+    assert set(profile["backends"]) == {"rapidwright", "vivado"}
+    checks = [call for call in calls if "environment" in call and "check" in call]
+    assert {call[-1] for call in checks} == {"rapidwright", "vivado"}

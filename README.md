@@ -46,7 +46,7 @@ Install once, then give EmuFlow the RTL, top module and clock period:
 git clone https://github.com/ZeayW/FPGA_emulation.git
 cd FPGA_emulation
 ./install.sh
-emuflow run rtl/top.sv --top top --clock clk=10
+emuflow run rtl/top.sv --top top --clock clk=10 --backend rapidwright
 ```
 
 The installer builds the complete runtime, downloads the pinned RapidWright
@@ -54,9 +54,10 @@ release, prepares the supported XCVU19P device data and stores the resulting
 runtime manifest inside the installation. There is no machine profile to edit or
 register. See [installation and run details](docs/RUNNING.md).
 
-The run command executes the complete flow with the installed OpenPARF/RWRoute backend and writes
-`runs/top`. Add more RTL files as positional arguments. Select the other physical
-backend with `--backend vivado`, or choose a different output with `--out`.
+The run command executes the complete flow and writes `runs/top`. The physical
+route is selected per run: use `--backend rapidwright` for OpenPARF/RWRoute or
+`--backend vivado` for Vivado. Add more RTL files as positional arguments, or
+choose a different output with `--out`.
 Stage progress is printed by the native controller. Each output directory contains
 `stage-metrics/`, `multi-fpga-flow-report.json`, and terminal
 `runtime/phase7c_report.json` and `runtime/qor_report.json` evidence.

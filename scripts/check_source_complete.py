@@ -528,7 +528,8 @@ def audit(repo_root: Path) -> list[str]:
                     )
             for required in (
                 "./install.sh",
-                "emuflow run rtl/top.sv --top top --clock clk=10",
+                "emuflow run rtl/top.sv --top top --clock clk=10 --backend rapidwright",
+                "--backend vivado",
                 "runs/top",
             ):
                 if required not in quick_start:

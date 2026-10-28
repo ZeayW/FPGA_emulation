@@ -149,7 +149,12 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--phase6-provider", choices=("baseline", "chimew"), default="baseline"
     )
-    run.add_argument("--backend", choices=("rapidwright", "vivado"), default="rapidwright")
+    run.add_argument(
+        "--backend",
+        choices=("rapidwright", "vivado"),
+        default="rapidwright",
+        help="physical implementation route (default: rapidwright)",
+    )
     run.add_argument("--out", type=Path, help="default: runs/TOP")
     run.add_argument("--check", action="store_true", help="check input/configuration inventory without executing the design")
 

@@ -397,6 +397,11 @@ def publish_environment(
         [emuflow, "environment", "check", staged, "--backend", "rapidwright"],
         environment=environment,
     )
+    if "vivado" in profile["backends"]:
+        command(
+            [emuflow, "environment", "check", staged, "--backend", "vivado"],
+            environment=environment,
+        )
     os.replace(staged, output)
     return output
 
@@ -477,7 +482,17 @@ def main(argv=None) -> int:
     )
     link_launchers()
     print(f"EmuFlow installation is ready: {manifest}")
-    print("Run: emuflow run rtl/top.sv --top top --clock clk=10")
+    backends = sorted(installed_environment()["backends"])
+    print("Available physical backends: " + ", ".join(backends))
+    print(
+        "Run: emuflow run rtl/top.sv --top top --clock clk=10 "
+        "--backend rapidwright"
+    )
+    if "vivado" in backends:
+        print(
+            "Or:  emuflow run rtl/top.sv --top top --clock clk=10 "
+            "--backend vivado"
+        )
     return 0
 
 
