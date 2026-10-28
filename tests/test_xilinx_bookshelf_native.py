@@ -10,7 +10,7 @@ from unittest import mock
 
 from emuflow.common.errors import ValidationError
 from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index
-from emuflow.physical.openparf import xilinx_openparf_atomic as adapter
+from tests import openparf_input_reference as adapter
 from tests.native_build import emuflow_native
 
 
@@ -164,9 +164,9 @@ class NativeBookshelfTests(unittest.TestCase):
             with open_xilinx_mapped_index(path) as mapped, mock.patch.object(
                 adapter, "resolve_native_stage_command", return_value=self.command
             ), mock.patch.object(
-                adapter, "_ordered_cell_items", side_effect=AssertionError("Python cell traversal")
+                adapter, "_ordered_cell_items", side_effect=AssertionError("Python cell traversal"), create=True
             ), mock.patch.object(
-                adapter, "_expanded_pins", side_effect=AssertionError("Python pin traversal")
+                adapter, "_expanded_pins", side_effect=AssertionError("Python pin traversal"), create=True
             ):
                 output = root / "published" / "design.nets"
                 actual = adapter._render_library_and_nets(
@@ -248,8 +248,8 @@ class NativeBookshelfTests(unittest.TestCase):
             output = root / "design.nets"
             with open_xilinx_mapped_index(mapped_path) as mapped, mock.patch.dict(
                 os.environ, {"EMUFLOW_NATIVE_ROOT": str(runtime)}
-            ), mock.patch.object(adapter, "_ordered_cell_items", side_effect=AssertionError("Python cells")), \
-                    mock.patch.object(adapter, "_expanded_pins", side_effect=AssertionError("Python pins")):
+            ), mock.patch.object(adapter, "_ordered_cell_items", side_effect=AssertionError("Python cells"), create=True), \
+                    mock.patch.object(adapter, "_expanded_pins", side_effect=AssertionError("Python pins"), create=True):
                 actual = adapter._render_library_and_nets(mapped.cells, atoms, names, nets_path=output)
             self.assertEqual(actual, expected)
             self.assertEqual(output.read_text(), GOLDEN_NETS)

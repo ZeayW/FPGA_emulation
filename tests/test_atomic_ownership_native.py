@@ -21,10 +21,8 @@ from emuflow.physical.openparf.xilinx_openparf_atomic import (
     open_xilinx_openparf_atomic_placement,
     write_xilinx_openparf_atomic_placement_certificate,
 )
-from emuflow.physical.openparf.xilinx_openparf_source_storage import (
-    XilinxOpenparfAtomicSourceView,
-    write_xilinx_openparf_atomic_source_storage,
-)
+from tests.openparf_source_fixture import write_xilinx_openparf_atomic_source_storage
+from emuflow.physical.openparf.xilinx_openparf_source_storage import XilinxOpenparfAtomicSourceView
 from tests.native_build import emuflow_native
 from tests.test_rwroute_native import fixture
 from tests.test_xilinx_openparf_source_storage import _macro
@@ -128,16 +126,8 @@ def test_millionth_singleton_rank_is_streamed_and_includes_constants(tmp_path):
         )
     digest = file_sha256(mapped)
     with open_xilinx_mapped_index(mapped) as indexed:
-        source = write_xilinx_openparf_atomic_source_storage(
-            tmp_path / "large-source.json",
-            mapped_path=mapped,
-            mapped_value=indexed,
-            mapped_sha256=digest,
-            top="top",
-            macro_clusters=[],
-            cascades=[],
-            physical_macro_count=0,
-        )
+        from emuflow.physical.openparf.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source
+        source = build_xilinx_openparf_atomic_source(mapped, tmp_path / "large-source.json", mapped_value=indexed, mapped_sha256=digest, top="top")
 
         class Assignments(Sequence):
             def __len__(self):

@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+from tests import openparf_input_reference as input_reference
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
@@ -307,10 +308,10 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
         # even though it would fit a fictitious sixteen-LUT density model.
         sites = [({"name": "SLICE_X0Y0"}, {"LUT": 16, "FF": 16})]
         with self.assertRaisesRegex(ValidationError, "headroom for LUT"):
-            atomic_adapter._validate_native_density_contract(
+            input_reference._validate_native_density_contract(
                 sites, [{"resource": "LUT"}] * 7
             )
-        units, contract = atomic_adapter._validate_native_density_contract(
+        units, contract = input_reference._validate_native_density_contract(
             sites, [{"resource": "LUT"}] * 5 + [{"resource": "FF"}]
         )
         self.assertEqual(units, {"LUT": 8, "FF": 16})
@@ -331,7 +332,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                     },
                 }, {"LUT": 16, "FF": 16}))
 
-        available, contract = atomic_adapter._expose_all_clock_region_sites(sites)
+        available, contract = input_reference._expose_all_clock_region_sites(sites)
 
         self.assertEqual(contract["status"], "pass")
         self.assertEqual(contract["limit"], 1.0)
@@ -358,7 +359,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             for x in range(2)
             for y, physical_y in ((0, 0), (1, 3))
         ]
-        _prefix, suffix, coordinates = atomic_adapter._render_site_geometry(
+        _prefix, suffix, coordinates = input_reference._render_site_geometry(
             sites
         )
         self.assertEqual(coordinates["y_axis"], [0, 1, 2, 3])
@@ -387,7 +388,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             ({"name": "DSP48E2_X1Y5", "type": "DSP48E2", "x": 1, "y": 5},
              {"DSP48E2": 1}),
         ]
-        _prefix, suffix, coordinates = atomic_adapter._render_site_geometry(sites)
+        _prefix, suffix, coordinates = input_reference._render_site_geometry(sites)
         rows = [line.split() for line in suffix.split("SITEMAP 2 6\n", 1)[1]
                 .split("END SITEMAP", 1)[0].strip().splitlines()]
         # Apply the native reader's next-entry bounding-box rule to the
@@ -426,7 +427,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
 
         for order in ("ascending", "descending"):
             _prefix, _suffix, coordinates = (
-                atomic_adapter._render_site_geometry(
+                input_reference._render_site_geometry(
                     sites, y_axis_order=order
                 )
             )
@@ -451,7 +452,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             f"X0Y{i}": {"index": (0, i), "sites": [(0, low), (448, high)]}
             for i, (low, high) in enumerate(observed)
         }
-        atomic_adapter._complete_clock_region_boxes(
+        input_reference._complete_clock_region_boxes(
             regions, 449, 622, y_axis_order="descending",
         )
         for y in range(622):
@@ -478,7 +479,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                     "placement geometry must scan compact raw sites"
                 ),
             ):
-                sites = atomic_adapter._placement_sites(
+                sites = input_reference._placement_sites(
                     architecture,
                     ["DSP48E2", "RAMB36E2", "URAM288"],
                 )
@@ -582,7 +583,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             output = Path(temporary) / "design.nets"
             output.write_text("prior generation\n")
             with self.assertRaisesRegex(ValidationError, "current typed owners"):
-                atomic_adapter._render_library_and_nets({}, [], {}, nets_path=output)
+                input_reference._render_library_and_nets({}, [], {}, nets_path=output)
             self.assertEqual(output.read_text(), "prior generation\n")
             mapped, packed, architecture = _fixture(Path(temporary))
             with self.assertRaisesRegex(ValidationError, "current mapped-index owner"):
@@ -1030,19 +1031,7 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
             )
             architecture = ArchitectureDB.load(architecture_path)
             outputs = [root / "fpga0", root / "fpga1"]
-            with (
-                mock.patch.object(
-                    atomic_adapter,
-                    "_placement_sites",
-                    wraps=atomic_adapter._placement_sites,
-                ) as placement_sites,
-                mock.patch.object(
-                    atomic_adapter,
-                    "_render_site_geometry",
-                    wraps=atomic_adapter._render_site_geometry,
-                ) as render_geometry,
-                ThreadPoolExecutor(max_workers=2) as executor,
-            ):
+            with ThreadPoolExecutor(max_workers=2) as executor:
                 manifests = list(executor.map(
                     lambda output: export_xilinx_openparf_atomic(
                         mapped,
@@ -1054,14 +1043,11 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                     outputs,
                 ))
 
-            self.assertEqual(placement_sites.call_count, 1)
-            self.assertEqual(render_geometry.call_count, 1)
             self.assertEqual(manifests[0]["placement_region"],
                              manifests[1]["placement_region"])
             databases = [output / "site-map.sqlite3" for output in outputs]
             stats = [path.stat() for path in databases]
-            self.assertEqual(stats[0].st_ino, stats[1].st_ino)
-            self.assertGreaterEqual(stats[0].st_nlink, 2)
+            self.assertEqual(databases[0].read_bytes(), databases[1].read_bytes())
             self.assertEqual(
                 (outputs[0] / "design.scl").read_text(encoding="utf-8"),
                 (outputs[1] / "design.scl").read_text(encoding="utf-8"),
@@ -2174,6 +2160,8 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                     for index in range(2)
                 ],
             }}
+            from tests.openparf_device_fixture import seal_native_input
+            native = seal_native_input(architecture, native_path, provider_path, native)
             output = root / "output"
             with mock.patch(
                 "emuflow.physical.openparf.xilinx_openparf_atomic.load_xilinx_native_device_constraints",
@@ -2894,6 +2882,8 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                     for index in range(2)
                 ],
             }}
+            from tests.openparf_device_fixture import seal_native_input
+            native = seal_native_input(architecture, native_path, provider_path, native)
             output = root / "output"
             with mock.patch(
                 "emuflow.physical.openparf.xilinx_openparf_atomic.load_xilinx_native_device_constraints",

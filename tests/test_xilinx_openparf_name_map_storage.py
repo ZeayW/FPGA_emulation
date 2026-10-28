@@ -11,12 +11,8 @@ from unittest import mock
 
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import file_sha256, read_json
-from emuflow.physical.openparf.xilinx_openparf_name_map_storage import (
-    OPENPARF_ATOMIC_NAME_MAP_SCHEMA,
-    OPENPARF_ATOMIC_NAME_MAP_STORAGE_SCHEMA,
-    read_xilinx_openparf_atomic_name_map,
-    write_xilinx_openparf_atomic_name_map_storage,
-)
+from tests.openparf_names_fixture import write_xilinx_openparf_atomic_name_map_storage
+from emuflow.physical.openparf.xilinx_openparf_name_map_storage import OPENPARF_ATOMIC_NAME_MAP_SCHEMA, OPENPARF_ATOMIC_NAME_MAP_STORAGE_SCHEMA, read_xilinx_openparf_atomic_name_map
 
 
 _DIGESTS = {

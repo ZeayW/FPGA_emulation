@@ -18,10 +18,8 @@ from emuflow.physical.xilinx_netlist import (
     emit_xilinx_mapped_index,
     open_xilinx_mapped_index,
 )
-from emuflow.physical.openparf.xilinx_openparf_source_storage import (
-    OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA,
-    write_xilinx_openparf_atomic_source_storage,
-)
+from tests.openparf_source_fixture import write_xilinx_openparf_atomic_source_storage
+from emuflow.physical.openparf.xilinx_openparf_source_storage import OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA
 from emuflow.frontend.yosys import import_yosys_json
 from tests.openparf_runtime_fixture import write_openparf_runtime_fixture
 
@@ -259,17 +257,7 @@ class XilinxOpenparfSourceStorageTest(unittest.TestCase):
             store_before = previous_store.read_bytes()
 
             _write_mapped(mapped, 6)
-            real_replace = os.replace
-
-            def replace_with_commit_failure(source, destination):
-                if Path(destination) == source_path:
-                    raise OSError("injected selector commit failure")
-                return real_replace(source, destination)
-
-            with mock.patch(
-                "emuflow.physical.openparf.xilinx_openparf_source_storage.os.replace",
-                side_effect=replace_with_commit_failure,
-            ), self.assertRaisesRegex(OSError, "injected selector commit"):
+            with mock.patch.dict(os.environ, {"EMUFLOW_TEST_OPENPARF_SOURCE_PUBLICATION": "before-selector"}), self.assertRaisesRegex(ValidationError, "injected selector commit"):
                 build_xilinx_openparf_atomic_source(
                     mapped, source_path, top="top"
                 )

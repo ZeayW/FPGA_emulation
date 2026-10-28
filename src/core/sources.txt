@@ -75,3 +75,6 @@ physical/handoff_audit.cpp
 physical/handoff.cpp
 physical/mapped_index.cpp
 physical/rapidwright/route_validation.cpp
+physical/openparf/source.cpp
+physical/openparf/geometry.cpp
+physical/openparf/prepare.cpp

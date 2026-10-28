@@ -267,7 +267,7 @@ def test_atomic_source_binds_mapped_input_and_source_seal_before_consumption(
                 yield from ()
 
             with pytest.raises(ValidationError, match="generation changed"):
-                source_module.write_xilinx_openparf_atomic_source_storage(
+                __import__("tests.openparf_source_fixture", fromlist=["write_xilinx_openparf_atomic_source_storage"]).write_xilinx_openparf_atomic_source_storage(
                     selector,
                     mapped_path=mapped,
                     mapped_value=indexed,

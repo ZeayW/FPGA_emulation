@@ -218,14 +218,23 @@
         "engines/openparf/openparf/placement",
         "engines/openparf/openparf/ops",
         "engines/openparf/openparf/pybind",
-        "src/python/emuflow/physical/openparf/openparf.py"
+        "src/python/emuflow/physical/openparf/openparf.py",
+        "src/core/physical/openparf",
+        "src/python/emuflow/physical/openparf/input_native.py",
+        "src/python/emuflow/data/openparf/input-policy.json",
+        "src/python/emuflow/data/schema/openparf_atomic_source.sql",
+        "src/python/emuflow/data/schema/openparf_name_map.sql",
+        "src/python/emuflow/data/schema/openparf_sites.sql"
       ],
       "build_targets": [
-        "openparf_native"
+        "openparf_native",
+        "emuflow_core",
+        "emuflow_native"
       ],
       "runtime_products": [
         "openparf/openparf.py",
-        "openparf/openparf"
+        "openparf/openparf",
+        "emuflow-native"
       ],
       "integration": "default-in-tree-build"
     },

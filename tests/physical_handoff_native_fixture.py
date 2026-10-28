@@ -10,9 +10,7 @@ from emuflow.physical.openparf.xilinx_openparf_atomic import (
     open_xilinx_openparf_atomic_placement,
     write_xilinx_openparf_atomic_placement_certificate,
 )
-from emuflow.physical.openparf.xilinx_openparf_source_storage import (
-    write_xilinx_openparf_atomic_source_storage,
-)
+from tests.openparf_source_fixture import write_xilinx_openparf_atomic_source_storage
 from tests.test_rwroute_native import write_mapped
 
 

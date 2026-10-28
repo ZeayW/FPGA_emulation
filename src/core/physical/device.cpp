@@ -313,6 +313,9 @@ struct PhysicalDevice::Impl {
     sha = FileHash(architecture, flag);
     db.Execute(
         "PRAGMA temp_store=FILE; PRAGMA temp.cache_size=-16384; CREATE TEMP "
+        "TABLE pd_site_tiles(name TEXT PRIMARY KEY,x INTEGER,y "
+        "INTEGER,site_index INTEGER,has_tile INTEGER) WITHOUT ROWID; CREATE "
+        "TEMP "
         "TABLE pd_templates(name TEXT PRIMARY KEY,value TEXT NOT NULL) WITHOUT "
         "ROWID; CREATE TEMP TABLE pd_sites(name TEXT PRIMARY KEY,type TEXT NOT "
         "NULL,base TEXT NOT NULL,x INTEGER NOT NULL,y INTEGER NOT NULL,slr "
@@ -401,6 +404,27 @@ struct PhysicalDevice::Impl {
           row.BindText(7, clock);
           row.BindText(8, region);
           row.Execute();
+          auto gx = x, gy = y, site_index = I(0);
+          bool has_tile = false;
+          if (s.Has("tile") && s.Token("tile") != "null") {
+            BoundedJson tile(s.Token("tile"));
+            if (tile.Has("grid_col") && tile.Has("grid_row")) {
+              gx = tile.Integer("grid_col");
+              gy = tile.Integer("grid_row");
+              Check(gx >= 0 && gy >= 0, "negative tile geometry");
+              has_tile = true;
+            }
+            if (tile.Has("site_index"))
+              site_index = tile.Integer("site_index");
+          }
+          auto geometry =
+              db.Prepare("INSERT INTO pd_site_tiles VALUES(?,?,?,?,?)");
+          geometry.BindText(1, name);
+          geometry.BindInteger(2, gx);
+          geometry.BindInteger(3, gy);
+          geometry.BindInteger(4, site_index);
+          geometry.BindInteger(5, has_tile ? 1 : 0);
+          geometry.Execute();
           if (!s.Has("template")) {
             Check(s.Has("bels"), "site lacks BEL contract");
             for (const auto &b : BoundedJson::Array(s.Token("bels"), 65536))

@@ -224,6 +224,9 @@ endforeach()
 set(EMUFLOW_STORE_SCHEMA_GENERATOR "${CMAKE_SOURCE_DIR}/scripts/generate_store_schema_headers.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${EMUFLOW_STORE_SCHEMA_GENERATOR}"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/openparf_atomic_source.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/openparf_name_map.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/openparf_sites.sql"
   "${CMAKE_SOURCE_DIR}/src/core/storage/schema/assignment_schema.hpp.in"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/phase3_clusters.sql"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/emuir_compact.sql"
@@ -377,6 +380,7 @@ file(
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/platforms/*.json"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/io/*.json"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/rapidwright/*.json"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/openparf/*.json"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/*.sql"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/*.tcl"
   "${CMAKE_SOURCE_DIR}/platforms/virtual/*.wires.csv"
@@ -427,6 +431,10 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/rapidwright"
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/rapidwright"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/openparf"
+    "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/openparf"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/platforms/virtual"

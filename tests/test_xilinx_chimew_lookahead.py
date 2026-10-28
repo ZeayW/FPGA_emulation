@@ -67,7 +67,7 @@ def case(tmp_path, fixed_case, request):
             stages.update(mapped_verilog=report, vivado_implementation={'cell_coverage':coverage})
         else:
             from tests.physical_handoff_fixture import write_bridge_cluster_fixture
-            from emuflow.physical.openparf.xilinx_openparf_atomic import _write_site_database
+            from tests.openparf_input_reference import _write_site_database
             handoff, sites = root/'handoff.sqlite', root/'site-map.sqlite3'
             write_bridge_cluster_fixture(handoff, {'id':'c0','kind':'slice','site_templates':['SLICEL'],
                     '_placement':{'site':'S0','site_type':'SLICEL','x':9999,'y':8888,'fixed':False},
@@ -295,14 +295,14 @@ def test_preflight_catalog_is_reused_without_rescanning_the_device_graph(case):
 def test_shared_site_map_seal_is_published_once_and_survives_later_hardlinks(case, tmp_path):
     import os
     from emuflow.common.native_tools import native_file_generation
-    from emuflow.physical.openparf.xilinx_openparf_atomic import _materialize_site_database
+    from tests.openparf_input_reference import _materialize_site_database
     platform,source,architecture,report,*_=case
     device={'coordinate_system':{'coordinate_system':PLACEMENT_COORDINATE_SYSTEM,
         'architecture_sha256':file_sha256(architecture),'sites':[
             {'dense_x':index,'dense_y':0,'physical_x':3+index*10,'physical_y':4+index*10,
              'placement_x':9999,'placement_y':8888,'site':f'S{index}',
              'resources':{'FF':16},'physical_sites':{'FF':[f'S{index}']}} for index in range(2)]}}
-    with patch('emuflow.physical.openparf.xilinx_openparf_atomic._sha256',wraps=file_sha256) as producer_hash:
+    with patch('tests.openparf_input_reference._sha256',wraps=file_sha256) as producer_hash:
         for index,record in enumerate(report['fpgas']):
             stage=record['stages']['rapidwright_implementation']
             ref=stage['placement']['site_database']; path=Path(ref['path'])
@@ -343,7 +343,7 @@ def test_site_map_edit_cannot_hide_behind_restored_mtime(case):
 @pytest.mark.parametrize('case',['rapidwright'],indirect=True)
 def test_site_map_publisher_rejects_a_changed_shared_generation(case, tmp_path):
     import os
-    from emuflow.physical.openparf.xilinx_openparf_atomic import _materialize_site_database
+    from tests.openparf_input_reference import _materialize_site_database
     from emuflow.common.native_tools import native_file_generation
     platform,source,architecture,report,*_=case
     path=Path(report['fpgas'][0]['stages']['rapidwright_implementation']['placement']['site_database']['path'])

@@ -11,7 +11,7 @@ from emuflow.storage.store_publication import bind_store_source
 
 KINDS = ("name_map", "certificate")
 MODULES = {
-    "name_map": "emuflow.physical.openparf.xilinx_openparf_name_map_storage",
+    "name_map": "tests.openparf_names_fixture",
     "certificate": "emuflow.physical.openparf.xilinx_openparf_atomic",
 }
 

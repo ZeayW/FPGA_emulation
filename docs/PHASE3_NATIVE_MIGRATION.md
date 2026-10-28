@@ -568,7 +568,7 @@ there is no silent implementation or provider fallback.
 | Phase 4 | Native routing; typed RouteStore/results | Remove remaining graph-level adapter work and integrate complete native stage lifecycle |
 | Phase 5 | Complete shared-core stage owns model/solver/certificate/store, independent validation, timing projection, report and generation commit | Native compiler configuration/execution are native; optional Python API configuration remains bounded. Complete real-design qualification |
 | Phase 6 | Native baseline stage owns source-bound split, typed-hop transport/binding, independent audits, RTL/XDC, cost aggregation, manifest/report and atomic directory publication | Retained Chimew qualification/report ownership and real-design acceptance remain; bounded board-policy preparation stays in the transitional route-policy adapter. Baseline runtime/calendar and stage invocation are native, with independent size-limited behavioral replay preserved |
-| Phase 7 | Native lowering, compact-to-mapped physical input generation, certificate-to-handoff production/audit, Bookshelf/RWRoute input export and independent RWRoute connectivity/PIP validation | Complete OpenPARF atomic-source/device-geometry preparation, physical/signoff orchestration and NVDLA qualification on both retained backends |
+| Phase 7 | Native lowering, compact-to-mapped physical input generation, certificate-to-handoff production/audit, Bookshelf/RWRoute input export and independent RWRoute connectivity/PIP validation | Complete physical/signoff orchestration and NVDLA qualification on both retained backends |
 | Global STA | Native typed physical-to-event binding, event validation/model export, measurement import, full-original-path reduction and typed QoR publication | Migrate remaining physical producers and orchestration; qualify complete real-design physical/global timing |
 
 Native computation does not eliminate algorithmic search cost. Compare search,
@@ -1304,3 +1304,37 @@ device/site geometry preparation, Chimew stage control, complete physical and
 signoff orchestration, and NVDLA terminal qualification remain W7 work. Neither
 component regression nor source reorganization changes algorithm selection or
 establishes full-design physical/timing acceptance.
+
+
+### Native OpenPARF input ownership
+
+The shared core owns the complete maintained OpenPARF input preparation path:
+`physical build-openparf-source REQUEST OUTPUT` derives macro membership,
+constant identities and directed cascade records from the mapped owner, then
+publishes a typed source selector. `physical prepare-openparf-input REQUEST
+OUTPUT_DIR` owns atom coverage, safe-name ordinals, qualified site selection,
+tile/clock-region/SLR geometry, BRAM view binding, physical macro windows,
+Bookshelf files, typed site/name-map stores, solver configuration and manifest.
+The existing placement policy and solver parameters are unchanged. Their small
+configuration template is installed as `data/openparf/input-policy.json`.
+
+The request contains source references, generations and bounded options. Native
+readers independently validate atomic-source seals and rejoin mapped ownership.
+The source producer also runs the independent source-envelope validator before
+committing its selector. Input sidecars share installed SQL definitions with
+readers. Existing input-directory replacement retains the name-map reader lease
+and restores prior members on reported publication failure. New directories are
+published after all source checks and complete generation preparation.
+
+The replaced Python atomic population, safe-name index, device geometry cache,
+Bookshelf preparation, source writer and name-map writer are retired. Python
+retains a small source-reference host, lazy read interfaces, independent
+placement-result checks and the required OpenPARF/PyTorch host. Native source
+publication attaches its lazy Python view from checked output generations;
+it does not rederive every mapped record in the host. Small mutable fixture
+writers and independent geometry probes live only in tests and are outside the
+installed production package.
+
+This closes the OpenPARF input-generation ownership boundary. It does not claim
+completed physical/signoff orchestration, Chimew stage closure, native-default
+entry retirement or current-source NVDLA physical/global-timing acceptance.

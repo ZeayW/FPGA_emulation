@@ -1212,4 +1212,12 @@ StageResult BuildPhysicalHandoff(const ArtifactRef &request_ref,
                 "physical-handoff-bridge-report-v1")};
       });
 }
+void AuditOpenparfSource(const ArtifactRef &selector, const ArtifactRef &store,
+                         const volatile std::sig_atomic_t *flag) {
+  Inputs inputs;
+  inputs.refs = {selector, store};
+  inputs.roles = {{"atomic_selector", 0}, {"atomic_source", 1}};
+  SqliteDatabase json(":memory:", SqliteDatabase::Mode::kReadOnly);
+  ValidateAtomicSource(inputs, json, flag);
+}
 } // namespace emuflow::core

@@ -6,7 +6,7 @@ import pytest
 
 from emuflow.common.errors import ValidationError
 from emuflow.flow.prepared_inputs import _published_timing_report
-from emuflow.physical.openparf.xilinx_openparf_atomic import _write_site_database
+from tests.openparf_input_reference import _write_site_database
 
 
 @pytest.fixture

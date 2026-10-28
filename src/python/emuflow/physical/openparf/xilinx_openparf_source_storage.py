@@ -55,39 +55,7 @@ _POLICY_KEYS = {"provider", "dedicated_or_relative_constraints"}
 _SINGLETON_CLUSTER_PREFIX = "atomic-source-"
 
 
-_DDL = """
-CREATE TABLE metadata(
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-) WITHOUT ROWID;
-CREATE TABLE clusters(
-  seq INTEGER PRIMARY KEY,
-  cluster_id TEXT NOT NULL UNIQUE,
-  kind TEXT NOT NULL,
-  site_templates_json TEXT NOT NULL CHECK(json_valid(site_templates_json)),
-  control_set_json TEXT NOT NULL CHECK(json_valid(control_set_json)),
-  site_mode TEXT
-);
-CREATE TABLE assignments(
-  cluster_seq INTEGER NOT NULL REFERENCES clusters(seq),
-  seq INTEGER NOT NULL,
-  instance TEXT NOT NULL UNIQUE,
-  cell_type TEXT NOT NULL,
-  bel TEXT,
-  bel_candidates_json TEXT NOT NULL CHECK(json_valid(bel_candidates_json)),
-  PRIMARY KEY(cluster_seq,seq)
-) WITHOUT ROWID;
-CREATE INDEX assignments_instance_order ON assignments(instance);
-CREATE TABLE cascades(
-  seq INTEGER PRIMARY KEY,
-  cascade_id TEXT NOT NULL UNIQUE,
-  record_json TEXT NOT NULL CHECK(json_valid(record_json))
-);
-CREATE TABLE constants(
-  seq INTEGER PRIMARY KEY,
-  instance TEXT NOT NULL UNIQUE
-);
-"""
+_DDL = (Path(__file__).resolve().parents[2] / "data/schema/openparf_atomic_source.sql").read_text(encoding="utf-8")
 
 
 def _canonical(value: Any) -> str:
@@ -736,6 +704,44 @@ class XilinxOpenparfAtomicSourceView(Mapping[str, Any]):
         self._validate_mapped_ownership()
         self.require_sources_unchanged()
 
+    @classmethod
+    def _from_native_publication(cls, selector_path, mapped_path, store, *, mapped_value=None, mapped_sha256=None, receipt):
+        """Attach lazy readers to native-validated records without host rederivation."""
+        value = cls.__new__(cls)
+        value.selector_path = Path(selector_path).resolve()
+        fields = ("device", "inode", "bytes", "mtime_seconds", "mtime_nanoseconds", "ctime_seconds", "ctime_nanoseconds")
+        def generation(record):
+            return tuple(record["generation"][key] for key in fields)
+        value.selector_generation = generation(receipt["outputs"][0])
+        if native_file_generation(value.selector_path) != value.selector_generation:
+            raise ValidationError("native OpenPARF selector generation changed")
+        selector = _validate_selector_envelope(read_json(value.selector_path))
+        value.store_path = value.selector_path.with_name(selector["artifact"])
+        if value.store_path.resolve() != Path(store["path"]).resolve():
+            raise ValidationError("native OpenPARF source output identity disagrees")
+        value.store_generation = generation(store)
+        value.mapped_path = Path(mapped_path).resolve()
+        mapped_records = [r for r in receipt["inputs"] if Path(r["path"]).resolve() == value.mapped_path]
+        if len(mapped_records) != 1:
+            raise ValidationError("native OpenPARF mapped receipt disagrees")
+        value.mapped_generation = generation(mapped_records[0])
+        value.mapped_schema = "xilinx-mapped-index-v2" if is_xilinx_mapped_index(value.mapped_path) else "xilinx-mapped-json-v1"
+        if mapped_sha256 is not None and mapped_sha256 != selector["mapped"]["sha256"]:
+            raise ValidationError("OpenPARF atomic-source mapped seal disagrees")
+        if mapped_value is None:
+            mapped_value = open_xilinx_mapped_index(value.mapped_path) if value.mapped_schema == "xilinx-mapped-index-v2" else read_json(value.mapped_path)
+        if value.mapped_schema == "xilinx-mapped-index-v2" and Path(mapped_value.path).resolve() != value.mapped_path:
+            raise ValidationError("native OpenPARF mapped view belongs to another artifact")
+        cells = mapped_value["modules"][selector["header"]["top"]]["cells"]
+        value._mapped_owner, value._cells = mapped_value, cells
+        value._selector, value._header = selector, dict(selector["header"])
+        counts = selector["counts"]
+        value._clusters = _AtomicClusterSequence(value.store_path, cells, counts["macro_clusters"], counts["singleton_clusters"])
+        value._cascades = _StoredJsonSequence(value.store_path, "cascades", counts["cascade_chains"])
+        value._constants = _ConstantSequence(value.store_path, counts["constant_cells"])
+        value.require_sources_unchanged()
+        return value
+
     def bound_store_sources(self):
         self.require_sources_unchanged()
         return (
@@ -899,6 +905,50 @@ class XilinxOpenparfAtomicSourceView(Mapping[str, Any]):
         }
 
 
+
+
+
+
+
+
+def read_xilinx_openparf_atomic_source(
+    path: Path,
+    *,
+    mapped_path: Optional[Path] = None,
+    mapped_value: Optional[Mapping[str, Any]] = None,
+    mapped_sha256: Optional[str] = None,
+) -> Mapping[str, Any]:
+    """Read a typed selector, or explicitly materialize a legacy source JSON."""
+
+    value = read_json(path)
+    if (
+        isinstance(value, Mapping)
+        and value.get("schema") == OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA
+    ):
+        return XilinxOpenparfAtomicSourceView(
+            path, mapped_path=mapped_path, mapped_value=mapped_value,
+            mapped_sha256=mapped_sha256,
+        )
+    if not isinstance(value, Mapping) or value.get("schema") != OPENPARF_ATOMIC_SOURCE_SCHEMA:
+        raise ValidationError("OpenPARF atomic source header is invalid")
+    return value
+
+
+def materialize_xilinx_openparf_atomic_source(
+    source_path: Path, output_path: Path
+) -> dict[str, Any]:
+    """Explicitly export the historical graph-sized JSON compatibility form."""
+
+    source = read_xilinx_openparf_atomic_source(source_path)
+    value = (
+        source.materialize()
+        if isinstance(source, XilinxOpenparfAtomicSourceView)
+        else dict(source)
+    )
+    write_json(output_path, value, compact=True)
+    return value
+
+
 def _validate_macro_cluster(cluster: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     cluster_id = cluster.get("id")
     kind = cluster.get("kind")
@@ -947,6 +997,7 @@ def _validate_macro_cluster(cluster: Mapping[str, Any]) -> tuple[dict[str, Any],
     return normalized_cluster, normalized_assignments
 
 
+
 def _validate_cascade_identity(value: Any) -> str:
     if (
         not isinstance(value, str)
@@ -954,310 +1005,4 @@ def _validate_cascade_identity(value: Any) -> str:
         or value.startswith(_SINGLETON_CLUSTER_PREFIX)
     ):
         raise ValidationError("OpenPARF atomic-source cascade identity is invalid")
-    return value
-
-
-def write_xilinx_openparf_atomic_source_storage(
-    path: Path,
-    *,
-    mapped_path: Path,
-    mapped_value: Mapping[str, Any],
-    mapped_sha256: str,
-    top: str,
-    macro_clusters: Iterable[Mapping[str, Any]],
-    cascades: Iterable[Mapping[str, Any]],
-    physical_macro_count: int,
-) -> XilinxOpenparfAtomicSourceView:
-    """Publish one selector plus the non-derivable typed source relations."""
-
-    if path.parent.resolve() != mapped_path.parent.resolve():
-        raise ValidationError(
-            "OpenPARF atomic-source selector and mapped input must share a directory"
-        )
-    if not _valid_digest(mapped_sha256):
-        raise ValidationError("OpenPARF atomic-source mapped seal is invalid")
-    require_mapped = getattr(mapped_value, "require_source_unchanged", None)
-    if callable(require_mapped):
-        require_mapped()
-    mapped_schema = (
-        "xilinx-mapped-index-v2"
-        if is_xilinx_mapped_index(mapped_path)
-        else "xilinx-mapped-json-v1"
-    )
-    source_bindings = validate_store_destination(
-        path, (bind_store_source(mapped_path, mapped_schema),)
-    )
-    modules = mapped_value.get("modules")
-    module = modules.get(top) if isinstance(modules, Mapping) else None
-    cells = module.get("cells") if isinstance(module, Mapping) else None
-    if not isinstance(cells, Mapping):
-        raise ValidationError("OpenPARF atomic-source mapped top is invalid")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # The previous generation belongs to the existing selector.  Discover and
-    # seal-check it without opening the newly generated mapped input: a valid
-    # mapped replacement necessarily disagrees with the old selector's source
-    # seal.  The old store remains live until the new selector commits.
-    old_store = _previous_source_store(path)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.stem}.", suffix=".sqlite.tmp", dir=path.parent
-    )
-    os.close(descriptor)
-    temporary = Path(temporary_name)
-    connection: Optional[sqlite3.Connection] = None
-    published_store: Optional[Path] = None
-    created_store = False
-    selector_committed = False
-    selector_descriptor, selector_temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".selector.tmp", dir=path.parent
-    )
-    os.close(selector_descriptor)
-    selector_temporary = Path(selector_temporary_name)
-    try:
-        connection = sqlite3.connect(temporary)
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute(f"PRAGMA application_id={OPENPARF_ATOMIC_SOURCE_APPLICATION_ID}")
-        connection.execute(f"PRAGMA user_version={OPENPARF_ATOMIC_SOURCE_USER_VERSION}")
-        connection.executescript(_DDL)
-        cluster_digest = hashlib.sha256()
-        assignment_digest = hashlib.sha256()
-        macro_count = 0
-        macro_assignment_count = 0
-        for cluster_seq, raw_cluster in enumerate(macro_clusters):
-            cluster, assignments = _validate_macro_cluster(raw_cluster)
-            connection.execute(
-                "INSERT INTO clusters VALUES (?,?,?,?,?,?)",
-                (
-                    cluster_seq, cluster["id"], cluster["kind"],
-                    _canonical(cluster["site_templates"]),
-                    _canonical(cluster["control_set"]), cluster.get("site_mode"),
-                ),
-            )
-            cluster_digest.update(_canonical(cluster).encode("utf-8"))
-            cluster_digest.update(b"\n")
-            for assignment_seq, assignment in enumerate(assignments):
-                connection.execute(
-                    "INSERT INTO assignments VALUES (?,?,?,?,?,?)",
-                    (
-                        cluster_seq, assignment_seq, assignment["instance"],
-                        assignment["cell_type"], assignment.get("bel"),
-                        _canonical(assignment["bel_candidates"]),
-                    ),
-                )
-                assignment_digest.update(_canonical(assignment).encode("utf-8"))
-                assignment_digest.update(b"\n")
-                macro_assignment_count += 1
-            macro_count += 1
-
-        cascade_digest = hashlib.sha256()
-        cascade_count = 0
-        for seq, raw_cascade in enumerate(cascades):
-            if not isinstance(raw_cascade, Mapping):
-                raise ValidationError("OpenPARF atomic-source cascade is invalid")
-            cascade = dict(raw_cascade)
-            cascade_id = _validate_cascade_identity(cascade.get("id"))
-            if connection.execute(
-                "SELECT 1 FROM clusters WHERE cluster_id=?", (cascade_id,)
-            ).fetchone() is not None:
-                raise ValidationError(
-                    "OpenPARF atomic-source cascade identity collides with a macro cluster"
-                )
-            encoded = _canonical(cascade)
-            connection.execute(
-                "INSERT INTO cascades VALUES (?,?,?)", (seq, cascade_id, encoded)
-            )
-            cascade_digest.update(encoded.encode("utf-8"))
-            cascade_digest.update(b"\n")
-            cascade_count += 1
-
-        owned_rows = iter(connection.execute(
-            "SELECT instance,cell_type FROM assignments ORDER BY instance"
-        ))
-        owned = next(owned_rows, None)
-        constant_digest = hashlib.sha256()
-        constant_count = 0
-        physical_count = 0
-        singleton_count = 0
-        for _index, (name, cell_type) in enumerate(_ordered_cell_types(cells)):
-            if owned is not None and str(owned[0]) < name:
-                raise ValidationError(
-                    "OpenPARF atomic-source macro cell is absent from mapped input"
-                )
-            if cell_type in CONSTANT_TYPES:
-                connection.execute(
-                    "INSERT INTO constants VALUES (?,?)", (constant_count, name)
-                )
-                constant_digest.update(_canonical(name).encode("utf-8"))
-                constant_digest.update(b"\n")
-                constant_count += 1
-                continue
-            physical_count += 1
-            if owned is not None and str(owned[0]) == name:
-                if str(owned[1]) != cell_type:
-                    raise ValidationError(
-                        "OpenPARF atomic-source macro cell type disagrees"
-                    )
-                owned = next(owned_rows, None)
-            else:
-                singleton_count += 1
-        if owned is not None:
-            raise ValidationError(
-                "OpenPARF atomic-source macro cell is absent from mapped input"
-            )
-
-        summary: dict[str, Any] = {
-            "physical_atoms": macro_count + singleton_count,
-            "constant_cells": constant_count,
-        }
-        if physical_macro_count:
-            summary["physical_macros"] = physical_macro_count
-        header = {
-            "schema": OPENPARF_ATOMIC_SOURCE_SCHEMA,
-            "status": "pass",
-            "top": top,
-            "source": {"mapped_sha256": mapped_sha256},
-            "policy": {
-                "provider": "mapped-singleton-atoms-no-site-packing-v1",
-                "dedicated_or_relative_constraints": "fail-closed",
-            },
-            "summary": summary,
-        }
-        counts = {
-            "physical_cells": physical_count,
-            "macro_clusters": macro_count,
-            "macro_assignments": macro_assignment_count,
-            "singleton_clusters": singleton_count,
-            "cascade_chains": cascade_count,
-            "constant_cells": constant_count,
-        }
-        mapped_descriptor = {
-            "artifact": mapped_path.name,
-            "bytes": mapped_path.stat().st_size,
-            "sha256": mapped_sha256,
-        }
-        logical_sha = hashlib.sha256(_canonical({
-            "header": header,
-            "counts": counts,
-            "mapped": mapped_descriptor,
-            "cluster_sha256": cluster_digest.hexdigest(),
-            "assignment_sha256": assignment_digest.hexdigest(),
-            "cascade_sha256": cascade_digest.hexdigest(),
-            "constant_sha256": constant_digest.hexdigest(),
-        }).encode("utf-8")).hexdigest()
-        selector_base = {
-            "schema": OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA,
-            "logical_schema": OPENPARF_ATOMIC_SOURCE_SCHEMA,
-            "application_id": OPENPARF_ATOMIC_SOURCE_APPLICATION_ID,
-            "user_version": OPENPARF_ATOMIC_SOURCE_USER_VERSION,
-            "header": header,
-            "counts": counts,
-            "mapped": mapped_descriptor,
-            "logical_sha256": logical_sha,
-        }
-        for key, value in (
-            ("header", header), ("counts", counts),
-            ("mapped", mapped_descriptor), ("logical_sha256", logical_sha),
-        ):
-            connection.execute(
-                "INSERT INTO metadata VALUES (?,?)", (key, _canonical(value))
-            )
-        connection.commit()
-        connection.close()
-        connection = None
-        store_sha = file_sha256(temporary)
-        published_store = path.with_name(_store_name(store_sha))
-        require_store_sources_unchanged(source_bindings)
-        if callable(require_mapped):
-            require_mapped()
-        if published_store.is_file():
-            if file_sha256(published_store) != store_sha:
-                raise ValidationError(
-                    "existing OpenPARF atomic-source artifact seal disagrees"
-                )
-            temporary.unlink()
-        else:
-            publish_sqlite_store(
-                temporary,
-                published_store,
-                "openparf-atomic-source-store-v1",
-                sources=source_bindings,
-            )
-            created_store = True
-        selector = {
-            **selector_base,
-            "artifact": published_store.name,
-            "store_bytes": published_store.stat().st_size,
-            "store_sha256": store_sha,
-        }
-        write_json(selector_temporary, selector, compact=True)
-        view = XilinxOpenparfAtomicSourceView(
-            selector_temporary, mapped_path=mapped_path, mapped_value=mapped_value,
-            mapped_sha256=mapped_sha256,
-        )
-        view.require_sources_unchanged()
-        require_store_sources_unchanged(source_bindings)
-        os.replace(selector_temporary, path)
-        selector_committed = True
-        view.selector_path = path.resolve()
-        # Rename may change ctime even though the verified inode/content remain
-        # the same. Bind the returned view to its committed selector, while
-        # retaining the original mapped/store generations.
-        committed_generation = native_file_generation(view.selector_path)
-        if committed_generation[:5] != view.selector_generation[:5]:
-            raise ValidationError("OpenPARF atomic source selector changed at publication")
-        view.selector_generation = committed_generation
-        if (
-            old_store is not None
-            and old_store.resolve() != published_store.resolve()
-        ):
-            old_store.unlink(missing_ok=True)
-        return view
-    except BaseException as error:
-        if connection is not None:
-            connection.close()
-        temporary.unlink(missing_ok=True)
-        selector_temporary.unlink(missing_ok=True)
-        if published_store is not None and created_store and not selector_committed:
-            published_store.unlink(missing_ok=True)
-        if isinstance(error, sqlite3.IntegrityError):
-            raise ValidationError(
-                "OpenPARF atomic-source identity or ownership is duplicated"
-            ) from error
-        raise
-
-
-def read_xilinx_openparf_atomic_source(
-    path: Path,
-    *,
-    mapped_path: Optional[Path] = None,
-    mapped_value: Optional[Mapping[str, Any]] = None,
-    mapped_sha256: Optional[str] = None,
-) -> Mapping[str, Any]:
-    """Read a typed selector, or explicitly materialize a legacy source JSON."""
-
-    value = read_json(path)
-    if (
-        isinstance(value, Mapping)
-        and value.get("schema") == OPENPARF_ATOMIC_SOURCE_STORAGE_SCHEMA
-    ):
-        return XilinxOpenparfAtomicSourceView(
-            path, mapped_path=mapped_path, mapped_value=mapped_value,
-            mapped_sha256=mapped_sha256,
-        )
-    if not isinstance(value, Mapping) or value.get("schema") != OPENPARF_ATOMIC_SOURCE_SCHEMA:
-        raise ValidationError("OpenPARF atomic source header is invalid")
-    return value
-
-
-def materialize_xilinx_openparf_atomic_source(
-    source_path: Path, output_path: Path
-) -> dict[str, Any]:
-    """Explicitly export the historical graph-sized JSON compatibility form."""
-
-    source = read_xilinx_openparf_atomic_source(source_path)
-    value = (
-        source.materialize()
-        if isinstance(source, XilinxOpenparfAtomicSourceView)
-        else dict(source)
-    )
-    write_json(output_path, value, compact=True)
     return value

@@ -262,7 +262,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 )
                 certificate_path.parent.mkdir(parents=True, exist_ok=True)
                 certificate_path.write_text("{}\n", encoding="utf-8")
-                from emuflow.physical.openparf.xilinx_openparf_atomic import _write_site_database
+                from tests.openparf_input_reference import _write_site_database
                 _write_site_database(certificate_path.with_name("site-map.sqlite3"), {
                     "coordinate_system":"native-device-tile-column-row-v1",
                     "architecture_sha256":"0"*64,

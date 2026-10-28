@@ -55,7 +55,7 @@ def setup_case(kind, root):
         "weights": "emuflow.timing.sta",
         "qor": "emuflow.timing.qor_storage",
         "functions": "emuflow.physical.vivado.vivado_indexed_netlist",
-        "sites": "emuflow.physical.openparf.xilinx_openparf_atomic",
+        "sites": "tests.openparf_input_reference",
     }[kind]
     module = importlib.import_module(module_name)
     measured = root / "paths.tsv"
@@ -217,7 +217,7 @@ def test_sta_selector_failure_preserves_old_payload_and_retires_uncommitted_gene
 
 
 def test_site_alias_failure_keeps_prior_target_and_shares_successful_bytes(tmp_path):
-    from emuflow.physical.openparf import xilinx_openparf_atomic as sites
+    from tests import openparf_input_reference as sites
     from emuflow.common.io import file_sha256
     from emuflow.common.native_tools import native_file_generation
 

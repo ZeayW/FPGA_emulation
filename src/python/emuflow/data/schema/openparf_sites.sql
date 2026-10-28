@@ -1,0 +1,4 @@
+CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL) WITHOUT ROWID;CREATE TABLE sites(dense_x INTEGER NOT NULL,dense_y INTEGER NOT NULL,physical_x INTEGER NOT NULL,physical_y INTEGER NOT NULL,placement_x REAL NOT NULL,placement_y REAL NOT NULL,site TEXT NOT NULL,PRIMARY KEY(dense_x,dense_y)) WITHOUT ROWID;CREATE TABLE resources(dense_x INTEGER NOT NULL,dense_y INTEGER NOT NULL,resource TEXT NOT NULL,capacity INTEGER NOT NULL,PRIMARY KEY(dense_x,dense_y,resource)) WITHOUT ROWID;CREATE TABLE physical_sites(resource TEXT NOT NULL,physical_site TEXT NOT NULL,dense_x INTEGER NOT NULL,dense_y INTEGER NOT NULL,slot INTEGER NOT NULL);
+CREATE UNIQUE INDEX physical_sites_identity ON physical_sites(resource,physical_site);
+CREATE INDEX physical_sites_coordinate ON physical_sites(dense_x,dense_y,resource,slot);
+CREATE INDEX physical_sites_name ON physical_sites(physical_site);

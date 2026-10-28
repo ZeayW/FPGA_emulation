@@ -128,6 +128,21 @@ def generate(directory):
     if not output.exists() or output.read_text(encoding="utf-8") != handoff:
         output.write_text(handoff, encoding="utf-8")
 
+    openparf = "#pragma once\nnamespace emuflow::core {\n"
+    for symbol, filename in (
+        ("kOpenparfAtomicSourceDDL", "openparf_atomic_source.sql"),
+        ("kOpenparfNameMapDDL", "openparf_name_map.sql"),
+        ("kOpenparfSitesDDL", "openparf_sites.sql"),
+    ):
+        ddl = (root / "src/python/emuflow/data/schema" / filename).read_text(encoding="utf-8")
+        if ')EMUFLOW_SQL"' in ddl:
+            raise ValueError("SQL schema contains the native raw-string delimiter")
+        openparf += f'inline constexpr const char* {symbol} = R"EMUFLOW_SQL({ddl})EMUFLOW_SQL";\n'
+    openparf += "}\n"
+    output = Path(directory) / "openparf_input_schema.hpp"
+    if not output.exists() or output.read_text(encoding="utf-8") != openparf:
+        output.write_text(openparf, encoding="utf-8")
+
     events = "#pragma once\nnamespace emuflow::core {\n"
     for symbol, filename in (
         ("kGlobalEventsDDL", "global_events.sql"),
