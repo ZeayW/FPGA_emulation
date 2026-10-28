@@ -145,3 +145,13 @@ def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(sou
     assert _require_native_word_evidence(record,hashes)
     (output/'native-word-observation/native-costs.tsv').write_text('changed observations\n')
     with pytest.raises(ValidationError,match='stream changed'):_require_native_word_evidence(record,hashes)
+
+
+@pytest.mark.parametrize('replacement',['s10\ns2\n','s10\ns10\n','s10\ns3\n','s10\ninvalid\n'])
+def test_retained_budget_roles_are_unordered_but_exact(tmp_path,replacement):
+    from emuflow.vivado_physical import _require_same_word_data_origins
+    left=tmp_path/'old.tsv';right=tmp_path/'new.tsv'
+    left.write_text('source_origin\ns2\ns10\n');right.write_text('source_origin\n'+replacement)
+    if replacement=='s10\ns2\n':_require_same_word_data_origins(left,right)
+    else:
+        with pytest.raises(ValidationError):_require_same_word_data_origins(left,right)

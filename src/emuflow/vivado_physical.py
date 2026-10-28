@@ -179,6 +179,19 @@ def _validate_snapshot_inputs(checkpoint: Path, expected_sha256: str, source_rep
             "input_contracts":expected_files,"scope":f"retained {stage} snapshot with identical compiled inputs"}
 
 
+def _require_same_word_data_origins(left: Path,right: Path):
+    """Budget source sets have no ordering semantics."""
+    populations=[]
+    for path in (left,right):
+        rows=path.read_text().splitlines()
+        if(not rows or rows[0]!='source_origin'or len(set(rows[1:]))!=len(rows)-1 or
+           any(re.fullmatch(r's[0-9]+',value)is None for value in rows[1:])):
+            raise ValidationError('retained routed RX budget source roles are malformed')
+        populations.append(set(rows[1:]))
+    if populations[0]!=populations[1]:
+        raise ValidationError('retained routed RX budget source roles differ')
+
+
 def _import_routed_measurement(*, kind, output, identity, resolution, importer, export,
                                source_dispositions=None, **options):
     """Keep partial observations separate from complete timing databases."""
@@ -395,8 +408,7 @@ def run_indexed_vivado_partition(
             if not path.is_file()or path.stat().st_size==0:
                 raise ValidationError('retained routed implementation artifact is missing: '+name)
             retained_parents.append(bind_store_source(path,'physical-input-document-v1'))
-        if file_sha256(retained/'word-data-source-origins.tsv')!=file_sha256(output_dir/'word-data-source-origins.tsv'):
-            raise ValidationError('retained routed RX budget source roles differ')
+        _require_same_word_data_origins(retained/'word-data-source-origins.tsv',output_dir/'word-data-source-origins.tsv')
         retained_parents.append(bind_store_source(routed_checkpoint,'physical-input-document-v1'))
         for name in copied:shutil.copyfile(retained/name,output_dir/name)
         require_store_sources_unchanged(retained_parents)
