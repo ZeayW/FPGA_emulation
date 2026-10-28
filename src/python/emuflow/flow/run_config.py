@@ -21,6 +21,7 @@ from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
 from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH
 
 SCHEMA = "emuflow.run/v1"
+DESIGN_SCHEMA = "emuflow.design/v1"
 # These are the recorded four-FPGA NVDLA run choices, not changed algorithm
 # defaults. They are written explicitly into each prepared run configuration.
 NVDLA_OPTIONS = {
@@ -121,7 +122,7 @@ def validate_nvdla_source(benchmark, source_root):
 def source_records(benchmark, source_root):
     files = set(benchmark.resolve_sources(source_root))
     for directory in benchmark.resolve_include_dirs(source_root):
-        files.update(p for p in directory.rglob("*") if p.is_file())
+        files.update(p.resolve() for p in directory.rglob("*") if p.is_file())
     if len(files) > 16384:
         raise EmuFlowError("design source inventory exceeds the configuration bound")
     records = []
@@ -166,7 +167,11 @@ def load_run(path):
         validate_nvdla_source(benchmark, source_root)
     if source_digest(benchmark, source_root) != value["source_sha256"]:
         raise EmuFlowError("design RTL/include bytes differ from the prepared run")
-    options = value["options"]
+    value = {**value, "options": _compile_options(value["options"], path.parent)}
+    return path, value, benchmark, source_root
+
+
+def _compile_options(options, base):
     if (
         type(options) is not dict
         or set(options) & (_FRONTEND_KEYS | _ENV_KEYS)
@@ -193,9 +198,125 @@ def load_run(path):
         if key not in signature.parameters:
             raise EmuFlowError(f"unknown compile option {key!r}")
         if item is not None and "Path" in str(signature.parameters[key].annotation):
-            options[key] = resolve_path(path.parent, item)
-    value = {**value, "options": options}
-    return path, value, benchmark, source_root
+            options[key] = resolve_path(base, item)
+    return options
+
+
+def _require_physical_design(benchmark):
+    synthesis = benchmark.value["synthesis"]
+    if (
+        synthesis.get("family") != "xcup"
+        or synthesis.get("policy") != "native"
+        or not benchmark.value.get("clock_periods_ns")
+        or benchmark.value.get("timing_io") is None
+        or not benchmark.value.get("physical_mapping_profile")
+    ):
+        raise EmuFlowError(
+            "a complete physical run requires a timed native Xilinx benchmark"
+        )
+
+
+def prepare_design_run(design_path, environment_path, output_path):
+    """Seal user RTL and constraints without requiring a benchmark preset."""
+    path, value = read_control(design_path)
+    required = {
+        "schema",
+        "name",
+        "source_root",
+        "sources",
+        "top",
+        "clock_periods_ns",
+        "timing_io",
+    }
+    allowed = required | {"include_dirs", "defines", "platform", "options"}
+    if value.get("schema") != DESIGN_SCHEMA or not required <= set(value) <= allowed:
+        raise EmuFlowError("unsupported design configuration schema or fields")
+    environment_path = Path(environment_path).expanduser().resolve()
+    profile = load_environment(environment_path)
+    source_root = resolve_path(path.parent, value["source_root"])
+    platform = (
+        resolve_path(path.parent, value["platform"])
+        if "platform" in value
+        else DEFAULT_PLATFORM_PATH.resolve()
+    )
+    from emuflow.platform.platform import Platform
+
+    Platform.load(platform)
+    periods = value["clock_periods_ns"]
+    if type(periods) is not dict or not periods:
+        raise EmuFlowError("clock_periods_ns requires a period for every design clock")
+    benchmark = BenchmarkRun(
+        {
+            "schema": "emuflow.benchmark-run/v1",
+            "id": value["name"],
+            "design_id": value["name"],
+            "top": value["top"],
+            "sources": value["sources"],
+            "clocks": list(periods),
+            "clock_periods_ns": periods,
+            "timing_io": value["timing_io"],
+            "platform": str(platform),
+            "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
+            "synthesis": {
+                "family": "xcup",
+                "policy": "native",
+                "include_dirs": value.get("include_dirs", []),
+                "defines": value.get("defines", []),
+            },
+        }
+    )
+    _require_physical_design(benchmark)
+    if value["name"] == "nvdla":
+        validate_nvdla_source(benchmark, source_root)
+    options = _compile_options(value.get("options", {}), path.parent)
+    return _publish_run(
+        benchmark,
+        source_root,
+        platform,
+        environment_path,
+        output_path,
+        options,
+        profile,
+    )
+
+
+def _publish_run(
+    benchmark, source_root, platform, environment_path, output_path, options, profile
+):
+    output = Path(output_path).expanduser().resolve()
+    benchmark_path = output.with_name(output.stem + ".benchmark.json")
+    if source_root == output or source_root in output.parents:
+        raise EmuFlowError("run configuration must be outside the source tree")
+    if output.exists() or benchmark_path.exists():
+        raise EmuFlowError("design preparation requires new run/benchmark paths")
+    source_sha256 = source_digest(benchmark, source_root)
+    write_json(benchmark_path, benchmark.value)
+    write_json(
+        output,
+        {
+            "schema": SCHEMA,
+            "environment": str(environment_path),
+            "benchmark_run": str(benchmark_path),
+            "benchmark_sha256": file_sha256(benchmark_path),
+            "source_root": str(source_root),
+            "platform": str(platform),
+            "platform_sha256": file_sha256(platform),
+            "source_sha256": source_sha256,
+            "options": {
+                key: str(item) if isinstance(item, Path) else item
+                for key, item in options.items()
+            },
+        },
+    )
+    return {
+        "status": "pass",
+        "scope": "design-preparation",
+        "terminal_qualification": False,
+        "run_config": str(output),
+        "top": benchmark.value["top"],
+        "source_files": len(benchmark.resolve_sources(source_root)),
+        "backends": sorted(profile["backends"]),
+    }
 
 
 def execute_run(config_path, output_dir, *, backend="rapidwright", check_only=False):
@@ -204,15 +325,7 @@ def execute_run(config_path, output_dir, *, backend="rapidwright", check_only=Fa
     environment_options = compile_environment(profile, backend)
     synthesis = benchmark.value["synthesis"]
     periods = benchmark.value.get("clock_periods_ns")
-    if (
-        synthesis.get("family") != "xcup"
-        or synthesis.get("policy") != "native"
-        or not periods
-        or benchmark.value.get("timing_io") is None
-    ):
-        raise EmuFlowError(
-            "a complete physical run requires a timed native Xilinx benchmark"
-        )
+    _require_physical_design(benchmark)
     records = source_records(benchmark, source_root)
     options = {
         **value["options"],
@@ -309,33 +422,15 @@ def prepare_nvdla_run(
             )
             benchmark_value = prepared["benchmark"]
         validate_nvdla_source(BenchmarkRun(benchmark_value), source_root)
-        write_json(benchmark_path, benchmark_value)
-    prepared = {
-        "benchmark": benchmark_value,
-        "source_count": len(benchmark_value["sources"]),
-    }
-    validate_nvdla_source(BenchmarkRun(prepared["benchmark"]), source_root)
-    value = {
-        "schema": SCHEMA,
-        "environment": str(environment_path),
-        "benchmark_run": str(benchmark_path),
-        "benchmark_sha256": file_sha256(benchmark_path),
-        "source_root": str(source_root),
-        "platform": str(Path(platform_path).resolve()),
-        "platform_sha256": file_sha256(Path(platform_path)),
-        "source_sha256": source_digest(
-            BenchmarkRun(prepared["benchmark"]), source_root
-        ),
-        "options": dict(NVDLA_OPTIONS),
-    }
-    write_json(output_path, value)
-    return {
-        "status": "pass",
-        "scope": "design-preparation",
-        "terminal_qualification": False,
-        "run_config": str(output_path),
-        "top": "NV_nvdla",
-        "source_files": prepared["source_count"],
-        "memory_policy": PHYSICAL_MEMORY_POLICY,
-        "backends": sorted(profile["backends"]),
-    }
+    benchmark = BenchmarkRun(benchmark_value)
+    validate_nvdla_source(benchmark, source_root)
+    report = _publish_run(
+        benchmark,
+        source_root,
+        platform_path,
+        environment_path,
+        output_path,
+        NVDLA_OPTIONS,
+        profile,
+    )
+    return {**report, "memory_policy": PHYSICAL_MEMORY_POLICY}

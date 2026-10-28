@@ -319,7 +319,12 @@ def test_version_probe_uses_real_native_tool_supervision(channel):
     from tests.native_build import emuflow_native
 
     assert "version-fixture" in env._probe_tool(
-        str(emuflow_native()), [sys.executable, "-c", "import sys; print('version-fixture', file=sys." + channel + ")"]
+        str(emuflow_native()),
+        [
+            sys.executable,
+            "-c",
+            "import sys; print('version-fixture', file=sys." + channel + ")",
+        ],
     )
 
 
@@ -331,3 +336,163 @@ def test_installed_nvdla_pin_matches_the_fetch_catalog():
     selected = next(item for item in canonical["designs"] if item["id"] == "nvdla")
     installed = json.loads(CATALOG_PATH.read_text())
     assert installed["designs"] == [selected]
+
+
+@pytest.fixture
+def generic_design(tmp_path):
+    """A component fixture for the generic frontend, not a qualification design."""
+    root = tmp_path / "user-rtl"
+    (root / "rtl").mkdir(parents=True)
+    (root / "include").mkdir()
+    (root / "rtl/top.sv").write_text(
+        "module user_top(input clk, input a, output reg q);\n"
+        "always @(posedge clk) q <= a;\nendmodule\n"
+    )
+    (root / "include/config.vh").write_text("`define WIDTH 1\n")
+    value = {
+        "schema": run.DESIGN_SCHEMA,
+        "name": "user-design",
+        "source_root": "user-rtl",
+        "sources": ["rtl/*.sv"],
+        "include_dirs": ["include"],
+        "defines": ["WIDTH=1"],
+        "top": "user_top",
+        "clock_periods_ns": {"clk": 12.5},
+        "timing_io": {
+            "input_groups": [{"clock": "clk", "delay_ns": 1, "ports": ["a"]}],
+            "output_groups": [{"clock": "clk", "delay_ns": 2, "ports": ["q"]}],
+        },
+        "options": {
+            "cut_mode": "static-exact-combinational",
+            "phase6_provider": "baseline",
+        },
+    }
+    config = tmp_path / "design.json"
+    write_json(config, value)
+    return config, root, value
+
+
+@pytest.mark.parametrize("backend", ["rapidwright", "vivado"])
+def test_generic_cli_prepare_and_run_preserve_user_inputs(
+    generic_design, profile, tmp_path, backend
+):
+    from emuflow.flow.cli import _build_parser, _dispatch
+
+    config, root, description = generic_design
+    output = tmp_path / "prepared/design.run.json"
+    args = _build_parser().parse_args(
+        [
+            "design",
+            "prepare",
+            str(config),
+            "--environment",
+            str(profile),
+            "--out",
+            str(output),
+        ]
+    )
+    with patch("emuflow.flow.cli._print_json") as printed:
+        assert _dispatch(args) == 0
+    assert printed.call_args.args[0]["top"] == "user_top"
+    assert printed.call_args.args[0]["source_files"] == 1
+    _, value, benchmark, source_root = run.load_run(output)
+    assert source_root == root
+    assert benchmark.value["design_id"] == "user-design"
+    assert benchmark.value["synthesis"]["defines"] == ["WIDTH=1"]
+    with patch(
+        "emuflow.flow.native_compile.run_native_multi_fpga_flow",
+        return_value={"status": "pass"},
+    ) as native:
+        assert (
+            run.execute_run(output, tmp_path / "flow", backend=backend)["status"]
+            == "pass"
+        )
+    kwargs = native.call_args.kwargs
+    assert kwargs["sources"] == [root / "rtl/top.sv"]
+    assert kwargs["top"] == "user_top"
+    assert kwargs["clock_periods"] == {"clk": 12.5}
+    assert kwargs["timing_io"] == description["timing_io"]
+    assert kwargs["include_dirs"] == [root / "include"]
+    assert str(root / "include/config.vh") in kwargs["source_checksums"]
+    assert kwargs["physical_backend"] == backend
+    assert kwargs["cut_mode"] == "static-exact-combinational"
+    assert value["options"]["phase6_provider"] == "baseline"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "clock",
+        "io",
+        "source",
+        "escape",
+        "unknown",
+        "override",
+        "option",
+        "schema",
+        "symlink",
+    ],
+)
+def test_generic_prepare_rejects_invalid_inputs_without_publishing(
+    generic_design, profile, tmp_path, change
+):
+    config, root, value = generic_design
+    if change == "clock":
+        value["clock_periods_ns"] = {"clk": -1}
+    elif change == "io":
+        value["timing_io"]["input_groups"][0]["clock"] = "missing"
+    elif change == "source":
+        value["sources"] = ["absent/*.v"]
+    elif change == "escape":
+        value["sources"] = ["../design.json"]
+    elif change == "unknown":
+        value["typo"] = True
+    elif change == "override":
+        value["options"]["sources"] = ["wrong.v"]
+    elif change == "option":
+        value["options"]["not_a_compile_option"] = True
+    elif change == "schema":
+        value["schema"] = "emuflow.design/v999"
+    else:
+        (root / "include/escape.vh").symlink_to(config)
+    write_json(config, value)
+    output = tmp_path / "rejected.run.json"
+    with pytest.raises(EmuFlowError):
+        run.prepare_design_run(config, profile, output)
+    assert not output.exists()
+    assert not output.with_name(output.stem + ".benchmark.json").exists()
+
+
+def test_generic_prepare_rejects_overwrites_and_source_tree_outputs(
+    generic_design, profile, tmp_path
+):
+    config, root, _ = generic_design
+    with pytest.raises(EmuFlowError, match="outside"):
+        run.prepare_design_run(config, profile, root / "run.json")
+    output = tmp_path / "ready.json"
+    run.prepare_design_run(config, profile, output)
+    before = output.read_bytes()
+    with pytest.raises(EmuFlowError, match="new run"):
+        run.prepare_design_run(config, profile, output)
+    assert output.read_bytes() == before
+    (root / "include/config.vh").write_text("changed\n")
+    with pytest.raises(EmuFlowError, match="bytes differ"):
+        run.load_run(output)
+
+
+def test_generic_template_is_a_valid_design_description(profile, tmp_path):
+    template = (
+        Path(__file__).resolve().parents[1] / "examples/designs/design.example.json"
+    )
+    value = json.loads(template.read_text())
+    root = tmp_path / "example"
+    (root / "rtl/blocks").mkdir(parents=True)
+    (root / "include").mkdir()
+    (root / "rtl/top.sv").write_text("module top; endmodule\n")
+    (root / "rtl/blocks/block.sv").write_text("module block; endmodule\n")
+    value["source_root"] = str(root)
+    config = tmp_path / "template.json"
+    write_json(config, value)
+    report = run.prepare_design_run(config, profile, tmp_path / "template.run.json")
+    assert report["source_files"] == 2
+    assert report["terminal_qualification"] is False

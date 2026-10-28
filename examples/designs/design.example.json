@@ -1,0 +1,45 @@
+{
+  "schema": "emuflow.design/v1",
+  "name": "my-design",
+  "source_root": "/path/to/design",
+  "sources": [
+    "rtl/top.sv",
+    "rtl/blocks/*.sv"
+  ],
+  "include_dirs": [
+    "include"
+  ],
+  "defines": [],
+  "top": "top",
+  "clock_periods_ns": {
+    "clk": 10.0
+  },
+  "timing_io": {
+    "input_groups": [
+      {
+        "clock": "clk",
+        "delay_ns": 1.0,
+        "ports": [
+          "reset_n",
+          "data_in"
+        ]
+      }
+    ],
+    "output_groups": [
+      {
+        "clock": "clk",
+        "delay_ns": 1.0,
+        "ports": [
+          "data_out"
+        ]
+      }
+    ]
+  },
+  "options": {
+    "partition_provider": "patron",
+    "patron_algorithm_version": 14,
+    "cut_mode": "static-exact-combinational",
+    "phase6_provider": "baseline",
+    "physical_seed": 1
+  }
+}

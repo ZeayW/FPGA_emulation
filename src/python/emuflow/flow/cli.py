@@ -120,6 +120,12 @@ def _build_parser() -> argparse.ArgumentParser:
     check_environment.add_argument("--backend", choices=("rapidwright", "vivado"))
     design = subparsers.add_parser("design", help="prepare reproducible design inputs once")
     designs = design.add_subparsers(dest="design_command", required=True)
+    prepare_design = designs.add_parser(
+        "prepare", help="prepare RTL from its source, clock and I/O configuration"
+    )
+    prepare_design.add_argument("config", type=Path)
+    prepare_design.add_argument("--environment", type=Path, required=True)
+    prepare_design.add_argument("--out", type=Path, required=True)
     nvdla = designs.add_parser("prepare-nvdla", help="prepare pinned NV_nvdla and complete physical memory models")
     nvdla.add_argument("--source-root", type=Path, required=True)
     nvdla.add_argument("--environment", type=Path, required=True)
@@ -1415,8 +1421,13 @@ def _dispatch(args: argparse.Namespace) -> int:
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
     if args.command == "design":
-        from emuflow.flow.run_config import prepare_nvdla_run
-        report = prepare_nvdla_run(args.source_root, args.environment, args.out, platform_path=args.platform)
+        from emuflow.flow.run_config import prepare_design_run, prepare_nvdla_run
+        if args.design_command == "prepare":
+            report = prepare_design_run(args.config, args.environment, args.out)
+        else:
+            report = prepare_nvdla_run(
+                args.source_root, args.environment, args.out, platform_path=args.platform
+            )
         _print_json(report)
         return 0
     if args.command == "run":

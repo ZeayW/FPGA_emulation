@@ -65,21 +65,29 @@ installation have separate setup requirements; see
 
 ## Quick start
 
-After the [one-time environment and NVDLA preparation](docs/RUNNING_NVDLA.md),
-use the prepared `nvdla.run.json` to start the complete Phase 1–7/7C flow.
-The configuration fixes the pinned `NV_nvdla` source, physical memory models,
-dual clocks, four-FPGA platform and upstream algorithm choices. Tools and device
-data come from its registered environment.
+Prepare the machine once, then prepare each RTL design from its own configuration.
+Start with the [environment template](examples/environments/xcvu19p.example.json)
+and [design template](examples/designs/design.example.json), replacing the example
+paths, RTL files, top module, clocks and I/O constraints with your inputs.
+See [running a design](docs/RUNNING.md) for the configuration fields and setup.
+The supported target is Xilinx UltraScale+; the default platform is the bundled
+four-XCVU19P mesh.
 
 ```bash
-# OpenPARF placement and RapidWright/RWRoute routing.
-emuflow run nvdla.run.json --backend rapidwright --out runs/nvdla-openparf
+export PATH="$PWD/build/native/install/bin:$PATH"
 
-# The same design and upstream configuration with the Vivado backend.
-emuflow run nvdla.run.json --backend vivado --out runs/nvdla-vivado
+# Once per machine/tool installation, using your edited environment template.
+emuflow environment prepare machine.json --out environment.json
 
-# Independently validate the completed physical/global timing result.
-emuflow multi-fpga validate --flow runs/nvdla-openparf --require-physical
+# Once per design revision, using your edited design template.
+emuflow design prepare design.json --environment environment.json --out design.run.json
+
+# Start the complete flow with either physical backend.
+emuflow run design.run.json --backend rapidwright --out runs/design-openparf
+emuflow run design.run.json --backend vivado --out runs/design-vivado
+
+# Independently validate a completed physical/global timing result.
+emuflow multi-fpga validate --flow runs/design-openparf --require-physical
 ```
 
 Stage progress is printed by the native controller. Each output directory contains
