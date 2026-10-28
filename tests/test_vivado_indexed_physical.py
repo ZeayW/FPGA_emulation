@@ -13,10 +13,9 @@ from unittest.mock import patch
 
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import file_sha256
-from emuflow.physical.vivado.vivado_inputs import prepare_vivado_inputs
+from tests.vivado_input_host import prepare_vivado_inputs
 from emuflow.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
-from emuflow.physical.vivado.vivado_physical import parse_timing_summary
-from emuflow.physical.vivado.vivado_physical_timing import write_vivado_local_query, import_vivado_local_timing
+from tests.vivado_measurement_host import write_vivado_local_query, import_vivado_local_timing
 from emuflow.frontend.yosys import import_yosys_json
 
 
@@ -188,7 +187,7 @@ puts pass
     def test_indexed_boundary_import_preserves_board_scope_and_exact_coverage(self):
         from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
         from emuflow.timing.boundary_timing_storage import read_boundary_timing_storage
-        from emuflow.physical.vivado.vivado_physical_timing import import_indexed_vivado_boundary
+        from tests.vivado_measurement_host import import_indexed_vivado_boundary
         def _header():
             return {"schema": "emuflow.boundary-identity/v1", "status": "pass",
                     "design": "dut", "platform": "board", "fpga": "fpga0", "provider": "test"}
@@ -301,14 +300,6 @@ puts pass
             self.assertNotIn("DONT_TOUCH", text)
             self.assertIn('EMUFLOW_SOURCE = "s', text)
 
-    def test_endpoint_aggregate_accepts_negative_slack_and_rejects_bad_counts(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "timing.rpt"
-            path.write_text("Design Timing Summary\n WNS(ns) TNS(ns) TNS Failing Endpoints TNS Total Endpoints WHS(ns) THS(ns) THS Failing Endpoints THS Total Endpoints\n-----\n-0.125 -0.250 2 10 0.1 0.0 0 10\n")
-            self.assertEqual(parse_timing_summary(path)["tns_ns"], -0.25)
-            path.write_text(path.read_text().replace("2 10", "11 10"))
-            with self.assertRaises(ValidationError):
-                parse_timing_summary(path)
 
     def test_complete_local_paths_use_indexed_queries_and_reject_corruption(self):
         from tests.native_build import emuflow_native

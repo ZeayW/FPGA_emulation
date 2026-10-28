@@ -155,7 +155,8 @@ not language line counts or the presence of typed storage:
 | Phase 6 Chimew | Grouping/refinement/RUDY kernels and indexed baseline split | Lookahead and pin-planning orchestration, independent grouping/bank qualification and adapter generation |
 | Mapped physical inputs | Indexed Bookshelf writers, placement lowering, Vivado runtime XDC and fixed-I/O top/query generation | Mapped-index SQL projection, atomic/macro fact generation, geometry and window policy |
 | Placement and routing handoff | Typed certificate/handoff ownership checks and RWRoute exporter | Site/BEL/primitive checks, handoff record production and independent route connectivity/PIP validation |
-| Physical timing | Complete local-path and logic-segment query generation, shared physical object resolution, Vivado boundary/descendant association, indexed evidence import and OpenSTA staging | Bounded backend configuration and tool supervision |
+| Vivado partition implementation | Input generation, vendor process supervision, lineage import, complete measurement import, closure/budget validation and final partition report | Bounded configuration and artifact locators |
+| Physical timing | Complete local-path and logic-segment query generation, shared physical object resolution, Vivado boundary/descendant association, indexed evidence import and OpenSTA staging | Bounded configuration and OpenPARF/RWRoute tool supervision |
 | Global timing | Runtime generation/signoff, full-assignment physical coverage, event binding, measurement import, original-path reduction, Chimew comparison and final flow-report sealing | Bounded tool configuration |
 
 Indexed atoms and ordinal safe names already avoid complete in-memory lists or
@@ -163,7 +164,7 @@ name dictionaries. Local-path evidence already has a typed owner. These are not
 outstanding format migrations. Both physical timing query producers now publish
 through shared native stage owners; their replaced Python production loops are
 retired. Physical signoff control and comparison publication are native; the
-maintained physical implementation controller and Chimew split/lookahead
+multi-FPGA implementation controller, OpenPARF/RWRoute control and Chimew split/lookahead
 orchestration still require closure and retirement of their production adapters. Chimew remains a maintained optional path with its own
 ownership and qualification requirement.
 

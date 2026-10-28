@@ -139,7 +139,7 @@ def test_baseline_reports_have_one_control_owner_and_restore_aliases(tmp_path):
         _control_snapshot(ctx, "split", flow)
 
 
-def test_real_chimew_kernels_survive_split_physical_signoff_control_boundaries(
+def test_real_chimew_kernels_survive_split_and_physical_control_boundaries(
     case, tmp_path
 ):
     """Real lookahead/typed Chimew pipeline; physical/STA engines are test doubles."""
@@ -177,6 +177,7 @@ def test_real_chimew_kernels_survive_split_physical_signoff_control_boundaries(
     ctx.projected_timing_paths = None
     ctx.timing_driven = False
     ctx.copied_link_timing_path = None
+    ctx.global_sta_launcher_reference = None
     ctx.path_database_path = root / "paths.json"
     ctx.path_database_path.write_text("{}")
     split_calls, physical_calls, timing_calls = [], [], []
@@ -254,12 +255,12 @@ def test_real_chimew_kernels_survive_split_physical_signoff_control_boundaries(
     with (
         patch.object(flow, "run_phase6", side_effect=split_engine),
         patch.object(flow, "run_multi_fpga_physical_flow", side_effect=physical_engine),
-        patch.object(flow, "run_phase7c", side_effect=timing_engine),
+        patch.object(flow, "run_native_physical_signoff", side_effect=timing_engine),
         patch.object(
             flow, "validate_multi_fpga_physical_report"
         ) as physical_validation,
     ):
-        for stage in ("split", "physical", "signoff"):
+        for stage in ("split", "physical"):
             output = tmp_path / (stage + "-state.json")
             execute(stage, request, previous, output, "chimew")
             assert output.stat().st_size < 262144
@@ -269,10 +270,21 @@ def test_real_chimew_kernels_survive_split_physical_signoff_control_boundaries(
                 and "baseline_runtime_report" not in state
             )
             previous = output
-        assert physical_validation.call_count == 2
+        physical_validation.assert_not_called()
     comparison = state["phase6_comparison"]
-    assert comparison["validation"]["status"] == "pass"
-    assert len(split_calls) == len(physical_calls) == len(timing_calls) == 2
+    assert comparison["status"] == "pending-physical-comparison"
+    assert len(split_calls) == len(physical_calls) == 2
+    assert len(timing_calls) == 1  # Only the baseline prepass has run.
+    input_path=state["native_phase6_comparison_input"]
+    assert tuple(state["native_phase6_comparison_generation"]) == tuple(str(v) for v in native_file_generation(input_path))
+    draft=json.loads(input_path.read_text())
+    assert draft["baseline"] == comparison["baseline"]
+    assert draft["pin_plan_metrics"]["signals"] > 0
+    # This fixture's engine doubles are not terminal physical evidence. The
+    # native signoff/comparison integration is tested against actual typed
+    # evidence in test_native_physical_signoff/test_native_phase6_comparison.
+    with pytest.raises(EmuFlowError,match=r"owned by the C\+\+ Phase 7C stage"):
+        execute("signoff",request,previous,tmp_path/"retired-state.json","chimew")
     assert physical_calls[0][1] == physical_calls[1][1]
     assert physical_calls[1][1]["backend"] == backend
     assert {
@@ -282,17 +294,13 @@ def test_real_chimew_kernels_survive_split_physical_signoff_control_boundaries(
     } <= split_calls[1][1].keys()
     for key in ("pin_plan_path", "position_hints_path", "electrical_binding_path"):
         assert split_calls[1][1][key].is_file()
-    assert (
-        comparison["baseline"]["runtime"]["status"]
-        == comparison["chimew"]["runtime"]["status"]
-        == "pass"
-    )
-    assert comparison["baseline_system_timing"] == comparison["chimew_system_timing"]
-    assert (root / "phase6-comparison/comparison-report.json").is_file()
+    assert comparison["baseline"]["runtime"]["status"] == "pass"
+    assert not (root / "phase6-comparison/comparison-report.json").exists()
+
 
 
 @pytest.mark.parametrize("tamper", [None, "split", "physical"])
-def test_native_cpp_controller_carries_real_device_state_across_processes(
+def test_native_cpp_controller_carries_real_device_state_to_native_signoff(
     case, tmp_path, tamper
 ):
     """Native Phase 3/4/5 and real codec; timing is an explicit prepared-boundary double."""
@@ -371,11 +379,15 @@ value['state']=codec._pack(codec._control_snapshot(_CompileContext(state),a.stag
         assert "geometry generation changed" in result.stderr
         assert not (root / "out/multi-fpga-flow-report.json").exists()
     else:
-        assert result.returncode == 0, result.stderr
-        assert calls == [stage for stage in STAGES if stage not in {"tdm", "partition", "route", "finalize"}]
+        # The codec fixture deliberately supplies no physical implementation.
+        # It must reach the native signoff owner and be rejected, rather than
+        # regain the old Python terminal adapter's fabricated success.
+        assert result.returncode != 0
+        assert "Chimew signoff requires physical results" in result.stderr
+        assert calls == [stage for stage in STAGES[:STAGES.index("signoff")] if stage not in {"tdm", "partition", "route", "finalize"}]
         report = json.loads((root / "out/native-compile-result.json").read_text())
-        assert report["effective_configuration"]["phase6_provider"] == "chimew"
         assert report["native_data_plane_complete"] is False
+        assert not (root / "out/multi-fpga-flow-report.json").exists()
         route = next(step for step in report["stages"] if step["stage"] == "route")
         assert route["implementation_id"] == "native-phase4-v1"
         partition = next(step for step in report["stages"] if step["stage"] == "partition")

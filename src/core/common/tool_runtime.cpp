@@ -176,7 +176,8 @@ struct StreamWorker {
 };
 void Execute(const ToolRequest& request, ToolResult& result,
              const volatile std::sig_atomic_t* cancelled,
-             const std::function<void(std::istream&)>* consume=nullptr) {
+             const std::function<void(std::istream&)>* consume=nullptr,
+             AtomicBinaryWriter* log=nullptr) {
   std::map<std::string, std::string> environment;
   if (request.inherit_environment) {
     for (auto item = environ; item && *item; ++item) {
@@ -269,7 +270,10 @@ void Execute(const ToolRequest& request, ToolResult& result,
     // starve deadline/cancellation processing by keeping its pipe readable.
     for (unsigned chunk = 0; chunk < 16 && diagnostics.read >= 0; ++chunk) {
       const auto count = read(diagnostics.read, buffer.data(), buffer.size());
-      if (count > 0) AppendTail(result, ring, cursor, buffer.data(), count);
+      if (count > 0) {
+        if(log)log->WriteBytes(buffer.data(),count);
+        AppendTail(result, ring, cursor, buffer.data(), count);
+      }
       else if (!count) diagnostics.CloseRead();
       else if (errno == EINTR) continue;
       else if (errno == EAGAIN || errno == EWOULDBLOCK) break;
@@ -355,6 +359,24 @@ ToolResult RunExternalToolStream(const ToolRequest& request,
     if(access(executable.path().c_str(),X_OK)!=0)Invalid("external tool is not executable");
     refs.push_back(std::move(executable));return refs;
   },[&](const auto&){Execute(request,result,cancelled,&consume);});
+  return result;
+}
+ToolResult RunExternalToolLogged(const ToolRequest& request,const std::string& log,
+    const volatile std::sig_atomic_t* cancelled,const std::vector<ArtifactRef>& inputs) {
+  ToolResult result;
+  result.operation=RunStage("native.external-tool-logged",[&]{
+    Validate(request);if(request.forward_stdout)Invalid("logged tool must capture combined output");
+    if(!std::filesystem::path(log).is_absolute())Invalid("tool log must be absolute");
+    auto refs=inputs;auto executable=ArtifactRef::Bind(request.argv[0],"external-tool-executable-v1");
+    if(access(executable.path().c_str(),X_OK)!=0)Invalid("external tool is not executable");
+    refs.push_back(std::move(executable));
+    for(const auto& ref:refs){std::error_code error;if(std::filesystem::absolute(log).lexically_normal()==ref.path()||std::filesystem::equivalent(log,ref.path(),error))Invalid("tool log aliases an input");}
+    return refs;
+  },[&](const auto&){
+    AtomicBinaryWriter writer(log);
+    try{Execute(request,result,cancelled,nullptr,&writer);}catch(...){writer.Commit();throw;}
+    writer.Commit();
+  },[&]{return std::vector<ArtifactRef>{ArtifactRef::Bind(log,"exact-sha256-text-v1")};});
   return result;
 }
 std::string ToolResultJson(const ToolResult& result) {

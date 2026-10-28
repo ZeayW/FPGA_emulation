@@ -8,7 +8,7 @@ import pytest
 
 from emuflow.common.io import file_sha256
 from emuflow.common.native_tools import native_file_generation
-from emuflow.physical.vivado.vivado_inputs import prepare_vivado_inputs
+from tests.vivado_input_host import prepare_vivado_inputs
 from tests.native_build import emuflow_native
 from tests.test_vivado_indexed_physical import fixture
 from tests.test_vivado_backend import RUNTIME

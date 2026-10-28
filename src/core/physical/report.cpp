@@ -166,6 +166,37 @@ void Result(Doc &value, const std::string &backend, const std::string &fpga,
 }
 } // namespace
 
+std::string ValidatePhysicalPartitionReport(const std::string &document,
+                                            const std::string &backend,
+                                            const std::string &fpga,
+                                            const std::string &part,
+                                            std::int64_t original,
+                                            std::int64_t transport) {
+  Doc value(document);
+  Result(value, backend, fpga, part, original, transport);
+  Doc account(value.Token("cell_accounting")), timing(value.Token("timing"));
+  Raw summary{{"status", JsonQuote("pass")},
+              {"backend", JsonQuote(backend)},
+              {"fpga", JsonQuote(fpga)},
+              {"part", JsonQuote(part)},
+              {"routed_cells", account.Token("routed_cells")},
+              {"physical_cells", account.Token("physical_cells")}};
+  if (value.Has("implementation_status") &&
+      value.Token("implementation_status") == JsonQuote("inactive")) {
+    summary["active"] = "false";
+    summary["wns_ns"] = "null";
+    summary["tns_ns"] = "null";
+    summary["failing_endpoints"] = "0";
+  } else {
+    summary["wns_ns"] = timing.Token("wns_ns");
+    if (timing.Has("tns_ns")) {
+      summary["tns_ns"] = timing.Token("tns_ns");
+      summary["failing_endpoints"] = timing.Token("failing_endpoints");
+    }
+  }
+  return Doc::Encode(summary);
+}
+
 PhysicalReportFacts ValidatePhysicalFlowReport(const std::string &document) {
   Doc report(document);
   Check(report.Text("schema") == "emuflow.multi-fpga-physical-flow/v1",

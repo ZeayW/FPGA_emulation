@@ -1439,8 +1439,36 @@ fixed-pin query and logical-to-physical timing map as one fresh directory. Bus
 width, direction, bit ownership, P/N port collisions, physical port/pair census,
 and adapter/XDC source seals must agree before publication. Every output is
 returned with its generation. Existing input generations are never overwritten.
-The Python wrapper submits bounded configuration and artifact locations only;
+The native partition owner invokes this library API directly;
 the replaced XDC/top/query generation loops and separate physical-top module
 are retired. Both source ports and fixed bus membership are consumed in the
-native owner. Vivado tool execution, measurement orchestration and whole-backend
-control remain separate W7 completion work.
+native owner. Its former Python locator host is retained only in component tests.
+
+
+### Complete native Vivado partition transaction
+
+`physical run-vivado-partition` owns the maintained indexed implementation from
+input generation through final partition report. It binds the EmuIR, mapped
+index, source-function signatures, emitted RTL, identity/query owners, vendor
+executable and Tcl sources before execution. Source generations and producer
+hashes remain fixed through publication. The output lease rejects concurrent writers. A retry uses a fresh implementation
+generation and switches the bounded report only after success; failure cannot
+replace an accepted report or its physical artifacts.
+
+The shared process supervisor streams the complete combined tool log to disk,
+retains bounded diagnostics and reaps the engine process group on failure or
+cancellation. Critical warnings are checked over the full log, including text
+outside the diagnostic tail. Native code imports the source lineage, checks the
+complete endpoint timing aggregate and route-status census, enforces the raw
+whole-device resource budget, resolves all descendant timing queries and imports
+boundary, logic-segment and original local-path populations into their typed
+owners. The final report is published after independent physical result
+validation and source-generation checks. Vendor directives and timing semantics
+retain their existing definitions.
+
+The Python Vivado partition implementation, metric/timing parsers and standalone
+boundary/descendant query adapters are retired. The retained host submits bounded
+configuration and locators; independent component tests keep explicit importer
+bridges outside the production package. Multi-FPGA physical coordination,
+OpenPARF/RWRoute control, Chimew orchestration and current-source NVDLA terminal
+qualification remain W7 completion requirements.

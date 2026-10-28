@@ -260,7 +260,6 @@
       "stage": "Phase 7 indexed Xilinx physical backend",
       "source_paths": [
         "src/python/emuflow/physical/physical_backend.py",
-        "src/python/emuflow/physical/vivado/vivado_backend.py",
         "src/python/emuflow/physical/vivado/vivado_netlist.py",
         "schemas/physical-backend-v1.schema.json",
         "schemas/physical-partition-result-v1.schema.json",
@@ -268,7 +267,7 @@
         "src/python/emuflow/physical/vivado/vivado_indexed_netlist.py",
         "src/python/emuflow/physical/vivado/vivado_lineage.py",
         "src/python/emuflow/physical/vivado/vivado_physical_timing.py",
-        "src/python/emuflow/physical/vivado/vivado_inputs.py",
+        "src/core/physical/vivado/vivado_partition.cpp",
         "src/python/emuflow/physical/vivado/vivado_source.py",
         "scripts/vivado/implement_indexed_partition.tcl",
         "scripts/vivado/source_inventory.tcl",

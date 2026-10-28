@@ -45,6 +45,12 @@ ToolResult RunExternalToolStream(const ToolRequest& request,
     const std::function<void(std::istream&)>& consume,
     const volatile std::sig_atomic_t* cancelled = nullptr,
     const std::vector<ArtifactRef>& inputs = {});
+// Persist the complete combined diagnostic stream while retaining the same
+// process-group supervision, cancellation and bounded diagnostic tail.
+// The log survives engine failure; it is diagnostic evidence, not a pass seal.
+ToolResult RunExternalToolLogged(const ToolRequest& request,const std::string& log,
+    const volatile std::sig_atomic_t* cancelled=nullptr,
+    const std::vector<ArtifactRef>& inputs={});
 ToolRequest ReadToolRequest(const std::string& path);
 std::string ToolResultJson(const ToolResult& result);
 void PublishToolResult(const std::string& path, const ToolResult& result);

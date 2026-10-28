@@ -7,13 +7,10 @@ from emuflow.common.errors import EmuFlowError, ValidationError
 from emuflow.common.io import write_json
 from emuflow.ir.ir import EmuIR
 from emuflow.frontend.yosys import import_yosys_json
-from emuflow.physical.vivado.vivado_backend import (
-    write_vivado_boundary_timing_query,
-)
-from emuflow.physical.vivado.vivado_physical import execute_vivado
-from emuflow.physical.vivado.vivado_inputs import prepare_vivado_inputs
+from tests.vivado_query_host import write_vivado_boundary_query as write_vivado_boundary_timing_query
+from tests.vivado_input_host import prepare_vivado_inputs
 from emuflow.ir.emuir_compact import write_compact_emuir
-from emuflow.physical.vivado.vivado_physical_timing import import_indexed_vivado_boundary
+from tests.vivado_measurement_host import import_indexed_vivado_boundary
 from emuflow.physical.vivado.vivado_netlist import (
     emit_vivado_mapped_verilog,
 )
@@ -107,7 +104,7 @@ class VivadoBackendTest(unittest.TestCase):
             source, output = root / "ir.json", root / "physical"
             write_json(source, _ir().to_dict())
             with patch("emuflow.ir.ir.EmuIR.load", side_effect=AssertionError("whole graph")), \
-                 patch("emuflow.physical.vivado.vivado_backend._resolve_vivado", side_effect=AssertionError("tool lookup")):
+                 patch("emuflow.physical.vivado.vivado_physical.shutil.which", side_effect=AssertionError("tool lookup")):
                 with self.assertRaisesRegex(ValidationError, "current indexed EmuIR"):
                     emit_vivado_mapped_verilog(source, root / "partition.v")
                 with self.assertRaisesRegex(ValidationError, "current indexed EmuIR"):
@@ -322,35 +319,6 @@ class VivadoBackendTest(unittest.TestCase):
             self.assertEqual(len(list(root.glob("query.tsv.generation.*"))), 1)
 
 
-    def test_vivado_critical_warning_is_a_hard_failure(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            completed = type(
-                "Completed",
-                (),
-                {
-                    "returncode": 0,
-                    "stdout": "CRITICAL WARNING: ignored constraint\n",
-                },
-            )()
-            def run(*args, **kwargs):
-                kwargs["stdout"].write(completed.stdout)
-                return completed
-
-            with patch(
-                "emuflow.physical.vivado.vivado_physical.subprocess.run",
-                side_effect=run,
-            ):
-                with self.assertRaisesRegex(
-                    EmuFlowError, "critical_warnings=1"
-                ):
-                    execute_vivado(
-                        "vivado",
-                        root / "provider.tcl",
-                        [],
-                        root,
-                        "vivado.log",
-                    )
 
     def test_current_indexed_export_retains_generic_cell_semantics(self):
         from emuflow.ir.emuir_compact import write_compact_emuir

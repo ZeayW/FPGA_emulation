@@ -13,8 +13,9 @@ import pytest
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json
 from emuflow.physical.physical_measurements_native import import_physical_measurements
-from emuflow.physical.vivado.vivado_physical_timing import import_indexed_vivado_boundary, import_vivado_local_timing
-from emuflow.timing.logic_segment_timing import import_vivado_logic_segment_timing, VIVADO_LOGIC_SEGMENT_TIMING_HEADER
+from tests.vivado_measurement_host import import_indexed_vivado_boundary, import_vivado_local_timing
+from tests.vivado_measurement_host import import_vivado_logic_segment_timing
+from emuflow.timing.logic_segment_timing import VIVADO_LOGIC_SEGMENT_TIMING_HEADER
 from emuflow.timing.local_path_timing import LOCAL_PATH_IDENTITY_STORAGE_QUALIFICATION
 from tests import test_logic_segment_timing as logic_fixture
 from tests.test_physical_store_publication import producer
@@ -159,7 +160,7 @@ def test_source_mutation_after_native_import_cannot_publish(tmp_path,kind):
 
 def test_typed_vivado_query_uses_shared_local_owner_and_rejects_retired_private_schema(tmp_path, monkeypatch):
     from emuflow.timing.local_path_timing import read_local_path_identity
-    from emuflow.physical.vivado.vivado_physical_timing import write_vivado_local_query
+    from tests.vivado_measurement_host import write_vivado_local_query
     from tests.local_path_query_fixture import sources, prepare
     from tests.native_build import emuflow_native
     monkeypatch.setenv('EMUFLOW_NATIVE_ROOT',str(emuflow_native().parent.parent))
@@ -201,7 +202,7 @@ def test_native_import_rejects_bad_crc_and_preserves_previous_publication(tmp_pa
 
 
 def test_shared_local_identity_query_rejects_destination_aliases(tmp_path):
-    from emuflow.physical.vivado.vivado_physical_timing import write_vivado_local_query
+    from tests.vivado_measurement_host import write_vivado_local_query
     from tests.test_vivado_indexed_physical import fixture
     from types import SimpleNamespace
     ir=fixture(tmp_path);old=ir.read_bytes()

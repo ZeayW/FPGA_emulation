@@ -19,7 +19,7 @@ from emuflow.platform.default_platform import research_platform_path
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json, write_json, file_sha256
 
-from emuflow.physical.vivado.vivado_lineage import import_cell_lineage, PLACEMENT_COORDINATE_SYSTEM
+from tests.vivado_lineage_host import import_cell_lineage, PLACEMENT_COORDINATE_SYSTEM
 from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxChimewGeometry, read_xilinx_package_geometry
 from tests.test_chimew_fixed_wiring import fixed_case
 

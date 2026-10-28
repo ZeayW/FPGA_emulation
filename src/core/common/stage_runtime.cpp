@@ -69,6 +69,8 @@ constexpr RegisteredSchema schemas[] = {
     {"phase6-comparison-input-v1", ArtifactEncoding::kText, 0, 1},
     {"vivado-input-request-v1", ArtifactEncoding::kText, 0, 1},
     {"vivado-input-report-v1", ArtifactEncoding::kText, 0, 1},
+    {"vivado-partition-request-v1", ArtifactEncoding::kText, 0, 1},
+    {"vivado-partition-report-v1", ArtifactEncoding::kText, 0, 1},
     {"openparf-name-map-selector-v1", ArtifactEncoding::kText, 0, 1},
     {"openparf-placement-selector-v2", ArtifactEncoding::kText, 0, 2},
     {"openparf-name-map-store-v1", ArtifactEncoding::kSqlite, 0x454d554e, 1, true,

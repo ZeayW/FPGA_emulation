@@ -116,36 +116,6 @@ def _indexed_logic_measurement_import(input_path, identity, output_path, *, prov
     )
 
 
-def import_vivado_logic_segment_timing(
-    input_path: Path,
-    identity_path: Path,
-    output_path: Path,
-    *,
-    provider: str = "vivado-routed-logic-segment-datapath-v1",
-    qualification: str = "routed-vendor-device-endpoint-chain",
-    allow_missing: bool = False,
-    allow_legacy_timing_format: bool = False,
-) -> Dict[str, Any]:
-    from emuflow.timing.logic_segment_identity_storage import LogicSegmentIdentityView, read_logic_segment_identity_storage
-
-    identity = read_logic_segment_identity_storage(
-        identity_path
-    )
-    if isinstance(identity, LogicSegmentIdentityView):
-        try:
-            return _indexed_logic_measurement_import(
-                input_path,
-                identity,
-                output_path,
-                provider=provider,
-                qualification=qualification,
-                allow_missing=allow_missing,
-                allow_legacy_timing_format=allow_legacy_timing_format,
-            )
-        finally:
-            identity.close()
-    raise ValidationError("native physical timing import requires a current typed identity")
-
 
 def validate_logic_segment_timing(database: Mapping[str, Any]) -> Dict[str, Any]:
     from emuflow.timing.logic_segment_timing_storage import LogicSegmentTimingView

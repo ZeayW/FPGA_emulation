@@ -1,3 +1,4 @@
+#include "physical/vivado/vivado_partition.hpp"
 #include "physical/vivado/vivado_inputs.hpp"
 #include "physical/openparf/inputs.hpp"
 #include "transport/transport.hpp"
@@ -58,6 +59,7 @@ constexpr const char* kUsage =
     "  phase6 finalize-comparison INPUT FLOW_ROOT\n"
     "  physical validate-flow-report INPUT SUMMARY\n"
     "  physical prepare-vivado-inputs REQUEST OUTPUT\n"
+    "  physical run-vivado-partition REQUEST OUTPUT\n"
     "  phase6 split EMUIR ASSIGNMENT SCHEDULE OUTPUT\n"
     "  phase6 run EMUIR ASSIGNMENT SCHEDULE REQUEST OUTPUT_DIR\n"
     "  phase6 compile EMUIR ASSIGNMENT SCHEDULE_SELECTOR BOARD POLICY OUTPUT_DIR\n"
@@ -199,6 +201,9 @@ int RunTool(const std::string& input, const std::string& output) {
 }
 
 int Dispatch(int argc, char** argv, const std::string& report) {
+  if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="run-vivado-partition") {
+    ToolSignals signals;return Finish(emuflow::core::RunVivadoPartition(emuflow::core::ArtifactRef::Bind(argv[3],"vivado-partition-request-v1"),argv[4],&tool_cancelled),report);
+  }
   if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="prepare-vivado-inputs") {
     ToolSignals signals;return Finish(emuflow::core::PrepareVivadoInputs(emuflow::core::ArtifactRef::Bind(argv[3],"vivado-input-request-v1"),argv[4],&tool_cancelled),report);
   }

@@ -12,7 +12,8 @@ import pytest
 
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import file_sha256
-from emuflow.physical.vivado.vivado_lineage import LINEAGE_SCHEMA, PLACEMENT_COORDINATE_SYSTEM, import_cell_lineage
+from emuflow.physical.vivado.vivado_lineage import LINEAGE_SCHEMA, PLACEMENT_COORDINATE_SYSTEM
+from tests.vivado_lineage_host import import_cell_lineage
 
 
 @pytest.fixture

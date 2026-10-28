@@ -1,5 +1,5 @@
 # Current indexed Phase6 -> native Vivado implementation. No placement is fixed.
-# All tool products are scratch; the Python consumer validates inventories,
+# All tool products are scratch; the native stage validates inventories,
 # resource budgets, fixed I/O and complete source-bound timing separately.
 # Source tags never impose KEEP/DONT_TOUCH constraints.
 if {$argc != 15} {

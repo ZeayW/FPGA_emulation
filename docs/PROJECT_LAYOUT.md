@@ -29,7 +29,7 @@ Python resources remain in `emuflow/data`, with their location resolved through
 `emuflow.common.paths` independently of a consumer module's depth.
 
 Python consumers import the current domain module directly, for example
-`emuflow.partition.phase3` or `emuflow.physical.vivado.vivado_backend`.
+`emuflow.partition.phase3` or `emuflow.physical.vivado.vivado_physical`.
 Retired flat module paths have no forwarding packages or aliases.
 
 The installed commands remain `emuflow` and `emuflow-native`. Directory

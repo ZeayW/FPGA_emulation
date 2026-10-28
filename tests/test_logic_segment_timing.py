@@ -1,3 +1,4 @@
+from tests.vivado_measurement_host import import_vivado_logic_segment_timing as _native_import_vivado_logic_segment_timing
 from contextlib import closing
 import tempfile
 import tracemalloc
@@ -13,7 +14,6 @@ from emuflow.common.io import read_json, write_json
 from emuflow.ir.ir import EmuIR
 from emuflow.common.errors import ValidationError
 from emuflow.timing.logic_segment_timing import (
-    import_vivado_logic_segment_timing as _native_import_vivado_logic_segment_timing,
     prepare_logic_segment_query_inputs,
 )
 from tests.physical_query_reference import (

@@ -1,91 +1,26 @@
-"""Current indexed Phase-6 implementation provider for AMD Vivado.
-
-This path does not use the retired whole-EmuIR or sampled timing adapters.
-It consumes the common mapped index, fixed-I/O contract and complete timing
-queries, then publishes the existing provider-neutral physical result.
-"""
+"""Bounded host for the complete native Vivado partition stage."""
 from __future__ import annotations
 
 from emuflow.common.paths import REPOSITORY_ROOT
-
-import hashlib
 import json
-import math
 import os
-import re
-import subprocess
-import sys
-import time
-from collections import deque
 from pathlib import Path
+import shutil
+import sys
+import tempfile
 from typing import Any, Mapping
 
 from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.common.io import file_sha256, write_json
-from emuflow.physical.physical_backend import PHYSICAL_PARTITION_RESULT_SCHEMA, validate_physical_partition_result
-from emuflow.ir.resource_budget import validate_device_resource_usage
-from emuflow.physical.vivado.vivado_inputs import prepare_vivado_inputs
-from emuflow.physical.vivado.vivado_lineage import LINEAGE_POLICY, import_cell_lineage, resolve_timing_query
-
-_ROOT = REPOSITORY_ROOT
+from emuflow.common.native_tools import native_file_generation, require_native_schema, resolve_native_executable
+from emuflow.common.tool_runtime import NativeToolProcess
 
 
 def _vivado_script(name: str) -> Path:
-    for directory in (_ROOT / "scripts/vivado", Path(sys.prefix) / "share/emuflow/scripts/vivado"):
-        path = directory / name
+    for directory in (REPOSITORY_ROOT/'scripts/vivado', Path(sys.prefix)/'share/emuflow/scripts/vivado'):
+        path = directory/name
         if path.is_file():
             return path
-    raise EmuFlowError(f"installed Vivado Tcl script is missing: {name}")
-
-
-def execute_vivado(executable: str, script: Path, arguments: list[str], output: Path, name: str) -> dict[str, Any]:
-    """Stream provider output to scratch instead of buffering the full log."""
-    log_path = output / name
-    scratch = output / ".tmp"
-    scratch.mkdir(exist_ok=True)
-    command = [executable, "-mode", "batch", "-nojournal", "-nolog", "-notrace", "-source", str(script), "-tclargs", *arguments]
-    started = time.monotonic()
-    with log_path.open("w", encoding="utf-8") as log:
-        completed = subprocess.run(command, cwd=output, stdin=subprocess.DEVNULL,
-                                   stdout=log, stderr=subprocess.STDOUT,
-                                   env={**os.environ, "TMPDIR": str(scratch), "XILINX_LOCAL_USER_DATA": "no"}, check=False)
-    tail: deque[str] = deque(maxlen=40)
-    critical = 0
-    with log_path.open(encoding="utf-8", errors="replace") as log:
-        for line in log:
-            tail.append(line.rstrip())
-            critical += "CRITICAL WARNING:" in line
-    if completed.returncode or critical:
-        raise EmuFlowError(f"Vivado {script.name} failed: exit={completed.returncode}, critical_warnings={critical}\n" + "\n".join(tail))
-    return {"status": "pass", "command": command, "log": str(log_path),
-            "log_sha256": file_sha256(log_path), "runtime_seconds": time.monotonic() - started,
-            "critical_warnings": 0}
-
-
-def parse_timing_summary(path: Path) -> dict[str, Any]:
-    """Read the vendor's complete endpoint aggregate, never a top-N sample."""
-    armed = False
-    with path.open(encoding="utf-8") as stream:
-        for line in stream:
-            if "WNS(ns)" in line and "TNS(ns)" in line:
-                armed = True
-                continue
-            if not armed:
-                continue
-            fields = line.split()
-            if len(fields) < 8:
-                continue
-            try:
-                wns, tns = float(fields[0]), float(fields[1])
-                failures, total = int(fields[2]), int(fields[3])
-            except ValueError:
-                continue
-            if (not all(math.isfinite(x) for x in (wns, tns)) or tns > 0
-                    or not 0 <= failures <= total or (tns < 0) != (failures > 0)):
-                raise ValidationError("Vivado endpoint timing aggregate is invalid")
-            return {"wns_ns": wns, "tns_ns": tns, "failing_endpoints": failures,
-                    "failing_endpoint_constraints": failures, "analyzed_endpoints": total}
-    raise ValidationError("Vivado timing summary has no complete setup aggregate")
+    raise EmuFlowError(f'installed Vivado Tcl script is missing: {name}')
 
 
 def run_indexed_vivado_partition(
@@ -95,147 +30,71 @@ def run_indexed_vivado_partition(
     boundary_identity_path: Path | None = None, logic_identity_path: Path | None = None,
     logic_query_path: Path | None = None, local_identity_path: Path | None = None,
     local_query_path: Path | None = None, virtual_io_contract: Mapping[str, Any] | None = None,
-    executable: str | None = None, place_directive: str = "Default", route_directive: str = "Default",
+    executable: str | None = None, place_directive: str = 'Default', route_directive: str = 'Default',
 ) -> dict[str, Any]:
-    from emuflow.physical.vivado.vivado_backend import _resolve_vivado, _read_metrics, _integer, _number, write_vivado_boundary_timing_query
-    from emuflow.physical.vivado.vivado_physical_timing import import_indexed_vivado_boundary, import_vivado_local_timing
-    from emuflow.timing.logic_segment_timing import import_vivado_logic_segment_timing
-
     from emuflow.ir.emuir_storage import is_emuir_sqlite
     from emuflow.ir.emuir_compact import is_compact_emuir
-
     if not is_emuir_sqlite(ir_path) or not is_compact_emuir(ir_path):
-        raise ValidationError("Vivado physical implementation requires current indexed EmuIR")
-    if not re.fullmatch(r"xc[a-z0-9-]+", part):
-        raise ValidationError("Vivado requires a concrete Xilinx part")
-    for kind, identity, query in (("logic", logic_identity_path, logic_query_path),
-                                  ("local", local_identity_path, local_query_path)):
-        if (identity is None) != (query is None):
-            raise ValidationError(f"Vivado {kind} timing requires identity and query together")
-    from emuflow.common.native_tools import require_native_schema
-    require_native_schema("vivado-lineage-store-v2")
-    output_dir = output_dir.resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    executable = _resolve_vivado(executable)
-    index_path = Path(mapped_report["mapped_index"]["path"])
-    if mapped_report.get("optimization_policy") != LINEAGE_POLICY:
-        raise ValidationError("indexed Vivado requires the current optimization/lineage policy")
-    functions_path = Path(mapped_report["source_functions"]["path"])
-    expected = original_cells + transport_cells
-    inputs = prepare_vivado_inputs(ir_path, output_dir, runtime, virtual_io_contract)
-    if inputs["instances"] != expected or mapped_report["emitted_instances"] != expected:
-        raise ValidationError("Vivado input mapped cell accounting disagrees")
-    top, prefix = inputs["top"], inputs["hierarchy_prefix"]
-    dut_count = inputs["dut_clock_count"]
-    xdc = Path(inputs["runtime_xdc"])
-    fixed = inputs.get("fixed_io", {})
-    adapter, wrapper, io_xdc, io_query = (fixed.get(field, "") for field in ("adapter", "wrapper", "xdc", "query"))
-    top_report = fixed.get("top")
-    timing_arguments = [prefix] + ([fixed["timing_map"]] if fixed else [])
-    threads = int(os.environ.get("EMUFLOW_VIVADO_THREADS", "2"))
-    if threads < 1:
-        raise ValidationError("Vivado thread count must be positive")
-    implementation = execute_vivado(executable, _vivado_script("implement_indexed_partition.tcl"),
-        [part, str(mapped_verilog_path.resolve()), top, str(xdc), str(output_dir), str(expected), prefix,
-         adapter, wrapper, io_xdc, io_query, place_directive, route_directive, str(dut_count), str(threads)],
-        output_dir, "vivado-implementation.log")
-    metrics = _read_metrics(output_dir / "implementation_metrics.tsv")
-    if metrics.get("part") != part or _integer(metrics, "dut_clock_count") != dut_count:
-        raise ValidationError("Vivado part/clock identity differs from Phase6")
-    lineage_path = output_dir / "cell-lineage.sqlite"
-    coverage = import_cell_lineage(index_path, functions_path, {
-        "synthesized": output_dir / "mapped_cells.tsv", "routed": output_dir / "routed_mapped_cells.tsv"},
-        lineage_path, mapped_sha256=mapped_report["mapped_index"]["sha256"])
-    if coverage["stages"]["routed"]["placed_objects"] != _integer(metrics, "routed_cells"):
-        raise ValidationError("Vivado lineage placement coverage differs from physical mapped cells")
-    # These tool snapshots have been hashed during import. The indexed lineage
-    # owns all retained observations; later stages consume that owner directly.
-    for inventory in ("mapped_cells.tsv", "routed_mapped_cells.tsv"):
-        (output_dir / inventory).unlink()
-    aggregate = parse_timing_summary(output_dir / "timing_summary.rpt")
-    if abs(aggregate["wns_ns"] - _number(metrics, "wns_ns")) > 0.002:
-        raise ValidationError("Vivado timing aggregate and worst path disagree")
-    # report_route_status also covers partially routed/conflicting nets that
-    # must not be accepted merely because the UNROUTED filter is empty.
-    with (output_dir / "route_status.rpt").open(encoding="utf-8") as stream:
-        for line in stream:
-            if any(label in line.lower() for label in ("nets with routing errors", "unrouted nets", "partially routed nets")):
-                match = re.search(r"([0-9]+)\s*$", line)
-                if match and int(match.group(1)):
-                    raise ValidationError("Vivado route-status report contains incomplete routing")
-    counts = {field: _integer(metrics, field) for field in ("lut", "ff", "carry8", "dsp48", "uram288")}
-    counts["bram18k"] = _integer(metrics, "ramb18_cells") + 2 * _integer(metrics, "ramb36_cells")
-    usage = {}
-    if "resource_budget" in runtime:
-        usage = {"physical": validate_device_resource_usage(counts, runtime["resource_budget"], stage="post-physical-materialization")}
-    stages = {}
-    if boundary_identity_path is not None:
-        query = output_dir / "boundary-query.tsv"
-        query_report = write_vivado_boundary_timing_query(ir_path, boundary_identity_path, query)
-        query = Path(query_report["output"])
-        resolved = output_dir / "boundary-query-resolved.tsv"
-        resolution = resolve_timing_query(index_path, functions_path, lineage_path, query, resolved, boundary=True)
-        resolved = Path(resolution["output"])
-        measured = output_dir / "boundary-timing.tsv"
-        export = execute_vivado(executable, _vivado_script("export_boundary_timing.tcl"),
-                                [str(output_dir / "routed.dcp"), str(resolved), str(measured), *timing_arguments], output_dir, "boundary-export.log")
-        imported = import_indexed_vivado_boundary(measured, boundary_identity_path, output_dir / "boundary-timing.json",
-            measurement_scope="board-integrated-interface" if virtual_io_contract is not None else "partition-boundary")
-        stages["boundary_timing"] = {"status": "pass", "query": query_report, "resolution": resolution, "export": export, "import": imported}
-    for kind, identity, query, importer in (
-        ("logic_segment_timing", logic_identity_path, logic_query_path, import_vivado_logic_segment_timing),
-        ("local_path_timing", local_identity_path, local_query_path, import_vivado_local_timing),
-    ):
-        if (identity is None) != (query is None):
-            raise ValidationError(f"Vivado {kind} requires identity and query together")
-        if identity is None:
-            continue
-        measured = output_dir / f"{kind}.tsv"
-        resolved = output_dir / f"{kind}-resolved.tsv"
-        resolution = resolve_timing_query(index_path, functions_path, lineage_path, query, resolved)
-        resolved = Path(resolution["output"])
-        export = execute_vivado(executable, _vivado_script("export_logic_segment_timing.tcl"),
-                                [str(output_dir / "routed.dcp"), str(resolved), str(measured), *timing_arguments], output_dir, f"{kind}-export.log")
-        imported = importer(measured, identity, output_dir / f"{kind}.json")
-        stages[kind] = {"status": "pass", "resolution": resolution, "export": export, "import": imported}
-    virtual_io = None
+        raise ValidationError('Vivado physical implementation requires current indexed EmuIR')
+    candidate = shutil.which(executable or 'vivado')
+    if candidate is None:
+        raise EmuFlowError('Vivado executable was not found; pass --physical-vivado')
+    for schema in ('vivado-partition-request-v1', 'vivado-partition-report-v1'):
+        require_native_schema(schema)
+    output_dir = Path(output_dir).absolute()
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    def source(path):
+        path = Path(path).resolve()
+        return {'path': str(path), 'generation': native_file_generation(path)}
+    sources = {'ir':source(ir_path), 'rtl':source(mapped_verilog_path),
+        'mapped_index':source(mapped_report['mapped_index']['path']),
+        'functions':source(mapped_report['source_functions']['path']), 'tool':source(candidate)}
+    for name, path in (('boundary_identity',boundary_identity_path), ('logic_identity',logic_identity_path),
+                       ('logic_query',logic_query_path), ('local_identity',local_identity_path), ('local_query',local_query_path)):
+        if path is not None:
+            sources[name] = source(path)
     if virtual_io_contract is not None:
-        pairs = _integer(metrics, "virtual_io_pairs")
-        if pairs != virtual_io_contract["metrics"]["differential_pairs"]:
-            raise ValidationError("Vivado implemented fixed differential pair count disagrees")
-        virtual_io = {"status": "pass", "provider": "vivado-fixed-lvds-routed-boundary-v1",
-            "qualification": "routed-IBUFDS-OBUFDS-with-fixed-P-N-package-pins-and-IOSTANDARD",
-            "contract_sha256": hashlib.sha256(json.dumps(virtual_io_contract, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
-            "differential_pairs": pairs, "physical_ports": 2 * pairs,
-            "top": top_report, "route_validation": {"unrouted_nets": _integer(metrics, "unrouted_nets")}}
-    artifacts = {}
-    for name in ("synthesized.dcp", "placed.dcp", "routed.dcp", "route_status.rpt", "drc.rpt", "timing_summary.rpt", "utilization.rpt", "implementation_metrics.tsv"):
-        path = output_dir / name
-        if not path.is_file() or path.stat().st_size == 0:
-            raise ValidationError(f"Vivado physical artifact is missing: {name}")
-        artifacts[name] = {"path": str(path), "sha256": file_sha256(path), "bytes": path.stat().st_size}
-    result = {"schema": PHYSICAL_PARTITION_RESULT_SCHEMA, "status": "pass",
-        "identity": {"backend": "vivado", "fpga": fpga, "part": part},
-        "analysis_scope": {"implementation_mode": "out-of-context",
-            "data_path_delay": "routed-vendor-device",
-            "external_clock_sources": "abstract-unbound",
-            "absolute_clock_insertion_and_skew": "not-qualified",
-            "cell_accounting_policy": LINEAGE_POLICY,
-            "board_signoff": False},
-        "cell_accounting": {"original_cells": original_cells, "transport_cells": transport_cells,
-            **{name: coverage["stages"]["routed"][name] for name in ("source_cells_with_lineage", "unretained_source_cells", "source_cells_with_multiple_objects")},
-            **{name: _integer(metrics, name) for name in ("routed_cells", "physical_cells", "infrastructure_cells", "optimization_cells")}},
-        "closure": {name: _integer(metrics, name) for name in ("unrouted_nets", "drc_violations", "drc_warnings")},
-        "clocks": {"fabric_period_ns": _number(metrics, "fabric_period_ns"), "dut_period_ns": float(runtime["virtual_dut_clock"]["nominal_period_ns"])},
-        "timing": {**aggregate, "timing_met": aggregate["wns_ns"] >= 0,
-            **{name: _number(metrics, name) for name in ("dut_wns_ns", "fabric_wns_ns", "fabric_to_dut_wns_ns", "critical_path_ns")},
-            "clock_domain_delays_ns": {domain: _number(metrics, name) for domain, name in (("overall", "critical_path_ns"), ("dut", "dut_delay_ns"), ("fabric", "fabric_delay_ns"), ("cross", "fabric_to_dut_delay_ns"))}},
-        "resource_usage": usage, "hard_resources": counts, "artifacts": artifacts}
-    validation = validate_physical_partition_result(result, backend="vivado", fpga=fpga, part=part, original_cells=original_cells, transport_cells=transport_cells)
-    report = {"schema": "emuflow.vivado-partition-report/v1", "status": "pass", "provider": "indexed-phase6-vivado-physical-v1",
-        "tool": {"executable": executable, "version": metrics["vivado_version"], "threads": threads},
-        "implementation": implementation, "cell_coverage": coverage, **stages,
-        **({"virtual_io_implementation": virtual_io} if virtual_io is not None else {}),
-        "result": result, "validation": validation}
-    write_json(output_dir / "vivado-partition-report.json", report, compact=True)
-    return report
+        sources.update(io_adapter=source(virtual_io_contract['adapter']['path']),
+                       io_xdc=source(virtual_io_contract['xdc']['path']))
+    for script in sorted(_vivado_script('implement_indexed_partition.tcl').parent.glob('*.tcl')):
+        sources['script.'+script.name] = source(script)
+    config = {'schema':'emuflow.vivado-partition-request/v1', 'sources':sources,
+        'fpga':fpga, 'part':part, 'runtime':runtime, 'virtual_io_contract':virtual_io_contract,
+        'mapped_report':{'optimization_policy':mapped_report['optimization_policy'],
+            'mapped_sha256':mapped_report['mapped_index']['sha256'],
+            'rtl_sha256':mapped_report['output_sha256'],
+            'functions_sha256':mapped_report['source_functions']['sha256'],
+            'emitted_instances':mapped_report['emitted_instances'],
+            'original_cells':original_cells,'transport_cells':transport_cells},
+        'place_directive':place_directive,'route_directive':route_directive,
+        'threads':int(os.environ.get('EMUFLOW_VIVADO_THREADS','2'))}
+    # Default ASCII escaping retains the existing canonical fixed-I/O seal.
+    payload = json.dumps(config, sort_keys=True, separators=(',', ':'), allow_nan=False)
+    if len(payload.encode()) > 8*1024*1024:
+        raise ValidationError('Vivado partition control document exceeds bound')
+    with tempfile.TemporaryDirectory(prefix='.vivado-partition-host-', dir=output_dir.parent) as temporary:
+        root = Path(temporary)
+        request, proof = root/'request.json', root/'operation.json'
+        request.write_text(payload, encoding='utf-8')
+        native = resolve_native_executable('emuflow-native')
+        with NativeToolProcess(native, [native,'--report',str(proof),'physical',
+            'run-vivado-partition',str(request),str(output_dir)], environment=dict(os.environ), scratch_parent=root, termination_grace_ms=5000) as process:
+            completed = process.finish()
+        if completed.returncode:
+            raise ValidationError('native Vivado partition failed: '+completed.stdout)
+        operation = json.loads(proof.read_text())
+        rows = operation.get('outputs')
+        report_path = output_dir/'vivado-partition-report.json'
+        if (operation.get('stage') != 'physical.run-vivado-partition' or operation.get('status') != 'pass'
+                or not isinstance(rows,list) or len(rows) != 1 or rows[0].get('path') != str(report_path.resolve())
+                or rows[0].get('schema') != 'vivado-partition-report-v1'):
+            raise ValidationError('native Vivado partition proof disagrees')
+        stamped = tuple(rows[0]['generation'].get(key) for key in ('device','inode','bytes','mtime_seconds',
+            'mtime_nanoseconds','ctime_seconds','ctime_nanoseconds'))
+        if stamped != native_file_generation(report_path) or report_path.stat().st_size > 8*1024*1024:
+            raise ValidationError('native Vivado partition report generation changed')
+        report = json.loads(report_path.read_text())
+        if (report.get('status') != 'pass' or report.get('implementation_id') != 'native-vivado-partition-v1'
+                or report.get('result',{}).get('identity') != {'backend':'vivado','fpga':fpga,'part':part}):
+            raise ValidationError('native Vivado partition report identity disagrees')
+        return report
