@@ -5,9 +5,17 @@ a design-specific script or machine-specific configuration.
 
 ## Install once
 
-The complete runtime currently targets Linux x86-64. Install a JDK, CMake,
-GNU Make and the compiler/development packages listed in the
-[complete build requirements](USER_GUIDE.md#complete-build), then run:
+The complete runtime currently targets Linux x86-64. Before installation, the
+host must provide:
+
+- Git, Python 3.9+ with `venv`, CMake 3.20+, GNU Make and a C++17 compiler;
+- a JDK with `java` and `javac`;
+- Bison 3.4+, Flex 2.6+, SWIG 4.0+ and Tcl 8.6+ development files;
+- Boost 1.78+, SQLite 3.22+, zlib, Eigen3, spdlog, LEMON, OR-Tools and OpenMP
+  development packages.
+
+Package names vary by Linux distribution. These are build dependencies rather
+than manually registered EmuFlow paths. With them installed, run:
 
 ```bash
 ./install.sh

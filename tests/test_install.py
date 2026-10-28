@@ -47,6 +47,17 @@ def test_verified_rapidwright_download_is_reused(tmp_path, monkeypatch):
     assert target.read_bytes() == b"verified"
 
 
+def test_program_any_accepts_an_available_alternative(monkeypatch):
+    monkeypatch.setattr(
+        INSTALLER.shutil,
+        "which",
+        lambda name: "/tools/clang++" if name == "clang++" else None,
+    )
+    assert INSTALLER.program_any(
+        "C++ compiler", ("c++", "g++", "clang++")
+    ) == Path("/tools/clang++")
+
+
 def test_launcher_links_point_at_installation(tmp_path, monkeypatch):
     installation = tmp_path / "install"
     (installation / "bin").mkdir(parents=True)

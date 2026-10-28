@@ -73,6 +73,15 @@ def program(name: str) -> Path:
     return Path(result).resolve()
 
 
+def program_any(label: str, names: tuple[str, ...]) -> Path:
+    for name in names:
+        if result := shutil.which(name):
+            return Path(result).resolve()
+    raise InstallError(
+        f"required program is missing: {label} ({', '.join(names)})"
+    )
+
+
 def python_is_ready(python: Path) -> bool:
     probe = subprocess.run(
         [
@@ -446,6 +455,11 @@ def main(argv=None) -> int:
         )
     python = prepare_python(args.python.expanduser().resolve())
     program("cmake")
+    program_any("GNU Make", ("gmake", "make"))
+    program_any("C++ compiler", ("c++", "g++", "clang++"))
+    program("bison")
+    program("flex")
+    program("swig")
     java = program("java")
     javac = program("javac")
 

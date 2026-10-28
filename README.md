@@ -40,6 +40,20 @@ references are in [the algorithm overview](docs/ALGORITHMS.md).
 
 ## Quick start
 
+The complete runtime requires these host prerequisites before running the
+installer:
+
+- Linux x86-64;
+- Git, Python 3.9+ with `venv`, CMake 3.20+, GNU Make and a C++17 compiler;
+- a JDK providing both `java` and `javac`;
+- Bison 3.4+, Flex 2.6+, SWIG 4.0+ and Tcl 8.6+ development files;
+- Boost 1.78+, SQLite 3.22+, zlib, Eigen3, spdlog, LEMON, OR-Tools and OpenMP
+  development packages.
+
+Python packages used by the flow, including NumPy, PyYAML and CPU PyTorch, are
+prepared automatically when they are missing. Vivado is optional and is only
+needed for the `vivado` backend.
+
 Install once, then give EmuFlow the RTL, top module and clock period:
 
 ```bash

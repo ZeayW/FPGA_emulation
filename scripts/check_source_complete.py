@@ -528,6 +528,8 @@ def audit(repo_root: Path) -> list[str]:
                     )
             for required in (
                 "./install.sh",
+                "CMake 3.20+",
+                "JDK",
                 "emuflow run rtl/top.sv --top top --clock clk=10 --backend rapidwright",
                 "--backend vivado",
                 "runs/top",
