@@ -19,7 +19,7 @@ FILES=('native-costs.tsv','fanin-summary.tsv','native-capture-costs.tsv','missin
        'native-dut-hold.tsv','native-rx-infrastructure-hold.tsv','native-control-checks.tsv',
        'native-observation-metrics.tsv')
 SCRIPTS=('observe_native_word.tcl','native_word_observation.tcl','native_word_captures.tcl',
-         'native_word_timing.tcl','word_phase_context.tcl','timing_contract.tcl')
+         'native_word_timing.tcl','native_word_tx_batch.tcl','word_phase_context.tcl','timing_contract.tcl')
 
 
 def _checks(path):

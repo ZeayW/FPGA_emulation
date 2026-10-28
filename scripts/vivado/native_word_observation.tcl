@@ -1,6 +1,7 @@
 # Disposable post-route observation. No original DUT pin or hierarchy is a
 # timing endpoint; canonical RX state tags and physical TX pads own the cuts.
 source [file join [file dirname [info script]] native_word_captures.tcl]
+source [file join [file dirname [info script]] native_word_tx_batch.tcl]
 
 proc emuflow_observe_native_word {checkpoint roles boundaries output threads} {
   if {![string is integer -strict $threads] || $threads<1} {error "invalid native observation thread count"}
@@ -87,18 +88,16 @@ proc emuflow_observe_native_word {checkpoint roles boundaries output threads} {
   set count 0
   foreach phase [lsort -integer [dict keys $targets]] {
     emuflow_word_phase_select $context $phase
+    set phase_targets [list]
     foreach logical [dict get $targets $phase] {
-      # Resolves the actual serializer D bit through its fixed package pad.
-      # Unused RX hierarchy ports are deliberately never looked up.
-      set pin [emuflow_fixed_io_object $mapping $logical]
-      set fanin [emuflow_native_word_tx_costs $sources $stream $phase $logical $pin]
-      puts $summary "$phase\t[binary encode hex [encoding convertto utf-8 $logical]]\t[dict get $fanin native_startpoints]\t[dict size [dict get $fanin rx]]\t[dict size [dict get $fanin dut_cells]]\t[dict size [dict get $fanin infrastructure_cells]]\t[dict size [dict get $fanin ports]]\t[dict size [dict get $fanin unclassified]]"
-      incr count
-      if {$count%100==0} {
-        flush $summary
-        puts $progress "$phase\t$count\t[expr {[clock seconds]-$began}]"
-        flush $progress
-      }
+      lappend phase_targets [list $logical [emuflow_fixed_io_object $mapping $logical]]
+    }
+    for {set begin 0} {$begin<[llength $phase_targets]} {incr begin 256} {
+      set observed [emuflow_native_word_tx_batch $sources $stream $summary $phase \
+          [lrange $phase_targets $begin [expr {$begin+255}]] 256]
+      incr count [dict get $observed contexts]
+      puts $progress "$phase\t$count\t[expr {[clock seconds]-$began}]"
+      flush $progress
     }
     flush $summary
     puts $progress "$phase\t$count\t[expr {[clock seconds]-$began}]"
