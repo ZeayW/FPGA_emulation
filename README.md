@@ -132,56 +132,6 @@ contracts, then uses the currently selected BoardDB for Phases 3–7. It does no
 inherit an older interconnect configuration. See
 [continuation requirements](docs/USER_GUIDE.md#continue-from-completed-indexed-inputs).
 
-## Implementation and validation status
-
-The shared C++ library owns the ordinary RTL frontend, pre-placement timing,
-Phase 3 partitioning, Phase 4 routing, Phase 5 scheduling and baseline Phase 6
-when these stages run under native control. It also owns OpenPARF input
-preparation, typed physical handoff production and audit, RWRoute input export
-and connectivity/PIP validation, and the core global timing binding and reduction.
-The replaced Python input generators are removed from the production package.
-
-The native controller still uses transitional adapters for configuration,
-supplied/prepared inputs, Chimew and physical/signoff stages. OpenPARF
-placement-result processing and certificate production also retain Python
-production logic; the required OpenPARF/PyTorch host remains. A single production
-controller does not establish complete native data-plane ownership. See
-[native compile control](docs/USER_GUIDE.md#native-compile-control) and
-[migration boundaries](docs/PHASE3_NATIVE_MIGRATION.md#stage-ownership-boundaries).
-
-Current-source NVDLA end-to-end physical and global-timing qualification remains
-incomplete. Component regressions and intermediate results do not establish
-full-design acceptance on either physical backend. The required correctness,
-coverage, resource and timing evidence is defined in
-[validation requirements](docs/VALIDATION.md) and
-[the Xilinx physical-flow contract](docs/XILINX_PHYSICAL_FLOW.md).
-
-## Scope and limits
-
-- The maintained compile path targets Xilinx UltraScale+. Retired partition,
-  scheduling and physical routes are not alternative production configurations;
-  historical runs require their matching source revision.
-- The bundled BoardDB is an academic platform model, not evidence of a
-  manufactured board. Its default four-FPGA preset caps each resource at 25% of
-  each device's raw capacity, including downstream implementation overhead.
-  Partition balance and physical capacity are separate constraints. See
-  [the hardware platform model](docs/HARDWARE_PLATFORM.md).
-- State every analyzed clock period explicitly. Static Exact has a constrained
-  synchronous, single-virtual-clock semantic model; it does not establish
-  arbitrary CDC or board-level clock/skew signoff.
-- Physical acceptance requires complete cell and endpoint coverage, legal
-  site/BEL and dedicated-resource use, exclusive routing-resource ownership and
-  source-to-sink connectivity. Analytical placement convergence alone is not
-  a physical certificate.
-- WNS/TNS refer to the declared original TimingPathDB population. Original-path
-  TNS sums negative slack per original path, rather than once per unique register
-  endpoint. Per-FPGA timing summaries are separate diagnostics. See
-  [global timing scope](docs/global-opensta-qualification.md).
-- Vivado is proprietary and is not bundled. RapidWright and other upstream
-  components retain their own licensing conditions. Bitstream generation and
-  hardware bring-up require board-specific clock, reset, electrical and transport
-  qualification beyond this research-platform flow.
-
 ## Repository layout
 
 ```text
