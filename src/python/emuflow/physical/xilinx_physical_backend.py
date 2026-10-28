@@ -24,7 +24,7 @@ from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index, open_xilin
 from emuflow.physical.openparf.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source, run_xilinx_openparf_atomic_qualification
 from emuflow.physical.handoff import materialize_xilinx_openparf_atomic_contract
 from emuflow.timing.xilinx_opensta import run_xilinx_routed_opensta
-from emuflow.physical.rapidwright.xilinx_rwroute import export_rwroute_input, run_rwroute, validate_xilinx_route_db
+from emuflow.physical.rapidwright.route_stage import run_native_rwroute_stage
 from emuflow.timing.xilinx_segment_timing import build_xilinx_segment_timing_bundle
 from emuflow.timing.xilinx_timing import build_xilinx_routed_timing
 
@@ -243,7 +243,6 @@ def _run_rapidwright_routed_backend_tail(
     boundary_identity_path: Path,
     rapidwright_jar: Path,
     java: Path,
-    classes_dir: Path,
     java_source: Path,
     device_data_root: Path,
     timing_data_dir: Path,
@@ -254,74 +253,23 @@ def _run_rapidwright_routed_backend_tail(
     packing_stage: Mapping[str, Any],
     placement_stage: Mapping[str, Any],
     placement_artifacts: Mapping[str, Path],
-    mapped_sha256: Optional[str] = None,
     virtual_io_contract: Optional[Mapping[str, Any]] = None,
     resume: bool = False,
 ) -> Dict[str, Any]:
     """Route and time one already materialized packed placement."""
 
-    packed_sha256 = _sha256(packed_path)
-    placement_sha256 = (
-        packed_sha256
-        if packed_path == placement_path else _sha256(placement_path)
-    )
-    source_sha256 = {
-        "mapped_sha256": mapped_sha256 or _sha256(mapped_path),
-        "packed_sha256": packed_sha256,
-        "placement_sha256": placement_sha256,
-    }
-    rwroute_input = output_dir / "rwroute.tsv"
-    route_input_report = export_rwroute_input(
-        mapped_path, packed_path, rwroute_input,
-        source_sha256=source_sha256,
+    routed = run_native_rwroute_stage(
+        None, output_dir / "route.json", rapidwright_jar=rapidwright_jar,
+        java=java, java_source=java_source, device_data_root=device_data_root,
+        timing_data_dir=timing_data_dir, mapped_path=mapped_path,
+        handoff_path=packed_path, placement_path=placement_path,
         virtual_io_contract=virtual_io_contract,
         resource_limits=runtime.get("resource_budget", {}).get("effective_capacity"),
+        export_input=True, resume=resume,
     )
-    route_path = output_dir / "route.json"
-    route_value: Dict[str, Any] = {}
-    route_log_path = output_dir / "rwroute.log"
-    if resume and route_path.is_file():
-        loaded_route = read_json(route_path)
-        if not isinstance(loaded_route, dict):
-            raise ValidationError("resumed XilinxRouteDB header is invalid")
-        route_value.update(loaded_route)
-        route_report = {
-            **validate_xilinx_route_db(
-                route_path,
-                rwroute_input_path=rwroute_input,
-                mapped_path=mapped_path,
-                packed_path=packed_path,
-                placement_path=placement_path,
-                mapped_value=mapped_value,
-                packed_value=packed_value,
-                source_sha256=source_sha256,
-                virtual_io_contract=virtual_io_contract,
-
-            ),
-            "output": str(route_path),
-            "log": str(route_log_path) if route_log_path.is_file() else None,
-            "reused": True,
-        }
-    else:
-        route_report = run_rwroute(
-            rwroute_input,
-            route_path,
-            rapidwright_jar=rapidwright_jar,
-            java=java,
-            classes_dir=classes_dir,
-            java_source=java_source,
-            device_data_root=device_data_root,
-            timing_data_dir=timing_data_dir,
-            log_path=route_log_path,
-            mapped_path=mapped_path,
-            packed_path=packed_path,
-            placement_path=placement_path,
-            mapped_value=mapped_value,
-            packed_value=packed_value,
-            source_sha256=source_sha256,
-            route_value_sink=route_value,
-            virtual_io_contract=virtual_io_contract,
-        )
+    source_sha256 = routed["source_sha256"]
+    route_input_report, route_report = routed["export"], routed["route"]
+    route_path, route_value = Path(route_report["output"]), routed["manifest"]
     return _finish_rapidwright_routed_backend(
         fpga=fpga,
         part=part,
@@ -674,7 +622,6 @@ def run_rapidwright_openparf_native_candidate_backend(
     boundary_identity_path: Path,
     rapidwright_jar: Path,
     java: Path,
-    classes_dir: Path,
     java_source: Path,
     device_data_root: Path,
     timing_data_dir: Path,
@@ -842,7 +789,6 @@ def run_rapidwright_openparf_native_candidate_backend(
         boundary_identity_path=boundary_identity_path,
         rapidwright_jar=rapidwright_jar,
         java=java,
-        classes_dir=classes_dir,
         java_source=java_source,
         device_data_root=device_data_root,
         timing_data_dir=timing_data_dir,
@@ -882,7 +828,6 @@ def run_rapidwright_openparf_native_candidate_backend(
             } if atomic_source_store_path is not None else {}),
             "openparf_atomic_certificate": certificate_path,
         },
-        mapped_sha256=mapped_sha256,
         virtual_io_contract=virtual_io_contract,
         resume=resume,
     )

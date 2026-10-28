@@ -111,7 +111,7 @@ def native(root, values, *, contract=True):
     mapped, packed, placement, io, mapped_path, handoff = values
     with mock.patch.object(
             rwroute_native, 'resolve_native_executable', return_value=str(emuflow_native())), \
-            mock.patch('emuflow.physical.rapidwright.xilinx_rwroute.read_json', side_effect=AssertionError('Python JSON loader')), \
+            mock.patch('emuflow.common.io.read_json', side_effect=AssertionError('Python JSON loader')), \
             mock.patch('emuflow.physical.xilinx_netlist.IndexedXilinxMappedNetlist.__init__', side_effect=AssertionError('Python mapped view')), \
             mock.patch('emuflow.physical.xilinx_physical_handoff.open_xilinx_physical_handoff', side_effect=AssertionError('Python physical views')):
         return export_rwroute_input(

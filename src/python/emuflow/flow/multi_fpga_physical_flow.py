@@ -491,7 +491,6 @@ def run_multi_fpga_physical_flow(
     vivado_route_directive: str = "Default",
     rapidwright_jar: Optional[Path] = None,
     rapidwright_java: Optional[Path] = None,
-    rapidwright_classes: Optional[Path] = None,
     rapidwright_java_source: Optional[Path] = None,
     rapidwright_device_data: Optional[Path] = None,
     rapidwright_timing_data: Optional[Path] = None,
@@ -785,8 +784,6 @@ def run_multi_fpga_physical_flow(
             rapidwright_java_source = next((path for path in candidates if path.is_file()), candidates[0])
         if not rapidwright_java_source.is_file():
             raise ValidationError("RapidWright Java adapter source is missing")
-        if rapidwright_classes is None:
-            rapidwright_classes = output_dir / ".rapidwright-classes"
         provider_identity = None
         if rapidwright_provider_manifest is not None:
             provider_identity = validate_rapidwright_provider_manifest(
@@ -1232,7 +1229,6 @@ def run_multi_fpga_physical_flow(
                 local_identity_path = Path(local_query_report["identity"])
             assert rapidwright_jar is not None
             assert rapidwright_java is not None
-            assert rapidwright_classes is not None
             assert rapidwright_java_source is not None
             assert rapidwright_device_data is not None
             assert rapidwright_timing_data is not None
@@ -1250,10 +1246,6 @@ def run_multi_fpga_physical_flow(
                 boundary_identity_path=boundary_identity_path,
                 rapidwright_jar=rapidwright_jar,
                 java=rapidwright_java,
-                # Each worker receives an isolated class/runtime-data root.
-                # RapidWright may extract device data beneath user.home, so a
-                # shared directory would introduce cross-partition races.
-                classes_dir=rapidwright_classes / fpga_id,
                 java_source=rapidwright_java_source,
                 device_data_root=rapidwright_device_data,
                 timing_data_dir=rapidwright_timing_data,

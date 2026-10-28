@@ -89,3 +89,4 @@ physical/openparf/prepare.cpp
 physical/vivado/vivado_inputs.cpp
 physical/measurement_stage.cpp
 physical/vivado/vivado_partition.cpp
+physical/rapidwright/rwroute_stage.cpp

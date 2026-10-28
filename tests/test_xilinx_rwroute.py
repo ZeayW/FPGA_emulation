@@ -19,7 +19,6 @@ from emuflow.physical.xilinx_physical_handoff import (
     open_xilinx_physical_handoff,
 )
 from emuflow.physical.rapidwright.xilinx_rwroute import (
-    _validate_rapidwright_device_data,
     export_rwroute_input,
     validate_xilinx_route_db,
 )
@@ -435,15 +434,6 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertIn('"jsonl-object/v1"', source)
         self.assertIn('"jsonl-array/v1"', source)
         self.assertNotIn('output.put("nets"', source)
-
-    def test_device_data_provider_fails_closed_on_unpinned_database(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            path = root / "data/parts.db"
-            path.parent.mkdir(parents=True)
-            path.write_bytes(b"not-the-pinned-provider")
-            with self.assertRaisesRegex(ValidationError, "pinned XCVU19P"):
-                _validate_rapidwright_device_data(root)
 
     def _route(self):
         return {
@@ -1023,13 +1013,6 @@ class XilinxRWRouteTest(unittest.TestCase):
         self.assertGreaterEqual(source.count("Files.newBufferedReader(inputPath"), 2)
         self.assertNotIn("Map<String, List<String[]>> pinRows", source)
 
-    def test_rapidwright_heap_override_is_bounded_java_size(self):
-        source = (
-            Path(__file__).parents[1] / "src/python/emuflow/physical/rapidwright/xilinx_rwroute.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn('EMUFLOW_RAPIDWRIGHT_MAX_HEAP", "32g"', source)
-        self.assertIn('f"-Xmx{maximum_heap}"', source)
-
     def test_checker_requires_explicit_boundary_clock_qualification(self):
         value = self._route()
         value["excluded_nets"] = [{
@@ -1131,7 +1114,7 @@ class XilinxRWRouteTest(unittest.TestCase):
                     wraps=real_timing_read,
                 ) as timing_read,
                 mock.patch(
-                    "emuflow.physical.rapidwright.xilinx_rwroute.read_json",
+                    "emuflow.common.io.read_json",
                     side_effect=AssertionError(
                         "route validator reparsed preloaded objects"
                     ),
@@ -1385,7 +1368,7 @@ class XilinxRWRouteTest(unittest.TestCase):
             root = Path(temporary)
             output = root / "route.tsv"
             with mock.patch(
-                "emuflow.physical.rapidwright.xilinx_rwroute.read_json",
+                "emuflow.common.io.read_json",
                 side_effect=AssertionError("preloaded objects were reparsed"),
             ):
                 report = export_rwroute_reference(

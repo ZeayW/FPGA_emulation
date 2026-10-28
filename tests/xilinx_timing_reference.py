@@ -15,7 +15,8 @@ from typing import Any, Callable, Dict, Iterator, Mapping, Optional
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import file_sha256, read_json, write_json
 from emuflow.physical.xilinx_physical_handoff import validate_xilinx_physical_handoff_pair
-from emuflow.physical.rapidwright.xilinx_rwroute import iter_xilinx_route_nets, validate_xilinx_route_db
+from tests.rwroute_reference import iter_xilinx_route_nets
+from emuflow.physical.rapidwright.xilinx_rwroute import validate_xilinx_route_db
 
 
 XILINX_ROUTED_TIMING_SCHEMA = "emuflow.xilinx-routed-timing/v1"

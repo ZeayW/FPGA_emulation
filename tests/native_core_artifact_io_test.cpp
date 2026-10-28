@@ -76,6 +76,15 @@ int main() {
       throw std::runtime_error("CRC-32 vector disagrees");
     }
   }
+  // Vendor checksum vectors cover padding boundaries and incremental updates.
+  for(const auto &item:std::vector<std::pair<std::string,std::string>>{
+    {"","d41d8cd98f00b204e9800998ecf8427e"},{"abc","900150983cd24fb0d6963f7d28e17f72"},
+    {std::string(1000000,'a'),"7707d6ae4e027c70eea2a935c2296f21"}}){
+    emuflow::core::Md5 hash;
+    for(std::size_t i=0;i<item.first.size();i+=17)hash.update(reinterpret_cast<const unsigned char*>(item.first.data()+i),std::min(std::size_t(17),item.first.size()-i));
+    std::string actual;for(auto b:hash.finish()){actual+="0123456789abcdef"[b>>4];actual+="0123456789abcdef"[b&15];}
+    if(actual!=item.second)throw std::runtime_error("vendor MD5 checksum vector disagrees");
+  }
   const auto root = std::filesystem::temp_directory_path() /
                     ("emuflow-core-artifact-" + std::to_string(ProcessId()));
   std::filesystem::create_directories(root);

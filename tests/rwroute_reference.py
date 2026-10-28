@@ -900,3 +900,169 @@ _CLOCK_SINK_PINS = frozenset({
     "CLKARDCLK",
     "CLKBWRCLK",
 })
+
+
+# This streaming reader is used only by the explicit timing oracle. Production
+# route traversal and certification are native and have no Python fallback.
+from emuflow.physical.rapidwright.xilinx_rwroute import _route_payload_path, XILINX_ROUTE_NET_PAYLOAD_FORMAT
+XILINX_ROUTE_DB_SCHEMA = "emuflow.xilinx-route-db/v1"
+XILINX_ROUTE_DB_STREAM_SCHEMA = "emuflow.xilinx-route-db/v2"
+XILINX_ROUTE_PIP_PAYLOAD_FORMAT = "jsonl-array/v1"
+
+def _hashed_json_lines(
+    path: Path,
+    *,
+    expected_sha256: str,
+    expected_records: int,
+    field: str,
+) -> Iterator[object]:
+    digest = hashlib.sha256()
+    count = 0
+    with path.open("rb") as stream:
+        for raw in stream:
+            digest.update(raw)
+            if not raw.endswith(b"\n"):
+                raise ValidationError(
+                    f"XilinxRouteDB payloads.{field} has a truncated record"
+                )
+            try:
+                value = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ValidationError(
+                    f"XilinxRouteDB payloads.{field} record {count} is invalid"
+                ) from error
+            count += 1
+            yield value
+    if count != expected_records:
+        raise ValidationError(
+            f"XilinxRouteDB payloads.{field} record count disagrees"
+        )
+    if digest.hexdigest() != expected_sha256:
+        raise ValidationError(
+            f"XilinxRouteDB payloads.{field} digest disagrees"
+        )
+
+
+def iter_xilinx_route_nets(
+    path: Path,
+    route: Mapping[str, Any],
+    *,
+    include_pips: bool,
+) -> Iterator[Dict[str, Any]]:
+    """Iterate one route net at a time without loading the v2 payloads.
+
+    The legacy v1 object remains readable for immutable historical evidence.
+    New producers emit a small manifest plus line-delimited net and PIP
+    payloads.  Validation consumes both streams exactly once; timing binding
+    reads only the much smaller net/end-point stream and never scans PIPs.
+    """
+
+    schema = route.get("schema")
+    if schema == XILINX_ROUTE_DB_SCHEMA:
+        nets = route.get("nets")
+        if not isinstance(nets, list):
+            raise ValidationError("XilinxRouteDB net collection is invalid")
+        for net in nets:
+            if not isinstance(net, dict):
+                raise ValidationError("XilinxRouteDB net record is invalid")
+            if include_pips:
+                yield net
+            else:
+                yield {key: value for key, value in net.items() if key != "pips"}
+        return
+    if schema != XILINX_ROUTE_DB_STREAM_SCHEMA:
+        raise ValidationError("XilinxRouteDB header is invalid")
+    payloads = route.get("payloads")
+    if not isinstance(payloads, Mapping) or set(payloads) != {"nets", "pips"}:
+        raise ValidationError("XilinxRouteDB payload manifest is invalid")
+    nets_path, nets_digest, nets_count = _route_payload_path(
+        path,
+        payloads["nets"],
+        field="nets",
+        expected_format=XILINX_ROUTE_NET_PAYLOAD_FORMAT,
+    )
+    net_stream = _hashed_json_lines(
+        nets_path,
+        expected_sha256=nets_digest,
+        expected_records=nets_count,
+        field="nets",
+    )
+    if not include_pips:
+        for index, net in enumerate(net_stream):
+            if not isinstance(net, dict):
+                raise ValidationError(
+                    f"XilinxRouteDB payloads.nets record {index} is invalid"
+                )
+            pip_count = net.get("pip_count")
+            if isinstance(pip_count, bool) or not isinstance(pip_count, int) or pip_count < 0:
+                raise ValidationError(
+                    f"XilinxRouteDB payloads.nets record {index} pip count is invalid"
+                )
+            yield net
+        return
+    pips_path, pips_digest, pips_count = _route_payload_path(
+        path,
+        payloads["pips"],
+        field="pips",
+        expected_format=XILINX_ROUTE_PIP_PAYLOAD_FORMAT,
+    )
+    pip_stream = iter(_hashed_json_lines(
+        pips_path,
+        expected_sha256=pips_digest,
+        expected_records=pips_count,
+        field="pips",
+    ))
+    consumed_pips = 0
+    for index, net in enumerate(net_stream):
+        if not isinstance(net, dict):
+            raise ValidationError(
+                f"XilinxRouteDB payloads.nets record {index} is invalid"
+            )
+        pip_count = net.get("pip_count")
+        if isinstance(pip_count, bool) or not isinstance(pip_count, int) or pip_count < 0:
+            raise ValidationError(
+                f"XilinxRouteDB payloads.nets record {index} pip count is invalid"
+            )
+        net_name = net.get("net")
+        pips: List[Dict[str, Any]] = []
+        for _ in range(pip_count):
+            try:
+                record = next(pip_stream)
+            except StopIteration as error:
+                raise ValidationError(
+                    f"XilinxRouteDB payloads.pips ends inside net {net_name!r}"
+                ) from error
+            consumed_pips += 1
+            if (
+                not isinstance(record, list)
+                or len(record) != 8
+                or record[0] != net_name
+                or any(not isinstance(record[field], str) or not record[field]
+                       for field in range(1, 6))
+                or not isinstance(record[6], bool)
+                or not isinstance(record[7], bool)
+            ):
+                raise ValidationError(
+                    f"XilinxRouteDB payloads.pips record {consumed_pips - 1} is invalid"
+                )
+            pips.append({
+                "tile": record[1],
+                "start_wire": record[2],
+                "end_wire": record[3],
+                "start_node": record[4],
+                "end_node": record[5],
+                "bidirectional": record[6],
+                "reversed": record[7],
+            })
+        value = dict(net)
+        value.pop("pip_count", None)
+        value["pips"] = pips
+        yield value
+    try:
+        next(pip_stream)
+    except StopIteration:
+        pass
+    else:
+        raise ValidationError("XilinxRouteDB payloads.pips has unbound records")
+    if consumed_pips != pips_count:
+        raise ValidationError("XilinxRouteDB payloads.pips record count disagrees")

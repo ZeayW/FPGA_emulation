@@ -22,7 +22,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             "fpga": "F0", "part": "xcvu19p-test",
             **{name: root / name for name in (
                 "merged_ir_path", "mapped_path", "packed_path", "placement_path",
-                "boundary_identity_path", "rapidwright_jar", "java", "classes_dir",
+                "boundary_identity_path", "rapidwright_jar", "java",
                 "java_source", "device_data_root", "timing_data_dir",
             )},
             "mapped_report": {"top": "top"}, **values,
@@ -31,25 +31,21 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             "logic_identity_path": None, "local_identity_path": None,
             "provider": "fixture", "packing_stage": {},
             "placement_stage": {}, "placement_artifacts": {},
-            "mapped_sha256": "a" * 64,
             "virtual_io_contract": {"sealed": "fixed-xdc-adapter"},
         }
         route_header = {"fixture": "bounded-header"}
         route_check = {"status": "pass", "route_sha256": "c" * 64}
         input_report = {"expanded_lut6_2_cells": 0, "transformed_dsp48e2_cells": 0}
 
-        def route(*args, **kw):
-            kw["route_value_sink"].update(route_header)
-            return route_check
-
+        route_check['output'] = str(root / 'route.json')
         module = "emuflow.physical.xilinx_physical_backend."
-        with mock.patch(module + "_sha256", return_value="b" * 64), \
-             mock.patch(module + "export_rwroute_input", return_value=input_report) as export, \
-             mock.patch(module + "run_rwroute", side_effect=route) as router, \
+        result = {'source_sha256':{'mapped_sha256':'a'*64}, 'export':input_report,
+                  'route':route_check, 'manifest':route_header}
+        with mock.patch(module + "run_native_rwroute_stage", return_value=result) as router, \
              mock.patch(module + "_finish_rapidwright_routed_backend", return_value={"done": True}) as finish:
             self.assertEqual(_run_rapidwright_routed_backend_tail(**kwargs), {"done": True})
-        export.assert_called_once()
         router.assert_called_once()
+        self.assertTrue(router.call_args.kwargs['export_input'])
         finish.assert_called_once()
         handed = finish.call_args.kwargs
         for name, value in values.items():
@@ -67,8 +63,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
         route_check = {"status": "pass", "route_sha256": "a" * 64}
         route_header = {"fixture": "bounded-header"}
         source = {"mapped_sha256": "b" * 64}
-        with mock.patch(module + "export_rwroute_input", side_effect=AssertionError("re-export forbidden")), \
-             mock.patch(module + "run_rwroute", side_effect=AssertionError("reroute forbidden")), \
+        with mock.patch(module + "run_native_rwroute_stage", side_effect=AssertionError("reroute forbidden")), \
              mock.patch(module + "build_xilinx_routed_timing", side_effect=RuntimeError("timing-stage-reached")) as timing:
             with self.assertRaisesRegex(RuntimeError, "timing-stage-reached"):
                 _finish_rapidwright_routed_backend(
@@ -109,39 +104,29 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                 for name in (
                     "merged_ir_path", "mapped_path", "packed_path",
                     "placement_path", "boundary_identity_path", "rapidwright_jar",
-                    "java", "classes_dir", "java_source", "device_data_root",
+                    "java", "java_source", "device_data_root",
                     "timing_data_dir",
                 ):
                     arguments[name] = root / name
+                routed={'source_sha256':{}, 'export':{}, 'route':{'status':'pass','output':str(route_path)},
+                        'manifest':{'schema':'sealed-route'}}
                 with (
-                    mock.patch("emuflow.physical.xilinx_physical_backend._sha256", return_value="0" * 64),
-                    mock.patch("emuflow.physical.xilinx_physical_backend.export_rwroute_input") as export,
-                    mock.patch(
-                        "emuflow.physical.xilinx_physical_backend.validate_xilinx_route_db",
-                        return_value={"status": "pass"},
-                        side_effect=None if valid else ValidationError("input mismatch"),
-                    ) as validate,
-                    mock.patch("emuflow.physical.xilinx_physical_backend.run_rwroute") as route,
-                    mock.patch(
-                        "emuflow.physical.xilinx_physical_backend.build_xilinx_routed_timing",
-                        side_effect=RuntimeError("timing-boundary-reached"),
-                    ) as timing,
+                    mock.patch('emuflow.physical.xilinx_physical_backend.run_native_rwroute_stage',
+                        return_value=routed, side_effect=None if valid else ValidationError('input mismatch')) as route,
+                    mock.patch('emuflow.physical.xilinx_physical_backend.build_xilinx_routed_timing',
+                        side_effect=RuntimeError('timing-boundary-reached')) as timing,
                 ):
                     if valid:
-                        with self.assertRaisesRegex(RuntimeError, "timing-boundary-reached"):
+                        with self.assertRaisesRegex(RuntimeError,'timing-boundary-reached'):
                             _run_rapidwright_routed_backend_tail(**arguments)
+                        self.assertEqual(timing.call_args.kwargs['route_value'],{'schema':'sealed-route'})
                     else:
-                        with self.assertRaisesRegex(ValidationError, "input mismatch"):
+                        with self.assertRaisesRegex(ValidationError,'input mismatch'):
                             _run_rapidwright_routed_backend_tail(**arguments)
-                    export.assert_called_once()
-                    route.assert_not_called()
-                    validate.assert_called_once()
-                    self.assertEqual(validate.call_args.kwargs["rwroute_input_path"], root / "rwroute.tsv")
-                    self.assertEqual(validate.call_args.kwargs["mapped_path"], arguments["mapped_path"])
-                    if valid:
-                        self.assertEqual(timing.call_args.kwargs["route_value"], {"schema": "sealed-route"})
-                    else:
                         timing.assert_not_called()
+                    route.assert_called_once()
+                    self.assertTrue(route.call_args.kwargs['resume'])
+                    self.assertTrue(route.call_args.kwargs['export_input'])
 
     def test_native_qualification_report_references_large_certificate(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -239,22 +224,13 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     },
                 }
 
-            def stop_at_export(mapped, handoff, output, **kwargs):
-                self.assertEqual(mapped, physical / "partition.mapped.sqlite")
-                self.assertEqual(handoff, packed_path)
-                self.assertEqual(output, physical / "rwroute.tsv")
-                self.assertNotIn("mapped_value", kwargs)
-                self.assertNotIn("packed_value", kwargs)
-                self.assertNotIn("placement_value", kwargs)
-                self.assertEqual(
-                    kwargs["source_sha256"],
-                    {
-                        "mapped_sha256": "0" * 64,
-                        "packed_sha256": "0" * 64,
-                        "placement_sha256": "0" * 64,
-                    },
-                )
-                raise RuntimeError("native-bridge-reached-rwroute")
+            def stop_at_export(_input, output, **kwargs):
+                self.assertEqual(kwargs['mapped_path'], physical / 'partition.mapped.sqlite')
+                self.assertEqual(kwargs['handoff_path'], packed_path)
+                self.assertEqual(output, physical / 'route.json')
+                self.assertTrue(kwargs['export_input'])
+                self.assertNotIn('mapped_value',kwargs)
+                raise RuntimeError('native-bridge-reached-rwroute')
 
             def qualify(*_args, **_kwargs):
                 certificate_path = (
@@ -316,7 +292,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     side_effect=materialize,
                 ) as bridge,
                 mock.patch(
-                    "emuflow.physical.xilinx_physical_backend.export_rwroute_input",
+                    "emuflow.physical.xilinx_physical_backend.run_native_rwroute_stage",
                     side_effect=stop_at_export,
                 ) as export,
                 mock.patch(
@@ -339,7 +315,6 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                         boundary_identity_path=root / "boundary.json",
                         rapidwright_jar=root / "rapidwright.jar",
                         java=root / "java",
-                        classes_dir=root / "classes",
                         java_source=root / "route.java",
                         device_data_root=root / "device-data",
                         timing_data_dir=root / "timing-data",
@@ -350,10 +325,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
             qualify.assert_called_once()
             bridge.assert_called_once()
             export.assert_called_once()
-            self.assertEqual(
-                digest.call_args_list.count(mock.call(published_handoff_path)),
-                1,
-            )
+            self.assertNotIn(mock.call(published_handoff_path),digest.call_args_list)
             read.assert_not_called()
             self.assertIs(
                 build_source.call_args.kwargs["mapped_value"], mapped_value

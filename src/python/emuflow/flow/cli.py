@@ -595,7 +595,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_compile.add_argument("--physical-rapidwright-jar", type=Path)
     multi_fpga_compile.add_argument("--physical-rapidwright-java", type=Path)
-    multi_fpga_compile.add_argument("--physical-rapidwright-classes", type=Path)
     multi_fpga_compile.add_argument(
         "--physical-rapidwright-java-source", type=Path
     )
@@ -691,7 +690,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     multi_fpga_physical.add_argument("--rapidwright-jar", type=Path)
     multi_fpga_physical.add_argument("--rapidwright-java", type=Path)
-    multi_fpga_physical.add_argument("--rapidwright-classes", type=Path)
     multi_fpga_physical.add_argument("--rapidwright-java-source", type=Path)
     multi_fpga_physical.add_argument("--rapidwright-device-data", type=Path)
     multi_fpga_physical.add_argument("--rapidwright-timing-data", type=Path)
@@ -849,7 +847,6 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_run_rwroute.add_argument("--output", "-o", type=Path, required=True)
     arch_run_rwroute.add_argument("--rapidwright-jar", type=Path, required=True)
     arch_run_rwroute.add_argument("--java", type=Path, required=True)
-    arch_run_rwroute.add_argument("--classes", type=Path, required=True)
     arch_run_rwroute.add_argument("--java-source", type=Path, required=True)
     arch_run_rwroute.add_argument(
         "--device-data-root", type=Path, required=True,
@@ -862,7 +859,6 @@ def _build_parser() -> argparse.ArgumentParser:
             "timing-data files"
         ),
     )
-    arch_run_rwroute.add_argument("--log", type=Path)
     arch_validate_rwroute = arch_subparsers.add_parser(
         "validate-xilinx-route",
         help="independently validate a sealed RWRoute route certificate",
@@ -1678,11 +1674,9 @@ def _dispatch(args: argparse.Namespace) -> int:
                 args.input, args.output,
                 rapidwright_jar=args.rapidwright_jar,
                 java=args.java,
-                classes_dir=args.classes,
                 java_source=args.java_source,
                 device_data_root=args.device_data_root,
                 timing_data_dir=args.timing_data_dir,
-                log_path=args.log,
             )
         elif args.arch_command == "validate-xilinx-route":
             report = validate_xilinx_route_db(
@@ -1795,7 +1789,6 @@ def _dispatch(args: argparse.Namespace) -> int:
                 vivado_route_directive=args.vivado_route_directive,
                 rapidwright_jar=args.rapidwright_jar,
                 rapidwright_java=args.rapidwright_java,
-                rapidwright_classes=args.rapidwright_classes,
                 rapidwright_java_source=args.rapidwright_java_source,
                 rapidwright_device_data=args.rapidwright_device_data,
                 rapidwright_timing_data=args.rapidwright_timing_data,
@@ -1968,7 +1961,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             ),
             physical_rapidwright_jar=args.physical_rapidwright_jar,
             physical_rapidwright_java=args.physical_rapidwright_java,
-            physical_rapidwright_classes=args.physical_rapidwright_classes,
             physical_rapidwright_java_source=(
                 args.physical_rapidwright_java_source
             ),

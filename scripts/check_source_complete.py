@@ -155,6 +155,8 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/python/emuflow/physical/vivado/vivado_lineage.py",
     "src/python/emuflow/physical/vivado/vivado_physical_timing.py",
     "src/core/physical/vivado/vivado_partition.cpp",
+    "src/core/physical/rapidwright/rwroute_stage.cpp",
+    "src/python/emuflow/physical/rapidwright/route_stage.py",
     "src/python/emuflow/physical/vivado/vivado_source.py",
     "scripts/vivado/implement_indexed_partition.tcl",
     "scripts/vivado/source_inventory.tcl",

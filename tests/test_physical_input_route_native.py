@@ -149,14 +149,8 @@ def test_route_validation_uses_no_python_route_or_pip_loader(tmp_path):
 
     route, _, _ = stream_route(tmp_path)
     assert not hasattr(adapter, "_PipOwnership")
-    with (
-        patch.object(
-            adapter, "read_json", side_effect=AssertionError("Python route tree")
-        ),
-        patch.object(
-            adapter, "iter_xilinx_route_nets", side_effect=AssertionError("Python nets")
-        ),
-    ):
+    assert not hasattr(adapter, "iter_xilinx_route_nets")
+    with patch('emuflow.common.io.read_json',side_effect=AssertionError('Python route tree')):
         checked = validate_xilinx_route_db(route)
     assert checked["implementation_id"] == "native-xilinx-route-validation-v1"
     assert (checked["nets"], checked["sinks"], checked["pips"]) == (1, 2, 3)

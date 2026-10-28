@@ -1470,5 +1470,32 @@ The Python Vivado partition implementation, metric/timing parsers and standalone
 boundary/descendant query adapters are retired. The retained host submits bounded
 configuration and locators; independent component tests keep explicit importer
 bridges outside the production package. Multi-FPGA physical coordination,
-OpenPARF/RWRoute control, Chimew orchestration and current-source NVDLA terminal
+OpenPARF placement/timing coordination, Chimew orchestration and current-source NVDLA terminal
 qualification remain W7 completion requirements.
+
+
+### Complete RWRoute execution owner
+
+`physical run-rwroute REQUEST SUMMARY` owns typed input export, verification of
+pinned device inventory and timing files, a private Java runtime and fresh class
+compilation, routing process supervision, independent connectivity/PIP/timing
+validation and accepted manifest publication. Production supplies mapped and
+physical handoff owners directly. The standalone input runner uses the same
+transaction with an existing TSV. Neither path compiles or starts Java in Python.
+
+Each invocation owns its generated classes, runtime and full tool logs. Concurrent
+writers to a route destination are rejected. A failed compile, router, source
+seal or certificate leaves the previous accepted manifest and its immutable
+payloads intact. Successful publication atomically replaces only the bounded
+manifest after the native independent validator accepts its unique payloads.
+Resume regenerates the typed input and revalidates the existing route; it does
+not silently reroute a rejected certificate. Java heap, source provenance,
+whole-device limits and fixed-I/O seals retain their existing semantics.
+
+The Python device-data checker, Java compilation cache, subprocess route launcher
+and production resume/export/validation coordinator are retired together. The
+route-net/PIP Python iterator now belongs only to the explicit test oracle. The
+remaining bridge submits bounded locators and configuration. This closes route
+execution ownership; OpenPARF placement certificate production, routed timing
+coordination, multi-FPGA control, Chimew stage orchestration and current-source
+NVDLA terminal qualification remain W7 completion requirements.
