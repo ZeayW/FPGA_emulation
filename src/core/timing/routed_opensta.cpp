@@ -122,7 +122,7 @@ void ValidateRoutedOpenstaGraph(SqliteDatabase& db,I endpoints,I types) {
 }
 
 void StageRoutedOpensta(const std::vector<ArtifactRef>& inputs,const std::string& emuir,
-                       const std::string& liberty,const std::string& summary) {
+                       const std::string& liberty,const std::string& summary,const std::string* preloaded_manifest) {
   Check(inputs.size()==4,"source coverage is invalid");CheckedRequestReader request(inputs[3].path(),65536);
   Check(request.Read<std::uint64_t>()==0x314f5352464d5545ULL && request.Read<std::uint32_t>()==1,"request version is invalid");
   for(unsigned i=0;i<3;++i)if(!(ReadFileGeneration(request)==inputs[i].generation()))throw StageError(ErrorCode::kMixedGeneration,"routed OpenSTA input generation changed");
@@ -134,14 +134,25 @@ void StageRoutedOpensta(const std::vector<ArtifactRef>& inputs,const std::string
     auto& db=writer.database();db.Execute(kEmuirCompactDDL);db.Execute("PRAGMA cache_size=-32768; PRAGMA temp.cache_size=-8192");
     {auto attach=db.Prepare("ATTACH DATABASE ? AS source");attach.BindText(1,SqliteImmutableUri(inputs[0].path()));attach.Execute();}
     SqliteTransaction transaction(db);Json json(db);
-    std::ifstream manifest_stream(inputs[1].path(),std::ios::binary);Check(bool(manifest_stream),"timing manifest is missing");
-    std::string timing;Sha256 manifest_hash;char chunk[65536];
-    while(manifest_stream.read(chunk,sizeof(chunk)) || manifest_stream.gcount()){const auto size=std::size_t(manifest_stream.gcount());timing.append(chunk,size);manifest_hash.update(reinterpret_cast<const unsigned char*>(chunk),size);}
-    Check(!manifest_stream.bad() && Digest(manifest_hash)==json.String(config,"$.timing_sha256"),"timing manifest read/seal failed");
+    std::string loaded;Sha256 manifest_hash;
+    if(preloaded_manifest)manifest_hash.update(reinterpret_cast<const unsigned char*>(preloaded_manifest->data()),preloaded_manifest->size());
+    else {
+      std::ifstream manifest_stream(inputs[1].path(),std::ios::binary);Check(bool(manifest_stream),"timing manifest is missing");char chunk[65536];
+      while(manifest_stream.read(chunk,sizeof(chunk))||manifest_stream.gcount()) {
+        const auto size=std::size_t(manifest_stream.gcount());loaded.append(chunk,size);manifest_hash.update(reinterpret_cast<const unsigned char*>(chunk),size);
+      }
+      Check(!manifest_stream.bad(),"timing manifest read failed");
+    }
+    const auto &timing=preloaded_manifest?*preloaded_manifest:loaded;
+    Check(Digest(manifest_hash)==json.String(config,"$.timing_sha256"),"timing manifest read/seal failed");
     Check(json.String(timing,"$.schema")=="emuflow.xilinx-routed-timing/v2" && json.String(timing,"$.status")=="pass","timing manifest schema/status is invalid");
     Check(json.String(timing,"$.source.mapped_sha256")==json.String(config,"$.mapped_sha256"),"mapped source seal disagrees");
     for(const char* key:{"mapped_sha256","packed_sha256","placement_sha256","route_sha256"}) {const auto value=json.String(timing,std::string("$.source.")+key);Check(value.size()==64 && value.find_first_not_of("0123456789abcdef")==std::string::npos,"source digest is invalid");}
     Check(json.String(timing,"$.payloads.endpoints.format")=="jsonl-object/v1","endpoint payload format is invalid");
+    const auto payload_name=json.String(timing,"$.payloads.endpoints.path");
+    Check(!payload_name.empty()&&std::filesystem::path(payload_name).filename()==payload_name&&payload_name!="."&&payload_name!=".."&&
+      std::filesystem::weakly_canonical(std::filesystem::path(inputs[1].path()).parent_path()/payload_name)==inputs[2].path()&&
+      std::filesystem::path(inputs[2].path()).parent_path()==std::filesystem::path(inputs[1].path()).parent_path(),"endpoint payload belongs to another timing owner");
     Object coefficients;std::set<std::string> expected_coefficients{"ff_clock_to_q","carry_co","lut_a1","lut_a2","lut_a3","lut_a4","lut_a5","lut_a6"};
     auto coefficient=db.Prepare("SELECT key,type,value FROM json_each(?,'$.qualification.logic_coefficients_ps')");coefficient.BindText(1,timing);
     while(coefficient.Step()){const auto key=Text(coefficient,0),kind=coefficient.TypedText(1);Check(expected_coefficients.erase(key)==1 && (kind=="integer" || kind=="real"),"logic coefficient identity/type is invalid");const auto value=coefficient.TypedReal(2);Check(std::isfinite(value) && value>=0,"logic coefficient is invalid");coefficients.emplace(key,value);}

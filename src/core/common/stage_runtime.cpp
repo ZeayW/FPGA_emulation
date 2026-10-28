@@ -50,6 +50,8 @@ constexpr RegisteredSchema schemas[] = {
     {"xilinx-route-manifest-v2", ArtifactEncoding::kText, 0, 2},
     {"xilinx-route-nets-v1", ArtifactEncoding::kText, 0, 1},
     {"routed-endpoint-request-v1", ArtifactEncoding::kBinary, 0x31505452464d5545ULL, 1},
+    {"routed-opensta-stage-request-v1", ArtifactEncoding::kText, 0, 1},
+    {"routed-opensta-stage-report-v1", ArtifactEncoding::kText, 0, 1},
     {"routed-opensta-request-v1", ArtifactEncoding::kBinary, 0x314f5352464d5545ULL, 1},
     {"opensta-input-export-request-v1", ArtifactEncoding::kBinary, 0x31455853464d5545ULL, 1},
     {"sta-weight-request-v1", ArtifactEncoding::kBinary, 0x31574754534d5545ULL, 1},

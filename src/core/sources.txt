@@ -97,3 +97,5 @@ physical/openparf/placement_import.cpp
 physical/openparf/runtime.cpp
 physical/openparf/convergence.cpp
 physical/openparf/qualification.cpp
+timing/routed_model.cpp
+timing/routed_stage.cpp

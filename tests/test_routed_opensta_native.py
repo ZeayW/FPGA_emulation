@@ -15,8 +15,8 @@ from emuflow.common.errors import ValidationError
 from emuflow.common.io import file_sha256
 from emuflow.timing.indexed_timing import IndexedTimingView
 from emuflow.timing.opensta import validate_timing_model_coverage
-from emuflow.timing.routed_opensta_native import RoutedTimingModel
-from emuflow.timing.xilinx_opensta import build_xilinx_routed_opensta_indexed_inputs
+from tests.routed_opensta_stage_reference import RoutedTimingModel
+from tests.routed_opensta_reference import build_xilinx_routed_opensta_indexed_inputs
 from tests.test_xilinx_opensta import _indexed_routed_fixture
 
 
@@ -111,7 +111,7 @@ def test_indexed_runner_keeps_native_coverage_bounded_in_its_final_report(tmp_pa
 
 @pytest.mark.parametrize("damage", ["duplicate-id", "duplicate-sink", "wrong-bit", "output-pin", "constant-pin", "negative", "nonfinite", "bad-coefficient", "io-duplicate", "io-measurement", "truncated", "crc"])
 def test_rejected_inputs_preserve_both_previous_outputs(tmp_path, damage):
-    from emuflow.timing import routed_opensta_native as native
+    from tests import routed_opensta_stage_reference as native
     mapped, timing, output = fixture(tmp_path)
     stage(mapped, timing, output)
     library = output.with_name(output.name+".route-delays.lib")

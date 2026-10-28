@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from emuflow.ir import emuir_compact; from emuflow.timing import xilinx_opensta
+from emuflow.ir import emuir_compact; from tests import routed_opensta_reference as xilinx_opensta
 from emuflow.ir.emuir_storage import write_emuir_sqlite
 from emuflow.common.errors import ValidationError
 from emuflow.ir.ir import EmuIR
@@ -87,7 +87,7 @@ def test_fanout_finishes_before_the_only_publication(tmp_path, failure):
 
 @pytest.mark.parametrize("failure", ["native", "mapped", "timing", "payload"])
 def test_routed_normalization_rejects_changes_without_mutating_previous_owner(tmp_path, failure):
-    from emuflow.timing.routed_opensta_native import NativeToolProcess
+    from tests.routed_opensta_stage_reference import NativeToolProcess
     mapped, timing = _indexed_routed_fixture(tmp_path)
     output = tmp_path / "routed.emuir.sqlite"
     xilinx_opensta.build_xilinx_routed_opensta_indexed_inputs(mapped, timing, output, clocks={"clk": 10.0})

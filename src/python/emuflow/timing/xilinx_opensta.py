@@ -1,324 +1,110 @@
-"""OpenSTA setup analysis over RapidWright-routed UltraScale+ netlists."""
-
+"""Bounded artifact locators for complete native routed OpenSTA execution."""
 from __future__ import annotations
-
-import math
-import re
-import tempfile
-from copy import deepcopy
+import json
+import os
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+import tempfile
 
 from emuflow.common.errors import ValidationError
-from emuflow.storage.store_publication import StoreSource, bind_store_source, require_store_sources_unchanged
-from emuflow.common.io import file_sha256, read_json, write_json
-from emuflow.timing.opensta import DEFAULT_TIMING_MODEL, load_timing_model, require_opensta_engine, run_opensta_path_database
-from emuflow.common.native_tools import resolve_native_executable
-from emuflow.timing.sta import STA_PATH_DATABASE_SCHEMA, STA_PATH_DATABASE_STREAM_SCHEMA, STA_PATH_DATABASE_INDEX_SCHEMA, sta_path_database_qor
-from emuflow.timing.xilinx_timing import XILINX_ROUTED_TIMING_STREAM_SCHEMA
+from emuflow.common.io import file_sha256
+from emuflow.common.native_tools import native_file_generation, require_native_schema, resolve_native_executable
+from emuflow.common.tool_runtime import NativeToolProcess
+from emuflow.physical.handoff import _small
+from emuflow.timing.opensta import DEFAULT_TIMING_MODEL, OPENSTA_EXPORT_SCRIPT, OPENSTA_RUNTIME_CHECK_SCRIPT, _runtime_data_path
 
-from emuflow.physical.xilinx_netlist import is_xilinx_mapped_index
-
-
-XILINX_ROUTED_OPENSTA_SCHEMA = "emuflow.xilinx-routed-opensta-summary/v1"
-_RAM_TYPES = {"RAMB18E2", "RAMB36E2", "URAM288"}
+XILINX_ROUTED_OPENSTA_SCHEMA = 'emuflow.xilinx-routed-opensta-summary/v1'
+_FIELDS = ('device','inode','bytes','mtime_seconds','mtime_nanoseconds','ctime_seconds','ctime_nanoseconds')
 
 
-def _sha256(path: Path) -> str:
-    return file_sha256(path)
+def _invoke(mode, sources, configuration, bindings=None):
+    require_native_schema('routed-opensta-stage-request-v1')
+    output=Path(configuration['output_path']).absolute()
+    output.parent.mkdir(parents=True,exist_ok=True)
+    rows=[]
+    for role,path,schema in sources:
+        path=Path(path).resolve()
+        bound=(bindings or {}).get(role)
+        generation=list(native_file_generation(path))
+        if bound is not None:
+            if bound.path!=path or bound.schema!=schema or list(bound.generation)!=generation:
+                raise ValidationError('routed OpenSTA source generation changed')
+            generation=list(bound.generation)
+        rows.append({'role':role,'path':str(path),'schema':schema,'generation':generation})
+    value={'schema':'emuflow.routed-opensta-stage-request/v1','mode':mode,
+        'sources':rows,'configuration':configuration}
+    with tempfile.TemporaryDirectory(prefix='.routed-opensta-host-',dir=output.parent if mode=='run' else None) as temporary:
+        root=Path(temporary);request,operation,accepted=root/'request.json',root/'operation.json',root/'accepted.json'
+        text=json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False)
+        if len(text.encode())>1024*1024:raise ValidationError('routed OpenSTA control exceeds bound')
+        request.write_text(text,encoding='utf-8')
+        executable=resolve_native_executable('emuflow-native')
+        command=[executable,'--report',str(operation),'physical','routed-opensta',str(request),str(accepted)]
+        with NativeToolProcess(executable,command,environment=dict(os.environ),scratch_parent=root,termination_grace_ms=10000) as process:
+            completed=process.finish()
+        if completed.returncode:raise ValidationError('native routed OpenSTA failed: '+completed.stdout)
+        proof=_small(operation,262144);outputs=proof.get('outputs',[])
+        if (proof.get('stage')!='physical.routed-opensta' or proof.get('status')!='pass' or len(outputs)!=(5 if mode=='run' else 4)
+                or outputs[0].get('path')!=str(accepted.resolve()) or outputs[0].get('schema')!='routed-opensta-stage-report-v1'):
+            raise ValidationError('native routed OpenSTA proof disagrees')
+        def unchanged():
+            for row in outputs:
+                if tuple(row.get('generation',{}).get(k) for k in _FIELDS)!=native_file_generation(row['path']):
+                    raise ValidationError('native routed OpenSTA output generation changed')
+            for row in rows:
+                if list(native_file_generation(row['path']))!=row['generation']:
+                    raise ValidationError('routed OpenSTA source generation changed')
+        unchanged()
+        result=_small(accepted)
+        if (result.get('schema')!='emuflow.routed-opensta-stage-report/v1' or result.get('status')!='pass'
+                or result.get('implementation_id')!='native-routed-opensta-stage-v1' or result.get('mode')!=mode
+                or result.get('validation',{}).get('schema')!='emuflow.xilinx-routed-opensta-validation/v1'
+                or result['validation'].get('status')!='pass'):
+            raise ValidationError('native routed OpenSTA result disagrees')
+        selector=_small(output)
+        payload=selector.get('payloads',{}).get('paths',{}).get('path')
+        if not isinstance(payload,str) or Path(payload).name!=payload:
+            raise ValidationError('native routed OpenSTA payload path disagrees')
+        expected=[(output,'sta-path-selector-v1'),(output.parent/payload,'timing-path-store-v1'),
+                  (Path(configuration['summary_path']),'physical-input-document-v1')]
+        if mode=='run':expected.append((Path(configuration['log_path']),'physical-input-document-v1'))
+        for row,(path,schema) in zip(outputs[1:],expected):
+            if row.get('path')!=str(path.resolve()) or row.get('schema')!=schema:
+                raise ValidationError('native routed OpenSTA ownership disagrees')
+        unchanged()
+        check=result['validation']
+        check['native_owner']={'implementation_id':result['implementation_id'],'metrics':proof['metrics']}
+        return check
 
 
-def _scalar_pins(pins: set[tuple[str, int]]) -> list[str]:
-    widths: Dict[str, int] = {}
-    for port, bit in pins:
-        widths[port] = max(widths.get(port, 0), bit + 1)
-    return [
-        port if widths[port] == 1 else f"{port}__{bit}"
-        for port, bit in sorted(pins)
-    ]
+def run_xilinx_routed_opensta(mapped_path,timing_path,output_path,summary_path,*,clocks,
+        executable=None,max_paths=200000,log_path=None,timing_validation=None,source_sha256=None,timing_sources=None):
+    sta=resolve_native_executable('sta',executable)
+    output_path=Path(output_path).absolute();summary_path=Path(summary_path).absolute()
+    log_path=Path(log_path).absolute() if log_path is not None else output_path.with_suffix('.log')
+    sources=[('mapped',mapped_path,'xilinx-mapped-index-v2'),('timing',timing_path,'xilinx-routed-timing-v2'),
+        ('base-model',DEFAULT_TIMING_MODEL,'phase2-source-v1'),('sta',sta,'external-tool-executable-v1'),
+        ('export-script',OPENSTA_EXPORT_SCRIPT,'phase2-source-v1'),('runtime-script',OPENSTA_RUNTIME_CHECK_SCRIPT,'phase2-source-v1')]
+    bindings={}
+    if timing_sources is not None:
+        if len(timing_sources)!=2:raise ValidationError('routed timing requires its original manifest/payload bindings')
+        bindings=dict(zip(('timing','endpoints'),timing_sources))
+        sources.append(('endpoints',timing_sources[1].path,'xilinx-routed-endpoints-v1'))
+    launcher=_runtime_data_path(Path('scripts/opensta/container_runtime.sh'))
+    wrapped=launcher.is_file() and file_sha256(Path(sta))==file_sha256(launcher)
+    if wrapped:
+        binary=os.environ.get('EMUFLOW_OPENSTA_CONTAINER_BINARY')
+        if not binary:raise ValidationError('OpenSTA container engine identity lacks an explicit binary')
+        sources.append(('container',binary,'external-tool-executable-v1'))
+    return _invoke('run',sources,{'clocks':dict(sorted(clocks.items())),'max_paths':max_paths,
+        'output_path':str(output_path),'summary_path':str(summary_path),'log_path':str(log_path),
+        'source_sha256':dict(source_sha256) if source_sha256 is not None else None,
+        'timing_validation':timing_validation},bindings=bindings)
 
 
-def _bind_routed_opensta_inputs(mapped_path, timing_path, timing_value=None):
-    mapped_source = bind_store_source(mapped_path, "yosys-source-document-v1")
-    timing_source = bind_store_source(timing_path, "sta-source-document-v1")
-    if is_xilinx_mapped_index(mapped_path):
-        mapped_source = StoreSource(
-            mapped_source.path, "xilinx-mapped-index-v2", mapped_source.generation
-        )
-    timing_value = read_json(timing_path) if timing_value is None else timing_value
-    require_store_sources_unchanged((mapped_source, timing_source))
-    sources = (mapped_source, timing_source)
-    if timing_value.get("schema") == XILINX_ROUTED_TIMING_STREAM_SCHEMA:
-        from emuflow.physical.rapidwright.routed_endpoints_native import bind_routed_timing_sources
-        sources = (mapped_source, *bind_routed_timing_sources(timing_path, timing_value))
-    require_store_sources_unchanged(sources)
-    return sources, timing_value
-
-
-def _routed_base_model(timing, pin_sets):
-    model = deepcopy(load_timing_model(DEFAULT_TIMING_MODEL))
-    coefficients = timing["qualification"]["logic_coefficients_ps"]
-    conservative_lut_ns = max(
-        float(value) for name, value in coefficients.items()
-        if name.startswith("lut_")
-    ) / 1000.0
-    for width in range(1, 7):
-        model["cells"][f"LUT{width}"]["delay_ns"] = conservative_lut_ns
-    for ff in ("FDCE", "FDPE", "FDRE", "FDSE"):
-        model["cells"][ff]["clock_to_q_ns"] = (
-            float(coefficients["ff_clock_to_q"]) / 1000.0
-        )
-        model["cells"][f"{ff}__NEG"] = deepcopy(model["cells"][ff])
-        model["cells"][f"{ff}__NEG"]["kind"] = "falling_edge_ff"
-    model["cells"]["LUT6_2"] = {
-        "kind": "combinational",
-        "inputs": [f"I{index}" for index in range(6)],
-        "outputs": ["O5", "O6"],
-        "delay_ns": conservative_lut_ns,
-    }
-    model["cells"]["CARRY8"] = {
-        "kind": "combinational",
-        "inputs": [
-            "CI", "CI_TOP", *[f"DI__{index}" for index in range(8)],
-            *[f"S__{index}" for index in range(8)],
-        ],
-        "outputs": [
-            *[f"CO__{index}" for index in range(8)],
-            *[f"O__{index}" for index in range(8)],
-        ],
-        "delay_ns": float(coefficients["carry_co"]) / 1000.0,
-    }
-    model["cells"].setdefault(
-        "MUXF9",
-        {
-            "kind": "combinational", "inputs": ["I0", "I1", "S"],
-            "output": "O", "delay_ns": model["cells"]["MUXF8"]["delay_ns"],
-        },
-    )
-    hard_blocks = []
-    for cell_type, records in pin_sets.items():
-        if cell_type in model["cells"]:
-            continue
-        inputs = _scalar_pins({tuple(pin) for pin in records["inputs"]})
-        outputs = _scalar_pins({tuple(pin) for pin in records["outputs"]})
-        if cell_type in _RAM_TYPES:
-            clock_pins = [pin for pin in inputs if "CLK" in pin.upper()]
-            if not clock_pins or not outputs:
-                raise ValidationError(f"hard block {cell_type} lacks clock/outputs")
-            primary_clock = clock_pins[0]
-            controls = [
-                pin for pin in inputs
-                if pin != primary_clock and (
-                    "CLK" in pin.upper() or "RST" in pin.upper()
-                    or pin.upper() == "SLEEP"
-                )
-            ]
-            data_inputs = [
-                pin for pin in inputs
-                if pin != primary_clock and pin not in controls
-            ]
-            if not data_inputs:
-                raise ValidationError(f"hard block {cell_type} lacks timing inputs")
-            model["cells"][cell_type] = {
-                "kind": "rising_edge_bank", "clock": primary_clock,
-                "inputs": data_inputs, "controls": controls,
-                "outputs": outputs, "setup_ns": 0.0, "clock_to_q_ns": 0.0,
-            }
-            hard_blocks.append(cell_type)
-        elif cell_type == "DSP48E2":
-            if not inputs or not outputs:
-                raise ValidationError("DSP48E2 lacks timing inputs or outputs")
-            model["cells"][cell_type] = {
-                "kind": "combinational", "inputs": inputs,
-                "outputs": outputs, "delay_ns": 5.0,
-            }
-            hard_blocks.append(cell_type)
-        else:
-            raise ValidationError(
-                f"RapidWright OpenSTA model does not cover {cell_type!r}"
-            )
-    model.update({
-        "name": "rapidwright-ultrascaleplus-routed-v1",
-        "family": "xcup",
-        "source": {
-            "provider": "rapidwright-lightweight+routed-opensta-v1",
-            "qualification": "analytical_uncharacterized",
-            "route_delays": "rapidwright-lightweight-exact-per-sink",
-            "logic_delays": "rapidwright-lightweight-conservative-scalar",
-            "ff_setup": "analytical-uncharacterized",
-            "hard_block_timing": "zero-delay-sequential-surrogate-unqualified",
-            "hold_analysis": "unavailable",
-        },
-    })
-    return model, hard_blocks
-
-def build_xilinx_routed_opensta_indexed_inputs(
-    mapped_path: Path, timing_path: Path, output_path: Path, *,
-    clocks: Mapping[str, float], timing_validation=None, timing_value=None,
-    mapped_sha256=None, timing_sha256=None, _source_bindings=None,
-):
-    from emuflow.timing.routed_opensta_native import stage_routed_opensta
-    return stage_routed_opensta(mapped_path, timing_path, output_path, clocks=clocks,
-        timing_validation=timing_validation, timing_value=timing_value,
-        mapped_sha256=mapped_sha256, timing_sha256=timing_sha256,
-        source_bindings=_source_bindings)
-
-
-def _qor(database: Mapping[str, Any]) -> Dict[str, Any]:
-    slacks = [float(path["slack_ns"]) for path in database["paths"]]
-    if not slacks:
-        raise ValidationError("RapidWright OpenSTA produced no timing paths")
-    return {
-        "wns_ns": min(slacks),
-        "tns_ns": math.fsum(value for value in slacks if value < 0.0),
-        "failing_endpoints": sum(value < 0.0 for value in slacks),
-        "timed_endpoints": len(slacks),
-    }
-
-
-def _qor_path(path: Path) -> Dict[str, Any]:
-    database = read_json(path)
-    if database.get("schema") in {
-        STA_PATH_DATABASE_SCHEMA,
-        STA_PATH_DATABASE_STREAM_SCHEMA,
-        STA_PATH_DATABASE_INDEX_SCHEMA,
-    }:
-        return sta_path_database_qor(path, database)
-    # Preserve the minimal schema-less fixture accepted by historical tests.
-    return _qor(database)
-
-
-def run_xilinx_routed_opensta(
-    mapped_path: Path,
-    timing_path: Path,
-    output_path: Path,
-    summary_path: Path,
-    *,
-    clocks: Mapping[str, float],
-    executable: Optional[str] = None,
-    max_paths: int = 200000,
-    log_path: Optional[Path] = None,
-    timing_validation: Optional[Mapping[str, Any]] = None,
-    mapped_value: Optional[Mapping[str, Any]] = None,
-    timing_value: Optional[Mapping[str, Any]] = None,
-    source_sha256: Optional[Mapping[str, str]] = None,
-) -> Dict[str, Any]:
-    # Engine availability is a constant-time prerequisite.  Check it before
-    # expanding hundreds of thousands of routed endpoints into the temporary
-    # OpenSTA graph so a missing runtime dependency fails immediately rather
-    # than after minutes of staging work.
-    opensta = resolve_native_executable("sta", executable)
-    require_opensta_engine(opensta)
-    source_bindings, timing_value = _bind_routed_opensta_inputs(
-        mapped_path, timing_path, timing_value
-    )
-    input_sha256 = (
-        {
-            "mapped_sha256": _sha256(mapped_path),
-            "routed_timing_sha256": _sha256(timing_path),
-        }
-        if source_sha256 is None else dict(source_sha256)
-    )
-    with tempfile.TemporaryDirectory(prefix="emuflow-rw-opensta-") as temporary:
-        root = Path(temporary)
-        ir_path = root / "routed.emuir.sqlite"
-        model, metadata = build_xilinx_routed_opensta_indexed_inputs(
-            mapped_path,
-            timing_path,
-            ir_path,
-            clocks=clocks,
-            timing_validation=timing_validation,
-            timing_value=timing_value,
-            mapped_sha256=input_sha256.get("mapped_sha256"),
-            timing_sha256=input_sha256.get("routed_timing_sha256"),
-            _source_bindings=source_bindings,
-        )
-        report = run_opensta_path_database(
-            ir_path, output_path, clocks=clocks,
-            _timing_model=model, executable=opensta,
-            max_paths=max_paths, log_path=log_path,
-        )
-    if report["path_limit_reached"]:
-        raise ValidationError(
-            "RapidWright OpenSTA path limit was reached; global TNS is incomplete"
-        )
-    path_database_sha256 = _sha256(output_path)
-    summary = {
-        "schema": XILINX_ROUTED_OPENSTA_SCHEMA,
-        "status": "pass",
-        "authority": "opensta",
-        "qualification": model["source"],
-        "source": {
-            **input_sha256,
-            "timing_path_database_sha256": path_database_sha256,
-        },
-        "clocks": dict(sorted(clocks.items())),
-        "staging": metadata,
-        "qor": report["path_qor"],
-        "opensta": report,
-    }
-    write_json(summary_path, summary, compact=True)
-    return validate_xilinx_routed_opensta_summary(
-        summary_path, output_path=output_path,
-        mapped_path=mapped_path, timing_path=timing_path,
-        source_sha256={
-            **input_sha256,
-            "timing_path_database_sha256": path_database_sha256,
-        },
-        _qor_value=report["path_qor"],
-    )
-
-
-def validate_xilinx_routed_opensta_summary(
-    summary_path: Path,
-    *,
-    output_path: Path,
-    mapped_path: Optional[Path] = None,
-    timing_path: Optional[Path] = None,
-    source_sha256: Optional[Mapping[str, str]] = None,
-    _database: Optional[Mapping[str, Any]] = None,
-    _qor_value: Optional[Mapping[str, Any]] = None,
-) -> Dict[str, Any]:
-    value = read_json(summary_path)
-    if value.get("schema") != XILINX_ROUTED_OPENSTA_SCHEMA or value.get("status") != "pass":
-        raise ValidationError("RapidWright OpenSTA summary header is invalid")
-    expected = {
-        "timing_path_database_sha256": output_path,
-        "mapped_sha256": mapped_path,
-        "routed_timing_sha256": timing_path,
-    }
-    expected_sha256 = (
-        {field: _sha256(path) for field, path in expected.items()
-         if path is not None}
-        if source_sha256 is None else dict(source_sha256)
-    )
-    for field, path in expected.items():
-        digest = value.get("source", {}).get(field)
-        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
-            raise ValidationError(f"RapidWright OpenSTA source.{field} is invalid")
-        if path is not None and digest != expected_sha256.get(field):
-            raise ValidationError(f"RapidWright OpenSTA source.{field} disagrees")
-    recomputed = (
-        dict(_qor_value)
-        if _qor_value is not None
-        else (
-            _qor(_database)
-            if _database is not None
-            else _qor_path(output_path)
-        )
-    )
-    reported = value.get("qor")
-    if not isinstance(reported, dict):
-        raise ValidationError("RapidWright OpenSTA QoR is invalid")
-    for field in ("wns_ns", "tns_ns"):
-        if not math.isclose(float(reported.get(field, math.nan)), recomputed[field], rel_tol=1e-9, abs_tol=1e-9):
-            raise ValidationError(f"RapidWright OpenSTA {field} disagrees")
-    for field in ("failing_endpoints", "timed_endpoints"):
-        if reported.get(field) != recomputed[field]:
-            raise ValidationError(f"RapidWright OpenSTA {field} disagrees")
-    return {
-        "status": "pass",
-        "schema": "emuflow.xilinx-routed-opensta-validation/v1",
-        **recomputed,
-        "summary_sha256": _sha256(summary_path),
-    }
+def validate_xilinx_routed_opensta_summary(summary_path,*,output_path,mapped_path=None,timing_path=None,source_sha256=None):
+    sources=[('paths',output_path,'sta-path-selector-v1'),('summary',summary_path,'physical-input-document-v1')]
+    for role,path,schema in [('mapped',mapped_path,'xilinx-mapped-index-v2'),('timing',timing_path,'xilinx-routed-timing-v2')]:
+        if path is not None:sources.append((role,path,schema))
+    return _invoke('validate',sources,{'clocks':None,'max_paths':None,'log_path':None,
+        'output_path':str(Path(output_path).absolute()),'summary_path':str(Path(summary_path).absolute()),
+        'source_sha256':dict(source_sha256) if source_sha256 is not None else None,'timing_validation':None})

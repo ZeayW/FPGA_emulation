@@ -104,7 +104,7 @@ def stage_routed_opensta(mapped_path, timing_path, output_path, *, clocks,
                          timing_validation=None, timing_value=None,
                          mapped_sha256=None, timing_sha256=None, source_bindings=None):
     from emuflow.timing.opensta import DEFAULT_TIMING_MODEL, load_timing_model
-    from emuflow.timing.xilinx_opensta import _bind_routed_opensta_inputs, _routed_base_model
+    from tests.routed_opensta_reference import _bind_routed_opensta_inputs, _routed_base_model
 
     require_native_schema("routed-opensta-request-v1")
     executable = resolve_native_executable("emuflow-native")

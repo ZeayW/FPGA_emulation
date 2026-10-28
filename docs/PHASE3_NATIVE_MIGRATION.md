@@ -1567,3 +1567,35 @@ independent region-policy checks remain test-only. This closes partition
 placement control. Routed OpenSTA coordination, the multi-FPGA physical owner,
 Chimew orchestration, remaining prepared-input/configuration adapters and
 current-source NVDLA terminal qualification remain W7 completion requirements.
+
+
+### Native routed OpenSTA control
+
+`physical routed-opensta REQUEST REPORT` owns the maintained routed timing
+transaction: engine/version/Tcl preflight, typed graph and exact per-sink delay
+staging, base-model and Liberty generation, indexed Verilog/net export, OpenSTA
+execution, typed path import and independent path/summary acceptance. The same
+operation validates current typed summaries independently. There is no
+schema-less or historical JSON path fallback in the production reader.
+
+The existing model policy is preserved, including negative-edge FF identity,
+conservative LUT coefficients and the explicitly unqualified DSP/RAM surrogates.
+No hold or hard-block timing qualification is implied by this migration.
+TNS uses the shared exact summation implementation. Source identities, path
+and membership counts, endpoint structure and reported QoR are recomputed from
+the sealed current path store. Reaching the path cap remains a failure.
+
+All engine inputs remain bound during execution. Source changes or failed
+extraction leave previous accepted artifacts intact. Closed path stores have
+content-addressed owners; the selector, summary, full tool log and acceptance
+report publish together with rollback on a reported publication failure.
+Consumers verify the returned artifact generations and retain the producer's
+original manifest/payload bindings. Large artifact metadata is not expanded into
+the bounded host control request. The native validator also
+returns the critical delay, retiring the backend's second Python path scan.
+
+The prior Python routed coordinator, model builder, large timing-model view and
+QoR/legacy readers are confined to test oracles. Production Python submits only
+bounded artifact and tool locators. Complete multi-FPGA implementation control,
+Chimew orchestration and configuration/prepared-input adapters remain W7 work,
+with current-source NVDLA terminal qualification still required.

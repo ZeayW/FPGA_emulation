@@ -1,3 +1,4 @@
+#include "timing/routed_stage.hpp"
 #include "physical/openparf/qualification.hpp"
 #include "physical/openparf/runtime.hpp"
 #include "physical/openparf/placement_import.hpp"
@@ -64,6 +65,7 @@ constexpr const char* kUsage =
     "  physical validate-flow-report INPUT SUMMARY\n"
     "  physical prepare-vivado-inputs REQUEST OUTPUT\n"
     "  physical import-openparf-placement REQUEST REPORT\n"
+    "  physical routed-opensta REQUEST REPORT\n"
     "  physical qualify-openparf REQUEST OUTPUT_DIR\n"
     "  physical openparf-runtime REQUEST REPORT\n"
     "  physical run-rwroute REQUEST SUMMARY\n"
@@ -213,6 +215,9 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     ToolSignals signals;return Finish(emuflow::core::ImportOpenparfPlacement(emuflow::core::ArtifactRef::Bind(argv[3],"openparf-placement-import-request-v1"),argv[4],&tool_cancelled),report);
   }
 
+  if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="routed-opensta") {
+    ToolSignals signals;return Finish(emuflow::core::RunRoutedOpensta(emuflow::core::ArtifactRef::Bind(argv[3],"routed-opensta-stage-request-v1"),argv[4],&tool_cancelled),report);
+  }
   if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="qualify-openparf") {
     ToolSignals signals;return Finish(emuflow::core::QualifyOpenparf(emuflow::core::ArtifactRef::Bind(argv[3],"openparf-qualification-request-v1"),argv[4],&tool_cancelled),report);
   }

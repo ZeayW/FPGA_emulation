@@ -176,14 +176,16 @@ def test_path_producer_keeps_generation_from_before_manifest_read(tmp_path):
 
 def test_consumer_keeps_the_produced_timing_generation(tmp_path):
     from emuflow.physical.rapidwright.routed_endpoints_native import bind_routed_timing_sources
-    from emuflow.timing.xilinx_opensta import _bind_routed_opensta_inputs
+    from emuflow.timing.xilinx_opensta import run_xilinx_routed_opensta
     c = case(tmp_path);sink = {};output = tmp_path / "native" / "timing.json"
     run(c, output, sink)
+    sources=bind_routed_timing_sources(output,sink)
     output.chmod(output.stat().st_mode ^ 0o100)
     with pytest.raises(ValidationError, match="generation changed"):
         bind_routed_timing_sources(output, sink)
     with pytest.raises(ValidationError, match="generation changed"):
-        _bind_routed_opensta_inputs(c["mapped_path"], output, sink)
+        run_xilinx_routed_opensta(c["mapped_path"],output,tmp_path/'paths.json',tmp_path/'summary.json',
+            clocks={'clk':10.0},executable='/usr/bin/false',timing_sources=sources)
 
 
 def test_endpoint_consumer_does_not_reopen_or_retain_qualified_pip_payload(tmp_path):

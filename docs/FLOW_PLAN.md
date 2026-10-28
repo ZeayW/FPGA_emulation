@@ -156,7 +156,7 @@ not language line counts or the presence of typed storage:
 | Mapped physical inputs | Mapped indexes and signatures, atomic/macro facts, geometry, Bookshelf inputs, full-device capacity admission, placement lowering and Vivado runtime/fixed-I/O input generation | Bounded tool discovery |
 | Placement and routing handoff | Complete OpenPARF partition placement control and result reuse, raw coordinate import, deterministic FF-control repair, certified macro windows, typed certificate/handoff generation, complete RWRoute export/execution and independent physical/route auditing | Bounded tool configuration |
 | Vivado partition implementation | Input generation, vendor process supervision, lineage import, complete measurement import, closure/budget validation and final partition report | Bounded configuration and artifact locators |
-| Physical timing | Complete local-path and logic-segment query generation, shared physical object resolution, Vivado boundary/descendant association, indexed evidence import and OpenSTA staging | Bounded configuration, OpenPARF host and routed OpenSTA coordination |
+| Physical timing | Complete local-path and logic-segment query generation, shared physical object resolution, Vivado boundary/descendant association, indexed evidence import, complete routed OpenSTA execution, model/Liberty generation, path import and independent QoR validation | Bounded tool configuration and artifact locators |
 | Global timing | Runtime generation/signoff, full-assignment physical coverage, event binding, measurement import, original-path reduction, Chimew comparison and final flow-report sealing | Bounded tool configuration |
 
 Indexed atoms and ordinal safe names already avoid complete in-memory lists or
@@ -164,8 +164,9 @@ name dictionaries. Local-path evidence already has a typed owner. These are not
 outstanding format migrations. Both physical timing query producers now publish
 through shared native stage owners; their replaced Python production loops are
 retired. Physical signoff control and comparison publication are native; the
-multi-FPGA implementation controller, OpenPARF solver/checkpoint and routed timing coordination and Chimew split/lookahead
-orchestration still require closure and retirement of their production adapters. Chimew remains a maintained optional path with its own
+multi-FPGA implementation controller and Chimew split/lookahead orchestration still
+require closure and retirement of their production adapters, alongside the
+remaining configuration/prepared-input adapters. Chimew remains a maintained optional path with its own
 ownership and qualification requirement.
 
 ## Native route publication

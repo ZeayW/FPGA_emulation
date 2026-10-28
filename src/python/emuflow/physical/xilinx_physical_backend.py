@@ -17,11 +17,11 @@ from emuflow.ir.emuir_storage import is_emuir_sqlite, open_emuir_sqlite_read_onl
 from emuflow.common.io import file_sha256, read_json, write_json
 from emuflow.physical.physical_backend import PHYSICAL_PARTITION_RESULT_SCHEMA
 from emuflow.ir.resource_budget import validate_device_resource_usage, validate_materialized_resource_counts
-from emuflow.timing.sta import iter_sta_path_database_paths
 from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
 from emuflow.physical.openparf.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source
 from emuflow.physical.openparf.qualification_native import run_qualification
 from emuflow.timing.xilinx_opensta import run_xilinx_routed_opensta
+from emuflow.physical.rapidwright.routed_endpoints_native import bind_routed_timing_sources
 from emuflow.physical.rapidwright.route_stage import run_native_rwroute_stage
 from emuflow.timing.xilinx_segment_timing import build_xilinx_segment_timing_bundle
 from emuflow.timing.xilinx_timing import build_xilinx_routed_timing
@@ -327,20 +327,13 @@ def _finish_rapidwright_routed_backend(
         executable=opensta,
         log_path=output_dir / "opensta.log",
         timing_validation=timing_check,
-        timing_value=routed_timing_value,
+        timing_sources=bind_routed_timing_sources(routed_timing_path,routed_timing_value),
         source_sha256={
             "mapped_sha256": source_sha256["mapped_sha256"],
             "routed_timing_sha256": timing_check["timing_sha256"],
         },
     )
-    opensta_database = read_json(path_database_path)
-    critical_path_ns = max(
-        (float(path.get("fixed_delay_ns", 0.0))
-         for path in iter_sta_path_database_paths(
-             path_database_path, opensta_database
-         )),
-        default=0.0,
-    )
+    critical_path_ns = float(opensta_check["critical_path_ns"])
     opensta_summary = read_json(opensta_summary_path)
     qor = opensta_summary["qor"]
     expansion_cells = (
