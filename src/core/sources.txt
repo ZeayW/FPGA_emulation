@@ -93,3 +93,7 @@ physical/rapidwright/rwroute_stage.cpp
 physical/openparf/ff_legalization.cpp
 physical/openparf/placement_windows.cpp
 physical/openparf/placement_import.cpp
+
+physical/openparf/runtime.cpp
+physical/openparf/convergence.cpp
+physical/openparf/qualification.cpp

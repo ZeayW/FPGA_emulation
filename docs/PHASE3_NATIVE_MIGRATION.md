@@ -1529,3 +1529,41 @@ OpenPARF solver/checkpoint control, routed timing coordination, the multi-FPGA
 physical owner and Chimew stage control remain migration work. W7 completion
 still requires current-source NVDLA terminal qualification on the maintained
 physical backends and the supported Chimew path.
+
+
+### Native partition placement control
+
+`physical qualify-openparf REQUEST OUTPUT_DIR` owns the complete maintained
+partition placement sequence in process: full-device capacity admission,
+Bookshelf/site input preparation, supervised OpenPARF execution, convergence
+acceptance, deterministic FF repair, certificate publication and independent
+physical handoff auditing. The region policy is unchanged: all SLRs remain
+available, with 1.5x resource headroom as admission rather than a smaller pblock.
+Mapped/device records are consumed by the core; Python no longer traverses
+atomic clusters or device sites to choose the placement domain.
+
+`physical openparf-runtime REQUEST REPORT` shares the same tool supervisor for
+runtime preflight, solver execution and native convergence validation. The
+PyTorch driver remains the permitted engine host and emits convergence facts;
+it does not decide whether the flow may accept the result. The native validator
+preserves the SLL, filler geometry, feasible-iterate and bounded diagnostic
+legalization gates. Source leases cover the interpreter, driver, configuration
+and every prepared input throughout execution.
+
+Every solver invocation writes into a private generation. It cannot truncate a
+previous accepted raw placement or matching metrics. Result checkpoint v2 binds
+the full input inventory, executable/entry/driver and installed OpenPARF
+implementation content, virtual-environment launcher and selected runtime settings; relocation only
+normalizes paths inside the input directory. A stale or damaged checkpoint
+reexecutes the same solver in a fresh generation. Historical v1 checkpoint
+acceptance is retired. Region constraints have content-addressed immutable
+owners, and rejected stage retries preserve the accepted final placement report,
+certificate and handoff.
+
+The Python solver launcher, result fingerprint/reuse implementation, convergence
+validator, placement-window planner and partition placement coordinator are
+retired together. Retained hosts submit bounded runtime and artifact locators;
+independent region-policy checks remain test-only. This closes partition
+placement control. Routed OpenSTA coordination, the multi-FPGA physical owner,
+Chimew orchestration, remaining prepared-input/configuration adapters and
+current-source NVDLA terminal qualification remain W7 completion requirements.

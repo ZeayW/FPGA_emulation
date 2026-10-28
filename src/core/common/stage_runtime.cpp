@@ -17,6 +17,10 @@
 namespace emuflow::core {
 namespace {
 constexpr RegisteredSchema schemas[] = {
+    {"openparf-qualification-request-v1", ArtifactEncoding::kText, 0, 1},
+    {"openparf-qualification-report-v1", ArtifactEncoding::kText, 0, 1},
+    {"openparf-runtime-request-v1", ArtifactEncoding::kText, 0, 1},
+    {"openparf-runtime-report-v1", ArtifactEncoding::kText, 0, 1},
     {"openparf-input-request-v1", ArtifactEncoding::kText, 0, 1},
     {"openparf-input-manifest-v1", ArtifactEncoding::kText, 0, 1},
     {"xilinx-route-validation-request-v1", ArtifactEncoding::kBinary, 0x31565250464d5545ULL, 1},

@@ -160,6 +160,36 @@ def prepare_atomic_input(
     architecture=None,
     allowed_slrs=None,
 ):
+    sources, effective_top = atomic_input_sources(mapped_path, packed_path, architecture_path,
+        top=top, native_constraints_path=native_constraints_path, provider_manifest_path=provider_manifest_path,
+        mapped_value=mapped_value, packed_value=packed_value)
+    manifest, proof = _run(
+        "prepare-openparf-input",
+        output_dir,
+        sources,
+        top=effective_top,
+        allowed_slrs=allowed_slrs,
+    )
+    value = _small(manifest, 8 * 1024 * 1024)
+    fields = (
+        "device",
+        "inode",
+        "bytes",
+        "mtime_seconds",
+        "mtime_nanoseconds",
+        "ctime_seconds",
+        "ctime_nanoseconds",
+    )
+    if native_file_generation(manifest) != tuple(
+        proof["outputs"][0]["generation"][k] for k in fields
+    ):
+        raise ValidationError("native OpenPARF manifest generation changed")
+    return value
+
+
+def atomic_input_sources(mapped_path, packed_path, architecture_path, *, top=None,
+                         native_constraints_path=None, provider_manifest_path=None,
+                         mapped_value=None, packed_value=None):
     from emuflow.physical.xilinx_netlist import (
         IndexedXilinxMappedNetlist,
         is_xilinx_mapped_index,
@@ -196,25 +226,4 @@ def prepare_atomic_input(
         require = getattr(view, "require_sources_unchanged", None)
         if callable(require):
             require()
-    manifest, proof = _run(
-        "prepare-openparf-input",
-        output_dir,
-        sources,
-        top=top or mapped_value.top,
-        allowed_slrs=allowed_slrs,
-    )
-    value = _small(manifest, 8 * 1024 * 1024)
-    fields = (
-        "device",
-        "inode",
-        "bytes",
-        "mtime_seconds",
-        "mtime_nanoseconds",
-        "ctime_seconds",
-        "ctime_nanoseconds",
-    )
-    if native_file_generation(manifest) != tuple(
-        proof["outputs"][0]["generation"][k] for k in fields
-    ):
-        raise ValidationError("native OpenPARF manifest generation changed")
-    return value
+    return sources, top or mapped_value.top

@@ -6,13 +6,10 @@ from emuflow.physical.xilinx_physical_handoff import open_xilinx_physical_handof
 import gc
 import hashlib
 import json
-import math
 import time
-from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Mapping, Optional
 
-from emuflow.platform.architecture import ArchitectureDB
 from emuflow.common.native_tools import native_file_generation
 from emuflow.common.errors import ValidationError
 from emuflow.ir.emuir_compact import source_metadata
@@ -22,7 +19,8 @@ from emuflow.physical.physical_backend import PHYSICAL_PARTITION_RESULT_SCHEMA
 from emuflow.ir.resource_budget import validate_device_resource_usage, validate_materialized_resource_counts
 from emuflow.timing.sta import iter_sta_path_database_paths
 from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
-from emuflow.physical.openparf.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source, run_xilinx_openparf_atomic_qualification
+from emuflow.physical.openparf.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source
+from emuflow.physical.openparf.qualification_native import run_qualification
 from emuflow.timing.xilinx_opensta import run_xilinx_routed_opensta
 from emuflow.physical.rapidwright.route_stage import run_native_rwroute_stage
 from emuflow.timing.xilinx_segment_timing import build_xilinx_segment_timing_bundle
@@ -30,122 +28,6 @@ from emuflow.timing.xilinx_timing import build_xilinx_routed_timing
 
 
 _ACTIVE_REGION_RESOURCE_HEADROOM = 1.5
-
-
-def _cluster_resource(cluster: Mapping[str, Any]) -> str:
-    kind = cluster.get("kind")
-    if kind in {"slice", "carry"}:
-        return "slice"
-    types = {item.get("cell_type") for item in cluster.get("assignments", [])}
-    if types == {"DSP48E2"}:
-        return "dsp"
-    if types and all(str(cell_type).startswith("RAMB") for cell_type in types):
-        return "bram"
-    if types == {"URAM288"}:
-        return "uram"
-    raise ValidationError(f"packed cluster {cluster.get('id')!r} has no region resource")
-
-
-def _site_resource(site_type: str) -> Optional[str]:
-    upper = site_type.upper()
-    if upper.startswith("SLICE"):
-        return "slice"
-    if upper.startswith("DSP"):
-        return "dsp"
-    if upper.startswith("RAMB"):
-        return "bram"
-    if upper.startswith("URAM"):
-        return "uram"
-    return None
-
-
-def _select_xilinx_slr_window(
-    packed_path: Path,
-    architecture_path: Path,
-    *,
-    packed_value: Optional[Mapping[str, Any]] = None,
-    architecture: Optional[ArchitectureDB] = None,
-) -> Tuple[str, ...]:
-    """Use every SLR while retaining a fail-closed capacity admission check.
-
-    The per-FPGA resource contract limits use to 25% of the complete device;
-    it does not define a 25%-area pblock.  Confining a large partition to the
-    smallest capacity-feasible SLR window turns otherwise available routing
-    fabric into an artificial bottleneck.  High-fanout transport nets are
-    buffered before placement, so the production default spreads placement
-    over the complete device and lets OpenPARF trade wirelength for routability.
-
-    The input is the final post-Phase-6 packed/atomic netlist, including
-    transport logic.  Keep the 1.5x resource-headroom check as an admission
-    guard, but do not use it to shrink the legal placement region.
-    """
-
-    packed = read_json(packed_path) if packed_value is None else packed_value
-    architecture = (
-        ArchitectureDB.load(architecture_path)
-        if architecture is None else architecture
-    )
-    clusters = packed.get("clusters")
-    if not isinstance(clusters, Sequence) or not clusters:
-        raise ValidationError("packed partition has no clusters")
-    if packed.get("schema") == "emuflow.openparf-atomic-source/v1":
-        atoms = Counter(
-            assignment.get("cell_type")
-            for cluster in clusters
-            for assignment in cluster.get("assignments", [])
-        )
-        demand = Counter({
-            "slice": max(
-                math.ceil(sum(
-                    count for cell_type, count in atoms.items()
-                    if isinstance(cell_type, str)
-                    and (cell_type.startswith("LUT") or cell_type == "LUT6_2")
-                ) / 8),
-                math.ceil(sum(
-                    count for cell_type, count in atoms.items()
-                    if isinstance(cell_type, str) and cell_type.startswith("FD")
-                ) / 16),
-                atoms["CARRY8"],
-                math.ceil(atoms["MUXF7"] / 4),
-                math.ceil(atoms["MUXF8"] / 2),
-                atoms["MUXF9"],
-            ),
-            "dsp": atoms["DSP48E2"],
-            "bram": atoms["RAMB18E2"] + atoms["RAMB36E2"],
-            "uram": atoms["URAM288"],
-        })
-        demand += Counter()
-    else:
-        demand = Counter(_cluster_resource(cluster) for cluster in clusters)
-    capacities: Dict[str, Counter] = {}
-    rows: Dict[str, list[int]] = {}
-    for site in architecture.value["sites"]:
-        region = site.get("physical_region")
-        if not isinstance(region, dict) or not isinstance(region.get("slr"), str):
-            continue
-        slr = region["slr"]
-        resource = _site_resource(site["type"])
-        if resource is not None:
-            capacities.setdefault(slr, Counter())[resource] += 1
-        tile = site.get("tile")
-        row = tile.get("grid_row") if isinstance(tile, dict) else site.get("y")
-        if isinstance(row, int):
-            rows.setdefault(slr, []).append(row)
-    if not capacities or set(capacities) != set(rows):
-        raise ValidationError("ArchitectureDB has no complete physical SLR inventory")
-    ordered = sorted(capacities, key=lambda name: (sum(rows[name]) / len(rows[name]), name))
-    required = Counter({
-        resource: math.ceil(count * _ACTIVE_REGION_RESOURCE_HEADROOM)
-        for resource, count in demand.items()
-        if count
-    })
-    device_capacity = sum((capacities[name] for name in ordered), Counter())
-    if any(required[key] > device_capacity[key] for key in required):
-        raise ValidationError(
-            "packed partition exceeds the complete Xilinx device capacity "
-            f"with {_ACTIVE_REGION_RESOURCE_HEADROOM:g}x placement headroom"
-        )
-    return tuple(ordered)
 
 
 def _sha256(path: Path) -> str:
@@ -642,12 +524,6 @@ def run_rapidwright_openparf_native_candidate_backend(
     require_native_schema("routed-segment-request-v1")
     require_native_schema("routed-endpoint-request-v1")
     require_native_schema("routed-opensta-request-v1")
-    architecture = ArchitectureDB.load(architecture_path)
-    if architecture.part != part:
-        raise ValidationError(
-            f"RapidWright architecture part {architecture.part!r} does not "
-            f"match BoardDB part {part!r}"
-        )
     output_dir.mkdir(parents=True, exist_ok=True)
     mapped_path = output_dir / "partition.mapped.sqlite"
     mapped_report = emit_xilinx_mapped_index(
@@ -698,25 +574,9 @@ def run_rapidwright_openparf_native_candidate_backend(
             if isinstance(atomic_source_selector, Mapping) else None
         ),
     }
-    selected_slrs = _select_xilinx_slr_window(
-        atomic_source_path,
-        architecture_path,
-        packed_value=atomic_source,
-        architecture=architecture,
-    )
     atomic_summary = dict(atomic_source["summary"])
-    region_path = output_dir / "placement-region.json"
-    write_json(region_path, {
-        "schema": "emuflow.xilinx-placement-constraints/v1",
-        "policy": {
-            "provider": "full-device-routability-v1",
-            "resource_headroom": _ACTIVE_REGION_RESOURCE_HEADROOM,
-        },
-        "global": {"allowed_slrs": list(selected_slrs)},
-        "clusters": [],
-    }, compact=True)
     qualification_root = output_dir / "openparf-native"
-    qualification = run_xilinx_openparf_atomic_qualification(
+    qualification = run_qualification(
         mapped_path,
         atomic_source_path,
         architecture_path,
@@ -728,10 +588,10 @@ def run_rapidwright_openparf_native_candidate_backend(
         provider_manifest_path=openparf_provider_manifest,
         mapped_value=mapped_value,
         packed_value=atomic_source,
-        architecture=architecture,
-        allowed_slrs=selected_slrs,
-        constraints_path=region_path,
+        expected_part=part,
     )
+    selected_slrs = tuple(qualification["allowed_slrs"])
+    region_path = Path(qualification["region_path"])
     certificate_path = Path(qualification["certificate_path"])
     compact_qualification = _compact_openparf_qualification(
         qualification, certificate_path

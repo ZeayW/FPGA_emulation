@@ -10,7 +10,6 @@ from emuflow.platform.architecture import ArchitectureDB, compatible_cells_for_b
 from emuflow.physical.openparf.openparf import (
     _openparf_environment,
     resolve_openparf_install,
-    run_openparf,
     validate_openparf_runtime,
 )
 
@@ -97,89 +96,7 @@ class OpenparfRuntimeAndArchitectureTest(unittest.TestCase):
                     python_executable=python,
                 )
 
-    def test_stable_native_runner_selects_driver_and_requires_certificate(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            installation = root / "openparf-install"
-            (installation / "openparf").mkdir(parents=True)
-            (installation / "openparf.py").write_text("", encoding="utf-8")
-            result_dir = root / "results"
-            config = root / "openparf.json"
-            config.write_text(json.dumps({
-                "benchmark_name": "runner",
-                "result_dir": str(result_dir),
-                "emuflow_stable_global_placement": True,
-            }), encoding="utf-8")
 
-            def fake_run(command, **_kwargs):
-                self.assertEqual(
-                    command[1:3], ["-m", "emuflow.physical.openparf.openparf_native_driver"]
-                )
-                result_dir.mkdir(parents=True)
-                (result_dir / "runner.pl").write_text(
-                    "i0 0 0 0\n", encoding="utf-8"
-                )
-                (result_dir / "runner.native-metrics.json").write_text(
-                    json.dumps({
-                        "schema": "emuflow.openparf-native-convergence/v1",
-                        "status": "pass",
-                        "stop_reason": "feasible-hpwl-patience",
-                        "iterations": 42,
-                        "restored_best_feasible": True,
-                        "best_feasible_hpwl": 10.0,
-                        "final_legal_hpwl": 11.0,
-                        "policy": {
-                            "sll_weighting": {
-                                "provider": "leaps-fixed-adam-step-v2",
-                                "step_size": 0.002,
-                                "delta_sll_ema_weight": 0.9,
-                                "accepted_range": [0.0, 1000.0],
-                            },
-                            "density_filler_sampling": {
-                                "provider": "density-bin-bounded-fillers-v2",
-                                "status": "pass",
-                                "maximum_bin_span": [0.5, 0.5],
-                                "resources": {
-                                    "LUT": {
-                                        "count": 4,
-                                        "size": [0.5, 0.5],
-                                        "bin_size": [1.0, 1.0],
-                                        "bin_span": [0.5, 0.5],
-                                    }
-                                },
-                            },
-                        },
-                    }),
-                    encoding="utf-8",
-                )
-                return mock.Mock(returncode=0)
-
-            with mock.patch(
-                "emuflow.physical.openparf.openparf.subprocess.run", side_effect=fake_run
-            ):
-                placement = run_openparf(
-                    config,
-                    install_root=installation,
-                    python_executable=Path(sys.executable),
-                )
-            self.assertEqual(placement, (result_dir / "runner.pl").resolve())
-
-    def test_retired_continuous_driver_cannot_be_selected(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            installation = root / "openparf-install"
-            (installation / "openparf").mkdir(parents=True)
-            (installation / "openparf.py").write_text("")
-            config = root / "openparf.json"
-            for flag in (True, False):
-                config.write_text(json.dumps({"benchmark_name":"runner",
-                    "result_dir":str(root / "results"),
-                    "emuflow_continuous_global_guidance":flag}))
-                with mock.patch("emuflow.physical.openparf.openparf.subprocess.run") as launch:
-                    with self.assertRaisesRegex(Exception, "continuous guidance placement is retired"):
-                        run_openparf(config, install_root=installation,
-                            python_executable=Path(sys.executable))
-                    launch.assert_not_called()
 
     def test_secondary_ultrascale_ff_bel_is_supported(self) -> None:
         self.assertEqual(
@@ -230,60 +147,6 @@ class OpenparfRunnerTest(unittest.TestCase):
                 resolve_openparf_install(prefix), package.resolve()
             )
 
-    def test_root_built_openparf_runner_returns_expected_result(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            installation = root / "install"
-            (installation / "openparf").mkdir(parents=True)
-            driver = installation / "openparf.py"
-            driver.write_text(
-                "\n".join(
-                    (
-                        "import argparse",
-                        "import json",
-                        "from pathlib import Path",
-                        "parser = argparse.ArgumentParser()",
-                        "parser.add_argument('--config', required=True)",
-                        "parser.add_argument('--log', required=True)",
-                        "args = parser.parse_args()",
-                        "config = json.loads(",
-                        "    Path(args.config).read_text(encoding='utf-8')",
-                        ")",
-                        "result = Path(config['result_dir'])",
-                        "result.mkdir(parents=True, exist_ok=True)",
-                        "(result / (config['benchmark_name'] + '.pl')).write_text(",
-                        "    'i0 0 0 0\\n', encoding='utf-8'",
-                        ")",
-                    )
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            config = root / "openparf.json"
-            result_dir = root / "results"
-            config.write_text(
-                json.dumps(
-                    {
-                        "benchmark_name": "runner",
-                        "result_dir": str(result_dir),
-                    }
-                ),
-                encoding="utf-8",
-            )
-            placement = run_openparf(
-                config,
-                install_root=installation,
-                python_executable=Path(sys.executable),
-            )
-            self.assertEqual(
-                placement, (result_dir / "runner.pl").resolve()
-            )
-            self.assertEqual(
-                placement.read_text(encoding="utf-8"),
-                "i0 0 0 0\n",
-            )
 
 
 

@@ -44,7 +44,6 @@ from emuflow.storage.store_publication import bind_store_source, publish_sqlite_
 
 from emuflow.common.io import file_sha256, read_json, write_json
 
-from emuflow.physical.openparf.openparf_native_driver import native_metrics_path, validate_openparf_native_metrics
 
 from emuflow.physical.xilinx_native_device_constraints import load_xilinx_native_device_constraints, require_xilinx_native_constraint_capability
 

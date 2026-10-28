@@ -1,3 +1,4 @@
+from tests.openparf_region_reference import _select_xilinx_slr_window
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,7 +10,6 @@ from emuflow.physical.xilinx_physical_backend import (
     _finish_rapidwright_routed_backend,
     _physical_clock_periods,
     _run_rapidwright_routed_backend_tail,
-    _select_xilinx_slr_window,
     run_rapidwright_openparf_native_candidate_backend,
 )
 
@@ -209,10 +209,11 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                         "placement_x":0.5,"placement_y":0.5,"site":"S0",
                         "resources":{"FF":16},"physical_sites":{"FF":["S0"]}}]})
                 from emuflow.common.io import file_sha256
-                self.assertEqual(_kwargs['constraints_path'],physical/'placement-region.json')
+                self.assertEqual(_kwargs['expected_part'],'xcvu19p-test')
                 return {
                     "status": "pass",
                     "certificate_path":str(certificate_path),
+                    "allowed_slrs":["SLR1"],"region_path":str(physical/'placement-region.json'),
                     "handoff_generation":[0]*7,
                     "bridge":{"status":"pass","physical_handoff":str(published_handoff_path),
                         "physical_handoff_sha256":"0"*64,
@@ -232,10 +233,6 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
 
             with (
                 mock.patch(
-                    "emuflow.physical.xilinx_physical_backend.ArchitectureDB.load",
-                    return_value=architecture_object,
-                ),
-                mock.patch(
                     "emuflow.physical.xilinx_physical_backend.emit_xilinx_mapped_index",
                     return_value={"top": "top", "output_sha256": "0" * 64},
                 ),
@@ -249,11 +246,7 @@ class XilinxPhysicalBackendTest(unittest.TestCase):
                     side_effect=publish_atomic_source,
                 ) as build_source,
                 mock.patch(
-                    "emuflow.physical.xilinx_physical_backend._select_xilinx_slr_window",
-                    return_value=("SLR1",),
-                ),
-                mock.patch(
-                    "emuflow.physical.xilinx_physical_backend.run_xilinx_openparf_atomic_qualification",
+                    "emuflow.physical.xilinx_physical_backend.run_qualification",
                     side_effect=qualify,
                 ) as qualify,
                 mock.patch(

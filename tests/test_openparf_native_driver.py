@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import torch
+from tests.openparf_runtime_host_fixture import validate_openparf_native_metrics
 
 from emuflow.physical.openparf.openparf_native_driver import (
     OPENPARF_NATIVE_CONVERGENCE_SCHEMA,
@@ -12,7 +13,6 @@ from emuflow.physical.openparf.openparf_native_driver import (
     stable_native_stop_condition,
     validate_native_filler_geometry,
     validate_native_logic_site_area,
-    validate_openparf_native_metrics,
 )
 
 

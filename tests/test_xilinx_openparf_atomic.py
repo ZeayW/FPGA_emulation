@@ -1,4 +1,3 @@
-from tests.openparf_export_fixture import run_atomic_facts as run_xilinx_openparf_atomic_qualification
 from tests.openparf_export_fixture import export_atomic_facts as export_xilinx_openparf_atomic
 from tests.openparf_bridge_fixture import materialize_bridge_fixture as materialize_xilinx_openparf_atomic_contract
 from contextlib import closing
@@ -2524,84 +2523,6 @@ class XilinxOpenparfAtomicTest(unittest.TestCase):
                     member_count + 1,
                 )
 
-    def test_internal_runner_has_no_fallback_and_keeps_runtime_evidence(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            mapped, packed, architecture = _fixture(root)
-            output = root / "output"
-
-            def fake_run(_config, **_kwargs):
-                placement = output / "results" / "xilinx_atomic_lut_ff.pl"
-                placement.parent.mkdir(parents=True, exist_ok=True)
-                placement.write_text("a0 0 0 0\na1 0 0 1\n", encoding="utf-8")
-                placement.with_suffix(".native-metrics.json").write_text(
-                    json.dumps({
-                        "schema": "emuflow.openparf-native-convergence/v1",
-                        "status": "pass",
-                        "stop_reason": "feasible-hpwl-patience",
-                        "iterations": 42,
-                        "restored_best_feasible": True,
-                        "best_feasible_hpwl": 10.0,
-                        "final_legal_hpwl": 11.0,
-                        "policy": {
-                            "sll_weighting": {
-                                "provider": "leaps-fixed-adam-step-v2",
-                                "step_size": 0.002,
-                                "delta_sll_ema_weight": 0.9,
-                                "accepted_range": [0.0, 1000.0],
-                            },
-                            "density_filler_sampling": {
-                                "provider": "density-bin-bounded-fillers-v2",
-                                "status": "pass",
-                                "maximum_bin_span": [0.5, 0.5],
-                                "resources": {
-                                    "LUT": {
-                                        "count": 4,
-                                        "size": [0.5, 0.5],
-                                        "bin_size": [1.0, 1.0],
-                                        "bin_span": [0.5, 0.5],
-                                    }
-                                },
-                            },
-                        },
-                    }),
-                    encoding="utf-8",
-                )
-                return placement
-
-            with mock.patch(
-                "emuflow.physical.openparf.xilinx_openparf_atomic.validate_openparf_runtime",
-                return_value={
-                    "status": "pass", "installation": "contract-fixture",
-                    "python": "contract-fixture",
-                },
-            ), mock.patch(
-                "emuflow.physical.openparf.xilinx_openparf_atomic.run_openparf",
-                side_effect=fake_run,
-            ) as run_openparf:
-                report = run_xilinx_openparf_atomic_qualification(
-                    mapped, packed, architecture, output
-                )
-                relocated = root / "relocated-output"
-                shutil.copytree(output, relocated)
-                reused = run_xilinx_openparf_atomic_qualification(
-                    mapped, packed, architecture, relocated
-                )
-        self.assertEqual(report["status"], "pass")
-        self.assertEqual(report["runtime"]["installation"], "contract-fixture")
-        self.assertEqual(
-            report["certificate"]["runtime_validation"], "unverified"
-        )
-        self.assertEqual(
-            report["certificate"]["native_convergence"]["metrics"][
-                "stop_reason"
-            ],
-            "feasible-hpwl-patience",
-        )
-        self.assertNotIn("fallback", report)
-        self.assertFalse(report["openparf_result"]["reused"])
-        self.assertTrue(reused["openparf_result"]["reused"])
-        self.assertEqual(run_openparf.call_count, 1)
 
     def test_parser_rejects_missing_or_extra_atoms(self):
         with tempfile.TemporaryDirectory() as temporary:
