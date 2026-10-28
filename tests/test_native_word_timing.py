@@ -165,7 +165,6 @@ puts $message
     ('unset emuflow_native_export_stage','read-only'),
     ('dict set parent core_half core_half','cycle'),
     ('dict set pin_clock rx/C core_half','projection'),
-    ('set clocks {emuflow_tdm_clk unused_phy}','no declared DUT clock'),
 ])
 def test_incompatible_snapshot_facts_remain_analysis_failures(tmp_path,setup,expected):
     done,_ = execute(tmp_path,setup+r'''
@@ -174,6 +173,28 @@ puts $message
 puts [llength $constraints]
 ''')
     assert not done.stderr and expected in done.stdout and done.stdout.rstrip().endswith('0')
+
+
+def test_clockless_transit_snapshot_retains_real_rx_and_control_sources(tmp_path):
+    done,output=execute(tmp_path,r'''
+set clocks {emuflow_tdm_clk unused_phy}
+set source_points {rx/Q rx_copy/Q phase/Q}
+set sources [emuflow_native_word_sources $role_path]
+puts [llength [dict get $sources dut_clocks]]
+puts [dict get $sources rx s7]
+puts [dict get $sources missing_rx_origins]
+puts [llength $constraints]
+emuflow_native_word_reference $sources
+set stream [open $output_path w]
+emuflow_native_word_cost_header $stream
+emuflow_native_word_tx_costs $sources $stream 0 q {native_serializer/D[3]}
+close $stream
+''')
+    assert not done.stderr
+    assert done.stdout.splitlines()==['0','rx/C rx_copy/C','s9','0']
+    with output.open(newline='')as stream:rows=list(csv.DictReader(stream,delimiter='\t'))
+    assert {row['source_kind']for row in rows}=={'rx','infrastructure'}
+    assert all(row['measurement']=='native-clock-aware-reference'for row in rows)
 
 
 def test_cost_export_refuses_a_nominal_clock_requirement_instead_of_the_reference(tmp_path):
