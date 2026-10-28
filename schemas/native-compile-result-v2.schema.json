@@ -22,7 +22,7 @@
       "const": "native-orchestration-v1"
     },
     "phase_implementation": {
-      "const": "native-rtl-frontend-phase2-phase3-phase4-phase5-baseline-phase6-nonphysical-terminal-and-isolated-python-adapters-v4"
+      "const": "native-rtl-frontend-phase2-phase3-phase4-phase5-baseline-phase6-terminal-and-isolated-python-adapters-v5"
     },
     "native_data_plane_complete": {
       "const": false
@@ -95,6 +95,7 @@
               "native-phase2-v1",
               "native-no-physical-stage-v1",
               "native-nonphysical-phase7c-v1",
+              "native-physical-phase7c-v1",
               "native-flow-finalize-v1"
             ]
           },

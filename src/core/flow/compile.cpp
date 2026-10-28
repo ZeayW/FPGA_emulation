@@ -1,7 +1,6 @@
 #include "flow/compile.hpp"
 #include "flow/finalize.hpp"
 #include "flow/signoff.hpp"
-#include "physical/evidence_catalog.hpp"
 #include "common/artifact_io.hpp"
 #include "common/json_record.hpp"
 #include "storage/sqlite.hpp"
@@ -329,16 +328,24 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
       }
       if(std::string(stage)=="signoff") {
         ControlJson prior(previous.string());
-        const bool native_signoff=prior.String("$.state[1].phase6_provider")=="baseline" &&
-            !prior.Boolean("$.state[1].physical");
+        const bool physical_signoff=prior.Boolean("$.state[1].physical");
+        const bool native_signoff=prior.String("$.state[1].phase6_provider")=="baseline";
         if(native_signoff) {
           Require(prior.String("$.stage")=="physical","invalid native Phase 7C predecessor");
           const auto next=scratch.root/"signoff.json";auto bound=ArtifactRef::Bind(previous.string(),"native-compile-state-v1");
           const auto step=RunStage("signoff",[&]{return std::vector<ArtifactRef>{bound};},
-            [&](const auto& sources){SignoffNonphysical(output);for(const auto& source:sources)source.RequireUnchanged();},
+            [&](const auto& sources){
+              if(physical_signoff){
+                SignoffPhysical(output,prior.String("$.state[1].global_sta_executable"),cancelled,
+                    prior.Has("$.state[1].global_sta_launcher_reference")?prior.StatePath("global_sta_launcher_reference"):"");
+                Require(ControlJson((output/"runtime/phase7c_report.json").string()).String("$.status")=="pass",
+                    "full physical flow did not close unified Phase 7C system timing");
+              }else SignoffNonphysical(output);
+              for(const auto& source:sources)source.RequireUnchanged();
+            },
             [&]{return std::vector<ArtifactRef>{ArtifactRef::Bind(
                 (output/"runtime/phase7c_report.json").string(),"exact-sha256-text-v1")};});
-          result.steps.push_back({stage,step.ok(),"native-nonphysical-phase7c-v1",step.metrics.wall_seconds,
+          result.steps.push_back({stage,step.ok(),physical_signoff?"native-physical-phase7c-v1":"native-nonphysical-phase7c-v1",step.metrics.wall_seconds,
             step.metrics.user_cpu_seconds,step.metrics.system_cpu_seconds,step.metrics.process_peak_rss_kib});
           if(!step.ok())throw StageError(step.error,"native compile signoff: "+step.message);
           auto published=ArtifactRef::Bind((output/"runtime/phase7c_report.json").string(),"exact-sha256-text-v1");
@@ -531,8 +538,6 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
           const auto summary=fs::path(state.StatePath("physical_summary_path"));
           Require(fs::weakly_canonical(summary)==output/"physical/physical-summary.json",
                   "physical summary escapes compiler ownership");
-          (void)ResolvePhysicalEvidenceCatalog(
-              ArtifactRef::Bind(summary.string(),"physical-summary-v1"));
         }
         state.RequirePublishedPaths(temporary);
         state_ref.RequireUnchanged();
@@ -568,7 +573,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
 std::string CompileResultJson(const CompileResult& result) {
   std::ostringstream out; out << std::setprecision(17);
   out << "{\"schema\":\"emuflow.native-compile-result/v2\",\"implementation_id\":\"native-orchestration-v1\","
-      << "\"phase_implementation\":\"native-rtl-frontend-phase2-phase3-phase4-phase5-baseline-phase6-nonphysical-terminal-and-isolated-python-adapters-v4\",\"native_data_plane_complete\":false,"
+      << "\"phase_implementation\":\"native-rtl-frontend-phase2-phase3-phase4-phase5-baseline-phase6-terminal-and-isolated-python-adapters-v5\",\"native_data_plane_complete\":false,"
       << "\"operation\":" << StageResultJson(result.operation) << ",\"output_directory\":" << JsonQuote(result.output_directory)
       << ",\"request_configuration\":" << (result.request_configuration.empty() ? "null" : result.request_configuration)
       << ",\"effective_configuration\":" << (result.effective_configuration.empty() ? "null" : result.effective_configuration)

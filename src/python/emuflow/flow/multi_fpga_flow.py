@@ -1294,6 +1294,8 @@ def _compile_preflight(ctx: _CompileContext):
         from emuflow.common.native_tools import require_native_schema
         require_native_schema("placement-lowering-request-v1")
         ctx.global_sta_executable = resolve_native_executable("sta", ctx.global_sta_executable)
+        from emuflow.timing.opensta import _runtime_data_path
+        ctx.global_sta_launcher_reference = _runtime_data_path(Path("scripts/opensta/container_runtime.sh")).resolve()
         if not Path(ctx.global_sta_executable).is_file() or not os.access(ctx.global_sta_executable, os.X_OK):
             raise EmuFlowError("global OpenSTA executable is unavailable or not executable")
         if ctx.global_sta_executable != ctx.opensta:
@@ -1869,7 +1871,9 @@ def _compile_physical(ctx: _CompileContext):
                 }
             )
 
-def _compile_signoff(ctx: _CompileContext):
+def _compile_chimew_signoff(ctx: _CompileContext):
+    if ctx.phase6_provider != "chimew":
+        raise EmuFlowError("baseline Phase 7C is owned by the native compiler")
     ctx.runtime_root = ctx.output_dir / "runtime"
     ctx.runtime_report = ctx.measured("phase7c", run_phase7c,
         ctx.schedule_path,

@@ -299,11 +299,11 @@ def execute(stage, request_path, previous_path, output_path, run_id):
         ctx = flow._CompileContext(
             _restore_control_state(_unpack(previous["state"]))
         )
-    function = getattr(flow, "_compile_" + {"tdm": "schedule"}.get(stage, stage.replace("-", "_")))
+    function = getattr(flow, "_compile_" + {"tdm": "schedule", "signoff": "chimew_signoff"}.get(stage, stage.replace("-", "_")))
     if stage=="split" and ctx.phase6_provider=="baseline":
         raise EmuFlowError('native compiler baseline Phase 6 is owned by the C++ stage')
-    if stage=="signoff" and ctx.phase6_provider=="baseline" and not ctx.physical:
-        raise EmuFlowError('native compiler nonphysical baseline signoff is owned by the C++ Phase 7C stage')
+    if stage=="signoff" and ctx.phase6_provider=="baseline":
+        raise EmuFlowError('native compiler baseline signoff is owned by the C++ Phase 7C stage')
     if stage=="physical" and ctx.phase6_provider=="baseline" and not ctx.physical:
         raise EmuFlowError('native compiler nonphysical boundary is owned by the C++ controller')
     function(ctx)

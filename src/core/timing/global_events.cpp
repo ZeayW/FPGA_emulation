@@ -5,6 +5,7 @@
 #include "common/hash.hpp"
 #include "common/json_record.hpp"
 #include "scheduling/schedule_timing.hpp"
+#include "physical/physical_evidence.hpp"
 #include <deque>
 #include <tuple>
 
@@ -789,6 +790,7 @@ void BindGlobalEvents(const std::vector<ArtifactRef>& inputs,const std::string& 
     Check(locals.Step(),"local FPGA catalog is incomplete");const auto fpga=Text(locals,0);
     SqliteStore local(inputs[3+3*boundary_count+i]);auto& l=local.database();RequireSqliteDDL(l,kLocalPathTimingDDL);
     const auto lh=Metadata(l,"header");BindingHeader(l,lh,fpga,design,platform,true);(void)JsonText(l,lh,"$.qualification");
+    (void)AuditPhysicalEvidenceStore(l,4);
     Object binding;for(const char* key:{"path_database_sha256","original_ir_sha256","assignment_sha256","routes_sha256","original_path_ids_sha256"}) {
       const auto value=JsonText(l,lh,(std::string("$.source.")+key).c_str());Check(value.size()==64 && value.find_first_not_of("0123456789abcdef")==std::string::npos,"local source digest is invalid");binding.emplace(key,value);
     }

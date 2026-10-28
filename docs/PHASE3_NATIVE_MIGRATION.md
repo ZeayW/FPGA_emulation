@@ -1360,8 +1360,8 @@ ordinary RTL synthesis and baseline splitting are deleted in the same change.
 Provider, algorithm, seed, constraints and physical-policy defaults stay fixed.
 
 Configuration preparation, supplied/prepared input binding, Chimew comparison
-and physical execution remain explicit isolated stage adapters. Physical and
-Chimew signoff remain adapter-owned; baseline nonphysical signoff and final
+and physical execution remain explicit isolated stage adapters. Chimew signoff
+remains adapter-owned; baseline physical and nonphysical signoff and final
 reporting are native. The adapters cannot choose another top-level controller
 or silently retry failed native stages. Native execution owns order, predecessor validation,
 artifact-generation handoffs, cancellation and process cleanup. Frame-length
@@ -1394,3 +1394,28 @@ source/include bytes. The native frontend binds checked include files as well
 as RTL through tool completion. Both physical backends and Chimew remain
 available; no numerical placement/scheduling policy is changed by this entry.
 Checks and source preparation explicitly exclude terminal qualification.
+
+### Native baseline physical signoff
+
+The baseline compiler executes physical Phase 7C in the shared core. Phase 5
+publishes `schedule-board.bin` within its report-last generation seal; downstream
+event binding consumes that route-generation-bound request directly. The core
+resolves current physical evidence selectors and payloads, validates independent
+whole-assignment coverage, supervises OpenSTA, imports representative measurements,
+restores every original path and publishes the typed QoR owner. Runtime artifacts,
+coverage certificate, engine identity and measurement selectors commit together
+through a fresh runtime-directory rename. Temporary event/index databases and
+requests are retired after the independent QoR audit.
+
+The bounded Phase 7C report exposes target and runtime WNS/TNS and the original
+path population. Original path IDs, source seals, fixed-slot readiness/commit
+checks and board timing qualification retain their existing definitions. Changed
+sources, corrupt selectors/stores, incomplete coverage and malformed engine
+output reject before terminal publication. Existing measurement and coverage
+readers can independently replay the new terminal artifacts.
+
+The generic Python compiler signoff adapter is retired. The remaining signoff
+adapter is explicitly restricted to Chimew comparison, which still executes both
+comparison arms. Full physical implementation control, configuration/prepared-input
+adapters and Chimew orchestration remain W7 work. NVDLA terminal acceptance is
+required before claiming complete migration.

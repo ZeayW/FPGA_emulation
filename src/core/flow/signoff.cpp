@@ -160,6 +160,9 @@ std::string TimingEstimate(const Raw& runtime,BoundedJson& phase5) {
 }
 }  // namespace
 
+std::string RuntimeSignoffXdc(const Raw& runtime){return RuntimeXdc(runtime);}
+std::string RuntimeSignoffTestbench(const Raw& runtime,const std::vector<std::string>& fpgas){return RuntimeTestbench(runtime,fpgas);}
+
 void SignoffNonphysical(const fs::path& output) {
   Check(output.is_absolute() && fs::is_directory(output),"flow root is unavailable");
   const auto target=output/"runtime";Check(!fs::exists(target) && !fs::is_symlink(target),"runtime output already exists");

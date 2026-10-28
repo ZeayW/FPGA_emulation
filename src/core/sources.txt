@@ -17,12 +17,14 @@ scheduling/schedule_store.cpp
 scheduling/schedule_validation.cpp
 scheduling/schedule_timing.cpp
 timing/global_events.cpp
+timing/physical_global_sta.cpp
 routing/route_view.cpp
 scheduling/schedule_ingress.cpp
 common/tool_runtime.cpp
 flow/compile.cpp
 flow/finalize.cpp
 flow/signoff.cpp
+flow/physical_signoff.cpp
 physical/openparf/bookshelf.cpp
 physical/rapidwright/rwroute_export.cpp
 partition/patron_ingress.cpp
@@ -69,6 +71,7 @@ routing/phase4.cpp
 timing/phase2.cpp
 physical/physical_coverage.cpp
 physical/evidence_catalog.cpp
+physical/board_timing.cpp
 physical/physical_query_objects.cpp
 timing/logic_segment_query.cpp
 timing/local_path_query.cpp

@@ -27,7 +27,7 @@ struct PhysicalEvidenceCatalog {
 
 // Resolve the bounded Phase 7 physical summary to current typed store owners.
 // Every selector and payload seal is checked before a graph cursor is opened.
-PhysicalEvidenceCatalog ResolvePhysicalEvidenceCatalog(
-    const ArtifactRef& summary);
+PhysicalEvidenceCatalog
+ResolvePhysicalEvidenceCatalog(const ArtifactRef &summary);
 
-}  // namespace emuflow::core
+} // namespace emuflow::core
