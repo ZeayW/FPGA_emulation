@@ -38,13 +38,15 @@ def context(phase=0,query='word[0]',**kw):
 
 
 def bind(binary,rows,*,entries=(('outgoing','word[0]',0,8),),clocks=('core',),rx=None,
-         fanins=None,bound=4096,maximum=1000000,fail=None):
+         fanins=None,bound=4096,maximum=1000000,calendar=None,fail=None):
     rx=rx or {}
     if fanins is None:
         keys=sorted({(int(r[0]),bytes.fromhex(r[1]).decode())for r in rows})
         fanins=[(phase,query,0,0,0,0)for phase,query in keys]
     quote=lambda value:json.dumps(value,ensure_ascii=False)if isinstance(value,str)else str(value)
-    lines=[f'{bound} {maximum} {len(entries)} {len(clocks)} {len(rx)} {len(fanins)}']
+    calendar=sorted({entry[3]//8 for entry in entries})if calendar is None else calendar
+    lines=[f'{bound} {maximum} {len(entries)} {len(clocks)} {len(rx)} {len(fanins)} {len(calendar)}',
+           ' '.join(map(str,calendar))]
     lines+=[' '.join(map(quote,entry))for entry in entries]
     lines+=[quote(clock)for clock in clocks]
     lines+=[' '.join(map(quote,item))for item in rx.items()]
@@ -108,6 +110,20 @@ def test_no_timed_rx_and_unbound_startup_inputs_remain_explicit(tx_binder):
     result=bind(tx_binder,rows,rx={'s7':'incoming'},fanins=[(0,'word[0]',1,0,1,0)])
     assert result['untimed_rx_rows']==1 and result['unbound_source_rows']==1
     assert result['entries'][0]['rows'][-1]['cost_ps'] is None
+
+
+def test_receive_only_counter_extends_the_tx_observation_calendar(tx_binder):
+    result=bind(tx_binder,context(0)+context(2),entries=[('tx','word[0]',0,16)],calendar=[2,3])
+    assert result['repeat_words']==6 and result['expected_contexts']==3
+    assert result['observed_contexts']==2 and result['entries'][0]['data_phase_invariant']is None
+    complete=bind(tx_binder,context(0)+context(2)+context(4),entries=[('tx','word[0]',0,16)],calendar=[2,3])
+    assert complete['entries'][0]['data_phase_invariant']is True
+
+
+@pytest.mark.parametrize('calendar,message',[
+    ([], 'calendar is missing'),([1,1],'repeated'),([33],'invalid'),([2],'absent from its counter calendar')])
+def test_calendar_coverage_is_owned_by_the_complete_counter_catalog(tx_binder,calendar,message):
+    bind(tx_binder,context(),calendar=calendar,fail=message)
 
 
 @pytest.mark.parametrize('change,message',[

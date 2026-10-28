@@ -20,6 +20,9 @@ struct NativeWordTxCatalog {
   // Native RX source tags bind to incoming canonical schedule entries.
   std::map<std::string,std::string> rx_entries;
   std::uint64_t maximum_repeat_words, maximum_contexts;
+  // Complete source-bound counter catalog, including receive-only periods.
+  // TX ratios alone need not describe the partition's joint calendar.
+  std::vector<std::uint32_t> calendar_period_words;
 };
 struct NativeWordBoundTxCost {
   NativeWordCost observation;

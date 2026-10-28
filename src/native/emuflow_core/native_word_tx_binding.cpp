@@ -38,6 +38,15 @@ NativeWordTxBinding BindNativeWordTxCosts(const NativeWordTxCatalog& catalog,
   for (const auto& clock:catalog.dut_clocks)
     Check(!clock.empty() && clocks.insert(clock).second,"native TX DUT clock is empty or repeated");
   Check(!clocks.empty(),"native TX catalog has no DUT launch clocks");
+  std::set<std::uint32_t> calendar;
+  for (auto period:catalog.calendar_period_words) {
+    Check(period>=1 && period<=32 && calendar.insert(period).second,
+        "native TX counter calendar period is invalid or repeated");
+    const auto quotient=result.repeat_words/std::gcd(result.repeat_words,static_cast<std::uint64_t>(period));
+    Check(quotient<=catalog.maximum_repeat_words/period,"native TX serializer recurrence exceeds its explicit bound");
+    result.repeat_words=quotient*period;
+  }
+  Check(!calendar.empty(),"native TX source-bound counter calendar is missing");
   for (const auto& item:catalog.rx_entries) {
     const auto& tag = item.first;
     Check(tag.size() > 1 && tag[0] == 's' && tag.find_first_not_of("0123456789",1) == std::string::npos &&
@@ -49,9 +58,7 @@ NativeWordTxBinding BindNativeWordTxCosts(const NativeWordTxCatalog& catalog,
     Check(entry.ratio_serial_uis >= 8 && entry.ratio_serial_uis <= 256 && entry.ratio_serial_uis%8 == 0 &&
         entry.phase_word < entry.ratio_serial_uis/8,"native TX serializer phase or ratio is invalid");
     const auto period = entry.ratio_serial_uis/8;
-    const auto quotient = result.repeat_words/std::gcd(result.repeat_words,static_cast<std::uint64_t>(period));
-    Check(quotient <= catalog.maximum_repeat_words/period,"native TX serializer recurrence exceeds its explicit bound");
-    result.repeat_words = quotient*period;
+    Check(calendar.count(period),"native TX serializer ratio is absent from its counter calendar");
     result.entries.push_back({entry,{},std::nullopt});
   }
   struct Context {

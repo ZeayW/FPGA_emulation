@@ -8,9 +8,13 @@ int main() {
   try {
     using namespace emuflow::core;
     NativeWordTxCatalog catalog;
-    std::uint64_t entries,clocks,rx,contexts;
-    if (!(std::cin >> catalog.maximum_repeat_words >> catalog.maximum_contexts >> entries >> clocks >> rx >> contexts) ||
-        entries>100000 || clocks>1000 || rx>100000 || contexts>1000000) throw std::runtime_error("invalid binding fixture");
+    std::uint64_t entries,clocks,rx,contexts,periods;
+    if (!(std::cin >> catalog.maximum_repeat_words >> catalog.maximum_contexts >> entries >> clocks >> rx >> contexts >> periods) ||
+        entries>100000 || clocks>1000 || rx>100000 || contexts>1000000 || periods>32) throw std::runtime_error("invalid binding fixture");
+    for (std::uint64_t i=0;i<periods;++i) {
+      std::uint32_t period;if (!(std::cin>>period))throw std::runtime_error("invalid counter calendar fixture");
+      catalog.calendar_period_words.push_back(period);
+    }
     for (std::uint64_t i=0;i<entries;++i) {
       NativeWordTxEntry entry;
       if (!(std::cin >> std::quoted(entry.id) >> std::quoted(entry.query) >> entry.phase_word >> entry.ratio_serial_uis))

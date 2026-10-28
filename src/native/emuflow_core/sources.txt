@@ -20,6 +20,7 @@ emuflow_core/word_events.cpp
 emuflow_core/word_phase_sweep.cpp
 emuflow_core/native_word_costs.cpp
 emuflow_core/native_word_tx_binding.cpp
+emuflow_core/native_word_network.cpp
 emuflow_core/word_physical_binding.cpp
 emuflow_core/exact_semantic_view.cpp
 emuflow_core/source_launch_clocks.cpp
