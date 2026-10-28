@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 import tests.routed_opensta_reference as xilinx_opensta
-import emuflow.timing.xilinx_timing as xilinx_timing
+import tests.routed_timing_adapter as xilinx_timing
 from emuflow.common.errors import ValidationError
 from emuflow.timing.opensta import render_opensta_liberty
 from emuflow.timing.xilinx_opensta import (

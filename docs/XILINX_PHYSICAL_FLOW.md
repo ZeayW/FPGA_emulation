@@ -503,9 +503,10 @@ sequential metadata-array views instead of rebuilding the clock/I/O populations;
 graph and OpenSTA consumers retain that produced generation. This preserves
 exact/shared-site/intra-site delays, static/internal-clock exclusions and fixed
 I/O/clock-gate bindings. It does not replace independent physical route checking.
-The public `build-xilinx-routed-timing` command now requires `--mapped-index`
-and `--physical-handoff`; its former JSON/packing/placement producer options are
-retired. Validation of explicit historical input remains a separate reader.
+The former separate routed-timing build/validation CLI is retired. The complete
+native RapidWright partition binds route endpoints and publishes every requested
+timing evidence owner within the accepted partition transaction. Component-level
+producer and independent-reader harnesses live only in the test tree.
 
 Routed boundary, logic-segment and same-FPGA path measurements use
 `emuflow-native physical build-routed-segments`. Its checked request binds the

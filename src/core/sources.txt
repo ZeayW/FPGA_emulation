@@ -99,3 +99,4 @@ physical/openparf/convergence.cpp
 physical/openparf/qualification.cpp
 timing/routed_model.cpp
 timing/routed_stage.cpp
+physical/rapidwright/partition.cpp

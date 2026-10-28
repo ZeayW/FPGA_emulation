@@ -33,7 +33,7 @@ from emuflow.timing.sta import (
     STA_PATH_DATABASE_INDEX_SCHEMA,
     sta_path_database_qor,
 )
-from emuflow.timing.xilinx_timing import (
+from tests.routed_timing_adapter import (
     XILINX_ROUTED_TIMING_SCHEMA,
     XILINX_ROUTED_TIMING_STREAM_SCHEMA,
     iter_xilinx_routed_timing_endpoints,

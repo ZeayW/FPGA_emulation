@@ -1599,3 +1599,36 @@ QoR/legacy readers are confined to test oracles. Production Python submits only
 bounded artifact and tool locators. Complete multi-FPGA implementation control,
 Chimew orchestration and configuration/prepared-input adapters remain W7 work,
 with current-source NVDLA terminal qualification still required.
+
+
+### Complete native RapidWright partition
+
+`physical run-rapidwright-partition REQUEST OUTPUT_DIR` owns the maintained
+partition transaction from compact PlacementIR through final accepted physical
+report. It calls mapped and atomic input producers, full-device OpenPARF
+qualification, RWRoute, routed endpoint binding, all requested boundary/logic/local
+timing projections and routed OpenSTA directly in the shared core. Whole-device
+resource limits, primitive transformations, source cell census, endpoint identity,
+clock periods and route/DRC closure remain mandatory checks. Vivado and
+RapidWright share the same closed timing-store publication helper.
+
+The output directory has one native owner. Every invocation uses a fresh
+implementation generation, including a requested retry; stage-local reuse is
+accepted only when that stage finds its own matching sealed inputs. A retry does
+not modify the prior partition's immutable payloads. The accepted partition report
+is replaced only after the complete transaction passes. The host verifies the
+original input generations and all returned output generations before consuming
+the bounded report. Failed attempts retain diagnostic evidence.
+
+The former Python mapped/placement/route/timing coordinator, physical-clock
+projection, certificate compaction, cell/resource accounting and report builder
+are deleted. Python only resolves tool installations and submits bounded artifact
+references. This closes per-partition ownership for both maintained backends;
+the multi-FPGA implementation controller, Chimew orchestration and remaining
+prepared-input/configuration adapters still require native ownership. NVDLA
+terminal qualification and `native_data_plane_complete=false` remain explicit.
+
+The replaced Python endpoint/segment hosts and routed-timing graph reader and
+validator are removed from the installed runtime. Their component regression
+harnesses and independent checks live under tests. The separate Python
+routed-timing build/validation commands are retired with those dependencies.

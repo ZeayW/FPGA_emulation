@@ -1,3 +1,4 @@
+#include "physical/rapidwright/partition.hpp"
 #include "timing/routed_stage.hpp"
 #include "physical/openparf/qualification.hpp"
 #include "physical/openparf/runtime.hpp"
@@ -69,6 +70,7 @@ constexpr const char* kUsage =
     "  physical qualify-openparf REQUEST OUTPUT_DIR\n"
     "  physical openparf-runtime REQUEST REPORT\n"
     "  physical run-rwroute REQUEST SUMMARY\n"
+    "  physical run-rapidwright-partition REQUEST OUTPUT_DIR\n"
     "  physical run-vivado-partition REQUEST OUTPUT\n"
     "  phase6 split EMUIR ASSIGNMENT SCHEDULE OUTPUT\n"
     "  phase6 run EMUIR ASSIGNMENT SCHEDULE REQUEST OUTPUT_DIR\n"
@@ -211,6 +213,9 @@ int RunTool(const std::string& input, const std::string& output) {
 }
 
 int Dispatch(int argc, char** argv, const std::string& report) {
+  if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="run-rapidwright-partition") {
+    ToolSignals signals;return Finish(emuflow::core::RunRapidwrightPartition(emuflow::core::ArtifactRef::Bind(argv[3],"rapidwright-partition-request-v1"),argv[4],&tool_cancelled),report);
+  }
   if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="import-openparf-placement") {
     ToolSignals signals;return Finish(emuflow::core::ImportOpenparfPlacement(emuflow::core::ArtifactRef::Bind(argv[3],"openparf-placement-import-request-v1"),argv[4],&tool_cancelled),report);
   }

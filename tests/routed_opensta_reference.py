@@ -15,7 +15,7 @@ from emuflow.common.io import file_sha256, read_json, write_json
 from emuflow.timing.opensta import DEFAULT_TIMING_MODEL, load_timing_model, require_opensta_engine, run_opensta_path_database
 from emuflow.common.native_tools import resolve_native_executable
 from emuflow.timing.sta import STA_PATH_DATABASE_SCHEMA, STA_PATH_DATABASE_STREAM_SCHEMA, STA_PATH_DATABASE_INDEX_SCHEMA, sta_path_database_qor
-from emuflow.timing.xilinx_timing import XILINX_ROUTED_TIMING_STREAM_SCHEMA
+from tests.routed_timing_adapter import XILINX_ROUTED_TIMING_STREAM_SCHEMA
 
 from emuflow.physical.xilinx_netlist import is_xilinx_mapped_index
 
@@ -49,7 +49,7 @@ def _bind_routed_opensta_inputs(mapped_path, timing_path, timing_value=None):
     require_store_sources_unchanged((mapped_source, timing_source))
     sources = (mapped_source, timing_source)
     if timing_value.get("schema") == XILINX_ROUTED_TIMING_STREAM_SCHEMA:
-        from emuflow.physical.rapidwright.routed_endpoints_native import bind_routed_timing_sources
+        from tests.routed_endpoint_adapter import bind_routed_timing_sources
         sources = (mapped_source, *bind_routed_timing_sources(timing_path, timing_value))
     require_store_sources_unchanged(sources)
     return sources, timing_value

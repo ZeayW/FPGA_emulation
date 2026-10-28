@@ -9,6 +9,11 @@ std::string ImportVivadoMeasurement(const ArtifactRef &identity_selector,
                                     unsigned kind, const std::string &output,
                                     bool board_interface,
                                     std::vector<ArtifactRef> &sources);
+// Publish a closed, native-sealed timing store in a fresh backend generation.
+std::string PublishPhysicalProjection(const std::string &payload,
+                                      const std::string &output, unsigned kind,
+                                      const std::string &summary,
+                                      std::vector<ArtifactRef> &sources);
 ArtifactRef BindPhysicalIdentity(const ArtifactRef &selector, unsigned kind,
                                  std::vector<ArtifactRef> &sources);
 } // namespace emuflow::core

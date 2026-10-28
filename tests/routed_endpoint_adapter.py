@@ -73,7 +73,7 @@ class _TimingMetadataArray(Sequence):
 
 
 def bind_routed_timing_sources(path, value):
-    from emuflow.timing.xilinx_timing import _timing_payload_path
+    from tests.routed_timing_adapter import _timing_payload_path
     payload, _sha, _count = _timing_payload_path(path, value)
     metadata = value.get("virtual_io")
     if isinstance(metadata, _TimingMetadataArray):

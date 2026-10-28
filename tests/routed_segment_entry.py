@@ -22,7 +22,7 @@ def build_xilinx_segment_timing_bundle(
         raise ValidationError("routed timing identity and output must be provided together")
     if getattr(mapped_value, "store_path", None) is None:
         raise ValidationError("routed timing requires the current typed mapped-index owner")
-    from emuflow.physical.rapidwright.routed_segments_native import build_routed_segments
+    from tests.routed_segment_adapter import build_routed_segments
     return build_routed_segments(
         boundary_identity_path=boundary_identity_path, mapped_path=mapped_path,
         timing_path=timing_path, boundary_output_path=boundary_output_path,

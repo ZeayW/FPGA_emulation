@@ -19,7 +19,7 @@ from emuflow.timing.local_path_timing import (
 )
 from emuflow.timing.local_path_timing_storage import (read_local_path_timing_storage)
 from tests.timing_facts import local_timing_facts
-from emuflow.timing.xilinx_timing import (
+from tests.routed_timing_adapter import (
     XILINX_ROUTED_TIMING_PAYLOAD_FORMAT,
     XILINX_ROUTED_TIMING_STREAM_SCHEMA,
 )

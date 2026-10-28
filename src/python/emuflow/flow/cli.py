@@ -45,7 +45,6 @@ from emuflow.transport.chimew.chimew_qualification import build_chimew_phase6_qu
 from emuflow.partition.combinational_cut import STATIC_EXACT_CANDIDATE_ASSIGNMENT_V2, STATIC_EXACT_DEFAULT_CANDIDATE_POLICY, STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
 from emuflow.physical.rapidwright.rapidwright_provider import load_rapidwright_provider_manifest, run_rapidwright_device_import, validate_rapidwright_architecture, validate_rapidwright_provider_manifest
 from emuflow.physical.rapidwright.xilinx_rwroute import export_rwroute_input, run_rwroute, validate_xilinx_route_db
-from emuflow.timing.xilinx_timing import build_xilinx_routed_timing, validate_xilinx_routed_timing
 from emuflow.timing.xilinx_opensta import run_xilinx_routed_opensta, validate_xilinx_routed_opensta_summary
 from emuflow.timing.xilinx_preplacement_timing import build_xilinx_preplacement_timing_db, validate_xilinx_preplacement_timing_db
 from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
@@ -867,24 +866,6 @@ def _build_parser() -> argparse.ArgumentParser:
     arch_validate_rwroute.add_argument("--mapped-json", type=Path, required=True)
     arch_validate_rwroute.add_argument("--packed", type=Path, required=True)
     arch_validate_rwroute.add_argument("--placement", type=Path, required=True)
-    arch_build_xilinx_timing = arch_subparsers.add_parser(
-        "build-xilinx-routed-timing",
-        help="bind RapidWright site-pin delays to mapped logical endpoints",
-    )
-    arch_build_xilinx_timing.add_argument("--mapped-index", type=Path, required=True)
-    arch_build_xilinx_timing.add_argument("--physical-handoff", type=Path, required=True)
-    arch_build_xilinx_timing.add_argument("--route", type=Path, required=True)
-    arch_build_xilinx_timing.add_argument("--output", "-o", type=Path, required=True)
-    arch_validate_xilinx_timing = arch_subparsers.add_parser(
-        "validate-xilinx-routed-timing",
-        help="independently validate logical endpoint timing bindings",
-    )
-    for option in (arch_validate_xilinx_timing,):
-        option.add_argument("--timing", type=Path, required=True)
-        option.add_argument("--mapped-json", type=Path, required=True)
-        option.add_argument("--packed", type=Path, required=True)
-        option.add_argument("--placement", type=Path, required=True)
-        option.add_argument("--route", type=Path, required=True)
     arch_run_xilinx_opensta = arch_subparsers.add_parser(
         "run-xilinx-opensta",
         help="run OpenSTA over RapidWright-routed logical endpoints",
@@ -1691,19 +1672,6 @@ def _dispatch(args: argparse.Namespace) -> int:
             )
         elif args.arch_command == "validate-xilinx-preplacement-timing":
             report = validate_xilinx_preplacement_timing_db(args.path)
-        elif args.arch_command == "build-xilinx-routed-timing":
-            report = build_xilinx_routed_timing(
-                args.mapped_index, args.physical_handoff, args.physical_handoff,
-                args.route, args.output,
-            )
-        elif args.arch_command == "validate-xilinx-routed-timing":
-            report = validate_xilinx_routed_timing(
-                args.timing,
-                mapped_path=args.mapped_json,
-                packed_path=args.packed,
-                placement_path=args.placement,
-                route_path=args.route,
-            )
         elif args.arch_command == "run-xilinx-opensta":
             report = run_xilinx_routed_opensta(
                 args.mapped_index,

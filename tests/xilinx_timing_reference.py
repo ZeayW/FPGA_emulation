@@ -509,4 +509,4 @@ def build_xilinx_routed_timing(
     }
 
 
-from emuflow.timing.xilinx_timing import validate_xilinx_routed_timing
+from tests.routed_timing_adapter import validate_xilinx_routed_timing

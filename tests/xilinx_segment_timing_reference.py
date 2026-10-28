@@ -29,7 +29,7 @@ from emuflow.timing.local_path_timing import (
     validate_local_path_timing,
 )
 from tests.timing_facts import local_timing_facts
-from emuflow.timing.xilinx_timing import (
+from tests.routed_timing_adapter import (
     iter_xilinx_routed_timing_endpoints,
     validate_xilinx_routed_timing,
 )

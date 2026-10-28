@@ -69,7 +69,7 @@ def iter_xilinx_routed_timing_endpoints(
     payload_path, expected_digest, expected_records = _timing_payload_path(
         path, value
     )
-    from emuflow.physical.rapidwright.routed_endpoints_native import bind_routed_timing_sources
+    from tests.routed_endpoint_adapter import bind_routed_timing_sources
     from emuflow.storage.store_publication import require_store_sources_unchanged
     sources = bind_routed_timing_sources(path, value)
     try:
@@ -120,7 +120,7 @@ def build_xilinx_routed_timing(
     from contextlib import ExitStack
     from emuflow.physical.xilinx_netlist import IndexedXilinxMappedNetlist
     from emuflow.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
-    from emuflow.physical.rapidwright.routed_endpoints_native import build_native_routed_endpoints
+    from tests.routed_endpoint_adapter import build_native_routed_endpoints
     from emuflow.storage.store_publication import bind_store_source, require_store_sources_unchanged
 
     with ExitStack() as lifetime:

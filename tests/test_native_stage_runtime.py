@@ -150,6 +150,7 @@ class NativeStageRuntimeTest(unittest.TestCase):
             missing = str(root / 'missing-source')
             output, report = root / 'output', root / 'report'
             cases = [
+                ["physical", "run-rapidwright-partition", missing],
                 ["physical", "routed-opensta", missing],
                 ["physical", "build-handoff", missing],
                 ["physical", "build-mapped-index", missing, missing, missing, missing],

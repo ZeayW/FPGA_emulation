@@ -13,7 +13,7 @@ import pytest
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import read_json
 from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index, IndexedXilinxMappedNetlist
-from emuflow.timing.xilinx_segment_timing import build_xilinx_segment_timing_bundle
+from tests.routed_segment_entry import build_xilinx_segment_timing_bundle
 from tests.xilinx_segment_timing_reference import (_TimingGraph,
     build_xilinx_boundary_timing, build_xilinx_logic_segment_timing, build_xilinx_local_path_timing)
 from emuflow.frontend.yosys import import_yosys_json
@@ -199,7 +199,7 @@ def test_invalid_graph_or_request_preserves_all_previous_projections(tmp_path, d
         with sqlite3.connect(tmp_path / value["artifact"]) as db:
             db.execute("UPDATE segments SET end_pin='unreachable'")
     from contextlib import ExitStack
-    from emuflow.physical.rapidwright import routed_segments_native as native
+    from tests import routed_segment_adapter as native
     with ExitStack() as stack:
         if damage == "crc":
             finish = native.CheckedRequestWriter.finish
@@ -261,7 +261,7 @@ def test_many_distinct_start_cones_do_not_initialize_or_scan_the_whole_graph_per
 
 
 def test_identity_selector_mutation_and_output_alias_are_rejected_before_publication(tmp_path):
-    from emuflow.physical.rapidwright import routed_segments_native as native
+    from tests import routed_segment_adapter as native
     c = case(tmp_path)
     run(c)
     prior = (tmp_path / "boundary.json").read_bytes()

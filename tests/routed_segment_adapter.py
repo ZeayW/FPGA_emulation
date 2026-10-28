@@ -16,14 +16,14 @@ from emuflow.common.native_tools import require_native_schema, resolve_native_ex
 from emuflow.physical.physical_measurements_native import publish_physical_projection
 from emuflow.storage.store_publication import bind_store_source, bind_view_sources, require_store_sources_unchanged, validate_store_destination
 from emuflow.common.tool_runtime import NativeToolProcess
-from emuflow.timing.xilinx_timing import validate_xilinx_routed_timing
+from tests.routed_timing_adapter import validate_xilinx_routed_timing
 
 
 def build_routed_segments(*, boundary_identity_path, mapped_path, timing_path,
                           boundary_output_path, logic_identity_path=None, logic_output_path=None,
                           local_identity_path=None, local_output_path=None, mapped_value,
                           timing_value=None, timing_validation=None, source_ir_path=None):
-    from emuflow.timing.xilinx_segment_timing import XILINX_SEGMENT_QUALIFICATION
+    from tests.routed_segment_entry import XILINX_SEGMENT_QUALIFICATION
 
     if source_ir_path is None:
         raise ValidationError("native routed timing requires the source placement IR")
@@ -36,7 +36,7 @@ def build_routed_segments(*, boundary_identity_path, mapped_path, timing_path,
         validate_xilinx_routed_timing(timing_path, mapped_path=mapped_path, _value=timing_value)
     if timing_value.get("schema") != "emuflow.xilinx-routed-timing/v2":
         raise ValidationError("native routed timing requires the current endpoint stream")
-    from emuflow.physical.rapidwright.routed_endpoints_native import bind_routed_timing_sources
+    from tests.routed_endpoint_adapter import bind_routed_timing_sources
     timing_sources = bind_routed_timing_sources(timing_path, timing_value)
     paths = {2: Path(boundary_output_path)}
     if logic_identity_path is not None:

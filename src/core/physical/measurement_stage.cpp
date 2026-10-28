@@ -193,10 +193,30 @@ std::string ImportVivadoMeasurement(const ArtifactRef &identity_selector,
   Check(result.Text("status") == "pass" && result.Integer("kind") == kind &&
             result.Integer("missing_segments") == 0,
         "import summary disagrees");
-  auto staged = ArtifactRef::Bind(payload.string(),
-                                  kind == 2   ? "boundary-timing-store-v1"
-                                  : kind == 3 ? "logic-segment-timing-store-v1"
-                                              : "local-path-timing-store-v1");
+  return PublishPhysicalProjection(payload.string(), output, kind,
+                                   result.text(), sources);
+}
+std::string PublishPhysicalProjection(const std::string &payload,
+                                      const std::string &output, unsigned kind,
+                                      const std::string &summary,
+                                      std::vector<ArtifactRef> &sources) {
+  Check(kind >= 2 && kind <= 4, "invalid projection kind");
+  const fs::path target(output);
+  Check(target.is_absolute() && !fs::exists(target) && !fs::is_symlink(target),
+        "projection output must be fresh");
+  Doc result(summary);
+  Check(result.Integer("kind") == kind &&
+            result.Integer("missing_segments") == 0,
+        "projection summary disagrees");
+  Doc header_doc(DecodeJsonString(result.Token("header_json")));
+  const auto header = header_doc.Fields();
+  const auto name = kind == 2   ? "boundary"
+                    : kind == 3 ? "logic-segment"
+                                : "local-path";
+  auto staged =
+      ArtifactRef::Bind(payload, kind == 2   ? "boundary-timing-store-v1"
+                                 : kind == 3 ? "logic-segment-timing-store-v1"
+                                             : "local-path-timing-store-v1");
   const auto hash = Hash(staged);
   const auto published = target.parent_path() / (target.filename().string() +
                                                  ".store." + hash + ".sqlite");

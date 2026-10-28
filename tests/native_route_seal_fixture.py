@@ -2,6 +2,7 @@
 import io
 import json
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from pathlib import Path
 import subprocess
 import tempfile
@@ -115,7 +116,7 @@ def write_route_store_fixture(selector, logical):
     # recapture, previous-generation deletion, rollback, or compatibility path.
     with tempfile.TemporaryDirectory(prefix='route-facts-', dir=selector.parent) as temporary:
         store = Path(temporary)/'facts.sqlite'
-        with sqlite3.connect(store) as db:
+        with closing(sqlite3.connect(store)) as db, db:
             ddl = Path(__file__).parents[1]/'src/python/emuflow/data/schema/phase4_routes.sql'
             db.executescript(ddl.read_text())
             db.execute('PRAGMA application_id=1162696018')

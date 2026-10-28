@@ -77,6 +77,8 @@ constexpr RegisteredSchema schemas[] = {
     {"vivado-input-report-v1", ArtifactEncoding::kText, 0, 1},
     {"openparf-placement-import-request-v1", ArtifactEncoding::kText, 0, 1},
     {"openparf-placement-import-report-v1", ArtifactEncoding::kText, 0, 1},
+    {"rapidwright-partition-request-v1", ArtifactEncoding::kText, 0, 1},
+    {"rapidwright-partition-report-v1", ArtifactEncoding::kText, 0, 1},
     {"rwroute-stage-request-v1", ArtifactEncoding::kText, 0, 1},
     {"rwroute-stage-report-v1", ArtifactEncoding::kText, 0, 1},
     {"vivado-partition-request-v1", ArtifactEncoding::kText, 0, 1},
