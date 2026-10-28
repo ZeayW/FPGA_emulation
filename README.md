@@ -70,10 +70,9 @@ emuflow run rtl/top.sv --top top --clock clk=10 --backend rapidwright
 emuflow run rtl/top.sv --top top --clock clk=10 --backend vivado
 ```
 
-The installer builds the complete runtime, downloads the pinned RapidWright
-release, prepares the supported XCVU19P device data and stores the resulting
-runtime manifest inside the installation. There is no machine profile to edit or
-register. See [installation and run details](docs/RUNNING.md).
+The installer builds and configures EmuFlow. You do not need to create an
+environment file or register the machine. The
+[step-by-step guide](docs/RUNNING.md) explains each command and argument.
 
 The run command executes the complete flow and writes `runs/top`. The physical
 route is selected per run: use `--backend rapidwright` for OpenPARF/RWRoute or
