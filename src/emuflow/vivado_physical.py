@@ -206,7 +206,7 @@ def run_indexed_vivado_partition(
     executable: str | None = None, place_directive: str = "Default", route_directive: str = "Default",
     synthesized_checkpoint: Path | None = None, synthesized_checkpoint_sha256: str | None = None,
     continuation_source_report: Path | None = None, dut_frequency_mhz: float | None = None,
-    word_phy_plan_path:Path|None=None,word_wiring_path:Path|None=None,
+    word_phy_plan_path:Path|None=None,word_wiring_path:Path|None=None,word_schedule_path:Path|None=None,
     retain_routed_checkpoint:bool=False,
     route_after_proof_failure:bool=False,
     dut_timing_io:Mapping[str,Any]|None=None,
@@ -221,9 +221,15 @@ def run_indexed_vivado_partition(
     word_mode=word_phy_plan_path is not None or word_wiring_path is not None
     if word_mode and (word_phy_plan_path is None or word_wiring_path is None or virtual_io_contract is not None):
         raise ValidationError('native word implementation requires its plan and wiring together, without a bit-adapter contract')
+    native_word_mode=word_mode and word_schedule_path is not None
+    if native_word_mode and boundary_identity_path is None:
+        raise ValidationError('native word observations require canonical boundary identities')
+    if not word_mode and word_schedule_path is not None:
+        raise ValidationError('native word schedule requires its physical word plan')
     if not isinstance(retain_routed_checkpoint,bool):raise ValidationError('routed-checkpoint retention must be explicit Boolean')
     if not isinstance(route_after_proof_failure,bool) or (route_after_proof_failure and not retain_routed_checkpoint):
         raise ValidationError('proof-failure routing requires explicit retained snapshots')
+    if native_word_mode:retain_routed_checkpoint=True
     if any(value is not None for value in continuation) and not all(value is not None for value in continuation):
         raise ValidationError("synthesized continuation requires checkpoint, digest and source report together")
     from .emuir_storage import is_emuir_sqlite
@@ -264,6 +270,7 @@ def run_indexed_vivado_partition(
     prefix, adapter, wrapper, io_xdc, io_query = "", "", "", "", ""
     top_report = None
     word_sources=()
+    word_source_preparation=None
     if word_mode:
         from .vivado_word_top import write_vivado_word_top
         for path in (word_phy_plan_path,word_wiring_path):
@@ -279,6 +286,10 @@ def run_indexed_vivado_partition(
         top,prefix=top_report['top'],top_report['hierarchy_prefix']
         adapter,wrapper=str(output_dir/'native-word-banks.sv'),str(output_dir/'physical_top.sv')
         io_xdc,io_query=str(output_dir/'native-word-fixed-io.xdc'),str(output_dir/'fixed-io-query.tsv')
+        if native_word_mode:
+            from .native_word_source_catalog import prepare_native_word_sources
+            word_source_preparation=prepare_native_word_sources(fpga,word_schedule_path,boundary_identity_path,
+                index_path,output_dir/'native-word-sources')
     if virtual_io_contract is not None:
         wrapper_path = output_dir / "physical_top.sv"
         top_report = write_vivado_physical_top(ir_path, wrapper_path, virtual_io_contract)
@@ -307,12 +318,12 @@ def run_indexed_vivado_partition(
                     stream.write(name.encode().hex() + "\t" + entry["p"]["port"].encode().hex() + "\n")
     queries = {}
     boundary_query_report = None
-    if boundary_identity_path is not None:
+    if boundary_identity_path is not None and not native_word_mode:
         query = output_dir/"boundary-query.tsv"
         boundary_query_report = write_vivado_boundary_timing_query(ir_path,boundary_identity_path,query)
         queries["boundary_timing"] = query
     for kind,query in (("logic_segment_timing",logic_query_path),("local_path_timing",local_query_path)):
-        if query is not None:
+        if query is not None and not native_word_mode:
             queries[kind] = query
     continuation_validation = None
     if synthesized_checkpoint is not None:
@@ -325,13 +336,14 @@ def run_indexed_vivado_partition(
         synthesized_checkpoint=synthesized_checkpoint,synthesized_checkpoint_sha256=synthesized_checkpoint_sha256,
         dut_frequency_mhz=dut_frequency_mhz,word_phy_directory=output_dir if word_mode else None,
         retain_routed_checkpoint=retain_routed_checkpoint,route_after_proof_failure=route_after_proof_failure,
-        source_hierarchy_prefix=prefix)
+        source_hierarchy_prefix=prefix,word_source_directory=output_dir/'native-word-sources'if native_word_mode else None)
     threads = int(os.environ.get("EMUFLOW_VIVADO_THREADS", "2"))
     if threads < 1:
         raise ValidationError("Vivado thread count must be positive")
     input_files = {"physical_ir":ir_path,"mapped_index":index_path,"source_functions":functions_path,
                    "mapped_verilog":mapped_verilog_path,**{f"query_{kind}":path for kind,path in queries.items()}}
     if word_mode:input_files.update(word_phy_plan=word_phy_plan_path,word_wiring=word_wiring_path)
+    if native_word_mode:input_files.update(word_schedule=word_schedule_path,word_boundary_identity=boundary_identity_path)
     input_identity = {key:{"path":str(path.resolve()),"sha256":file_sha256(path)} for key,path in input_files.items()}
     input_identity["runtime_sha256"] = hashlib.sha256(json.dumps(runtime,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
     for key,expected_sha in (("mapped_index",mapped_report["mapped_index"]["sha256"]),
@@ -346,7 +358,22 @@ def run_indexed_vivado_partition(
     metrics = _read_metrics(output_dir / "implementation_metrics.tsv")
     if metrics.get("part") != part or _integer(metrics, "dut_clock_count") != dut_count:
         raise ValidationError("Vivado part/clock identity differs from Phase6")
-    preparation = read_json(output_dir/"routed-query-preparation.json")
+    native_observation=None
+    if native_word_mode:
+        from .vivado_lineage import import_cell_lineage
+        from .native_word_observation import observe_native_word_checkpoint
+        coverage=import_cell_lineage(index_path,functions_path,
+            {stage:output_dir/name for stage,name in [('synthesized','mapped_cells.tsv'),
+                ('optimized','optimized_mapped_cells.tsv'),('routed','routed_mapped_cells.tsv')]},
+            output_dir/'cell-lineage.sqlite',mapped_sha256=mapped_report['mapped_index']['sha256'])
+        native_observation=observe_native_word_checkpoint(fpga,output_dir/'routed.dcp',
+            output_dir/'native-word-sources',output_dir/'native-word-boundaries.tsv',
+            output_dir/'native-word-observation',executable=executable,threads=threads)
+        preparation={'status':'pass','coverage':coverage,'timing_coverage':{
+            'status':'native-observations-complete','policy':'native-clock-and-interface-v1',
+            'original_member_accounting':'pending-independent-phase7c',**native_observation['counts']}}
+    else:
+        preparation = read_json(output_dir/"routed-query-preparation.json")
     if preparation.get("status") != "pass":
         raise ValidationError("native routed query preparation did not pass")
     coverage = preparation["coverage"]
@@ -376,7 +403,7 @@ def run_indexed_vivado_partition(
     cost_expectation = {"expected_sampling_cost_policy": SAMPLING_COST_POLICY} if word_mode else {}
     export = {"status":"pass","mode":"current-routed-native-session","log":implementation["log"],
               "timing_query_mode":query_mode}
-    if boundary_identity_path is not None:
+    if boundary_identity_path is not None and not native_word_mode:
         stages["boundary_timing"] = _import_routed_measurement(kind="boundary_timing", output=output_dir,
             identity=boundary_identity_path, resolution=preparation["resolutions"]["boundary_timing"],
             importer=import_indexed_vivado_boundary, export=export,
@@ -391,7 +418,7 @@ def run_indexed_vivado_partition(
     ):
         if (identity is None) != (query is None):
             raise ValidationError(f"Vivado {kind} requires identity and query together")
-        if identity is None:
+        if identity is None or native_word_mode:
             continue
         stages[kind] = _import_routed_measurement(kind=kind, output=output_dir, identity=identity,
             resolution=preparation["resolutions"][kind], importer=importer, export=export,
@@ -410,25 +437,41 @@ def run_indexed_vivado_partition(
         pairs=_integer(metrics,'virtual_io_pairs')
         if pairs!=top_report['data_pairs']+top_report['forwarded_clock_pairs']:
             raise ValidationError('native word fixed pair count differs from its data/clock bank plan')
-        word_timing = _word_infrastructure_timing(metrics, active_banks=top_report['active_banks'])
+        if native_word_mode:
+            checks=native_observation['physical_checks']['native-control-checks.tsv']
+            values={row['delay_type']:float(row['slack_ns']) for row in checks if row['measurement']=='native-path'}
+            word_timing={'status':'observed','scope':WORD_CONTROL_TIMING_SCOPE,'checks':len(values),
+                'wns_ns':values.get('max'),'whs_ns':values.get('min'),
+                'rx_scope_complete':native_observation['counts']['missing_rx_origins']==0,
+                'missing_rx_origins':native_observation['counts']['missing_rx_origins'],
+                'fixed_clock_contract_met':native_observation['fixed_clock_control_timing_met']}
+        else:
+            word_timing=_word_infrastructure_timing(metrics,active_banks=top_report['active_banks'])
         require_store_sources_unchanged(word_sources)
     require_store_sources_unchanged((lineage_binding,))
     artifacts = {"cell-lineage.sqlite":lineage_artifact}
     if source_dispositions is not None:
         path = Path(source_dispositions["output"])
         artifacts[path.name] = {"path":str(path), "sha256":file_sha256(path), "bytes":path.stat().st_size}
-    for name in ("route_status.rpt", "drc.rpt", "timing_summary.rpt", "utilization.rpt", "implementation_metrics.tsv",
-                 "native-session.json", "native-session.tcl", "clock-contract.tsv",
-                 "routed-query-preparation.json", "timing-exports.tsv"):
+    common_artifacts=("route_status.rpt", "drc.rpt", "timing_summary.rpt", "utilization.rpt", "implementation_metrics.tsv",
+                 "native-session.json", "native-session.tcl", "clock-contract.tsv")
+    for name in common_artifacts+(()if native_word_mode else("routed-query-preparation.json", "timing-exports.tsv")):
         path = output_dir / name
         if not path.is_file() or path.stat().st_size == 0:
             raise ValidationError(f"Vivado physical artifact is missing: {name}")
         artifacts[name] = {"path": str(path), "sha256": file_sha256(path), "bytes": path.stat().st_size}
     if word_mode:
-        for name in ('native-word-preparation.json','native-word-clock-census.tsv','native-word-rx-sources.tsv',
-                     'word-data-source-origins.tsv','word-data-budget-metrics.tsv'):
+        names=('native-word-preparation.json','word-data-source-origins.tsv','word-data-budget-metrics.tsv')
+        if not native_word_mode:names+=('native-word-clock-census.tsv','native-word-rx-sources.tsv')
+        for name in names:
             path=output_dir/name
             artifacts[name]={'path':str(path),'sha256':file_sha256(path),'bytes':path.stat().st_size}
+        if native_word_mode:
+            for name,artifact in native_observation['files'].items():
+                artifacts['native-word-observation/'+name]=artifact
+            for name in ('native-word-sources/source-catalog.json','native-word-observation/native-observation.json'):
+                path=output_dir/name
+                artifacts[name]={'path':str(path),'sha256':file_sha256(path),'bytes':path.stat().st_size}
     if retain_routed_checkpoint:
         path=output_dir/'routed.dcp'
         if not path.is_file():raise ValidationError('requested routed debug checkpoint is missing')
@@ -463,7 +506,7 @@ def run_indexed_vivado_partition(
     native_scripts=("native_session.tcl","source_inventory.tcl","resource_inventory.tcl","timing_contract.tcl",
         "export_boundary_timing.tcl","export_logic_segment_timing.tcl")
     if word_mode:native_scripts+=("word_native_physical.tcl","word_data_budgets.tcl","selectio_ip.tcl")
-    report = {"schema": "emuflow.vivado-partition-report/v1", "status": "pass", "provider": "indexed-phase6-vivado-word-physical-v4" if word_mode else "indexed-phase6-vivado-physical-v2",
+    report = {"schema": "emuflow.vivado-partition-report/v1", "status": "pass", "provider": ("indexed-phase6-vivado-word-physical-v5"if native_word_mode else "indexed-phase6-vivado-word-physical-v4")if word_mode else "indexed-phase6-vivado-physical-v2",
         "tool": {"executable": executable, "version": metrics["vivado_version"], "threads": threads},
         "implementation": implementation, "continuation": continuation_validation, "input_identity": input_identity,
         "implementation_timing": implementation_timing,
@@ -471,10 +514,11 @@ def run_indexed_vivado_partition(
                                    "dut_frequency_mhz": dut_frequency_mhz,"retain_routed_checkpoint":retain_routed_checkpoint,
                                    "route_after_proof_failure":route_after_proof_failure,
                                    **({'dut_timing_io_sha256':timing_io_sha256(dut_timing_io)}if dut_timing_io is not None else {})},
-        "native_session": {"mode":"current-design-stage-exports-v2","timing_query_mode":query_mode,
+        "native_session": {"mode":"routed-snapshot-native-observations-v1"if native_word_mode else"current-design-stage-exports-v2","timing_query_mode":query_mode,
             "scripts_sha256": {name:file_sha256(_vivado_script(name)) for name in native_scripts},
             "planner_sha256":file_sha256(Path(__file__).with_name("vivado_session.py"))},
         "cell_coverage": coverage, "timing_coverage": timing_coverage, **stages,
+        **({'native_word_observation':native_observation,'native_word_sources':word_source_preparation}if native_word_mode else{}),
         **({"optimization_proofs":source_dispositions} if source_dispositions is not None else {}),
         **({"virtual_io_implementation": virtual_io} if virtual_io is not None else {}),
         **({'word_phy_implementation':{'status':'pass','preparation':top_report,

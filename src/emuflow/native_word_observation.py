@@ -8,6 +8,7 @@ import csv
 import json
 import math
 from pathlib import Path
+import shutil
 import sqlite3
 
 from .errors import ValidationError
@@ -71,11 +72,15 @@ def observe_native_word_checkpoint(fpga,checkpoint,source_directory,boundaries,o
     if metadata.get('schema')!=SCHEMA or metadata.get('fpga')!=fpga:
         raise ValidationError('native word observation catalog owner differs')
     parents.extend(StoreSource(Path(p['path']),p['schema'],tuple(p['generation']))for p in metadata['source_generations'])
-    for name in SCRIPTS:parents.append(bind_store_source(_vivado_script(name),'physical-input-document-v1'))
+    recipes={name:bind_store_source(_vivado_script(name),'physical-input-document-v1')for name in SCRIPTS}
     require_store_sources_unchanged(parents)
     checkpoint_sha=file_sha256(checkpoint)
     output.mkdir(parents=True)
-    execution=execute_vivado(_resolve_vivado(executable),_vivado_script('observe_native_word.tcl'),
+    recipe_directory=output/'recipe';recipe_directory.mkdir()
+    for name,parent in recipes.items():shutil.copyfile(parent.path,recipe_directory/name)
+    require_store_sources_unchanged(tuple(recipes.values()))
+    for name in SCRIPTS:parents.append(bind_store_source(recipe_directory/name,'physical-input-document-v1'))
+    execution=execute_vivado(_resolve_vivado(executable),recipe_directory/'observe_native_word.tcl',
         [str(checkpoint),str(source_directory),str(boundaries),str(output),str(threads)],output,'native-observation.log')
     require_store_sources_unchanged(parents)
     if file_sha256(checkpoint)!=checkpoint_sha:raise ValidationError('native observation changed its routed snapshot')

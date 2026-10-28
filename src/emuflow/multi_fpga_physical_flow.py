@@ -151,16 +151,40 @@ def _require_native_word_evidence(record, source_hashes):
     stages = record.get('stages', {})
     native = stages.get('vivado_implementation', {})
     provider = native.get('provider')
-    if provider != 'indexed-phase6-vivado-word-physical-v4':
+    if provider not in {'indexed-phase6-vivado-word-physical-v4','indexed-phase6-vivado-word-physical-v5'}:
         raise ValidationError('completed native word PHY provider version is unsupported')
     evidence = stages.get('word_phy_implementation')
     from .vivado_physical import WORD_CONTROL_TIMING_SCOPE
     if (not isinstance(evidence, Mapping) or evidence.get('status') != 'pass' or
             evidence != native.get('word_phy_implementation') or
-            evidence.get('infrastructure_timing', {}).get('scope') != WORD_CONTROL_TIMING_SCOPE or
-            evidence.get('infrastructure_timing', {}).get('rx_scope_complete') is not True or
-            evidence.get('infrastructure_timing', {}).get('fixed_clock_contract_met') is not True):
+            evidence.get('infrastructure_timing', {}).get('scope') != WORD_CONTROL_TIMING_SCOPE):
         raise ValidationError(f"completed native word PHY evidence for {record['fpga']} is missing")
+    if provider.endswith('-v4'):
+        if (evidence.get('infrastructure_timing', {}).get('rx_scope_complete') is not True or
+                evidence.get('infrastructure_timing', {}).get('fixed_clock_contract_met') is not True):
+            raise ValidationError(f"completed native word PHY evidence for {record['fpga']} is missing")
+    else:
+        observation=native.get('native_word_observation',{})
+        sources=native.get('native_word_sources',{})
+        if (observation.get('schema')!='emuflow.native-word-observation/v1'or observation.get('status')!='complete'or
+                observation.get('fpga')!=record['fpga']or sources.get('status')!='complete'or
+                sources.get('fpga')!=record['fpga']or
+                observation.get('source_directory')!=sources.get('directory')or
+                observation.get('counts',{}).get('tx_contexts')!=sources.get('tx_contexts')or
+                observation.get('counts',{}).get('repeat_words')!=sources.get('repeat_words')):
+            raise ValidationError('completed native word observation/source coverage differs')
+        from .native_word_observation import FILES
+        from .store_publication import StoreSource,require_store_sources_unchanged
+        if set(observation.get('files',{}))!=set(FILES):raise ValidationError('native word observation streams are incomplete')
+        for item in observation['files'].values():
+            path=Path(item['path'])
+            if not path.is_file()or path.stat().st_size!=item['bytes']or _sha256(path)!=item['sha256']:
+                raise ValidationError('native word observation stream changed')
+        checkpoint=observation['checkpoint'];physical=native.get('result',{}).get('artifacts',{}).get('routed.dcp',{})
+        if checkpoint.get('path')!=physical.get('path')or checkpoint.get('sha256')!=physical.get('sha256'):
+            raise ValidationError('native word observation belongs to a different routed snapshot')
+        require_store_sources_unchanged(tuple(StoreSource(Path(p['path']),p['schema'],tuple(p['generation']))
+                                              for p in observation.get('source_generations',())))
     identity = native.get('input_identity', {})
     if any(identity.get(key, {}).get('sha256') != digest for key, digest in source_hashes.items()):
         raise ValidationError('completed native word PHY belongs to different Phase6 sources')
@@ -1528,7 +1552,7 @@ def run_multi_fpga_physical_flow(
             local_identity_path = None
             local_query_path = None
             local_query_report = None
-            if all(path is not None for path in logic_context):
+            if word_sources is None and all(path is not None for path in logic_context):
                 logic_identity_path = (
                     fpga_root / "logic-segment-identity.json"
                 )
@@ -1580,6 +1604,7 @@ def run_multi_fpga_physical_flow(
                 **({'dut_timing_io':dut_timing_io} if dut_timing_io is not None else {}),
                 **({'word_phy_plan_path':word_sources['plan'],
                     'word_wiring_path':word_sources['wiring'],
+                    'word_schedule_path':schedule_path,
                     'retain_routed_checkpoint':True,
                     'route_after_proof_failure':True} if word_sources is not None else {}),
             )
@@ -1779,6 +1804,7 @@ def _assemble_multi_fpga_physical_results(
     requires_word_phy = manifest.get('word_phy_plan') is not None
     word_timing_policy = None
     word_calendar_policy = None
+    native_word_projection = False
     if requires_word_phy:
         if backend != 'vivado' or requires_virtual_io:
             raise ValidationError('completed word PHY evidence requires the native Vivado adapter')
@@ -1790,6 +1816,10 @@ def _assemble_multi_fpga_physical_results(
         if len(policies) > 1:
             raise ValidationError('completed word PHY workers mix timing measurement policies')
         word_timing_policy = next(iter(policies)) if policies else None
+        providers={r['stages']['vivado_implementation']['provider']for r in records if r.get('active')is not False}
+        if len(providers)>1:
+            raise ValidationError('completed word PHY workers mix native and legacy observation contracts')
+        native_word_projection=providers=={'indexed-phase6-vivado-word-physical-v5'}
         calendars = {_word_physical_calendar_policy(record) for record in records if record.get('active') is not False}
         if len(calendars) > 1:
             raise ValidationError('completed word PHY workers mix physical payload calendars')
@@ -1845,6 +1875,15 @@ def _assemble_multi_fpga_physical_results(
             'timing_measurement_policy':word_timing_policy,
             'physical_calendar_policy':word_calendar_policy,
         }
+        if native_word_projection:
+            physical_summary['native_word_observations']={r['fpga']:{
+                'observation':r['stages']['vivado_implementation']['native_word_observation'],
+                'sources':r['stages']['vivado_implementation']['native_word_sources'],
+                'lineage':r['stages']['vivado_implementation']['result']['artifacts']['cell-lineage.sqlite'],
+                'input_identity':r['stages']['vivado_implementation']['input_identity'],
+            }for r in records if r.get('active')is not False}
+            physical_summary['word_phy_implementation']['fixed_clock_control_timing_met']=all(
+                e['infrastructure_timing'].get('fixed_clock_contract_met')is True for e in evidence.values())
     if backend == "vivado":
         from .physical_summary_storage import publish_optimization_proofs
         proof_references = {}
@@ -1882,7 +1921,7 @@ def _assemble_multi_fpga_physical_results(
         item["fpga"]: read_transport(split_root / item["transport"])
         for item in manifest["fpgas"]
     }
-    physical_summary["boundary_timing"] = {}
+    if not native_word_projection:physical_summary["boundary_timing"] = {}
     for item in records:
         fpga_id = item["fpga"]
         identity_path = Path(
@@ -1900,6 +1939,10 @@ def _assemble_multi_fpga_physical_results(
             validate_boundary_identity_database(
                 identity_database, transports_by_fpga[fpga_id]
             )
+            if native_word_projection:
+                # Native clock/interface observations replace old source-pin
+                # databases. Original identities remain a separate ledger.
+                continue
             timing_path = Path(
                 _implementation_stage(item, backend, "boundary_timing")[
                     "import"
@@ -1920,7 +1963,7 @@ def _assemble_multi_fpga_physical_results(
                     identity_database,
                 )
         physical_summary["boundary_timing"][fpga_id] = timing_reference
-    if include_logic_timing:
+    if include_logic_timing and not native_word_projection:
         physical_summary["logic_segment_timing"] = {}
         logic_semantic_seals = set()
         logic_route_seals = set()

@@ -21,6 +21,7 @@ proc emuflow_domain_metrics {from to} {
 if {[catch {
   lassign $argv part netlist top timing_xdc out expected prefix adapter wrapper io_xdc io_query place_directive route_directive dut_count threads session_config
   source $session_config
+  if {![info exists emuflow_native_word_observation]} {set emuflow_native_word_observation false}
   file mkdir $out
   set_param general.maxThreads $threads
   if {[llength [get_parts -quiet $part]] != 1} {error "target part is not installed: $part"}
@@ -153,8 +154,10 @@ if {[catch {
   set word_checks {0 {}}
   if {$emuflow_word_phy_directory ne ""} {
     emuflow_validate_clock_contract $emuflow_clock_contract true
-    emuflow_session_child prepare-timing
-    set word_checks [emuflow_word_routed_checks $out "$out/native-word-rx-sources.tsv"]
+    if {!$emuflow_native_word_observation} {
+      emuflow_session_child prepare-timing
+      set word_checks [emuflow_word_routed_checks $out "$out/native-word-rx-sources.tsv"]
+    }
   }
   set metrics [open "$out/implementation_metrics.tsv" w]
   puts $metrics "metric\tvalue"
@@ -172,7 +175,7 @@ if {[catch {
   dict for {key value} $resources {
     puts $metrics "$key\t$value"
   }
-  if {$emuflow_word_phy_directory ne ""} {
+  if {$emuflow_word_phy_directory ne "" && !$emuflow_native_word_observation} {
     emuflow_word_write_control_metrics $metrics $word_checks
   }
   close $metrics
@@ -180,8 +183,10 @@ if {[catch {
     # Physical optimization may add replicas after the preplacement budget.
     emuflow_word_data_budgets $emuflow_word_data_source_origins false
   }
-  emuflow_session_timings $emuflow_script_directory $prefix $emuflow_io_timing_map false \
-      [expr {$emuflow_word_phy_directory ne ""}]
+  if {!$emuflow_native_word_observation} {
+    emuflow_session_timings $emuflow_script_directory $prefix $emuflow_io_timing_map false \
+        [expr {$emuflow_word_phy_directory ne ""}]
+  }
   puts "EMUFLOW_INDEXED_VIVADO status=pass part=$part fixed_pairs=$pairs"
 } message options]} {
   puts stderr "EMUFLOW_INDEXED_VIVADO status=fail message=$message"

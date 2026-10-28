@@ -80,7 +80,7 @@ def _child_command(output):
 def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mapped_sha256,
                      queries, runtime, ports, synthesized_checkpoint=None, synthesized_checkpoint_sha256=None,
                      dut_frequency_mhz=None,word_phy_directory=None,retain_routed_checkpoint=False,
-                     route_after_proof_failure=False,source_hierarchy_prefix=""):
+                     route_after_proof_failure=False,source_hierarchy_prefix="",word_source_directory=None):
     """Prepare small native/child contracts after all source views have closed."""
     output = output.resolve()
     if not isinstance(retain_routed_checkpoint,bool):raise ValidationError('routed checkpoint retention must be Boolean')
@@ -90,6 +90,8 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
         raise ValidationError('native source hierarchy is invalid')
     if word_phy_directory is not None and not source_hierarchy_prefix:
         raise ValidationError('native word session requires its explicit mapped source hierarchy')
+    if word_source_directory is not None and (word_phy_directory is None or not retain_routed_checkpoint):
+        raise ValidationError('native word observations require a word top and retained routed snapshot')
     checkpoint = Path(synthesized_checkpoint).resolve() if synthesized_checkpoint is not None else output/"synthesized.dcp"
     reserved = {str((output/(kind+suffix)).resolve()) for kind in queries for suffix in ("-synthesis.tsv","-resolved.tsv",".tsv")}
     if any(str(value.resolve()) in reserved for value in queries.values()):
@@ -120,8 +122,23 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
         "source_hierarchy_prefix":source_hierarchy_prefix,
         "route_after_proof_failure":route_after_proof_failure}
     if word_phy_directory is not None:
-        manifest["word_data_budget"] = _word_data_source_origins(mapped_index,
-            queries.get("boundary_timing"), output, mapped_sha256)
+        if word_source_directory is None:
+            manifest["word_data_budget"] = _word_data_source_origins(mapped_index,
+                queries.get("boundary_timing"), output, mapped_sha256)
+        else:
+            from .store_publication import bind_store_source,require_store_sources_unchanged
+            source=Path(word_source_directory).resolve()/'rx-roles.tsv'
+            parent=bind_store_source(source,'physical-input-document-v1')
+            rows=source.read_text().splitlines()
+            if not rows or rows[0]!='source_origin' or len(set(rows[1:]))!=len(rows)-1 or any(
+                    not name.startswith('s') or not name[1:].isdigit() for name in rows[1:]):
+                raise ValidationError('native word data budget lacks canonical RX roles')
+            path=output/'word-data-source-origins.tsv';path.write_bytes(source.read_bytes())
+            require_store_sources_unchanged((parent,))
+            manifest['word_data_budget']={'policy':WORD_DATA_BUDGET_POLICY,'path':str(path),
+                'sha256':file_sha256(path),'mapped_index_sha256':mapped_sha256,
+                'rx_queries':len(rows)-1,'source_origins':len(rows)-1,'source_roles':str(source)}
+            manifest['word_source_directory']=str(Path(word_source_directory).resolve())
     write_json(output/"native-session.json",manifest,compact=True)
     with (output/"clock-contract.tsv").open("w") as stream:
         stream.write("clock_hex\tport_hex\tperiod_ns\n")
@@ -132,6 +149,7 @@ def prepare_manifest(output: Path, *, fpga, part, mapped_index, functions, mappe
     command = _child_command(output)
     settings = {"emuflow_session_out":str(output),"emuflow_session_manifest":str(output/"native-session.json"),
         "emuflow_word_phy_directory":str(Path(word_phy_directory).resolve())if word_phy_directory is not None else "",
+        "emuflow_native_word_observation":"true"if word_source_directory is not None else"false",
         "emuflow_word_data_source_origins":manifest.get("word_data_budget", {}).get("path", ""),
         "emuflow_timing_query_mode":manifest["timing_query_mode"],
         "emuflow_retain_routed_checkpoint":"true"if retain_routed_checkpoint else"false",
