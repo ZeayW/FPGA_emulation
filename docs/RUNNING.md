@@ -41,24 +41,24 @@ export PATH="$HOME/.local/bin:$PATH"
 For a design with one RTL file, run:
 
 ```bash
-emuflow run rtl/top.sv \
-  --top top \
+emuflow run examples/rtl/counter.v \
+  --top counter \
   --clock clk=10 \
   --backend rapidwright
 ```
 
 The arguments mean:
 
-- `rtl/top.sv`: the RTL source file;
-- `--top top`: the top-level module is named `top`;
+- `examples/rtl/counter.v`: the included RTL example;
+- `--top counter`: the top-level module is named `counter`;
 - `--clock clk=10`: the clock port is named `clk` and its period is 10 ns;
 - `--backend rapidwright`: use OpenPARF for placement and RapidWright/RWRoute
   for routing.
 
-The output is written to `runs/top`. Use `--out` to choose another directory:
+The output is written to `runs/counter`. Use `--out` to choose another directory:
 
 ```bash
-emuflow run rtl/top.sv --top top --clock clk=10 \
+emuflow run examples/rtl/counter.v --top counter --clock clk=10 \
   --backend rapidwright --out runs/my-first-run
 ```
 
@@ -71,13 +71,13 @@ The backend is selected separately for each run.
 OpenPARF plus RapidWright/RWRoute:
 
 ```bash
-emuflow run rtl/top.sv --top top --clock clk=10 --backend rapidwright
+emuflow run examples/rtl/counter.v --top counter --clock clk=10 --backend rapidwright
 ```
 
 Vivado:
 
 ```bash
-emuflow run rtl/top.sv --top top --clock clk=10 --backend vivado
+emuflow run examples/rtl/counter.v --top counter --clock clk=10 --backend vivado
 ```
 
 Vivado must already be installed and its `vivado` command must be available in
@@ -105,7 +105,7 @@ Add `--check` to validate the sources, selected backend and installation without
 starting the expensive compile:
 
 ```bash
-emuflow run rtl/top.sv --top top --clock clk=10 \
+emuflow run examples/rtl/counter.v --top counter --clock clk=10 \
   --backend rapidwright --check
 ```
 
@@ -114,7 +114,7 @@ emuflow run rtl/top.sv --top top --clock clk=10 \
 After a run finishes, validate its published result:
 
 ```bash
-emuflow multi-fpga validate --flow runs/top --require-physical
+emuflow multi-fpga validate --flow runs/counter --require-physical
 ```
 
 This command checks placement, routing, timing and the completed physical result.

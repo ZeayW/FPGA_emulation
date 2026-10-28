@@ -62,16 +62,16 @@ cd FPGA_emulation
 ./install.sh
 
 # Choose the OpenPARF + RapidWright/RWRoute route
-emuflow run rtl/top.sv --top top --clock clk=10 --backend rapidwright
+emuflow run examples/rtl/counter.v --top counter --clock clk=10 --backend rapidwright
 
 # Or choose the Vivado route
-emuflow run rtl/top.sv --top top --clock clk=10 --backend vivado
+emuflow run examples/rtl/counter.v --top counter --clock clk=10 --backend vivado
 ```
 
 The installer builds and configures EmuFlow. The [step-by-step guide](docs/RUNNING.md)
 explains each command and argument.
 
-Results are written to `runs/top` by default. Use `--out` to choose another
+Results are written to `runs/counter` by default. Use `--out` to choose another
 output directory.
 
 ## Developer build

@@ -502,12 +502,12 @@ def main(argv=None) -> int:
     backends = sorted(installed_environment()["backends"])
     print("Available physical backends: " + ", ".join(backends))
     print(
-        "Run: emuflow run rtl/top.sv --top top --clock clk=10 "
+        "Run: emuflow run examples/rtl/counter.v --top counter --clock clk=10 "
         "--backend rapidwright"
     )
     if "vivado" in backends:
         print(
-            "Or:  emuflow run rtl/top.sv --top top --clock clk=10 "
+            "Or:  emuflow run examples/rtl/counter.v --top counter --clock clk=10 "
             "--backend vivado"
         )
     return 0

@@ -9,11 +9,11 @@ Give EmuFlow one or more RTL files, the top module, every clock period, and a
 physical backend:
 
 ```bash
-emuflow run rtl/top.sv \
-  --top top \
+emuflow run examples/rtl/counter.v \
+  --top counter \
   --clock clk=10 \
   --backend rapidwright \
-  --out runs/top
+  --out runs/counter
 ```
 
 Use `--backend vivado` to select Vivado instead. Each run needs a new output
@@ -36,7 +36,7 @@ emuflow run \
 Before starting a long run, check the inputs and selected backend:
 
 ```bash
-emuflow run rtl/top.sv --top top --clock clk=10 \
+emuflow run examples/rtl/counter.v --top counter --clock clk=10 \
   --backend rapidwright --check
 ```
 
@@ -58,7 +58,7 @@ The bundled platform is used by default. Select another BoardDB with
 `--platform`:
 
 ```bash
-emuflow run rtl/top.sv --top top --clock clk=10 \
+emuflow run examples/rtl/counter.v --top counter --clock clk=10 \
   --platform platforms/my-board.json \
   --backend rapidwright --out runs/my-board
 ```
@@ -81,8 +81,8 @@ Two physical backends are supported:
 Select the backend for each run:
 
 ```bash
-emuflow run rtl/top.sv --top top --clock clk=10 --backend rapidwright
-emuflow run rtl/top.sv --top top --clock clk=10 --backend vivado
+emuflow run examples/rtl/counter.v --top counter --clock clk=10 --backend rapidwright
+emuflow run examples/rtl/counter.v --top counter --clock clk=10 --backend vivado
 ```
 
 The selected backend applies to every FPGA in the run. Use
@@ -93,10 +93,10 @@ The selected backend applies to every FPGA in the run. Use
 The default Phase 6 provider is `baseline`. Select Chimew explicitly:
 
 ```bash
-emuflow run rtl/top.sv --top top --clock clk=10 \
+emuflow run examples/rtl/counter.v --top counter --clock clk=10 \
   --phase6-provider chimew \
   --backend rapidwright \
-  --out runs/top-chimew
+  --out runs/counter-chimew
 ```
 
 Chimew requires a platform and physical architecture with package-pin geometry.
@@ -136,7 +136,7 @@ Use `emuflow multi-fpga compile --help` for the complete advanced option list.
 Validate all published artifacts after the flow completes:
 
 ```bash
-emuflow multi-fpga validate --flow runs/top --require-physical
+emuflow multi-fpga validate --flow runs/counter --require-physical
 ```
 
 Without `--require-physical`, validation accepts an upstream-only flow. Keep the

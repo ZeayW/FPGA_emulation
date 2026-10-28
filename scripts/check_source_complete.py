@@ -530,12 +530,18 @@ def audit(repo_root: Path) -> list[str]:
                 "./install.sh",
                 "CMake 3.20+",
                 "JDK",
-                "emuflow run rtl/top.sv --top top --clock clk=10 --backend rapidwright",
+                "emuflow run examples/rtl/counter.v --top counter --clock clk=10 --backend rapidwright",
                 "--backend vivado",
-                "runs/top",
+                "runs/counter",
             ):
                 if required not in quick_start:
                     errors.append("README Quick start omits the maintained complete-flow entry: " + required)
+            quick_start_example = repo_root / "examples/rtl/counter.v"
+            if not quick_start_example.is_file():
+                errors.append(
+                    "README Quick start references a missing RTL example: "
+                    "examples/rtl/counter.v"
+                )
             setup = repo_root / "docs/RUNNING.md"
             if (
                 "docs/RUNNING.md" not in quick_start
