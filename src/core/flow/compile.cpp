@@ -1,5 +1,6 @@
 #include "flow/compile.hpp"
 #include "flow/finalize.hpp"
+#include "flow/signoff.hpp"
 #include "common/artifact_io.hpp"
 #include "common/json_record.hpp"
 #include "storage/sqlite.hpp"
@@ -171,6 +172,12 @@ class ControlJson {
     q.BindText(5,path(fs::path(StatePath("phase5_root"))/"schedule.json"));
     Require(q.Step(),"cannot construct native Phase 6 compiler state");return q.TypedText(0);
   }
+  std::string SignoffState(const std::string& reference,const fs::path& root) {
+    const auto path=[](const fs::path& value){return "[\"path\","+JsonQuote(value.string())+"]";};
+    auto q=db_.Prepare("SELECT json_set(?1,'$.stage','signoff','$.state[1].runtime_report',json(?2),'$.state[1].runtime_root',json(?3))");
+    q.BindText(1,data_);q.BindText(2,reference);q.BindText(3,path(root));
+    Require(q.Step(),"cannot construct native Phase 7C compiler state");return q.TypedText(0);
+  }
   void RequirePublishedPaths(const fs::path& temporary) {
     const auto root = fs::weakly_canonical(temporary);
     const auto check = [&](const fs::path& path) {
@@ -290,6 +297,40 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
         fs::remove(previous);previous.clear();
         std::cout<<"COMPILE_STAGE_COMPLETE finalize "<<step.metrics.wall_seconds<<"s\n"<<std::flush;
         continue;
+      }
+      if(std::string(stage)=="signoff") {
+        ControlJson prior(previous.string());
+        const bool native_signoff=prior.String("$.state[1].phase6_provider")=="baseline" &&
+            !prior.Boolean("$.state[1].physical");
+        if(native_signoff) {
+          Require(prior.String("$.stage")=="physical","invalid native Phase 7C predecessor");
+          const auto next=scratch.root/"signoff.json";auto bound=ArtifactRef::Bind(previous.string(),"native-compile-state-v1");
+          const auto step=RunStage("signoff",[&]{return std::vector<ArtifactRef>{bound};},
+            [&](const auto& sources){SignoffNonphysical(output);for(const auto& source:sources)source.RequireUnchanged();},
+            [&]{return std::vector<ArtifactRef>{ArtifactRef::Bind(
+                (output/"runtime/phase7c_report.json").string(),"exact-sha256-text-v1")};});
+          result.steps.push_back({stage,step.ok(),"native-nonphysical-phase7c-v1",step.metrics.wall_seconds,
+            step.metrics.user_cpu_seconds,step.metrics.system_cpu_seconds,step.metrics.process_peak_rss_kib});
+          if(!step.ok())throw StageError(step.error,"native compile signoff: "+step.message);
+          auto published=ArtifactRef::Bind((output/"runtime/phase7c_report.json").string(),"exact-sha256-text-v1");
+          const auto& g=published.generation();
+          const auto reference=JsonRecord(std::vector<JsonRecord>{JsonRecord("runtime-report"),JsonRecord(std::map<std::string,JsonRecord>{
+            {"schema",published.schema()},{"path",published.path()},{"generation",std::vector<JsonRecord>{g.device,g.inode,g.bytes,g.modified_seconds,g.modified_nanoseconds,g.changed_seconds,g.changed_nanoseconds}}})}).Encode();
+          auto bindings=std::vector<ArtifactRef>{bound,published};const auto state=prior.SignoffState(reference,output/"runtime");
+          PublishTextArtifact(next.string(),bindings,[&](std::ostream& stream){stream<<state<<'\n';});
+          auto state_ref=ArtifactRef::Bind(next.string(),"native-compile-state-v1");ControlJson state_control(state_ref.path());
+          Require(state_control.String("$.stage")=="signoff" && state_control.String("$.run_id")==run_id &&
+              state_control.String("$.status")=="pass" && state_control.StateShape() && state_control.Generation(configuration.generation()),
+              "invalid native Phase 7C compiler state");
+          const auto metrics=output/"stage-metrics/phase7c.json";fs::create_directories(metrics.parent_path());
+          const auto text=JsonRecord(std::map<std::string,JsonRecord>{{"stage","phase7c"},{"status","pass"},
+            {"wall_seconds",step.metrics.wall_seconds},{"peak_process_tree_rss_kib",step.metrics.process_peak_rss_kib},
+            {"rss_measurement","in-process-native-owner-high-water"}}).Encode();
+          PublishTextArtifact(metrics.string(),bindings,[&](std::ostream& stream){stream<<text<<'\n';});
+          fs::remove(previous);previous=next;
+          std::cout<<"COMPILE_STAGE_COMPLETE signoff "<<step.metrics.wall_seconds<<"s\n"<<std::flush;
+          continue;
+        }
       }
       const auto next = scratch.root / (std::string(stage) + ".json");
       const auto temporary = scratch.root / "tmp" / stage;
@@ -491,7 +532,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
 std::string CompileResultJson(const CompileResult& result) {
   std::ostringstream out; out << std::setprecision(17);
   out << "{\"schema\":\"emuflow.native-compile-result/v2\",\"implementation_id\":\"native-orchestration-v1\","
-      << "\"phase_implementation\":\"native-rtl-frontend-phase2-phase3-phase4-phase5-baseline-phase6-finalize-and-isolated-python-adapters-v2\",\"native_data_plane_complete\":false,"
+      << "\"phase_implementation\":\"native-rtl-frontend-phase2-phase3-phase4-phase5-baseline-phase6-nonphysical-phase7c-finalize-and-isolated-python-adapters-v3\",\"native_data_plane_complete\":false,"
       << "\"operation\":" << StageResultJson(result.operation) << ",\"output_directory\":" << JsonQuote(result.output_directory)
       << ",\"request_configuration\":" << (result.request_configuration.empty() ? "null" : result.request_configuration)
       << ",\"effective_configuration\":" << (result.effective_configuration.empty() ? "null" : result.effective_configuration)

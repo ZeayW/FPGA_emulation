@@ -127,8 +127,12 @@ one complete directory. It never calls the Python path extraction coordinator.
 Explicit prepared boundaries reuse their sealed indexed inputs; a missing native
 policy for new timing extraction is an error.
 
-Chimew, physical implementation and Phase 7C still have explicit stage adapters.
-Final report assembly is native and no longer has a Python stage adapter.
+Chimew and physical implementation still have explicit stage adapters. The
+nonphysical baseline Phase 7C owner is native: it builds the runtime contract
+from ScheduleStore, publishes bounded QoR and controller artifacts, and hands a
+generation-bound report to native finalization. Physical and Chimew Phase 7C
+remain transitional adapter paths. Final report assembly is native and no
+longer has a Python stage adapter.
 Configuration preparation and detailed stage ownership are distinct: bounded
 Python configuration is not a circuit data plane, and isolated execution alone
 does not complete migration. The compiler continues to report
@@ -146,15 +150,15 @@ not language line counts or the presence of typed storage:
 | Mapped physical inputs | Indexed Bookshelf pin/net writers and placement lowering | Mapped-index SQL projection, atomic/macro fact generation, geometry and window policy |
 | Placement and routing handoff | Typed certificate/handoff ownership checks and RWRoute exporter | Site/BEL/primitive checks, handoff record production and independent route connectivity/PIP validation |
 | Physical timing | Complete local-path and logic-segment query generation, shared physical object resolution, Vivado boundary/descendant association, indexed evidence import and OpenSTA staging | Bounded backend configuration and tool supervision |
-| Global timing | Full-assignment physical coverage, event binding, measurement import, original-path reduction and final flow-report sealing | Runtime generation, engine supervision and the signoff stage |
+| Global timing | Nonphysical baseline runtime generation/signoff, full-assignment physical coverage, event binding, measurement import, original-path reduction and final flow-report sealing | Physical runtime/signoff orchestration and engine supervision |
 
 Indexed atoms and ordinal safe names already avoid complete in-memory lists or
 name dictionaries. Local-path evidence already has a typed owner. These are not
 outstanding format migrations. Both physical timing query producers now publish
 through shared native stage owners; their replaced Python production loops are
-retired. Native global timing reduction does not imply that the complete signoff
-controller has migrated. The remaining closure sequence is physical input/handoff
-and independent route validation, then complete physical/signoff control and
+retired. Native nonphysical signoff and global timing reduction do not imply that
+physical signoff control has migrated. The remaining closure sequence is physical
+input/handoff and independent route validation, then physical/signoff control and
 retirement of their old production adapters. Chimew remains a maintained optional path with its own
 ownership and qualification requirement.
 

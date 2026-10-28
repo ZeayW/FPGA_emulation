@@ -302,6 +302,8 @@ def execute(stage, request_path, previous_path, output_path, run_id):
     function = getattr(flow, "_compile_" + {"tdm": "schedule"}.get(stage, stage.replace("-", "_")))
     if stage=="split" and ctx.phase6_provider=="baseline":
         raise EmuFlowError('native compiler baseline Phase 6 is owned by the C++ stage')
+    if stage=="signoff" and ctx.phase6_provider=="baseline" and not ctx.physical:
+        raise EmuFlowError('native compiler nonphysical baseline signoff is owned by the C++ Phase 7C stage')
     function(ctx)
     value = {"schema": "emuflow.native-compile-state/v1", "run_id": run_id,
              "stage": stage, "status": "pass", "request_generation": generation,

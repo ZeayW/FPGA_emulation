@@ -484,6 +484,12 @@ directly, with no Python partition phase adapter. The ordinary RTL frontend also
 executes directly in C++, using a checked configuration prepared by preflight.
 Baseline Phase 6 also executes directly through `phase6 compile`, constructing
 its runtime from the typed ScheduleStore and original BoardDB. Terminal
+nonphysical baseline Phase 7C also executes in the shared core: it validates the
+Phase 3--6 identities and proofs, rebuilds the runtime from the typed schedule,
+and atomically publishes the runtime contract, bounded QoR, controller RTL,
+testbench, timing constraints and Phase 7C report. The retained Python Phase 7C
+implementation is an independent replay oracle and the still-active physical
+and Chimew path, not the baseline nonphysical producer. Terminal
 finalization is native: it projects bounded stage summaries, checks cross-stage
 identities, seals referenced typed stores and publishes the final flow report
 without a Python finalize process. The remaining
@@ -1351,10 +1357,11 @@ The duplicate Python launch paths for partitioning, routing, scheduling,
 ordinary RTL synthesis and baseline splitting are deleted in the same change.
 Provider, algorithm, seed, constraints and physical-policy defaults stay fixed.
 
-Configuration preparation, supplied/prepared input binding, Chimew comparison,
-physical execution, signoff and final reporting remain explicit isolated stage
-adapters. They cannot choose another top-level controller or silently retry
-failed native stages. Native execution owns order, predecessor validation,
+Configuration preparation, supplied/prepared input binding, Chimew comparison
+and physical execution remain explicit isolated stage adapters. Physical and
+Chimew signoff remain adapter-owned; baseline nonphysical signoff and final
+reporting are native. The adapters cannot choose another top-level controller
+or silently retry failed native stages. Native execution owns order, predecessor validation,
 artifact-generation handoffs, cancellation and process cleanup. Frame-length
 search remains unsupported by this controller and rejects before synthesis.
 
