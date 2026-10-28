@@ -177,7 +177,8 @@ def verify_native_word_checks(events, directory, *, executable=None, results_dir
     qualification remain separate from this witness verification.
     """
     from array import array
-    from .global_sta import EventCheck,run_event_checks,read_engine_identity,read_measurements,validate_checks
+    from .global_sta import EventCheck,read_engine_identity,read_measurements,validate_checks
+    from .native_word_verification import run_native_event_checks
     from .io import file_sha256,write_json
     import math
     events=Path(events).resolve();directory=Path(directory).resolve()
@@ -216,7 +217,7 @@ def verify_native_word_checks(events, directory, *, executable=None, results_dir
                 yield EventCheck(identity(fields[1]),fields[2],identity(fields[3]),launch/4000.,(arc/1000.,),required/4000.)
         require_store_sources_unchanged((parent,))
     if results_dir is None:
-        values=run_event_checks(checks(),directory,executable,require_observation_pairs=False)
+        values=run_native_event_checks(checks(),directory,executable)
         engine_directory=directory
     else:
         if executable is not None:raise ValidationError('choose live OpenSTA or saved native witness results')
