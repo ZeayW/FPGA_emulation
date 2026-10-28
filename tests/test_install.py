@@ -58,6 +58,17 @@ def test_program_any_accepts_an_available_alternative(monkeypatch):
     ) == Path("/tools/clang++")
 
 
+def test_host_gate_describes_qualification_instead_of_architectural_limit():
+    INSTALLER.require_qualified_host("linux", "x86_64")
+    try:
+        INSTALLER.require_qualified_host("darwin", "arm64")
+    except INSTALLER.InstallError as error:
+        assert "automatic installer" in str(error)
+        assert "qualified" in str(error)
+    else:
+        raise AssertionError("an unqualified host was accepted")
+
+
 def test_launcher_links_point_at_installation(tmp_path, monkeypatch):
     installation = tmp_path / "install"
     (installation / "bin").mkdir(parents=True)
