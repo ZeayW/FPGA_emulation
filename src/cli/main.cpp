@@ -40,7 +40,7 @@ constexpr const char* kUsage =
     "  check-runtime [SCHEMA]\n"
     "  publish-store REQUEST OUTPUT\n"
     "  compile REQUEST_JSON\n"
-    "  phase7c run FLOW_ROOT OPENSTA [LAUNCHER_REFERENCE]\n"
+    "  phase7c run FLOW_ROOT OPENSTA [LAUNCHER_REFERENCE [SPLIT_ROOT PHYSICAL_ROOT RUNTIME_ROOT]]\n"
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
     "  phase2 run EMUIR POLICY OUTPUT_DIR\n"
     "  physical build-handoff REQUEST OUTPUT_DIR\n"
@@ -192,11 +192,11 @@ int RunTool(const std::string& input, const std::string& output) {
 }
 
 int Dispatch(int argc, char** argv, const std::string& report) {
-  if((argc==5 || argc==6) && std::string(argv[1])=="phase7c" && std::string(argv[2])=="run") {
+  if((argc==5 || argc==6 || argc==9) && std::string(argv[1])=="phase7c" && std::string(argv[2])=="run") {
     ToolSignals signals;
     return Finish(emuflow::core::RunStage("phase7c.run",[] {return std::vector<emuflow::core::ArtifactRef>{};},
-      [&](const auto&){emuflow::core::SignoffPhysical(std::filesystem::absolute(argv[3]),std::filesystem::absolute(argv[4]).string(),&tool_cancelled,argc==6?std::filesystem::absolute(argv[5]).string():"");},
-      [&]{return std::vector<emuflow::core::ArtifactRef>{emuflow::core::ArtifactRef::Bind((std::filesystem::absolute(argv[3])/"runtime/phase7c_report.json").string(),"exact-sha256-text-v1")};}),report);
+      [&](const auto&){emuflow::core::SignoffPhysical(std::filesystem::absolute(argv[3]),std::filesystem::absolute(argv[4]).string(),&tool_cancelled,argc>=6&&std::string(argv[5])!="-"?std::filesystem::absolute(argv[5]).string():"",argc==9?emuflow::core::PhysicalSignoffArm{std::filesystem::absolute(argv[6]),std::filesystem::absolute(argv[7]),std::filesystem::absolute(argv[8])}:emuflow::core::PhysicalSignoffArm{});},
+      [&]{return std::vector<emuflow::core::ArtifactRef>{emuflow::core::ArtifactRef::Bind(((argc==9?std::filesystem::absolute(argv[8]):std::filesystem::absolute(argv[3])/"runtime")/"phase7c_report.json").string(),"exact-sha256-text-v1")};}),report);
   }
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << kUsage; return 0;

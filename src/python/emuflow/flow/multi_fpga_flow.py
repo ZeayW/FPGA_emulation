@@ -33,6 +33,7 @@ from emuflow.routing.phase4 import validate_phase4
 from emuflow.scheduling.phase5 import validate_phase5
 from emuflow.transport.phase6 import run_phase6, validate_phase6
 from emuflow.timing.phase7c import run_phase7c
+from emuflow.timing.native_signoff import run_native_physical_signoff
 from emuflow.transport.pin_plan_storage import read_pin_plan
 from emuflow.physical.physical_summary_storage import read_physical_summary
 from emuflow.partition.partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT, DEFAULT_PARTITION_CUT_MODE, DEFAULT_PATRON_ALGORITHM_VERSION
@@ -317,18 +318,7 @@ def finalize_multi_fpga_physical_checkpoint(
     runtime_root = root / runtime_directory
     if runtime_root.is_symlink():
         raise ValidationError("multi-FPGA checkpoint runtime directory is a symlink")
-    runtime_report = run_phase7c(
-        paths["schedule"],
-        paths["platform"],
-        paths["partition"],
-        paths["system_route"],
-        paths["tdm"],
-        paths["split"],
-        runtime_root,
-        assignment_path=paths["assignment"],
-        physical_summary_path=physical_summary_path,
-        routes_path=paths["routes"],
-    )
+    runtime_report = run_native_physical_signoff(root, root / "split", physical_root, runtime_root)
     if runtime_report.get("status") != "pass":
         raise ValidationError("resumed physical flow did not close Phase 7C timing")
 
@@ -1690,22 +1680,9 @@ def _compile_split(ctx: _CompileContext):
         baseline_physical_started = time.monotonic()
         ctx.baseline_physical_report = _run_selected_physical(ctx, baseline_split, ctx.schedule_path, baseline_root / "physical")
         baseline_physical_seconds = time.monotonic() - baseline_physical_started
-        ctx.baseline_runtime_report = ctx.measured("phase7c", run_phase7c,
-            ctx.schedule_path,
-            ctx.platform_path,
-            ctx.phase3_root / "phase3_report.json",
-            ctx.phase4_root / "phase4_report.json",
-            ctx.phase5_root / "phase5_report.json",
-            baseline_split / "phase6_report.json",
-            baseline_root / "runtime",
-            assignment_path=ctx.assignment_path,
-            physical_summary_path=(
-                baseline_root / "physical/physical-summary.json"
-            ),
-            routes_path=ctx.routes_path,
-            board_link_timing_path=ctx.copied_link_timing_path,
-            global_sta_executable=ctx.global_sta_executable,
-            global_timing_engine=ctx.global_timing_engine,
+        ctx.baseline_runtime_report = ctx.measured("phase7c", run_native_physical_signoff,
+            ctx.output_dir, baseline_split, baseline_root / "physical", baseline_root / "runtime",
+            executable=ctx.global_sta_executable, launcher_reference=ctx.global_sta_launcher_reference,
         )
         lookahead_root = comparison_root / "lookahead"
         lookahead = materialize_xilinx_chimew_inputs(
@@ -1875,24 +1852,9 @@ def _compile_chimew_signoff(ctx: _CompileContext):
     if ctx.phase6_provider != "chimew":
         raise EmuFlowError("baseline Phase 7C is owned by the native compiler")
     ctx.runtime_root = ctx.output_dir / "runtime"
-    ctx.runtime_report = ctx.measured("phase7c", run_phase7c,
-        ctx.schedule_path,
-        ctx.platform_path,
-        ctx.phase3_root / "phase3_report.json",
-        ctx.phase4_root / "phase4_report.json",
-        ctx.phase5_root / "phase5_report.json",
-        ctx.phase6_root / "phase6_report.json",
-        ctx.runtime_root,
-        assignment_path=ctx.assignment_path,
-        global_sta_executable=ctx.global_sta_executable,
-        global_timing_engine=ctx.global_timing_engine,
-        physical_summary_path=ctx.physical_summary_path,
-        routes_path=ctx.routes_path if ctx.physical_summary_path is not None else None,
-        board_link_timing_path=(
-            ctx.copied_link_timing_path
-            if ctx.physical_summary_path is not None
-            else None
-        ),
+    ctx.runtime_report = ctx.measured("phase7c", run_native_physical_signoff,
+        ctx.output_dir, ctx.phase6_root, ctx.physical_summary_path.parent, ctx.runtime_root,
+        executable=ctx.global_sta_executable, launcher_reference=ctx.global_sta_launcher_reference,
     )
     if ctx.physical and ctx.runtime_report.get("status") != "pass":
         raise ValidationError(

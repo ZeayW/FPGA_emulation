@@ -783,7 +783,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             )
 
             def fake_phase7c(*args, **kwargs):
-                runtime = args[6]
+                runtime = args[3]
                 runtime.mkdir(parents=True)
                 write_json(runtime / "runtime_contract.json", {})
                 write_json(runtime / "qor_report.json", {})
@@ -799,7 +799,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                     return_value={"status": "pass"},
                 ),
                 patch(
-                    "emuflow.flow.multi_fpga_flow.run_phase7c",
+                    "emuflow.flow.multi_fpga_flow.run_native_physical_signoff",
                     side_effect=fake_phase7c,
                 ),
             ):

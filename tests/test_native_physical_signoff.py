@@ -90,3 +90,33 @@ def test_native_physical_terminal_seals_container_binary_and_launcher(tmp_path):
     from emuflow.timing.global_sta import read_engine_identity
     assert read_engine_identity(tmp_path/'runtime/global-opensta/opensta.log')==engine
     case['checks'].close()
+
+
+def test_native_physical_terminal_uses_selected_comparison_arm(tmp_path):
+    case=make_terminal_case(tmp_path)
+    arm=tmp_path/'phase6-comparison/baseline'
+    arm.mkdir(parents=True)
+    (tmp_path/'split').rename(arm/'split')
+    (tmp_path/'physical').rename(arm/'physical')
+    from emuflow.timing.native_signoff import run_native_physical_signoff
+    report=run_native_physical_signoff(tmp_path,arm/'split',arm/'physical',arm/'runtime',executable=str(case['engine']))
+    assert report['stage_implementation_id']=='native-physical-phase7c-v1'
+    assert report['physical_evidence_completeness']['status']=='pass'
+    assert (arm/'runtime/global-opensta/measurements.json').is_file()
+    assert not (tmp_path/'runtime').exists()
+    before=(arm/'runtime/phase7c_report.json').read_bytes()
+    from emuflow.common.errors import ValidationError
+    with pytest.raises(ValidationError,match='runtime output exists'):
+        run_native_physical_signoff(tmp_path,arm/'split',arm/'physical',arm/'runtime',executable=str(case['engine']))
+    assert (arm/'runtime/phase7c_report.json').read_bytes()==before
+    case['checks'].close()
+
+
+def test_native_physical_terminal_rejects_arm_outside_flow(tmp_path):
+    case=make_terminal_case(tmp_path)
+    from emuflow.timing.native_signoff import run_native_physical_signoff
+    from emuflow.common.errors import ValidationError
+    with pytest.raises(ValidationError,match='escapes the flow owner'):
+        run_native_physical_signoff(tmp_path,tmp_path/'split',tmp_path/'physical',tmp_path.parent/'outside-runtime',executable=str(case['engine']))
+    assert not (tmp_path.parent/'outside-runtime').exists()
+    case['checks'].close()

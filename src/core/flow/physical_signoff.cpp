@@ -554,10 +554,25 @@ std::string PhysicalMetrics(BoundedJson &physical, BoundedJson &board,
 
 void SignoffPhysical(const fs::path &output, const std::string &opensta,
                      const volatile std::sig_atomic_t *cancelled,
-                     const std::string &launcher_reference) {
+                     const std::string &launcher_reference,
+                     const PhysicalSignoffArm &arm) {
   PCheck(output.is_absolute() && fs::is_directory(output),
          "flow root is unavailable");
-  const auto target = output / "runtime";
+  const auto owned = [&](const fs::path &selected, const fs::path &fallback) {
+    const auto path = selected.empty() ? fallback : selected;
+    PCheck(path.is_absolute(), "comparison arm path is relative");
+    const auto relative =
+        fs::weakly_canonical(path).lexically_relative(fs::canonical(output));
+    PCheck(!relative.empty() && *relative.begin() != ".." &&
+               !fs::is_symlink(path),
+           "comparison arm path escapes the flow owner");
+    return path;
+  };
+  const auto split_root = owned(arm.split, output / "split"),
+             physical_root = owned(arm.physical, output / "physical"),
+             target = owned(arm.runtime, output / "runtime");
+  PCheck(fs::is_directory(split_root) && fs::is_directory(physical_root),
+         "comparison arm sources are unavailable");
   PCheck(!fs::exists(target) && !fs::is_symlink(target),
          "runtime output exists");
   std::vector<ArtifactRef> sources;
@@ -574,7 +589,7 @@ void SignoffPhysical(const fs::path &output, const std::string &opensta,
   auto p4 = PRead(p4r);
   auto p5r = source("tdm/phase5_report.json", "phase5-report-v1");
   auto p5 = PRead(p5r);
-  auto p6r = source("split/phase6_report.json", "phase6-report-v1");
+  auto p6r = source(split_root / "phase6_report.json", "phase6-report-v1");
   auto p6 = PRead(p6r);
   PPass(p3, "Phase 3", design, platform);
   PPass(p4, "Phase 4", design, platform);
@@ -588,13 +603,13 @@ void SignoffPhysical(const fs::path &output, const std::string &opensta,
       source("tdm/schedule-board.bin", "exact-schedule-board-request-v1");
   auto boarddb =
       source("frontend/phase1/platform.normalized.json", "boarddb-v1");
-  auto manifest = source("split/manifest.json");
+  auto manifest = source(split_root / "manifest.json");
   auto manifest_doc = PRead(manifest);
   const auto runtime_text = BuildVirtualRuntime(
       schedule, boarddb, manifest_doc.Token("clock_periods"));
   const auto runtime = PFields(runtime_text);
   auto physical_summary =
-      source("physical/physical-summary.json", "physical-summary-v1");
+      source(physical_root / "physical-summary.json", "physical-summary-v1");
   auto physical = ResolvePhysicalEvidenceCatalog(physical_summary);
   PCheck(physical.design == design && physical.platform == platform,
          "physical namespace disagrees");
@@ -625,7 +640,7 @@ void SignoffPhysical(const fs::path &output, const std::string &opensta,
        contract = source("tdm/cross_layer_timing.json"),
        schedule_selector =
            source("tdm/schedule.json", "tdm-schedule-selector-v4");
-  PWorkspace work(output);
+  PWorkspace work(target.parent_path());
   const auto stage = work.root;
   const auto coverage =
       Coverage(contract, schedule_selector, schedule, assignment, physical,
@@ -846,7 +861,7 @@ void SignoffPhysical(const fs::path &output, const std::string &opensta,
                 {"cross_layer_physical_binding",
                  JsonQuote("cross_layer_physical_binding.json")}})}};
   PWrite(stage / "runtime_contract.json", runtime_text);
-  auto controller = source("split/virtual_runtime_controller.sv");
+  auto controller = source(split_root / "virtual_runtime_controller.sv");
   fs::copy_file(controller.path(), stage / "virtual_runtime_controller.sv");
   PWrite(stage / "virtual_runtime_controller_tb.sv",
          RuntimeSignoffTestbench(runtime, fpgas));

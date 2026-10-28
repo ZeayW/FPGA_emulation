@@ -132,7 +132,8 @@ nonphysical baseline Phase 7C owner is native: it builds the runtime contract
 from ScheduleStore, publishes bounded QoR and controller artifacts, and hands a
 generation-bound report to native finalization. Baseline physical Phase 7C also
 executes coverage auditing, Global OpenSTA and typed QoR publication in the core.
-Chimew Phase 7C comparison remains a transitional adapter path. Final report assembly is native and no
+Both Chimew comparison arms use this same native signoff transaction; bounded
+comparison assembly remains a transitional adapter responsibility. Final report assembly is native and no
 longer has a Python stage adapter. A baseline run that does not request physical
 implementation also advances the physical boundary in process; it no longer
 starts a no-op Python adapter.

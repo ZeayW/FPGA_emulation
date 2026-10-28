@@ -1360,9 +1360,9 @@ ordinary RTL synthesis and baseline splitting are deleted in the same change.
 Provider, algorithm, seed, constraints and physical-policy defaults stay fixed.
 
 Configuration preparation, supplied/prepared input binding, Chimew comparison
-and physical execution remain explicit isolated stage adapters. Chimew signoff
-remains adapter-owned; baseline physical and nonphysical signoff and final
-reporting are native. The adapters cannot choose another top-level controller
+and physical execution remain explicit isolated stage adapters. Chimew comparison
+assembly remains adapter-owned; physical signoff for both comparison arms,
+baseline nonphysical signoff and final reporting are native. The adapters cannot choose another top-level controller
 or silently retry failed native stages. Native execution owns order, predecessor validation,
 artifact-generation handoffs, cancellation and process cleanup. Frame-length
 search remains unsupported by this controller and rejects before synthesis.
@@ -1397,7 +1397,9 @@ Checks and source preparation explicitly exclude terminal qualification.
 
 ### Native baseline physical signoff
 
-The baseline compiler executes physical Phase 7C in the shared core. Phase 5
+Physical Phase 7C for the baseline and both Chimew comparison arms executes
+in the shared core. Checked physical-resume finalization uses this same owner.
+Phase 5
 publishes `schedule-board.bin` within its report-last generation seal; downstream
 event binding consumes that route-generation-bound request directly. The core
 resolves current physical evidence selectors and payloads, validates independent
@@ -1415,7 +1417,10 @@ output reject before terminal publication. Existing measurement and coverage
 readers can independently replay the new terminal artifacts.
 
 The generic Python compiler signoff adapter is retired. The remaining signoff
-adapter is explicitly restricted to Chimew comparison, which still executes both
-comparison arms. Full physical implementation control, configuration/prepared-input
-adapters and Chimew orchestration remain W7 work. NVDLA terminal acceptance is
+adapter is explicitly restricted to Chimew comparison assembly and launches the
+same native transaction for its terminal arm. A bounded host selects the split,
+physical and runtime directories for each arm; native publication rejects paths
+outside the claimed flow and retains an existing terminal generation.
+Full physical implementation control, configuration/prepared-input adapters and
+Chimew orchestration remain W7 work. NVDLA terminal acceptance is
 required before claiming complete migration.
