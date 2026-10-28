@@ -15,15 +15,7 @@ from emuflow.physical.xilinx_netlist import (
     emit_xilinx_mapped_index,
     open_xilinx_mapped_index,
 )
-from emuflow.physical.openparf.xilinx_openparf_atomic import (
-    OPENPARF_ATOMIC_PLACEMENT_SCHEMA,
-    OPENPARF_ATOMIC_PROVIDER,
-    load_xilinx_openparf_atomic_placement_clusters,
-    load_xilinx_openparf_atomic_sites,
-    read_xilinx_openparf_atomic_name_map,
-    validate_xilinx_openparf_atomic_placement,
-    write_xilinx_openparf_atomic_placement_certificate,
-)
+from tests.openparf_placement_reference import (OPENPARF_ATOMIC_PLACEMENT_SCHEMA, OPENPARF_ATOMIC_PROVIDER, load_xilinx_openparf_atomic_placement_clusters, load_xilinx_openparf_atomic_sites, read_xilinx_openparf_atomic_name_map, validate_xilinx_openparf_atomic_placement, write_xilinx_openparf_atomic_placement_certificate)
 from tests.physical_handoff_native_fixture import validate_certificate_facts
 from tests.xilinx_site_reference import validate_xilinx_packing
 from tests.xilinx_site_reference import validate_xilinx_placement

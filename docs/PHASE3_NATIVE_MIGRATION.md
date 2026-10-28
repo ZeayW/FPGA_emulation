@@ -1499,3 +1499,33 @@ remaining bridge submits bounded locators and configuration. This closes route
 execution ownership; OpenPARF placement certificate production, routed timing
 coordination, multi-FPGA control, Chimew stage orchestration and current-source
 NVDLA terminal qualification remain W7 completion requirements.
+
+
+### Native OpenPARF placement result import
+
+`physical import-openparf-placement REQUEST REPORT` owns raw coordinate parsing,
+source/name/site identity verification, the existing nearest-compatible FF
+control repair, site/BEL and native BRAM tile-view normalization, certified macro
+window/claim checks and current v3 placement-certificate publication. It then
+executes the independent native handoff producer and physical auditor in process.
+The audit reconstructs source ownership, MUX/CARRY connectivity, FF controls and
+native dedicated adjacency independently of the importer's accepted decisions.
+The device contract also requires each BRAM anchor to be its native upper view.
+
+The accepted report binds the certificate selector/store, physical handoff and
+bridge report generations. The host verifies each returned generation, and lazy
+handoff readers retain the producer's validated generation. A rejected import
+removes only its private generation and preserves the previous accepted report.
+The raw solver output and metrics remain immutable; repaired coordinates have a
+separate generation. Solver-result checkpoints continue to refer to the original
+output and matching convergence metrics.
+
+The Python coordinate index, FF repair, macro/window verifier, cluster assembly,
+certificate producer and unused certificate readers have left the production
+package. The independent differential oracle is confined to tests. The OpenPARF
+host now submits source locators and bounded metadata; the physical backend
+consumes the already audited handoff without invoking a second bridge transaction.
+OpenPARF solver/checkpoint control, routed timing coordination, the multi-FPGA
+physical owner and Chimew stage control remain migration work. W7 completion
+still requires current-source NVDLA terminal qualification on the maintained
+physical backends and the supported Chimew path.

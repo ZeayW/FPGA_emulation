@@ -13,9 +13,7 @@ from tests.physical_handoff_native_fixture import encode_typed_bridge_facts
 
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import file_sha256, read_json, write_json
-from emuflow.physical.openparf.xilinx_openparf_atomic import (
-    write_xilinx_openparf_atomic_placement_certificate,
-)
+from tests.openparf_placement_reference import (write_xilinx_openparf_atomic_placement_certificate)
 from emuflow.physical.handoff import (
     materialize_xilinx_openparf_atomic_contract as materialize_typed,
 )

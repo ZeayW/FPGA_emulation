@@ -1,3 +1,4 @@
+#include "physical/openparf/placement_import.hpp"
 #include "physical/rapidwright/rwroute_stage.hpp"
 #include "physical/vivado/vivado_partition.hpp"
 #include "physical/vivado/vivado_inputs.hpp"
@@ -60,6 +61,7 @@ constexpr const char* kUsage =
     "  phase6 finalize-comparison INPUT FLOW_ROOT\n"
     "  physical validate-flow-report INPUT SUMMARY\n"
     "  physical prepare-vivado-inputs REQUEST OUTPUT\n"
+    "  physical import-openparf-placement REQUEST REPORT\n"
     "  physical run-rwroute REQUEST SUMMARY\n"
     "  physical run-vivado-partition REQUEST OUTPUT\n"
     "  phase6 split EMUIR ASSIGNMENT SCHEDULE OUTPUT\n"
@@ -203,6 +205,10 @@ int RunTool(const std::string& input, const std::string& output) {
 }
 
 int Dispatch(int argc, char** argv, const std::string& report) {
+  if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="import-openparf-placement") {
+    ToolSignals signals;return Finish(emuflow::core::ImportOpenparfPlacement(emuflow::core::ArtifactRef::Bind(argv[3],"openparf-placement-import-request-v1"),argv[4],&tool_cancelled),report);
+  }
+
   if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="run-rwroute") {
     ToolSignals signals;return Finish(emuflow::core::RunRwroute(emuflow::core::ArtifactRef::Bind(argv[3],"rwroute-stage-request-v1"),argv[4],&tool_cancelled),report);
   }

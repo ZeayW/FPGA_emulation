@@ -40,6 +40,7 @@ def seal_native_input(architecture_path, native_path, provider_path, supplied):
     payload = native["payload"]
     groups = supplied["payload"].get("bram_tile_groups", [])
     for group in groups:
+        group["upper"]["site"] = group["anchor"]
         for index, role in enumerate(("lower", "upper", "whole")):
             view = group[role]
             view["site_index"] = index

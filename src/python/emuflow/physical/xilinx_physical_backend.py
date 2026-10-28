@@ -1,6 +1,7 @@
 """Complete per-partition RapidWright research backend."""
 
 from __future__ import annotations
+from emuflow.physical.xilinx_physical_handoff import open_xilinx_physical_handoff
 
 import gc
 import hashlib
@@ -22,7 +23,6 @@ from emuflow.ir.resource_budget import validate_device_resource_usage, validate_
 from emuflow.timing.sta import iter_sta_path_database_paths
 from emuflow.physical.xilinx_netlist import emit_xilinx_mapped_index, open_xilinx_mapped_index
 from emuflow.physical.openparf.xilinx_openparf_atomic import build_xilinx_openparf_atomic_source, run_xilinx_openparf_atomic_qualification
-from emuflow.physical.handoff import materialize_xilinx_openparf_atomic_contract
 from emuflow.timing.xilinx_opensta import run_xilinx_routed_opensta
 from emuflow.physical.rapidwright.route_stage import run_native_rwroute_stage
 from emuflow.timing.xilinx_segment_timing import build_xilinx_segment_timing_bundle
@@ -730,40 +730,20 @@ def run_rapidwright_openparf_native_candidate_backend(
         packed_value=atomic_source,
         architecture=architecture,
         allowed_slrs=selected_slrs,
+        constraints_path=region_path,
     )
-    certificate_path = qualification_root / "placement-certificate.json"
+    certificate_path = Path(qualification["certificate_path"])
     compact_qualification = _compact_openparf_qualification(
         qualification, certificate_path
     )
-    # The serialized certificate remains the independently checked boundary.
-    # The complete Python assignment tree is not needed during RWRoute/OpenSTA.
-    del qualification
-    physical_handoff_path = output_dir / "physical-handoff.sqlite"
-    for legacy_name in ("packed-sites.json", "placement.json"):
-        (output_dir / legacy_name).unlink(missing_ok=True)
-    packed_path = physical_handoff_path
-    placement_path = physical_handoff_path
-    packed: Dict[str, Any] = {}
-    placement: Dict[str, Any] = {}
-    bridge = materialize_xilinx_openparf_atomic_contract(
-        mapped_path,
-        architecture_path,
-        certificate_path,
-        physical_handoff_path,
-        top=mapped_report["top"],
-        source_packed_path=atomic_source_path,
-        source_packed_value=atomic_source,
-        constraints_path=region_path,
-        native_constraints_path=openparf_native_constraints,
-        provider_manifest_path=openparf_provider_manifest,
-        mapped_value=mapped_value,
-        mapped_sha256=mapped_sha256,
-        packed_value_sink=packed,
-        placement_value_sink=placement,
-    )
+    bridge = qualification["bridge"]
     physical_handoff_path = Path(bridge["physical_handoff"])
-    packed_path = physical_handoff_path
-    placement_path = physical_handoff_path
+    packed, placement = open_xilinx_physical_handoff(
+        physical_handoff_path, validated_sha256=bridge["physical_handoff_sha256"],
+        validated_generation=qualification["handoff_generation"],
+    )
+    del qualification
+    packed_path = placement_path = physical_handoff_path
     # The source view and shared physical handoff were already independently
     # validated before atomic publication. Reuse their lazy indexed views
     # instead of materializing either historical JSON contract.

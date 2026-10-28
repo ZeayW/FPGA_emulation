@@ -227,6 +227,7 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/openparf_atomic_source.sql"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/openparf_name_map.sql"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/openparf_sites.sql"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/openparf_placement_certificate.sql"
   "${CMAKE_SOURCE_DIR}/src/core/storage/schema/assignment_schema.hpp.in"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/phase3_clusters.sql"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/schema/emuir_compact.sql"

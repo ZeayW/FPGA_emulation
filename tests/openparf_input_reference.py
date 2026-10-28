@@ -11,7 +11,7 @@ from emuflow.platform.architecture import ArchitectureDB
 from emuflow.common.native_tools import resolve_native_stage_command
 from emuflow.physical.xilinx_netlist import _IndexedCells
 from emuflow.physical.xilinx_packing import LUT_TYPES, FF_TYPES, DUAL_OUTPUT_LUT_TYPE
-from emuflow.physical.openparf import xilinx_openparf_atomic as runtime
+from tests import openparf_placement_reference as runtime
 _fsync_directory = runtime._fsync_directory
 import errno
 _HARD_RESOURCES = {

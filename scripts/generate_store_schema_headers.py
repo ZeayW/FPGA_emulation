@@ -133,6 +133,7 @@ def generate(directory):
         ("kOpenparfAtomicSourceDDL", "openparf_atomic_source.sql"),
         ("kOpenparfNameMapDDL", "openparf_name_map.sql"),
         ("kOpenparfSitesDDL", "openparf_sites.sql"),
+        ("kOpenparfPlacementDDL", "openparf_placement_certificate.sql"),
     ):
         ddl = (root / "src/python/emuflow/data/schema" / filename).read_text(encoding="utf-8")
         if ')EMUFLOW_SQL"' in ddl:

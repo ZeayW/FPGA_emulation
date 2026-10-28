@@ -9,12 +9,8 @@ from emuflow.common.io import read_json, write_json
 from emuflow.common.errors import ValidationError
 from emuflow.platform.architecture import ArchitectureDB
 from unittest import mock
-from emuflow.physical.openparf.xilinx_openparf_atomic import (
-    build_xilinx_openparf_atomic_source,
-    read_xilinx_openparf_atomic_source,
-    read_xilinx_openparf_atomic_name_map,
-    validate_xilinx_openparf_atomic_placement,
-)
+from emuflow.physical.openparf.xilinx_openparf_atomic import (build_xilinx_openparf_atomic_source)
+from tests.openparf_placement_reference import (read_xilinx_openparf_atomic_source, read_xilinx_openparf_atomic_name_map, validate_xilinx_openparf_atomic_placement)
 from tests.xilinx_site_reference import validate_xilinx_packing
 from tests.xilinx_site_reference import validate_xilinx_placement
 from tests.xilinx_carry_fixture import _write_fixture

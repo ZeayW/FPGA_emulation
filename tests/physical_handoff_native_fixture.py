@@ -6,10 +6,7 @@ from types import SimpleNamespace
 
 from emuflow.common.io import file_sha256
 from emuflow.physical.xilinx_netlist import open_xilinx_mapped_index
-from emuflow.physical.openparf.xilinx_openparf_atomic import (
-    open_xilinx_openparf_atomic_placement,
-    write_xilinx_openparf_atomic_placement_certificate,
-)
+from tests.openparf_placement_reference import (open_xilinx_openparf_atomic_placement, write_xilinx_openparf_atomic_placement_certificate)
 from tests.openparf_source_fixture import write_xilinx_openparf_atomic_source_storage
 from tests.test_rwroute_native import write_mapped
 

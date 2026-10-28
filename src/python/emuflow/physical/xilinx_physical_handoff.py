@@ -393,7 +393,7 @@ def validate_xilinx_physical_handoff(path: Path, *, integrity_check: bool = Fals
 
 
 def open_xilinx_physical_handoff(
-    path: Path, *, validated_sha256: Optional[str] = None,
+    path: Path, *, validated_sha256: Optional[str] = None, validated_generation=None,
 ) -> tuple[Dict[str, Any], Dict[str, Any]]:
     """Open relocatable lazy compatibility views over one physical handoff."""
 
@@ -407,6 +407,12 @@ def open_xilinx_physical_handoff(
         raise ValidationError("Xilinx physical handoff digest is invalid")
 
     source_binding = bind_store_source(path, "xilinx-physical-handoff-v1")
+    if validated_generation is not None and (
+        not isinstance(validated_generation,(list,tuple)) or len(validated_generation)!=7
+        or any(type(value) is not int for value in validated_generation)
+        or tuple(validated_generation)!=source_binding.generation
+    ):
+        raise ValidationError("Xilinx physical handoff differs from its validated generation")
     connection = _connect(path)
     try:
         manifest = connection.execute("SELECT * FROM manifest WHERE singleton=1").fetchone()

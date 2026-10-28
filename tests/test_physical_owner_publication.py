@@ -12,7 +12,7 @@ from emuflow.storage.store_publication import bind_store_source
 KINDS = ("name_map", "certificate")
 MODULES = {
     "name_map": "tests.openparf_names_fixture",
-    "certificate": "emuflow.physical.openparf.xilinx_openparf_atomic",
+    "certificate": "tests.openparf_placement_reference",
 }
 
 
@@ -246,7 +246,7 @@ def test_handoff_source_lease_covers_final_lazy_sink_adoption(tmp_path, native_h
 @pytest.mark.parametrize('field', ['name_map_sha256', 'native_placement_sha256'])
 def test_handoff_rejects_malformed_certificate_lineage(tmp_path, native_handoff, field):
     from tests.physical_handoff_native_fixture import build_native_handoff
-    from emuflow.physical.openparf.xilinx_openparf_atomic import (
+    from tests.openparf_placement_reference import (
         open_xilinx_openparf_atomic_placement,
         write_xilinx_openparf_atomic_placement_certificate,
     )

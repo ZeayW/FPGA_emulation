@@ -9,11 +9,8 @@ from unittest import mock
 
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import file_sha256, write_json
-from emuflow.physical.openparf.xilinx_openparf_atomic import (
-    build_xilinx_openparf_atomic_source,
-    materialize_xilinx_openparf_atomic_source,
-    read_xilinx_openparf_atomic_source,
-)
+from emuflow.physical.openparf.xilinx_openparf_atomic import (build_xilinx_openparf_atomic_source)
+from tests.openparf_placement_reference import (materialize_xilinx_openparf_atomic_source, read_xilinx_openparf_atomic_source)
 from emuflow.physical.xilinx_netlist import (
     emit_xilinx_mapped_index,
     open_xilinx_mapped_index,

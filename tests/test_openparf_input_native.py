@@ -10,6 +10,8 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.common.errors import ValidationError
+from emuflow.platform.architecture import ArchitectureDB
+from emuflow.physical.openparf.xilinx_openparf_name_map_storage import read_xilinx_openparf_atomic_name_map
 from emuflow.common.io import file_sha256
 from emuflow.physical.xilinx_netlist import _IndexedCells
 from emuflow.physical.openparf import xilinx_openparf_atomic as adapter
@@ -43,13 +45,12 @@ def test_native_input_has_no_host_cell_macro_or_device_population(tmp_path):
                 "_validate_mapped_ownership",
                 side_effect=AssertionError("host source rederivation"),
             ),
-            patch.object(
-                adapter,
-                "build_xilinx_physical_macro_contract",
+            patch(
+                "emuflow.physical.xilinx_physical_macros.build_xilinx_physical_macro_contract",
                 side_effect=AssertionError("host macro population"),
             ),
             patch.object(
-                adapter.ArchitectureDB,
+                ArchitectureDB,
                 "load",
                 side_effect=AssertionError("host device population"),
             ),
@@ -78,7 +79,7 @@ def test_native_geometry_matches_independent_small_device_contract(tmp_path):
     mapped, packed, architecture_path = write_openparf_runtime_fixture(
         tmp_path, include_hard=True
     )
-    architecture = adapter.ArchitectureDB.load(architecture_path)
+    architecture = ArchitectureDB.load(architecture_path)
     sites = reference._placement_sites(architecture, ("DSP48E2", "RAMB36E2", "URAM288"))
     _, _, expected = reference._render_site_geometry(sites)
     manifest = export_atomic_facts(
@@ -134,7 +135,7 @@ def test_source_constants_preserve_global_lexical_singleton_identity(tmp_path):
             mapped_value=owner,
             packed_value=source,
         )
-        with adapter.read_xilinx_openparf_atomic_name_map(
+        with read_xilinx_openparf_atomic_name_map(
             out / "name_map.json"
         ) as view:
             assert {

@@ -716,6 +716,8 @@ void PhysicalDevice::Impl::NativeFacts() {
                           nbel = r == "lower"   ? "RAMBFIFO18"
                                  : r == "upper" ? "RAMB18E2_U"
                                                 : "RAMBFIFO36E2";
+        Check(r != "upper" || view.Text("site") == anchor,
+              "BRAM ArchitectureDB anchor is not its native upper view");
         const auto index = view.Integer("site_index");
         Check(index >= 0 && indices.insert(index).second &&
                   view.Text("bel") == bel && view.Text("site_type") == type &&

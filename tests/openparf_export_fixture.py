@@ -60,4 +60,7 @@ def export_atomic_facts(*args, **kwargs):
 
 def run_atomic_facts(*args, **kwargs):
     with mapped_facts(args[0], kwargs.get("mapped_value")) as owner:
-        return atomic.run_xilinx_openparf_atomic_qualification(*args, **dict(kwargs, mapped_value=owner))
+        source_path=owner.path.with_name('atomic-source.json')
+        source=atomic.build_xilinx_openparf_atomic_source(owner.path,source_path,mapped_value=owner)
+        return atomic.run_xilinx_openparf_atomic_qualification(owner.path,source_path,*args[2:],
+            **dict(kwargs,mapped_value=owner,packed_value=source))
