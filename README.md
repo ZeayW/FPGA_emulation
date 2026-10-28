@@ -46,7 +46,12 @@ Install once, then give EmuFlow the RTL, top module and clock period:
 git clone https://github.com/ZeayW/FPGA_emulation.git
 cd FPGA_emulation
 ./install.sh
+
+# Choose the OpenPARF + RapidWright/RWRoute route
 emuflow run rtl/top.sv --top top --clock clk=10 --backend rapidwright
+
+# Or choose the Vivado route
+emuflow run rtl/top.sv --top top --clock clk=10 --backend vivado
 ```
 
 The installer builds the complete runtime, downloads the pinned RapidWright
