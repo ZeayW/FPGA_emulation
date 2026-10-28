@@ -527,12 +527,8 @@ def audit(repo_root: Path) -> list[str]:
                         f"{disallowed!r}"
                     )
             for required in (
-                "emuflow environment prepare machine.json",
-                "emuflow design prepare design.json",
-                "emuflow run design.run.json",
-                "--backend rapidwright",
-                "--backend vivado",
-                "--require-physical",
+                "emuflow run rtl/top.sv --top top --clock clk=10",
+                "runs/top",
             ):
                 if required not in quick_start:
                     errors.append("README Quick start omits the maintained complete-flow entry: " + required)

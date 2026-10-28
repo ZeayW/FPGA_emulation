@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import fcntl
 import json
+import os
 from pathlib import Path
 import tempfile
 
@@ -15,6 +16,7 @@ from emuflow.flow.environment import (
     read_control,
     resolve_path,
     compile_environment,
+    resolve_environment_path,
     environment_scope,
 )
 from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
@@ -319,16 +321,24 @@ def _publish_run(
     }
 
 
-def execute_run(config_path, output_dir, *, backend="rapidwright", check_only=False):
-    path, value, benchmark, source_root = load_run(config_path)
-    profile = load_environment(resolve_path(path.parent, value["environment"]))
+def _execute_benchmark(
+    benchmark,
+    source_root,
+    profile,
+    platform,
+    options,
+    output_dir,
+    *,
+    backend,
+    check_only,
+):
     environment_options = compile_environment(profile, backend)
     synthesis = benchmark.value["synthesis"]
     periods = benchmark.value.get("clock_periods_ns")
     _require_physical_design(benchmark)
     records = source_records(benchmark, source_root)
-    options = {
-        **value["options"],
+    compile_options = {
+        **options,
         **environment_options,
         "source_checksums": {
             str(source_root / name): digest for name, digest in records
@@ -341,17 +351,15 @@ def execute_run(config_path, output_dir, *, backend="rapidwright", check_only=Fa
         "clock_periods": dict(periods),
         "timing_io": benchmark.value["timing_io"],
         "mapping_profile": benchmark.value["physical_mapping_profile"],
-        "platform_path": resolve_path(path.parent, value["platform"]),
+        "platform_path": Path(platform).expanduser().resolve(),
         "output_dir": Path(output_dir).expanduser().resolve(),
         "physical": True,
         "physical_backend": backend,
     }
-    # Use the very same binding/size/default contract as execution. A check is
-    # a configuration/inventory check, never a physical completion certificate.
     from emuflow.flow.native_compile import _request
 
     with environment_scope(profile):
-        _request((), options)
+        _request((), compile_options)
         if check_only:
             return {
                 "schema": "emuflow.run-check/v1",
@@ -359,13 +367,94 @@ def execute_run(config_path, output_dir, *, backend="rapidwright", check_only=Fa
                 "scope": "source-configuration-and-runtime-inventory",
                 "design": benchmark.value["design_id"],
                 "top": benchmark.value["top"],
-                "source_files": len(options["sources"]),
+                "source_files": len(compile_options["sources"]),
                 "clocks": periods,
                 "backend": backend,
-                "output": str(options["output_dir"]),
+                "output": str(compile_options["output_dir"]),
                 "terminal_qualification": False,
             }
-        return run_multi_fpga_flow(**options)
+        return run_multi_fpga_flow(**compile_options)
+
+
+def execute_sources(
+    sources,
+    *,
+    top,
+    clock_periods,
+    output_dir,
+    environment_path=None,
+    backend="rapidwright",
+    include_dirs=(),
+    defines=(),
+    platform_path=DEFAULT_PLATFORM_PATH,
+    phase6_provider="baseline",
+    check_only=False,
+):
+    """Run user RTL directly; preparation artifacts stay internal."""
+    source_paths = [Path(item).expanduser().resolve() for item in sources]
+    include_paths = [Path(item).expanduser().resolve() for item in include_dirs]
+    if not source_paths or any(not item.is_file() for item in source_paths):
+        raise EmuFlowError("run requires existing RTL source files")
+    if any(not item.is_dir() for item in include_paths):
+        raise EmuFlowError("run include directories must exist")
+    roots = [item.parent for item in source_paths] + include_paths
+    source_root = Path(os.path.commonpath([str(item) for item in roots])).resolve()
+    if source_root.is_file():
+        source_root = source_root.parent
+    platform = Path(platform_path).expanduser().resolve()
+    from emuflow.platform.platform import Platform
+
+    Platform.load(platform)
+    benchmark = BenchmarkRun(
+        {
+            "schema": "emuflow.benchmark-run/v1",
+            "id": top,
+            "design_id": top,
+            "top": top,
+            "sources": [
+                item.relative_to(source_root).as_posix() for item in source_paths
+            ],
+            "clocks": list(clock_periods),
+            "clock_periods_ns": dict(clock_periods),
+            "timing_io": {"input_groups": [], "output_groups": []},
+            "platform": str(platform),
+            "physical_mapping_profile": "xilinx-ultrascaleplus-open-v1",
+            "synthesis": {
+                "family": "xcup",
+                "policy": "native",
+                "include_dirs": [
+                    item.relative_to(source_root).as_posix() for item in include_paths
+                ],
+                "defines": list(defines),
+            },
+        }
+    )
+    profile = load_environment(resolve_environment_path(environment_path))
+    return _execute_benchmark(
+        benchmark,
+        source_root,
+        profile,
+        platform,
+        {"phase6_provider": phase6_provider},
+        output_dir,
+        backend=backend,
+        check_only=check_only,
+    )
+
+
+def execute_run(config_path, output_dir, *, backend="rapidwright", check_only=False):
+    path, value, benchmark, source_root = load_run(config_path)
+    profile = load_environment(resolve_path(path.parent, value["environment"]))
+    return _execute_benchmark(
+        benchmark,
+        source_root,
+        profile,
+        resolve_path(path.parent, value["platform"]),
+        value["options"],
+        output_dir,
+        backend=backend,
+        check_only=check_only,
+    )
 
 
 def prepare_nvdla_run(

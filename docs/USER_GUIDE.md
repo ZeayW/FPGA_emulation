@@ -102,18 +102,17 @@ ordered-record seal checker. It does not provide another routing producer.
 The mapping-to-store writer is used to construct explicit test/import records;
 it cannot accept private kernel-output callbacks or retry a failed stage.
 
-## Prepare once, run a design from one configuration
+## Run RTL with the installed environment
 
-Use [Running a design](RUNNING.md) to register the machine and prepare any
-supported RTL design. `emuflow design prepare design.json --environment
-environment.json --out design.run.json` records sources, clocks, I/O constraints,
-platform and compile options. `emuflow run design.run.json --backend rapidwright
---out RUN` starts the complete physical/global timing flow through the native
-controller. Select `--backend vivado` for the other physical backend. Internal
-pre-placement TimingDB generation belongs to environment preparation.
-`--check` checks inputs without executing the design; it is not terminal
-qualification. [NVDLA preparation](RUNNING_NVDLA.md) is a specialized preset
-for the pinned qualification design and its physical memory models.
+Use [Running a design](RUNNING.md) to register the machine once. Afterwards,
+`emuflow run rtl/top.sv --top top --clock clk=10` starts the complete
+physical/global timing flow through the native controller. The installed
+OpenPARF/RWRoute environment is the default; select `--backend vivado` for the
+other backend. Design/run configuration files remain available for explicit I/O
+timing, custom options and reproducible source seals, but are not part of the
+ordinary entry. `--check` checks inputs without executing the design; it is not
+terminal qualification. [NVDLA preparation](RUNNING_NVDLA.md) is the specialized
+preset for the pinned qualification design and its physical memory models.
 
 ## Native compile control
 

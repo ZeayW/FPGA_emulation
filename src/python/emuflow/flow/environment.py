@@ -16,6 +16,7 @@ from emuflow.timing.xilinx_preplacement_timing import (
 )
 
 SCHEMA = "emuflow.environment/v1"
+ENVIRONMENT_VARIABLE = "EMUFLOW_ENVIRONMENT"
 _LICENSE_ENV = {
     "LM_LICENSE_FILE",
     "XILINXD_LICENSE_FILE",
@@ -40,6 +41,29 @@ _PATH_KEYS = {
     "native_constraints",
     "provider_manifest",
 }
+
+
+def default_environment_path():
+    """Return the environment registered during installation.
+
+    An explicit variable supports managed installations.  The ordinary user
+    path follows XDG without requiring it to be set.
+    """
+    configured = os.environ.get(ENVIRONMENT_VARIABLE)
+    if configured:
+        return Path(configured).expanduser().resolve()
+    config_root = Path(
+        os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
+    ).expanduser()
+    return (config_root / "emuflow" / "environment.json").resolve()
+
+
+def resolve_environment_path(path=None):
+    return (
+        Path(path).expanduser().resolve()
+        if path is not None
+        else default_environment_path()
+    )
 
 
 def read_control(path):

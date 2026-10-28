@@ -47,20 +47,47 @@ inherited from the launching shell, or explicitly registered under `environment`
 information local.
 
 ```bash
-emuflow environment prepare machine.json \
-  --out environment.json
-
-emuflow environment check environment.json
+emuflow environment prepare machine.json
+emuflow environment check
 ```
 
 Preparation reports missing inputs before starting EDA work, loads the native
 runtime and selected OpenPARF host, checks OpenSTA and vendor/JDK identities, and builds the
 internal source-sealed pre-placement TimingDB once. Subsequent runs consume its
-checked reference. Relative paths in profiles resolve from the profile directory.
+checked reference. By default the checked profile is registered at
+`$XDG_CONFIG_HOME/emuflow/environment.json` (or
+`~/.config/emuflow/environment.json`) so `emuflow run` finds it automatically.
+Use `--out` during registration or `EMUFLOW_ENVIRONMENT` during execution only
+when a managed installation needs a different location. Relative paths in
+profiles resolve from the profile directory.
 Changing the source timing revision requires preparing a new environment.
 Vendor license availability is enforced by the vendor tool during execution.
 
-## Prepare a design
+## Run a design
+
+For ordinary RTL, no design or run configuration file is required:
+
+```bash
+emuflow run rtl/top.sv --top top --clock clk=10
+```
+
+The command reads the environment registered during installation, validates the
+source and tool inventory, and submits the complete Phase 1–7/7C request to the
+native controller. Output defaults to `runs/top`. Multiple sources retain command
+line order:
+
+```bash
+emuflow run rtl/packages.sv rtl/core.sv rtl/top.sv \
+  --top top --clock clk=10 --include-dir rtl/include --define FEATURE=1
+```
+
+Repeat `--clock NAME=NS` for every clock. The direct entry applies no external
+input/output delay groups; designs that need explicit I/O timing, custom compile
+options, or a source-sealed reproducibility record can use the advanced
+configuration below. Select Vivado with `--backend vivado`; OpenPARF/RWRoute is
+the default.
+
+## Advanced reproducible configuration
 
 Copy [the design template](../examples/designs/design.example.json) to
 `design.json` and replace the example fields:
@@ -88,6 +115,7 @@ and other modules; preparation does not synthesize black boxes into missing IP.
 
 ```bash
 emuflow design prepare design.json --environment environment.json --out design.run.json
+emuflow run design.run.json --backend rapidwright --out runs/design-openparf
 ```
 
 Preparation validates the design description and platform and records the
@@ -101,17 +129,15 @@ at environment registration and again before execution.
 The optional [NVDLA preset](RUNNING_NVDLA.md) handles that qualification design's
 pinned archive and physical memory models. It is not required for user RTL.
 
-## Run and inspect
+## Inspect results
 
 ```bash
-emuflow run design.run.json --backend rapidwright --out runs/design-openparf
-emuflow run design.run.json --backend vivado --out runs/design-vivado
+emuflow multi-fpga validate --flow runs/top --require-physical
 ```
 
-Choose a registered backend and a new output directory for each invocation.
-Both commands submit to the sole `emuflow-native compile` controller for
-Phase 1–7/7C. Add `--check` for a source/configuration/runtime inventory check
-without executing the design; it does not establish physical completion.
+Choose a new output directory for each invocation. Add `--check` to the same run
+command for a source/configuration/runtime inventory check without executing the
+design; it does not establish physical completion.
 
 The controller prints stage progress. Inspect `stage-metrics/` and
 `native-compile-result.json` for execution state. Successful terminal execution
@@ -119,7 +145,7 @@ publishes `multi-fpga-flow-report.json`, `runtime/phase7c_report.json` and
 `runtime/qor_report.json`. Independently validate the completed result:
 
 ```bash
-emuflow multi-fpga validate --flow runs/design-openparf --require-physical
+emuflow multi-fpga validate --flow runs/top --require-physical
 ```
 
 Missing coverage, unresolved paths and failed implementation remain failures.

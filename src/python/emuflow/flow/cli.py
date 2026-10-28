@@ -114,9 +114,13 @@ def _build_parser() -> argparse.ArgumentParser:
     environment_commands = environment.add_subparsers(dest="environment_command", required=True)
     prepare_environment = environment_commands.add_parser("prepare", help="validate registration and generate internal pre-placement timing")
     prepare_environment.add_argument("input", type=Path)
-    prepare_environment.add_argument("--out", type=Path, required=True)
+    prepare_environment.add_argument(
+        "--out", type=Path, help="registered profile (default: user configuration directory)"
+    )
     check_environment = environment_commands.add_parser("check", help="report all missing registered runtime inputs")
-    check_environment.add_argument("profile", type=Path)
+    check_environment.add_argument(
+        "profile", type=Path, nargs="?", help="default: registered user profile"
+    )
     check_environment.add_argument("--backend", choices=("rapidwright", "vivado"))
     design = subparsers.add_parser("design", help="prepare reproducible design inputs once")
     designs = design.add_subparsers(dest="design_command", required=True)
@@ -131,10 +135,26 @@ def _build_parser() -> argparse.ArgumentParser:
     nvdla.add_argument("--environment", type=Path, required=True)
     nvdla.add_argument("--platform", type=Path, default=DEFAULT_PLATFORM_PATH)
     nvdla.add_argument("--out", type=Path, required=True)
-    run = subparsers.add_parser("run", help="run complete Phase 1–7/7C from one prepared configuration")
-    run.add_argument("config", type=Path)
+    run = subparsers.add_parser(
+        "run", help="run RTL through the complete Phase 1–7/7C flow"
+    )
+    run.add_argument(
+        "inputs", nargs="+", type=Path, help="RTL sources, or one prepared .run.json"
+    )
+    run.add_argument("--top", help="RTL top module")
+    run.add_argument(
+        "--clock", action="append", default=[], metavar="NAME=NS",
+        help="clock port and period in ns; repeat for multiple clocks",
+    )
+    run.add_argument("--include-dir", action="append", default=[], type=Path)
+    run.add_argument("--define", action="append", default=[])
+    run.add_argument("--environment", type=Path, help="override the installed environment")
+    run.add_argument("--platform", type=Path, default=DEFAULT_PLATFORM_PATH)
+    run.add_argument(
+        "--phase6-provider", choices=("baseline", "chimew"), default="baseline"
+    )
     run.add_argument("--backend", choices=("rapidwright", "vivado"), default="rapidwright")
-    run.add_argument("--out", type=Path, required=True)
+    run.add_argument("--out", type=Path, help="default: runs/TOP")
     run.add_argument("--check", action="store_true", help="check input/configuration inventory without executing the design")
 
     platform_parser = subparsers.add_parser("platform", help="BoardDB operations")
@@ -1413,11 +1433,20 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "environment":
-        from emuflow.flow.environment import prepare_environment, load_environment, inspect_environment, probe_environment
-        report = (prepare_environment(args.input, args.out) if args.environment_command == "prepare"
-                  else inspect_environment(load_environment(args.profile), args.backend))
+        from emuflow.flow.environment import (
+            prepare_environment,
+            load_environment,
+            inspect_environment,
+            probe_environment,
+            resolve_environment_path,
+        )
+        profile_path = resolve_environment_path(
+            args.out if args.environment_command == "prepare" else args.profile
+        )
+        report = (prepare_environment(args.input, profile_path) if args.environment_command == "prepare"
+                  else inspect_environment(load_environment(profile_path), args.backend))
         if args.environment_command == "check" and report["status"] == "pass":
-            report = probe_environment(load_environment(args.profile), args.backend)
+            report = probe_environment(load_environment(profile_path), args.backend)
         _print_json(report)
         return 0 if report["status"] == "pass" else 2
     if args.command == "design":
@@ -1431,8 +1460,39 @@ def _dispatch(args: argparse.Namespace) -> int:
         _print_json(report)
         return 0
     if args.command == "run":
-        from emuflow.flow.run_config import execute_run
-        report = execute_run(args.config, args.out, backend=args.backend, check_only=args.check)
+        from emuflow.flow.run_config import execute_run, execute_sources
+
+        prepared = (
+            len(args.inputs) == 1
+            and args.inputs[0].suffix == ".json"
+            and not args.top
+            and not args.clock
+        )
+        if prepared:
+            name = args.inputs[0].stem.removesuffix(".run")
+            output = args.out or Path("runs") / name
+            report = execute_run(
+                args.inputs[0], output, backend=args.backend, check_only=args.check
+            )
+        else:
+            if not args.top or not args.clock:
+                raise EmuFlowError(
+                    "RTL runs require --top and at least one --clock NAME=NS"
+                )
+            output = args.out or Path("runs") / args.top
+            report = execute_sources(
+                args.inputs,
+                top=args.top,
+                clock_periods=parse_clock_definitions(args.clock),
+                output_dir=output,
+                environment_path=args.environment,
+                backend=args.backend,
+                include_dirs=args.include_dir,
+                defines=args.define,
+                platform_path=args.platform,
+                phase6_provider=args.phase6_provider,
+                check_only=args.check,
+            )
         _print_json(report.get("summary", report))
         return 0 if report["status"] == "pass" else 2
 

@@ -65,31 +65,16 @@ installation have separate setup requirements; see
 
 ## Quick start
 
-Prepare the machine once, then prepare each RTL design from its own configuration.
-Start with the [environment template](examples/environments/xcvu19p.example.json)
-and [design template](examples/designs/design.example.json), replacing the example
-paths, RTL files, top module, clocks and I/O constraints with your inputs.
-See [running a design](docs/RUNNING.md) for the configuration fields and setup.
-The supported target is Xilinx UltraScale+; the default platform is the bundled
-four-XCVU19P mesh.
+After the [one-time installation and machine registration](docs/RUNNING.md),
+give EmuFlow the RTL, top module and clock period:
 
 ```bash
-export PATH="$PWD/build/native/install/bin:$PATH"
-
-# Once per machine/tool installation, using your edited environment template.
-emuflow environment prepare machine.json --out environment.json
-
-# Once per design revision, using your edited design template.
-emuflow design prepare design.json --environment environment.json --out design.run.json
-
-# Start the complete flow with either physical backend.
-emuflow run design.run.json --backend rapidwright --out runs/design-openparf
-emuflow run design.run.json --backend vivado --out runs/design-vivado
-
-# Independently validate a completed physical/global timing result.
-emuflow multi-fpga validate --flow runs/design-openparf --require-physical
+emuflow run rtl/top.sv --top top --clock clk=10
 ```
 
+This runs the complete flow with the installed OpenPARF/RWRoute backend and writes
+`runs/top`. Add more RTL files as positional arguments. Select the other physical
+backend with `--backend vivado`, or choose a different output with `--out`.
 Stage progress is printed by the native controller. Each output directory contains
 `stage-metrics/`, `multi-fpga-flow-report.json`, and terminal
 `runtime/phase7c_report.json` and `runtime/qor_report.json` evidence.

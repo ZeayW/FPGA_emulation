@@ -163,6 +163,18 @@ def test_profile_scope_restores_license_and_tool_context_even_after_failure(
     assert os.environ["EMUFLOW_NATIVE_ROOT"] == "original-root"
 
 
+def test_registered_environment_path_prefers_explicit_then_xdg(tmp_path, monkeypatch):
+    monkeypatch.delenv(env.ENVIRONMENT_VARIABLE, raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    assert (
+        env.default_environment_path()
+        == (tmp_path / "xdg/emuflow/environment.json").resolve()
+    )
+    explicit = tmp_path / "managed/environment.json"
+    monkeypatch.setenv(env.ENVIRONMENT_VARIABLE, str(explicit))
+    assert env.default_environment_path() == explicit.resolve()
+
+
 @pytest.mark.parametrize("backend", ["rapidwright", "vivado"])
 def test_complete_run_configuration_uses_the_same_native_controller(
     design, backend, tmp_path
@@ -370,6 +382,64 @@ def generic_design(tmp_path):
     config = tmp_path / "design.json"
     write_json(config, value)
     return config, root, value
+
+
+@pytest.mark.parametrize("backend", ["rapidwright", "vivado"])
+def test_direct_cli_run_uses_registered_environment_and_native_controller(
+    generic_design, profile, tmp_path, monkeypatch, backend
+):
+    from emuflow.flow.cli import _build_parser, _dispatch
+
+    _, root, _ = generic_design
+    monkeypatch.setenv(env.ENVIRONMENT_VARIABLE, str(profile))
+    monkeypatch.chdir(tmp_path)
+    arguments = [
+        "run",
+        str(root / "rtl/top.sv"),
+        "--top",
+        "user_top",
+        "--clock",
+        "clk=12.5",
+        "--include-dir",
+        str(root / "include"),
+        "--define",
+        "WIDTH=1",
+        "--backend",
+        backend,
+    ]
+    with (
+        patch("emuflow.flow.cli._print_json") as printed,
+        patch(
+            "emuflow.flow.native_compile.run_native_multi_fpga_flow",
+            return_value={"status": "pass", "summary": {"status": "pass"}},
+        ) as native,
+    ):
+        assert _dispatch(_build_parser().parse_args(arguments)) == 0
+    assert printed.call_args.args[0] == {"status": "pass"}
+    options = native.call_args.kwargs
+    assert options["sources"] == [root / "rtl/top.sv"]
+    assert options["include_dirs"] == [root / "include"]
+    assert options["defines"] == ["WIDTH=1"]
+    assert options["top"] == "user_top"
+    assert options["clocks"] == ["clk"]
+    assert options["clock_periods"] == {"clk": 12.5}
+    assert options["timing_io"] == {"input_groups": [], "output_groups": []}
+    assert options["physical"] is True
+    assert options["physical_backend"] == backend
+    assert options["output_dir"] == (tmp_path / "runs/user_top").resolve()
+    assert str(root / "rtl/top.sv") in options["source_checksums"]
+    assert str(root / "include/config.vh") in options["source_checksums"]
+
+
+def test_direct_cli_run_does_not_treat_an_rtl_file_as_a_prepared_config(
+    generic_design,
+):
+    from emuflow.flow.cli import _build_parser, _dispatch
+
+    _, root, _ = generic_design
+    args = _build_parser().parse_args(["run", str(root / "rtl/top.sv")])
+    with pytest.raises(EmuFlowError, match="--top.*--clock"):
+        _dispatch(args)
 
 
 @pytest.mark.parametrize("backend", ["rapidwright", "vivado"])
