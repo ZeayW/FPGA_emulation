@@ -178,6 +178,10 @@ class ControlJson {
     q.BindText(1,data_);q.BindText(2,reference);q.BindText(3,path(root));
     Require(q.Step(),"cannot construct native Phase 7C compiler state");return q.TypedText(0);
   }
+  std::string AdvanceState(const std::string& stage) {
+    auto q=db_.Prepare("SELECT json_set(?1,'$.stage',?2)");q.BindText(1,data_);q.BindText(2,stage);
+    Require(q.Step(),"cannot advance native compiler state");return q.TypedText(0);
+  }
   void RequirePublishedPaths(const fs::path& temporary) {
     const auto root = fs::weakly_canonical(temporary);
     const auto check = [&](const fs::path& path) {
@@ -297,6 +301,30 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
         fs::remove(previous);previous.clear();
         std::cout<<"COMPILE_STAGE_COMPLETE finalize "<<step.metrics.wall_seconds<<"s\n"<<std::flush;
         continue;
+      }
+      if(std::string(stage)=="physical") {
+        ControlJson prior(previous.string());
+        const bool native_no_physical=prior.String("$.state[1].phase6_provider")=="baseline" &&
+            !prior.Boolean("$.state[1].physical");
+        if(native_no_physical) {
+          Require(prior.String("$.stage")=="split","invalid native nonphysical predecessor");
+          const auto next=scratch.root/"physical.json";auto bound=ArtifactRef::Bind(previous.string(),"native-compile-state-v1");
+          const auto step=RunStage("physical",[&]{return std::vector<ArtifactRef>{bound};},
+            [&](const auto& sources){for(const auto& source:sources)source.RequireUnchanged();},
+            []{return std::vector<ArtifactRef>{};});
+          result.steps.push_back({stage,step.ok(),"native-no-physical-stage-v1",step.metrics.wall_seconds,
+            step.metrics.user_cpu_seconds,step.metrics.system_cpu_seconds,step.metrics.process_peak_rss_kib});
+          if(!step.ok())throw StageError(step.error,"native compile physical boundary: "+step.message);
+          const auto state=prior.AdvanceState("physical");
+          PublishTextArtifact(next.string(),{bound},[&](std::ostream& stream){stream<<state<<'\n';});
+          auto state_ref=ArtifactRef::Bind(next.string(),"native-compile-state-v1");ControlJson state_control(state_ref.path());
+          Require(state_control.String("$.stage")=="physical" && state_control.String("$.run_id")==run_id &&
+              state_control.String("$.status")=="pass" && state_control.StateShape() && state_control.Generation(configuration.generation()),
+              "invalid native nonphysical compiler state");
+          fs::remove(previous);previous=next;
+          std::cout<<"COMPILE_STAGE_COMPLETE physical "<<step.metrics.wall_seconds<<"s\n"<<std::flush;
+          continue;
+        }
       }
       if(std::string(stage)=="signoff") {
         ControlJson prior(previous.string());
@@ -532,7 +560,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
 std::string CompileResultJson(const CompileResult& result) {
   std::ostringstream out; out << std::setprecision(17);
   out << "{\"schema\":\"emuflow.native-compile-result/v2\",\"implementation_id\":\"native-orchestration-v1\","
-      << "\"phase_implementation\":\"native-rtl-frontend-phase2-phase3-phase4-phase5-baseline-phase6-nonphysical-phase7c-finalize-and-isolated-python-adapters-v3\",\"native_data_plane_complete\":false,"
+      << "\"phase_implementation\":\"native-rtl-frontend-phase2-phase3-phase4-phase5-baseline-phase6-nonphysical-terminal-and-isolated-python-adapters-v4\",\"native_data_plane_complete\":false,"
       << "\"operation\":" << StageResultJson(result.operation) << ",\"output_directory\":" << JsonQuote(result.output_directory)
       << ",\"request_configuration\":" << (result.request_configuration.empty() ? "null" : result.request_configuration)
       << ",\"effective_configuration\":" << (result.effective_configuration.empty() ? "null" : result.effective_configuration)

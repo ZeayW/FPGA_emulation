@@ -132,7 +132,9 @@ nonphysical baseline Phase 7C owner is native: it builds the runtime contract
 from ScheduleStore, publishes bounded QoR and controller artifacts, and hands a
 generation-bound report to native finalization. Physical and Chimew Phase 7C
 remain transitional adapter paths. Final report assembly is native and no
-longer has a Python stage adapter.
+longer has a Python stage adapter. A baseline run that does not request physical
+implementation also advances the physical boundary in process; it no longer
+starts a no-op Python adapter.
 Configuration preparation and detailed stage ownership are distinct: bounded
 Python configuration is not a circuit data plane, and isolated execution alone
 does not complete migration. The compiler continues to report

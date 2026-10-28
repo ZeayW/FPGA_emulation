@@ -304,6 +304,8 @@ def execute(stage, request_path, previous_path, output_path, run_id):
         raise EmuFlowError('native compiler baseline Phase 6 is owned by the C++ stage')
     if stage=="signoff" and ctx.phase6_provider=="baseline" and not ctx.physical:
         raise EmuFlowError('native compiler nonphysical baseline signoff is owned by the C++ Phase 7C stage')
+    if stage=="physical" and ctx.phase6_provider=="baseline" and not ctx.physical:
+        raise EmuFlowError('native compiler nonphysical boundary is owned by the C++ controller')
     function(ctx)
     value = {"schema": "emuflow.native-compile-state/v1", "run_id": run_id,
              "stage": stage, "status": "pass", "request_generation": generation,

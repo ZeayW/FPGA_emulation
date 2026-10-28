@@ -492,7 +492,9 @@ implementation is an independent replay oracle and the still-active physical
 and Chimew path, not the baseline nonphysical producer. Terminal
 finalization is native: it projects bounded stage summaries, checks cross-stage
 identities, seals referenced typed stores and publishes the final flow report
-without a Python finalize process. The remaining
+without a Python finalize process. Nonphysical baseline execution also advances
+the physical boundary inside the controller instead of starting an empty Python
+stage. The remaining
 transitional Python adapters invoke one shared phase body and exit, releasing
 their working population before the next phase starts. The existing Python controller uses the same phase bodies and
 retains advanced modes. Current defaults resolve from the shared phase API

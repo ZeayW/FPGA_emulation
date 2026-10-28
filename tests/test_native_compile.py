@@ -253,18 +253,12 @@ if a.stage=='route-policy':
  policy.write_text(json.dumps(body));st=policy.stat()
  g=[str(x) for x in (st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000))]
  state.update(native_phase4_policy=['path',str(policy)],native_phase4_generation=['tuple',g],phase4_root=['path',str(out/'system-route')],projected_timing_paths=None)
-
-if a.stage=='physical' and v['options'].get('phase6_provider','baseline')=='baseline':
- assert state['phase5_report'][0]=='phase-report'
- (out/'native-tdm-reference.json').write_text(json.dumps(state['phase5_report']))
- assert state['phase6_report'][0]=='split-report'
- (out/'native-split-reference.json').write_text(json.dumps(state['phase6_report']))
-if a.stage=='physical':
  partition=json.loads((out/'partition/phase3_report.json').read_text());design=partition['design'];platform=partition['platform']
  frontend=out/'frontend/phase1';frontend.mkdir(parents=True,exist_ok=True)
  shutil.copy2(state['platform_path'][1],frontend/'platform.normalized.json')
  shutil.copy2(state['ir_path'][1],frontend/'design.emuir.sqlite')
  (frontend/'phase1_report.json').write_text(json.dumps({'schema':'emuflow.phase1-report/v1','phase':1,'status':'pass','design':design,'platform':platform,'synthesis':{'mode':'fixture'}}))
+
 if a.stage=='signoff' and v['options'].get('phase6_provider')=='chimew':
  partition=json.loads((out/'partition/phase3_report.json').read_text());design=partition['design'];platform=partition['platform']
  runtime=out/'runtime';runtime.mkdir(exist_ok=True)
@@ -295,7 +289,7 @@ def test_native_controller_executes_fixed_order_and_publishes_metrics(tmp_path):
     request = fixture_request(tmp_path)
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "out/calls").read_text().splitlines() == [stage for stage in STAGES if stage not in {"tdm", "partition", "route", "split", "signoff", "finalize"}]
+    assert (tmp_path / "out/calls").read_text().splitlines() == [stage for stage in STAGES if stage not in {"tdm", "partition", "route", "split", "physical", "signoff", "finalize"}]
     report = json.loads((tmp_path / "out/native-compile-result.json").read_text())
     assert report["operation"]["status"] == "pass"
     assert report["native_data_plane_complete"] is False
@@ -309,15 +303,16 @@ def test_native_controller_executes_fixed_order_and_publishes_metrics(tmp_path):
     assert native_step["implementation_id"] == "native-exact-phase5-v1"
     split_step=next(step for step in report['stages'] if step['stage']=='split')
     assert split_step['implementation_id']=='native-baseline-phase6-v1'
+    physical_step=next(step for step in report['stages'] if step['stage']=='physical')
+    assert physical_step['implementation_id']=='native-no-physical-stage-v1'
     signoff_step=next(step for step in report['stages'] if step['stage']=='signoff')
     assert signoff_step['implementation_id']=='native-nonphysical-phase7c-v1'
     finalize_step=next(step for step in report['stages'] if step['stage']=='finalize')
     assert finalize_step['implementation_id']=='native-flow-finalize-v1'
-    split=_unpack(json.loads((tmp_path/'out/native-split-reference.json').read_text()))
+    split=json.loads((tmp_path/'out/split/phase6_report.json').read_text())
     assert split['status']=='pass' and split['equivalence']['mismatches']==0
     assert split['equivalence']['cycles']>0
-    reference = json.loads((tmp_path / "out/native-tdm-reference.json").read_text())
-    summary = _unpack(reference)
+    summary = json.loads((tmp_path / "out/tdm/phase5_report.json").read_text())
     assert summary["provider"] == "deterministic-dependency-earliest-slot-v1"
     assert summary["validation"]["status"] == "pass"
     metrics = json.loads((tmp_path / "out/stage-metrics/phase5.json").read_text())
@@ -327,22 +322,6 @@ def test_native_controller_executes_fixed_order_and_publishes_metrics(tmp_path):
     assert [step["stage"] for step in report["stages"]] == list(STAGES)
     assert all(step["maximum_process_rss_kib"] > 0 for step in report["stages"])
     assert not list(tmp_path.glob(".emuflow-compile-*"))
-
-
-def test_native_phase_report_reference_rejects_changed_generation_and_unknown_schema(tmp_path):
-    request = fixture_request(tmp_path)
-    completed = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
-    assert completed.returncode == 0, completed.stderr
-    for filename,label in (("native-tdm-reference.json","phase"),("native-split-reference.json","split")):
-        reference = json.loads((tmp_path / "out" / filename).read_text())
-        for field, value in (("schema", "unknown"), ("report_schema", "unknown"), ("path", "relative"), ("generation", [True] * 7)):
-            forged = json.loads(json.dumps(reference)); forged[1][field] = value
-            with pytest.raises(EmuFlowError, match=label+" report reference"):
-                _unpack(forged)
-        report = Path(reference[1]["path"])
-        report.write_text(report.read_text() + "\n")
-        with pytest.raises(EmuFlowError, match=label+" report generation changed"):
-            _unpack(reference)
 
 
 def test_python_tdm_adapter_entry_is_retired_before_execution(tmp_path):
@@ -364,6 +343,17 @@ def test_python_nonphysical_baseline_signoff_adapter_entry_is_retired(tmp_path):
         'state':_pack({'phase6_provider':'baseline','physical':False})}))
     with pytest.raises(EmuFlowError,match=r'owned by the C\+\+ Phase 7C stage'):
         execute('signoff',request,prior,tmp_path/'unused','run')
+
+
+def test_python_nonphysical_baseline_physical_adapter_entry_is_retired(tmp_path):
+    from emuflow.common.native_tools import native_file_generation
+    request=tmp_path/'request.json';request.write_text('{}')
+    prior=tmp_path/'prior.json'
+    prior.write_text(json.dumps({'schema':'emuflow.native-compile-state/v1','run_id':'run',
+        'stage':'split','status':'pass','request_generation':[str(value) for value in native_file_generation(request)],
+        'state':_pack({'phase6_provider':'baseline','physical':False})}))
+    with pytest.raises(EmuFlowError,match=r'owned by the C\+\+ controller'):
+        execute('physical',request,prior,tmp_path/'unused','run')
 
 
 def test_baseline_split_never_executes_a_python_phase_adapter(tmp_path):
@@ -392,7 +382,7 @@ temporary=pathlib.Path(os.environ['TMPDIR'])""")
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     roots = (tmp_path / "out/temporary-paths").read_text().splitlines()
-    assert len(set(roots)) == len(STAGES)-6
+    assert len(set(roots)) == len(STAGES)-7
     assert all(not Path(root).exists() for root in roots)
 
 
