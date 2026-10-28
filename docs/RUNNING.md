@@ -1,11 +1,10 @@
 # Install and run EmuFlow
 
-This page explains the ordinary user workflow. You do not need to create an
-environment file or register the machine manually.
+Follow these steps to install EmuFlow and run an RTL design.
 
 ## What you need
 
-The installer is currently tested on Linux x86-64. Before starting, install:
+Supported installer platform: Linux x86-64. Before starting, install:
 
 - Git and Python 3.9 or newer, including Python `venv` support;
 - CMake 3.20 or newer, GNU Make and a C++17 compiler;
@@ -14,9 +13,9 @@ The installer is currently tested on Linux x86-64. Before starting, install:
 - Boost, SQLite, zlib, Eigen3, spdlog, LEMON, OR-Tools and OpenMP development
   packages.
 
-Package names differ between Linux distributions. The installer handles the
-Python packages and RapidWright download itself. Vivado is optional and is only
-needed when you choose the Vivado backend.
+Package names differ between Linux distributions. The installer prepares the
+Python packages and RapidWright. The Vivado backend requires an existing Vivado
+installation.
 
 ## Install once
 
@@ -118,8 +117,7 @@ After a run finishes, validate its published result:
 emuflow multi-fpga validate --flow runs/top --require-physical
 ```
 
-A successful command launch does not guarantee that placement, routing or timing
-will pass. The validation command checks the completed physical result.
+This command checks placement, routing, timing and the completed physical result.
 
 ## Advanced design configuration
 
@@ -132,5 +130,5 @@ emuflow design prepare design.json --out design.run.json
 emuflow run design.run.json --backend rapidwright --out runs/design
 ```
 
-The optional [NVDLA instructions](RUNNING_NVDLA.md) are only for the project's
-full-scale validation design. They are not required for normal user RTL.
+The [NVDLA instructions](RUNNING_NVDLA.md) cover the project's full-scale
+validation design.

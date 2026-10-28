@@ -40,8 +40,7 @@ references are in [the algorithm overview](docs/ALGORITHMS.md).
 
 ## Quick start
 
-The installer is currently tested on Linux x86-64. The complete flow has not yet
-been tested on macOS or native Windows; Windows users can use a Linux WSL
+Supported installer platform: Linux x86-64. On Windows, use a Linux WSL
 environment.
 
 Before running the installer, install these prerequisites:
@@ -52,9 +51,8 @@ Before running the installer, install these prerequisites:
 - Boost 1.78+, SQLite 3.22+, zlib, Eigen3, spdlog, LEMON, OR-Tools and OpenMP
   development packages.
 
-Python packages used by the flow, including NumPy, PyYAML and CPU PyTorch, are
-prepared automatically when they are missing. Vivado is optional and is only
-needed for the `vivado` backend.
+The installer prepares NumPy, PyYAML, CPU PyTorch and RapidWright. The Vivado
+backend requires an existing Vivado installation.
 
 Install once, then give EmuFlow the RTL, top module and clock period:
 
@@ -70,9 +68,8 @@ emuflow run rtl/top.sv --top top --clock clk=10 --backend rapidwright
 emuflow run rtl/top.sv --top top --clock clk=10 --backend vivado
 ```
 
-The installer builds and configures EmuFlow. You do not need to create an
-environment file or register the machine. The
-[step-by-step guide](docs/RUNNING.md) explains each command and argument.
+The installer builds and configures EmuFlow. The [step-by-step guide](docs/RUNNING.md)
+explains each command and argument.
 
 The run command executes the complete flow and writes `runs/top`. The physical
 route is selected per run: use `--backend rapidwright` for OpenPARF/RWRoute or
@@ -81,8 +78,7 @@ choose a different output with `--out`.
 Stage progress is printed by the native controller. Each output directory contains
 `stage-metrics/`, `multi-fpga-flow-report.json`, and terminal
 `runtime/phase7c_report.json` and `runtime/qor_report.json` evidence.
-Use a new output directory for each run. Both backends remain under NVDLA
-qualification; launching a run does not establish successful physical closure.
+Use a new output directory for each run.
 
 ## Developer build
 
