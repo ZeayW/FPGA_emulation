@@ -2116,6 +2116,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Phase 3 assignment required for sampled virtual-wire timing",
     )
     phase7c.add_argument("--physical-summary", type=Path)
+    phase7c.add_argument("--original-ir", type=Path, help="original indexed DUT IR for native physical timing member records")
+    phase7c.add_argument("--original-path-database", type=Path, help="complete original timing selector for native physical timing")
+    phase7c.add_argument("--original-endpoint-index", type=Path, help="reuse the existing complete original endpoint index")
     phase7c.add_argument(
         "--routes",
         type=Path,
@@ -3383,6 +3386,9 @@ def _dispatch(args: argparse.Namespace) -> int:
             phase6_report_path=args.phase6_report,
             assignment_path=args.assignment,
             physical_summary_path=args.physical_summary,
+            original_ir_path=args.original_ir,
+            original_path_database_path=args.original_path_database,
+            original_endpoint_index_path=args.original_endpoint_index,
             routes_path=args.routes,
             simulation_frames=args.simulation_frames,
             global_sta_executable=args.global_sta_executable,

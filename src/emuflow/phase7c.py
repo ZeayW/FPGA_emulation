@@ -87,6 +87,9 @@ def run_phase7c(
     global_sta_results_dir: Optional[Path] = None,
     global_timing_engine: str = "opensta",
     allow_legacy_phase5_generation: bool = False,
+    original_ir_path: Optional[Path] = None,
+    original_path_database_path: Optional[Path] = None,
+    original_endpoint_index_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     if global_timing_engine != "opensta":
         raise ValidationError("only the OpenSTA global timing engine is supported")
@@ -208,6 +211,17 @@ def run_phase7c(
                 cross_layer_contract = build_cross_layer_timing_contract(
                     routes, schedule, semantic_contract
                 )
+        if physical_summary is not None and physical_summary.get('native_word_observations') is not None:
+            if board_link_timing_path is not None:
+                raise ValidationError('native word timing uses schedule-owned link latency; additional BoardLinkTimingDB is unsupported')
+            if global_sta_executable is not None and global_sta_results_dir is not None:
+                raise ValidationError('choose live OpenSTA or explicit saved-result validation')
+            from .native_word_phase7c import run_native_word_phase7c
+            return run_native_word_phase7c(physical_summary,runtime,platform,
+                [read_json(phase3_report_path),read_json(phase4_report_path),phase5_report,phase6_report],
+                schedule_path,output_dir,global_sta_executable=global_sta_executable,
+                global_sta_results_dir=global_sta_results_dir,endpoint_index=original_endpoint_index_path,
+                source_ir=original_ir_path,path_database=original_path_database_path,assignment=assignment_path)
         if physical_summary is not None:
             assert cross_layer_contract is not None
             physical_binding = build_cross_layer_physical_binding(

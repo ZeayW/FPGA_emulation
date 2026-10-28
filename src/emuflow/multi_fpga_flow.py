@@ -410,6 +410,8 @@ def finalize_multi_fpga_physical_checkpoint(
         paths["split"],
         runtime_root,
         assignment_path=paths["assignment"],
+        original_ir_path=paths["emuir"],
+        original_path_database_path=root/"timing/path-database.json",
         physical_summary_path=physical_summary_path,
         routes_path=paths["routes"],
     )
@@ -1193,6 +1195,10 @@ def validate_multi_fpga_flow_bundle(
             Path(temporary),
             assignment_path=assignment_path,
             physical_summary_path=physical_summary_path,
+            original_ir_path=flow_root/"frontend/phase1/design.emuir.sqlite",
+            original_path_database_path=flow_root/"timing/path-database.json",
+            original_endpoint_index_path=(flow_root/"runtime/original-endpoints.sqlite")
+                if (flow_root/"runtime/original-endpoints.sqlite").is_file() else None,
             routes_path=routes_path if physical_summary_path is not None else None,
             board_link_timing_path=board_link_timing_path,
             global_sta_results_dir=flow_root / "runtime/global-opensta" if opensta_result else None,
@@ -1980,6 +1986,8 @@ def _compile_split(ctx: _CompileContext):
             physical_summary_path=(
                 baseline_root / "physical/physical-summary.json"
             ),
+            original_ir_path=ctx.ir_path,
+            original_path_database_path=ctx.path_database_path,
             routes_path=ctx.routes_path,
             board_link_timing_path=ctx.copied_link_timing_path,
             global_sta_executable=ctx.global_sta_executable,
@@ -2173,6 +2181,8 @@ def _compile_signoff(ctx: _CompileContext):
         ctx.runtime_root,
         assignment_path=ctx.assignment_path,
         global_sta_executable=ctx.global_sta_executable,
+        original_ir_path=ctx.ir_path,
+        original_path_database_path=ctx.path_database_path,
         global_timing_engine=ctx.global_timing_engine,
         physical_summary_path=ctx.physical_summary_path,
         routes_path=ctx.routes_path if ctx.physical_summary_path is not None else None,

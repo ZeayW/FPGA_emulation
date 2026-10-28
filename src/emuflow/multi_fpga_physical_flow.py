@@ -1881,6 +1881,8 @@ def _assemble_multi_fpga_physical_results(
                 'sources':r['stages']['vivado_implementation']['native_word_sources'],
                 'lineage':r['stages']['vivado_implementation']['result']['artifacts']['cell-lineage.sqlite'],
                 'input_identity':r['stages']['vivado_implementation']['input_identity'],
+                'implementation_timing':r['stages']['vivado_implementation']['implementation_timing'],
+                'clock_contract':r['stages']['vivado_implementation']['result']['artifacts']['clock-contract.tsv'],
             }for r in records if r.get('active')is not False}
             physical_summary['word_phy_implementation']['fixed_clock_control_timing_met']=all(
                 e['infrastructure_timing'].get('fixed_clock_contract_met')is True for e in evidence.values())

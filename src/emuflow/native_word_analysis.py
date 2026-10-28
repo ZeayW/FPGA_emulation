@@ -167,7 +167,7 @@ def _execute_native_word_analysis(index,observations,output,*,project,source_bin
 CHECK_HEADER='window\tpath_hex\trole\tevent_hex\tlaunch_quarter_ps\tverification_arc_ps\trequired_quarter_ps\texpectation'
 
 
-def verify_native_word_checks(events, directory, *, executable=None):
+def verify_native_word_checks(events, directory, *, executable=None, results_dir=None):
     """Run independent OpenSTA on the native worst-phase witness constraints.
 
     Unit probe arcs encode signed sampling costs in required times; they must
@@ -177,7 +177,7 @@ def verify_native_word_checks(events, directory, *, executable=None):
     qualification remain separate from this witness verification.
     """
     from array import array
-    from .global_sta import EventCheck,run_event_checks,read_engine_identity
+    from .global_sta import EventCheck,run_event_checks,read_engine_identity,read_measurements,validate_checks
     from .io import file_sha256,write_json
     import math
     events=Path(events).resolve();directory=Path(directory).resolve()
@@ -215,7 +215,14 @@ def verify_native_word_checks(events, directory, *, executable=None):
                 expected.append(int(accepted))
                 yield EventCheck(identity(fields[1]),fields[2],identity(fields[3]),launch/4000.,(arc/1000.,),required/4000.)
         require_store_sources_unchanged((parent,))
-    values=run_event_checks(checks(),directory,executable,require_observation_pairs=False)
+    if results_dir is None:
+        values=run_event_checks(checks(),directory,executable,require_observation_pairs=False)
+        engine_directory=directory
+    else:
+        if executable is not None:raise ValidationError('choose live OpenSTA or saved native witness results')
+        engine_directory=Path(results_dir).resolve()
+        rows=validate_checks(checks(),require_observation_pairs=False)
+        values=read_measurements(engine_directory/'measurements.tsv',rows)
     if not expected or len(values)!=len(expected)or not any(not x for x in expected):
         raise ValidationError('native verification lacks complete acceptance and rejection probes')
     tolerance=0.0001
@@ -226,7 +233,8 @@ def verify_native_word_checks(events, directory, *, executable=None):
     require_store_sources_unchanged((parent,))
     result=dict(schema='emuflow.native-word-witness-verification/v1',status='verified',checks=len(expected),
         expected_rejections=len(expected)-sum(expected),windows=len(windows),source=dict(path=str(events),sha256=digest,generation=parent.generation),
-        engine=read_engine_identity(directory/'opensta.log'),slack_tolerance_ns=tolerance,
+        engine=read_engine_identity(engine_directory/'opensta.log'),slack_tolerance_ns=tolerance,
+        execution='standalone'if results_dir is None else'saved-results',
         scope='Independent worst-phase witness constraints; exhaustive native phase sweep, original path dispositions, physical/control and hold acceptance are separate',
         original_path_sta_acceptance='pending',physical_acceptance='pending')
     write_json(directory/'native-word-witness-verification.json',result)

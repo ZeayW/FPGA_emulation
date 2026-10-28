@@ -100,3 +100,21 @@ def test_missing_mapped_copies_and_missing_partition_owners_remain_records(prepa
     with closing(sqlite3.connect(out))as db:
         assert db.execute("SELECT count(*) FROM source_dispositions WHERE status='mapped-copy-unavailable'").fetchone()==(1,)
         assert db.execute('SELECT count(*) FROM members').fetchone()==(6,)
+
+
+@pytest.mark.parametrize('reuse',[False,True])
+def test_native_phase7c_member_ledger_keeps_every_original_without_numerical_placeholders(observed,prepared,reuse):
+    from emuflow.native_word_phase7c import _original_members
+    index,pairs,_=observed
+    evidence={}
+    for name,(mapped,lineage)in pairs.items():
+        with closing(sqlite3.connect(lineage))as db,db:
+            db.execute("UPDATE metadata SET value='routed'WHERE key='retained_stage'")
+            db.execute("UPDATE objects SET stage='routed'")
+        evidence[name]={'input_identity':{'mapped_index':{'path':str(mapped)}},'lineage':{'path':str(lineage)}}
+    output=index.parent/'phase7c';output.mkdir()
+    options={'endpoint_index':index}if reuse else dict(source_ir=prepared[2],path_database=prepared[0],assignment=prepared[3])
+    result=_original_members(evidence,output,[],**options)
+    assert result['status']=='complete-source-lineage-observations'and result['members']==6
+    assert result['observed_copies']==2 and result['changed_type_objects']==1
+    assert not any('delay'in k or'slack'in k for k in result)
