@@ -133,7 +133,7 @@ def test_retired_python_order_and_native_stage_launchers_are_absent():
     from emuflow.flow import multi_fpga_flow as flow
     source = ast.parse(inspect.getsource(flow.run_multi_fpga_flow))
     assert not any(isinstance(node, ast.Name) and node.id.startswith("_compile_") for node in ast.walk(source))
-    for name in ("_compile_partition", "_compile_route", "_compile_schedule", "_compile_routing_schedule"):
+    for name in ("_compile_partition", "_compile_route", "_compile_schedule", "_compile_routing_schedule", "_compile_chimew_signoff"):
         assert not hasattr(flow, name)
     assert set(inspect.signature(flow._CompileContext).parameters) == {"values"}
 
@@ -232,7 +232,7 @@ if WAITING and a.stage=='frontend':
  (out/'pid').write_text(str(os.getpid()))
  time.sleep(60)
 st=request.stat();generation=[str(x) for x in (st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000))]
-if a.stage in ('tdm','partition','route') or (a.stage=='split' and v['options'].get('phase6_provider','baseline')=='baseline'):raise AssertionError('Python native-owned phase adapter started')
+if a.stage in ('tdm','partition','route','signoff') or (a.stage=='split' and v['options'].get('phase6_provider','baseline')=='baseline'):raise AssertionError('Python native-owned phase adapter started')
 state=STATE_FIELDS if not a.previous else json.loads(pathlib.Path(a.previous).read_text())['state'][1]
 if a.stage=='partition-policy':
  root=out/'.native-phase3-request';root.mkdir()
@@ -259,13 +259,6 @@ if a.stage=='route-policy':
  shutil.copy2(state['ir_path'][1],frontend/'design.emuir.sqlite')
  (frontend/'phase1_report.json').write_text(json.dumps({'schema':'emuflow.phase1-report/v1','phase':1,'status':'pass','design':design,'platform':platform,'synthesis':{'mode':'fixture'}}))
 
-if a.stage=='signoff' and v['options'].get('phase6_provider')=='chimew':
- partition=json.loads((out/'partition/phase3_report.json').read_text());design=partition['design'];platform=partition['platform']
- runtime=out/'runtime';runtime.mkdir(exist_ok=True)
- validation={'status':'pass','frame_slots':16,'nominal_virtual_frequency_mhz':100.0}
- (runtime/'phase7c_report.json').write_text(json.dumps({'schema':'emuflow.phase7c-report/v1','status':'pass','design':design,'platform':platform,'validation':validation}))
- (runtime/'runtime_contract.json').write_text(json.dumps({'schema':'fixture-runtime/v1','status':'pass'}))
- (runtime/'qor_report.json').write_text(json.dumps({'schema':'fixture-qor/v1','status':'pass'}))
 # FIXTURE_CONTROL_STATE_READY
 value={'schema':'emuflow.native-compile-state/v1','run_id':a.run_id,'stage':a.stage,'status':'pass','request_generation':generation,'state':['map',state],'effective_options':v['options']}
 if TEMPORARY_REFERENCE and a.stage=='frontend':
@@ -335,13 +328,14 @@ def test_python_finalize_adapter_entry_is_retired_before_execution(tmp_path):
 
 
 @pytest.mark.parametrize("physical", [False, True])
-def test_python_baseline_signoff_adapter_entry_is_retired(tmp_path, physical):
+@pytest.mark.parametrize("provider", ["baseline", "chimew"])
+def test_python_signoff_adapter_entry_is_retired(tmp_path, physical, provider):
     from emuflow.common.native_tools import native_file_generation
     request=tmp_path/'request.json';request.write_text('{}')
     prior=tmp_path/'prior.json'
     prior.write_text(json.dumps({'schema':'emuflow.native-compile-state/v1','run_id':'run',
         'stage':'physical','status':'pass','request_generation':[str(value) for value in native_file_generation(request)],
-        'state':_pack({'phase6_provider':'baseline','physical':physical})}))
+        'state':_pack({'phase6_provider':provider,'physical':physical})}))
     with pytest.raises(EmuFlowError,match=r'owned by the C\+\+ Phase 7C stage'):
         execute('signoff',request,prior,tmp_path/'unused','run')
 

@@ -272,6 +272,8 @@ def _restore_control_state(state):
 
 
 def execute(stage, request_path, previous_path, output_path, run_id):
+    if stage == "signoff":
+        raise EmuFlowError("native compiler signoff is owned by the C++ Phase 7C stage")
     if stage == "finalize":
         raise EmuFlowError("native compiler finalize is owned by the C++ controller")
     if stage == "route":
@@ -299,11 +301,9 @@ def execute(stage, request_path, previous_path, output_path, run_id):
         ctx = flow._CompileContext(
             _restore_control_state(_unpack(previous["state"]))
         )
-    function = getattr(flow, "_compile_" + {"tdm": "schedule", "signoff": "chimew_signoff"}.get(stage, stage.replace("-", "_")))
+    function = getattr(flow, "_compile_" + {"tdm": "schedule"}.get(stage, stage.replace("-", "_")))
     if stage=="split" and ctx.phase6_provider=="baseline":
         raise EmuFlowError('native compiler baseline Phase 6 is owned by the C++ stage')
-    if stage=="signoff" and ctx.phase6_provider=="baseline":
-        raise EmuFlowError('native compiler baseline signoff is owned by the C++ Phase 7C stage')
     if stage=="physical" and ctx.phase6_provider=="baseline" and not ctx.physical:
         raise EmuFlowError('native compiler nonphysical boundary is owned by the C++ controller')
     function(ctx)
@@ -320,7 +320,7 @@ def execute(stage, request_path, previous_path, output_path, run_id):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stage", choices=[stage for stage in STAGES if stage not in {"tdm", "partition", "route", "finalize"}], required=True)
+    parser.add_argument("--stage", choices=[stage for stage in STAGES if stage not in {"tdm", "partition", "route", "signoff", "finalize"}], required=True)
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--previous", type=Path)
     parser.add_argument("--output", type=Path, required=True)

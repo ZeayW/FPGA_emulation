@@ -1395,7 +1395,7 @@ as RTL through tool completion. Both physical backends and Chimew remain
 available; no numerical placement/scheduling policy is changed by this entry.
 Checks and source preparation explicitly exclude terminal qualification.
 
-### Native baseline physical signoff
+### Native physical signoff and Chimew comparison
 
 Physical Phase 7C for the baseline and both Chimew comparison arms executes
 in the shared core. Checked physical-resume finalization uses this same owner.
@@ -1416,11 +1416,16 @@ sources, corrupt selectors/stores, incomplete coverage and malformed engine
 output reject before terminal publication. Existing measurement and coverage
 readers can independently replay the new terminal artifacts.
 
-The generic Python compiler signoff adapter is retired. The remaining signoff
-adapter is explicitly restricted to Chimew comparison assembly and launches the
-same native transaction for its terminal arm. A bounded host selects the split,
-physical and runtime directories for each arm; native publication rejects paths
-outside the claimed flow and retains an existing terminal generation.
+The Python compiler signoff adapter and comparison assembly are retired for
+both baseline and Chimew. A bounded host selects the split, physical and runtime
+directories for prepass/resume arms; native publication rejects paths outside the
+claimed flow and retains an existing terminal generation. The native controller
+finishes the selected arm and comparison directly. Comparison publication reads
+the canonical split, physical and runtime reports for both arms, verifies the
+frozen baseline and common design/device/execution identities, validates physical
+closure and cell/endpoint accounting, and reconstructs all physical and system
+timing deltas. It publishes only after every bound source remains unchanged.
+The transient comparison input is retired after successful compiler signoff.
 Full physical implementation control, configuration/prepared-input adapters and
 Chimew orchestration remain W7 work. NVDLA terminal acceptance is
 required before claiming complete migration.

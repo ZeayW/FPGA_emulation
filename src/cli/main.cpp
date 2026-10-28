@@ -11,6 +11,9 @@
 #include "common/tool_runtime.hpp"
 #include "flow/compile.hpp"
 #include "flow/signoff.hpp"
+#include "flow/comparison.hpp"
+#include "physical/report.hpp"
+#include "common/bounded_json.hpp"
 #include "frontend/yosys_hierarchy.hpp"
 #include "frontend/frontend.hpp"
 #include "timing/phase2.hpp"
@@ -51,6 +54,8 @@ constexpr const char* kUsage =
     "  physical validate-handoff-structure HANDOFF REQUEST SUMMARY\n"
     "  physical audit-handoff MAPPED HANDOFF ARCHITECTURE [NATIVE PROVIDER] [CONSTRAINTS] REQUEST SUMMARY\n"
     "  phase3 run REQUEST OUTPUT_DIR\n"
+    "  phase6 finalize-comparison INPUT FLOW_ROOT\n"
+    "  physical validate-flow-report INPUT SUMMARY\n"
     "  phase6 split EMUIR ASSIGNMENT SCHEDULE OUTPUT\n"
     "  phase6 run EMUIR ASSIGNMENT SCHEDULE REQUEST OUTPUT_DIR\n"
     "  phase6 compile EMUIR ASSIGNMENT SCHEDULE_SELECTOR BOARD POLICY OUTPUT_DIR\n"
@@ -192,6 +197,17 @@ int RunTool(const std::string& input, const std::string& output) {
 }
 
 int Dispatch(int argc, char** argv, const std::string& report) {
+  if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="finalize-comparison") {
+    return Finish(emuflow::core::RunStage("phase6.finalize-comparison",[&]{return std::vector<emuflow::core::ArtifactRef>{emuflow::core::ArtifactRef::Bind(argv[3],"phase6-comparison-input-v1")};},
+      [&](const auto& refs){emuflow::core::FinalizePhase6Comparison(refs[0],std::filesystem::absolute(argv[4]));},
+      [&]{return std::vector<emuflow::core::ArtifactRef>{emuflow::core::ArtifactRef::Bind((std::filesystem::absolute(argv[4])/"phase6-comparison/comparison-report.json").string(),"exact-sha256-text-v1")};}),report);
+  }
+  if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="validate-flow-report") {
+    return Finish(emuflow::core::RunStage("physical.validate-flow-report",[&]{return std::vector<emuflow::core::ArtifactRef>{emuflow::core::ArtifactRef::Bind(argv[3],"exact-sha256-text-v1")};},
+      [&](const auto& refs){const auto facts=emuflow::core::ValidatePhysicalFlowReport(emuflow::core::BoundedJson::Read(refs[0]));emuflow::core::PublishTextArtifact(argv[4],refs,[&](std::ostream& out){out<<emuflow::core::BoundedJson::Encode({{"summary",facts.summary},{"metrics",facts.metrics}})<<'\n';});},
+      [&]{return std::vector<emuflow::core::ArtifactRef>{emuflow::core::ArtifactRef::Bind(argv[4],"exact-sha256-text-v1")};}),report);
+  }
+
   if((argc==5 || argc==6 || argc==9) && std::string(argv[1])=="phase7c" && std::string(argv[2])=="run") {
     ToolSignals signals;
     return Finish(emuflow::core::RunStage("phase7c.run",[] {return std::vector<emuflow::core::ArtifactRef>{};},

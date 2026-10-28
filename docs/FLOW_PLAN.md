@@ -132,8 +132,10 @@ nonphysical baseline Phase 7C owner is native: it builds the runtime contract
 from ScheduleStore, publishes bounded QoR and controller artifacts, and hands a
 generation-bound report to native finalization. Baseline physical Phase 7C also
 executes coverage auditing, Global OpenSTA and typed QoR publication in the core.
-Both Chimew comparison arms use this same native signoff transaction; bounded
-comparison assembly remains a transitional adapter responsibility. Final report assembly is native and no
+Both Chimew comparison arms use this same native signoff transaction. The core
+reconstructs the comparison from both published arms, validates physical evidence
+and frozen-input identities, and publishes physical/system timing deltas. The
+Python signoff stage and comparison assembly are retired. Final report assembly is native and no
 longer has a Python stage adapter. A baseline run that does not request physical
 implementation also advances the physical boundary in process; it no longer
 starts a no-op Python adapter.
@@ -154,15 +156,15 @@ not language line counts or the presence of typed storage:
 | Mapped physical inputs | Indexed Bookshelf pin/net writers and placement lowering | Mapped-index SQL projection, atomic/macro fact generation, geometry and window policy |
 | Placement and routing handoff | Typed certificate/handoff ownership checks and RWRoute exporter | Site/BEL/primitive checks, handoff record production and independent route connectivity/PIP validation |
 | Physical timing | Complete local-path and logic-segment query generation, shared physical object resolution, Vivado boundary/descendant association, indexed evidence import and OpenSTA staging | Bounded backend configuration and tool supervision |
-| Global timing | Nonphysical baseline runtime generation/signoff, full-assignment physical coverage, event binding, measurement import, original-path reduction and final flow-report sealing | Chimew comparison signoff |
+| Global timing | Runtime generation/signoff, full-assignment physical coverage, event binding, measurement import, original-path reduction, Chimew comparison and final flow-report sealing | Bounded tool configuration |
 
 Indexed atoms and ordinal safe names already avoid complete in-memory lists or
 name dictionaries. Local-path evidence already has a typed owner. These are not
 outstanding format migrations. Both physical timing query producers now publish
 through shared native stage owners; their replaced Python production loops are
-retired. Baseline physical signoff control is native; the maintained physical implementation
-controller and Chimew comparison still require closure and retirement of their
-old production adapters. Chimew remains a maintained optional path with its own
+retired. Physical signoff control and comparison publication are native; the
+maintained physical implementation controller and Chimew split/lookahead
+orchestration still require closure and retirement of their production adapters. Chimew remains a maintained optional path with its own
 ownership and qualification requirement.
 
 ## Native route publication

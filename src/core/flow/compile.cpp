@@ -1,6 +1,7 @@
 #include "flow/compile.hpp"
 #include "flow/finalize.hpp"
 #include "flow/signoff.hpp"
+#include "flow/comparison.hpp"
 #include "common/artifact_io.hpp"
 #include "common/json_record.hpp"
 #include "storage/sqlite.hpp"
@@ -161,6 +162,12 @@ class ControlJson {
       if(!row.Step() || row.Text(0)!="integer" || row.TypedInteger(1)!=item.second)return false;
     }return true;
   }
+  ArtifactRef ComparisonInput() {
+    auto result=ArtifactRef::Bind(StatePath("native_phase6_comparison_input"),"phase6-comparison-input-v1");
+    const auto& g=result.generation();const std::string fields[]={std::to_string(g.device),std::to_string(g.inode),std::to_string(g.bytes),std::to_string(g.modified_seconds),std::to_string(g.modified_nanoseconds),std::to_string(g.changed_seconds),std::to_string(g.changed_nanoseconds)};
+    Require(String("$.state[1].native_phase6_comparison_generation[0]")=="tuple","native comparison input binding is invalid");
+    for(unsigned i=0;i<7;++i)Require(String("$.state[1].native_phase6_comparison_generation[1]["+std::to_string(i)+"]")==fields[i],"native comparison input generation changed");return result;
+  }
   std::string Phase5State(const std::string& reference) {
     auto row=db_.Prepare("SELECT json_set(?1,'$.stage','tdm','$.state[1].phase5_report',json(?2))");row.BindText(1,data_);row.BindText(2,reference);Require(row.Step(),"cannot construct native Phase 5 compiler state");return row.TypedText(0);
   }
@@ -174,7 +181,7 @@ class ControlJson {
   }
   std::string SignoffState(const std::string& reference,const fs::path& root) {
     const auto path=[](const fs::path& value){return "[\"path\","+JsonQuote(value.string())+"]";};
-    auto q=db_.Prepare("SELECT json_set(?1,'$.stage','signoff','$.state[1].runtime_report',json(?2),'$.state[1].runtime_root',json(?3))");
+    auto q=db_.Prepare("SELECT json_remove(json_set(?1,'$.stage','signoff','$.state[1].runtime_report',json(?2),'$.state[1].runtime_root',json(?3)),'$.state[1].native_phase6_comparison_input','$.state[1].native_phase6_comparison_generation','$.state[1].phase6_comparison','$.state[1].baseline_physical_report','$.state[1].baseline_runtime_report')");
     q.BindText(1,data_);q.BindText(2,reference);q.BindText(3,path(root));
     Require(q.Step(),"cannot construct native Phase 7C compiler state");return q.TypedText(0);
   }
@@ -329,11 +336,15 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
       if(std::string(stage)=="signoff") {
         ControlJson prior(previous.string());
         const bool physical_signoff=prior.Boolean("$.state[1].physical");
-        const bool native_signoff=prior.String("$.state[1].phase6_provider")=="baseline";
-        if(native_signoff) {
+        const auto provider=prior.String("$.state[1].phase6_provider");
+        Require(provider=="baseline"||provider=="chimew","unsupported native signoff provider");
+        const bool comparison=provider=="chimew";
+        {
           Require(prior.String("$.stage")=="physical","invalid native Phase 7C predecessor");
           const auto next=scratch.root/"signoff.json";auto bound=ArtifactRef::Bind(previous.string(),"native-compile-state-v1");
-          const auto step=RunStage("signoff",[&]{return std::vector<ArtifactRef>{bound};},
+          std::optional<ArtifactRef> comparison_input;
+          if(comparison){Require(physical_signoff,"Chimew signoff requires physical results");comparison_input=prior.ComparisonInput();Require(fs::path(comparison_input->path())==output/"phase6-comparison/comparison-input.json","comparison input escapes compiler ownership");}
+          const auto step=RunStage("signoff",[&]{auto refs=std::vector<ArtifactRef>{bound};if(comparison_input)refs.push_back(*comparison_input);return refs;},
             [&](const auto& sources){
               if(physical_signoff){
                 SignoffPhysical(output,prior.String("$.state[1].global_sta_executable"),cancelled,
@@ -341,6 +352,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
                 Require(ControlJson((output/"runtime/phase7c_report.json").string()).String("$.status")=="pass",
                     "full physical flow did not close unified Phase 7C system timing");
               }else SignoffNonphysical(output);
+              if(comparison_input)FinalizePhase6Comparison(*comparison_input,output);
               for(const auto& source:sources)source.RequireUnchanged();
             },
             [&]{return std::vector<ArtifactRef>{ArtifactRef::Bind(
@@ -363,6 +375,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
             {"wall_seconds",step.metrics.wall_seconds},{"peak_process_tree_rss_kib",step.metrics.process_peak_rss_kib},
             {"rss_measurement","in-process-native-owner-high-water"}}).Encode();
           PublishTextArtifact(metrics.string(),bindings,[&](std::ostream& stream){stream<<text<<'\n';});
+          if(comparison_input)fs::remove(comparison_input->path());
           fs::remove(previous);previous=next;
           std::cout<<"COMPILE_STAGE_COMPLETE signoff "<<step.metrics.wall_seconds<<"s\n"<<std::flush;
           continue;
@@ -573,7 +586,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
 std::string CompileResultJson(const CompileResult& result) {
   std::ostringstream out; out << std::setprecision(17);
   out << "{\"schema\":\"emuflow.native-compile-result/v2\",\"implementation_id\":\"native-orchestration-v1\","
-      << "\"phase_implementation\":\"native-rtl-frontend-phase2-phase3-phase4-phase5-baseline-phase6-terminal-and-isolated-python-adapters-v5\",\"native_data_plane_complete\":false,"
+      << "\"phase_implementation\":\"native-rtl-frontend-phase2-phase3-phase4-phase5-baseline-phase6-native-signoff-and-isolated-python-adapters-v6\",\"native_data_plane_complete\":false,"
       << "\"operation\":" << StageResultJson(result.operation) << ",\"output_directory\":" << JsonQuote(result.output_directory)
       << ",\"request_configuration\":" << (result.request_configuration.empty() ? "null" : result.request_configuration)
       << ",\"effective_configuration\":" << (result.effective_configuration.empty() ? "null" : result.effective_configuration)

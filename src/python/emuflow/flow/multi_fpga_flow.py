@@ -1800,87 +1800,17 @@ def _compile_physical(ctx: _CompileContext):
         ctx.physical_report = _run_selected_physical(ctx, ctx.phase6_root, ctx.schedule_path, ctx.output_dir / "physical")
         physical_seconds = time.monotonic() - physical_started
         ctx.physical_summary_path = ctx.output_dir / "physical/physical-summary.json"
-        if ctx.phase6_comparison is not None and ctx.baseline_physical_report is not None:
-            baseline_metrics = _phase6_physical_metrics(
-                ctx.baseline_physical_report
+        if ctx.phase6_comparison is not None:
+            from emuflow.common.native_tools import native_file_generation
+            ctx.native_phase6_comparison_input = ctx.output_dir / "phase6-comparison/comparison-input.json"
+            write_json(ctx.native_phase6_comparison_input, {
+                **ctx.phase6_comparison,
+                "pin_plan_metrics": ctx.chimew_pin_metrics,
+                "chimew_physical_runtime_seconds": physical_seconds,
+            })
+            ctx.native_phase6_comparison_generation = tuple(
+                str(value) for value in native_file_generation(ctx.native_phase6_comparison_input)
             )
-            chimew_metrics = _phase6_physical_metrics(ctx.physical_report)
-            pin_metrics = ctx.chimew_pin_metrics
-            ctx.phase6_comparison.update(
-                {
-                    "status": "pass",
-                    "chimew": {
-                        "phase6": ctx.phase6_report,
-                        "physical": ctx.physical_report,
-                        "phase6_runtime_seconds": ctx.phase6_comparison[
-                            "chimew_phase6_runtime_seconds"
-                        ],
-                        "physical_runtime_seconds": physical_seconds,
-                    },
-                    "baseline_physical": baseline_metrics,
-                    "chimew_physical": chimew_metrics,
-                    "physical_delta": {
-                        "worst_critical_path_ns": (
-                            chimew_metrics["worst_critical_path_ns"]
-                            - baseline_metrics["worst_critical_path_ns"]
-                        ),
-                        "worst_wns_ns": (
-                            chimew_metrics["worst_wns_ns"]
-                            - baseline_metrics["worst_wns_ns"]
-                        ),
-                        "total_tns_ns": (
-                            chimew_metrics["total_tns_ns"]
-                            - baseline_metrics["total_tns_ns"]
-                        ),
-                        "failing_endpoints": (
-                            chimew_metrics["failing_endpoints"]
-                            - baseline_metrics["failing_endpoints"]
-                        ),
-                        "failing_endpoint_constraints": (
-                            chimew_metrics["failing_endpoint_constraints"]
-                            - baseline_metrics[
-                                "failing_endpoint_constraints"
-                            ]
-                        ),
-                    },
-                    "pin_plan_metrics": pin_metrics,
-                    "chimew_physical_runtime_seconds": physical_seconds,
-                }
-            )
-
-def _compile_chimew_signoff(ctx: _CompileContext):
-    if ctx.phase6_provider != "chimew":
-        raise EmuFlowError("baseline Phase 7C is owned by the native compiler")
-    ctx.runtime_root = ctx.output_dir / "runtime"
-    ctx.runtime_report = ctx.measured("phase7c", run_native_physical_signoff,
-        ctx.output_dir, ctx.phase6_root, ctx.physical_summary_path.parent, ctx.runtime_root,
-        executable=ctx.global_sta_executable, launcher_reference=ctx.global_sta_launcher_reference,
-    )
-    if ctx.physical and ctx.runtime_report.get("status") != "pass":
-        raise ValidationError(
-            "full physical flow did not close unified Phase 7C system timing"
-        )
-    if ctx.phase6_comparison is not None:
-        if ctx.baseline_runtime_report is None:
-            raise ValidationError("Phase 6 A/B baseline runtime is missing")
-        ctx.phase6_comparison["chimew"]["runtime"] = ctx.runtime_report
-        baseline_system = _phase6_system_timing_metrics(
-            ctx.baseline_runtime_report
-        )
-        chimew_system = _phase6_system_timing_metrics(ctx.runtime_report)
-        ctx.phase6_comparison["baseline_system_timing"] = baseline_system
-        ctx.phase6_comparison["chimew_system_timing"] = chimew_system
-        ctx.phase6_comparison["system_timing_delta"] = {
-            key: chimew_system[key] - baseline_system[key]
-            for key in baseline_system
-        }
-        ctx.phase6_comparison["validation"] = validate_phase6_ab_comparison(
-            ctx.phase6_comparison
-        )
-        write_json(
-            ctx.output_dir / "phase6-comparison/comparison-report.json",
-            ctx.phase6_comparison,
-        )
 
 def run_multi_fpga_flow(
     platform_path: Path = DEFAULT_PLATFORM_PATH,
