@@ -1,10 +1,60 @@
-# Keep native TDM bank logic and RX shadow state in their I/O bank SLR.
+# Keep native bank logic, TX selection cones and RX shadow state in their
+# I/O bank SLR. Shared control remains available for native replication.
 # Only placement regions and native control-net replication preferences are
 # added. No clock exception, endpoint preservation, or pipeline is introduced.
 proc emuflow_bank_movable {cell} {
   set ref [get_property REF_NAME $cell]
   return [expr {[regexp {^(FD[A-Z]+|LD[A-Z]+|LUT[1-6](_2)?|CARRY[48]|MUXF[789])$} $ref] &&
       ![get_property IS_LOC_FIXED $cell]}]
+}
+
+proc emuflow_bank_transport_cone {pins prefix instance} {
+  # Walk through the bank's own combinational input gating to the generated
+  # transport muxes. Stop at every state element and at DUT logic.
+  set frontier $pins
+  set visited [dict create]
+  set members [dict create]
+  set examined [dict create]
+  while {[llength $frontier]} {
+    set pending [list]
+    foreach net [get_nets -quiet -segments -of_objects $frontier] {
+      set name [get_property NAME $net]
+      if {[dict exists $visited $name]} {continue}
+      dict set visited $name 1
+      lappend pending $net
+    }
+    if {![llength $pending]} {break}
+    set drivers [get_pins -quiet -leaf -of_objects $pending -filter {DIRECTION == OUT}]
+    if {![llength $drivers]} {break}
+    set next [list]
+    foreach cell [get_cells -quiet -of_objects $drivers] {
+      set name [get_property NAME $cell]
+      set transport [string match ${prefix}/__emuflow_transport__/* $name]
+      if {(!$transport && ![string match ${instance}/* $name]) ||
+          ![regexp {^(LUT[1-6](_2)?|CARRY[48]|MUXF[789])$} [get_property REF_NAME $cell]] ||
+          [dict exists $examined $name]} {continue}
+      dict set examined $name 1
+      if {$transport} {dict set members $name $cell}
+      lappend next $cell
+    }
+    if {![llength $next]} {break}
+    set frontier [get_pins -quiet -of_objects $next -filter {DIRECTION == IN}]
+  }
+  return [dict values $members]
+}
+
+proc emuflow_bank_add_member {groups_name assigned_name ambiguous_name slr cell} {
+  upvar 1 $groups_name groups $assigned_name assigned $ambiguous_name ambiguous
+  set name [get_property NAME $cell]
+  if {[dict exists $ambiguous $name]} {return 0}
+  if {[dict exists $assigned $name] && [dict get $assigned $name] ne $slr} {
+    dict unset groups [dict get $assigned $name] $name
+    dict set ambiguous $name 1
+    return 0
+  }
+  dict set assigned $name $slr
+  dict set groups $slr $name $cell
+  return 1
 }
 
 proc emuflow_native_bank_placement {placement sources output prefix} {
@@ -14,8 +64,11 @@ proc emuflow_native_bank_placement {placement sources output prefix} {
   set targets [dict create]
   set assigned [dict create]
   set ambiguous [dict create]
+  set tx_candidates [dict create]
   set stream [open [file join $output bank-affinity.tsv] w]
   puts $stream "bank\tdirection\tslr\tnative_movable_cells"
+  set tx_stream [open [file join $output bank-tx-cones.tsv] w]
+  puts $tx_stream "bank\tslr\ttransport_combinational_cells"
   set input [open [file join ${placement} banks.tsv] r]
   gets $input header
   while {[gets $input row]>=0} {
@@ -39,9 +92,28 @@ proc emuflow_native_bank_placement {placement sources output prefix} {
       incr count
     }
     puts $stream "$bank\t$direction\t$slr\t$count"
+    if {$direction eq "tx"} {
+      set data_pins [list]
+      foreach cell $cells {
+        if {[get_property REF_NAME $cell] ne "TX_BITSLICE"} {continue}
+        foreach pin [get_pins -quiet -of_objects $cell -filter {DIRECTION == IN}] {
+          if {[regexp {^D\[[0-7]\]$} [get_property REF_PIN_NAME $pin]]} {lappend data_pins $pin}
+        }
+      }
+      set cone [emuflow_bank_transport_cone $data_pins $prefix $instance]
+      foreach cell $cone {
+        if {![emuflow_bank_movable $cell]} {continue}
+        set name [get_property NAME $cell]
+        dict set tx_candidates $name $cell
+        dict set targets $name $cell
+        emuflow_bank_add_member groups assigned ambiguous $slr $cell
+      }
+      puts $tx_stream "$bank\t$slr\t[llength $cone]"
+    }
   }
   close $input
   close $stream
+  close $tx_stream
   # Bind RX shadow state through the canonical source catalog and the actual
   # native word-clock projections, rather than architectural DUT endpoints.
   set input [open [file join ${placement} rx-bank-roles.tsv] r]
@@ -57,15 +129,7 @@ proc emuflow_native_bank_placement {placement sources output prefix} {
       if {![emuflow_bank_movable $cell]} {continue}
       set name [get_property NAME $cell]
       dict set targets $name $cell
-      if {[dict exists $ambiguous $name]} {continue}
-      if {[dict exists $assigned $name] && [dict get $assigned $name] ne $slr} {
-        dict unset groups [dict get $assigned $name] $name
-        dict set ambiguous $name 1
-        continue
-      }
-      dict set assigned $name $slr
-      dict set groups $slr $name $cell
-      incr shadow_count
+      incr shadow_count [emuflow_bank_add_member groups assigned ambiguous $slr $cell]
     }
   }
   close $input
@@ -89,6 +153,16 @@ proc emuflow_native_bank_placement {placement sources output prefix} {
     if {[llength $outputs]} {set control_nets [get_nets -quiet -of_objects $outputs]}
   }
   if {[llength $control_nets]} {set_property MAX_FANOUT_MODE CLOCK_REGION $control_nets}
+  set shared_tx [list]
+  dict for {name cell} $tx_candidates {
+    if {[dict exists $ambiguous $name]} {lappend shared_tx $cell}
+  }
+  set shared_tx_nets [list]
+  if {[llength $shared_tx]} {
+    set outputs [get_pins -quiet -of_objects $shared_tx -filter {DIRECTION == OUT}]
+    if {[llength $outputs]} {set shared_tx_nets [get_nets -quiet -segments -of_objects $outputs]}
+  }
+  if {[llength $shared_tx_nets]} {set_property MAX_FANOUT_MODE CLOCK_REGION $shared_tx_nets}
   dict for {slr members} $groups {
     if {![dict size $members]} {continue}
     set block [create_pblock emuflow_bank_affinity_$slr]
@@ -103,6 +177,9 @@ proc emuflow_native_bank_placement {placement sources output prefix} {
   puts $stream "missing_rx_roles\t$missing"
   puts $stream "ambiguous_native_cells\t[dict size $ambiguous]"
   puts $stream "control_nets\t[llength $control_nets]"
+  puts $stream "tx_combinational_candidates\t[dict size $tx_candidates]"
+  puts $stream "shared_tx_combinational_cells\t[llength $shared_tx]"
+  puts $stream "shared_tx_combinational_nets\t[llength $shared_tx_nets]"
   close $stream
-  return [dict create target_cells [dict size $targets] shadow_projections $shadow_count missing_rx_roles $missing ambiguous_native_cells [dict size $ambiguous] control_nets [llength $control_nets]]
+  return [dict create target_cells [dict size $targets] shadow_projections $shadow_count missing_rx_roles $missing ambiguous_native_cells [dict size $ambiguous] control_nets [llength $control_nets] tx_combinational_candidates [dict size $tx_candidates] shared_tx_combinational_cells [llength $shared_tx] shared_tx_combinational_nets [llength $shared_tx_nets]]
 }

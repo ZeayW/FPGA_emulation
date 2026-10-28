@@ -565,6 +565,8 @@ def run_indexed_vivado_partition(
         placement_files={'native-bank-placement/request.json':request,
                          **{'native-bank-placement/'+name:Path(reference['path'])for name,reference in observed['files'].items()},
                          **{name:placement_root/name for name in ('bank-affinity.tsv','bank-placement-metrics.tsv')}}
+        if (placement_root/'bank-tx-cones.tsv').is_file():
+            placement_files['bank-tx-cones.tsv']=placement_root/'bank-tx-cones.tsv'
         for name,path in placement_files.items():
             retained_parents.append(bind_store_source(path,'physical-input-document-v1'))
             artifacts[name]={'path':str(path),'sha256':file_sha256(path),'bytes':path.stat().st_size}

@@ -137,3 +137,100 @@ puts complete
     completed = subprocess.run([TCL86], input=script, text=True, capture_output=True)
     assert completed.returncode == 0 and not completed.stderr, completed.stderr
     assert completed.stdout.strip() == 'complete'
+
+
+@pytest.mark.skipif(TCL86 is None, reason='Tcl 8.6 required')
+def test_tx_muxes_follow_their_phy_but_shared_decode_and_data_sources_stay_free(tmp_path):
+    placement=tmp_path/'request';placement.mkdir()
+    (placement/'banks.tsv').write_text('bank\tdirection\tinstance\n19\ttx\tnative_bank19_tx\n29\ttx\tnative_bank29_tx\n')
+    (placement/'rx-bank-roles.tsv').write_text('source_origin\tbank\n')
+    output=tmp_path/'output';output.mkdir()
+    script='source '+_tcl_word(ROOT/'scripts/vivado/native_bank_placement.tcl')+'\n'
+    script+=r'''
+set prefix mapped_partition/__emuflow_transport__
+set mux0 $prefix/mux0
+set mux1 $prefix/mux1
+set decode $prefix/decode
+set phase $prefix/phase
+set shadow $prefix/shadow
+set dut mapped_partition/dut/logic
+set refs [dict create native_bank19_tx/phy TX_BITSLICE native_bank29_tx/phy TX_BITSLICE native_bank19_tx/gate LUT2 native_bank29_tx/gate LUT2 $mux0 LUT6 $mux1 LUT5 $decode LUT2 $phase FDRE $shadow FDRE $dut LUT6]
+set pin_nets [dict create {native_bank19_tx/phy/D[0]} n0 {native_bank29_tx/phy/D[0]} n1 native_bank19_tx/gate/I0 m0 native_bank29_tx/gate/I0 m1 $mux0/I0 nd $mux0/I1 nu $mux0/I2 nr $mux1/I0 nd $decode/I0 np $decode/O nd $phase/Q np]
+set drivers [dict create n0 native_bank19_tx/gate/O n1 native_bank29_tx/gate/O m0 $mux0/O m1 $mux1/O nd $decode/O nu $dut/O nr $shadow/Q np $phase/Q]
+proc get_property {args} {
+  set property [lindex $args end-1];set object [lindex $args end]
+  switch -- $property {
+    NAME {return $object}
+    REF_NAME {return [dict get $::refs $object]}
+    REF_PIN_NAME {return [file tail $object]}
+    IS_LOC_FIXED {return 0}
+    EMUFLOW_SOURCE {return s900}
+    default {error "unexpected property: $property"}
+  }
+}
+proc get_iobanks {args} {return [lindex $args end]}
+proc get_slrs {args} {return [expr {[lindex $args end] eq "19" ? "SLR0" : "SLR1"}]}
+proc get_cells {args} {
+  set of [lsearch -exact $args -of_objects]
+  if {$of>=0} {return [lsort -unique [lmap pin [lindex $args [expr {$of+1}]] {file dirname $pin}]]}
+  set expression [lindex $args end]
+  if {[string first native_bank19_tx $expression]>=0} {return {native_bank19_tx/phy native_bank19_tx/gate}}
+  if {[string first native_bank29_tx $expression]>=0} {return {native_bank29_tx/phy native_bank29_tx/gate}}
+  if {[string first __emuflow_transport__ $expression]>=0} {return [list $::mux0 $::mux1 $::decode $::phase $::shadow]}
+  error "unexpected cell population"
+}
+proc get_nets {args} {
+  set of [lsearch -exact $args -of_objects];set result [list]
+  foreach pin [lindex $args [expr {$of+1}]] {lappend result [dict get $::pin_nets $pin]}
+  return [lsort -unique $result]
+}
+proc get_pins {args} {
+  set of [lsearch -exact $args -of_objects];set objects [lindex $args [expr {$of+1}]]
+  set expression [lindex $args end];set result [list]
+  if {[lsearch -exact $args -leaf]>=0} {
+    foreach net $objects {lappend result [dict get $::drivers $net]}
+    return [lsort -unique $result]
+  }
+  foreach cell $objects {
+    if {$expression eq "DIRECTION == OUT"} {
+      lappend result $cell/[expr {$cell eq $::phase ? "Q" : "O"}];continue
+    }
+    if {$cell eq "native_bank19_tx/phy" || $cell eq "native_bank29_tx/phy"} {
+      lappend result [format {%s/D[0]} $cell] $cell/CLK
+    } elseif {[string match native_bank*_tx/gate $cell]} {lappend result $cell/I0
+    } elseif {$cell eq $::mux0} {lappend result $cell/I0 $cell/I1 $cell/I2
+    } elseif {$cell eq $::mux1 || $cell eq $::decode} {lappend result $cell/I0
+    } else {error "walk escaped into a DUT cone or a state element: $cell"}
+  }
+  return $result
+}
+set regions [dict create]
+set preferences [dict create]
+proc create_pblock {name} {return $name}
+proc add_cells_to_pblock {name objects} {dict set ::regions $name [lsort $objects]}
+proc resize_pblock {name args} {}
+proc set_property {property value objects} {
+  if {$property eq "MAX_FANOUT_MODE" && $value eq "CLOCK_REGION"} {
+    foreach net $objects {dict set ::preferences $net 1};return
+  }
+  if {$property ne "IS_SOFT" || $value ne "false"} {error "unexpected preservation or timing constraint"}
+}
+foreach command {create_clock set_max_delay set_false_path set_case_analysis unplace_cell read_checkpoint} {
+  proc $command {args} {error "TX selection placement changed implementation behavior"}
+}
+set sources [dict create rx [dict create] infrastructure_clock_pins [dict create $phase [list $phase/C]]]
+'''
+    script+='set result [emuflow_native_bank_placement '+_tcl_word(placement)+' $sources '+_tcl_word(output)+' mapped_partition]\n'
+    script+=r'''
+if {[dict get $::regions emuflow_bank_affinity_SLR0] ne [lsort [list native_bank19_tx/gate $::mux0]] ||
+    [dict get $::regions emuflow_bank_affinity_SLR1] ne [lsort [list native_bank29_tx/gate $::mux1]]} {error "TX selection logic did not follow its PHY bank"}
+if {[dict get $result tx_combinational_candidates]!=3 ||
+    [dict get $result shared_tx_combinational_cells]!=1 ||
+    [dict get $result ambiguous_native_cells]!=1} {error "shared decode was assigned to incompatible SLRs"}
+if {![dict exists $::preferences np] || ![dict exists $::preferences nd]} {error "shared control/decode replication preference absent"}
+puts complete
+'''
+    completed=subprocess.run([TCL86],input=script,text=True,capture_output=True)
+    assert completed.returncode==0 and not completed.stderr,completed.stderr
+    assert completed.stdout.strip()=='complete'
+    assert (output/'bank-tx-cones.tsv').read_text().splitlines()[1:]==['19\tSLR0\t2','29\tSLR1\t2']
