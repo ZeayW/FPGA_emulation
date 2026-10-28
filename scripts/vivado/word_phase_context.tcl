@@ -95,8 +95,12 @@ proc emuflow_word_phase_select {context phase} {
   }
 }
 
-proc emuflow_word_phase_clear {context} {
+proc emuflow_word_phase_discard {context} {
   emuflow_word_phase_readonly
-  set pins [dict values [dict get $context pins]]
-  if {[llength $pins]} {remove_case_analysis $pins}
+  # Vivado has no remove_case_analysis command. This view owns a disposable
+  # design snapshot: collect unconditional checks first, then all conditional
+  # views, and close the snapshot. Never reset/recreate its timing constraints
+  # or write a phase-conditioned implementation checkpoint.
+  close_design
+  unset ::emuflow_native_export_stage
 }

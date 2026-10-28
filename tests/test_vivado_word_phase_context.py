@@ -37,9 +37,7 @@ proc get_property {args} {
 proc set_case_analysis {value pins} {
  foreach pin $pins {dict set ::state $pin $value}
 }
-proc remove_case_analysis {pins} {
- foreach pin $pins {dict unset ::state $pin}
-}
+proc close_design {} {set ::state [dict create];set ::snapshot_closed 1}
 '''
 
 
@@ -66,10 +64,11 @@ for {set phase 0} {$phase<12} {incr phase} {
   if {[dict get $state $pin]!=(($phase%$period)>>$bit&1)} {error "wrong source phase"}
  }
 }
-emuflow_word_phase_clear $context
+emuflow_word_phase_discard $context
 puts "remaining=[dict size $state]"
+puts "closed=$snapshot_closed export_context=[info exists emuflow_native_export_stage]"
 ''')
-    assert not result.stderr and result.stdout.splitlines() == ['12', 'remaining=0']
+    assert not result.stderr and result.stdout.splitlines() == ['12', 'remaining=0', 'closed=1 export_context=0']
 
 
 @pytest.mark.parametrize('roles, expected', [
@@ -133,7 +132,7 @@ def test_ratio_eight_source_literal_needs_no_retained_register(tmp_path):
     result = execute(tmp_path, '1\t0\tconstant:0\n', r'''
 set context [emuflow_word_phase_bind $role_path]
 emuflow_word_phase_select $context 0
-emuflow_word_phase_clear $context
+emuflow_word_phase_discard $context
 puts "[dict get $context repeat_words] [dict size $state] [dict size [dict get $context pins]]"
 ''')
     assert not result.stderr and result.stdout.strip() == '1 0 0'
