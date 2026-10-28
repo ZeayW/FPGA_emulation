@@ -5,17 +5,11 @@ a design-specific script or machine-specific configuration.
 
 ## Install once
 
-The automatic installer and complete physical flow are currently qualified on
-Linux x86-64. This is the maintained installation target rather than an
-architectural assertion about every source component. RapidWright's
-[standalone distribution](https://www.rapidwright.io/docs/Quick_Start.html)
-has Linux and Windows x86-64 assets but no macOS asset. OpenROAD
-[supports local macOS builds](https://github.com/The-OpenROAD-Project/OpenROAD/blob/master/docs/index.md),
-but the combined EmuFlow, OpenPARF, pinned RapidWright and global timing path
-has not been qualified there. Native Windows is unsupported; WSL uses the Linux
-installation path.
+The installer is currently tested on Linux x86-64. The complete flow has not yet
+been tested on macOS or native Windows; Windows users can use a Linux WSL
+environment.
 
-Before installation on the qualified host, provide:
+Before installation, provide:
 
 - Git, Python 3.9+ with `venv`, CMake 3.20+, GNU Make and a C++17 compiler;
 - a JDK with `java` and `javac`;

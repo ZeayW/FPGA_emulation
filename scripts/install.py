@@ -82,12 +82,12 @@ def program_any(label: str, names: tuple[str, ...]) -> Path:
     )
 
 
-def require_qualified_host(system: str, machine: str) -> None:
+def require_installer_host(system: str, machine: str) -> None:
     if system.startswith("linux") and machine.lower() in {"x86_64", "amd64"}:
         return
     raise InstallError(
-        "the automatic installer is currently qualified only for Linux x86-64; "
-        "this host has no qualified pinned RapidWright and complete-flow build"
+        "./install.sh currently supports Linux x86-64; "
+        f"detected {system}/{machine}"
     )
 
 
@@ -455,7 +455,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.jobs <= 0:
         raise InstallError("--jobs must be positive")
-    require_qualified_host(sys.platform, platform.machine())
+    require_installer_host(sys.platform, platform.machine())
     python = prepare_python(args.python.expanduser().resolve())
     program("cmake")
     program_any("GNU Make", ("gmake", "make"))

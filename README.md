@@ -40,16 +40,11 @@ references are in [the algorithm overview](docs/ALGORITHMS.md).
 
 ## Quick start
 
-The automatic installer and complete physical flow are currently qualified on
-Linux x86-64. This is the maintained installation target, not a claim that every
-source component is inherently Linux-only. [RapidWright's standalone release](https://www.rapidwright.io/docs/Quick_Start.html)
-provides Linux and Windows x86-64 packages but no macOS package, while
-[OpenROAD supports additional hosts](https://github.com/The-OpenROAD-Project/OpenROAD/blob/master/docs/index.md).
-EmuFlow's complete OpenPARF/RapidWright and global-timing chain has not been
-qualified on those additional hosts. Native Windows is unsupported; WSL uses
-the Linux path.
+The installer is currently tested on Linux x86-64. The complete flow has not yet
+been tested on macOS or native Windows; Windows users can use a Linux WSL
+environment.
 
-On the qualified host, install these prerequisites before running the installer:
+Before running the installer, install these prerequisites:
 
 - Git, Python 3.9+ with `venv`, CMake 3.20+, GNU Make and a C++17 compiler;
 - a JDK providing both `java` and `javac`;
