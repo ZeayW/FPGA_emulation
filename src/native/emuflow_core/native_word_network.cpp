@@ -52,7 +52,9 @@ NativeWordNetworkProjection ProjectNativeWordNetwork(
     const std::vector<NativeWordTransferOwner>& transfers,
     const std::vector<NativeWordPartitionCosts>& partitions,
     const std::vector<NativeWordClockWindow>& windows,std::int64_t word_period,
-    std::int64_t reference_period,std::uint64_t maximum_repeat) {
+    std::int64_t reference_period,std::uint64_t maximum_repeat,
+    const std::function<void(const NativeWordWindowProjection&,
+        const std::vector<WordPhaseTransfer>&)>& visit_window) {
   Check(word_period>0 && reference_period>0 && maximum_repeat>0,
       "native network needs explicit word/reference periods and recurrence bounds");
   Check(transfers.size()<=UINT32_MAX,"native network transfer population exceeds its domain");
@@ -213,6 +215,7 @@ NativeWordNetworkProjection ProjectNativeWordNetwork(
     result_window.required_reference_period_ps=Required(*result_window.maximum_sampling_cost_ps,reference_period,window->second.reference_window_ps);
     Maximum(result.maximum_sampling_cost_ps,*result_window.maximum_sampling_cost_ps);
     Maximum(result.required_reference_period_ps,*result_window.required_reference_period_ps);
+    if(visit_window)visit_window(result_window,graph);
     result.windows.push_back(std::move(result_window));
   }
   return result;

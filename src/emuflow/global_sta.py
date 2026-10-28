@@ -1399,7 +1399,12 @@ def _validate_indexed_checks(rows: _IndexedEventChecks) -> None:
     finish_bundle()
 
 
-def validate_checks(checks: Iterable[EventCheck]) -> Sequence[EventCheck]:
+def validate_checks(checks: Iterable[EventCheck], *, require_observation_pairs=True) -> Sequence[EventCheck]:
+    # Original-member analyses require one target/runtime observation pair.
+    # Explicit scalar witness exports retain value, identity and bundle-order
+    # validation while carrying their own acceptance/rejection expectations.
+    if type(require_observation_pairs)is not bool:
+        raise ValidationError("event observation-pair policy must be Boolean")
     # Preserve the public API's historical snapshot contract for every
     # caller-owned container, including list, tuple, and custom Sequence
     # implementations. Only the two private immutable/indexed views may stay
@@ -1429,6 +1434,9 @@ def validate_checks(checks: Iterable[EventCheck]) -> Sequence[EventCheck]:
     def finish_bundle() -> None:
         if current_path is None:
             return
+        if not require_observation_pairs:
+            completed_paths.add(current_path)
+            return
         if target is None and runtime is None:
             raise ValidationError("global STA event has no original-path observation")
         if target is None or runtime is None:
@@ -1454,13 +1462,13 @@ def validate_checks(checks: Iterable[EventCheck]) -> Sequence[EventCheck]:
         if identity in current_identities:
             raise ValidationError("global STA has duplicate/empty check identity")
         current_identities.add(identity)
-        if row.role == "target":
+        if require_observation_pairs and row.role == "target":
             if target is not None:
                 raise ValidationError(
                     "global STA must observe each original path once"
                 )
             target = row
-        elif row.role == "runtime":
+        elif require_observation_pairs and row.role == "runtime":
             if runtime is not None:
                 raise ValidationError(
                     "global STA must observe each original path once"
@@ -1470,7 +1478,7 @@ def validate_checks(checks: Iterable[EventCheck]) -> Sequence[EventCheck]:
     return rows
 
 
-def export_event_checks(checks: Iterable[EventCheck], directory: Path) -> Sequence[EventCheck]:
+def export_event_checks(checks: Iterable[EventCheck], directory: Path, *, require_observation_pairs=True) -> Sequence[EventCheck]:
     """Export Verilog/Liberty/SDC and one batch query; names never contain user text.
 
 Fixed-edge register cutpoints lower to SDC input launch times and output
@@ -1478,7 +1486,7 @@ deadlines relative to one epoch clock. Unlike periodic generated clocks this
 cannot silently wrap a missed slot into the following frame. The measured arc
 chain remains explicit; a scalar Liberty cell is shared for each unique delay.
 """
-    rows = validate_checks(checks)
+    rows = validate_checks(checks,require_observation_pairs=require_observation_pairs)
     directory.mkdir(parents=True, exist_ok=True)
     delays = sorted({0.0, *(v for r in rows for v in r.arcs_ns)})
     cells = {v: f"D{i}" for i, v in enumerate(delays)}
@@ -1856,13 +1864,13 @@ def _write_expanded_measurements(path: Path, rows: Sequence[EventCheck],
 
 
 def run_event_checks(checks: Iterable[EventCheck], directory: Path,
-                     executable: str | None = None, *, verify_arcs=True
+                     executable: str | None = None, *, verify_arcs=True, require_observation_pairs=True
                      ) -> Sequence[dict]:
-    rows = validate_checks(checks)
+    rows = validate_checks(checks,require_observation_pairs=require_observation_pairs)
     representatives, original_to_representative = (
         _compress_path_equivalent_checks(rows)
     )
-    export_event_checks(representatives, directory)
+    export_event_checks(representatives, directory,require_observation_pairs=require_observation_pairs)
     tool = resolve_native_executable("sta", executable)
     engine = require_opensta_engine(tool)
     output = directory / "measurements.tsv"

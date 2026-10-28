@@ -225,6 +225,21 @@ def test_reject_orphan_events_and_divergent_observation_chains():
         validate_checks(rows)
 
 
+def test_explicit_scalar_witness_checks_keep_identity_and_order_validation(tmp_path):
+    rows=[EventCheck('native-window','tx','root',0,(1,),2),
+          EventCheck('native-window','target','link',2,(30,),32),
+          EventCheck('native-window','target','capture',32,(1,),35)]
+    with pytest.raises(ValidationError):validate_checks(rows)
+    assert validate_checks(rows,require_observation_pairs=False)==rows
+    export_event_checks(rows,tmp_path,require_observation_pairs=False)
+    with pytest.raises(ValidationError,match='duplicate'):
+        validate_checks(rows+[rows[0]],require_observation_pairs=False)
+    with pytest.raises(ValidationError,match='contiguous'):
+        validate_checks(rows+[EventCheck('other','tx','x',0,(1,),1),rows[0]],require_observation_pairs=False)
+    with pytest.raises(ValidationError,match='Boolean'):
+        validate_checks(rows,require_observation_pairs=0)
+
+
 def test_check_population_validation_is_linear():
     # A quadratic original-member scan previously made global timing unusable.
     rows = [EventCheck(str(i), role, "end", 0, (1,), 2)

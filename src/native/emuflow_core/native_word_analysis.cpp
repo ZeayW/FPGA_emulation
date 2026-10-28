@@ -1,5 +1,6 @@
 #include "emuflow_core/native_word_analysis.hpp"
 #include "emuflow_core/native_word_network.hpp"
+#include "emuflow_core/native_word_checks.hpp"
 #include "emuflow_core/artifact_io.hpp"
 #include "emuflow_core/json_record.hpp"
 #include "emuflow_core/store.hpp"
@@ -70,7 +71,7 @@ struct Part {
 };
 JsonRecord Optional(const std::optional<std::int64_t>& value){return value?JsonRecord(*value):JsonRecord();}
 }
-void AnalyzeNativeWordNetwork(const std::vector<ArtifactRef>& inputs,const std::string& output) {
+void AnalyzeNativeWordNetwork(const std::vector<ArtifactRef>& inputs,const std::string& output,bool verification_events) {
   Check(inputs.size()>=2 && (inputs.size()-2)%4==0 && inputs.size()<=258,
       "native word analysis stream coverage is invalid");
   for(const auto& input:inputs)input.RequireUnchanged();
@@ -172,10 +173,19 @@ void AnalyzeNativeWordNetwork(const std::vector<ArtifactRef>& inputs,const std::
       {"expected_tx_contexts",expected_contexts},{"observed_tx_contexts",observed_contexts},{"incomplete_entries",unknown_entries},
       {"phase_dependent_entries",dependent_entries},{"untimed_rx_rows",untimed_rx},{"partitions",JsonRecord(std::move(coverage))},
       {"maximum_sampling_cost_ps",JsonRecord()},{"required_reference_period_ps",JsonRecord()},{"setup_model_frequency_mhz",JsonRecord()}};
+  Check(!verification_events || (ready && project),"native word verification export requires complete observations and projection");
+  std::unique_ptr<AtomicBinaryWriter> events;
+  if(verification_events){events=std::make_unique<AtomicBinaryWriter>(output,inputs);NativeWordCheckHeader(events->stream());}
   if(ready && project){
     std::vector<NativeWordPartitionCosts> observations;
     for(auto& p:parts)observations.push_back({p.name,&p.binding,p.clocks,p.catalog.rx_entries,p.missing,p.inputs,p.captures.get()});
-    const auto model=ProjectNativeWordNetwork(transfers,observations,windows,word,reference,maximum_repeat);
+    std::uint64_t window_number=0,event_count=0;
+    const auto model=ProjectNativeWordNetwork(transfers,observations,windows,word,reference,maximum_repeat,
+        [&](const auto& window,const auto& graph){
+          if(events)event_count+=WriteNativeWordWindowChecks(events->stream(),window_number,window,transfers,graph,word);
+          ++window_number;
+        });
+    if(events){Check(event_count>0,"native word verification has no timed windows");events->Commit();return;}
     report["status"]=JsonRecord("setup-model-projected");report["maximum_sampling_cost_ps"]=Optional(model.maximum_sampling_cost_ps);
     report["required_reference_period_ps"]=Optional(model.required_reference_period_ps);
     if(model.required_reference_period_ps && *model.required_reference_period_ps>0)

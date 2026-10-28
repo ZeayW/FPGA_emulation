@@ -39,6 +39,7 @@ const char* StageName(Stage stage) {
     case Stage::kValidateMappedNormalization: return "phase1.validate-mapped-normalization";
     case Stage::kBuildSourceLutModels: return "phase2.build-lut-models";
     case Stage::kAnalyzeNativeWordNetwork: return "phase7.analyze-word-network";
+    case Stage::kExportNativeWordChecks: return "phase7.export-word-checks";
     case Stage::kBuildSourceLaunchClocks: return "phase7.build-launch-clocks";
     case Stage::kBuildSourceCaptureClocks: return "phase7.build-capture-clocks";
     case Stage::kRefinePartitionHops: return "phase3.refine-hops";
@@ -83,7 +84,8 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
       return {"emuir-compact-v2","partition-cluster-columns-v2","patron-initial-columns-v1","patron-source-board-request-v1"};
     case Stage::kValidateMappedNormalization: return {"emuir-compact-v2","emuir-compact-v2","yosys-source-document-v1","mapped-normalization-request-v1"};
     case Stage::kBuildSourceLutModels: return {"emuir-compact-v2"};
-    case Stage::kAnalyzeNativeWordNetwork: {
+    case Stage::kAnalyzeNativeWordNetwork:
+    case Stage::kExportNativeWordChecks: {
       const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
       if(count<2 || count>258 || (count-2)%4)
         throw core::StageError(core::ErrorCode::kInvalidRequest,"native word observation input coverage differs");
@@ -303,6 +305,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kValidateMappedNormalization: core::ValidateMappedNormalization(inputs,output); break;
       case Stage::kBuildSourceLutModels: core::BuildSourceLutModels(inputs,output); break;
       case Stage::kAnalyzeNativeWordNetwork: core::AnalyzeNativeWordNetwork(inputs,output); break;
+      case Stage::kExportNativeWordChecks: core::AnalyzeNativeWordNetwork(inputs,output,true); break;
       case Stage::kBuildSourceLaunchClocks: core::BuildSourceLaunchClocksFromRequest(inputs,output,request.cancelled); break;
       case Stage::kBuildSourceCaptureClocks: core::BuildSourceCaptureClocksFromRequest(inputs,output,request.cancelled); break;
       case Stage::kRefinePartitionHops:
@@ -354,6 +357,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kValidateMappedNormalization: schema="mapped-normalization-proof-v1"; break;
       case Stage::kBuildSourceLutModels: schema="source-lut-model-store-v1"; break;
       case Stage::kAnalyzeNativeWordNetwork: schema="native-word-network-analysis-v1"; break;
+      case Stage::kExportNativeWordChecks: schema="native-word-verification-events-v1"; break;
       case Stage::kBuildSourceLaunchClocks: schema="source-launch-clock-store-v1"; break;
       case Stage::kBuildSourceCaptureClocks: schema="source-capture-clock-store-v1"; break;
       case Stage::kRefinePartitionHops: schema = "hop-refiner-output-v1"; break;

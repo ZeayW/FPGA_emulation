@@ -3,6 +3,7 @@
 #include "emuflow_core/word_phase_sweep.hpp"
 #include <set>
 #include <tuple>
+#include <functional>
 
 namespace emuflow::core {
 struct NativeWordTransferOwner {
@@ -61,5 +62,7 @@ NativeWordNetworkProjection ProjectNativeWordNetwork(
     const std::vector<NativeWordPartitionCosts>& partitions,
     const std::vector<NativeWordClockWindow>& windows,
     std::int64_t word_period_ps, std::int64_t reference_period_ps,
-    std::uint64_t maximum_repeat_words);
+    std::uint64_t maximum_repeat_words,
+    const std::function<void(const NativeWordWindowProjection&,
+        const std::vector<WordPhaseTransfer>&)>& visit_window = {});
 }  // namespace emuflow::core

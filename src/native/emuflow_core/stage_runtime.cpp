@@ -58,6 +58,7 @@ constexpr RegisteredSchema schemas[] = {
     {"native-word-projection-request-v1", ArtifactEncoding::kBinary, 0x315150574e4d5545ULL, 1},
     {"native-word-observation-rows-v1", ArtifactEncoding::kText, 0, 1},
     {"native-word-network-analysis-v1", ArtifactEncoding::kText, 0, 1},
+    {"native-word-verification-events-v1", ArtifactEncoding::kText, 0, 1},
     {"sta-path-selector-v1", ArtifactEncoding::kText, 0, 1},
     {"net-weight-store-v1", ArtifactEncoding::kSqlite, 0, 1, true,
      "SELECT 'net-weight-store-v1' WHERE (SELECT count(*) FROM pragma_table_info('net_weights') "

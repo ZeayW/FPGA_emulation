@@ -7,5 +7,5 @@ namespace emuflow::core {
 // Missing partitions remain explicit pending observations. Successful parsing
 // or a setup-model projection is not physical/global-STA acceptance.
 void AnalyzeNativeWordNetwork(const std::vector<ArtifactRef>& inputs,
-                              const std::string& output);
+                              const std::string& output,bool verification_events = false);
 }  // namespace emuflow::core

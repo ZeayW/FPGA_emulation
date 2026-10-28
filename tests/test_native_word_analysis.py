@@ -10,6 +10,7 @@ from emuflow.errors import EmuFlowError, ValidationError
 from emuflow.native_word_analysis import (
     INDEX_SCHEMA, ROW_SCHEMA, ROLES, _write_projection_request,
     analyze_native_word_network, write_native_word_index,
+    export_native_word_checks, verify_native_word_checks,
 )
 from emuflow.store_publication import bind_store_source
 from tests.native_build import emuflow_native
@@ -136,3 +137,98 @@ def test_output_alias_and_unknown_partition_are_rejected(tmp_path):
     index,observations,out=fixture(tmp_path)
     with pytest.raises(ValidationError,match='aliases'):analyze_native_word_network(index,observations,index)
     with pytest.raises(ValidationError,match='unknown partition'):analyze_native_word_network(index,{'wrong':{}},out)
+
+
+def test_production_export_preserves_readiness_prior_occurrence_and_capture_probes(tmp_path):
+    index,observations,_=fixture(tmp_path)
+    checks=tmp_path/'checks.tsv'
+    export_native_word_checks(index,observations,checks)
+    import csv
+    with checks.open(newline='')as stream:rows=list(csv.DictReader(stream,delimiter='\t'))
+    assert len(rows)==5
+    assert [r['expectation']for r in rows]==['accept','reject','accept','accept','reject']
+    assert [bytes.fromhex(r['event_hex']).decode()for r in rows]==[
+        'dut-root','previous-occurrence:dut-root','declared-link','capture-bound','reduced-cost-bound']
+    assert sum(r['verification_arc_ps']=='1000'for r in rows)==4
+
+
+def test_incomplete_native_exports_preserve_the_previous_verification_file(tmp_path):
+    index,observations,_=fixture(tmp_path,observed=('fpga0',))
+    out=tmp_path/'checks.tsv';out.write_text('previous\n')
+    with pytest.raises(EmuFlowError,match='requires complete observations'):
+        export_native_word_checks(index,observations,out)
+    assert out.read_text()=='previous\n'
+
+
+def test_verification_engine_destination_cannot_overwrite_input(tmp_path):
+    out=tmp_path/'checks.tsv';out.write_text('original\n')
+    with pytest.raises(ValidationError,match='aliases'):
+        verify_native_word_checks(out,tmp_path)
+    assert out.read_text()=='original\n'
+
+
+@pytest.mark.skipif(not os.environ.get('EMUFLOW_TEST_OPENSTA'),reason='explicit qualified OpenSTA required')
+def test_production_witness_is_independently_checked_by_opensta(tmp_path):
+    index,observations,_=fixture(tmp_path)
+    checks=tmp_path/'checks.tsv';export_native_word_checks(index,observations,checks)
+    result=verify_native_word_checks(checks,tmp_path/'engine',executable=os.environ['EMUFLOW_TEST_OPENSTA'])
+    assert result['status']=='verified' and result['checks']==5 and result['expected_rejections']==2
+    assert result['physical_acceptance']==result['original_path_sta_acceptance']=='pending'
+
+
+def chain_fixture(tmp_path):
+    """Four native partitions with recurring phases and signed relay credits."""
+    import math
+    transfers=[('a','fpga0','fpga1',0,24,6),('b','fpga1','fpga2',2,32,6),('c','fpga2','fpga3',1,24,6)]
+    parts=[];observations={}
+    for i in range(4):
+        fpga=f'fpga{i}';incoming=transfers[i-1]if i else None;outgoing=transfers[i]if i<3 else None
+        periods=sorted({t[4]//8 for t in(incoming,outgoing)if t})
+        parts.append(dict(fpga=fpga,clocks={'native_clk':'core'},calendar_periods=periods,
+            tx_entries=[(outgoing[0],'word[0]')]if outgoing else[],rx_entries=[(f's{i}',incoming[0])]if incoming else[]))
+        directory=tmp_path/fpga;directory.mkdir()
+        record={role:directory/(role+'.tsv')for role in ROLES};observations[fpga]=record
+        tx=[];fanin='phase_word\tquery_hex\tnative_startpoints\trx_sources\tdut_cells\tinfrastructure_cells\tports\tunclassified\n'
+        if outgoing:
+            for phase in range(math.lcm(*periods)):
+                if phase%(outgoing[4]//8)!=outgoing[3]:continue
+                for edge in('rise','fall'):
+                    tx.append(row(phase,source='native_clk',edge=edge,cost=1.371,measured=i==0 and edge=='rise'))
+                if incoming:tx.append(row(phase,kind='rx',source=f's{i}',edge='',cost=-.8 if i==1 else 5.001))
+                fanin+=f'{phase}\t'+b'word[0]'.hex()+f'\t1\t{int(bool(incoming))}\t{int(not incoming)}\t0\t0\t0\n'
+        record['tx_costs'].write_text(HEADER+'\n'+''.join('\t'.join(r)+'\n'for r in tx));record['fanins'].write_text(fanin)
+        cap=[]
+        for target in('rise','fall'):
+            query=f'dut-capture:native_clk:{target}'
+            for edge in('rise','fall'):cap.append(row(-1,query,source='native_clk',edge=edge,measured=False))
+            if incoming:
+                r=row(-1,query,kind='rx',source=f's{i}',edge='',cost=3.245,measured=i==3 and target=='fall')
+                if i==3 and target=='fall':r[13]=b'native_clk'.hex()
+                cap.append(r)
+        record['captures'].write_text(HEADER+'\n'+''.join('\t'.join(r)+'\n'for r in cap));record['missing_rx'].write_text('source_origin\n')
+    index=tmp_path/'index.sqlite'
+    write_native_word_index(index,transfers=transfers,partitions=parts,
+        clock_windows=[('core',a,'core',b,100000 if a==b else 50000)for a in(1,2)for b in(1,2)],source_context={'scope':'four-partition native interface fixture'})
+    return index,observations
+
+
+def test_complete_relay_calendar_exports_both_readiness_and_strict_next_word_checks(tmp_path):
+    import csv
+    index,observations=chain_fixture(tmp_path);out=tmp_path/'checks.tsv'
+    export_native_word_checks(index,observations,out)
+    with out.open(newline='')as stream:rows=list(csv.DictReader(stream,delimiter='\t'))
+    names=[bytes.fromhex(r['event_hex']).decode()for r in rows]
+    assert 'fanin-data:a'in names and 'fanin-next-word:a'in names
+    assert 'previous-occurrence:fanin-next-word:a'in names
+    assert names.count('declared-link')==3
+    assert sum(r['expectation']=='reject'for r in rows)==4
+
+
+@pytest.mark.skipif(not os.environ.get('EMUFLOW_TEST_OPENSTA'),reason='explicit qualified OpenSTA required')
+def test_opensta_checks_complete_multihop_native_witness_with_half_cycle_capture(tmp_path):
+    index,observations=chain_fixture(tmp_path);out=tmp_path/'checks.tsv';summary=tmp_path/'analysis.json'
+    analyze_native_word_network(index,observations,summary)
+    model=json.loads(summary.read_text());assert model['required_reference_period_ps']==2*model['maximum_sampling_cost_ps']
+    export_native_word_checks(index,observations,out)
+    result=verify_native_word_checks(out,tmp_path/'engine',executable=os.environ['EMUFLOW_TEST_OPENSTA'])
+    assert result['status']=='verified' and result['expected_rejections']==4 and result['windows']==1
