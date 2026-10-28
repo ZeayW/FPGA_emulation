@@ -73,3 +73,37 @@ proc emuflow_native_word_state_hold {sources stream} {
   # minimum external delays or the next logical version across a TDM link.
   return [llength $paths]
 }
+
+# RX data launches are excluded from next-word setup checks because their
+# destination occurrence belongs to the schedule. Physical minimum checks
+# still apply to those launches and must retain the actual native clocks.
+# Call on an unconditional snapshot, before reference or phase annotations.
+proc emuflow_native_word_rx_infrastructure_hold {sources stream} {
+  emuflow_word_phase_readonly
+  set starts [dict get $sources rx_clock_pins]
+  set cells [dict keys [dict get $sources infrastructure_cells]]
+  set ends [list]
+  if {[llength $cells]} {
+    set ends [get_pins -quiet -of_objects [get_cells -quiet $cells] \
+        -filter {DIRECTION == IN && IS_CLOCK == 0}]
+  }
+  puts $stream "scope\tmeasurement\tslack_ns\tdata_ns\tstart_hex\tend_hex\tstart_clock_hex\tend_clock_hex"
+  set paths [list]
+  if {[llength $starts] && [llength $ends]} {
+    set paths [get_timing_paths -quiet -delay_type min -max_paths 1 -nworst 1 \
+        -from $starts -to $ends]
+  }
+  if {[llength $paths]} {
+    set fields [list rx-to-infrastructure native-min-path \
+        [get_property SLACK $paths] [get_property DATAPATH_DELAY $paths]]
+    foreach property {STARTPOINT_PIN ENDPOINT_PIN STARTPOINT_CLOCK ENDPOINT_CLOCK} {
+      lappend fields [binary encode hex [encoding convertto utf-8 [get_property $property $paths]]]
+    }
+    puts $stream [join $fields \t]
+  } else {
+    puts $stream "rx-to-infrastructure\tnative-no-timed-path\t\t\t\t\t\t"
+  }
+  # Missing source roles remain coverage gaps in the source catalog. An empty
+  # query does not certify their elimination or any uncharacterized I/O hold.
+  return [llength $paths]
+}
