@@ -116,6 +116,40 @@ def test_complete_observations_keep_real_timing_failure_and_missing_source_roles
     with pytest.raises(ValidationError,match='fresh'):observe_native_word_checkpoint('fpga0',checkpoint,roles,boundary,out)
 
 
+def test_source_evidence_is_collected_by_default_with_the_runtime_environment_and_reused(observation,monkeypatch):
+    from emuflow.native_word_observation import reuse_native_word_observation
+    source,roles,checkpoint,boundary,execute=observation
+    (checkpoint.parent/'runtime.xdc').write_text('# original explicit input environment\n')
+    def capture(executable,script,arguments,output,name):
+        assert len(arguments)==6and arguments[-1]==str(output/'runtime.xdc')
+        result=execute(executable,script,arguments[:5],output,name)
+        census=output/'native-source-census';census.mkdir()
+        (census/'source-census.tsv').write_text(
+            'capture_clock_hex\ttarget_pins\tnative_startpoints\tdut_cells\trx_sources\tinfrastructure_cells\tports\tunclassified\n'+
+            ''.join(f'{c.encode().hex()}\t0\t0\t0\t0\t0\t0\t0\n'for c in('emuflow_dut_clk_0','emuflow_dut_clk_1')))
+        (census/'external-sources.tsv').write_text('capture_clock_hex\tsource_kind\tsource_hex\tsource_origin\n')
+        (census/'rx-sources.tsv').write_text('capture_clock_hex\tsource_origin\n')
+        (census/'progress.tsv').write_text('capture_clock_hex\tstatus\n')
+        (output/'native-source-properties.tsv').write_text('kind\tobject_hex\tproperty\tvalue_hex\n')
+        (output/'source-context-metrics.tsv').write_text('metric\tvalue\nrequests\t0\ntx_targets\t1\n')
+        return result
+    monkeypatch.setattr('emuflow.vivado_physical.execute_vivado',capture)
+    out=source.root/'observed'
+    report=observe_native_word_checkpoint('fpga0',checkpoint,roles,boundary,out)
+    bundle=report['source_context']
+    assert set(bundle)=={'runtime_constraints','capture_census','source_properties'}
+    assert json.loads(Path(bundle['capture_census']['path']).read_text())['original_checkpoint_unchanged']is True
+    def forbidden(*args,**kwargs):pytest.fail('reused source evidence launched a vendor process')
+    monkeypatch.setattr('emuflow.vivado_physical.execute_vivado',forbidden)
+    reused=reuse_native_word_observation('fpga0',checkpoint,roles,boundary,out/'native-observation.json',source.root/'reused')
+    assert reused['source_context']==bundle and reused['files']==report['files']
+    assert reused['fixed_clock_control_timing_met']is False
+    # A changed raw census cannot be relabeled as an unchanged observation.
+    (out/'native-source-census/external-sources.tsv').write_text('changed\n')
+    with pytest.raises(ValidationError):
+        reuse_native_word_observation('fpga0',checkpoint,roles,boundary,out/'native-observation.json',source.root/'damaged')
+
+
 def test_transit_observation_has_zero_local_capture_queries(observation,monkeypatch):
     source,roles,checkpoint,boundary,execute=observation;out=source.root/'observed'
     def transit(*args):

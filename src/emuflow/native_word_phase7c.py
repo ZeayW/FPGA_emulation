@@ -38,6 +38,36 @@ def _metadata(path):
         return result
 
 
+def _source_contexts(evidence,summary,output,parents,inputs):
+    """Attach observed source membership without changing numerical arcs."""
+    from .native_word_context import qualify_native_word_source_contexts
+    inputs={}if inputs is None else inputs
+    _require(isinstance(inputs,dict)and not(set(inputs)-set(evidence)),
+             'native source context inputs name an unknown partition')
+    records={};pending=[]
+    for index,(fpga,record)in enumerate(sorted(evidence.items())):
+        arguments=inputs.get(fpga)
+        if arguments is None and record.get('word_preparation')is not None:
+            bundle=record['observation'].get('source_context')
+            if bundle is not None:arguments={**bundle,'word_preparation':record['word_preparation']}
+        if arguments is None:
+            pending.append(fpga);continue
+        _require(isinstance(arguments,dict)and {'runtime_constraints','word_preparation'}<=set(arguments)and
+                 not(set(arguments)-{'runtime_constraints','word_preparation','capture_census','source_properties'}),
+                 'native source context input roles differ')
+        path=output/f'native-source-contexts-{index}.json'
+        result=qualify_native_word_source_contexts(record,**arguments,
+            calendar_policy=summary.get('word_phy_implementation',{}).get('physical_calendar_policy'),output=path)
+        parents.append(bind_store_source(path,'physical-input-document-v1'))
+        parents.extend(StoreSource(Path(p['path']),p['schema'],tuple(p['generation']))for p in result['sources'])
+        records[fpga]={'status':result['status'],'capture_source_coverage':result['capture_source_coverage'],
+                       'unresolved_contexts':result['unresolved_contexts'],
+                       'artifact':path.name,'sha256':file_sha256(path)}
+        if result['status']!='complete':pending.append(fpga)
+    return {'status':'incomplete'if pending else'complete','partitions':records,'pending_partitions':pending,
+            'scope':'native timing source membership; numerical timing and physical/minimum acceptance remain separate'}
+
+
 def _clock_context(evidence,parents):
     """Use actual primary-clock contracts and complete capture-family requests.
 
@@ -119,7 +149,8 @@ def _original_members(evidence,output,parents,*,endpoint_index=None,source_ir=No
 
 def run_native_word_phase7c(summary,runtime,platform,reports,schedule_path,output,*,
                            global_sta_executable=None,global_sta_results_dir=None,
-                           endpoint_index=None,source_ir=None,path_database=None,assignment=None):
+                           endpoint_index=None,source_ir=None,path_database=None,assignment=None,
+                           source_context_inputs=None):
     """Run the native physical-summary path of Phase7c, including its ledger.
 
     Source context and external minimum/startup qualification remain explicit
@@ -166,6 +197,7 @@ def run_native_word_phase7c(summary,runtime,platform,reports,schedule_path,outpu
                                               results_dir=global_sta_results_dir)
     originals=_original_members(evidence,output,parents,endpoint_index=endpoint_index,
         source_ir=source_ir,path_database=path_database,assignment=assignment)
+    source_contexts=_source_contexts(evidence,summary,output,parents,source_context_inputs)
     original_summary=dict(originals)
     for key in ('endpoint_index','lineage_index'):
         if key in original_summary:
@@ -187,7 +219,8 @@ def run_native_word_phase7c(summary,runtime,platform,reports,schedule_path,outpu
                         'worst_slack_bound_ns':None if minimum_slack is None else minimum_slack/1000.,
                         'total_negative_slack_bound_ns':None},
         'original_members':original_summary,'native_model':model,'global_opensta':independent_summary,
-        'physical_evidence_completeness':{'status':'incomplete','scope':'External source roles and full original check dispositions remain to be qualified'},
+        'physical_evidence_completeness':{'status':'incomplete','source_membership':source_contexts,
+            'scope':'Original check dispositions and external minimum/startup acceptance remain separate from source membership'},
         'source_binding':{'index':index.name,'analysis':analysis.name},
         'qualification':'routed-local-plus-declared-link-model; board-signoff-not-claimed'}
     qor=aggregate_qor(runtime,*reports,summary,platform,system_timing_result=timing)

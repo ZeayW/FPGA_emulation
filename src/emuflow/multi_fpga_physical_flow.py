@@ -1883,6 +1883,8 @@ def _assemble_multi_fpga_physical_results(
                 'input_identity':r['stages']['vivado_implementation']['input_identity'],
                 'implementation_timing':r['stages']['vivado_implementation']['implementation_timing'],
                 'clock_contract':r['stages']['vivado_implementation']['result']['artifacts']['clock-contract.tsv'],
+                **({'word_preparation':r['stages']['vivado_implementation']['result']['artifacts']['native-word-preparation.json']}
+                   if 'native-word-preparation.json'in r['stages']['vivado_implementation']['result']['artifacts']else{}),
             }for r in records if r.get('active')is not False}
             physical_summary['word_phy_implementation']['fixed_clock_control_timing_met']=all(
                 e['infrastructure_timing'].get('fixed_clock_contract_met')is True for e in evidence.values())

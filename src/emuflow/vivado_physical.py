@@ -436,7 +436,7 @@ def run_indexed_vivado_partition(
         if routed_snapshot is None:
             native_observation=observe_native_word_checkpoint(fpga,routed_checkpoint,
                 output_dir/'native-word-sources',output_dir/'native-word-boundaries.tsv',
-                output_dir/'native-word-observation',executable=executable,threads=threads)
+                output_dir/'native-word-observation',executable=executable,threads=threads,runtime_constraints=xdc)
         else:
             native_observation=reuse_native_word_observation(fpga,routed_checkpoint,
                 output_dir/'native-word-sources',output_dir/'native-word-boundaries.tsv',

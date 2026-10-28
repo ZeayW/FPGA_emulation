@@ -79,6 +79,15 @@ def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(sou
         else:
             assert script.name=='observe_native_word.tcl'and script.parent.name=='recipe'
             assert Path(args[0])==output/'routed.dcp'and Path(args[1])==output/'native-word-sources'
+            assert len(args)==6and Path(args[-1])==out/'runtime.xdc'
+            census=out/'native-source-census';census.mkdir()
+            (census/'source-census.tsv').write_text(
+                'capture_clock_hex\ttarget_pins\tnative_startpoints\tdut_cells\trx_sources\tinfrastructure_cells\tports\tunclassified\n')
+            (census/'external-sources.tsv').write_text('capture_clock_hex\tsource_kind\tsource_hex\tsource_origin\n')
+            (census/'rx-sources.tsv').write_text('capture_clock_hex\tsource_origin\n')
+            (census/'progress.tsv').write_text('capture_clock_hex\tstatus\n')
+            (out/'native-source-properties.tsv').write_text('kind\tobject_hex\tproperty\tvalue_hex\n')
+            (out/'source-context-metrics.tsv').write_text('metric\tvalue\nrequests\t0\ntx_targets\t3\n')
             for n in FILES:(out/n).write_text('native observation rows\n')
             counts=dict(dut_clocks=1,infrastructure_clocks=1,observed_rx_origins=0,requested_rx_origins=1,
                 missing_rx_origins=1,repeat_words=6,capture_queries=4,tx_contexts=3)
@@ -101,6 +110,7 @@ def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(sou
     assert report['result']['timing']['timing_met']is False
     assert report['word_phy_implementation']['infrastructure_timing']['fixed_clock_contract_met']is False
     assert report['native_word_observation']['counts']['missing_rx_origins']==1
+    assert set(report['native_word_observation']['source_context'])=={'runtime_constraints','capture_census','source_properties'}
     assert report['result']['cell_accounting']['unretained_source_cells']==1
     assert report['implementation_options']['retain_routed_checkpoint']is True
     assert not{'boundary_timing','local_path_timing','logic_segment_timing'}&set(report)
@@ -139,6 +149,7 @@ def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(sou
     assert retained['tool']['invoked_for_implementation']is False
     assert retained['result']['artifacts']['routed.dcp']==report['result']['artifacts']['routed.dcp']
     assert retained['native_word_observation']['files']==report['native_word_observation']['files']
+    assert retained['native_word_observation']['source_context']==report['native_word_observation']['source_context']
     assert retained['result']['timing']==report['result']['timing']
     assert not(adopted/'routed.dcp').exists()
     record['stages']={'vivado_implementation':retained,'word_phy_implementation':retained['word_phy_implementation']}

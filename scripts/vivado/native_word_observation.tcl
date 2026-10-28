@@ -2,8 +2,10 @@
 # timing endpoint; canonical RX state tags and physical TX pads own the cuts.
 source [file join [file dirname [info script]] native_word_captures.tcl]
 source [file join [file dirname [info script]] native_word_tx_batch.tcl]
+source [file join [file dirname [info script]] native_source_census.tcl]
+source [file join [file dirname [info script]] native_source_properties.tcl]
 
-proc emuflow_observe_native_word {checkpoint roles boundaries output threads} {
+proc emuflow_observe_native_word {checkpoint roles boundaries output threads {runtime_xdc ""}} {
   if {![string is integer -strict $threads] || $threads<1} {error "invalid native observation thread count"}
   file mkdir $output
   set_param general.maxThreads $threads
@@ -32,6 +34,32 @@ proc emuflow_observe_native_word {checkpoint roles boundaries output threads} {
       dict lappend targets $phase $logical
     }
   } finally {close $input}
+  if {$runtime_xdc ne ""} {
+    # Gather structural source facts before reference timing or phase case
+    # analysis. One union query covers every canonical TX pin without a
+    # second per-endpoint traversal or another checkpoint load.
+    set unknown [emuflow_native_capture_sources $sources $runtime_xdc [file join $output native-source-census]]
+    set property_targets [dict create]
+    dict for {phase logicals} $targets {
+      foreach logical $logicals {
+        if {![dict exists $property_targets $logical]} {
+          dict set property_targets $logical [emuflow_fixed_io_object $mapping $logical]
+        }
+      }
+    }
+    set pins [list]
+    dict for {logical target} $property_targets {foreach pin $target {lappend pins $pin}}
+    if {[llength $pins]} {
+      set fanin [emuflow_native_word_fanin $sources $pins]
+      dict for {name object} [dict get $fanin unclassified] {dict set unknown $name 1}
+    }
+    set requests [emuflow_native_source_properties $unknown [file join $output native-source-properties.tsv]]
+    set stream [open [file join $output source-context-metrics.tsv] w]
+    puts $stream "metric\tvalue"
+    puts $stream "requests\t$requests"
+    puts $stream "tx_targets\t[dict size $property_targets]"
+    close $stream
+  }
   set stream [open [file join $output missing-rx-roles.tsv] w]
   puts $stream "source_origin"
   foreach origin [dict get $sources missing_rx_origins] {puts $stream $origin}
@@ -90,7 +118,8 @@ proc emuflow_observe_native_word {checkpoint roles boundaries output threads} {
     emuflow_word_phase_select $context $phase
     set phase_targets [list]
     foreach logical [dict get $targets $phase] {
-      lappend phase_targets [list $logical [emuflow_fixed_io_object $mapping $logical]]
+      set target [expr {$runtime_xdc ne "" ? [dict get $property_targets $logical] : [emuflow_fixed_io_object $mapping $logical]}]
+      lappend phase_targets [list $logical $target]
     }
     for {set begin 0} {$begin<[llength $phase_targets]} {incr begin 256} {
       set observed [emuflow_native_word_tx_batch $sources $stream $summary $phase \

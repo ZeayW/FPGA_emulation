@@ -19,7 +19,8 @@ FILES=('native-costs.tsv','fanin-summary.tsv','native-capture-costs.tsv','missin
        'native-dut-hold.tsv','native-rx-infrastructure-hold.tsv','native-control-checks.tsv',
        'native-observation-metrics.tsv')
 SCRIPTS=('observe_native_word.tcl','native_word_observation.tcl','native_word_captures.tcl',
-         'native_word_timing.tcl','native_word_tx_batch.tcl','word_phase_context.tcl','timing_contract.tcl')
+         'native_word_timing.tcl','native_word_tx_batch.tcl','native_source_census.tcl',
+         'native_source_properties.tcl','word_phase_context.tcl','timing_contract.tcl')
 
 
 def _checks(path):
@@ -63,7 +64,8 @@ def _source_request(fpga,source_directory,boundaries):
     return preparation,metadata,parents
 
 
-def observe_native_word_checkpoint(fpga,checkpoint,source_directory,boundaries,output,*,executable=None,threads=2):
+def observe_native_word_checkpoint(fpga,checkpoint,source_directory,boundaries,output,*,executable=None,threads=2,
+                                   runtime_constraints=None):
     """Collect all native clock families and recurring canonical TX contexts.
 
     Reuses a completed routed DCP in a fresh process. It never changes that
@@ -82,17 +84,34 @@ def observe_native_word_checkpoint(fpga,checkpoint,source_directory,boundaries,o
     recipes={name:bind_store_source(_vivado_script(name),'physical-input-document-v1')for name in SCRIPTS}
     require_store_sources_unchanged(parents)
     checkpoint_sha=file_sha256(checkpoint)
+    if runtime_constraints is None:
+        candidate=checkpoint.parent/'runtime.xdc'
+        if candidate.is_file():runtime_constraints=candidate
+    if runtime_constraints is not None:
+        runtime_constraints=Path(runtime_constraints).resolve()
+        parents.append(bind_store_source(runtime_constraints,'physical-input-document-v1'))
     output.mkdir(parents=True)
     recipe_directory=output/'recipe';recipe_directory.mkdir()
     for name,parent in recipes.items():shutil.copyfile(parent.path,recipe_directory/name)
     require_store_sources_unchanged(tuple(recipes.values()))
     for name in SCRIPTS:parents.append(bind_store_source(recipe_directory/name,'physical-input-document-v1'))
+    arguments=[str(checkpoint),str(source_directory),str(boundaries),str(output),str(threads)]
+    if runtime_constraints is not None:
+        constraints=output/'runtime.xdc'
+        shutil.copyfile(runtime_constraints,constraints)
+        parents.append(bind_store_source(constraints,'physical-input-document-v1'))
+        arguments.append(str(constraints))
     execution=execute_vivado(_resolve_vivado(executable),recipe_directory/'observe_native_word.tcl',
-        [str(checkpoint),str(source_directory),str(boundaries),str(output),str(threads)],output,'native-observation.log')
+        arguments,output,'native-observation.log')
     require_store_sources_unchanged(parents)
     if file_sha256(checkpoint)!=checkpoint_sha:raise ValidationError('native observation changed its routed snapshot')
+    context=None
+    if runtime_constraints is not None:
+        from .native_word_source_evidence import publish_native_source_evidence
+        context=publish_native_source_evidence(fpga,checkpoint,constraints,output,
+            [recipe_directory/name for name in SCRIPTS],parents)
     return _record_native_word_observation(fpga,checkpoint,checkpoint_sha,source_directory,preparation,
-        output,parents,execution)
+        output,parents,execution,source_context=context)
 
 
 def reuse_native_word_observation(fpga,checkpoint,source_directory,boundaries,observation_path,output):
@@ -133,16 +152,20 @@ def reuse_native_word_observation(fpga,checkpoint,source_directory,boundaries,ob
     for name,artifact in prior['files'].items():
         if name not in FILES:raise ValidationError('retained native word observation has an unknown stream')
         parents.append(bind_store_source(Path(artifact['path']),'physical-input-document-v1'))
+    context=prior.get('source_context')
+    if context is not None:
+        from .native_word_source_evidence import bind_native_source_evidence
+        bind_native_source_evidence(context,parents)
     require_store_sources_unchanged(parents)
     execution=dict(status='reused',invoked_tool=False,
         source_observation=dict(path=str(observation_path),sha256=file_sha256(observation_path)),
         original_execution=prior['execution'])
     output.mkdir(parents=True)
     return _record_native_word_observation(fpga,checkpoint,prior['checkpoint']['sha256'],source_directory,
-        preparation,output,parents,execution,file_references=prior['files'])
+        preparation,output,parents,execution,file_references=prior['files'],source_context=context)
 
 
-def _record_native_word_observation(fpga,checkpoint,checkpoint_sha,source_directory,preparation,output,parents,execution,*,file_references=None):
+def _record_native_word_observation(fpga,checkpoint,checkpoint_sha,source_directory,preparation,output,parents,execution,*,file_references=None,source_context=None):
     """Validate complete streams and publish their observation without tool work."""
     files={}if file_references is None else dict(file_references)
     if file_references is not None and set(files)!=set(FILES):
@@ -193,6 +216,7 @@ def _record_native_word_observation(fpga,checkpoint,checkpoint_sha,source_direct
         fixed_clock_control_timing_met=control_met,
         source_generations=[dict(path=str(p.path),schema=p.schema,generation=list(p.generation))for p in parents],
         scope='routed-native-clock-and-interface-observations; global STA and original member accounting remain separate')
+    if source_context is not None:report['source_context']=source_context
     require_store_sources_unchanged(parents)
     (output/'native-observation.json').write_text(json.dumps(report,sort_keys=True,indent=2)+'\n')
     return report
