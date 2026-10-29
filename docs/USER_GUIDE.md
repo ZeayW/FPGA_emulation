@@ -434,6 +434,11 @@ the new runtime directory. Bundle validation follows the sealed runtime and
 physical artifact paths, including independently resumed directories.
 A completed native analysis publishes its actual `pass`, `fail`, or `incomplete`
 outcome; finalization returns exit code 2 for either non-passing outcome.
+To continue after completed mapping, supply `--prepared-frontend` without
+`--prepared-timing`; Phase 2 runs again using the selected timing inputs while
+the checked Phase 1 database remains read-only. Supplying both boundaries also
+reuses Phase 2. Fresh Phase 2 extraction requires the device FF control supplement
+in its pre-placement TimingDB; missing control data is rejected before synthesis.
 
 The old `phase2` placement spike, generic `placement` commands and single-FPGA
 `vpr fpga-open`/`full-open` flow are retired together with their whole-graph

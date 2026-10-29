@@ -78,10 +78,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             timing = root / "timing.json"
-            write_json(
-                timing,
-                {"schema": "emuflow.xilinx-preplacement-timing-db/v1"},
-            )
+            write_mock_xilinx_timing_contract(timing)
             with (
                 patch(
                     "emuflow.multi_fpga_flow.resolve_native_executable",
@@ -110,7 +107,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
             with self.subTest(strategy=strategy), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 timing = root / "timing.json"
-                write_json(timing, {"schema": "emuflow.xilinx-preplacement-timing-db/v1"})
+                write_mock_xilinx_timing_contract(timing)
                 with (
                     patch("emuflow.multi_fpga_flow.resolve_native_executable", return_value=str(FAKE_OPENSTA)),
                     patch("emuflow.multi_fpga_flow.check_opensta_engine_version"),
@@ -195,10 +192,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 vtr_timing,
                 {"schema": "emuflow.architecture-timing-db/v1"},
             )
-            write_json(
-                xilinx_timing,
-                {"schema": "emuflow.xilinx-preplacement-timing-db/v1"},
-            )
+            write_mock_xilinx_timing_contract(xilinx_timing)
 
             with self.assertRaisesRegex(EmuFlowError, "unsupported multi-FPGA mapping profile"):
                 _validate_mapping_timing_contract("vtr-hard-blocks", vtr_timing)
@@ -706,10 +700,7 @@ if os.environ.get("EMUFLOW_STA_THROUGH_NETS"):
             temporary = Path(temporary_directory)
             root = temporary / "multi"
             timing = temporary / "xilinx-timing.json"
-            write_json(
-                timing,
-                {"schema": "emuflow.xilinx-preplacement-timing-db/v1"},
-            )
+            write_mock_xilinx_timing_contract(timing)
             with patch(
                 "emuflow.multi_fpga_flow.validate_openparf_runtime",
                 side_effect=EmuFlowError("missing PyTorch runtime"),

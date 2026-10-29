@@ -267,3 +267,34 @@ def test_passing_standalone_report_cannot_hide_broken_v4_budgets(clock_boundarie
         with pytest.raises(ValidationError,match='budget|version|payload'):
             operation()
     assert not(tmp_path/'bad/front').exists()
+
+
+def test_frontend_only_continuation_reuses_mapping_and_enters_fresh_sta(tmp_path, boundaries):
+    from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract
+    class ReachedTiming(Exception):pass
+    timing_model=write_mock_xilinx_timing_contract(tmp_path/'device-timing.json')
+    with patch('emuflow.multi_fpga_flow.run_phase1',side_effect=AssertionError('repeated mapping')), \
+         patch('emuflow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream',side_effect=AssertionError('repeated synthesis')), \
+         patch('emuflow.multi_fpga_flow.run_opensta_path_database',side_effect=ReachedTiming)as sta, \
+         patch('emuflow.multi_fpga_flow.resolve_native_executable',return_value='/usr/bin/true'), \
+         patch('emuflow.multi_fpga_flow.check_opensta_engine_version'):
+        with pytest.raises(ReachedTiming):
+            run_multi_fpga_flow(output_dir=tmp_path/'continued',prepared_frontend=boundaries[0],
+                clock_periods={'clk':10.},architecture_timing_db=timing_model)
+    assert sta.call_args.kwargs['architecture_timing_db_path']==timing_model
+    assert (tmp_path/'continued/frontend/phase1/design.emuir.sqlite').resolve()==boundaries[0]/'design.emuir.sqlite'
+    assert not (tmp_path/'continued/timing/path-database.json').exists()
+
+
+def test_missing_device_controls_is_rejected_before_synthesis(tmp_path):
+    from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract
+    from tests.partition_fixture import run_multi_fpga_flow_fixture
+    path=write_mock_xilinx_timing_contract(tmp_path/'old-device-timing.json')
+    value=read_json(path);value.pop('ff_control_timing');write_json(path,value)
+    with patch('emuflow.multi_fpga_flow.run_xilinx_ultrascaleplus_yosys_stream')as synth:
+        with pytest.raises(ValidationError,match='FF control timing'):
+            run_multi_fpga_flow_fixture(platform_path=DEFAULT_PLATFORM_PATH,output_dir=tmp_path/'flow',
+                sources=[ROOT/'examples/rtl/counter.v'],top='counter',clocks=['clk'],clock_periods={'clk':10.},
+                architecture_timing_db=path,partition_provider='tritonpart')
+        synth.assert_not_called()
+    assert not (tmp_path/'flow').exists()

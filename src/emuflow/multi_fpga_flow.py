@@ -117,6 +117,7 @@ def _schedule_has_entries(schedule_path: Path) -> bool:
 def _validate_mapping_timing_contract(
     mapping_profile: str,
     timing_db_path: Optional[Path],
+    *, require_device_controls: bool = True,
 ) -> None:
     """Require the maintained Xilinx pre-placement contract before synthesis."""
     if mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
@@ -128,12 +129,19 @@ def _validate_mapping_timing_contract(
         )
     expected_schema = XILINX_PREPLACEMENT_TIMING_SCHEMA
 
-    observed_schema = read_json(timing_db_path).get("schema")
+    timing_db = read_json(timing_db_path)
+    observed_schema = timing_db.get("schema")
     if observed_schema != expected_schema:
         raise EmuFlowError(
             f"mapping profile {mapping_profile!r} requires Architecture "
             f"TimingDB schema {expected_schema!r}, got {observed_schema!r}"
         )
+    if require_device_controls:
+        from .xilinx_preplacement_timing import validate_xilinx_preplacement_timing_db
+        validate_xilinx_preplacement_timing_db(timing_db)
+        if timing_db.get("ff_control_timing") is None:
+            raise ValidationError("pre-placement TimingDB lacks device FF control timing; "
+                "rebuild it with --ff-control-timing before starting RTL synthesis")
 
 def _resolve_partition_openroad(
     partition_provider: str,
@@ -1379,7 +1387,8 @@ def _compile_preflight(ctx: _CompileContext):
                     if pins.get(pin["package_pin"], (None,))[0] != pin["site"]:
                         raise ValidationError("Chimew native package geometry does not cover the fixed P/N wiring")
     _validate_mapping_timing_contract(
-        ctx.mapping_profile, ctx.architecture_timing_db
+        ctx.mapping_profile, ctx.architecture_timing_db,
+        require_device_controls=ctx.prepared_timing is None and ctx.timing_paths is None,
     )
     ctx.internal_timing_database = ctx.timing_paths is None
     if ctx.partition_provider == "patron" and not ctx.internal_timing_database:
@@ -1515,13 +1524,18 @@ def _compile_frontend(ctx: _CompileContext):
     ctx.frontend_report: Optional[Dict[str, Any]] = None
     synthesized_json_sha256: Optional[str] = None
     if ctx.prepared_frontend is not None or ctx.prepared_timing is not None:
-        if ctx.prepared_frontend is None or ctx.prepared_timing is None or source_list or ctx.yosys_json is not None:
-            raise EmuFlowError("prepared continuation requires both Phase 1 and Phase 2 boundaries and no synthesis inputs")
-        from .prepared_inputs import bind_prepared_inputs
-        ctx.frontend_report, ctx.timing_report = bind_prepared_inputs(
-            ctx.prepared_frontend, ctx.prepared_timing, ctx.phase1_root,
-            ctx.output_dir / "timing", ctx.platform_path, ctx.clock_periods, ctx.mapping_profile,
-        )
+        if ctx.prepared_frontend is None or source_list or ctx.yosys_json is not None:
+            raise EmuFlowError("prepared continuation requires a Phase 1 boundary and no synthesis inputs")
+        from .prepared_inputs import bind_prepared_inputs, bind_prepared_frontend
+        if ctx.prepared_timing is None:
+            ctx.frontend_report = bind_prepared_frontend(ctx.prepared_frontend, ctx.phase1_root,
+                ctx.platform_path, ctx.clock_periods, ctx.mapping_profile)
+            ctx.timing_report = None
+        else:
+            ctx.frontend_report, ctx.timing_report = bind_prepared_inputs(
+                ctx.prepared_frontend, ctx.prepared_timing, ctx.phase1_root,
+                ctx.output_dir / "timing", ctx.platform_path, ctx.clock_periods, ctx.mapping_profile,
+            )
     else:
         if ctx.yosys_json is not None:
             if source_list:

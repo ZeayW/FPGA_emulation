@@ -164,9 +164,8 @@ def validate_prepared_timing_boundary(frontend, timing, clock_periods):
     return report
 
 
-def bind_prepared_inputs(frontend, timing, phase1_out, timing_out, platform_path,
-                         clock_periods: Mapping[str, float], mapping_profile):
-    frontend, timing = Path(frontend).resolve(), Path(timing).resolve()
+def _prepared_frontend_context(frontend, platform_path, clock_periods, mapping_profile):
+    frontend = Path(frontend).resolve()
     phase1 = frontend / "phase1" if (frontend / "phase1").is_dir() else frontend
     source_ir = phase1 / "design.emuir.sqlite"
     report_path = phase1 / "phase1_report.json"
@@ -188,6 +187,30 @@ def bind_prepared_inputs(frontend, timing, phase1_out, timing_out, platform_path
         f.part for f in platform.fpgas
     }:
         raise ValidationError("prepared Phase 1 device part differs from the selected platform")
+    return source_ir, report, platform
+
+
+def _publish_prepared_frontend(source_ir, report, platform, phase1_out):
+    phase1_out.mkdir(parents=True, exist_ok=True)
+    (phase1_out / "design.emuir.sqlite").symlink_to(source_ir)
+    write_json(phase1_out / "platform.normalized.json", platform.to_dict())
+    bound_report = {**report, "platform": platform.name,
+                    "continuation": {"mode": "read-only-indexed-boundary", "source": str(source_ir)}}
+    write_json(phase1_out / "phase1_report.json", bound_report, compact=True)
+    return bound_report
+
+
+def bind_prepared_frontend(frontend, phase1_out, platform_path, clock_periods, mapping_profile):
+    """Reuse completed mapping while allowing Phase 2 to run with current inputs."""
+    return _publish_prepared_frontend(*_prepared_frontend_context(
+        frontend, platform_path, clock_periods, mapping_profile), phase1_out)
+
+
+def bind_prepared_inputs(frontend, timing, phase1_out, timing_out, platform_path,
+                         clock_periods: Mapping[str, float], mapping_profile):
+    timing = Path(timing).resolve()
+    source_ir, report, platform = _prepared_frontend_context(
+        frontend, platform_path, clock_periods, mapping_profile)
     database = read_json(timing / "path-database.json")
     if database.get("schema") not in _INDEXED_SCHEMAS or database.get("design") != report["design"]:
         raise ValidationError("prepared Phase 2 must be the indexed database for this design")
@@ -210,9 +233,7 @@ def bind_prepared_inputs(frontend, timing, phase1_out, timing_out, platform_path
     if database.get('schema') == CLOCK_SCHEMA:
         # A standalone report cannot bypass the new per-path clock relation.
         timing_report = {**timing_report, **_published_timing_report(timing,database,weights,clock_periods)}
-    phase1_out.mkdir(parents=True, exist_ok=True)
     timing_out.mkdir(parents=True, exist_ok=True)
-    (phase1_out / "design.emuir.sqlite").symlink_to(source_ir)
     for name, value in (("path-database.json", database), ("partition-net-weights.json", weights)):
         # Payload names must remain local to the bound manifest. Reuse their
         # immutable bytes via symlinks; never copy or rehash a full population.
@@ -225,11 +246,8 @@ def bind_prepared_inputs(frontend, timing, phase1_out, timing_out, platform_path
                 raise ValidationError("prepared indexed payload is missing")
             (timing_out / relative).symlink_to(source)
         write_json(timing_out / name, value, compact=True)
-    write_json(phase1_out / "platform.normalized.json", platform.to_dict())
     write_json(timing_out / "experiment-timing-report.json", timing_report, compact=True)
-    bound_report = {**report, "platform": platform.name,
-                    "continuation": {"mode": "read-only-indexed-boundary", "source": str(source_ir)}}
-    write_json(phase1_out / "phase1_report.json", bound_report, compact=True)
+    bound_report = _publish_prepared_frontend(source_ir, report, platform, phase1_out)
     return bound_report, {
         "status": "pass", "mode": "validated-existing-phase2", "backend": "opensta",
         "sta": timing_report.get("sta", {}), "optimization_enabled": True,
