@@ -11,6 +11,7 @@ from emuflow.native_word_analysis import (
     INDEX_SCHEMA, ROW_SCHEMA, ROLES, _write_projection_request,
     analyze_native_word_network, write_native_word_index,
     export_native_word_checks, verify_native_word_checks,
+    export_native_word_arrivals,
 )
 from emuflow.store_publication import bind_store_source
 from tests.native_build import emuflow_native
@@ -158,6 +159,57 @@ def test_incomplete_native_exports_preserve_the_previous_verification_file(tmp_p
     with pytest.raises(EmuFlowError,match='requires complete observations'):
         export_native_word_checks(index,observations,out)
     assert out.read_text()=='previous\n'
+
+
+def test_arrival_export_uses_rx_visibility_not_tx_load_or_capture_cost(tmp_path):
+    import csv
+    index,observations,_=fixture(tmp_path)
+    output=tmp_path/'arrivals.tsv'
+    export_native_word_arrivals(index,observations,output)
+    with output.open(newline='')as stream:
+        rows=list(csv.DictReader(stream,delimiter='\t'))
+    assert len(rows)==1
+    r=rows[0]
+    assert bytes.fromhex(r['transfer_hex']).decode()=='transfer'
+    assert bytes.fromhex(r['sink_partition_hex']).decode()=='fpga1'
+    assert bytes.fromhex(r['launch_clock_hex']).decode()=='core'
+    assert r['launch_edge']==r['capture_edge']=='1'
+    assert r['reference_window_ps']=='100000'
+    assert r['arrival_status']=='reachable'
+    # Root1ns + one5ns calendar wait + fixed30ns; no capture-local2ns.
+    assert r['maximum_arrival_ps']=='36000'
+
+
+def test_incomplete_observations_cannot_replace_arrival_bounds(tmp_path):
+    index,observations,_=fixture(tmp_path,observed=('fpga0',))
+    output=tmp_path/'arrivals.tsv';output.write_text('previous complete bounds\n')
+    with pytest.raises(EmuFlowError,match='requires complete observations'):
+        export_native_word_arrivals(index,observations,output)
+    assert output.read_text()=='previous complete bounds\n'
+
+
+def test_arrival_export_does_not_turn_an_absent_launch_into_zero_delay(tmp_path):
+    import csv
+    import sqlite3
+    index,observations,_=fixture(tmp_path)
+    with sqlite3.connect(index)as db:
+        db.execute("INSERT INTO transfers VALUES('dormant','fpga0','fpga1',0,8,6)")
+        db.execute("INSERT INTO tx_entries VALUES('fpga0','dormant','unused')")
+        db.execute("INSERT INTO rx_entries VALUES('fpga1','s8','dormant')")
+    for role,lines in [
+        ('tx_costs',[row(0,'unused',source='native_clk',edge=edge,measured=False)for edge in('rise','fall')]),
+        ('captures',[row(-1,f'dut-capture:native_clk:{edge}',kind='rx',source='s8',edge='',measured=False)
+                     for edge in('rise','fall')])]:
+        path=observations['fpga0'if role=='tx_costs'else'fpga1'][role]
+        with path.open('a')as stream:
+            for line in lines:stream.write('\t'.join(line)+'\n')
+    with observations['fpga0']['fanins'].open('a')as stream:
+        stream.write('0\t'+b'unused'.hex()+'\t0\t0\t0\t0\t0\t0\n')
+    output=tmp_path/'arrivals.tsv';export_native_word_arrivals(index,observations,output)
+    with output.open(newline='')as stream:rows=list(csv.DictReader(stream,delimiter='\t'))
+    assert len(rows)==2
+    absent=next(r for r in rows if bytes.fromhex(r['transfer_hex']).decode()=='dormant')
+    assert absent['arrival_status']=='no-causal-launch' and absent['maximum_arrival_ps']==''
 
 
 def test_verification_engine_destination_cannot_overwrite_input(tmp_path):

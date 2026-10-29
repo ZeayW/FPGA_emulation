@@ -129,6 +129,19 @@ def export_native_word_checks(index, observations, output, *, source_bindings=No
         source_bindings=source_bindings,executable=executable,operation='export-word-checks')
 
 
+def export_native_word_arrivals(index, observations, output, *, source_bindings=None, executable=None):
+    """Stream exact per-RX continuous-phase arrival suprema for timed windows.
+
+    Values include TX readiness, calendar waits and fixed link latency, relative
+    to the logical launch edge. Each RX has its own worst phase; these are not
+    simultaneous events, raw routed datapath delays or endpoint slack/TNS.
+    No-causal-launch rows carry no numerical value. All stream owners remain
+    generation-bound, as for the independent-engine witness export.
+    """
+    return _execute_native_word_analysis(index,observations,output,project=True,
+        source_bindings=source_bindings,executable=executable,operation='export-word-arrivals')
+
+
 def _execute_native_word_analysis(index,observations,output,*,project,source_bindings,executable,operation):
     if type(project)is not bool:raise ValidationError('native word projection mode must be Boolean')
     index=Path(index).resolve();output=Path(output).resolve()

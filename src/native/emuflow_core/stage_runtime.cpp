@@ -59,6 +59,7 @@ constexpr RegisteredSchema schemas[] = {
     {"native-word-observation-rows-v1", ArtifactEncoding::kText, 0, 1},
     {"native-word-network-analysis-v1", ArtifactEncoding::kText, 0, 1},
     {"native-word-verification-events-v1", ArtifactEncoding::kText, 0, 1},
+    {"native-word-arrival-bounds-v1", ArtifactEncoding::kText, 0, 1},
     {"native-original-endpoint-request-v1", ArtifactEncoding::kBinary, 0x3151454f4e4d5545ULL, 1},
     {"native-original-endpoint-index-v1", ArtifactEncoding::kSqlite, 0x454d4f45, 1, true,
      "SELECT value FROM metadata WHERE key='schema'","emuflow.native-original-endpoint-index/v1"},

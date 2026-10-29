@@ -70,8 +70,14 @@ struct Part {
   std::uint64_t capture_rows=0;
 };
 JsonRecord Optional(const std::optional<std::int64_t>& value){return value?JsonRecord(*value):JsonRecord();}
+std::string Hex(const std::string& text) {
+  constexpr char digits[]="0123456789abcdef";std::string result;result.reserve(text.size()*2);
+  for(const unsigned char c:text){result+=digits[c>>4];result+=digits[c&15];}return result;
 }
-void AnalyzeNativeWordNetwork(const std::vector<ArtifactRef>& inputs,const std::string& output,bool verification_events) {
+}
+void AnalyzeNativeWordNetwork(const std::vector<ArtifactRef>& inputs,const std::string& output,
+                              bool verification_events,bool arrival_bounds) {
+  Check(!verification_events || !arrival_bounds,"native word numerical export modes conflict");
   Check(inputs.size()>=2 && (inputs.size()-2)%4==0 && inputs.size()<=258,
       "native word analysis stream coverage is invalid");
   for(const auto& input:inputs)input.RequireUnchanged();
@@ -173,19 +179,39 @@ void AnalyzeNativeWordNetwork(const std::vector<ArtifactRef>& inputs,const std::
       {"expected_tx_contexts",expected_contexts},{"observed_tx_contexts",observed_contexts},{"incomplete_entries",unknown_entries},
       {"phase_dependent_entries",dependent_entries},{"untimed_rx_rows",untimed_rx},{"partitions",JsonRecord(std::move(coverage))},
       {"maximum_sampling_cost_ps",JsonRecord()},{"required_reference_period_ps",JsonRecord()},{"setup_model_frequency_mhz",JsonRecord()}};
-  Check(!verification_events || (ready && project),"native word verification export requires complete observations and projection");
+  Check(!(verification_events || arrival_bounds) || (ready && project),"native word numerical export requires complete observations and projection");
   std::unique_ptr<AtomicBinaryWriter> events;
-  if(verification_events){events=std::make_unique<AtomicBinaryWriter>(output,inputs);NativeWordCheckHeader(events->stream());}
+  if(verification_events || arrival_bounds){
+    events=std::make_unique<AtomicBinaryWriter>(output,inputs);
+    if(verification_events)NativeWordCheckHeader(events->stream());
+    else events->stream()<<"window\tlaunch_clock_hex\tlaunch_edge\tcapture_clock_hex\tcapture_edge\treference_window_ps\ttransfer_hex\tsource_partition_hex\tsink_partition_hex\tarrival_status\tmaximum_arrival_ps\n";
+  }
   if(ready && project){
     std::vector<NativeWordPartitionCosts> observations;
     for(auto& p:parts)observations.push_back({p.name,&p.binding,p.clocks,p.catalog.rx_entries,p.missing,p.inputs,p.captures.get()});
     std::uint64_t window_number=0,event_count=0;
     const auto model=ProjectNativeWordNetwork(transfers,observations,windows,word,reference,maximum_repeat,
         [&](const auto& window,const auto& graph){
-          if(events)event_count+=WriteNativeWordWindowChecks(events->stream(),window_number,window,transfers,graph,word);
+          if(verification_events)event_count+=WriteNativeWordWindowChecks(events->stream(),window_number,window,transfers,graph,word);
+          if(arrival_bounds){
+            Check(window.transport.maximum_arrival_ps.size()==transfers.size(),"native word arrival population differs");
+            const auto& w=window.window;
+            for(std::size_t i=0;i<transfers.size();++i){
+              const auto& t=transfers[i];const auto& value=window.transport.maximum_arrival_ps[i];
+              events->stream()<<window_number<<'\t'<<Hex(w.launch.clock)<<'\t'<<static_cast<int>(w.launch.edge)<<'\t'
+                  <<Hex(w.capture.clock)<<'\t'<<static_cast<int>(w.capture.edge)<<'\t'<<w.reference_window_ps<<'\t'
+                  <<Hex(t.id)<<'\t'<<Hex(t.source_partition)<<'\t'<<Hex(t.sink_partition)<<'\t'
+                  <<(value?"reachable":"no-causal-launch")<<'\t';
+              if(value)events->stream()<<*value;
+              events->stream()<<'\n';
+            }
+          }
           ++window_number;
         });
-    if(events){Check(event_count>0,"native word verification has no timed windows");events->Commit();return;}
+    if(events){
+      Check(verification_events?event_count>0:window_number>0,"native word numerical export has no timed windows");
+      events->Commit();return;
+    }
     report["status"]=JsonRecord("setup-model-projected");report["maximum_sampling_cost_ps"]=Optional(model.maximum_sampling_cost_ps);
     report["required_reference_period_ps"]=Optional(model.required_reference_period_ps);
     if(model.required_reference_period_ps && *model.required_reference_period_ps>0)

@@ -46,6 +46,7 @@ constexpr const char* kUsage =
     "  phase7 validate-physical-cells MAPPED PHYSICAL REQUEST SUMMARY\n"
     "  phase7 analyze-word-network INDEX REQUEST OUTPUT [TX FANIN CAPTURE MISSING_RX]...\n"
     "  phase7 export-word-checks INDEX REQUEST OUTPUT [TX FANIN CAPTURE MISSING_RX]...\n"
+    "  phase7 export-word-arrivals INDEX REQUEST OUTPUT [TX FANIN CAPTURE MISSING_RX]...\n"
     "  phase7 index-original-endpoints SELECTOR PAYLOAD SOURCE ASSIGNMENT REQUEST OUTPUT MAPPED... [CONTROL...]\n"
     "  phase7 index-original-lineage INDEX REQUEST OUTPUT [MAPPED LINEAGE]...\n"
     "  phase7 build-launch-clocks ORIGINAL_IR REQUEST TOOL_REQUEST LOGIC... LOCAL... TIMING_INPUT... OUTPUT\n"
@@ -184,10 +185,12 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     for(int i=6;i<argc;++i)inputs.emplace_back(argv[i]);
     return run(Stage::kIndexOriginalLineage,std::move(inputs),argv[5]);
   }
-  if (phase == "phase7" && (operation == "analyze-word-network" || operation == "export-word-checks") && argc>=6 && (argc-6)%4==0) {
+  if (phase == "phase7" && (operation == "analyze-word-network" || operation == "export-word-checks" || operation == "export-word-arrivals") && argc>=6 && (argc-6)%4==0) {
     std::vector<std::string> inputs{argv[3],argv[4]};
     for(int i=6;i<argc;++i)inputs.emplace_back(argv[i]);
-    return run(operation=="analyze-word-network"?Stage::kAnalyzeNativeWordNetwork:Stage::kExportNativeWordChecks,std::move(inputs),argv[5]);
+    const auto stage=operation=="analyze-word-network"?Stage::kAnalyzeNativeWordNetwork:
+        operation=="export-word-checks"?Stage::kExportNativeWordChecks:Stage::kExportNativeWordArrivals;
+    return run(stage,std::move(inputs),argv[5]);
   }
   if (phase == "phase7" && operation == "import-vivado-lineage" && argc >= 9) {
     StageRequest request{Stage::kImportVivadoLineage,{argv[3],argv[4],argv[5]},argv[6]};

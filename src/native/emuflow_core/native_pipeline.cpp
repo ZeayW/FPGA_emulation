@@ -42,6 +42,7 @@ const char* StageName(Stage stage) {
     case Stage::kBuildSourceLutModels: return "phase2.build-lut-models";
     case Stage::kAnalyzeNativeWordNetwork: return "phase7.analyze-word-network";
     case Stage::kExportNativeWordChecks: return "phase7.export-word-checks";
+    case Stage::kExportNativeWordArrivals: return "phase7.export-word-arrivals";
     case Stage::kIndexOriginalEndpoints: return "phase7.index-original-endpoints";
     case Stage::kIndexOriginalLineage: return "phase7.index-original-lineage";
     case Stage::kBuildSourceLaunchClocks: return "phase7.build-launch-clocks";
@@ -103,6 +104,7 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
       return core::OriginalEndpointInputSchemas(refs.empty()?paths[4]:refs[4].path());
     }
     case Stage::kAnalyzeNativeWordNetwork:
+    case Stage::kExportNativeWordArrivals:
     case Stage::kExportNativeWordChecks: {
       const auto count=request.input_artifacts.empty()?request.input_paths.size():request.input_artifacts.size();
       if(count<2 || count>258 || (count-2)%4)
@@ -324,6 +326,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kBuildSourceLutModels: core::BuildSourceLutModels(inputs,output); break;
       case Stage::kAnalyzeNativeWordNetwork: core::AnalyzeNativeWordNetwork(inputs,output); break;
       case Stage::kExportNativeWordChecks: core::AnalyzeNativeWordNetwork(inputs,output,true); break;
+      case Stage::kExportNativeWordArrivals: core::AnalyzeNativeWordNetwork(inputs,output,false,true); break;
       case Stage::kIndexOriginalEndpoints: core::BuildOriginalEndpointIndex(inputs,output); break;
       case Stage::kIndexOriginalLineage: core::BuildOriginalLineageIndex(inputs,output); break;
       case Stage::kBuildSourceLaunchClocks: core::BuildSourceLaunchClocksFromRequest(inputs,output,request.cancelled); break;
@@ -378,6 +381,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kBuildSourceLutModels: schema="source-lut-model-store-v1"; break;
       case Stage::kAnalyzeNativeWordNetwork: schema="native-word-network-analysis-v1"; break;
       case Stage::kExportNativeWordChecks: schema="native-word-verification-events-v1"; break;
+      case Stage::kExportNativeWordArrivals: schema="native-word-arrival-bounds-v1"; break;
       case Stage::kIndexOriginalEndpoints: schema="native-original-endpoint-index-v1"; break;
       case Stage::kIndexOriginalLineage: schema="native-original-lineage-index-v1"; break;
       case Stage::kBuildSourceLaunchClocks: schema="source-launch-clock-store-v1"; break;

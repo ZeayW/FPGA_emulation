@@ -28,6 +28,10 @@ int main(int argc,char** argv) {
     }
     const auto result = SweepContinuousWordPhases(period,nodes,bound);
     JsonRecord cost,witness;
+    std::vector<JsonRecord> arrivals;
+    if (std::string(argv[1]) == "details")
+      for (const auto& value:result.maximum_arrival_ps)
+        arrivals.push_back(value ? JsonRecord(*value) : JsonRecord());
     if (result.maximum_capture_cost_ps) cost = JsonRecord(*result.maximum_capture_cost_ps);
     if (result.witness && std::string(argv[1]) == "details") {
       const auto& w = *result.witness;
@@ -39,6 +43,7 @@ int main(int argc,char** argv) {
     }
     std::cout << JsonRecord(std::map<std::string,JsonRecord>{{"maximum_capture_cost_ps",cost},
         {"repeat_words",result.repeat_words},{"phase_cells",result.phase_cells},
+        {"maximum_arrival_ps",JsonRecord(std::move(arrivals))},
         {"node_recomputations",result.node_recomputations},{"witness",witness}}).Encode() << "\n";
     return 0;
   } catch (const std::exception& error) {

@@ -572,6 +572,17 @@ invalid `set_input_delay` on a pin. Original external DUT inputs require their
 design/environment constraints. Link delay and upstream arrival must not be
 counted again as a PHY pad delay.
 
+For global analysis, `phase7 export-word-arrivals` streams a generation-bound
+arrival envelope for every canonical RX transfer in each timed logical clock
+window. The continuous calendar sweep includes TX readiness, relative word
+order and the fixed link latency; it records a transfer's bound when its load
+changes or its fractional phase interval ends. It does not rescan every node
+at every boundary. A transfer without a causal launch carries an explicit
+`no-causal-launch` record and no numerical delay. Bounds for different transfers
+can occur at different phases. This export supplies global analysis data; it
+does not itself apply implementation budgets, report endpoint TNS, or replace
+raw routed datapath measurements.
+
 Partitions can share the same original DUT clock periods while requiring
 different boundary constraints. For a cut signal entering a partition, its
 arrival depends on the preceding routed logic and resolved link events;

@@ -138,7 +138,13 @@ WordPhaseSweepResult SweepContinuousWordPhases(std::int64_t period,
   const auto prepared = Prepare(period,transfers,maximum_repeat);
   WordPhaseSweepResult result;result.repeat_words = prepared.repeat;
   const auto count = transfers.size();
+  result.maximum_arrival_ps.resize(count);
   std::vector<std::int64_t> roots(count);
+  const auto arrival = [&](std::uint32_t node,std::int64_t load,std::int64_t upper) {
+    const auto value = Integer((Wide(load)+transfers[node].fixed_latency_words)*period+upper);
+    auto& maximum = result.maximum_arrival_ps[node];
+    if (!maximum || value>*maximum) maximum=value;
+  };
   for (std::uint64_t phase=0; phase<prepared.repeat; ++phase) {
     auto loads = Initial(prepared,transfers,phase,prepared.bounds.front(),period,roots,result.node_recomputations);
     using Capture = std::tuple<std::int64_t,std::uint32_t,std::int64_t>;
@@ -164,7 +170,15 @@ WordPhaseSweepResult SweepContinuousWordPhases(std::int64_t period,
           result.witness = WordPhaseSweepWitness{phase,lower,upper,std::get<1>(captures.top()),{}};
         }
       }
-      if (cell+1 == prepared.bounds.size()) continue;
+      if (cell+1 == prepared.bounds.size()) {
+        // A node's load is constant between its own updates. Its arrival
+        // grows with the fractional offset there, so record only the last
+        // left limit before each change and the final cell. Do not scan the
+        // entire graph for every fractional root boundary.
+        for (std::uint32_t node=0;node<count;++node)
+          if (loads[node]) arrival(node,*loads[node],upper);
+        continue;
+      }
       const auto changed = prepared.root_changes.find(upper);
       Check(changed != prepared.root_changes.end(),"continuous word phase cell lacks its root boundary");
       std::priority_queue<std::pair<std::uint32_t,std::uint32_t>,
@@ -184,6 +198,7 @@ WordPhaseSweepResult SweepContinuousWordPhases(std::int64_t period,
         Increment(result.node_recomputations);
         Check(next <= previous,"continuous word phase update is not monotone within its cell sweep");
         if (next == previous) continue;
+        arrival(node,previous,upper);
         loads[node] = next;add_capture(node);
         for (const auto child:prepared.successors[node]) enqueue(child);
       }

@@ -105,9 +105,27 @@ def exhaustive_supremum(nodes,period):
     return best+Fraction(1,4)if best is not None else None
 
 
+def exhaustive_arrivals(nodes,period):
+    """Independent event enumeration for each RX, including unused captures."""
+    repeat = math.lcm(*(item['ratio']//8 for item in nodes))
+    best = [None]*len(nodes)
+    for phase in range(repeat):
+        for quarter in range(1,4*period):
+            offset = Fraction(quarter,4)
+            _,loads = event_enumeration(nodes,period,phase,offset)
+            for i,item in enumerate(nodes):
+                if loads[i] is None:
+                    continue
+                value = offset+(loads[i]+item['latency'])*period
+                if best[i] is None or value>best[i]:
+                    best[i] = value
+    return [v+Fraction(1,4)if v is not None else None for v in best]
+
+
 def test_one_crossing_includes_readiness_word_wait_fixed_arc_and_capture(sweep_kernel):
     result = sweep(sweep_kernel,[node(root=1000,capture=2000)])
     assert result['maximum_capture_cost_ps']==38000
+    assert result['maximum_arrival_ps']==[36000]
     assert result['phase_cells']==2 and result['repeat_words']==1
     assert result['witness']==dict(phase_word=0,lower_offset_ps=0,upper_offset_ps=1000,
                                  capture_transfer=0,load_words=[1])
@@ -144,6 +162,7 @@ def test_exact_relay_word_boundary_and_next_quantum_have_different_loads(sweep_k
 def test_absent_root_contributions_remain_absent_not_zero_or_eliminated(sweep_kernel):
     result = sweep(sweep_kernel,[node(capture=0),node(fanins=[(0,0)],capture=0)])
     assert result['maximum_capture_cost_ps'] is None and result['witness'] is None
+    assert result['maximum_arrival_ps']==[None,None]
     assert result['node_recomputations']==0
     items = [node(capture=0),node(root=0),node(fanins=[(0,100000),(1,0)],capture=0)]
     result = sweep(sweep_kernel,items)
@@ -175,11 +194,25 @@ def test_random_shuffled_graphs_match_complete_rational_event_enumeration(sweep_
         result = sweep(sweep_kernel,shuffled,period=5)
         expected = exhaustive_supremum(shuffled,5)
         assert result['maximum_capture_cost_ps']==expected
+        assert result['maximum_arrival_ps']==exhaustive_arrivals(shuffled,5)
         if result['witness'] is not None:
             w = result['witness'];middle = Fraction(w['lower_offset_ps']+w['upper_offset_ps'],2)
             actual,loads = event_enumeration(shuffled,5,w['phase_word'],middle)
             assert w['load_words']==[loads[i]for i in range(len(shuffled))]
             assert actual+w['upper_offset_ps']-middle==expected
+
+
+def test_arrivals_cover_uncaptured_transfers_and_distinct_worst_phases(sweep_kernel):
+    items = [node(root=1),node(root=3),node(fanins=[(0,0)],capture=2),
+             node(),node(fanins=[(3,0)])]
+    result = sweep(sweep_kernel,items,period=5)
+    assert result['maximum_arrival_ps']==exhaustive_arrivals(items,5)
+    assert result['maximum_arrival_ps'][:2]==[36,38]
+    assert result['maximum_arrival_ps'][3:]==[None,None]
+    w = result['witness']
+    at_witness = [(load+items[i]['latency'])*5+w['upper_offset_ps']
+                  if load is not None else None for i,load in enumerate(w['load_words'])]
+    assert at_witness[1]<result['maximum_arrival_ps'][1]
 
 
 def test_witnesses_match_the_existing_native_continuous_calendar(sweep_kernel,event_kernel):

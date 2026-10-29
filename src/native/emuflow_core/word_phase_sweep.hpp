@@ -28,6 +28,12 @@ struct WordPhaseSweepWitness {
 struct WordPhaseSweepResult {
   std::optional<std::int64_t> maximum_capture_cost_ps;
   std::optional<WordPhaseSweepWitness> witness;
+  // Per-transfer supremum of RX visibility time relative to the declared
+  // logical launch edge, across the full continuous calendar. Includes the
+  // fixed link latency after TX load. Absent means no causal launch from this
+  // family; it is not a zero delay or proof of optimization removal. Different
+  // entries can reach their suprema at different phases.
+  std::vector<std::optional<std::int64_t>> maximum_arrival_ps;
   std::uint64_t repeat_words = 1, phase_cells = 0, node_recomputations = 0;
 };
 // Exact continuous-calendar kernel for an explicitly integral time quantum.
