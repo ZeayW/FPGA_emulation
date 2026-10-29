@@ -3,9 +3,23 @@
 # The caller loads and seals that I/O environment before using this view.
 source [file join [file dirname [info script]] native_word_timing.tcl]
 
+proc emuflow_native_word_rx_group_has_path {entries capture capture_edge} {
+  emuflow_word_phase_readonly
+  if {[llength $entries]<=1} {return 1}
+  set pins [list]
+  foreach entry $entries {
+    foreach pin [lindex $entry 1] {lappend pins $pin}
+  }
+  if {![llength $pins]} {return 1}
+  return [expr {[llength [get_timing_paths -quiet -max_paths 1 -nworst 1 \
+      -from $pins -${capture_edge}_to [list $capture]]]>0}]
+}
+
 proc emuflow_native_word_capture_costs {sources stream inputs progress} {
   emuflow_word_phase_readonly
   set count 0
+  set rx_entries [list]
+  dict for {origin pins} [dict get $sources rx] {lappend rx_entries [list $origin $pins]}
   foreach capture [dict get $sources dut_clocks] {
     foreach capture_edge {rise fall} {
       set query "dut-capture:[get_property NAME $capture]:$capture_edge"
@@ -18,15 +32,26 @@ proc emuflow_native_word_capture_costs {sources stream inputs progress} {
           incr count
         }
       }
-      dict for {origin pins} [dict get $sources rx] {
-        set paths [get_timing_paths -quiet -max_paths 1 -nworst 1 \
-            -from $pins -${capture_edge}_to [list $capture]]
-        emuflow_native_word_cost_row $stream -1 $query rx $origin "" $paths
-        incr count
-        if {$count%100==0} {
-          flush $stream
-          puts $progress "[binary encode hex [encoding convertto utf-8 $query]]\t$count"
-          flush $progress
+      # A native query over a small RX group can prove that all its members
+      # have no timed path to this capture edge. Preserve every origin row;
+      # groups with a path retain the original per-origin witness queries.
+      for {set begin 0} {$begin<[llength $rx_entries]} {incr begin 64} {
+        set group [lrange $rx_entries $begin [expr {$begin+63}]]
+        set rx_has_path [emuflow_native_word_rx_group_has_path $group $capture $capture_edge]
+        foreach entry $group {
+          lassign $entry origin pins
+          set paths [list]
+          if {$rx_has_path} {
+            set paths [get_timing_paths -quiet -max_paths 1 -nworst 1 \
+                -from $pins -${capture_edge}_to [list $capture]]
+          }
+          emuflow_native_word_cost_row $stream -1 $query rx $origin "" $paths
+          incr count
+          if {$count%100==0} {
+            flush $stream
+            puts $progress "[binary encode hex [encoding convertto utf-8 $query]]\t$count"
+            flush $progress
+          }
         }
       }
       dict for {name port} $inputs {

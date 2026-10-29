@@ -42,6 +42,59 @@ puts [llength $queries]
     assert sum(row['measurement']=='native-no-timed-path'for row in rows)==8
 
 
+@pytest.mark.parametrize('extra_origins',[15,130])
+def test_empty_native_rx_groups_keep_every_origin_and_other_edge_witness(tmp_path,extra_origins):
+    source=ROOT/'scripts/vivado/native_word_captures.tcl'
+    done,path=execute(tmp_path,f'source {_tcl_word(source)}\nset extra_origins {extra_origins}\n'+r'''
+set sources [emuflow_native_word_sources $role_path]
+for {set i 0} {$i<$extra_origins} {incr i} {dict set sources rx s[expr {$i+8}] other$i/C}
+rename get_property saved_get_property
+proc get_property {args} {
+ if {[lindex $args end] eq "other_path"} {
+  if {[lindex $args end-1] eq "STARTPOINT_PIN"} {return other0/C}
+  return [saved_get_property {*}[lreplace $args end end rx_path]]
+ }
+ return [saved_get_property {*}$args]
+}
+rename get_timing_paths saved_get_timing_paths
+proc get_timing_paths {args} {
+ lappend ::queries $args
+ set from_at [lsearch -exact $args -from]
+ if {$from_at<0} {return dut_path}
+ set from [lindex $args [expr {$from_at+1}]]
+ set rise [expr {[lsearch -exact $args -rise_to]>=0}]
+ set capture [lindex $args end]
+ if {$rise && [lsearch -exact $from rx/C]>=0} {return rx_path}
+ if {!$rise && $capture eq "core_half" && [lsearch -exact $from other0/C]>=0} {return other_path}
+ return {}
+}
+set stream [open $output_path w]
+emuflow_native_word_cost_header $stream
+set progress [open "$output_path.progress" w]
+puts [emuflow_native_word_capture_costs $sources $stream {} $progress]
+close $progress
+close $stream
+puts [llength $queries]
+puts [llength $constraints]
+''')
+    origins=extra_origins+1
+    row_count=16+4*origins
+    query_count=16+3*min(origins,64)+4*((origins+63)//64)
+    assert not done.stderr and done.stdout.splitlines()==[str(row_count),str(query_count),'0']
+    with path.open(newline='')as stream:rows=list(csv.DictReader(stream,delimiter='\t'))
+    rx=[row for row in rows if row['source_kind']=='rx']
+    assert len(rows)==row_count and len(rx)==4*origins
+    assert {bytes.fromhex(row['source_hex']).decode()for row in rx}=={f's{i}'for i in range(7,extra_origins+8)}
+    for row in rx:
+        query=bytes.fromhex(row['query_hex']).decode()
+        origin=bytes.fromhex(row['source_hex']).decode()
+        measured=(query.endswith(':rise')and origin=='s7')or(
+            query=='dut-capture:core_half:fall'and origin=='s8')
+        assert (row['measurement']=='native-clock-aware-reference')==measured
+        if measured:assert float(row['data_ns'])==6.
+        else:assert all(row[key]==''for key in ('data_ns','sampling_cost_ns','start_hex','end_hex'))
+
+
 def test_state_hold_excludes_primary_io_and_does_not_change_constraints(tmp_path):
     source = ROOT/'scripts/vivado/native_word_captures.tcl'
     done,path = execute(tmp_path,f'source {_tcl_word(source)}\n'+r'''
