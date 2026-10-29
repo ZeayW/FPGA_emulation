@@ -10,7 +10,7 @@ from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
 from emuflow.flow.native_compile import _request
 from emuflow.partition.partition import (DEFAULT_PARTITION_CUT_MODE, DEFAULT_PATRON_ALGORITHM_VERSION)
 from emuflow.partition.phase3 import run_phase3
-from emuflow.partition.phase3_native import write_request
+from emuflow.partition.phase3_native import _configuration_value
 
 
 @pytest.mark.parametrize("command", [
@@ -36,8 +36,8 @@ def test_api_and_native_request_share_the_same_defaults(tmp_path):
         assert "patron_flow_refinement" not in parameters
     import emuflow.partition.partition as retired_host
     assert not hasattr(retired_host, "build_clusters")
-    assert inspect.signature(write_request).parameters["patron_max_moves"].default is None
-    assert "flow_refinement" not in inspect.signature(write_request).parameters
+    assert inspect.signature(_configuration_value).parameters["patron_max_moves"].default is None
+    assert "flow_refinement" not in inspect.signature(_configuration_value).parameters
     value, _ = _request((), {"output_dir": tmp_path / "flow"})
     assert value["options"]["patron_algorithm_version"] == 14
     assert value["options"]["cut_mode"] == "static-exact-combinational"

@@ -156,16 +156,17 @@ def test_native_compile_executes_whole_frontend_without_starting_its_python_adap
     adapter=tmp_path/'source/emuflow/flow/native_compile_adapter.py'
     text=adapter.read_text()
     # This fixture qualifies the complete frontend boundary. Its later graph
-    # test doubles use a different tiny input, so stop before joining them.
+    # test doubles use a different tiny input. Stop at native partition-policy
+    # admission with no configuration, before joining those inputs.
     marker='# FIXTURE_CONTROL_STATE_READY';assert marker in text
-    text=text.replace(marker, "if a.stage=='preflight':\n state.pop('native_frontend_input_request',None);state.pop('native_frontend_input_generation',None)\n state.update(internal_timing_database=False,prepared_timing=None)\n state.update(json.loads(pathlib.Path("+repr(str(fields))+").read_text()))\nif a.stage=='frontend':raise AssertionError('Python migrated frontend started')\nif a.stage=='partition-policy':\n assert state['frontend_report'][0]=='frontend-report'\n assert 'native_frontend_request' not in state\n raise RuntimeError('FRONTEND_BOUNDARY_OBSERVED')\n"+marker)
+    text=text.replace(marker, "if a.stage=='preflight':\n state.pop('native_frontend_input_request',None);state.pop('native_frontend_input_generation',None)\n state.update(internal_timing_database=False,prepared_timing=None)\n state.update(json.loads(pathlib.Path("+repr(str(fields))+").read_text()))\n state.pop('native_phase3_configuration',None)\nif a.stage=='frontend':raise AssertionError('Python migrated frontend started')\n"+marker)
     adapter.write_text(text)
     result=subprocess.run([native,'compile',str(compile_request)],capture_output=True,text=True,timeout=20)
-    assert result.returncode!=0 and 'FRONTEND_BOUNDARY_OBSERVED' in result.stderr,result.stderr
+    assert result.returncode!=0 and 'native partition configuration policy is missing' in result.stderr,result.stderr
     report=json.loads((tmp_path/'out/native-compile-result.json').read_text())
     assert next(row for row in report['stages'] if row['stage']=='frontend')['implementation_id']=='native-rtl-frontend-v1'
     assert [row['stage'] for row in report['stages']]==['preflight','frontend','timing-policy','timing','partition-policy']
-    assert 'frontend' not in (tmp_path/'out/calls').read_text().splitlines()
+    assert (tmp_path/'out/calls').read_text().splitlines()==['preflight']
     assert not config.exists()
     assert (root/'phase1_report.json').is_file()
 
