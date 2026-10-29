@@ -20,6 +20,7 @@
 #include "flow/native_pipeline.hpp"
 #include "common/tool_runtime.hpp"
 #include "flow/compile.hpp"
+#include "board/model.hpp"
 #include "flow/route_policy.hpp"
 #include "flow/signoff.hpp"
 #include "flow/comparison.hpp"
@@ -59,6 +60,7 @@ constexpr const char* kUsage =
     "  check-runtime [SCHEMA]\n"
     "  publish-store REQUEST OUTPUT\n"
     "  compile REQUEST_JSON\n"
+    "  board normalize INPUT OUTPUT\n"
     "  phase7c run FLOW_ROOT OPENSTA [LAUNCHER_REFERENCE [SPLIT_ROOT PHYSICAL_ROOT RUNTIME_ROOT]]\n"
     "  phase1 prepare-configuration REQUEST DIRECTORY\n"
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
@@ -386,6 +388,9 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     if(argc>=9)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[8],argc==9?"patron-initial-columns-v1":"patron-output-v1"));
     if(argc==10)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[9],"patron-cluster-order-v1"));
     return Finish(emuflow::core::FinalizePartitionSemantics(inputs,argv[7]),report);
+  }
+  if(argc==5 && std::string(argv[1])=="board" && std::string(argv[2])=="normalize") {
+    return Finish(emuflow::core::NormalizeBoardArtifact(emuflow::core::ArtifactRef::Bind(argv[3],"boarddb-v1"),argv[4]),report);
   }
   if(argc==5 && std::string(argv[1])=="phase1" && std::string(argv[2])=="prepare-configuration") {
     ToolSignals signals;return Finish(emuflow::core::PrepareFrontendConfiguration(emuflow::core::ArtifactRef::Bind(argv[3],"frontend-configuration-request-v1"),argv[4],&tool_cancelled),report);

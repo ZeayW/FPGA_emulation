@@ -1,3 +1,4 @@
+#include "board/model.hpp"
 #include "common/artifact_io.hpp"
 #include "common/bounded_json.hpp"
 #include "common/hash.hpp"
@@ -196,10 +197,10 @@ struct Inputs {
     Check(roles.count("timing") == roles.count("timing_selector") &&
               roles.count("weights") == roles.count("weight_selector"),
           "unpaired timing source");
-    D raw(D::Read(roles.at("board")));
-    Check(D(raw.Token("platform")).Text("name") ==
-              D(b.Token("platform")).Text("name"),
-          "normalized board namespace disagrees");
+    const auto normalized = NormalizeBoard(D::Read(roles.at("board")));
+    RequireEquivalentJson(compare, board, normalized,
+                          "normalized board contract differs from its source");
+    board = normalized;
   }
 };
 void Candidate(const fs::path &output, Inputs &in, D &facts) {

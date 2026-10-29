@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from emuflow.common.paths import REPOSITORY_ROOT
+from emuflow.common.paths import PACKAGE_ROOT, REPOSITORY_ROOT
 
 import os
 import sys
@@ -22,7 +22,12 @@ def native_install_roots() -> tuple[Path, ...]:
         # An explicit installation is authoritative, including missing tools.
         return (Path(configured).expanduser().resolve(),)
 
-    roots.append(REPO_ROOT / "build" / "native" / "install")
+    if PACKAGE_ROOT.resolve() == (REPO_ROOT / "lib/emuflow").resolve():
+        # Root installs keep this optional API beside the native bin directory.
+        # Bind its own prefix before considering a launcher or source checkout.
+        roots.append(REPO_ROOT)
+    else:
+        roots.append(REPO_ROOT / "build" / "native" / "install")
 
     launcher = Path(sys.argv[0]).expanduser()
     if launcher.parent.name == "bin":

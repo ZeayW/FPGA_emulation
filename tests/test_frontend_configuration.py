@@ -114,7 +114,7 @@ def test_rtl_script_matches_maintained_mapping_contract_and_source_receipts(tmp_
 
 @pytest.mark.parametrize('damage', ['mode', 'schema', 'duplicate', 'unknown', 'top', 'strategy',
     'source', 'include', 'define', 'checksum', 'checksum-coverage', 'checksum-empty',
-    'mixed-json', 'relative', 'clock', 'profile', 'board-generation', 'existing'])
+    'mixed-json', 'relative', 'clock', 'profile', 'board-generation', 'host-capacity', 'host-topology', 'existing'])
 def test_invalid_configuration_cannot_publish_a_request(tmp_path, damage):
     value = configuration(tmp_path)
     if damage == 'mode': value['mode'] = 'legacy'
@@ -133,6 +133,8 @@ def test_invalid_configuration_cannot_publish_a_request(tmp_path, damage):
     if damage == 'clock': value['clocks'] = [True]
     if damage == 'profile': value['mapping_profile'] = 'legacy'
     if damage == 'board-generation': value['board_generation'][2] += 1
+    if damage == 'host-capacity': value['platform']['fpgas'][0]['effective_capacity']['lut'] += 1
+    if damage == 'host-topology': value['platform']['links'][0]['data_lanes_per_direction'] += 1
     if damage == 'existing':
         (tmp_path/'request').mkdir(); (tmp_path/'request/native-frontend-request.bin').write_bytes(b'keep')
     result, target = invoke(value, tmp_path, duplicate=damage=='duplicate')

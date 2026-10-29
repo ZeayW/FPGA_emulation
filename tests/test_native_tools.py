@@ -14,6 +14,17 @@ from emuflow.common.native_tools import (
 
 
 class NativeToolsTest(unittest.TestCase):
+    def test_installed_api_finds_its_own_native_prefix_without_environment(self):
+        from emuflow.common import native_tools
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix=Path(temporary)/"install"
+            binary=prefix/"bin/emuflow-native"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("#!/bin/sh\nexit 0\n");binary.chmod(0o755)
+            with patch.dict(os.environ,{},clear=True), patch.object(native_tools,"REPO_ROOT",prefix), patch.object(
+                    native_tools,"PACKAGE_ROOT",prefix/"lib/emuflow"):
+                self.assertEqual(resolve_native_executable("emuflow-native"),str(binary.resolve()))
+
     def test_default_symlink_executes_beside_its_runtime_resources(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

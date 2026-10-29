@@ -47,7 +47,7 @@ def test_configuration_matches_independent_reference_and_binary_policy(inputs, t
     assert (generated.parent/'candidate-policy.bin').read_bytes() == (reference.parent/'candidate-policy.bin').read_bytes()
 
 
-@pytest.mark.parametrize('damage', ['generation', 'version', 'duplicate-role', 'unknown-options', 'bound-source', 'existing'])
+@pytest.mark.parametrize('damage', ['generation', 'version', 'duplicate-role', 'unknown-options', 'bound-source', 'host-capacity', 'host-topology', 'existing'])
 def test_configuration_rejects_invalid_sources_without_publishing(inputs, tmp_path, damage):
     ir, board, config = options(inputs, tmp_path)
     encoded, _ = _configuration_value(ir.path, board, **config)
@@ -57,6 +57,8 @@ def test_configuration_rejects_invalid_sources_without_publishing(inputs, tmp_pa
     elif damage == 'duplicate-role': value['sources'].append(value['sources'][0])
     elif damage == 'unknown-options': value['options']['implicit-fallback'] = True
     elif damage == 'bound-source': board.write_text(board.read_text() + '\n')
+    elif damage == 'host-capacity': value['board']['fpgas'][0]['effective_capacity']['lut'] += 1
+    elif damage == 'host-topology': value['board']['links'][0]['data_lanes_per_direction'] += 1
     settings = tmp_path/'settings.json'; settings.write_text(json.dumps(value))
     output = tmp_path/'rejected'
     if damage == 'existing': output.mkdir(); (output/'prior').write_text('preserved')

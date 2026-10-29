@@ -1,4 +1,5 @@
 # Shared core implementation; paths are relative to src/core.
+board/model.cpp
 flow/native_pipeline.cpp
 partition/patron_refiner.cpp
 partition/static_exact_analyzer.cpp

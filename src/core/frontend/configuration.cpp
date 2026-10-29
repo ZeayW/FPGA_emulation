@@ -1,4 +1,5 @@
 #include "frontend/configuration.hpp"
+#include "board/model.hpp"
 #include "common/artifact_io.hpp"
 #include "common/bounded_json.hpp"
 #include <algorithm>
@@ -299,6 +300,11 @@ struct Configuration {
     RequireEquivalentJson(compare, config.Token("board_generation"),
                           Generation(board_ref),
                           "frontend BoardDB changed during configuration");
+    const auto normalized_board = NormalizeBoard(D::Read(board_ref));
+    RequireEquivalentJson(
+        compare, platform, normalized_board,
+        "frontend normalized BoardDB differs from its source");
+    platform = normalized_board;
     if (mode != "rtl")
       records.push_back(Source("board", board_ref));
     if (mode == "rtl") {

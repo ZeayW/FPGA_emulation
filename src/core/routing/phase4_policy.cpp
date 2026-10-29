@@ -1,3 +1,4 @@
+#include "board/model.hpp"
 #include "common/artifact_io.hpp"
 #include "common/bounded_json.hpp"
 #include "routing/policy.hpp"
@@ -106,6 +107,12 @@ StageResult PreparePhase4Policy(const ArtifactRef &request,
                 "compiled route constraint schema disagrees");
           sources.push_back(*compiled_constraints);
         }
+        const auto normalized_board =
+            NormalizeBoard(D::Read(roles.at("board")));
+        RequireEquivalentJson(
+            compare, board, normalized_board,
+            "Phase 4 normalized board contract differs from its source");
+        board = normalized_board;
         return sources;
       },
       [&](const auto &refs) {

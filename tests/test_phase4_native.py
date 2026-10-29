@@ -198,3 +198,19 @@ def test_raw_null_signature_retains_normalization_semantics(tmp_path):
     report = run_native_phase4(assignment, board, tmp_path/'native', timing_paths=timing,
         frame_slots=16, max_iterations=3, executable=str(emuflow_native()))
     assert report['route_storage']['logical_sha256'] == GOLDEN[False, True]
+
+
+@pytest.mark.parametrize('damage',['capacity','topology'])
+def test_routing_preparation_uses_its_original_board_contract_not_host_fields(tmp_path,damage):
+    from emuflow.routing.phase4_native import prepare_configuration_request
+    _,assignment,board,timing=inputs(tmp_path)
+    settings=prepare_configuration_request(tmp_path/'request.json',board,assignment=assignment,
+        timing_paths=timing,frame_slots=16,max_iterations=3)
+    value=json.loads(settings.read_text())
+    if damage=='capacity':value['board']['fpgas'][0]['effective_capacity']['lut']+=1
+    else:value['board']['links'][0]['data_lanes_per_direction']+=1
+    settings.write_text(json.dumps(value))
+    output=tmp_path/'policy.json'
+    result=subprocess.run([str(emuflow_native()),'phase4','prepare-policy',str(settings),str(output)],capture_output=True,text=True)
+    assert result.returncode!=0 and not output.exists()
+    assert 'normalized board contract differs' in result.stderr

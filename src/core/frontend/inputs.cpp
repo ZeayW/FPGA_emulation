@@ -1,4 +1,5 @@
 #include "frontend/inputs.hpp"
+#include "board/model.hpp"
 #include "common/bounded_json.hpp"
 #include "frontend/report.hpp"
 #include "frontend/yosys_hierarchy.hpp"
@@ -247,6 +248,8 @@ struct Input {
            "normalized effective capacity disagrees");
     }
     Check(seen.size() == raw_parts.size(), "normalized BoardDB omits FPGA");
+    Same(NormalizeBoard(raw.text()), platform,
+         "normalized BoardDB topology/services differ from source");
   }
   std::string Payload(const char *selector_role, const char *store_role,
                       const char *kind, const char *format) {
