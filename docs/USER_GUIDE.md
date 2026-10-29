@@ -424,6 +424,17 @@ for current qualification and optimization limits.
 The indexed provider also supports checked active-run synthesized continuation
 and exports routed timing in one native session without mandatory routed checkpoints.
 
+After independently finishing physical implementation, finalize its report with
+`emuflow multi-fpga finalize-physical --flow <flow> --physical <physical-directory>`.
+This reuses the checked Phase 1--6 artifacts and writes Phase 7C under
+`runtime-final` by default. Use `--global-sta-executable` for a specific OpenSTA
+installation, or `--global-sta-results-dir` to recheck matching saved measurements.
+Saved-result replay retains the verified measurement file and engine log in
+the new runtime directory. Bundle validation follows the sealed runtime and
+physical artifact paths, including independently resumed directories.
+A completed native analysis publishes its actual `pass`, `fail`, or `incomplete`
+outcome; finalization returns exit code 2 for either non-passing outcome.
+
 The old `phase2` placement spike, generic `placement` commands and single-FPGA
 `vpr fpga-open`/`full-open` flow are retired together with their whole-graph
 Bookshelf exporter, greedy placement and generic placement schema.
@@ -648,8 +659,8 @@ See [timing-model scope](global-opensta-qualification.md) and
 Use the [RTL catalog instructions](RTL_BENCHMARKS.md) and checked-in workload
 contracts. Contest communication graphs are not synthesizable RTL.
 
-Store run directories, temporary tool products, local assistant configuration,
-logs, and experiment records outside the public source tree. Consult CLI help
+Store run directories, temporary tool products, logs, and experiment records
+outside the public source tree. Consult CLI help
 for specialized diagnostics; do not treat an old run directory or a partial
 stage as a newly validated full flow.
 

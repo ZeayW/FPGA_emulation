@@ -8,6 +8,7 @@ from pathlib import Path
 import json
 import os
 import sqlite3
+import shutil
 import subprocess
 import tempfile
 
@@ -219,9 +220,13 @@ def verify_native_word_checks(events, directory, *, executable=None, results_dir
     if results_dir is None:
         values=run_native_event_checks(checks(),directory,executable)
         engine_directory=directory
+        evidence_parents=tuple(bind_store_source(engine_directory/name,'native-word-verification-evidence-v1')
+            for name in ('measurements.tsv','opensta.log'))
     else:
         if executable is not None:raise ValidationError('choose live OpenSTA or saved native witness results')
         engine_directory=Path(results_dir).resolve()
+        evidence_parents=tuple(bind_store_source(engine_directory/name,'native-word-verification-evidence-v1')
+            for name in ('measurements.tsv','opensta.log'))
         rows=validate_checks(checks(),require_observation_pairs=False)
         values=read_measurements(engine_directory/'measurements.tsv',rows)
     if not expected or len(values)!=len(expected)or not any(not x for x in expected):
@@ -231,12 +236,27 @@ def verify_native_word_checks(events, directory, *, executable=None, results_dir
         slack=value['slack_ns']
         if not math.isfinite(slack)or(expected[i]and slack < -tolerance)or(not expected[i]and slack >= -tolerance):
             raise ValidationError('independent OpenSTA contradicts a native word witness constraint')
-    require_store_sources_unchanged((parent,))
+    require_store_sources_unchanged((parent,*evidence_parents))
     result=dict(schema='emuflow.native-word-witness-verification/v1',status='verified',checks=len(expected),
         expected_rejections=len(expected)-sum(expected),windows=len(windows),source=dict(path=str(events),sha256=digest,generation=parent.generation),
         engine=read_engine_identity(engine_directory/'opensta.log'),slack_tolerance_ns=tolerance,
         execution='standalone'if results_dir is None else'saved-results',
         scope='Independent worst-phase witness constraints; exhaustive native phase sweep, original path dispositions, physical/control and hold acceptance are separate',
         original_path_sta_acceptance='pending',physical_acceptance='pending')
+    if results_dir is not None and engine_directory!=directory:
+        # A replayed report must carry the measurements it verified, so a
+        # later bundle replay does not depend on an earlier runtime folder.
+        directory.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='.saved-opensta-',dir=directory)as scratch:
+            for name in ('measurements.tsv','opensta.log'):
+                target=directory/name
+                validate_store_destination(target,(parent,*evidence_parents))
+                staged=Path(scratch)/name
+                shutil.copyfile(engine_directory/name,staged)
+                if file_sha256(staged)!=file_sha256(engine_directory/name):
+                    raise ValidationError('saved OpenSTA evidence copy differs')
+            require_store_sources_unchanged((parent,*evidence_parents))
+            for name in ('measurements.tsv','opensta.log'):os.replace(Path(scratch)/name,directory/name)
+    require_store_sources_unchanged((parent,*evidence_parents))
     write_json(directory/'native-word-witness-verification.json',result)
     return result

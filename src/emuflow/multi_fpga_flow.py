@@ -360,6 +360,8 @@ def finalize_multi_fpga_physical_checkpoint(
     physical_root: Path,
     *,
     runtime_directory: str = "runtime-final",
+    global_sta_executable: Optional[str] = None,
+    global_sta_results_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Finish Phase 7C and seal a flow after an independently resumed Phase 7.
 
@@ -434,9 +436,12 @@ def finalize_multi_fpga_physical_checkpoint(
         original_path_database_path=root/"timing/path-database.json",
         physical_summary_path=physical_summary_path,
         routes_path=paths["routes"],
+        global_sta_executable=global_sta_executable,
+        global_sta_results_dir=global_sta_results_dir,
     )
-    if runtime_report.get("status") != "pass":
-        raise ValidationError("resumed physical flow did not close Phase 7C timing")
+    native_analysis = native_analysis_completed(runtime_report)
+    if runtime_report.get("status") != "pass" and not native_analysis:
+        raise ValidationError("resumed physical flow did not complete Phase 7C analysis")
 
     def artifact(path: Path) -> Dict[str, str]:
         checked = _checked_flow_member(root, path, path.name)
@@ -446,8 +451,9 @@ def finalize_multi_fpga_physical_checkpoint(
         }
 
     report: Dict[str, Any] = {
-        "schema": MULTI_FPGA_FLOW_SCHEMA,
-        "status": "pass",
+        "schema": ANALYSIS_FLOW_SCHEMA if native_analysis else MULTI_FPGA_FLOW_SCHEMA,
+        "status": runtime_report["status"] if native_analysis else "pass",
+        **({"execution_status": "pass"} if native_analysis else {}),
         "provider": MULTI_FPGA_FLOW_PROVIDER,
         "architecture_policy": "provider-neutral",
         "runtime": runtime_report,
@@ -478,9 +484,12 @@ def finalize_multi_fpga_physical_checkpoint(
         "partition_net_weights": root / "timing/partition-net-weights.json",
         "cut_segment_qualification": root / "timing/cut-segment-qualification.json",
         "cut_timing_paths": root / "timing/cut-timing-paths.json",
+        "route_store": system_route_store_path(paths["routes"]),
+        "schedule_store": tdm_schedule_store_path(paths["schedule"]),
+        "transport_cost": root / "split/transport-cost.json",
     }
     for name, path in optional.items():
-        if path.is_file() and not path.is_symlink():
+        if path is not None and path.is_file() and not path.is_symlink():
             report["artifacts"][name] = artifact(path)
     report["summary"] = validate_multi_fpga_flow_report(report)
     write_json(root / "multi-fpga-flow-report.json", report)
@@ -1035,6 +1044,13 @@ def validate_multi_fpga_flow_bundle(
             )
         artifact_digests[label] = digest
 
+    def artifact_path(label: str, legacy_path: str) -> Path:
+        reference = artifacts.get(label)
+        if reference is None and report["schema"] == ANALYSIS_FLOW_SCHEMA:
+            raise ValidationError(f"native flow artifact {label!r} is missing")
+        return _checked_flow_member(flow_root,
+            Path(reference["path"] if reference is not None else legacy_path), label)
+
     platform_path = _checked_flow_member(
         flow_root, Path("frontend/phase1/platform.normalized.json"), "platform"
     )
@@ -1146,11 +1162,9 @@ def validate_multi_fpga_flow_bundle(
         raise ValidationError("independent static-exact equivalence replay failed")
 
     platform = Platform.load(platform_path)
-    runtime_contract = read_json(
-        _checked_flow_member(
-            flow_root, Path("runtime/runtime_contract.json"), "runtime contract"
-        )
-    )
+    runtime_contract = read_json(artifact_path("runtime_contract", "runtime/runtime_contract.json"))
+    qor_report_path = artifact_path("qor_report", "runtime/qor_report.json")
+    runtime_root = qor_report_path.parent
     split_manifest = read_json(manifest_path)
     clock_periods = split_manifest.get("clock_periods")
     if not isinstance(clock_periods, dict) or not clock_periods:
@@ -1178,13 +1192,8 @@ def validate_multi_fpga_flow_bundle(
     physical_summary_path = None
     board_link_timing_path = None
     if physical is not None:
-        live_physical = read_json(
-            _checked_flow_member(
-                flow_root,
-                Path("physical/multi-fpga-physical-flow-report.json"),
-                "physical flow report",
-            )
-        )
+        live_physical = read_json(artifact_path("physical_flow_report",
+            "physical/multi-fpga-physical-flow-report.json"))
         physical_matches = (
             live_physical == physical
             if "fpgas" in physical
@@ -1194,11 +1203,7 @@ def validate_multi_fpga_flow_bundle(
             raise ValidationError(
                 "live physical report disagrees with the multi-FPGA flow report"
             )
-        physical_summary_path = _checked_flow_member(
-            flow_root,
-            Path("physical/physical-summary.json"),
-            "physical summary",
-        )
+        physical_summary_path = artifact_path("physical_summary", "physical/physical-summary.json")
         _require_physical_source_timing(_checked_flow_member(
             flow_root, Path('timing/path-database.json'), 'source timing database'))
         with read_physical_summary(physical_summary_path) as summary_view:
@@ -1209,9 +1214,7 @@ def validate_multi_fpga_flow_bundle(
                 flow_root, candidate_link_timing, "board-link timing"
             )
 
-    stored_qor = read_json(
-        _checked_flow_member(flow_root, Path("runtime/qor_report.json"), "QoR report")
-    )
+    stored_qor = read_json(qor_report_path)
     standalone_sta = stored_qor.get("timing", {}).get("global_opensta", {}).get("execution") == "standalone"
     empty_sta = stored_qor.get("timing", {}).get("global_opensta", {}).get("authority") == "no-numerical-checks"
     opensta_result = standalone_sta or empty_sta
@@ -1219,7 +1222,7 @@ def validate_multi_fpga_flow_bundle(
         raise ValidationError("physical terminal validation requires standalone OpenSTA evidence")
     if opensta_result:
         for name in (("measurements.tsv", "opensta.log") if standalone_sta else ("measurements.tsv",)):
-            _checked_flow_member(flow_root, Path("runtime/global-opensta") / name,
+            _checked_flow_member(flow_root, runtime_root / "global-opensta" / name,
                                  "standalone OpenSTA result")
     with tempfile.TemporaryDirectory(prefix="emuflow-flow-validate-") as temporary:
         replay = run_phase7c(
@@ -1234,11 +1237,11 @@ def validate_multi_fpga_flow_bundle(
             physical_summary_path=physical_summary_path,
             original_ir_path=flow_root/"frontend/phase1/design.emuir.sqlite",
             original_path_database_path=flow_root/"timing/path-database.json",
-            original_endpoint_index_path=(flow_root/"runtime/original-endpoints.sqlite")
-                if (flow_root/"runtime/original-endpoints.sqlite").is_file() else None,
+            original_endpoint_index_path=(runtime_root/"original-endpoints.sqlite")
+                if (runtime_root/"original-endpoints.sqlite").is_file() else None,
             routes_path=routes_path if physical_summary_path is not None else None,
             board_link_timing_path=board_link_timing_path,
-            global_sta_results_dir=flow_root / "runtime/global-opensta" if opensta_result else None,
+            global_sta_results_dir=runtime_root / "global-opensta" if opensta_result else None,
             global_timing_engine="opensta",
         )
         replay_qor = read_json(Path(temporary) / "qor_report.json")

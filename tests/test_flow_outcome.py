@@ -143,3 +143,104 @@ def test_finalize_publishes_nonpassing_outcome_and_binds_timing_evidence(tmp_pat
     jsonschema.validate(saved, schema)
     broken = copy.deepcopy(saved); broken["status"] = "pass"
     with pytest.raises(jsonschema.ValidationError): jsonschema.validate(broken, schema)
+
+
+def checkpoint_fixture(tmp_path, monkeypatch, status="incomplete"):
+    """Exercise report ownership; numerical engines have separate integration tests."""
+    s = stages(); value = runtime(status)
+    names = {"frontend": "frontend/phase1/phase1_report.json", "partition": "partition/phase3_report.json",
+             "system_route": "system-route/phase4_report.json", "tdm": "tdm/phase5_report.json",
+             "split": "split/phase6_report.json"}
+    for name, relative in names.items(): write_json(tmp_path/relative, s[name])
+    for relative in ["frontend/phase1/platform.normalized.json", "frontend/phase1/design.emuir.sqlite",
+            "partition/constraints.normalized.json", "partition/assignment.json", "partition/clusters.json",
+            "system-route/route_constraints.normalized.json", "system-route/routes.json", "system-route/routes.sqlite",
+            "tdm/schedule.json", "tdm/schedule.sqlite", "timing/path-database.json"]:
+        write_json(tmp_path/relative, {})
+    write_json(tmp_path/"split/manifest.json", {"clock_periods": {"clk": 100.}})
+    physical_root = tmp_path/"physical-resumed"
+    write_json(physical_root/"multi-fpga-physical-flow-report.json", physical())
+    write_json(physical_root/"physical-summary.json", {})
+    monkeypatch.setattr(flow, "_require_physical_source_timing", lambda p: None)
+    monkeypatch.setattr(flow, "validate_multi_fpga_physical_report", lambda *a: {"status": "pass"})
+    monkeypatch.setattr(flow, "tdm_schedule_store_path", lambda p: p.with_suffix(".sqlite"))
+    monkeypatch.setattr(flow, "system_route_store_path", lambda p: p.with_suffix(".sqlite"))
+    calls = []
+    def phase7c(*args, **kwargs):
+        calls.append((args, kwargs))
+        directory = args[6]; directory.mkdir(parents=True, exist_ok=True)
+        write_json(directory/"runtime_contract.json", {})
+        write_json(directory/"qor_report.json", {"timing": {"global_opensta": {"execution": "standalone"}}})
+        write_json(directory/"native-word-analysis.json", {})
+        write_json(directory/"phase7c_report.json", value)
+        for name in ["measurements.tsv", "opensta.log", "native-word-witness-verification.json"]:
+            p = directory/"global-opensta"/name; p.parent.mkdir(exist_ok=True); p.write_text("fixture evidence\n")
+        return value
+    monkeypatch.setattr(flow, "run_phase7c", phase7c)
+    return value, s, physical_root, calls
+
+
+@pytest.mark.parametrize("status", ["incomplete", "fail"])
+def test_resumed_checkpoint_publishes_completed_outcome_without_repeating_upstream(tmp_path, monkeypatch, status):
+    value, _, physical_root, calls = checkpoint_fixture(tmp_path, monkeypatch, status)
+    saved = flow.finalize_multi_fpga_physical_checkpoint(tmp_path, physical_root,
+        runtime_directory="runtime-final", global_sta_results_dir=tmp_path/"saved-engine")
+    assert saved["schema"] == ANALYSIS_FLOW_SCHEMA
+    assert saved["status"] == saved["summary"]["status"] == status
+    assert saved["execution_status"] == "pass"
+    assert saved["runtime"] == value
+    assert saved["artifacts"]["runtime_contract"]["path"] == "runtime-final/runtime_contract.json"
+    assert saved["artifacts"]["runtime_native_word_analysis"]["path"] == "runtime-final/native-word-analysis.json"
+    assert saved["artifacts"]["route_store"]["path"] == "system-route/routes.sqlite"
+    assert saved["artifacts"]["schedule_store"]["path"] == "tdm/schedule.sqlite"
+    assert len(calls) == 1 and calls[0][1]["global_sta_results_dir"] == tmp_path/"saved-engine"
+    assert json.loads((tmp_path/"multi-fpga-flow-report.json").read_text()) == saved
+
+
+def test_resumed_checkpoint_keeps_failed_execution_fatal(tmp_path, monkeypatch):
+    value, _, physical_root, _ = checkpoint_fixture(tmp_path, monkeypatch)
+    value["execution_status"] = "fail"
+    with pytest.raises(ValidationError, match="complete Phase 7C"):
+        flow.finalize_multi_fpga_physical_checkpoint(tmp_path, physical_root)
+    assert not (tmp_path/"multi-fpga-flow-report.json").exists()
+
+
+@pytest.mark.parametrize("status", ["pass", "incomplete", "fail"])
+def test_finalize_cli_preserves_outcome_and_forwards_independent_engine_choice(tmp_path, monkeypatch, status):
+    calls = []
+    def finalize(*args, **kwargs):
+        calls.append((args, kwargs)); return {"status": status, "summary": {"status": status}}
+    monkeypatch.setattr("emuflow.cli.finalize_multi_fpga_physical_checkpoint", finalize)
+    args = _build_parser().parse_args(["multi-fpga", "finalize-physical", "--flow", str(tmp_path),
+        "--physical", "physical-resumed", "--global-sta-executable", "qualified-sta"])
+    assert _dispatch(args) == (0 if status == "pass" else 2)
+    assert calls[0][1]["global_sta_executable"] == "qualified-sta"
+
+
+def test_bundle_replay_uses_sealed_resumed_runtime_and_physical_paths(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    _, s, physical_root, calls = checkpoint_fixture(tmp_path, monkeypatch)
+    saved = flow.finalize_multi_fpga_physical_checkpoint(tmp_path, physical_root)
+    for relative in ["runtime/runtime_contract.json", "runtime/qor_report.json",
+            "physical/multi-fpga-physical-flow-report.json", "physical/physical-summary.json"]:
+        p = tmp_path/relative; p.parent.mkdir(exist_ok=True); p.write_text("wrong canonical directory\n")
+    monkeypatch.setattr(flow, "validate_phase3_indexed", lambda *a, **kw: copy.deepcopy(s["partition"]["validation"]))
+    monkeypatch.setattr(flow, "validate_phase4", lambda *a, **kw: copy.deepcopy(s["system_route"]["validation"]))
+    monkeypatch.setattr(flow, "validate_phase5", lambda *a, **kw: copy.deepcopy(s["tdm"]["validation"]))
+    monkeypatch.setattr(flow, "validate_phase6", lambda *a, **kw: copy.deepcopy(s["split"]["validation"]))
+    monkeypatch.setattr(flow.Platform, "load", lambda *a: SimpleNamespace())
+    monkeypatch.setattr(flow, "validate_virtual_runtime", lambda *a: {"frame_slots": 8})
+    monkeypatch.setattr(flow, "read_tdm_schedule", lambda *a: {})
+    @contextmanager
+    def physical_summary(path):
+        assert path == physical_root/"physical-summary.json"
+        yield {}
+    monkeypatch.setattr(flow, "read_physical_summary", physical_summary)
+    replay = flow.validate_multi_fpga_flow_bundle(tmp_path, require_physical=True)
+    assert replay["status"] == "incomplete" and len(calls) == 2
+    assert calls[-1][1]["physical_summary_path"] == physical_root/"physical-summary.json"
+    assert calls[-1][1]["global_sta_results_dir"] == tmp_path/"runtime-final/global-opensta"
+    assert saved["status"] == replay["status"]
+    (tmp_path/"runtime-final/global-opensta/measurements.tsv").write_text("changed\n")
+    with pytest.raises(ValidationError, match="SHA-256"):
+        flow.validate_multi_fpga_flow_bundle(tmp_path, require_physical=True)

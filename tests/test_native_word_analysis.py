@@ -232,3 +232,43 @@ def test_opensta_checks_complete_multihop_native_witness_with_half_cycle_capture
     export_native_word_checks(index,observations,out)
     result=verify_native_word_checks(out,tmp_path/'engine',executable=os.environ['EMUFLOW_TEST_OPENSTA'])
     assert result['status']=='verified' and result['expected_rejections']==4 and result['windows']==1
+
+
+@pytest.mark.skipif(not os.environ.get('EMUFLOW_TEST_OPENSTA'),reason='explicit qualified OpenSTA required')
+def test_saved_witness_replay_carries_independent_engine_evidence(tmp_path,monkeypatch):
+    import shutil
+    index,observations,_=fixture(tmp_path)
+    checks=tmp_path/'checks.tsv';export_native_word_checks(index,observations,checks)
+    live=tmp_path/'engine'
+    result=verify_native_word_checks(checks,live,executable=os.environ['EMUFLOW_TEST_OPENSTA'])
+    from emuflow import native_word_verification
+    monkeypatch.setattr(native_word_verification,'run_native_event_checks',lambda *a,**kw:pytest.fail('saved replay launched an engine'))
+    replay=tmp_path/'replay'
+    verified=verify_native_word_checks(checks,replay,results_dir=live)
+    assert verified['execution']=='saved-results'and verified['checks']==result['checks']
+    for name in ('measurements.tsv','opensta.log'):assert(replay/name).read_bytes()==(live/name).read_bytes()
+    shutil.rmtree(live)
+    again=verify_native_word_checks(checks,tmp_path/'again',results_dir=replay)
+    assert again['checks']==verified['checks']and again['engine']==verified['engine']
+
+
+@pytest.mark.skipif(not os.environ.get('EMUFLOW_TEST_OPENSTA'),reason='explicit qualified OpenSTA required')
+def test_saved_evidence_change_during_copy_preserves_previous_replay(tmp_path,monkeypatch):
+    import shutil
+    index,observations,_=fixture(tmp_path)
+    checks=tmp_path/'checks.tsv';export_native_word_checks(index,observations,checks)
+    live=tmp_path/'engine'
+    verify_native_word_checks(checks,live,executable=os.environ['EMUFLOW_TEST_OPENSTA'])
+    output=tmp_path/'retained';output.mkdir()
+    for name in ('measurements.tsv','opensta.log','native-word-witness-verification.json'):
+        (output/name).write_text('previous '+name)
+    copyfile=shutil.copyfile
+    def changed(source,target):
+        copyfile(source,target)
+        if Path(source).name=='measurements.tsv':
+            with Path(source).open('a')as stream:stream.write('changed during copy\n')
+    monkeypatch.setattr(shutil,'copyfile',changed)
+    with pytest.raises(ValidationError,match='differs|generation changed'):
+        verify_native_word_checks(checks,output,results_dir=live)
+    for name in ('measurements.tsv','opensta.log','native-word-witness-verification.json'):
+        assert(output/name).read_text()=='previous '+name
