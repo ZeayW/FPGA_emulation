@@ -1,4 +1,4 @@
-"""Deterministic buffer trees for synthesized transport-only high-fanout nets."""
+"""Independent small-fixture reference; never installed in production."""
 
 from __future__ import annotations
 

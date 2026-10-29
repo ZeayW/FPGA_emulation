@@ -1,3 +1,4 @@
+from tests.synthesis_generic_reference import _build_generic_yosys_stream_script, run_generic_yosys_stream
 import subprocess
 import json
 import tempfile
@@ -12,9 +13,7 @@ from emuflow.common.io import read_json
 from emuflow.frontend.synthesis import (
     DEFAULT_XILINX_MAPPING_STRATEGY,
     build_xilinx_mapping_statistics_script,
-    _build_generic_yosys_stream_script,
     build_yosys_script,
-    run_generic_yosys_stream,
     run_yosys,
     run_xilinx_ultrascaleplus_yosys_stream,
     run_xilinx_mapping_statistics,

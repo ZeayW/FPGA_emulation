@@ -1283,6 +1283,7 @@ def _compile_preflight(ctx: _CompileContext):
     if ctx.physical:
         from emuflow.common.native_tools import require_native_schema
         require_native_schema("placement-lowering-request-v1")
+        require_native_schema("transport-synthesis-request-v1")
         ctx.global_sta_executable = resolve_native_executable("sta", ctx.global_sta_executable)
         from emuflow.timing.opensta import _runtime_data_path
         ctx.global_sta_launcher_reference = _runtime_data_path(Path("scripts/opensta/container_runtime.sh")).resolve()

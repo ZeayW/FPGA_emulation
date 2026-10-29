@@ -13,7 +13,7 @@ from emuflow.ir.emuir_storage import write_emuir_sqlite
 from emuflow.common.errors import ValidationError
 from emuflow.ir.ir import EmuIR
 from emuflow.storage.store_publication import bind_store_source
-from emuflow.transport.transport_fanout import buffer_transport_high_fanout_records
+from tests.transport_fanout_reference import buffer_transport_high_fanout_records
 from tests.routed_timing_adapter import XILINX_ROUTED_TIMING_PAYLOAD_FORMAT
 from tests.test_transport_fanout import _transport_ir
 from tests.test_xilinx_opensta import _indexed_routed_fixture

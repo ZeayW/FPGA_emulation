@@ -158,6 +158,8 @@ REQUIRED_FIRST_PARTY_NATIVE_FILES = (
     "src/core/timing/routed_model.cpp",
     "src/core/timing/routed_stage.cpp",
     "src/core/physical/rapidwright/partition.cpp",
+    "src/core/physical/transport/synthesis.cpp",
+    "src/core/physical/transport/fanout.cpp",
     "tests/test_routed_opensta_stage_native.py",
     "src/core/physical/openparf/qualification.cpp",
     "src/python/emuflow/physical/openparf/qualification_native.py",

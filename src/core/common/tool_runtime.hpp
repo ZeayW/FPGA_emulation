@@ -41,10 +41,12 @@ ToolResult RunExternalTool(const ToolRequest& request,
 // Consume engine stdout in-process with bounded pipe backpressure. The engine
 // is forked before the consumer thread starts; stderr/deadlines remain serviced
 // by the common supervisor. Consumer failure cancels and reaps the whole group.
+// An optional diagnostic log persists stderr, never the graph on stdout.
 ToolResult RunExternalToolStream(const ToolRequest& request,
     const std::function<void(std::istream&)>& consume,
     const volatile std::sig_atomic_t* cancelled = nullptr,
-    const std::vector<ArtifactRef>& inputs = {});
+    const std::vector<ArtifactRef>& inputs = {},
+    const std::string& diagnostic_log = {});
 // Persist the complete combined diagnostic stream while retaining the same
 // process-group supervision, cancellation and bounded diagnostic tail.
 // The log survives engine failure; it is diagnostic evidence, not a pass seal.

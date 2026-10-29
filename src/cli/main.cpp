@@ -1,3 +1,4 @@
+#include "physical/transport/synthesis.hpp"
 #include "physical/rapidwright/partition.hpp"
 #include "timing/routed_stage.hpp"
 #include "physical/openparf/qualification.hpp"
@@ -71,6 +72,7 @@ constexpr const char* kUsage =
     "  physical openparf-runtime REQUEST REPORT\n"
     "  physical run-rwroute REQUEST SUMMARY\n"
     "  physical run-rapidwright-partition REQUEST OUTPUT_DIR\n"
+    "  physical synthesize-transport REQUEST OUTPUT_DIR\n"
     "  physical run-vivado-partition REQUEST OUTPUT\n"
     "  phase6 split EMUIR ASSIGNMENT SCHEDULE OUTPUT\n"
     "  phase6 run EMUIR ASSIGNMENT SCHEDULE REQUEST OUTPUT_DIR\n"
@@ -213,6 +215,9 @@ int RunTool(const std::string& input, const std::string& output) {
 }
 
 int Dispatch(int argc, char** argv, const std::string& report) {
+  if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="synthesize-transport") {
+    ToolSignals signals;return Finish(emuflow::core::SynthesizeTransport(emuflow::core::ArtifactRef::Bind(argv[3],"transport-synthesis-request-v1"),argv[4],&tool_cancelled),report);
+  }
   if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="run-rapidwright-partition") {
     ToolSignals signals;return Finish(emuflow::core::RunRapidwrightPartition(emuflow::core::ArtifactRef::Bind(argv[3],"rapidwright-partition-request-v1"),argv[4],&tool_cancelled),report);
   }

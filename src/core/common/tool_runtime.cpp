@@ -298,7 +298,12 @@ void Execute(const ToolRequest& request, ToolResult& result,
   result.maximum_process_rss_kib /= 1024;
 #endif
   FinishTail(result, ring, cursor);
-  if(worker)worker->Finish();
+  std::exception_ptr consumer_error;
+  if(worker){try{worker->Finish();}catch(...){consumer_error=std::current_exception();}}
+  // Cancellation closes the producer pipe. A parser's consequent EOF error
+  // must not replace the authoritative timeout/cancellation diagnosis.
+  if(!result.timed_out && !result.cancelled_signal && !result.spawn_errno && consumer_error)
+    std::rethrow_exception(consumer_error);
   if (result.timed_out || result.cancelled_signal || result.spawn_errno || result.return_code)
     throw StageError(ErrorCode::kExecutionFailed,
         result.timed_out ? "external tool exceeded wall-time limit" :
@@ -351,14 +356,25 @@ ToolResult RunExternalTool(const ToolRequest& request,
 }
 ToolResult RunExternalToolStream(const ToolRequest& request,
     const std::function<void(std::istream&)>& consume,
-    const volatile std::sig_atomic_t* cancelled,const std::vector<ArtifactRef>& inputs) {
+    const volatile std::sig_atomic_t* cancelled,const std::vector<ArtifactRef>& inputs,const std::string& diagnostic_log) {
   ToolResult result;
   result.operation=RunStage("native.external-tool-stream",[&]{
     Validate(request);if(!consume || request.forward_stdout)Invalid("invalid external stream consumer/mode");
     auto refs=inputs;auto executable=ArtifactRef::Bind(request.argv[0],"external-tool-executable-v1");
     if(access(executable.path().c_str(),X_OK)!=0)Invalid("external tool is not executable");
-    refs.push_back(std::move(executable));return refs;
-  },[&](const auto&){Execute(request,result,cancelled,&consume);});
+    refs.push_back(std::move(executable));
+    if(!diagnostic_log.empty()&&!std::filesystem::path(diagnostic_log).is_absolute())Invalid("stream log must be absolute");
+    if(!diagnostic_log.empty())for(const auto& ref:refs){
+      std::error_code error;
+      if(std::filesystem::absolute(diagnostic_log).lexically_normal()==ref.path() || std::filesystem::equivalent(diagnostic_log,ref.path(),error))Invalid("stream log aliases an input");
+    }
+    return refs;
+  },[&](const auto&){if(diagnostic_log.empty())Execute(request,result,cancelled,&consume);
+    else {
+      AtomicBinaryWriter writer(diagnostic_log);
+      try{Execute(request,result,cancelled,&consume,&writer);}catch(...){writer.Commit();throw;}
+      writer.Commit();
+    }});
   return result;
 }
 ToolResult RunExternalToolLogged(const ToolRequest& request,const std::string& log,

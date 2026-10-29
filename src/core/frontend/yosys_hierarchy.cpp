@@ -427,7 +427,7 @@ class CompactYosysBuilder {
 
 class Hierarchy {
  public:
-  Hierarchy(SqliteDatabase& db,std::string top):db_(db),json_(db),top_(std::move(top)),parents_{0,1},constants_(2) {}
+  Hierarchy(SqliteDatabase& db,std::string top,bool flat=false):db_(db),json_(db),top_(std::move(top)),parents_{0,1},constants_(2),flat_(flat) {}
   void Parse(std::istream& input) {
     Stream stream(input,json_);std::set<std::string> root;
     stream.Object([&](const auto& key){
@@ -450,6 +450,7 @@ class Hierarchy {
   }
   void Expand() {
     std::vector<std::string> ancestors;ExpandModule(top_,"",nullptr,ancestors);
+    if(flat_)return;
     // Late child constant outputs can change previously staged consumers.
     // Resolve every final connection against the final union-find exactly once.
     auto cells=db_.Prepare("SELECT id,record_json FROM staging_instances ORDER BY id");auto update=db_.Prepare("UPDATE staging_instances SET record_json=?1 WHERE id=?2");
@@ -462,10 +463,11 @@ class Hierarchy {
   }
   std::string Summary() {
     auto count=db_.Prepare("SELECT count(*) FROM staging_module_defs");Check(count.Step(),"cannot count modules");
-    const JsonRecord hierarchy( std::map<std::string,JsonRecord>{{"schema","emuflow.yosys-hierarchical-expansion/v1"},{"top",top_},{"module_definitions",count.Integer(0)},{"expanded_module_instances",expanded_},{"maximum_hierarchy_depth",depth_},{"allocated_signal_bits",parents_.size()-2},{"collapsed_signal_bits",collapsed_}});
+    const JsonRecord hierarchy( std::map<std::string,JsonRecord>{{"schema","emuflow.yosys-hierarchical-expansion/v1"},{"top",top_},{"module_definitions",count.Integer(0)},{"expanded_module_instances",expanded_},{"maximum_hierarchy_depth",depth_},{"allocated_signal_bits",flat_?flat_bits_:parents_.size()-2},{"collapsed_signal_bits",collapsed_}});
     return JsonRecord(std::map<std::string,JsonRecord>{{"schema","emuflow.yosys-hierarchy-stage/v1"},{"status","pass"},{"implementation_id","native-yosys-hierarchy-v1"},{"creator",creator_},{"hierarchical_interchange",hierarchy}}).Encode();
   }
  private:
+  bool flat_=false;std::size_t flat_bits_=0;
   I Root(I bit){Check(bit>=2 && static_cast<std::uint64_t>(bit)<parents_.size(),"alias identity is out of range");I root=bit;while(parents_[root]!=root)root=parents_[root];while(parents_[bit]!=bit){const auto next=parents_[bit];parents_[bit]=root;bit=next;}return root;}
   Bit Canonical(const Bit& bit){if(std::holds_alternative<std::string>(bit))return bit;const auto root=Root(std::get<I>(bit));return constants_[root]?Bit(std::string(1,constants_[root])):Bit(root);}
   void Unite(Bit left,Bit right){left=Canonical(left);right=Canonical(right);if(left==right)return;const bool li=std::holds_alternative<I>(left),ri=std::holds_alternative<I>(right);Check(li || ri,"incompatible constant bindings");if(!li){std::swap(left,right);}const auto l=std::get<I>(left);if(std::holds_alternative<std::string>(right)){const auto c=std::get<std::string>(right);Check(c.size()==1 && std::string("01xXzZ").find(c[0])!=std::string::npos,"invalid constant binding");constants_[l]=c[0];}else{const auto r=std::get<I>(right);parents_[std::max(l,r)]=std::min(l,r);}}
@@ -475,7 +477,9 @@ class Hierarchy {
   void ExpandModule(const std::string& module,const std::string& prefix,const Fields* bindings,std::vector<std::string>& ancestors) {
     Check(ancestors.size()<512,"hierarchy depth exceeds bound");Check(std::find(ancestors.begin(),ancestors.end(),module)==ancestors.end(),"recursive Yosys module hierarchy");++expanded_;depth_=std::max<I>(depth_,ancestors.size());ancestors.push_back(module);
     std::map<I,Bit> local;
-    const auto resolve=[&](Bit bit){if(std::holds_alternative<std::string>(bit))return bit;const auto id=std::get<I>(bit);auto found=local.find(id);if(found==local.end())found=local.emplace(id,Allocate()).first;return Canonical(found->second);};
+    const auto resolve=[&](Bit bit){if(std::holds_alternative<std::string>(bit))return bit;const auto id=std::get<I>(bit);
+      if(flat_){Check(bindings==nullptr && prefix.empty() && id>=0,"invalid flat source wire");local.emplace(id,bit);return bit;}
+      auto found=local.find(id);if(found==local.end())found=local.emplace(id,Allocate()).first;return Canonical(found->second);};
     auto ports=db_.Prepare("SELECT name,record_json FROM staging_module_ports WHERE module=?1 ORDER BY name");ports.BindText(1,module);
     // Port binding is a separate pass: two child ports may alias one local bit.
     while(ports.Step()) {
@@ -494,18 +498,19 @@ class Hierarchy {
     }
     auto cells=db_.Prepare("SELECT name,record_json FROM staging_module_cells WHERE module=?1 ORDER BY name");cells.BindText(1,module);auto insert_cell=db_.Prepare("INSERT INTO staging_instances VALUES(?1,?2,?3,?4,?5)");
     while(cells.Step()) {auto cell=json_.Object(cells.Text(1));const auto type=json_.String(Get(cell,"type"));Check(!type.empty(),"cell type is empty");auto connections=json_.Object(Get(cell,"connections","{}"));for(auto& port:connections){auto bits=json_.Array(port.second);for(auto& bit:bits)bit=resolve(bit);port.second=Encode(bits);}const auto name=qualify(cells.Text(0));
-      if(Expandable(type)){ExpandModule(type,name,&connections,ancestors);continue;}if(type=="$scopeinfo")continue;cell["connections"]=Encode(connections);auto kind=type;std::transform(kind.begin(),kind.end(),kind.begin(),[](unsigned char c){return std::toupper(c);});
+      if(Expandable(type)){Check(!flat_,"transport synthesis did not flatten the module hierarchy");ExpandModule(type,name,&connections,ancestors);continue;}if(type=="$scopeinfo")continue;cell["connections"]=Encode(connections);auto kind=type;std::transform(kind.begin(),kind.end(),kind.begin(),[](unsigned char c){return std::toupper(c);});
       const bool ff=kind.rfind("FD",0)==0 || kind.rfind("$DFF",0)==0 || kind.rfind("$SDFF",0)==0 || kind.rfind("$ADFF",0)==0 || kind.rfind("$_DFF",0)==0 || kind.rfind("$_SDFF",0)==0 || kind.rfind("$_ADFF",0)==0;
       const bool bram=kind=="VTR_SP_RAM" || kind=="VTR_DP_RAM";
       insert_cell.Reset();insert_cell.BindText(1,name);insert_cell.BindText(2,type);insert_cell.BindInteger(3,ff);insert_cell.BindInteger(4,bram);insert_cell.BindText(5,Encode(cell));insert_cell.Execute();
     }
+    if(flat_)flat_bits_=local.size();
     ancestors.pop_back();
   }
   SqliteDatabase& db_;Json json_;std::string top_,creator_="unknown";std::vector<I> parents_;std::vector<char> constants_;I expanded_=0,depth_=0,collapsed_=0;
 };
 } // namespace
 namespace {
-StageResult RunYosysProducer(const ArtifactRef& request,std::istream& stream,const std::string& output,const std::string& summary,const ArtifactRef* normalization_library,bool compact) {
+StageResult RunYosysProducer(const ArtifactRef& request,std::istream& stream,const std::string& output,const std::string& summary,const ArtifactRef* normalization_library,bool compact,const std::function<void(SqliteDatabase&)>& finalize = {},bool flat=false) {
   const std::string stage=compact?"phase1.import-yosys":"phase1.stage-yosys-hierarchy";
   const std::string schema=compact?"emuir-compact-v2":"yosys-hierarchy-store-v1";
   return RunStage(stage,[&]{auto refs=std::vector<ArtifactRef>{request};if(normalization_library)refs.push_back(*normalization_library);return refs;},[&](const auto& inputs){
@@ -526,10 +531,17 @@ StageResult RunYosysProducer(const ArtifactRef& request,std::istream& stream,con
       db.Execute("PRAGMA cache_size=-32768;PRAGMA temp.cache_size=-16384");std::string staging=kYosysHierarchyDDL;
       if(compact){std::size_t at=0;while((at=staging.find("CREATE TABLE ",at))!=std::string::npos){staging.replace(at,13,"CREATE TEMP TABLE ");at+=18;}}
       db.Execute(staging);SqliteTransaction tx(db);
-      {Hierarchy hierarchy(db,top);hierarchy.Parse(stream);hierarchy.Expand();result=hierarchy.Summary();}
+      {Hierarchy hierarchy(db,top,flat);hierarchy.Parse(stream);hierarchy.Expand();result=hierarchy.Summary();}
       db.Execute("DROP TABLE staging_module_defs;DROP TABLE staging_module_cells;DROP TABLE staging_module_names;DROP TABLE staging_module_ports;DROP TABLE hierarchy_aliases");
       if(normalization_library){XilinxNormalizer normalizer(db,top,*normalization_library);auto fields=Json(db).Object(result);fields["normalization"]=normalizer.Run();fields["implementation_id"]=JsonQuoteUtf8("native-yosys-hierarchy-and-xilinx-normalization-v1");result=Encode(fields);}
       if(compact){db.Execute(kEmuirCompactDDL);auto fields=Json(db).Object(result);std::string counts;{CompactYosysBuilder builder(db,top,Json(db).String(Get(fields,"creator")),source,clocks);counts=builder.Run();}fields["emuir_records"]=counts;fields["schema"]=JsonQuoteUtf8("emuflow.yosys-emuir-import/v1");fields["implementation_id"]=JsonQuoteUtf8("native-yosys-emuir-v1");fields["validation"]=Encode(Fields{{"status",JsonQuoteUtf8("pass")},{"coverage",JsonQuoteUtf8("complete-source-endpoints-and-independent-net-classification")}});result=Encode(fields);}
+      if(finalize){
+        Check(compact,"private finalization requires compact EmuIR");
+        finalize(db);
+        auto fields=Json(db).Object(result);
+        auto counts=db.Prepare("SELECT value FROM metadata WHERE key='record_counts_json'");
+        Check(counts.Step(),"final compact counts are missing");fields["emuir_records"]=counts.TypedText(0);result=Encode(fields);
+      }
       tx.Commit();writer.Commit();
     }
     PublishTextArtifact(summary,inputs,[&](std::ostream& out){out<<result<<'\n';});
@@ -537,5 +549,7 @@ StageResult RunYosysProducer(const ArtifactRef& request,std::istream& stream,con
 }
 }
 StageResult StageYosysHierarchy(const ArtifactRef& request,std::istream& stream,const std::string& output,const std::string& summary,const ArtifactRef* library){return RunYosysProducer(request,stream,output,summary,library,false);}
-StageResult ImportYosysEmuir(const ArtifactRef& request,std::istream& stream,const std::string& output,const std::string& summary,const ArtifactRef* library){return RunYosysProducer(request,stream,output,summary,library,true);}
+StageResult ImportYosysEmuir(const ArtifactRef& request,std::istream& stream,const std::string& output,const std::string& summary,const ArtifactRef* library,const std::function<void(SqliteDatabase&)>& finalize){return RunYosysProducer(request,stream,output,summary,library,true,finalize);}
+StageResult ImportFlatYosysEmuir(const ArtifactRef& request,std::istream& stream,const std::string& output,const std::string& summary,const std::function<void(SqliteDatabase&)>& finalize){return RunYosysProducer(request,stream,output,summary,nullptr,true,finalize,true);}
+
 }

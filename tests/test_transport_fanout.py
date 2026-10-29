@@ -4,7 +4,7 @@ from pathlib import Path
 
 from emuflow.common.errors import ValidationError
 from emuflow.ir.ir import EmuIR
-from emuflow.transport.transport_fanout import (
+from tests.transport_fanout_reference import (
     buffer_transport_high_fanout_records,
 )
 from emuflow.physical.xilinx_netlist import (

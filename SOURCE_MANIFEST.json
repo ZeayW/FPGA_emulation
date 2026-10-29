@@ -206,14 +206,19 @@
         "src/python/emuflow/transport/pin_planning.py",
         "src/python/emuflow/transport/netlist.py",
         "src/python/emuflow/transport/phase6.py",
+        "src/core/physical/transport/synthesis.cpp",
+        "src/core/physical/transport/fanout.cpp",
         "schemas/signal-position-hints-v1.schema.json",
         "schemas/placement-aware-pin-plan-v1.schema.json",
         "rtl/transport"
       ],
       "build_targets": [
+        "emuflow_core",
+        "emuflow_native",
         "emuflow_python"
       ],
       "runtime_products": [
+        "emuflow-native",
         "emuflow"
       ],
       "integration": "default-in-tree-build"

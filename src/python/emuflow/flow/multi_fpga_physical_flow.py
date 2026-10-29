@@ -7,7 +7,6 @@ from emuflow.common.paths import REPOSITORY_ROOT
 import hashlib
 import json
 import math
-import re
 import shutil
 import sqlite3
 from contextlib import contextmanager
@@ -20,13 +19,12 @@ from emuflow.timing.boundary_identity_storage import read_boundary_identity_stor
 from emuflow.timing.boundary_timing_storage import read_boundary_timing_storage
 from emuflow.transport.chimew.chimew_binding_storage import open_chimew_binding_schedule_entry_lookup, read_chimew_binding
 from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.storage.store_publication import bind_view_sources, bind_store_source
+from emuflow.storage.store_publication import bind_view_sources
 from emuflow.common.io import read_json, write_json
 from emuflow.timing.logic_segment_timing import LOGIC_SEGMENT_TIMING_SCHEMA, prepare_logic_segment_query_inputs, validate_logic_segment_timing, write_vivado_logic_segment_query, write_xilinx_logic_segment_query
 from emuflow.timing.local_path_timing import local_path_timing_header, prepare_local_path_query_inputs, read_local_path_identity, validate_local_path_timing, write_xilinx_local_path_query
 from emuflow.timing.local_path_timing_storage import read_local_path_timing_storage
 from emuflow.ir.ir import EMUIR_SCHEMA, EmuIR
-from emuflow.ir.emuir_storage import open_emuir_sqlite_read_only
 from emuflow.physical.lowering import PLACEMENT_IR_REPORT_SCHEMA, run_placement_ir_lowering_from_split
 from emuflow.transport.split_netlist_storage import SplitNetlistView
 from emuflow.transport.netlist import SPLIT_MANIFEST_SCHEMA
@@ -37,22 +35,19 @@ from emuflow.platform.platform import Platform
 from emuflow.partition.partition_limits import planning_resource_capacities
 from emuflow.transport.position_hints_storage import PositionHintsView, read_position_hints
 from emuflow.ir.resource_budget import validate_device_resource_usage
-from emuflow.ir.resources import RESOURCE_FIELDS, ResourceVector
+from emuflow.ir.resources import RESOURCE_FIELDS
 from emuflow.physical.rapidwright.rapidwright_provider import validate_rapidwright_provider_manifest
 from emuflow.transport.runtime import PHYSICAL_SUMMARY_SCHEMA, build_virtual_runtime, validate_physical_summary
-from emuflow.frontend.synthesis import run_generic_yosys_stream
-from emuflow.transport.transport_fanout import buffer_transport_high_fanout_records
+from emuflow.physical.transport_synthesis import synthesize_transport
 from emuflow.scheduling.tdm_schedule_storage import canonical_tdm_schedule_sha256, read_tdm_schedule
 from emuflow.transport.transport_storage import read_lane_map, read_transport, read_virtual_binding
 from emuflow.transport.virtual_board import build_virtual_io_physical_contract, validate_virtual_binding, validate_virtual_board
 from emuflow.physical.vivado.vivado_physical import run_indexed_vivado_partition
 from emuflow.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
-from emuflow.frontend.yosys import import_yosys_json_indexed
 from emuflow.physical.xilinx_physical_backend import run_rapidwright_openparf_native_candidate_backend
 
 
 MULTI_FPGA_PHYSICAL_SCHEMA = "emuflow.multi-fpga-physical-flow/v1"
-_TRANSPORT_MODULE = re.compile(r"^module\s+([A-Za-z_][A-Za-z0-9_$]*)", re.M)
 _INACTIVE_PARTITION_PROVIDER = "inactive-empty-partition-v1"
 
 
@@ -116,39 +111,6 @@ def _implementation_stage(
         return item["stages"][stage]
     owner = "vivado_implementation" if backend == "vivado" else "rapidwright_implementation"
     return item["stages"][owner][stage]
-
-
-def _indexed_emuir_counts(path: Path) -> tuple[int, int]:
-    """Read transport synthesis counts without reconstructing its graph."""
-
-    connection = open_emuir_sqlite_read_only(path)
-    try:
-        return (
-            int(connection.execute("SELECT count(*) FROM cell_records").fetchone()[0]),
-            int(connection.execute("SELECT count(*) FROM net_records").fetchone()[0]),
-        )
-    finally:
-        connection.close()
-
-
-def _indexed_emuir_resource_totals(path: Path) -> Dict[str, int]:
-    """Aggregate indexed resources without materializing transport cells."""
-
-    connection = open_emuir_sqlite_read_only(path)
-    try:
-        raw = {
-            str(resource): int(amount)
-            for resource, amount in connection.execute(
-                "SELECT resource, SUM(amount) FROM instance_resources "
-                "GROUP BY resource"
-            )
-            if int(amount)
-        }
-    finally:
-        connection.close()
-    return ResourceVector.from_mapping(
-        raw, "indexed transport resources"
-    ).to_dict(include_zeros=False)
 
 
 def _validate_transport_resource_reservation(
@@ -667,6 +629,7 @@ def run_multi_fpga_physical_flow(
         )
     from emuflow.common.native_tools import require_native_schema
     require_native_schema("placement-lowering-request-v1")
+    require_native_schema("transport-synthesis-request-v1")
     if backend == "rapidwright":
         # Validate the compiled OpenPARF/PyTorch runtime before reading the
         # graph-sized EmuIR and timing databases.  A loader mismatch must fail
@@ -1109,63 +1072,12 @@ def run_multi_fpga_physical_flow(
             return record
 
         transport_rtl = split_root / item["transport_rtl"]
-        transport_sources = tuple(
-            bind_store_source(path, "yosys-source-document-v1")
-            for path in (runtime_controller, transport_rtl)
-        )
-        module_match = _TRANSPORT_MODULE.search(
-            transport_rtl.read_text(encoding="utf-8")
-        )
-        if module_match is None:
-            raise ValidationError(f"cannot find transport top module for {fpga_id}")
-        transport_ir_path = fpga_root / "transport.emuir.sqlite"
-        fanout_report = None
-
-        def finalize_transport_emuir(connection):
-            nonlocal fanout_report
-            fanout_report = buffer_transport_high_fanout_records(connection)
-
-        run_generic_yosys_stream(
-            [runtime_controller, transport_rtl],
-            module_match.group(1),
-            lambda stream: import_yosys_json_indexed(
-                Path("<generic-yosys-stdout>"),
-                transport_ir_path,
-                top=module_match.group(1),
-                clocks=("fabric_clk",),
-                _source_stream=stream,
-                _finalize_emuir=finalize_transport_emuir,
-                source_bindings=transport_sources,
-            ),
+        transport_report = synthesize_transport(
+            runtime_controller, transport_rtl, fpga_root / "transport-synthesis",
             executable=yosys,
-            log_path=fpga_root / "transport-yosys.log",
         )
-        if fanout_report is None:
-            raise ValidationError("transport EmuIR finalization did not complete")
-        fanout_report_path = fpga_root / "transport-fanout-buffering.json"
-        write_json(fanout_report_path, fanout_report, compact=True)
-        transport_instances, transport_nets = _indexed_emuir_counts(
-            transport_ir_path
-        )
-        transport_resources = _indexed_emuir_resource_totals(
-            transport_ir_path
-        )
-        transport_report = {
-            "status": "pass",
-            "provider": "yosys-generic-lut6-ff",
-            "top": module_match.group(1),
-            "instances": transport_instances,
-            "nets": transport_nets,
-            "resources": transport_resources,
-            "fanout_buffering": {
-                "output": str(fanout_report_path),
-                "sha256": _sha256(fanout_report_path),
-                "summary": fanout_report["summary"],
-                "policy": fanout_report["policy"],
-            },
-            "output": str(transport_ir_path),
-            "sha256": _sha256(transport_ir_path),
-        }
+        transport_ir_path = Path(transport_report["output"])
+        transport_resources = transport_report["resources"]
 
         merged_ir = fpga_root / "lowering/placement.emuir.sqlite"
         lowering_report = lower_placement_ir(transport_ir_path, merged_ir)

@@ -1632,3 +1632,29 @@ The replaced Python endpoint/segment hosts and routed-timing graph reader and
 validator are removed from the installed runtime. Their component regression
 harnesses and independent checks live under tests. The separate Python
 routed-timing build/validation commands are retired with those dependencies.
+
+
+### Native transport synthesis and private finalization
+
+`physical synthesize-transport REQUEST OUTPUT_DIR` owns the generated runtime and
+transport RTL through generic LUT6/FF Yosys execution, streamed compact EmuIR
+import, writer-owned balanced LUT1 trees, resource census and atomic publication.
+The native flat importer retains the existing synthesis wire numbers and
+canonical unaliased net identities; it rejects a remaining expandable hierarchy.
+The generic synthesis script, 512-sink policy and clock/reset exclusions are
+unchanged. Arbitrary Python finalizers are not part of this production stage.
+
+The buffer writer audits final sink multisets, including original pin, bit and
+extra metadata, single buffer inputs, cell/net census and per-net fanout. Its
+transaction closes before the only transport artifact publication. The shared
+stream supervisor retains full stderr diagnostics while stdout flows directly
+to the native importer. Cancellation or source mutation rejects the complete
+stage and preserves existing accepted owners. The physical caller retires the
+synthesized IR only after lowering succeeds.
+
+The Python transport transform, generic transport stream/script entry and
+physical caller's post-import resource/cell scans are retired. Small independent
+reference implementations live only in tests. This is a prerequisite of the
+remaining multi-FPGA physical controller, rather than a separate performance
+policy change. Chimew orchestration, configuration/prepared-input adapters and
+current-source NVDLA terminal qualification remain required for W7.

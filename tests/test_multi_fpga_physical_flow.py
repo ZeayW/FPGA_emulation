@@ -21,7 +21,6 @@ from emuflow.flow.multi_fpga_physical_flow import (
     MULTI_FPGA_PHYSICAL_SCHEMA,
     _assemble_multi_fpga_physical_results,
     _implementation_stage,
-    _indexed_emuir_resource_totals,
     _open_position_hint_lookup,
     _partition_has_physical_work,
     _record_chimew_fixed_io_target,
@@ -139,11 +138,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
             self.assertEqual(source.read_bytes(), b"shared source")
 
     def test_transport_resources_must_fit_sealed_phase3_reservation(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "transport.emuir.sqlite"
-            _merged_ir("fpga0").save(path)
-            resources = _indexed_emuir_resource_totals(path)
-        self.assertEqual(resources, {"lut": 2})
+        resources = {"lut": 2}
         report = _validate_transport_resource_reservation(
             "fpga0", resources, {"fpga0": {"lut": 2}}
         )
@@ -485,19 +480,14 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
 
             worker_barrier = threading.Barrier(2, timeout=5.0)
 
-            def fake_yosys(_sources, _top, consumer, **_kwargs):
+            def fake_synthesis(_controller, _rtl, directory, **_kwargs):
                 worker_barrier.wait()
-                return consumer(io.StringIO(""))
-
-            def fake_indexed_import(_source, output, **kwargs):
-                from emuflow.ir.emuir_storage import write_emuir_sqlite
-
-                write_emuir_sqlite(
-                    output,
-                    _merged_ir("transport").value,
-                    source_bindings=kwargs.get("source_bindings", ()),
-                    _finalize=kwargs.get("_finalize_emuir"),
-                )
+                directory.mkdir(parents=True)
+                output=directory/'transport.emuir.sqlite'
+                _merged_ir("transport").save(output)
+                return {"status":"pass", "provider":"yosys-generic-lut6-ff", "top":"transport",
+                    "instances":2,"nets":0,"resources":{"lut":2}, "output":str(output), "sha256":_sha256(output),
+                    "fanout_buffering":{"output":str(directory/'fanout.json'),"summary":{},"policy":{}}}
 
             class SplitCounts:
                 def __init__(self, path, fpga):
@@ -609,16 +599,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                     "emuflow.flow.multi_fpga_physical_flow.build_virtual_runtime",
                     return_value=runtime,
                 ),
-                patch(
-                    "emuflow.flow.multi_fpga_physical_flow."
-                    "run_generic_yosys_stream",
-                    side_effect=fake_yosys,
-                ),
-                patch(
-                    "emuflow.flow.multi_fpga_physical_flow."
-                    "import_yosys_json_indexed",
-                    side_effect=fake_indexed_import,
-                ),
+                patch("emuflow.flow.multi_fpga_physical_flow.synthesize_transport", side_effect=fake_synthesis),
                 patch(
                     "emuflow.flow.multi_fpga_physical_flow."
                     "run_placement_ir_lowering_from_split",
@@ -680,7 +661,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                 )
                 with patch(
                     "emuflow.flow.multi_fpga_physical_flow."
-                    "run_generic_yosys_stream",
+                    "synthesize_transport",
                     side_effect=AssertionError("synthesis rerun forbidden"),
                 ), patch(
                     "emuflow.flow.multi_fpga_physical_flow.run_indexed_vivado_partition",
@@ -747,7 +728,7 @@ class MultiFpgaPhysicalFlowTest(unittest.TestCase):
                         split, PLATFORM, root / "schedule.json", root / "failed-lowering",
                         backend="vivado", fpga_ids=["fpga0"],
                     )
-                self.assertTrue((root / "failed-lowering/fpga0/transport.emuir.sqlite").is_file())
+                self.assertTrue((root / "failed-lowering/fpga0/transport-synthesis/transport.emuir.sqlite").is_file())
                 self.assertTrue((split / "manifest.json").is_file())
 
         self.assertEqual(report["summary"]["fpgas"], 2)
