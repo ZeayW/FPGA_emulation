@@ -22,8 +22,17 @@ fi
 for task_name in ${!EMUFLOW_STA_@}; do
   task_environment+=("$task_name=${!task_name}")
 done
-exec "$EMUFLOW_YOSYS_CONTAINER_EXECUTABLE" exec --cleanenv --no-home --contain \
-  --workdir "$task_scratch/work" --bind "$EMUFLOW_YOSYS_CONTAINER_BIND" \
+task_scratch_probe=$(mktemp "$task_scratch/.container-visible-XXXXXX")
+# Check the actual container namespace before expensive engine work begins.
+exec "$EMUFLOW_YOSYS_CONTAINER_EXECUTABLE" exec --cleanenv --no-home \
+  --bind "$EMUFLOW_YOSYS_CONTAINER_BIND" \
   --pwd "$PWD" "$EMUFLOW_YOSYS_CONTAINER_IMAGE" /usr/bin/env \
   "${task_environment[@]}" \
-  "$EMUFLOW_YOSYS_CONTAINER_BINARY" "$@"
+  /bin/sh -c '
+    if ! test -f "$1" || ! ( : >> "$1" ) || ! rm -f -- "$1"; then
+      printf "%s\n" "Container cannot access writable TMPDIR=$TMPDIR; include scratch in EMUFLOW_YOSYS_CONTAINER_BIND." >&2
+      exit 73
+    fi
+    shift
+    exec "$@"
+  ' container-scratch-check "$task_scratch_probe" "$EMUFLOW_YOSYS_CONTAINER_BINARY" "$@"

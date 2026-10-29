@@ -9,6 +9,64 @@ import unittest
 
 
 class ContainerRuntimeTest(unittest.TestCase):
+    def test_container_scratch_failure_prevents_engine_start(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory) / "project"
+            scratch = Path(directory) / "scratch with spaces"
+            project.mkdir()
+            container = project / "container"
+            container.write_text(
+                f"#!{sys.executable}\n"
+                "import os,pathlib,subprocess,sys\n"
+                "args=sys.argv[1:]; command=args[args.index('/usr/bin/env')+1:]\n"
+                "env={}\n"
+                "while command and '=' in command[0]:\n"
+                " key,value=command.pop(0).split('=',1); env[key]=value\n"
+                "scratch=pathlib.Path(env['TMPDIR']); hidden=None\n"
+                "if os.environ.get('HIDE_SCRATCH')=='1':\n"
+                " hidden=scratch.with_name(scratch.name+'.hidden'); scratch.rename(hidden)\n"
+                "try: code=subprocess.run(command,env=env).returncode\n"
+                "finally:\n"
+                " if hidden is not None: hidden.rename(scratch)\n"
+                "sys.exit(code)\n"
+            )
+            container.chmod(0o755)
+            executable = project / "engine"
+            marker = project / "engine-ran"
+            executable.write_text(
+                f"#!{sys.executable}\nimport json,pathlib,sys\n"
+                f"pathlib.Path({str(marker)!r}).write_text('started')\n"
+                "print(json.dumps(sys.argv[1:]))\n"
+            )
+            executable.chmod(0o755)
+            env = {"PATH": os.defpath, "TMPDIR": str(scratch),
+                "EMUFLOW_YOSYS_CONTAINER_EXECUTABLE": str(container),
+                "EMUFLOW_YOSYS_CONTAINER_IMAGE": "/versioned/image.sif",
+                "EMUFLOW_YOSYS_CONTAINER_BINARY": str(executable),
+                "EMUFLOW_OPENSTA_CONTAINER_BINARY": str(executable),
+                "EMUFLOW_OPENROAD_CONTAINER_BINARY": str(executable),
+                "EMUFLOW_PATRON_CONTAINER_BINARY": str(executable),
+                "EMUFLOW_YOSYS_CONTAINER_BIND": str(project),
+                "EMUFLOW_YOSYS_CONTAINER_LIBRARY_PATH": "/versioned/lib"}
+            for engine in ("yosys", "opensta", "openroad", "patron"):
+                for hidden in (False, True):
+                    with self.subTest(engine=engine, hidden=hidden):
+                        marker.unlink(missing_ok=True)
+                        result = subprocess.run(
+                            [str(root / "scripts" / engine / "container_runtime.sh"), "-exit", "query path.tcl"],
+                            cwd=project, env={**env, "HIDE_SCRATCH": str(int(hidden))},
+                            text=True, capture_output=True,
+                        )
+                        if hidden:
+                            self.assertEqual(result.returncode, 73, result.stdout + result.stderr)
+                            self.assertIn("Container cannot access writable TMPDIR", result.stderr)
+                            self.assertFalse(marker.exists())
+                        else:
+                            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                            self.assertEqual(json.loads(result.stdout), ["-exit", "query path.tcl"])
+                            self.assertTrue(marker.exists())
+
     @unittest.skipUnless(shutil.which("cmake"), "requires CMake")
     def test_tcl_header_guard_handles_upstream_preprocessor_spacing(self):
         helper = Path(__file__).resolve().parents[1] / "engines/opensta/cmake/FindTCL.cmake"

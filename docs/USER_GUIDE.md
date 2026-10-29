@@ -392,6 +392,10 @@ On hosts whose system C library is older than the versioned Yosys build,
 bind root, and runtime library paths listed at the top of that script, plus the
 active experiment's `TMPDIR`. This isolates the synthesis runtime from host
 Vivado and keeps writable container work under that scratch directory.
+The configured bind must expose the inputs, output directory, and `TMPDIR`.
+The launcher uses standard runtime filesystem mounts to retain caller scratch
+visibility, and checks that scratch is visible and writable inside the
+container before starting the engine.
 For the same host ABI issue with OpenSTA, set `EMUFLOW_OPENSTA_CONTAINER_BINARY`
 and pass `scripts/opensta/container_runtime.sh` to `--global-sta-executable`.
 It shares the container configuration and selects OpenSTA independently of
