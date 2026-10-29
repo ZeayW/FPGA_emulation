@@ -1,3 +1,4 @@
+from tests.chimew_bank_fixture import evaluate_chimew_bank_channel_assignment
 """Shared publication contracts; phase tests retain independent semantics."""
 
 import json
@@ -59,9 +60,7 @@ def private_store(root, schema="pin-plan-store-v1"):
             ) as view:
                 source = view.store_path
         elif schema == "chimew-bank-report-store-v1":
-            from emuflow.transport.chimew.chimew_bank_channel import (
-                evaluate_chimew_bank_channel_assignment,
-            )
+            from tests.chimew_bank_fixture import evaluate_chimew_bank_channel_assignment
             from tests.test_chimew_bank_channel import ChimewBankChannelTest
 
             case = ChimewBankChannelTest()
@@ -376,9 +375,7 @@ def test_indexed_views_bind_original_generations_instead_of_taking_a_new_snapsho
             )
             schema = "chimew-bank-input-store-v1"
         elif kind == "bank_report":
-            from emuflow.transport.chimew.chimew_bank_channel import (
-                evaluate_chimew_bank_channel_assignment,
-            )
+            from tests.chimew_bank_fixture import evaluate_chimew_bank_channel_assignment
             from tests.test_chimew_bank_channel import ChimewBankChannelTest
 
             case = ChimewBankChannelTest()

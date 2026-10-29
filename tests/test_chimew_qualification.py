@@ -1,3 +1,6 @@
+from tests.chimew_bank_report_fixture import write_chimew_bank_channel_report_storage
+from tests.chimew_bank_fixture import build_chimew_phase6_pin_plan
+from tests.chimew_bank_fixture import evaluate_chimew_bank_channel_assignment
 from contextlib import closing
 from tests.native_build import emuflow_native
 import copy
@@ -14,14 +17,12 @@ from unittest import mock
 from emuflow.transport.chimew.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
-    evaluate_chimew_bank_channel_assignment,
 )
 from emuflow.transport.chimew.chimew_bank_channel_storage import (
     write_chimew_bank_channel_storage,
 )
 from emuflow.transport.chimew.chimew_bank_channel_report_storage import (
     read_chimew_bank_channel_report,
-    write_chimew_bank_channel_report_storage,
 )
 from emuflow.transport.chimew.chimew_binding_storage import read_chimew_binding
 from emuflow.flow.cli import main
@@ -40,7 +41,6 @@ from emuflow.transport.chimew.chimew_qualification import (
 from emuflow.transport.chimew.chimew_phase6 import (
     CHIMEW_ELECTRICAL_MAP_PROVIDER,
     CHIMEW_ELECTRICAL_MAP_SCHEMA,
-    build_chimew_phase6_pin_plan,
     validate_chimew_phase6_binding,
 )
 from emuflow.transport.chimew.chimew_pipeline import (

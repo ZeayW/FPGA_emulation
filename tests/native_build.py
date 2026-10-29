@@ -139,3 +139,14 @@ def native_pipeline_api_test() -> Path:
 @lru_cache(maxsize=1)
 def hop_partition_refiner() -> Path:
     return emuflow_native()
+
+
+@lru_cache(maxsize=1)
+def chimew_bank_oracle() -> Path:
+    """Historical wire/certificate fixture driver, absent from installed tools."""
+    if program := _cmake_program("emuflow_chimew_bank_oracle"):
+        return program
+    return _build_native_stage_program(
+        ROOT / "tests/native_chimew_bank_oracle.cpp",
+        Path(_BUILD_ROOT.name) / "native_chimew_bank_oracle",
+    )

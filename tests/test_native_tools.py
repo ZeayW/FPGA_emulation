@@ -299,9 +299,9 @@ class NativeToolsTest(unittest.TestCase):
             ), patch("emuflow.common.native_tools.REPO_ROOT", root / "missing"):
                 self.assertEqual(
                     resolve_native_stage_command(
-                        "phase6", "assign-banks"
+                        "phase6", "assign-bank-store"
                     ),
-                    [str(unified.resolve()), "phase6", "assign-banks"],
+                    [str(unified.resolve()), "phase6", "assign-bank-store"],
                 )
 
     def test_explicit_unified_entry_and_symlink_keep_stage_arguments(self) -> None:

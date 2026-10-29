@@ -16,8 +16,8 @@ from typing import Any, Dict, Mapping, Optional, Tuple
 
 from emuflow.storage.sqlite_artifacts import immutable_sqlite_uri
 from emuflow.transport.chimew.chimew_bank_channel import CHIMEW_BANK_CHANNEL_PROVIDER, CHIMEW_BANK_CHANNEL_REPORT_SCHEMA, evaluate_chimew_bank_channel_assignment, validate_chimew_bank_channel_input
-from emuflow.transport.chimew.chimew_bank_channel_storage import read_chimew_bank_channel_input
-from emuflow.transport.chimew.chimew_bank_channel_report_storage import BankChannelReportView, read_chimew_bank_channel_report, write_chimew_bank_channel_report_storage
+from emuflow.transport.chimew.chimew_bank_channel_storage import BankChannelInputView, read_chimew_bank_channel_input
+from emuflow.transport.chimew.chimew_bank_channel_report_storage import BankChannelReportView, read_chimew_bank_channel_report, copy_chimew_bank_channel_report_storage
 from emuflow.transport.chimew.chimew_grouping import _tdm_ratio
 from emuflow.storage.store_publication import bind_view_sources
 from emuflow.common.native_tools import require_native_schema
@@ -210,7 +210,6 @@ def validate_chimew_adapter_generation(report_path: Path) -> set[Path]:
     try:
         bank_report = read_chimew_bank_channel_report(
             paths["bank_channel_report"],
-            allow_legacy="bank_channel_report_store" not in paths,
         )
     except (OSError, ValueError, ValidationError) as error:
         raise ValidationError(
@@ -1162,6 +1161,8 @@ def build_chimew_phase6_pin_plan(
     Omitting paths preserves the logical in-memory documents for legacy APIs.
     """
 
+    if not isinstance(bank_channel_input, BankChannelInputView):
+        raise ValidationError("Chimew pin planning requires a typed bank input")
     if not 1 <= region_count <= 31:
         raise ValueError("region_count must be in [1, 31]")
     if pin_plan_output_path is not None or electrical_binding_output_path is not None:
@@ -1196,6 +1197,8 @@ def build_chimew_phase6_pin_plan(
                 "Chimew byte-bound package-pin provenance does not agree"
             )
     if bank_channel_report_document is not None:
+        if not isinstance(bank_channel_report_document, BankChannelReportView):
+            raise ValidationError("Chimew pin planning requires a typed assignment report")
         if qualification_document is None:
             raise ValidationError(
                 "a precomputed Chimew assignment report requires qualification"
@@ -1210,130 +1213,147 @@ def build_chimew_phase6_pin_plan(
             executable=executable,
             output_path=bank_channel_report_output_path,
         )
-    if qualification_document is not None and qualification_document[
-        "artifacts"
-    ].get("bank_channel_report") != canonical_sha256(report):
-        raise ValidationError(
-            "Chimew assignment report does not match qualification certificate"
-        )
-    if report["provider"] != CHIMEW_BANK_CHANNEL_PROVIDER:
-        raise ValidationError("Chimew assignment provider is invalid")
-    if (
-        schedule.get("design") != problem["design"]
-        or schedule.get("platform") != platform.name
-    ):
-        raise ValidationError("Chimew assignment does not match schedule identity")
-    indexed_report = isinstance(report, BankChannelReportView)
-    publication_sources += bind_view_sources((report, "chimew-bank-report-store-v1"))
-    report_assignment = None
-    if not indexed_report:
-        report_assignment = {row["group"]: row for row in report["assignments"]}
-        if len(report_assignment) != len(report["assignments"]):
-            raise ValidationError("Chimew assignment duplicates groups")
-    assignment_cursor = iter(report["assignments"]) if indexed_report else None
-
-    build_connection, schedule_count = _open_chimew_build_index(schedule)
     try:
-        pending_members: list[tuple[Any, ...]] = []
-        pending_package_pins: list[tuple[str, str]] = []
-        for group_index, group in enumerate(problem["groups"]):
-            assignment = (
-                next(assignment_cursor, None)
-                if assignment_cursor is not None
-                else report_assignment.get(group["id"])
+        if qualification_document is not None and qualification_document[
+            "artifacts"
+        ].get("bank_channel_report") != canonical_sha256(report):
+            raise ValidationError(
+                "Chimew assignment report does not match qualification certificate"
             )
-            if assignment is None or assignment.get("group") != group["id"]:
-                raise ValidationError("Chimew assignment does not cover all groups")
-            channel = electrical["channels"].get(assignment["channel"])
-            if channel is None:
-                raise ValidationError("Chimew assignment has no electrical channel")
-            domain = problem["domains"][group["domain"]]
-            group_direction = (
-                "a_to_b"
-                if group["direction"] == 0
-                else "b_to_a" if group["direction"] == 1 else "bidirectional"
-            )
-            if (
-                group_direction == "bidirectional"
-                and channel["direction"] != "either"
-            ) or (
-                group_direction != "bidirectional"
-                and channel["direction"] not in {"either", group_direction}
-            ):
-                raise ValidationError("Chimew assignment electrical direction mismatch")
-            if (channel["fpga_a"], channel["fpga_b"]) != (
-                domain["fpga_a"], domain["fpga_b"]
-            ):
-                raise ValidationError("Chimew assignment electrical domain mismatch")
-            member_directions = set()
-            for member_seq, member in enumerate(group["members"]):
-                entry_id = member["id"]
-                member_direction = (
-                    "a_to_b" if member["direction"] == 0 else "b_to_a"
+        if report["provider"] != CHIMEW_BANK_CHANNEL_PROVIDER:
+            raise ValidationError("Chimew assignment provider is invalid")
+        if (
+            schedule.get("design") != problem["design"]
+            or schedule.get("platform") != platform.name
+        ):
+            raise ValidationError("Chimew assignment does not match schedule identity")
+        publication_sources += bind_view_sources((report, "chimew-bank-report-store-v1"))
+        assignment_cursor = iter(report["assignments"])
+
+        build_connection, schedule_count = _open_chimew_build_index(schedule)
+        try:
+            pending_members: list[tuple[Any, ...]] = []
+            pending_package_pins: list[tuple[str, str]] = []
+            for group_index, group in enumerate(problem["groups"]):
+                assignment = (
+                    next(assignment_cursor, None)
                 )
-                member_directions.add(member_direction)
-                source = (
-                    domain["fpga_a"]
-                    if member_direction == "a_to_b"
-                    else domain["fpga_b"]
+                if assignment is None or assignment.get("group") != group["id"]:
+                    raise ValidationError("Chimew assignment does not cover all groups")
+                channel = electrical["channels"].get(assignment["channel"])
+                if channel is None:
+                    raise ValidationError("Chimew assignment has no electrical channel")
+                domain = problem["domains"][group["domain"]]
+                group_direction = (
+                    "a_to_b"
+                    if group["direction"] == 0
+                    else "b_to_a" if group["direction"] == 1 else "bidirectional"
                 )
-                sink = (
-                    domain["fpga_b"]
-                    if member_direction == "a_to_b"
-                    else domain["fpga_a"]
-                )
-                source_y = _normalized_y(
-                    member["fanout"][1],
-                    electrical["bounds"][source],
-                    f"{entry_id}.source_y",
-                )
-                sink_physical_y = sum(
-                    point[1] for point in member["fanins"]
-                ) / len(member["fanins"])
-                sink_y = _normalized_y(
-                    sink_physical_y,
-                    electrical["bounds"][sink],
-                    f"{entry_id}.sink_y",
-                )
-                pending_members.append(
-                    (
-                        entry_id,
-                        group_index,
-                        member_seq,
-                        member_direction,
-                        channel["link"],
-                        source,
-                        sink,
-                        channel["physical_lane"],
-                        source_y,
-                        sink_y,
-                        min(region_count - 1, int(source_y * region_count)),
-                        min(region_count - 1, int(sink_y * region_count)),
+                if (
+                    group_direction == "bidirectional"
+                    and channel["direction"] != "either"
+                ) or (
+                    group_direction != "bidirectional"
+                    and channel["direction"] not in {"either", group_direction}
+                ):
+                    raise ValidationError("Chimew assignment electrical direction mismatch")
+                if (channel["fpga_a"], channel["fpga_b"]) != (
+                    domain["fpga_a"], domain["fpga_b"]
+                ):
+                    raise ValidationError("Chimew assignment electrical domain mismatch")
+                member_directions = set()
+                for member_seq, member in enumerate(group["members"]):
+                    entry_id = member["id"]
+                    member_direction = (
+                        "a_to_b" if member["direction"] == 0 else "b_to_a"
                     )
-                )
-                if len(pending_members) >= 4096:
+                    member_directions.add(member_direction)
+                    source = (
+                        domain["fpga_a"]
+                        if member_direction == "a_to_b"
+                        else domain["fpga_b"]
+                    )
+                    sink = (
+                        domain["fpga_b"]
+                        if member_direction == "a_to_b"
+                        else domain["fpga_a"]
+                    )
+                    source_y = _normalized_y(
+                        member["fanout"][1],
+                        electrical["bounds"][source],
+                        f"{entry_id}.source_y",
+                    )
+                    sink_physical_y = sum(
+                        point[1] for point in member["fanins"]
+                    ) / len(member["fanins"])
+                    sink_y = _normalized_y(
+                        sink_physical_y,
+                        electrical["bounds"][sink],
+                        f"{entry_id}.sink_y",
+                    )
+                    pending_members.append(
+                        (
+                            entry_id,
+                            group_index,
+                            member_seq,
+                            member_direction,
+                            channel["link"],
+                            source,
+                            sink,
+                            channel["physical_lane"],
+                            source_y,
+                            sink_y,
+                            min(region_count - 1, int(source_y * region_count)),
+                            min(region_count - 1, int(sink_y * region_count)),
+                        )
+                    )
+                    if len(pending_members) >= 4096:
+                        try:
+                            build_connection.executemany(
+                                "INSERT INTO chimew_build_members VALUES "
+                                "(?,?,?,?,?,?,?,?,?,?,?,?)",
+                                pending_members,
+                            )
+                        except sqlite3.IntegrityError as error:
+                            raise ValidationError(
+                                "Chimew members do not cover unique schedule entries"
+                            ) from error
+                        pending_members.clear()
+                if (
+                    group_direction == "bidirectional"
+                    and member_directions != {"a_to_b", "b_to_a"}
+                ) or (
+                    group_direction != "bidirectional"
+                    and member_directions != {group_direction}
+                ):
+                    raise ValidationError("Chimew group violates schedule TDM capacity")
+                package_pin_keys = electrical_channel_pin_keys(channel, fixed)
+                pending_package_pins.extend(package_pin_keys)
+                if len(pending_package_pins) >= 4096:
                     try:
                         build_connection.executemany(
-                            "INSERT INTO chimew_build_members VALUES "
-                            "(?,?,?,?,?,?,?,?,?,?,?,?)",
-                            pending_members,
+                            "INSERT INTO chimew_build_package_pins VALUES (?,?)",
+                            pending_package_pins,
                         )
                     except sqlite3.IntegrityError as error:
                         raise ValidationError(
-                            "Chimew members do not cover unique schedule entries"
+                            "selected Chimew groups collide on package pins"
                         ) from error
-                    pending_members.clear()
-            if (
-                group_direction == "bidirectional"
-                and member_directions != {"a_to_b", "b_to_a"}
-            ) or (
-                group_direction != "bidirectional"
-                and member_directions != {group_direction}
-            ):
-                raise ValidationError("Chimew group violates schedule TDM capacity")
-            package_pin_keys = electrical_channel_pin_keys(channel, fixed)
-            pending_package_pins.extend(package_pin_keys)
-            if len(pending_package_pins) >= 4096:
+                    pending_package_pins.clear()
+            if next(assignment_cursor, None) is not None:
+                raise ValidationError("Chimew assignment does not cover all groups")
+            if pending_members:
+                try:
+                    build_connection.executemany(
+                        "INSERT INTO chimew_build_members VALUES "
+                        "(?,?,?,?,?,?,?,?,?,?,?,?)",
+                        pending_members,
+                    )
+                except sqlite3.IntegrityError as error:
+                    raise ValidationError(
+                        "Chimew members do not cover unique schedule entries"
+                    ) from error
+            if pending_package_pins:
                 try:
                     build_connection.executemany(
                         "INSERT INTO chimew_build_package_pins VALUES (?,?)",
@@ -1343,308 +1363,278 @@ def build_chimew_phase6_pin_plan(
                     raise ValidationError(
                         "selected Chimew groups collide on package pins"
                     ) from error
-                pending_package_pins.clear()
-        if assignment_cursor is not None and next(assignment_cursor, None) is not None:
-            raise ValidationError("Chimew assignment does not cover all groups")
-        if pending_members:
-            try:
-                build_connection.executemany(
-                    "INSERT INTO chimew_build_members VALUES "
-                    "(?,?,?,?,?,?,?,?,?,?,?,?)",
-                    pending_members,
-                )
-            except sqlite3.IntegrityError as error:
-                raise ValidationError(
-                    "Chimew members do not cover unique schedule entries"
-                ) from error
-        if pending_package_pins:
-            try:
-                build_connection.executemany(
-                    "INSERT INTO chimew_build_package_pins VALUES (?,?)",
-                    pending_package_pins,
-                )
-            except sqlite3.IntegrityError as error:
-                raise ValidationError(
-                    "selected Chimew groups collide on package pins"
-                ) from error
 
-        member_count, joined_count = build_connection.execute(
-            """
-            SELECT count(*),count(schedule.identity)
-            FROM chimew_build_members AS member
-            LEFT JOIN indexed_schedule_entries AS schedule
-              ON schedule.identity=member.entry_id
-            """
-        ).fetchone()
-        member_count = int(member_count)
-        package_pin_count = int(
-            build_connection.execute(
-                "SELECT count(*) FROM chimew_build_package_pins"
-            ).fetchone()[0]
-        )
-        if member_count != schedule_count or joined_count != schedule_count:
-            raise ValidationError("Chimew groups do not cover the schedule exactly")
-        mismatch = build_connection.execute(
-            """
-            SELECT member.entry_id
-            FROM chimew_build_members AS member
-            JOIN indexed_schedule_entries AS schedule
-              ON schedule.identity=member.entry_id
-            WHERE schedule.link_id!=member.expected_link
-               OR schedule.source_fpga!=member.expected_source
-               OR schedule.sink_fpga!=member.expected_sink
-            LIMIT 1
-            """
-        ).fetchone()
-        if mismatch is not None:
-            raise ValidationError("Chimew member schedule domain does not agree")
-        collision = build_connection.execute(
-            """
-            SELECT member.group_index,member.entry_id,schedule.slot
-            FROM chimew_build_members AS member
-            JOIN indexed_schedule_entries AS schedule
-              ON schedule.identity=member.entry_id
-            JOIN (
-              SELECT member.group_index,schedule.slot
-              FROM chimew_build_members AS member
-              JOIN indexed_schedule_entries AS schedule
-                ON schedule.identity=member.entry_id
-              GROUP BY member.group_index,schedule.slot HAVING count(*)>1
-            ) AS duplicate
-              ON duplicate.group_index=member.group_index
-             AND duplicate.slot=schedule.slot
-            ORDER BY member.group_index,member.member_seq LIMIT 1
-            """
-        ).fetchone()
-        if collision is not None:
-            raise ValidationError(
-                "Chimew group has a TDM slot collision: "
-                f"group_index={collision[0]!r}, entry={collision[1]!r}, "
-                f"slot={collision[2]!r}"
+            member_count, joined_count = build_connection.execute(
+                """
+                SELECT count(*),count(schedule.identity)
+                FROM chimew_build_members AS member
+                LEFT JOIN indexed_schedule_entries AS schedule
+                  ON schedule.identity=member.entry_id
+                """
+            ).fetchone()
+            member_count = int(member_count)
+            package_pin_count = int(
+                build_connection.execute(
+                    "SELECT count(*) FROM chimew_build_package_pins"
+                ).fetchone()[0]
             )
-        invalid_capacity = build_connection.execute(
-            """
-            SELECT member.group_index
-            FROM chimew_build_members AS member
-            JOIN indexed_schedule_entries AS schedule
-              ON schedule.identity=member.entry_id
-            GROUP BY member.group_index,member.member_direction
-            HAVING min(schedule.tdm_ratio)!=max(schedule.tdm_ratio)
-                OR count(*)>min(schedule.tdm_ratio)
-            LIMIT 1
-            """
-        ).fetchone()
-        if invalid_capacity is not None:
-            raise ValidationError("Chimew group violates schedule TDM capacity")
+            if member_count != schedule_count or joined_count != schedule_count:
+                raise ValidationError("Chimew groups do not cover the schedule exactly")
+            mismatch = build_connection.execute(
+                """
+                SELECT member.entry_id
+                FROM chimew_build_members AS member
+                JOIN indexed_schedule_entries AS schedule
+                  ON schedule.identity=member.entry_id
+                WHERE schedule.link_id!=member.expected_link
+                   OR schedule.source_fpga!=member.expected_source
+                   OR schedule.sink_fpga!=member.expected_sink
+                LIMIT 1
+                """
+            ).fetchone()
+            if mismatch is not None:
+                raise ValidationError("Chimew member schedule domain does not agree")
+            collision = build_connection.execute(
+                """
+                SELECT member.group_index,member.entry_id,schedule.slot
+                FROM chimew_build_members AS member
+                JOIN indexed_schedule_entries AS schedule
+                  ON schedule.identity=member.entry_id
+                JOIN (
+                  SELECT member.group_index,schedule.slot
+                  FROM chimew_build_members AS member
+                  JOIN indexed_schedule_entries AS schedule
+                    ON schedule.identity=member.entry_id
+                  GROUP BY member.group_index,schedule.slot HAVING count(*)>1
+                ) AS duplicate
+                  ON duplicate.group_index=member.group_index
+                 AND duplicate.slot=schedule.slot
+                ORDER BY member.group_index,member.member_seq LIMIT 1
+                """
+            ).fetchone()
+            if collision is not None:
+                raise ValidationError(
+                    "Chimew group has a TDM slot collision: "
+                    f"group_index={collision[0]!r}, entry={collision[1]!r}, "
+                    f"slot={collision[2]!r}"
+                )
+            invalid_capacity = build_connection.execute(
+                """
+                SELECT member.group_index
+                FROM chimew_build_members AS member
+                JOIN indexed_schedule_entries AS schedule
+                  ON schedule.identity=member.entry_id
+                GROUP BY member.group_index,member.member_direction
+                HAVING min(schedule.tdm_ratio)!=max(schedule.tdm_ratio)
+                    OR count(*)>min(schedule.tdm_ratio)
+                LIMIT 1
+                """
+            ).fetchone()
+            if invalid_capacity is not None:
+                raise ValidationError("Chimew group violates schedule TDM capacity")
 
-        position_header = {
-            "schema": SIGNAL_POSITION_HINTS_SCHEMA,
-            "design": schedule["design"],
-            "platform": platform.name,
-            "provider": CHIMEW_PHYSICAL_POSITION_PROVIDER,
-            "source_coordinate_system": "physical-site-xy",
-            "region_count": region_count,
-            "provenance": {
-                "producer": problem["provenance"]["producer"],
-                "producer_version": problem["provenance"]["producer_version"],
-                "assignment_input_sha256": report["input_sha256"],
-                "placement_sha256": problem["provenance"]["placement_sha256"],
-                "architecture_sha256": problem["provenance"]["architecture_sha256"],
-            },
-            "metrics": {
-                "signals": member_count,
-                "endpoint_centroid_fallbacks": 0,
-            },
-        }
-        positions_document = {
-            **position_header,
-            "entries": _iter_chimew_position_records(build_connection),
-        }
-        positions = (
-            write_position_hints_storage(
-                position_hints_output_path,
-                positions_document,
-                source_bindings=publication_sources,
-            )
-            if position_hints_output_path is not None
-            else {
-                **position_header,
-                "entries": list(_iter_chimew_position_records(build_connection)),
-            }
-        )
-        weights = {"crossing": 1.0, "position": 1.0}
-        schedule_sha256 = canonical_tdm_schedule_sha256(schedule)
-        metrics = _indexed_assignment_metrics(
-            build_connection, platform, baseline=False
-        )
-        baseline = _indexed_assignment_metrics(
-            build_connection, platform, baseline=True
-        )
-        plan_records = _IndexedPinPlanRecords(build_connection, member_count)
-        plan_document = {
-            "schema": PIN_PLAN_SCHEMA,
-            "design": schedule["design"],
-            "platform": platform.name,
-            "provider": CHIMEW_PIN_PLAN_PROVIDER,
-            "configuration": {
-                "refinement_iterations": 0,
-                "paper_assignment_provider": report["provider"],
-                "electrical_map_sha256": electrical["map_sha256"],
-                "schedule_sha256": schedule_sha256,
-                "lookahead_qualification": (
-                    "complete-artifact-chain"
-                    if qualification_validation is not None
-                    else "bank-electrical-only"
-                ),
-                **(
-                    {
-                        "qualification_sha256": qualification_validation[
-                            "qualification_sha256"
-                        ],
-                        "qualification_scope": qualification_validation[
-                            "qualification_scope"
-                        ],
-                    }
-                    if qualification_validation is not None
-                    else {}
-                ),
-            },
-            "weights": weights,
-            "metrics": {
-                "signals": member_count,
-                "groups": len(problem["groups"]),
-                **metrics,
-                **{
-                    f"baseline_logical_lane_{field}": value
-                    for field, value in baseline.items()
+            position_header = {
+                "schema": SIGNAL_POSITION_HINTS_SCHEMA,
+                "design": schedule["design"],
+                "platform": platform.name,
+                "provider": CHIMEW_PHYSICAL_POSITION_PROVIDER,
+                "source_coordinate_system": "physical-site-xy",
+                "region_count": region_count,
+                "provenance": {
+                    "producer": problem["provenance"]["producer"],
+                    "producer_version": problem["provenance"]["producer_version"],
+                    "assignment_input_sha256": report["input_sha256"],
+                    "placement_sha256": problem["provenance"]["placement_sha256"],
+                    "architecture_sha256": problem["provenance"]["architecture_sha256"],
                 },
-            },
-            "entries": plan_records,
-        }
-        plan = (
-            write_pin_plan_storage(
-                pin_plan_output_path, plan_document, source_bindings=publication_sources
-            )
-            if pin_plan_output_path is not None
-            else {**plan_document, "entries": list(plan_records)}
-        )
-        validation = validate_pin_plan(schedule, platform, positions, plan)
-
-        def iter_binding_entries() -> Iterator[Mapping[str, Any]]:
-            # Typed production storage exposes this cursor in strict group-id
-            # order and validates that order record by record.  Avoid an H-size
-            # ``sorted`` list here; legacy callers retain their explicitly
-            # materialized compatibility path.
-            groups = problem["groups"]
-            if not hasattr(bank_channel_input, "store_path"):
-                groups = sorted(groups, key=lambda item: item["id"])
-            else:
-                groups = bank_channel_input.iter_normalized_groups_by_id()
-            assignments = (
-                report.iter_assignments_by_group()
-                if indexed_report
-                else (
-                    report_assignment[group["id"]]
-                    for group in groups
+                "metrics": {
+                    "signals": member_count,
+                    "endpoint_centroid_fallbacks": 0,
+                },
+            }
+            positions_document = {
+                **position_header,
+                "entries": _iter_chimew_position_records(build_connection),
+            }
+            positions = (
+                write_position_hints_storage(
+                    position_hints_output_path,
+                    positions_document,
+                    source_bindings=publication_sources,
                 )
-            )
-            for group, assignment in zip(groups, assignments):
-                if assignment.get("group") != group["id"]:
-                    raise ValidationError(
-                        "Chimew assignment does not cover all groups"
-                    )
-                channel = electrical["channels"][assignment["channel"]]
-                yield {
-                    "group": group["id"],
-                    "schedule_entries": sorted(
-                        member["id"] for member in group["members"]
-                    ),
-                    "bank_pair": assignment["bank_pair"],
-                    "channel": assignment["channel"],
-                    **channel,
-                    "direction": (
-                        "a_to_b"
-                        if group["direction"] == 0
-                        else "b_to_a"
-                        if group["direction"] == 1
-                        else "bidirectional"
-                    ),
+                if position_hints_output_path is not None
+                else {
+                    **position_header,
+                    "entries": list(_iter_chimew_position_records(build_connection)),
                 }
+            )
+            weights = {"crossing": 1.0, "position": 1.0}
+            schedule_sha256 = canonical_tdm_schedule_sha256(schedule)
+            metrics = _indexed_assignment_metrics(
+                build_connection, platform, baseline=False
+            )
+            baseline = _indexed_assignment_metrics(
+                build_connection, platform, baseline=True
+            )
+            plan_records = _IndexedPinPlanRecords(build_connection, member_count)
+            plan_document = {
+                "schema": PIN_PLAN_SCHEMA,
+                "design": schedule["design"],
+                "platform": platform.name,
+                "provider": CHIMEW_PIN_PLAN_PROVIDER,
+                "configuration": {
+                    "refinement_iterations": 0,
+                    "paper_assignment_provider": report["provider"],
+                    "electrical_map_sha256": electrical["map_sha256"],
+                    "schedule_sha256": schedule_sha256,
+                    "lookahead_qualification": (
+                        "complete-artifact-chain"
+                        if qualification_validation is not None
+                        else "bank-electrical-only"
+                    ),
+                    **(
+                        {
+                            "qualification_sha256": qualification_validation[
+                                "qualification_sha256"
+                            ],
+                            "qualification_scope": qualification_validation[
+                                "qualification_scope"
+                            ],
+                        }
+                        if qualification_validation is not None
+                        else {}
+                    ),
+                },
+                "weights": weights,
+                "metrics": {
+                    "signals": member_count,
+                    "groups": len(problem["groups"]),
+                    **metrics,
+                    **{
+                        f"baseline_logical_lane_{field}": value
+                        for field, value in baseline.items()
+                    },
+                },
+                "entries": plan_records,
+            }
+            plan = (
+                write_pin_plan_storage(
+                    pin_plan_output_path, plan_document, source_bindings=publication_sources
+                )
+                if pin_plan_output_path is not None
+                else {**plan_document, "entries": list(plan_records)}
+            )
+            validation = validate_pin_plan(schedule, platform, positions, plan)
 
-        binding_document = {
-            "schema": (FIXED_WIRING_BINDING_SCHEMA if electrical["fixed_wiring"] is not None
-                       else CHIMEW_PHASE6_BINDING_SCHEMA),
-            **({"fixed_wiring": electrical["fixed_wiring"]} if electrical["fixed_wiring"] is not None else {}),
-            "status": "pass",
-            "integration_status": "phase6-pin-plan",
-            "design": schedule["design"],
-            "platform": platform.name,
-            "provider": CHIMEW_PHASE6_BINDING_PROVIDER,
-            "paper_provider": report["provider"],
-            "extension_scope": (
-                "EmuFlow concrete lane, bank voltage, IOSTANDARD, and package-pin legality"
-            ),
-            "fpga_y_bounds": [
-                {"fpga": fpga, "y_min": bounds[0], "y_max": bounds[1]}
-                for fpga, bounds in sorted(electrical["bounds"].items())
-            ],
-            "provenance": {
-                **electrical["provenance"],
-                "electrical_map_sha256": electrical["map_sha256"],
-                "assignment_input_sha256": report["input_sha256"],
-                "schedule_sha256": schedule_sha256,
-                **(
-                    {
-                        "qualification_sha256": qualification_validation[
-                            "qualification_sha256"
-                        ],
-                        "qualification_scope": qualification_validation[
-                            "qualification_scope"
-                        ],
+            def iter_binding_entries() -> Iterator[Mapping[str, Any]]:
+                # Both source relations have independent ordered cursors.
+                groups = bank_channel_input.iter_normalized_groups_by_id()
+                assignments = report.iter_assignments_by_group()
+                for group, assignment in zip(groups, assignments):
+                    if assignment.get("group") != group["id"]:
+                        raise ValidationError(
+                            "Chimew assignment does not cover all groups"
+                        )
+                    channel = electrical["channels"][assignment["channel"]]
+                    yield {
+                        "group": group["id"],
+                        "schedule_entries": sorted(
+                            member["id"] for member in group["members"]
+                        ),
+                        "bank_pair": assignment["bank_pair"],
+                        "channel": assignment["channel"],
+                        **channel,
+                        "direction": (
+                            "a_to_b"
+                            if group["direction"] == 0
+                            else "b_to_a"
+                            if group["direction"] == 1
+                            else "bidirectional"
+                        ),
                     }
-                    if qualification_validation is not None
+
+            binding_document = {
+                "schema": (FIXED_WIRING_BINDING_SCHEMA if electrical["fixed_wiring"] is not None
+                           else CHIMEW_PHASE6_BINDING_SCHEMA),
+                **({"fixed_wiring": electrical["fixed_wiring"]} if electrical["fixed_wiring"] is not None else {}),
+                "status": "pass",
+                "integration_status": "phase6-pin-plan",
+                "design": schedule["design"],
+                "platform": platform.name,
+                "provider": CHIMEW_PHASE6_BINDING_PROVIDER,
+                "paper_provider": report["provider"],
+                "extension_scope": (
+                    "EmuFlow concrete lane, bank voltage, IOSTANDARD, and package-pin legality"
+                ),
+                "fpga_y_bounds": [
+                    {"fpga": fpga, "y_min": bounds[0], "y_max": bounds[1]}
+                    for fpga, bounds in sorted(electrical["bounds"].items())
+                ],
+                "provenance": {
+                    **electrical["provenance"],
+                    "electrical_map_sha256": electrical["map_sha256"],
+                    "assignment_input_sha256": report["input_sha256"],
+                    "schedule_sha256": schedule_sha256,
+                    **(
+                        {
+                            "qualification_sha256": qualification_validation[
+                                "qualification_sha256"
+                            ],
+                            "qualification_scope": qualification_validation[
+                                "qualification_scope"
+                            ],
+                        }
+                        if qualification_validation is not None
+                        else {}
+                    ),
+                },
+                **(
+                    {"lookahead_qualification": dict(qualification_document)}
+                    if qualification_document is not None
                     else {}
                 ),
-            },
-            **(
-                {"lookahead_qualification": dict(qualification_document)}
-                if qualification_document is not None
-                else {}
-            ),
-            "metrics": {
-                "signals": member_count,
-                "groups": len(problem["groups"]),
-                "channels": len(problem["groups"]),
-                "package_pins": package_pin_count,
-                "lane_slot_collisions": validation["physical_lane_slot_collisions"],
-                "package_pin_collisions": 0,
-            },
-            "entries": iter_binding_entries(),
-        }
-        binding = (
-            write_chimew_binding_storage(
-                electrical_binding_output_path,
-                binding_document,
-                source_bindings=publication_sources
-                + bind_view_sources((plan, "pin-plan-store-v1")),
+                "metrics": {
+                    "signals": member_count,
+                    "groups": len(problem["groups"]),
+                    "channels": len(problem["groups"]),
+                    "package_pins": package_pin_count,
+                    "lane_slot_collisions": validation["physical_lane_slot_collisions"],
+                    "package_pin_collisions": 0,
+                },
+                "entries": iter_binding_entries(),
+            }
+            binding = (
+                write_chimew_binding_storage(
+                    electrical_binding_output_path,
+                    binding_document,
+                    source_bindings=publication_sources
+                    + bind_view_sources((plan, "pin-plan-store-v1")),
+                )
+                if electrical_binding_output_path is not None
+                else {**binding_document, "entries": list(iter_binding_entries())}
             )
-            if electrical_binding_output_path is not None
-            else {**binding_document, "entries": list(iter_binding_entries())}
-        )
-        # Independently rejoin all three sealed typed relations before return.
-        validate_chimew_phase6_binding(schedule, platform, plan, binding)
-        return {
-            "status": "pass",
-            "provider": CHIMEW_PHASE6_BINDING_PROVIDER,
-            "bank_channel_report": report,
-            "position_hints": positions,
-            "pin_plan": plan,
-            "electrical_binding": binding,
-            "qualification_validation": qualification_validation,
-            "validation": validation,
-        }
-    finally:
-        build_connection.close()
+            # Independently rejoin all three sealed typed relations before return.
+            validate_chimew_phase6_binding(schedule, platform, plan, binding)
+            return {
+                "status": "pass",
+                "provider": CHIMEW_PHASE6_BINDING_PROVIDER,
+                "bank_channel_report": report,
+                "position_hints": positions,
+                "pin_plan": plan,
+                "electrical_binding": binding,
+                "qualification_validation": qualification_validation,
+                "validation": validation,
+            }
+        finally:
+            try:
+                assignment_cursor.close()
+            finally:
+                build_connection.close()
+    except BaseException:
+        if bank_channel_report_document is None:
+            report.close()
+        raise
+
 
 def _validate_chimew_phase6_binding(
     schedule: Mapping[str, Any],
@@ -2093,7 +2083,7 @@ def _run_chimew_phase6_adapter_with_input(
     qualification = read_json(qualification_path) if qualification_path else None
     assignment_report = (
         read_chimew_bank_channel_report(
-            bank_channel_report_path, allow_legacy=True
+            bank_channel_report_path
         )
         if bank_channel_report_path
         else None
@@ -2184,13 +2174,10 @@ def _run_chimew_phase6_adapter_with_input(
         ):
             indexed_bank_report = result_bank_report
         else:
-            indexed_bank_report = write_chimew_bank_channel_report_storage(
-                report_selector_path,
-                result_bank_report,
-                source_bindings=bind_view_sources(
-                    (result_bank_report, "chimew-bank-report-store-v1")
-                ),
-            )
+            if not isinstance(result_bank_report, BankChannelReportView):
+                raise ValidationError("Chimew adapter requires a typed assignment report")
+            copy_chimew_bank_channel_report_storage(result_bank_report.manifest_path, report_selector_path)
+            indexed_bank_report = read_chimew_bank_channel_report(report_selector_path)
         if qualification is not None:
             write_json(staging_root / "qualification_certificate.json", qualification)
 

@@ -6,10 +6,8 @@ from unittest.mock import patch
 import pytest
 
 from emuflow.transport.chimew import chimew_pipeline
-from emuflow.transport.chimew.chimew_bank_channel import evaluate_chimew_bank_channel_assignment
-from emuflow.transport.chimew.chimew_bank_channel_report_storage import (
-    write_chimew_bank_channel_report_storage,
-)
+from tests.chimew_bank_fixture import evaluate_chimew_bank_channel_assignment
+from tests.chimew_bank_report_fixture import write_chimew_bank_channel_report_storage
 from emuflow.common.errors import ValidationError
 from tests.native_build import emuflow_native
 

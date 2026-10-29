@@ -23,8 +23,7 @@ void WriteStaticExactSections(const std::vector<core::ArtifactRef>& inputs,
 void RouteTlr(const std::vector<core::ArtifactRef>& inputs,
               const std::string& output_path,
               const volatile std::sig_atomic_t* cancelled = nullptr);
-void AssignChimewBankChannels(const std::string& input_path,
-                              std::ostream& output);
+
 void GroupChimewSignals(const std::string& input_path,
                         std::ostream& output,
                         const std::string& expected_sha256);

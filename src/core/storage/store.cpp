@@ -1,5 +1,6 @@
 #include "transport/split_overlay.hpp"
 #include "storage/store.hpp"
+#include <cctype>
 #include "common/json_record.hpp"
 
 #include <filesystem>
@@ -38,8 +39,17 @@ void RequireSqliteDDL(SqliteDatabase& db,const char* ddl) {
   const char* sql="SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name";
   auto observed=db.Prepare(sql),reference=expected.Prepare(sql);
   const auto normalize=[](const std::string& source) {
-    std::istringstream input(source);std::string result,token;
-    while(input>>token){if(!result.empty())result+=' ';result+=token;}return result;
+    // SQLite preserves producer whitespace in sqlite_master. Compare tokens
+    // without folding whitespace inside quoted strings or identifiers; the
+    // effective column/index catalogue is independently checked below.
+    std::string result;char quote=0;
+    for(std::size_t i=0;i<source.size();++i){const char c=source[i];
+      if(quote){result+=c;if(c==quote){if(i+1<source.size()&&source[i+1]==quote){result+=source[++i];}else quote=0;}}
+      else if(c=='\''||c=='"'||c=='`'){quote=c;result+=c;}
+      else if(c=='['){quote=']';result+=c;}
+      else if(!std::isspace(static_cast<unsigned char>(c)))result+=c;
+    }
+    return result;
   };
   while(reference.Step()) {
     if(!observed.Step())throw StageError(ErrorCode::kInvalidArtifact,"SQLite store has missing schema objects");

@@ -1,3 +1,5 @@
+from tests.chimew_bank_fixture import build_chimew_phase6_pin_plan
+from tests.chimew_bank_fixture import evaluate_chimew_bank_channel_assignment
 from tests.schedule_store_fixture import write_tdm_schedule_storage
 from contextlib import closing
 import copy
@@ -14,7 +16,6 @@ from tests.native_build import chimew_bank_channel_assigner
 from emuflow.transport.chimew.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
-    evaluate_chimew_bank_channel_assignment,
     validate_chimew_bank_channel_input,
 )
 from emuflow.transport.chimew.chimew_bank_channel_storage import (
@@ -33,7 +34,6 @@ from emuflow.transport.chimew.chimew_phase6 import (
     CHIMEW_ELECTRICAL_MAP_SCHEMA,
     CHIMEW_ELECTRICAL_MAP_SCHEMA_V1,
     CHIMEW_PHASE6_BINDING_PROVIDER,
-    build_chimew_phase6_pin_plan,
     chimew_adapter_report_generation_path,
     run_chimew_phase6_adapter,
     validate_chimew_adapter_generation,
@@ -1343,6 +1343,38 @@ class ChimewPhase6AdapterTest(unittest.TestCase):
                 self.electrical_map,
                 executable=str(self.executable),
             )
+
+    def test_failed_pin_plan_closes_owned_report_and_active_cursor_with_live_traceback(self) -> None:
+        from emuflow.transport.chimew import chimew_phase6 as adapter
+        from emuflow.transport.chimew.chimew_bank_channel import evaluate_chimew_bank_channel_assignment as assign
+        assignment = copy.deepcopy(self.assignment_input)
+        assignment["groups"][0]["members"][0]["fanout"]["y"] = 101.0
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with write_chimew_bank_channel_storage(root / "input.json", assignment) as source:
+                report = assign(source, executable=str(self.executable), output_path=root / "report.json")
+                with mock.patch.object(adapter, "evaluate_chimew_bank_channel_assignment", return_value=report):
+                    try:
+                        adapter.build_chimew_phase6_pin_plan(
+                            self.schedule, self.platform, source, self.electrical_map,
+                            executable=str(self.executable), bank_channel_report_output_path=root / "report.json")
+                    except ValidationError as error:
+                        self.assertIn("outside FPGA bounds", str(error))
+                        traceback = error.__traceback__
+                    else:
+                        self.fail("out-of-bounds placement was accepted")
+                retained = traceback
+                found = False
+                while traceback is not None:
+                    if traceback.tb_frame.f_code.co_name == "build_chimew_phase6_pin_plan":
+                        cursor = traceback.tb_frame.f_locals["assignment_cursor"]
+                        self.assertIsNone(cursor.gi_frame)
+                        found = True
+                    traceback = traceback.tb_next
+                self.assertTrue(found)
+                with self.assertRaisesRegex(ValidationError, "closed"):
+                    report["assignments"][0]
+                self.assertIsNotNone(retained)
 
     def test_bank_voltage_must_match_selected_iostandard(self) -> None:
         electrical_map = copy.deepcopy(self.electrical_map)

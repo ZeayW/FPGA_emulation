@@ -552,7 +552,7 @@ CREATE TABLE boundary_registers(
       StageRequest malformed_rudy{Stage::kRudy,{invalid_source},output};
       if (emuflow::native::ExecuteStage(malformed_rudy).ok() || read_text(output) != before)
         throw std::runtime_error("RUDY parse failure destroyed a published result");
-      for (const auto stage : {Stage::kGroupSignals,Stage::kRefinePositions,Stage::kAssignBanks}) {
+      for (const auto stage : {Stage::kGroupSignals,Stage::kRefinePositions}) {
         StageRequest legacy{stage,{invalid_source},output}; legacy.typed_input = false;
         if (emuflow::native::ExecuteStage(legacy).error != ErrorCode::kInvalidRequest || read_text(output) != before)
           throw std::runtime_error("retired Chimew text API executed");

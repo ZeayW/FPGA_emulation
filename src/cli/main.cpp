@@ -13,6 +13,7 @@
 #include "transport/chimew/geometry.hpp"
 #include "transport/chimew/signals.hpp"
 #include "transport/chimew/lookahead.hpp"
+#include "transport/chimew/bank_store.hpp"
 #include "board/wiring.hpp"
 #include "flow/preflight.hpp"
 #include "physical/placement_lowering.hpp"
@@ -102,6 +103,8 @@ constexpr const char* kUsage =
     "  phase6 split EMUIR ASSIGNMENT SCHEDULE OUTPUT\n"
     "  phase6 run EMUIR ASSIGNMENT SCHEDULE REQUEST OUTPUT_DIR\n"
     "  phase6 prepare-policy EMUIR CONFIGURATION OUTPUT\n"
+    "  phase6 assign-bank-store SELECTOR REPORT\n"
+    "  phase6 copy-bank-report SELECTOR REPORT\n"
     "  phase6 prepare-chimew-lookahead REQUEST OUTPUT_DIR\n"
     "  phase6 prepare-chimew-signals REQUEST OUTPUT_DIR\n"
     "  phase6 prepare-chimew-geometry REQUEST OUTPUT_DIR\n"
@@ -164,7 +167,6 @@ constexpr const char* kUsage =
     "  physical resolve-vivado-timing-query MAPPED FUNCTIONS LINEAGE QUERY REQUEST OUTPUT_DIR\n"
     "  global-sta index-events PRIMARY INDEX\n"
     "  global-sta export-events PRIMARY INDEX REQUEST SUMMARY\n"
-    "  phase6 assign-banks --typed-input INPUT OUTPUT\n"
     "  phase6 group-signals --typed-input INPUT OUTPUT EXPECTED_SHA256\n"
     "  phase6 refine-groups --typed-input INPUT OUTPUT EXPECTED_SHA256\n"
     "  phase6 rudy INPUT OUTPUT\n"
@@ -311,6 +313,32 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="prepare-configuration") {
     ToolSignals signals;return Finish(emuflow::core::PreparePhase6Configuration(emuflow::core::ArtifactRef::Bind(argv[3],"phase6-configuration-input-v1"),argv[4],&tool_cancelled),report);
+  }
+  if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="copy-bank-report") {
+    ToolSignals signals;
+    if(!report.empty() && (SamePath(report,argv[3]) || SamePath(report,argv[4])))
+      throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"native report aliases a bank assignment artifact");
+    try {
+      const auto source=emuflow::core::ArtifactRef::Bind(argv[3],"chimew-bank-report-selector-v1");
+      return Finish(emuflow::core::CopyChimewBankReport(source,argv[4],&tool_cancelled),report);
+    } catch(const emuflow::core::StageError& error) {
+      emuflow::core::StageResult result;
+      result.stage="phase6.copy-bank-report";result.error=error.code();result.message=error.what();
+      return Finish(std::move(result),report);
+    }
+  }
+  if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="assign-bank-store") {
+    ToolSignals signals;
+    if(!report.empty() && (SamePath(report,argv[3]) || SamePath(report,argv[4])))
+      throw emuflow::core::StageError(emuflow::core::ErrorCode::kInvalidRequest,"native report aliases a bank assignment artifact");
+    try {
+      const auto source=emuflow::core::ArtifactRef::Bind(argv[3],"chimew-bank-input-selector-v1");
+      return Finish(emuflow::core::AssignChimewBankStore(source,argv[4],&tool_cancelled),report);
+    } catch(const emuflow::core::StageError& error) {
+      emuflow::core::StageResult result;
+      result.stage="phase6.assign-bank-store";result.error=error.code();result.message=error.what();
+      return Finish(std::move(result),report);
+    }
   }
   if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="prepare-chimew-lookahead") {
     ToolSignals signals;return Finish(emuflow::core::PrepareChimewLookahead(emuflow::core::ArtifactRef::Bind(argv[3],"chimew-lookahead-input-v1"),argv[4],&tool_cancelled),report);
@@ -730,8 +758,6 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     if (operation == "rudy" && argc == 5)
       return run(Stage::kRudy, {argv[3]}, argv[4]);
     const std::string mode = argc > 3 ? argv[3] : "";
-    if (operation == "assign-banks" && argc == 6 && mode == "--typed-input")
-      return run(Stage::kAssignBanks, {argv[4]}, argv[5], mode == "--typed-input");
     if (operation == "group-signals" || operation == "refine-groups") {
       const auto stage = operation == "group-signals" ? Stage::kGroupSignals : Stage::kRefinePositions;
       if (argc == 7 && mode == "--typed-input")

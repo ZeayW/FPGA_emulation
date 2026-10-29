@@ -2,6 +2,7 @@
 #include "board/model.hpp"
 #include "common/artifact_io.hpp"
 #include "common/bounded_json.hpp"
+#include "common/canonical_json.hpp"
 #include "common/hash.hpp"
 #include <algorithm>
 #include <regex>
@@ -30,29 +31,6 @@ std::string Array(const std::vector<std::string> &rows) {
     result += r;
   }
   return result + ']';
-}
-std::string Canonical(const std::string &token) {
-  Check(!token.empty(), "empty JSON token");
-  if (token[0] == '{') {
-    O fields;
-    VisitJsonObjectTokens(token, [&](const auto &k, const auto &v) {
-      fields.emplace(k, Canonical(v));
-    });
-    return D::Encode(fields);
-  }
-  if (token[0] == '[') {
-    std::vector<std::string> rows;
-    VisitJsonArrayTokens(token,
-                         [&](const auto &v) { rows.push_back(Canonical(v)); });
-    return Array(rows);
-  }
-  if (token[0] == '"')
-    return JsonQuote(DecodeJsonString(token));
-  if (token == "true" || token == "false" || token == "null")
-    return token;
-  if (token.find_first_of(".eE") != std::string::npos)
-    return JsonRecord(ParseFiniteDecimal(token, "inventory number")).Encode();
-  return std::to_string(D::IntegerToken(token));
 }
 std::string Digest(const std::string &text) {
   Sha256 hash;
@@ -374,7 +352,7 @@ std::string BuildVirtualBoard(const std::string &normalized,
   }
   O source{{"inventory_file",
             JsonQuote(fs::path(inventory.path()).filename().string())},
-           {"inventory_sha256", JsonQuote(Digest(Canonical(pins.text())))},
+           {"inventory_sha256", JsonQuote(Digest(CanonicalJsonToken(pins.text())))},
            {"device_provenance", pins.Token("provenance")},
            {"pin_screening", pins.Token("screening")}};
   if (wiring) {
@@ -412,8 +390,8 @@ std::string BuildVirtualBoard(const std::string &normalized,
        {"model", JsonQuote("xcvu19p-hp-lvds-cable-v1")},
        {"platform", platform.Token("name")},
        {"qualification", JsonQuote("virtual_board_real_device_pins")},
-       {"source", Canonical(D::Encode(source))},
-       {"assumptions", Canonical(assumptions)},
+       {"source", CanonicalJsonToken(D::Encode(source))},
+       {"assumptions", CanonicalJsonToken(assumptions)},
        {"fpgas", Array(fpgas)},
        {"wires", Array(wires)},
        {"metrics",

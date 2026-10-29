@@ -1,3 +1,4 @@
+from tests.chimew_bank_fixture import evaluate_chimew_bank_channel_assignment
 """Late publication failures must preserve every retained Phase 6 typed owner."""
 
 import importlib
@@ -27,7 +28,7 @@ MODULES = {
     'position_hints': 'emuflow.transport.position_hints_storage',
     'chimew_binding': 'emuflow.transport.chimew.chimew_binding_storage',
     'chimew_bank_channel': 'emuflow.transport.chimew.chimew_bank_channel_storage',
-    'chimew_bank_channel_report': 'emuflow.transport.chimew.chimew_bank_channel_report_storage',
+    'chimew_bank_channel_report': 'tests.chimew_bank_report_fixture',
 }
 
 
@@ -53,9 +54,7 @@ def prepare(kind):
         case.setUp()
         document = case.document
         if kind.endswith("_report"):
-            from emuflow.transport.chimew.chimew_bank_channel import (
-                evaluate_chimew_bank_channel_assignment,
-            )
+            from tests.chimew_bank_fixture import evaluate_chimew_bank_channel_assignment
 
             document = evaluate_chimew_bank_channel_assignment(
                 document, executable=str(emuflow_native())

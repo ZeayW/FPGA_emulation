@@ -7,7 +7,7 @@ enum class Stage {
   kInvalid, kImportPhysicalBoundary, kImportPhysicalLogic, kImportPhysicalLocal, kValidatePhysicalEvidence, kSealRoutes, kValidatePhysicalCells, kValidateAtomicOwnership,
   kAnalyzeExact, kFinalizeExact, kHashSemantics, kAuditPartitionDecision, kNormalizePartitionConfiguration,
   kWriteExactSections, kValidateExactBinary, kRoute,
-  kAssignBanks, kGroupSignals, kRefinePositions, kRudy,
+  kGroupSignals, kRefinePositions, kRudy,
   kCompilePhase5, kRunPhase5, kBuildSchedule, kValidateSchedule, kProjectScheduleTiming, kBindGlobalEvents, kIndexGlobalEvents, kExportGlobalEvents, kImportGlobalMeasurements, kAuditGlobalMeasurements, kPublishGlobalQor, kValidateGlobalQor, kExportBookshelf, kBuildPartitionClusters, kBuildCandidateIds, kRefinePatronFromPrimary, kReducePartitionLoads, kPublishAssignmentIndex, kPublishAssignmentDescriptor, kValidateAssignmentCuts, kPublishClusterCatalog, kBuildCaptures, kValidateCaptures, kExportRwroute, kImportVivadoLineage, kExportVivado, kBuildRoutedSegments, kBuildRoutedEndpoints, kStageRoutedOpensta, kExportOpenstaInputs, kImportStaPaths, kValidateStaPaths, kBuildStaWeights, kValidateStaWeights, kBuildPhysicalCoverage, kAuditPhysicalCoverage
 };
 struct StageRequest {

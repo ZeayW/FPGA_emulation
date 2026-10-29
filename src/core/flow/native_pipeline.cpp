@@ -89,7 +89,6 @@ const char* StageName(Stage stage) {
     case Stage::kPublishGlobalQor: return "global-sta.publish-qor";
     case Stage::kValidateGlobalQor: return "global-sta.validate-qor";
     case Stage::kValidateSchedule: return "phase5.validate-schedule";
-    case Stage::kAssignBanks: return "phase6.assign-banks";
     case Stage::kGroupSignals: return "phase6.group-signals";
     case Stage::kRefinePositions: return "phase6.refine-groups";
     case Stage::kRudy: return "phase6.rudy";
@@ -268,12 +267,10 @@ std::vector<std::string> InputSchemas(const StageRequest& request) {
     case Stage::kCompilePhase5: return {"system-route-selector-v1","assignment-index-v4","boarddb-v1"};
     case Stage::kRunPhase5: return {"system-route-store-v3", "exact-schedule-board-request-v1", "exact-schedule-generation-request-v1", "phase5-stage-request-v1"};
     case Stage::kBuildSchedule: return {"system-route-store-v3", "exact-schedule-board-request-v1", "exact-schedule-generation-request-v1"};
-    case Stage::kAssignBanks:
     case Stage::kGroupSignals:
     case Stage::kRefinePositions:
       if (!request.typed_input)
         throw core::StageError(core::ErrorCode::kInvalidRequest, "Chimew requires typed input");
-      if (request.stage == Stage::kAssignBanks) return {"chimew-bank-input-v1"};
       if (request.stage == Stage::kGroupSignals) return {"chimew-group-input-v1"};
       return {"chimew-refine-input-v1"};
     case Stage::kRudy: return {"chimew-rudy-input-v1"};
@@ -356,7 +353,7 @@ core::StageResult ExecuteStage(const StageRequest& request) {
     } else if (request.stage!=Stage::kBuildRoutedSegments && (!request.auxiliary_output_path.empty() || !request.scratch_path.empty())) {
       throw core::StageError(core::ErrorCode::kInvalidRequest,"unexpected auxiliary stage destinations");
     }
-    const bool stream_stage = request.stage == Stage::kAssignBanks || request.stage == Stage::kGroupSignals ||
+    const bool stream_stage = request.stage == Stage::kGroupSignals ||
         request.stage == Stage::kRefinePositions || request.stage == Stage::kRudy;
     const bool pipe_input = stream_stage;
     if (request.output_path == "-" && !stream_stage)
@@ -395,11 +392,10 @@ core::StageResult ExecuteStage(const StageRequest& request) {
   }, [&](const auto& inputs) {
     const auto path = [&](std::size_t i) -> const std::string& { return inputs.at(i).path(); };
     const auto& output = request.output_path;
-    if (request.stage == Stage::kAssignBanks || request.stage == Stage::kGroupSignals ||
+    if (request.stage == Stage::kGroupSignals ||
         request.stage == Stage::kRefinePositions || request.stage == Stage::kRudy) {
       const auto produce = [&](std::ostream& stream) {
         switch (request.stage) {
-          case Stage::kAssignBanks: AssignChimewBankChannels(path(0),stream); break;
           case Stage::kGroupSignals: GroupChimewSignals(path(0),stream,request.expected_sha256); break;
           case Stage::kRefinePositions: RefineChimewPositions(path(0),stream,request.expected_sha256); break;
           case Stage::kRudy: EvaluateChimewRudy(path(0),stream); break;
@@ -541,7 +537,6 @@ core::StageResult ExecuteStage(const StageRequest& request) {
       case Stage::kIndexGlobalEvents: schema = "global-event-index-v1"; break;
       case Stage::kExportGlobalEvents: schema = "global-event-export-summary-v1"; break;
       case Stage::kValidateSchedule: schema = "exact-schedule-validation-summary-v1"; break;
-      case Stage::kAssignBanks: schema = "chimew-bank-output-text"; break;
       case Stage::kGroupSignals: schema = "chimew-group-output-text"; break;
       case Stage::kRefinePositions: schema = "chimew-refine-output-text"; break;
       case Stage::kRudy: schema = "chimew-rudy-output-text"; break;

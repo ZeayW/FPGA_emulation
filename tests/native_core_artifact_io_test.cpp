@@ -362,7 +362,7 @@ int main() {
     if (malformed.error != ErrorCode::kInvalidArtifact) {
       throw std::runtime_error("mixed native envelope was accepted");
     }
-    const auto pipe = ArtifactRef::Bind("-", "chimew-bank-input-v1", true);
+    const auto pipe = ArtifactRef::Bind("-", "chimew-group-input-v1", true);
     if (!pipe.is_pipe()) throw std::runtime_error("native pipe was treated as a file");
     // File consumers must never observe a partial result or an output from
     // changed source generations, including when a producer fails late.

@@ -316,7 +316,6 @@ constexpr RegisteredSchema schemas[] = {
     {"candidate-policy-request-v1", ArtifactEncoding::kBinary, 0x31514543464d5545ULL, 1},
     {"candidate-id-columns-v1", ArtifactEncoding::kBinary, 0x31544343464d5545ULL, 1},
     {"partition-cluster-request-v1", ArtifactEncoding::kBinary, 0x31515243464d5545ULL, 1},
-    {"chimew-bank-input-v1", ArtifactEncoding::kBinary, 0x0033434248434d45ULL, 1},
     {"chimew-group-input-v1", ArtifactEncoding::kBinary, 0x0033524748434d45ULL, 1},
     {"chimew-refine-input-v1", ArtifactEncoding::kBinary, 0x0032465248434d45ULL, 1},
     // Text compatibility/IPC schemas have stage-owned grammars. Binding does
@@ -385,7 +384,6 @@ constexpr RegisteredSchema schemas[] = {
      "SELECT json_extract(value,'$') FROM metadata WHERE key='logical_schema'","emuflow.tdm-schedule/v1"},
     {"exact-sha256-text-v1", ArtifactEncoding::kText, 0, 1},
     {"exact-section-summary-v2", ArtifactEncoding::kBinary, 0x314f5753464d5545ULL, 2},
-    {"chimew-bank-output-text", ArtifactEncoding::kText, 0, 1},
     {"chimew-group-output-text", ArtifactEncoding::kText, 0, 1},
     {"chimew-refine-output-text", ArtifactEncoding::kText, 0, 1},
     {"chimew-rudy-output-text", ArtifactEncoding::kText, 0, 1},

@@ -1,3 +1,4 @@
+from tests.chimew_bank_fixture import build_chimew_phase6_pin_plan
 from tests.virtual_io_reference import build_virtual_io_physical_contract, write_virtual_binding_systemverilog, write_virtual_binding_xdc
 """Chimew electrical integration over real fixed wiring, with tiny mocked geometry.
 
@@ -13,7 +14,7 @@ from emuflow.transport.chimew.chimew_fixed_wiring import (
     FIXED_WIRING_BINDING_SCHEMA, FixedWiringChannels,
 )
 from emuflow.transport.chimew.chimew_phase6 import (
-    build_chimew_phase6_pin_plan, run_chimew_phase6_adapter,
+    run_chimew_phase6_adapter,
     validate_chimew_electrical_map, validate_chimew_phase6_binding,
     validate_chimew_adapter_generation, chimew_adapter_report_generation_path,
 )

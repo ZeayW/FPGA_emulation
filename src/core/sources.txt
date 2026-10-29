@@ -15,6 +15,7 @@ transport/chimew/position_refiner.cpp
 transport/chimew/geometry.cpp
 transport/chimew/signals.cpp
 transport/chimew/lookahead.cpp
+transport/chimew/bank_store.cpp
 common/artifact_io.cpp
 storage/sqlite.cpp
 common/stage_runtime.cpp

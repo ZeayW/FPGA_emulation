@@ -1,3 +1,4 @@
+from tests.chimew_bank_report_fixture import write_chimew_bank_channel_report_storage
 from contextlib import closing
 import copy
 import hashlib
@@ -13,16 +14,15 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from emuflow.transport.chimew import chimew_bank_channel as bank_channel_module
+from tests import chimew_bank_channel_reference as bank_channel_module
 from emuflow.transport.chimew import chimew_bank_channel_storage as storage_module
-from emuflow.transport.chimew import chimew_bank_channel_report_storage as report_storage_module
+from tests import chimew_bank_report_fixture as report_storage_module
 from emuflow.transport.chimew import chimew_qualification as qualification_module
 from emuflow.transport.chimew.chimew_bank_channel import (
     CHIMEW_BANK_CHANNEL_INPUT_PROVIDER,
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA,
     CHIMEW_BANK_CHANNEL_INPUT_SCHEMA_V1,
     CHIMEW_BANK_CHANNEL_PROVIDER,
-    evaluate_chimew_bank_channel_assignment,
     validate_chimew_bank_channel_input,
 )
 from emuflow.transport.chimew.chimew_bank_channel_storage import (
@@ -39,13 +39,13 @@ from emuflow.transport.chimew.chimew_bank_channel_report_storage import (
     BankChannelReportView,
     canonical_bank_channel_report_sha256,
     read_chimew_bank_channel_report,
-    write_chimew_bank_channel_report_storage,
 )
 from emuflow.common.errors import EmuFlowError, ValidationError
 from emuflow.transport.chimew.chimew_qualification import (
     validate_chimew_bank_channel_report_artifact,
 )
-from tests.native_build import emuflow_native
+from tests.chimew_bank_fixture import evaluate_chimew_bank_channel_assignment
+from tests.native_build import chimew_bank_oracle, emuflow_native
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,7 +69,7 @@ class ChimewBankChannelTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.temporary_directory = tempfile.TemporaryDirectory()
         cls.executable = emuflow_native()
-        cls.command = [str(cls.executable), "phase6", "assign-banks"]
+        cls.command = [str(chimew_bank_oracle())]
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -200,7 +200,7 @@ class ChimewBankChannelTest(unittest.TestCase):
         self.assertEqual(result["direction_priority"]["near"], "a_to_b")
 
     def test_indexed_input_is_lazy_and_assignment_is_differential(self) -> None:
-        legacy = evaluate_chimew_bank_channel_assignment(
+        legacy = bank_channel_module.evaluate_chimew_bank_channel_assignment(
             self.document, executable=str(self.executable)
         )
         with tempfile.TemporaryDirectory() as temporary:
@@ -810,7 +810,7 @@ class ChimewBankChannelTest(unittest.TestCase):
                 executable.chmod(0o755)
                 with self.subTest(stage=stage), self.assertRaisesRegex(
                     EmuFlowError, 'negative reduced cost|primal certificate|dual'):
-                    evaluate_chimew_bank_channel_assignment(self.document, executable=str(executable))
+                    bank_channel_module.evaluate_chimew_bank_channel_assignment(self.document, executable=str(executable))
 
     def test_200_group_sparse_certificate_regression(self) -> None:
         document = copy.deepcopy(self.document)
@@ -916,7 +916,7 @@ class ChimewBankChannelTest(unittest.TestCase):
         self.assertEqual(assignment["noncritical"], "high")
 
     def test_indexed_report_preserves_the_logical_assignment_contract(self) -> None:
-        legacy = evaluate_chimew_bank_channel_assignment(
+        legacy = bank_channel_module.evaluate_chimew_bank_channel_assignment(
             self.document, executable=str(self.executable)
         )
         with tempfile.TemporaryDirectory() as temporary:
@@ -934,16 +934,10 @@ class ChimewBankChannelTest(unittest.TestCase):
             )
             self.assertLess(path.stat().st_size, 2048)
             indexed.close()
-            with self.assertRaisesRegex(ValidationError, "allow_legacy"):
+            with self.assertRaisesRegex(ValidationError, "typed selector"):
                 legacy_path = Path(temporary) / "legacy.json"
                 legacy_path.write_text(json.dumps(legacy), encoding="utf-8")
                 read_chimew_bank_channel_report(legacy_path)
-            self.assertEqual(
-                read_chimew_bank_channel_report(
-                    legacy_path, allow_legacy=True
-                ),
-                legacy,
-            )
 
     def test_native_stdout_certificate_matches_file_protocol(self) -> None:
         problem = validate_chimew_bank_channel_input(self.document)
@@ -971,23 +965,17 @@ class ChimewBankChannelTest(unittest.TestCase):
             self.assertEqual(streamed.stderr, "")
             self.assertEqual(streamed.stdout, output_path.read_text())
 
-    def test_production_prefers_unified_phase6_entry(self) -> None:
-        problem = validate_chimew_bank_channel_input(self.document)
-        digest = canonical_bank_channel_input_sha256(self.document)
-        with mock.patch.object(
-            bank_channel_module,
-            "resolve_native_stage_command",
-            return_value=[*self.command],
-        ) as dispatch:
-            with bank_channel_module._run_native(
-                problem, None, logical_sha256=digest
-            ):
-                pass
-        dispatch.assert_called_once_with(
-            "phase6",
-            "assign-banks",
-            explicit=None,
+    def test_retired_bank_wire_entry_is_absent_from_production(self) -> None:
+        completed = subprocess.run(
+            [str(self.executable), "phase6", "assign-banks", "--typed-input", "-", "-"],
+            input=b"", capture_output=True,
         )
+        self.assertNotEqual(completed.returncode, 0)
+        problem = validate_chimew_bank_channel_input(self.document)
+        with bank_channel_module._run_native(
+            problem, None, logical_sha256=canonical_bank_channel_input_sha256(self.document)
+        ):
+            pass
 
     def test_typed_input_rejects_truncation_corruption_and_mixed_seals(self) -> None:
         problem = validate_chimew_bank_channel_input(self.document)
@@ -1141,7 +1129,7 @@ class ChimewBankChannelTest(unittest.TestCase):
                     with self.assertRaisesRegex(
                         EmuFlowError, "output is malformed|assignment is incomplete"
                     ):
-                        evaluate_chimew_bank_channel_assignment(
+                        bank_channel_module.evaluate_chimew_bank_channel_assignment(
                             self.document, executable=str(executable)
                         )
 
@@ -1195,7 +1183,7 @@ class ChimewBankChannelTest(unittest.TestCase):
                         with self.assertRaisesRegex(
                             EmuFlowError, "certificate dimensions are invalid"
                         ):
-                            evaluate_chimew_bank_channel_assignment(
+                            bank_channel_module.evaluate_chimew_bank_channel_assignment(
                                 self.document, executable=str(executable)
                             )
 
@@ -1276,7 +1264,7 @@ class ChimewBankChannelTest(unittest.TestCase):
             selector["store_sha256"] = digest
             path.write_text(json.dumps(selector), encoding="utf-8")
             with self.assertRaisesRegex(
-                ValidationError, "SQLite metadata disagrees"
+                ValidationError, "SQLite storage envelope disagrees"
             ):
                 read_chimew_bank_channel_report(path)
 
@@ -1292,10 +1280,10 @@ class ChimewBankChannelTest(unittest.TestCase):
             self.document, executable=str(self.executable)
         )
         for column, value, message in (
-            ("bank_cost", "nan", "finite number"),
-            ("channel_cost", "inf", "finite number"),
-            ("bank_cost_rank", "not-an-integer", "non-negative integer"),
-            ("bank_pair", sqlite3.Binary(b"wrong-type"), "non-empty string"),
+            ("bank_cost", "nan", "invalid real number"),
+            ("channel_cost", "inf", "invalid real number"),
+            ("bank_cost_rank", "not-an-integer", "invalid integer"),
+            ("bank_pair", sqlite3.Binary(b"wrong-type"), "invalid text"),
         ):
             with self.subTest(column=column), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)

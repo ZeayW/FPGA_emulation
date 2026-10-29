@@ -451,10 +451,6 @@ def _validate_pipeline_artifact_semantics_records(
                 else None
             ),
         )
-        if "bank_channel_report_store" in paths
-        else read_chimew_bank_channel_report(
-            paths["bank_channel_report"], allow_legacy=True
-        )
     )
     if "bank_channel_report_store" in paths and (
         not isinstance(bank_report, BankChannelReportView)
@@ -520,10 +516,6 @@ def _validate_pipeline_artifact_semantics_records(
                 if verified_sha256 is not None
                 else None
             ),
-        )
-        if "adapter_bank_channel_report_store" in paths
-        else read_chimew_bank_channel_report(
-            paths["adapter_bank_channel_report"], allow_legacy=True
         )
     )
     if (
