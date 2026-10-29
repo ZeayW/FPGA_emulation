@@ -20,9 +20,9 @@ from emuflow.timing.sta import (
     import_sta_path_database_tsv_streaming,
     iter_sta_path_database_paths,
     load_partition_net_weights_indexed,
-    project_sta_path_database,
     write_emuir_net_map,
 )
+from emuflow.timing.sta_projection import project_sta_path_database
 from emuflow.frontend.yosys import import_yosys_json
 
 
@@ -34,7 +34,7 @@ def _write_assignment_facts(path, value):
     from types import SimpleNamespace
     from tests.phase3_store_fixture import write_current_assignment_fixture
     owners = dict(value.get('instance_assignment', {}))
-    assert len(owners) <= 256 and len(value['cut_nets']) <= 4096
+    assert len(owners) <= 256 and len(value['cut_nets']) <= 16384
     cuts = [dict(row, source_fpgas=row.get('source_fpgas', ['a']),
                  sink_fpgas=row.get('sink_fpgas', ['b']),
                  cut_class=row.get('cut_class', 'register_output'),
@@ -48,6 +48,29 @@ def _write_assignment_facts(path, value):
         partitions=[dict(fpga=part, clusters=[]) for part in parts])
     source = SimpleNamespace(value={'instances':[{'id':name} for name in owners]})
     write_current_assignment_fixture(path, source, facts)
+
+
+def _write_projection_database(path, value):
+    """Encode small path facts using the current typed source contract."""
+    from contextlib import closing
+    import hashlib
+    from emuflow.common.paths import DATA_ROOT
+    path=Path(path);payload=path.with_name(path.name+'.paths.sqlite')
+    with closing(sqlite3.connect(payload)) as db,db:
+        db.executescript('PRAGMA user_version=1;'+(DATA_ROOT/'schema/sta_paths.sql').read_text())
+        for ordinal,row in enumerate(value['paths']):
+            endpoints=[]
+            for name in ('startpoint','endpoint'):
+                endpoint=row.get(name)
+                endpoints.extend([None]*4 if endpoint is None else [endpoint['object'],endpoint.get('instance'),endpoint['port'],endpoint['bit']])
+            db.execute('INSERT INTO paths VALUES('+','.join('?' for _ in range(14))+')',
+                (ordinal,row['id'],row['clock_domain'],row['clock_period_ns'],row['slack_ns'],row['fixed_delay_ns'],*endpoints))
+            db.executemany('INSERT INTO path_nets VALUES(?,?,?)',[(ordinal,i,net) for i,net in enumerate(row['path_nets'])])
+    manifest={key:item for key,item in value.items() if key not in {'paths','payloads','summary'}}
+    manifest.update(schema='emuflow.sta-path-database/v3',summary={'paths':len(value['paths'])},
+        payloads={'paths':{'path':payload.name,'format':'sqlite-sta-path/v1','records':len(value['paths']),
+            'sha256':hashlib.sha256(payload.read_bytes()).hexdigest()}})
+    write_json(path,manifest)
 
 
 class StaAdapterTest(unittest.TestCase):
@@ -402,7 +425,7 @@ class StaAdapterTest(unittest.TestCase):
             database_path = root / "database.json"
             assignment_path = root / "assignment.json"
             output_path = root / "projected.json"
-            write_json(database_path, database)
+            _write_projection_database(database_path, database)
             _write_assignment_facts(assignment_path, assignment)
             report = project_sta_path_database(
                 database_path, assignment_path, output_path
@@ -536,10 +559,10 @@ class StaAdapterTest(unittest.TestCase):
                 }
                 _write_assignment_facts(path, assignment)
             report_a = project_sta_path_database(
-                database_path, assignment_a_path, projected_a_path
+                indexed_database, assignment_a_path, projected_a_path
             )
             report_b = project_sta_path_database(
-                database_path, assignment_b_path, projected_b_path
+                indexed_database, assignment_b_path, projected_b_path
             )
             projected_a = json.loads(
                 projected_a_path.read_text(encoding="utf-8")
@@ -616,7 +639,7 @@ class StaAdapterTest(unittest.TestCase):
             root = Path(temporary)
             staging = root / "staging"
             staging.mkdir()
-            write_json(staging / "database.json", database)
+            _write_projection_database(staging / "database.json", database)
             _write_assignment_facts(staging / "assignment.json", assignment)
             project_sta_path_database(
                 staging / "database.json",

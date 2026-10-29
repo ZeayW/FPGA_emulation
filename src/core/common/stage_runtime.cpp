@@ -58,6 +58,8 @@ constexpr RegisteredSchema schemas[] = {
     {"sta-weight-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"sta-weight-validation-v1", ArtifactEncoding::kText, 0, 1},
     {"net-weight-selector-v2", ArtifactEncoding::kText, 0, 2},
+    {"sta-projection-request-v1", ArtifactEncoding::kBinary, 0x31525053464d5545ULL, 1},
+    {"sta-projection-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"sta-path-request-v1", ArtifactEncoding::kBinary, 0x31505453464d5545ULL, 1},
     {"sta-path-import-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"sta-path-validation-v1", ArtifactEncoding::kText, 0, 1},

@@ -28,6 +28,7 @@
 #include "frontend/frontend.hpp"
 #include "frontend/inputs.hpp"
 #include "timing/phase2.hpp"
+#include "timing/sta_projection.hpp"
 #include "timing/logic_segment_query.hpp"
 #include "timing/local_path_query.hpp"
 #include "physical/vivado/vivado_timing_queries.hpp"
@@ -152,6 +153,7 @@ constexpr const char* kUsage =
     "  physical export-opensta-inputs EMUIR REQUEST VERILOG|- NET_MAP|- SUMMARY\n"
     "  physical build-sta-weights EMUIR PATH_SELECTOR PATH_STORE REQUEST STORE SUMMARY\n"
     "  physical validate-sta-weights EMUIR PATH_SELECTOR PATH_STORE WEIGHT_SELECTOR WEIGHT_STORE REQUEST SUMMARY\n"
+    "  timing project-paths SELECTOR PATH_STORE ASSIGNMENT_STORE ASSIGNMENT_SELECTOR REQUEST OUTPUT SUMMARY\n"
     "  physical import-sta-paths EMUIR TSV REQUEST STORE SUMMARY\n"
     "  physical validate-sta-paths EMUIR STORE REQUEST SUMMARY\n"
     "  physical build-routed-endpoints MAPPED PHYSICAL ROUTE NETS REQUEST ENDPOINTS MANIFEST SUMMARY\n"
@@ -527,6 +529,16 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if(phase=="physical" && operation=="validate-sta-weights" && argc==10)
     return run(Stage::kValidateStaWeights,{argv[3],argv[4],argv[5],argv[6],argv[7],argv[8]},argv[9]);
+  if(phase=="timing" && operation=="project-paths" && argc==10) {
+    ToolSignals signals;
+    const auto assignment=emuflow::core::ArtifactRef::Bind(argv[5],"assignment-index-v4");
+    const bool direct=std::filesystem::canonical(argv[6])==std::filesystem::path(assignment.path());
+    return Finish(emuflow::core::ProjectStaPaths({
+      emuflow::core::ArtifactRef::Bind(argv[3],"sta-path-selector-v1"),
+      emuflow::core::ArtifactRef::Bind(argv[4],"timing-path-store-v1"),assignment,
+      emuflow::core::ArtifactRef::Bind(argv[6],direct?"assignment-index-v4":"assignment-selector-v4"),
+      emuflow::core::ArtifactRef::Bind(argv[7],"sta-projection-request-v1")},argv[8],argv[9],&tool_cancelled),report);
+  }
   if(phase=="physical" && operation=="import-sta-paths" && argc==8) {
     StageRequest request{Stage::kImportStaPaths,{argv[3],argv[4],argv[5]},argv[6]};request.auxiliary_output_path=argv[7];return Execute(std::move(request),report);
   }

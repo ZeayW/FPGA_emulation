@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
+from emuflow.timing.sta_projection import project_sta_path_database
 from emuflow.platform.board_link_timing import directed_route_link_delays, validate_board_link_timing
 from emuflow.transport.chimew.chimew_lookahead import materialize_xilinx_chimew_inputs
 from emuflow.transport.chimew.chimew_pipeline import read_chimew_phase6_pipeline, run_chimew_phase6_pipeline
@@ -45,7 +46,7 @@ from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from emuflow.routing.system_route_storage import read_system_routes
 from emuflow.scheduling.timing_routing import GLOBAL_CANDIDATE_PROVIDER
-from emuflow.timing.sta import partition_net_weights_payload_path, project_sta_path_database, sta_path_database_payload_path
+from emuflow.timing.sta import partition_net_weights_payload_path, sta_path_database_payload_path
 from emuflow.frontend.synthesis import VALID_XILINX_MAPPING_STRATEGIES
 from emuflow.timing.xilinx_preplacement_timing import XILINX_PREPLACEMENT_TIMING_SCHEMA
 from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE

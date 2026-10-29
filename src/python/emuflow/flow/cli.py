@@ -30,6 +30,7 @@ _BooleanOptionalAction = getattr(
     argparse, "BooleanOptionalAction", _Python38BooleanOptionalAction
 )
 
+from emuflow.timing.sta_projection import project_sta_path_database
 from emuflow.partition.partition import DEFAULT_PARTITION_CUT_MODE, DEFAULT_PATRON_ALGORITHM_VERSION
 
 from emuflow.platform.architecture import ArchitectureDB
@@ -69,7 +70,7 @@ from emuflow.transport.pin_plan_storage import read_pin_plan
 from emuflow.transport.position_hints_storage import read_position_hints
 
 from emuflow.frontend.synthesis import VALID_SYNTHESIS_POLICIES, VALID_XILINX_FAMILIES, VALID_XILINX_MAPPING_STRATEGIES, run_yosys, run_xilinx_ultrascaleplus_yosys
-from emuflow.timing.sta import derive_partition_net_weights, project_sta_path_database, validate_sta_path_database
+from emuflow.timing.sta import derive_partition_net_weights, validate_sta_path_database
 from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
 from emuflow.scheduling.timing_routing import GLOBAL_CANDIDATE_PROVIDER
