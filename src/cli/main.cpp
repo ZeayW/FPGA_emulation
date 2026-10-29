@@ -72,6 +72,7 @@ constexpr const char* kUsage =
     "  physical openparf-runtime REQUEST REPORT\n"
     "  physical run-rwroute REQUEST SUMMARY\n"
     "  physical run-rapidwright-partition REQUEST OUTPUT_DIR\n"
+    "  physical prepare-fixed-io REQUEST OUTPUT_DIR\n"
     "  physical synthesize-transport REQUEST OUTPUT_DIR\n"
     "  physical run-vivado-partition REQUEST OUTPUT\n"
     "  phase6 split EMUIR ASSIGNMENT SCHEDULE OUTPUT\n"
@@ -292,6 +293,10 @@ int Dispatch(int argc, char** argv, const std::string& report) {
       emuflow::core::ArtifactRef::Bind(argv[4],"transport-store-v2"),
       emuflow::core::ArtifactRef::Bind(argv[5],"emuir-compact-v2"),
       emuflow::core::ArtifactRef::Bind(argv[6],"placement-lowering-request-v1")},argv[7],&tool_cancelled),report);
+  }
+  if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="prepare-fixed-io") {
+    ToolSignals signals;
+    return Finish(emuflow::core::PreparePhysicalIo(emuflow::core::ArtifactRef::Bind(argv[3],"physical-io-stage-request-v1"),argv[4],&tool_cancelled),report);
   }
   if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="audit-transport") {
     return Finish(emuflow::core::AuditTransportArtifacts(emuflow::core::ArtifactRef::Bind(argv[3],"transport-store-v2"),argv[4]),report);

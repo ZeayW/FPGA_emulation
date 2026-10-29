@@ -1,3 +1,4 @@
+from tests.virtual_io_reference import build_virtual_io_physical_contract
 from tests.phase3_store_fixture import write_current_assignment_fixture
 from tests.native_route_fixture import route_system_native
 """Phase 6 materializes and independently replays the declared virtual board."""
@@ -30,7 +31,6 @@ from emuflow.transport.transport_storage import (
 )
 from emuflow.transport.virtual_board import (
     IO_CONTRACT_STORAGE_SCHEMA,
-    build_virtual_io_physical_contract,
 )
 from emuflow.frontend.yosys import import_yosys_json
 from tests.native_build import tlr_router

@@ -125,6 +125,8 @@ constexpr RegisteredSchema schemas[] = {
     {"phase6-oracle-request-v1", ArtifactEncoding::kText, 0, 1},
     {"transport-cost-input-v1", ArtifactEncoding::kText, 0, 1},
     {"phase6-report-v1", ArtifactEncoding::kText, 0, 1},
+    {"physical-io-stage-request-v1", ArtifactEncoding::kText, 0, 1},
+    {"physical-io-stage-report-v1", ArtifactEncoding::kText, 0, 1},
     {"transport-audit-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"transport-stage-summary-v1", ArtifactEncoding::kText, 0, 1},
     {"transport-store-v2", ArtifactEncoding::kSqlite, 0x454d5558, 2, false,

@@ -1,3 +1,4 @@
+from tests.virtual_io_reference import build_virtual_io_physical_contract
 """Virtual wiring is fixed hardware; TDM and direction only select its use."""
 import copy
 import csv
@@ -17,7 +18,6 @@ from emuflow.platform.platform import Platform
 from emuflow.transport.virtual_board import (
     INVENTORY_PATH,
     build_virtual_board,
-    build_virtual_io_physical_contract,
     validate_virtual_binding,
     validate_virtual_board,
     write_wiring_csv,
@@ -201,6 +201,7 @@ def test_missing_or_modified_wiring_is_rejected(platform, mutation):
 
 @pytest.mark.parametrize("mutation", ["missing", "pin", "polarity", "port", "wire", "slot", "digest"])
 def test_binding_replay_rejects_modified_assignments(platform, mutation):
+    from tests.virtual_io_reference import validate_virtual_binding
     board = build_virtual_board(platform)
     schedule, artifacts = schedule_and_ports(platform, [("fpga0", "fpga1", 7, 2)])
     binding = native_binding(platform, board, schedule, artifacts)
@@ -354,6 +355,7 @@ def test_phase7_physical_contract_consumes_exact_xdc_and_adapter(platform, tmp_p
 
 @pytest.mark.parametrize("damage", ["missing", "duplicate", "wrong-peer", "wrong-slot"])
 def test_current_binding_requires_complete_lane_identity(platform, damage):
+    from tests.virtual_io_reference import validate_virtual_binding
     board = build_virtual_board(platform)
     schedule, artifacts = schedule_and_ports(platform, [("fpga0", "fpga1", 7, 2)])
     binding = native_binding(platform, board, schedule, artifacts)

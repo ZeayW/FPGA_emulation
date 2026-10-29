@@ -6,6 +6,7 @@ from emuflow.common.paths import REPOSITORY_ROOT
 
 import hashlib
 import json
+import uuid
 import math
 import shutil
 import sqlite3
@@ -39,9 +40,10 @@ from emuflow.ir.resources import RESOURCE_FIELDS
 from emuflow.physical.rapidwright.rapidwright_provider import validate_rapidwright_provider_manifest
 from emuflow.transport.runtime import PHYSICAL_SUMMARY_SCHEMA, build_virtual_runtime, validate_physical_summary
 from emuflow.physical.transport_synthesis import synthesize_transport
-from emuflow.scheduling.tdm_schedule_storage import canonical_tdm_schedule_sha256, read_tdm_schedule
-from emuflow.transport.transport_storage import read_lane_map, read_transport, read_virtual_binding
-from emuflow.transport.virtual_board import build_virtual_io_physical_contract, validate_virtual_binding, validate_virtual_board
+from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
+from emuflow.transport.transport_storage import read_transport, read_virtual_binding
+from emuflow.transport.virtual_board import validate_virtual_board
+from emuflow.physical.fixed_io import prepare_fixed_io
 from emuflow.physical.vivado.vivado_physical import run_indexed_vivado_partition
 from emuflow.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
 from emuflow.physical.xilinx_physical_backend import run_rapidwright_openparf_native_candidate_backend
@@ -576,35 +578,6 @@ def run_multi_fpga_physical_flow(
         virtual_board = read_json(split_root / wiring_ref)
         virtual_binding = read_virtual_binding(split_root / binding_ref)
         validate_virtual_board(platform, virtual_board)
-        virtual_phase6_artifacts = {
-            "lane_map": read_lane_map(split_root / manifest["lane_map"]),
-            "transports": {
-                item["fpga"]: read_transport(
-                    split_root / item["transport"]
-                )
-                for item in manifest["fpgas"]
-            },
-        }
-        validate_virtual_binding(
-            platform,
-            virtual_board,
-            schedule,
-            virtual_phase6_artifacts,
-            virtual_binding,
-        )
-        canonical = lambda value: hashlib.sha256(
-            json.dumps(value, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
-        ).hexdigest()
-        if (
-            virtual_binding.get("board_sha256") != canonical(virtual_board)
-            or virtual_binding.get("schedule_sha256")
-            != canonical_tdm_schedule_sha256(schedule)
-        ):
-            raise ValidationError(
-                "physical virtual-board binding source seals disagree"
-            )
         if backend not in {"rapidwright", "vivado"}:
             raise ValidationError(
                 f"the {backend} physical backend does not yet consume the fixed "
@@ -630,6 +603,7 @@ def run_multi_fpga_physical_flow(
     from emuflow.common.native_tools import require_native_schema
     require_native_schema("placement-lowering-request-v1")
     require_native_schema("transport-synthesis-request-v1")
+    require_native_schema("physical-io-stage-request-v1")
     if backend == "rapidwright":
         # Validate the compiled OpenPARF/PyTorch runtime before reading the
         # graph-sized EmuIR and timing databases.  A loader mismatch must fail
@@ -786,6 +760,15 @@ def run_multi_fpga_physical_flow(
             "provider": "vivado-device-database",
         }
 
+    fixed_io_contracts = None
+    if virtual_binding is not None:
+        fixed_io_contracts = prepare_fixed_io(
+            split_root / virtual_artifacts["binding"], split_root / manifest["lane_map"],
+            split_root / virtual_artifacts["wiring"], schedule,
+            {fpga: split_root / path for fpga, path in virtual_artifacts["xdc"].items()},
+            {fpga: split_root / path for fpga, path in virtual_artifacts["differential_io"].items()},
+            output_dir / ("fixed-io-" + uuid.uuid4().hex),
+        )
     runtime_controller = split_root / manifest["runtime_controller_rtl"]
     def _run_partition(
         item: Mapping[str, Any],
@@ -794,22 +777,9 @@ def run_multi_fpga_physical_flow(
         source_root = split_root / fpga_id
         fpga_root = output_dir / fpga_id
         fpga_root.mkdir(parents=True, exist_ok=True)
-        virtual_io_contract = None
-        if virtual_binding is not None:
-            assert isinstance(virtual_artifacts, Mapping)
-            virtual_io_contract = build_virtual_io_physical_contract(
-                virtual_binding,
-                fpga_id,
-                xdc_path=split_root / virtual_artifacts["xdc"][fpga_id],
-                adapter_path=(
-                    split_root / virtual_artifacts["differential_io"][fpga_id]
-                ),
-            )
-            write_json(
-                fpga_root / "virtual-io-physical-contract.json",
-                virtual_io_contract,
-                compact=True,
-            )
+        virtual_io_contract = (
+            fixed_io_contracts[fpga_id] if fixed_io_contracts is not None else None
+        )
         netlist_path = split_root / item["netlist"]
         transport_path = split_root / item["transport"]
         transport = read_transport(transport_path)

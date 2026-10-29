@@ -8,6 +8,10 @@ namespace emuflow::core {
 // Pin-plan entries, when selected, remain in their typed source store.
 StageResult BuildTransportArtifacts(const std::vector<ArtifactRef>& inputs,
                                    const std::string& output_directory);
+// Audit original fixed wiring and current selectors; verify every XDC/adapter
+// and atomically publish all FPGA physical contracts as one fresh generation.
+StageResult PreparePhysicalIo(const ArtifactRef& request,const std::string& output,
+                              const volatile std::sig_atomic_t* cancelled=nullptr);
 StageResult AuditTransportArtifacts(const ArtifactRef& artifact,const std::string& summary);
 // One baseline Phase 6 generation: source-bound split, transport, independent
 // certificates, engine inputs, manifest and report. No intermediate is exposed.

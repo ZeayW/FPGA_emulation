@@ -1658,3 +1658,33 @@ reference implementations live only in tests. This is a prerequisite of the
 remaining multi-FPGA physical controller, rather than a separate performance
 policy change. Chimew orchestration, configuration/prepared-input adapters and
 current-source NVDLA terminal qualification remain required for W7.
+
+
+### Native whole-board fixed-I/O handoff
+
+`physical prepare-fixed-io REQUEST OUTPUT_DIR` owns the Phase 6 fixed wiring
+through the contracts consumed by both physical backends. Its bounded request
+binds the current transport store, original selected schedule, lane/binding
+selectors, fixed wiring document and every FPGA's XDC and differential adapter.
+The stage independently rejoins the original assignment, schedule and optional
+Chimew pin plan. It rejects changed generations, direction-bank violations,
+wire/slot collisions, conflicting package pins, incomplete membership and
+selector seals that disagree with the audited records. The SQLite views must
+match the current registered DDL; matching damaged derived records do not
+replace original-source validation.
+
+All FPGA adapters are checked against the maintained native emitters before
+one fresh directory publishes the v2 physical contracts and bounded report.
+An empty schedule still publishes an empty contract for every declared FPGA.
+An existing destination, changed XDC/adapter or late source failure cannot
+replace a prior accepted directory. Bounded host adoption rechecks the original
+output generations before and after reading the contracts; it does not return
+unleased paths for a later unverified read. Native compile retains the same fixed
+wiring, data-only pin scope and whole-device resource policies.
+
+Both the physical caller and independent Phase 6 replay use this owner. The
+Python per-hop binding replay, physical-contract builder and XDC/adapter
+writers are retired from the installed package; independent small record
+oracles remain under tests. The multi-FPGA controller, Chimew orchestration,
+configuration/prepared-input adapters and current-source NVDLA terminal
+qualification remain required before W7 is complete.

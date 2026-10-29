@@ -1,3 +1,4 @@
+from tests.virtual_io_reference import build_virtual_io_physical_contract, write_virtual_binding_systemverilog, write_virtual_binding_xdc
 """Chimew electrical integration over real fixed wiring, with tiny mocked geometry.
 
 The inventory/pin identities are real. Native assignment and typed publication
@@ -141,8 +142,7 @@ def test_report_committed_adapter_accepts_fixed_differential_map(fixed_case, tmp
 
 def test_selected_channels_reach_the_existing_phase7_lvds_contract(fixed_case, tmp_path):
     from emuflow.transport.virtual_board import (
-        build_virtual_board, build_virtual_io_physical_contract,
-        write_virtual_binding_systemverilog, write_virtual_binding_xdc,
+        build_virtual_board,
     )
     platform, schedule, problem, electrical = fixed_case
     result = build_chimew_phase6_pin_plan(schedule, platform, problem, electrical,

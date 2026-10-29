@@ -32,7 +32,7 @@ def original_sources(metadata):
     return tuple(result)
 
 
-def audit_transport(view):
+def audit_transport_result(view):
     sources=view.bound_store_sources()
     with tempfile.TemporaryDirectory(prefix='transport-audit-') as directory:
         path=Path(directory)/'audit.json';tool=resolve_native_executable('emuflow-native')
@@ -45,7 +45,11 @@ def audit_transport(view):
     require_store_sources_unchanged(sources)
     if value.get('status')!='pass' or type(value.get('ports')) is not list:
         raise ValidationError('native transport audit is malformed')
-    return value['ports']
+    return value
+
+
+def audit_transport(view):
+    return audit_transport_result(view)['ports']
 
 
 def transport_request(assignment,schedule,platform,*,design,clocks,

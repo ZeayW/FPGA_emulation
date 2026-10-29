@@ -846,7 +846,7 @@ def validate_phase6(
     if platform.virtual_board_model is not None:
         if virtual_metadata != _virtual_board_artifact_paths(platform):
             raise ValidationError("Phase 6 declared virtual board requires wiring, binding and pin constraints")
-        from emuflow.transport.virtual_board import virtual_binding_systemverilog_matches, virtual_binding_xdc_matches
+        from emuflow.physical.fixed_io import prepare_fixed_io
         root = manifest_path.parent
         artifacts = {
             "manifest": manifest,
@@ -859,14 +859,14 @@ def validate_phase6(
             validation["virtual_board_binding"] = _validate_virtual_board_artifacts(
                 platform, schedule, artifacts, board, binding
             )
-            for fpga, relative in virtual_metadata["xdc"].items():
-                if not virtual_binding_xdc_matches(root / relative, binding, fpga):
-                    raise ValidationError(f"Phase 6 virtual data-pin XDC differs for {fpga}")
-            for fpga, relative in virtual_metadata["differential_io"].items():
-                if not virtual_binding_systemverilog_matches(
-                    root / relative, binding, fpga
-                ):
-                    raise ValidationError(f"Phase 6 differential I/O adapter differs for {fpga}")
+            with tempfile.TemporaryDirectory(prefix="physical-io-validation-") as temporary:
+                prepare_fixed_io(
+                    root / virtual_metadata["binding"], root / manifest["lane_map"],
+                    root / virtual_metadata["wiring"], schedule,
+                    {fpga: root / relative for fpga, relative in virtual_metadata["xdc"].items()},
+                    {fpga: root / relative for fpga, relative in virtual_metadata["differential_io"].items()},
+                    Path(temporary) / "accepted",
+                )
         except (OSError, ValueError) as error:
             raise ValidationError(f"Phase 6 virtual board artifact is unreadable: {error}") from error
     elif virtual_metadata is not None:

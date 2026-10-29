@@ -257,11 +257,14 @@ struct Producer {
     auto anchors=db.Prepare("SELECT fpga,link,peer,kind,lane FROM endpoints GROUP BY fpga,link,peer,kind,lane ORDER BY fpga,link,peer,kind,lane"),insert=db.Prepare("INSERT INTO anchors VALUES (?,?,?,?,?,?,?)");while(anchors.Step()){const auto fpga=anchors.TypedText(0),link=anchors.TypedText(1),peer=anchors.TypedText(2),kind=anchors.TypedText(3);const I lane=anchors.TypedInteger(4);const auto& board_link=links.at(link);const bool serial=board_link.mode=="serial";const auto id=link+':'+fpga+':'+kind+':'+std::to_string(lane);const auto required=serial?"[\"package_pin_p\",\"package_pin_n\",\"connector\",\"transceiver_site\"]":"[\"package_pin\",\"bank\",\"iostandard\"]";
       Raw record{{"id",JsonQuote(id)},{"link",JsonQuote(link)},{"peer",JsonQuote(peer)},{"direction",JsonQuote(kind)},{"logical_lane",std::to_string(lane)},{"physical_lane",std::to_string(serial?lane/board_link.payload:lane)},{"bit_within_physical_lane",std::to_string(serial?lane%board_link.payload:0)},{"placement_class",JsonQuote("virtual_link_io_region")},{"binding_status",JsonQuote("unbound")},{"required_hardware_binding_fields",required}};insert.BindText(1,id);insert.BindText(2,fpga);insert.BindText(3,link);insert.BindText(4,peer);insert.BindText(5,kind);insert.BindInteger(6,lane);insert.BindText(7,Object(record));insert.Execute();}
   }
-  void Describe(SqliteDatabase& db,const fs::path& root,std::vector<std::tuple<fs::path,std::string,std::string,Raw,Raw,std::string>>& selectors) {
+  void DescribeBinding(SqliteDatabase& db,const fs::path& root,std::vector<std::tuple<fs::path,std::string,std::string,Raw,Raw,std::string>>& selectors) {
     Raw lane_header{{"schema",JsonQuote("emuflow.logical-lane-map/v1")},{"design",JsonQuote(design)},{"platform",JsonQuote(platform)},{"frame_slots",std::to_string(frame)},{"binding_status",JsonQuote("logical_only")}};if(exact_mode){lane_header["cut_mode"]=JsonQuote("static-exact-combinational");lane_header["semantic_contract_sha256"]=semantic;}
     const auto lane_query="SELECT record_json FROM lanes ORDER BY schedule_entry";const auto lane_section=DocumentSection(db,lane_header,lane_query);const auto lane_sha=lane_section.second;selectors.emplace_back(root/"lane_map.json","emuflow.logical-lane-map-storage/v1","emuflow.logical-lane-map/v1",lane_header,Raw{{"entries",lane_section.first.Json()}},lane_sha);
     if(has_board){Raw binding_header{{"schema",JsonQuote("emuflow.virtual-board-binding/v1")},{"platform",JsonQuote(platform)},{"design",JsonQuote(design)},{"qualification",JsonQuote("virtual_board_real_device_pins")},{"status",JsonQuote("pass")},{"integration_status",JsonQuote("differential_data_constraints_and_adapter_generated")},{"physical_backend_status",JsonQuote("phase7_consumption_required")},{"board_services_status",JsonQuote("clock_reset_and_control_pins_not_bound")},{"io_adapter_status",JsonQuote("phase7_top_level_integration_required")},{"board_sha256",JsonQuote(Digest(board))},{"schedule_sha256",Meta(schedule.database(),"logical_sha256")},{"lane_map_sha256",JsonQuote(lane_sha)},{"metrics",Object({{"scheduled_hops",std::to_string(entries)},{"used_differential_pairs",std::to_string(directions.size())},{"bound_data_ports",std::to_string(pin_ports.size())},{"total_differential_pairs",std::to_string(wires.size())}})}};
       const auto query="SELECT record_json FROM binding_entries ORDER BY schedule_entry";const auto section=DocumentSection(db,binding_header,query);selectors.emplace_back(root/"virtual_board_binding.json","emuflow.virtual-board-binding-storage/v1","emuflow.virtual-board-binding/v1",binding_header,Raw{{"entries",section.first.Json()}},section.second);}
+  }
+  void Describe(SqliteDatabase& db,const fs::path& root,std::vector<std::tuple<fs::path,std::string,std::string,Raw,Raw,std::string>>& selectors) {
+    DescribeBinding(db,root,selectors);
     for(const auto& part:parts){const auto& fpga=part.first;Raw transport{{"schema",JsonQuote("emuflow.transport-endpoints/v1")},{"design",JsonQuote(design)},{"platform",JsonQuote(platform)},{"fpga",JsonQuote(fpga)},{"frame_slots",std::to_string(frame)},{"virtual_clock_order",clock_order}};if(exact_mode){transport["cut_mode"]=JsonQuote("static-exact-combinational");transport["semantic_contract_sha256"]=semantic;if(exact!="null")transport["semantic_contract_storage"]=exact;transport["shadow_reset_value"]="0";transport["startup_policy"]=JsonQuote("first-post-reset-frame-current-arrivals");}
       Raw sections{{"endpoints",EndpointSection(db,fpga).Json()}};for(const auto* kind:{"source","shadow"}){auto rows=db.Prepare("SELECT seq,signal FROM signals WHERE fpga=? AND kind=? ORDER BY seq");rows.BindText(1,fpga);rows.BindText(2,kind);Sha256 hash;I count=0;while(rows.Step()){Add(hash,Object({{"index",std::to_string(rows.TypedInteger(0))},{"signal",JsonQuote(rows.TypedText(1))}}));Add(hash,"\n");++count;}sections[std::string(kind)+"_signals"]=Section{count,Hex(hash)}.Json();}
       selectors.emplace_back(root/fpga/"transport.json","emuflow.transport-storage/v1","emuflow.transport-endpoints/v1",transport,sections,"");
@@ -274,11 +277,11 @@ struct Producer {
   }
 };
 std::string AuditRecords(const ArtifactRef& artifact){
-  SqliteStore store(artifact);auto& db=store.database();const auto snapshot=Meta(db,"configuration");auto configuration=Fields(snapshot);
+  SqliteStore store(artifact);auto& db=store.database();RequireSqliteDDL(db,kTransportDDL);const auto snapshot=Meta(db,"configuration");auto configuration=Fields(snapshot);
   const auto bindings=Values(Get(configuration,"sources"));Check(bindings.size()==2 || bindings.size()==3,"audit original-source coverage disagrees");
   std::vector<ArtifactRef> controls;for(std::size_t i=0;i<bindings.size();++i){auto fields=Fields(bindings[i]);const auto expected=i==0?"assignment-index-v4":i==1?"tdm-schedule-store-v4":"pin-plan-store-v1";Check(Text(fields,"schema")==expected,"audit source role disagrees");controls.push_back(ArtifactRef::Bind(Text(fields,"path"),expected));}
   controls.insert(controls.begin()+2,artifact);Producer expected(controls,snapshot);
-  for(const auto& value:Raw{{"design",JsonQuote(expected.design)},{"platform",JsonQuote(expected.platform)},{"frame_slots",std::to_string(expected.frame)},{"virtual_clock_order",expected.clock_order},{"semantic_contract_sha256",expected.semantic}})Check(Meta(db,value.first)==value.second,"audit store namespace disagrees");
+  for(const auto& value:Raw{{"design",JsonQuote(expected.design)},{"platform",JsonQuote(expected.platform)},{"frame_slots",std::to_string(expected.frame)},{"virtual_clock_order",expected.clock_order},{"semantic_contract_sha256",expected.semantic},{"iostandard",JsonQuote(expected.standard)}})Check(Meta(db,value.first)==value.second,"audit store namespace disagrees");
   auto attach=[&](const ArtifactRef& ref,const std::string& name){auto q=db.Prepare("ATTACH DATABASE ? AS "+name);q.BindText(1,SqliteImmutableUri(ref.path()));q.Execute();};attach(controls[1],"audit_schedule");if(controls.size()==4)attach(controls[3],"audit_pins");
   const auto scalar=[&](const std::string& sql){auto q=db.Prepare(sql);Check(q.Step(),"audit scalar missing");return q.TypedInteger(0);};
   const auto projected="SELECT e.entry_id,e.demand,e.net,e.link_id,e.source_fpga,e.sink_fpga,e.slot,e.arrival_slot,"+std::string(controls.size()==4?"p.physical_lane":"e.lane")+" AS lane,e.lane AS logical_lane,r.source_fpga AS route_source,e.tdm_ratio FROM audit_schedule.schedule_entries e JOIN audit_schedule.schedule_routes r ON r.demand=e.demand "+(controls.size()==4?"LEFT JOIN audit_pins.entries p ON p.schedule_entry=e.entry_id ":"");
@@ -294,6 +297,16 @@ std::string AuditRecords(const ArtifactRef& artifact){
       "AND e.logical_lane>=b.low AND e.logical_lane<b.high AND e.lane>=b.low AND e.lane<b.high)")==0,
       "audit pin assignment leaves the schedule's allocated direction banks");
   const auto columns="entry_id,demand,net,link_id,source_fpga,sink_fpga,slot,arrival_slot,lane,logical_lane,route_source,tdm_ratio";
+  if(expected.has_board){
+    Check(scalar("SELECT count(*) FROM (SELECT 1 FROM hops GROUP BY link_id,slot,lane HAVING count(*)>1)")==0,"audit physical wire slot collision");
+    auto wires=db.Prepare("SELECT link,wire,wire_id,bank_group,cable FROM wire_bindings ORDER BY link,wire");
+    std::size_t seen=0;while(wires.Step()){
+      auto key=std::make_pair(wires.TypedText(0),wires.TypedInteger(1));
+      Check(expected.wires.count(key),"audit unexpected fixed wire");const auto& wire=expected.wires.at(key);
+      Check(wires.TypedText(2)==Text(wire,"id") && Canonical(wires.TypedText(3))==Get(wire,"bank_group") && Canonical(wires.TypedText(4))==Get(wire,"cable"),"audit fixed wire identity/bank/cable disagrees");++seen;
+    }Check(seen==expected.wires.size(),"audit fixed wire inventory incomplete");
+    Check(scalar("SELECT count(*) FROM binding_entries")==scalar("SELECT count(*) FROM hops"),"audit binding coverage disagrees");
+  }
   using Key=std::tuple<std::string,std::string,I,std::string>;
   struct Membership{I count=0;Sha256 hash;};std::map<Key,Membership> members;
   auto actual=db.Prepare("SELECT "+std::string(columns)+" FROM hops ORDER BY entry_id");
@@ -302,6 +315,13 @@ std::string AuditRecords(const ArtifactRef& artifact){
     for(unsigned column=0;column<12;++column){if(column==11){Check(actual.IsNull(column)==original.IsNull(column),"audit ratio presence disagrees");if(actual.IsNull(column))continue;}
       const bool string=column<6 || column==10;Check(string?actual.TypedText(column)==original.TypedText(column):actual.TypedInteger(column)==original.TypedInteger(column),"audit hop facts disagree with original schedule or pin plan");}
     ++count;maximum=std::max(maximum,original.TypedInteger(7));
+    if(expected.has_board){
+      const auto wire=expected.wires.find({original.TypedText(3),original.TypedInteger(8)});
+      Check(wire!=expected.wires.end(),"audit scheduled wire is absent from fixed inventory");
+      const auto direction=std::make_pair(original.TypedText(4),original.TypedText(5));
+      const auto prior=expected.directions.emplace(Text(wire->second,"id"),direction);
+      Check(prior.second || prior.first->second==direction,"audit physical wire changes direction");
+    }
     if(expected.has_board)for(bool tx:{true,false}){const std::string fpga=original.TypedText(tx?4:5),link=original.TypedText(3),kind=tx?"tx":"rx";const I lane=original.TypedInteger(8);auto& value=members[{fpga,link,lane,kind}];++value.count;Add(value.hash,JsonQuote(original.TypedText(0)));Add(value.hash,"\n");}
   }
   Check(count==Int(Meta(expected.schedule.database(),"entry_relation_records")) && count==scalar("SELECT count(*) FROM audit_schedule.schedule_entries"),"audit complete schedule coverage disagrees");
@@ -314,12 +334,24 @@ std::string AuditRecords(const ArtifactRef& artifact){
     Raw canonical{{"id",JsonQuote(kind+':'+port)},{"direction",JsonQuote(kind)},{"link",Get(board_wire,"link")},{"wire",Get(board_wire,"wire")},{"wire_id",Get(board_wire,"id")},{"bank",Get(end,"bank")},{"pair_id",Get(end,"pair_id")},{"iostandard",JsonQuote(expected.standard)},{"logical_port",JsonQuote(Port(kind,link,peer))},{"logical_bit",std::to_string(wire)},{"logical_port_width",std::to_string(expected.links.at(link).width)}};
     for(const auto* polarity:{"p","n"}){auto pin=Fields(Get(end,polarity));pin["port"]=JsonQuote("emuflow_io_"+kind+'_'+Name(link)+"_wire"+std::to_string(wire)+'_'+polarity);canonical[polarity]=Object(pin);}
     Check(port==Text(Fields(Get(canonical,"p")),"port") && Object(canonical)==Canonical(ports.TypedText(2)),"audit physical pin/bus/direction facts disagree with original fixed wiring");
+    for(const auto* polarity:{"p","n"}){
+      const auto pin=Fields(Get(canonical,polarity));const auto package=Text(pin,"package_pin"),name=Text(pin,"port");
+      const auto a=expected.pin_ports.emplace(std::make_pair(fpga,package),name),b=expected.port_pins.emplace(std::make_pair(fpga,name),package);
+      Check((a.second || a.first->second==name) && (b.second || b.first->second==package),"audit package pin or RTL port collision");
+    }
     auto& membership=members.at(key);const auto digest=Hex(membership.hash);Check(ports.TypedInteger(3)==membership.count && ports.TypedText(4)==digest,"physical-port membership disagrees with binding entries");
     canonical["schedule_entry_count"]=std::to_string(membership.count);canonical["schedule_entries_sha256"]=JsonQuote(digest);records.push_back(Object({{"fpga",JsonQuote(fpga)},{"record",Object(canonical)}}));
   }
   Check(visited.size()==members.size(),"audit original physical-port coverage is incomplete");
+  expected.entries=count;
+  std::vector<std::tuple<fs::path,std::string,std::string,Raw,Raw,std::string>> selectors;
+  expected.DescribeBinding(db,{},selectors);
+  Raw descriptions;
+  for(const auto& item:selectors){const auto& [path,schema,logical,header,sections,canonical]=item;
+    descriptions[path.stem().string()]=Object({{"schema",JsonQuote(schema)},{"logical_schema",JsonQuote(logical)},{"header",Object(header)},{"sections",Object(sections)},{"logical_sha256",JsonQuote(Digest(Object({{"header",Object(header)},{"sections",Object(sections)}})))},{"canonical_sha256",JsonQuote(canonical)}});
+  }
   for(const auto& input:controls)input.RequireUnchanged();artifact.RequireUnchanged();
-  return Object({{"status",JsonQuote("pass")},{"provider",JsonQuote("native-source-transport-audit-v1")},{"scheduled_hops",std::to_string(scalar("SELECT count(*) FROM hops"))},{"ports",Array(records)}});
+  return Object({{"status",JsonQuote("pass")},{"provider",JsonQuote("native-source-transport-audit-v1")},{"scheduled_hops",std::to_string(scalar("SELECT count(*) FROM hops"))},{"ports",Array(records)},{"selectors",Object(descriptions)}});
 }
 
 }
@@ -335,6 +367,229 @@ StageResult BuildTransportArtifacts(const std::vector<ArtifactRef>& inputs,const
     PublishText(root/"transport-summary.json",Object({{"schema",JsonQuote("emuflow.transport-storage/v1")},{"status",JsonQuote("pass")},{"artifact",JsonQuote("transport.sqlite")},{"bytes",std::to_string(bytes)},{"sha256",JsonQuote(sha)},{"scheduled_hops",std::to_string(producer.entries)},{"transport_endpoints",std::to_string(2*producer.entries)},{"lane_entries",std::to_string(producer.entries)},{"virtual_binding_entries",std::to_string(producer.has_board?producer.entries:0)},{"dataflow",JsonQuote("indexed-lazy-sqlite-v1")},{"implementation_id",JsonQuote("native-transport-stage-v1")},{"anchors",std::to_string(anchor_count)},{"fpga_order",Array(order)}})+'\n',refs);
     PublishNewDirectory(root.string(),destination.string(),refs);workspace.root.clear();
   },[&]{return std::vector<ArtifactRef>{ArtifactRef::Bind((fs::path(directory)/"transport.sqlite").string(),"transport-store-v2"),ArtifactRef::Bind((fs::path(directory)/"transport-summary.json").string(),"transport-stage-summary-v1")};});
+}
+StageResult PreparePhysicalIo(const ArtifactRef &request,
+                              const std::string &output,
+                              const volatile std::sig_atomic_t *cancelled) {
+  std::vector<ArtifactRef> refs{request}, outputs;
+  std::map<std::string, ArtifactRef> owners;
+  std::map<std::string, std::string> parts;
+  fs::path destination;
+  const auto stop = [&] {
+    if (cancelled && *cancelled)
+      throw StageError(ErrorCode::kExecutionFailed,
+                       "physical I/O preparation cancelled");
+  };
+  return RunStage(
+      "physical.prepare-fixed-io",
+      [&] {
+        Check(request.schema() == "physical-io-stage-request-v1",
+              "physical I/O request role disagrees");
+        const auto config = Fields(Read(request.path()));
+        Check(config.size() == 2 &&
+                  Text(config, "schema") == "emuflow.physical-io-stage/v1",
+              "physical I/O request fields/version disagree");
+        for (const auto &token : Values(Get(config, "sources"))) {
+          const auto row = Fields(token);
+          Check(row.size() == 4, "physical I/O source fields disagree");
+          const auto role = Text(row, "role"), schema = Text(row, "schema");
+          const auto wanted =
+              role == "transport"  ? "transport-store-v2"
+              : role == "schedule" ? "tdm-schedule-store-v4"
+              : role == "binding" || role == "lane_map" || role == "wiring"
+                  ? "physical-input-document-v1"
+              : role.rfind("xdc.", 0) == 0 || role.rfind("adapter.", 0) == 0
+                  ? "exact-sha256-text-v1"
+                  : "";
+          Check(!std::string(wanted).empty() && schema == wanted,
+                "physical I/O source role/schema disagrees");
+          const auto ref = ArtifactRef::Bind(Text(row, "path"), schema);
+          const auto generation = Values(Get(row, "generation"));
+          Check(generation.size() == 7,
+                "physical I/O source generation coverage disagrees");
+          const FileGeneration original{
+              UInt(generation[0]), UInt(generation[1]), UInt(generation[2]),
+              Int(generation[3]),  Int(generation[4]),  Int(generation[5]),
+              Int(generation[6])};
+          Check(ref.generation() == original,
+                "physical I/O original source generation changed");
+          Check(owners.emplace(role, ref).second,
+                "duplicate physical I/O source role");
+          refs.push_back(ref);
+        }
+        for (const auto *role :
+             {"transport", "binding", "lane_map", "wiring", "schedule"})
+          Check(owners.count(role), "physical I/O required source is missing");
+        SqliteStore transport(owners.at("transport"));
+        const auto config_snapshot =
+            Fields(Meta(transport.database(), "configuration"));
+        for (const auto &token : Values(Get(config_snapshot, "fpgas"))) {
+          const auto fpga = Fields(token);
+          Check(parts.emplace(Text(fpga, "id"), Text(fpga, "part")).second,
+                "duplicate physical I/O FPGA");
+        }
+        Check(!parts.empty() && parts.size() <= 1024 &&
+                  owners.size() == 5 + 2 * parts.size(),
+              "physical I/O source inventory disagrees");
+        for (const auto &fpga : parts)
+          for (const auto *kind : {"xdc.", "adapter."})
+            Check(owners.count(kind + fpga.first),
+                  "physical I/O FPGA adapter coverage disagrees");
+        for (const auto &token : Values(Get(config_snapshot, "sources"))) {
+          const auto row = Fields(token);
+          auto ref = ArtifactRef::Bind(Text(row, "path"), Text(row, "schema"));
+          refs.push_back(ref);
+          if (ref.schema() == "tdm-schedule-store-v4")
+            Check(ref.path() == owners.at("schedule").path() &&
+                      ref.generation() == owners.at("schedule").generation(),
+                  "physical I/O selected schedule differs from original "
+                  "transport source");
+        }
+        Check(Canonical(Read(owners.at("wiring").path())) ==
+                  Get(config_snapshot, "virtual_board"),
+              "physical I/O selected wiring differs from original fixed "
+              "inventory");
+        const fs::path path(output);
+        Check(path.is_absolute() && !fs::exists(path) && !fs::is_symlink(path),
+              "physical I/O output must be a fresh absolute directory");
+        fs::create_directories(path.parent_path());
+        destination = fs::canonical(path.parent_path()) / path.filename();
+        for (const auto &ref : refs) {
+          const auto relative =
+              fs::path(ref.path()).lexically_relative(destination);
+          Check(relative.empty() || *relative.begin() == "..",
+                "physical I/O source lies in its output directory");
+        }
+        return refs;
+      },
+      [&](const auto &sources) {
+        stop();
+        const auto audit = Fields(AuditRecords(owners.at("transport")));
+        const auto selectors = Fields(Get(audit, "selectors"));
+        Check(selectors.size() == 2,
+              "physical I/O requires fixed board binding");
+        const auto seal = FileHash(owners.at("transport").path());
+        const auto validate = [&](const std::string &role,
+                                  const std::string &name) {
+          const auto &ref = owners.at(role);
+          const auto value = Fields(Read(ref.path())),
+                     expected = Fields(Get(selectors, name));
+          Check(value.size() == 11,
+                "physical I/O selector field coverage disagrees");
+          Check(fs::canonical(fs::path(ref.path()).parent_path() /
+                              Text(value, "artifact")) ==
+                    owners.at("transport").path(),
+                "physical I/O selector selects another transport store");
+          Check(Int(Get(value, "application_id")) == 0x454d5558 &&
+                    Int(Get(value, "user_version")) == 2 &&
+                    UInt(Get(value, "store_bytes")) ==
+                        owners.at("transport").generation().bytes &&
+                    Text(value, "store_sha256") == seal,
+                "physical I/O selector store envelope/seal disagrees");
+          for (const auto &field : expected)
+            Check(Canonical(Get(value, field.first)) == field.second,
+                  "physical I/O selector header/record seal disagrees: " +
+                      role + "." + field.first);
+        };
+        validate("binding", "virtual_board_binding");
+        validate("lane_map", "lane_map");
+        const auto binding = Fields(Get(selectors, "virtual_board_binding")),
+                   header = Fields(Get(binding, "header"));
+        const auto binding_sha = Get(binding, "canonical_sha256");
+        SqliteStore transport(owners.at("transport"));
+        Workspace workspace(destination.parent_path());
+        const auto root = workspace.root;
+        Raw contracts;
+        for (const auto &fpga : parts) {
+          stop();
+          const auto id = fpga.first;
+          const auto expected_dir = root / "expected" / id;
+          fs::create_directories(expected_dir);
+          EmitAdapter(transport.database(), expected_dir, id, sources);
+          const auto &xdc = owners.at("xdc." + id);
+          const auto &adapter = owners.at("adapter." + id);
+          Check(FileHash(expected_dir / "virtual_data_pins.xdc") ==
+                    FileHash(xdc.path()),
+                id + " virtual data-pin XDC differs from its binding");
+          Check(FileHash(expected_dir / "virtual_differential_io.sv") ==
+                    FileHash(adapter.path()),
+                id + " differential I/O adapter differs from its binding");
+          std::vector<std::string> entries;
+          I hops = 0;
+          for (const auto &token : Values(Get(audit, "ports"))) {
+            const auto port = Fields(token);
+            if (Text(port, "fpga") == id) {
+              const auto record = Get(port, "record");
+              hops += Int(Get(Fields(record), "schedule_entry_count"));
+              entries.push_back(record);
+            }
+          }
+          std::sort(entries.begin(), entries.end(),
+                    [](const auto &a, const auto &b) {
+                      return Text(Fields(a), "id") < Text(Fields(b), "id");
+                    });
+          const auto text = Object(
+              {{"schema", JsonQuote("emuflow.virtual-io-physical-contract/v2")},
+               {"status", JsonQuote("pass")},
+               {"provider",
+                JsonQuote(
+                    "phase6-indexed-xdc-differential-adapter-contract-v2")},
+               {"platform", Get(header, "platform")},
+               {"design", Get(header, "design")},
+               {"fpga", JsonQuote(id)},
+               {"binding_sha256", binding_sha},
+               {"binding_relation",
+                Object({{"logical_sha256", binding_sha},
+                        {"membership",
+                         JsonQuote("per-port canonical JSON schedule-entry "
+                                   "strings, newline framed")},
+                        {"store_sha256", JsonQuote(seal)}})},
+               {"xdc", Object({{"path", JsonQuote(xdc.path())},
+                               {"sha256", JsonQuote(FileHash(xdc.path()))}})},
+               {"adapter",
+                Object(
+                    {{"path", JsonQuote(adapter.path())},
+                     {"sha256", JsonQuote(FileHash(adapter.path()))},
+                     {"module", JsonQuote("emuflow_virtual_io_" + Name(id))}})},
+               {"implementation_contract",
+                JsonQuote("one fixed RapidWright LVDS IOB at the P package "
+                          "pin; the verified N package pin is the dedicated "
+                          "complementary mate")},
+               {"entries", Array(entries)},
+               {"metrics",
+                Object({{"differential_pairs", std::to_string(entries.size())},
+                        {"physical_ports", std::to_string(2 * entries.size())},
+                        {"scheduled_hops", std::to_string(hops)}})}});
+          PublishText(root / id / "virtual-io-physical-contract.json",
+                      text + '\n', sources);
+          contracts[id] =
+              JsonQuote((destination / id / "virtual-io-physical-contract.json")
+                            .string());
+        }
+        fs::remove_all(root / "expected");
+        PublishText(root / "physical-io-report.json",
+                    Object({{"schema",
+                             JsonQuote("emuflow.physical-io-stage-report/v1")},
+                            {"status", JsonQuote("pass")},
+                            {"implementation_id",
+                             JsonQuote("native-physical-io-stage-v1")},
+                            {"binding_validation", Get(header, "metrics")},
+                            {"contracts", Object(contracts)}}) +
+                        '\n',
+                    sources);
+        stop();
+        PublishNewDirectory(root.string(), destination.string(), sources);
+        workspace.root.clear();
+        outputs.push_back(ArtifactRef::Bind(
+            (destination / "physical-io-report.json").string(),
+            "physical-io-stage-report-v1"));
+        for (const auto &fpga : parts)
+          outputs.push_back(ArtifactRef::Bind(
+              (destination / fpga.first / "virtual-io-physical-contract.json")
+                  .string(),
+              "physical-input-document-v1"));
+      },
+      [&] { return outputs; });
 }
 StageResult AuditTransportArtifacts(const ArtifactRef& artifact,const std::string& summary){
   std::vector<ArtifactRef> sources{artifact};
