@@ -25,63 +25,26 @@
 
 #include "common/hash.hpp"
 #include "flow/native_stages.hpp"
+#include "transport/chimew/kernels.hpp"
 
 namespace {
 
-struct Point {
-  double x = 0.0;
-  double y = 0.0;
-};
+using Point = emuflow::native::ChimewPoint;
+using Member = emuflow::native::ChimewBankMember;
+using Group = emuflow::native::ChimewBankGroup;
+using Channel = emuflow::native::ChimewBankChannel;
+using BankPair = emuflow::native::ChimewBankPair;
+using Input = emuflow::native::ChimewBankInput;
+using AssignmentResult = emuflow::native::ChimewAssignment;
+using Stage2Result = emuflow::native::ChimewBankAlternative;
 
-struct Member {
-  int direction = -1;  // 0: FPGA A -> B, 1: FPGA B -> A.
-  double timing_weight = 1.0;
-  Point fanout;
-  std::vector<Point> fanins;
-};
-
-struct Group {
-  int index = -1;
-  int domain = -1;
-  int kind = -1;       // 0: TDM group, 1: common signal.
-  int direction = -1;  // 0: A -> B, 1: B -> A, 2: shared TDM bundle.
-  int expected_members = 0;
-  std::vector<Member> members;
-};
-
-struct Channel {
-  int index = -1;
-  int bank = -1;
-  int order = -1;
-  Point pin_a;
-  Point pin_b;
-};
-
-struct BankPair {
-  int index = -1;
-  int domain = -1;
-  Point bank_a;
-  Point bank_b;
-  std::vector<int> channels;
-};
-
-struct Input {
-  double cost_scale = 0.0;
-  std::vector<BankPair> banks;
-  std::vector<Channel> channels;
-  std::vector<Group> groups;
-};
-
-double manhattan(const Point& lhs, const Point& rhs) {
+double manhattan(const Point &lhs, const Point &rhs) {
   return std::abs(lhs.x - rhs.x) + std::abs(lhs.y - rhs.y);
 }
 
-
-
-
-void read_exact(std::istream& stream, void* destination, std::size_t size,
-                const char* label) {
-  if (!stream.read(static_cast<char*>(destination),
+void read_exact(std::istream &stream, void *destination, std::size_t size,
+                const char *label) {
+  if (!stream.read(static_cast<char *>(destination),
                    static_cast<std::streamsize>(size))) {
     throw std::runtime_error(std::string("truncated Chimew typed input ") +
                              label);
@@ -89,8 +52,8 @@ void read_exact(std::istream& stream, void* destination, std::size_t size,
 }
 
 template <typename Unsigned>
-Unsigned read_little_endian(std::istream& stream, std::uint32_t* checksum,
-                            const char* label) {
+Unsigned read_little_endian(std::istream &stream, std::uint32_t *checksum,
+                            const char *label) {
   static_assert(std::is_unsigned_v<Unsigned>);
   std::array<unsigned char, sizeof(Unsigned)> bytes{};
   read_exact(stream, bytes.data(), bytes.size(), label);
@@ -104,8 +67,8 @@ Unsigned read_little_endian(std::istream& stream, std::uint32_t* checksum,
   return result;
 }
 
-std::int32_t read_i32(std::istream& stream, std::uint32_t* checksum,
-                      const char* label) {
+std::int32_t read_i32(std::istream &stream, std::uint32_t *checksum,
+                      const char *label) {
   const std::uint32_t bits =
       read_little_endian<std::uint32_t>(stream, checksum, label);
   std::int32_t result = 0;
@@ -113,8 +76,8 @@ std::int32_t read_i32(std::istream& stream, std::uint32_t* checksum,
   return result;
 }
 
-double read_double(std::istream& stream, std::uint32_t* checksum,
-                   const char* label) {
+double read_double(std::istream &stream, std::uint32_t *checksum,
+                   const char *label) {
   const std::uint64_t bits =
       read_little_endian<std::uint64_t>(stream, checksum, label);
   double result = 0.0;
@@ -127,8 +90,8 @@ double read_double(std::istream& stream, std::uint32_t* checksum,
   return result;
 }
 
-void expect_tag(std::istream& stream, std::uint32_t& checksum,
-                unsigned char expected, const char* label) {
+void expect_tag(std::istream &stream, std::uint32_t &checksum,
+                unsigned char expected, const char *label) {
   unsigned char tag = 0;
   read_exact(stream, &tag, 1, label);
   emuflow::core::UpdateCrc32(checksum, &tag, 1);
@@ -138,7 +101,7 @@ void expect_tag(std::istream& stream, std::uint32_t& checksum,
   }
 }
 
-int checked_count(std::uint64_t value, const char* label, bool positive) {
+int checked_count(std::uint64_t value, const char *label, bool positive) {
   if (value > static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
       (positive && value == 0)) {
     throw std::runtime_error(std::string("invalid Chimew typed input ") +
@@ -147,9 +110,9 @@ int checked_count(std::uint64_t value, const char* label, bool positive) {
   return static_cast<int>(value);
 }
 
-Input read_typed_input(const std::string& path) {
+Input read_typed_input(const std::string &path) {
   std::ifstream input_file;
-  std::istream* stream = &std::cin;
+  std::istream *stream = &std::cin;
   if (path != "-") {
     input_file.open(path, std::ios::binary);
     if (!input_file) {
@@ -163,8 +126,8 @@ Input read_typed_input(const std::string& path) {
   std::array<unsigned char, 8> magic{};
   read_exact(*stream, magic.data(), magic.size(), "header");
   emuflow::core::UpdateCrc32(checksum, magic.data(), magic.size());
-  const std::array<unsigned char, 8> expected_magic = {
-      'E', 'M', 'C', 'H', 'B', 'C', '3', 0};
+  const std::array<unsigned char, 8> expected_magic = {'E', 'M', 'C', 'H',
+                                                       'B', 'C', '3', 0};
   if (magic != expected_magic ||
       read_little_endian<std::uint32_t>(*stream, &checksum, "version") != 1 ||
       read_little_endian<std::uint32_t>(*stream, &checksum, "endianness") !=
@@ -193,7 +156,8 @@ Input read_typed_input(const std::string& path) {
   std::array<unsigned char, 32> source_digest{};
   read_exact(*stream, source_digest.data(), source_digest.size(),
              "source digest");
-  emuflow::core::UpdateCrc32(checksum, source_digest.data(), source_digest.size());
+  emuflow::core::UpdateCrc32(checksum, source_digest.data(),
+                             source_digest.size());
 
   Input input;
   input.cost_scale = cost_scale;
@@ -211,12 +175,13 @@ Input read_typed_input(const std::string& path) {
     bank.bank_a.y = read_double(*stream, &checksum, "bank A y");
     bank.bank_b.x = read_double(*stream, &checksum, "bank B x");
     bank.bank_b.y = read_double(*stream, &checksum, "bank B y");
-    const int local_channels = checked_count(
-        read_little_endian<std::uint64_t>(*stream, &checksum,
-                                          "bank channel count"),
-        "bank channel count", true);
+    const int local_channels =
+        checked_count(read_little_endian<std::uint64_t>(*stream, &checksum,
+                                                        "bank channel count"),
+                      "bank channel count", true);
     if (bank.index != bank_index || bank.domain < 0 ||
-        local_channels > channel_count - static_cast<int>(input.channels.size())) {
+        local_channels >
+            channel_count - static_cast<int>(input.channels.size())) {
       throw std::runtime_error("invalid Chimew typed input bank");
     }
     input.banks.push_back(std::move(bank));
@@ -248,10 +213,10 @@ Input read_typed_input(const std::string& path) {
     group.domain = read_i32(*stream, &checksum, "group domain");
     group.kind = read_i32(*stream, &checksum, "group kind");
     group.direction = read_i32(*stream, &checksum, "group direction");
-    group.expected_members = checked_count(
-        read_little_endian<std::uint64_t>(*stream, &checksum,
-                                          "group member count"),
-        "group member count", true);
+    group.expected_members =
+        checked_count(read_little_endian<std::uint64_t>(*stream, &checksum,
+                                                        "group member count"),
+                      "group member count", true);
     if (group.index != group_index || group.domain < 0 ||
         (group.kind != 0 && group.kind != 1) ||
         (group.direction != 0 && group.direction != 1 &&
@@ -264,18 +229,17 @@ Input read_typed_input(const std::string& path) {
     for (int member_index = 0; member_index < group.expected_members;
          ++member_index) {
       expect_tag(*stream, checksum, 'M', "member tag");
-      const int declared_index =
-          read_i32(*stream, &checksum, "member index");
+      const int declared_index = read_i32(*stream, &checksum, "member index");
       Member member;
       member.direction = read_i32(*stream, &checksum, "member direction");
       member.timing_weight =
           read_double(*stream, &checksum, "member timing weight");
       member.fanout.x = read_double(*stream, &checksum, "member fanout x");
       member.fanout.y = read_double(*stream, &checksum, "member fanout y");
-      const int local_fanins = checked_count(
-          read_little_endian<std::uint64_t>(*stream, &checksum,
-                                            "member fanin count"),
-          "member fanin count", true);
+      const int local_fanins =
+          checked_count(read_little_endian<std::uint64_t>(*stream, &checksum,
+                                                          "member fanin count"),
+                        "member fanin count", true);
       if (declared_index != member_index ||
           (member.direction != 0 && member.direction != 1) ||
           (group.direction != 2 && member.direction != group.direction) ||
@@ -297,7 +261,7 @@ Input read_typed_input(const std::string& path) {
     }
     if (group.direction == 2) {
       bool seen_direction[2] = {false, false};
-      for (const Member& member : group.members) {
+      for (const Member &member : group.members) {
         seen_direction[member.direction] = true;
       }
       if (!seen_direction[0] || !seen_direction[1]) {
@@ -312,29 +276,30 @@ Input read_typed_input(const std::string& path) {
   }
   std::array<unsigned char, 8> end_magic{};
   read_exact(*stream, end_magic.data(), end_magic.size(), "trailer");
-  const std::array<unsigned char, 8> expected_end = {
-      'E', 'M', 'C', 'H', 'E', 'N', 'D', 0};
+  const std::array<unsigned char, 8> expected_end = {'E', 'M', 'C', 'H',
+                                                     'E', 'N', 'D', 0};
   const std::uint64_t declared_checksum =
       read_little_endian<std::uint64_t>(*stream, nullptr, "checksum");
   std::array<unsigned char, 32> trailer_digest{};
   read_exact(*stream, trailer_digest.data(), trailer_digest.size(),
              "trailer digest");
   if (end_magic != expected_end || declared_checksum != checksum ||
-      trailer_digest != source_digest || stream->peek() != std::char_traits<char>::eof()) {
+      trailer_digest != source_digest ||
+      stream->peek() != std::char_traits<char>::eof()) {
     throw std::runtime_error("Chimew typed input seal disagrees");
   }
   return input;
 }
 
-double raw_cost(const Group& group, const Point& endpoint_a,
-                const Point& endpoint_b) {
+double raw_cost(const Group &group, const Point &endpoint_a,
+                const Point &endpoint_b) {
   double cost = 0.0;
-  for (const Member& member : group.members) {
-    const Point& output = member.direction == 0 ? endpoint_a : endpoint_b;
-    const Point& input = member.direction == 0 ? endpoint_b : endpoint_a;
+  for (const Member &member : group.members) {
+    const Point &output = member.direction == 0 ? endpoint_a : endpoint_b;
+    const Point &input = member.direction == 0 ? endpoint_b : endpoint_a;
     double member_cost = manhattan(member.fanout, output);
     double fanin_distance = 0.0;
-    for (const Point& fanin : member.fanins) {
+    for (const Point &fanin : member.fanins) {
       fanin_distance += manhattan(fanin, input);
     }
     member_cost += fanin_distance / static_cast<double>(member.fanins.size());
@@ -360,7 +325,7 @@ struct Edge {
 };
 
 class MinCostFlow {
- public:
+public:
   explicit MinCostFlow(int nodes) : graph_(nodes) {}
 
   int add_edge(int from, int to, int capacity, std::int64_t cost) {
@@ -392,7 +357,7 @@ class MinCostFlow {
         queued[node] = false;
         for (int index = 0; index < static_cast<int>(graph_[node].size());
              ++index) {
-          const Edge& edge = graph_[node][index];
+          const Edge &edge = graph_[node][index];
           if (edge.capacity <= 0 || distance[node] == infinity) {
             continue;
           }
@@ -415,7 +380,7 @@ class MinCostFlow {
         if (previous_node[node] < 0) {
           throw std::runtime_error("broken Chimew augmenting path");
         }
-        Edge& edge = graph_[previous_node[node]][previous_edge[node]];
+        Edge &edge = graph_[previous_node[node]][previous_edge[node]];
         --edge.capacity;
         ++graph_[node][edge.reverse].capacity;
       }
@@ -438,7 +403,7 @@ class MinCostFlow {
       const int node = queue.front();
       queue.pop();
       queued[node] = false;
-      for (const Edge& edge : graph_[node]) {
+      for (const Edge &edge : graph_[node]) {
         if (edge.capacity <= 0 ||
             distance[edge.to] <= distance[node] + edge.cost) {
           continue;
@@ -456,7 +421,7 @@ class MinCostFlow {
       }
     }
     for (int node = 0; node < nodes; ++node) {
-      for (const Edge& edge : graph_[node]) {
+      for (const Edge &edge : graph_[node]) {
         if (edge.capacity > 0 &&
             edge.cost + distance[node] - distance[edge.to] < 0) {
           throw std::runtime_error("invalid Chimew optimality certificate");
@@ -466,9 +431,9 @@ class MinCostFlow {
     return distance;
   }
 
-  const Edge& edge(int node, int index) const { return graph_[node][index]; }
+  const Edge &edge(int node, int index) const { return graph_[node][index]; }
 
- private:
+private:
   std::vector<std::vector<Edge>> graph_;
 };
 
@@ -478,19 +443,12 @@ struct CandidateEdge {
   std::int64_t cost = 0;
 };
 
-struct AssignmentResult {
-  std::vector<int> right_for_left;
-  std::vector<std::int64_t> cost_for_left;
-  std::int64_t total_cost = 0;
-  std::vector<std::int64_t> potentials;
-};
-
 // Accumulate the sign of a short linear expression without relying on the
 // non-standard __int128 extension or overflowing int64_t.  The certificate
 // checks below contain at most three signed int64_t terms, so a two-limb
 // unsigned magnitude is more than sufficient while remaining strict C++17.
 class ExactSignedSum {
- public:
+public:
   void add(std::int64_t value, bool negate = false) {
     const bool term_negative = (value < 0) != negate;
     const std::uint64_t magnitude =
@@ -528,15 +486,15 @@ class ExactSignedSum {
 
   bool negative() const { return negative_; }
 
- private:
+private:
   bool negative_ = false;
   std::uint64_t high_ = 0;
   std::uint64_t low_ = 0;
 };
 
-AssignmentResult assign(int right_count, const std::vector<int>& capacities,
+AssignmentResult assign(int right_count, const std::vector<int> &capacities,
                         int left_count,
-                        const std::vector<CandidateEdge>& candidates) {
+                        const std::vector<CandidateEdge> &candidates) {
   const int source = 0;
   const int first_right = 1;
   const int first_left = first_right + right_count;
@@ -551,7 +509,7 @@ AssignmentResult assign(int right_count, const std::vector<int>& capacities,
   std::vector<int> unique_right(left_count, -1);
   std::vector<std::int64_t> unique_cost(left_count, 0);
   bool unique_candidate = true;
-  for (const CandidateEdge& candidate : candidates) {
+  for (const CandidateEdge &candidate : candidates) {
     if (candidate.left < 0 || candidate.left >= left_count ||
         candidate.right < 0 || candidate.right >= right_count ||
         unique_right[candidate.left] >= 0) {
@@ -561,9 +519,8 @@ AssignmentResult assign(int right_count, const std::vector<int>& capacities,
     unique_right[candidate.left] = candidate.right;
     unique_cost[candidate.left] = candidate.cost;
   }
-  if (unique_candidate &&
-      std::find(unique_right.begin(), unique_right.end(), -1) ==
-          unique_right.end()) {
+  if (unique_candidate && std::find(unique_right.begin(), unique_right.end(),
+                                    -1) == unique_right.end()) {
     std::vector<int> used(right_count, 0);
     AssignmentResult result;
     result.right_for_left = unique_right;
@@ -599,7 +556,7 @@ AssignmentResult assign(int right_count, const std::vector<int>& capacities,
     }
     using CostRow = std::vector<std::pair<int, std::int64_t>>;
     std::vector<CostRow> rows(left_count);
-    for (const CandidateEdge& candidate : candidates) {
+    for (const CandidateEdge &candidate : candidates) {
       if (candidate.left < 0 || candidate.left >= left_count ||
           candidate.right < 0 || candidate.right >= right_count) {
         return std::nullopt;
@@ -610,11 +567,11 @@ AssignmentResult assign(int right_count, const std::vector<int>& capacities,
     std::vector<CostRow> type_rows;
     std::vector<std::vector<int>> members_by_type;
     for (int left = 0; left < left_count; ++left) {
-      CostRow& row = rows[left];
+      CostRow &row = rows[left];
       std::sort(row.begin(), row.end());
       if (row.empty() ||
           std::adjacent_find(row.begin(), row.end(),
-                             [](const auto& lhs, const auto& rhs) {
+                             [](const auto &lhs, const auto &rhs) {
                                return lhs.first == rhs.first;
                              }) != row.end()) {
         return std::nullopt;
@@ -647,7 +604,7 @@ AssignmentResult assign(int right_count, const std::vector<int>& capacities,
     };
     std::vector<CompressedReference> references;
     for (int type = 0; type < type_count; ++type) {
-      for (const auto& [right, cost] : type_rows[type]) {
+      for (const auto &[right, cost] : type_rows[type]) {
         const int edge_index =
             flow.add_edge(compressed_first_right + right,
                           compressed_first_type + type, 1, cost);
@@ -656,13 +613,14 @@ AssignmentResult assign(int right_count, const std::vector<int>& capacities,
       flow.add_edge(compressed_first_type + type, compressed_sink,
                     static_cast<int>(members_by_type[type].size()), 0);
     }
-    const auto [assigned, total] = flow.solve(source, compressed_sink, left_count);
+    const auto [assigned, total] =
+        flow.solve(source, compressed_sink, left_count);
     if (assigned != left_count) {
       throw std::runtime_error("no complete Chimew assignment exists");
     }
     std::vector<std::vector<std::pair<int, std::int64_t>>> selected_by_type(
         type_count);
-    for (const CompressedReference& reference : references) {
+    for (const CompressedReference &reference : references) {
       const int node = compressed_first_right + reference.right;
       if (flow.edge(node, reference.edge_index).capacity == 0) {
         selected_by_type[reference.type].push_back(
@@ -683,7 +641,7 @@ AssignmentResult assign(int right_count, const std::vector<int>& capacities,
           compressed_potentials[compressed_first_right + right];
     }
     for (int type = 0; type < type_count; ++type) {
-      auto& selected = selected_by_type[type];
+      auto &selected = selected_by_type[type];
       std::sort(selected.begin(), selected.end());
       if (selected.size() != members_by_type[type].size()) {
         return std::nullopt;
@@ -713,16 +671,14 @@ AssignmentResult assign(int right_count, const std::vector<int>& capacities,
         return std::nullopt;
       }
     }
-    for (const CandidateEdge& candidate : candidates) {
+    for (const CandidateEdge &candidate : candidates) {
       if (result.right_for_left[candidate.left] == candidate.right) {
         continue;
       }
       ExactSignedSum forward_reduced;
       forward_reduced.add(candidate.cost);
-      forward_reduced.add(
-          result.potentials[first_right + candidate.right]);
-      forward_reduced.add(
-          result.potentials[first_left + candidate.left], true);
+      forward_reduced.add(result.potentials[first_right + candidate.right]);
+      forward_reduced.add(result.potentials[first_left + candidate.left], true);
       if (forward_reduced.negative()) {
         return std::nullopt;
       }
@@ -737,8 +693,7 @@ AssignmentResult assign(int right_count, const std::vector<int>& capacities,
       }
     }
     for (int left = 0; left < left_count; ++left) {
-      if (result.potentials[sink] <
-          result.potentials[first_left + left]) {
+      if (result.potentials[sink] < result.potentials[first_left + left]) {
         return std::nullopt;
       }
     }
@@ -758,10 +713,10 @@ AssignmentResult assign(int right_count, const std::vector<int>& capacities,
   };
   std::vector<Reference> references;
   references.reserve(candidates.size());
-  for (const CandidateEdge& candidate : candidates) {
-    const int edge_index = flow.add_edge(first_right + candidate.right,
-                                         first_left + candidate.left, 1,
-                                         candidate.cost);
+  for (const CandidateEdge &candidate : candidates) {
+    const int edge_index =
+        flow.add_edge(first_right + candidate.right,
+                      first_left + candidate.left, 1, candidate.cost);
     references.push_back({candidate, edge_index});
   }
   for (int left = 0; left < left_count; ++left) {
@@ -775,7 +730,7 @@ AssignmentResult assign(int right_count, const std::vector<int>& capacities,
   result.right_for_left.assign(left_count, -1);
   result.cost_for_left.assign(left_count, 0);
   result.total_cost = total;
-  for (const Reference& reference : references) {
+  for (const Reference &reference : references) {
     const int node = first_right + reference.candidate.right;
     if (flow.edge(node, reference.edge_index).capacity != 0) {
       continue;
@@ -787,19 +742,13 @@ AssignmentResult assign(int right_count, const std::vector<int>& capacities,
     result.right_for_left[left] = reference.candidate.right;
     result.cost_for_left[left] = reference.candidate.cost;
   }
-  if (std::find(result.right_for_left.begin(), result.right_for_left.end(), -1) !=
-      result.right_for_left.end()) {
+  if (std::find(result.right_for_left.begin(), result.right_for_left.end(),
+                -1) != result.right_for_left.end()) {
     throw std::runtime_error("incomplete Chimew assignment reconstruction");
   }
   result.potentials = flow.certificate_potentials();
   return result;
 }
-
-struct Stage2Result {
-  int priority = 0;
-  std::vector<int> groups;
-  AssignmentResult assignment;
-};
 
 int bank_worker_count(std::size_t jobs) {
   if (jobs == 0) {
@@ -810,9 +759,8 @@ int bank_worker_count(std::size_t jobs) {
     requested = 1;
   }
   bool explicitly_requested = false;
-  if (const char* override_value =
-          std::getenv("EMUFLOW_CHIMEW_BANK_WORKERS")) {
-    char* end = nullptr;
+  if (const char *override_value = std::getenv("EMUFLOW_CHIMEW_BANK_WORKERS")) {
+    char *end = nullptr;
     const long parsed = std::strtol(override_value, &end, 10);
     if (override_value[0] == '\0' || end == nullptr || *end != '\0' ||
         parsed <= 0 || parsed > 256) {
@@ -832,13 +780,13 @@ int bank_worker_count(std::size_t jobs) {
       std::min<std::size_t>(jobs, static_cast<std::size_t>(requested)));
 }
 
-Stage2Result solve_bank(const Input& input, int bank_index,
-                        const std::vector<int>& groups, int priority) {
-  const BankPair& bank = input.banks[bank_index];
+Stage2Result solve_bank(const Input &input, int bank_index,
+                        const std::vector<int> &groups, int priority) {
+  const BankPair &bank = input.banks[bank_index];
   int direction_counts[3] = {0, 0, 0};
   int common_count = 0;
   for (int group_index : groups) {
-    const Group& group = input.groups[group_index];
+    const Group &group = input.groups[group_index];
     if (group.kind == 0) {
       ++direction_counts[group.direction];
     } else {
@@ -877,17 +825,15 @@ Stage2Result solve_bank(const Input& input, int bank_index,
       required_kind = 0;
       required_direction = 2;
     }
-    const Channel& channel = input.channels[bank.channels[right]];
+    const Channel &channel = input.channels[bank.channels[right]];
     for (int left = 0; left < static_cast<int>(groups.size()); ++left) {
-      const Group& group = input.groups[groups[left]];
-      const bool eligible = dedicated_direction >= 0
-                                ? group.kind == 0 &&
-                                      group.direction == dedicated_direction
-                                : (required_kind == 0
-                                       ? group.kind == 0 &&
-                                             group.direction ==
-                                                 required_direction
-                                       : group.kind == 1);
+      const Group &group = input.groups[groups[left]];
+      const bool eligible =
+          dedicated_direction >= 0
+              ? group.kind == 0 && group.direction == dedicated_direction
+              : (required_kind == 0
+                     ? group.kind == 0 && group.direction == required_direction
+                     : group.kind == 1);
       if (!eligible) {
         continue;
       }
@@ -903,20 +849,21 @@ Stage2Result solve_bank(const Input& input, int bank_index,
                  static_cast<int>(groups.size()), candidates)};
 }
 
-void write_certificate(std::ostream& output, const std::string& label,
-                       const AssignmentResult& result) {
+void write_certificate(std::ostream &output, const std::string &label,
+                       const AssignmentResult &result) {
   output << "CERT " << label << " " << result.potentials.size() << "\n";
-  for (int node = 0; node < static_cast<int>(result.potentials.size()); ++node) {
-    output << "POT " << label << " " << node << " "
-           << result.potentials[node] << "\n";
+  for (int node = 0; node < static_cast<int>(result.potentials.size());
+       ++node) {
+    output << "POT " << label << " " << node << " " << result.potentials[node]
+           << "\n";
   }
 }
 
-void run(const std::string& input_path, std::ostream& output) {
-  const Input input = read_typed_input(input_path);
+emuflow::native::ChimewBankResult calculate(const Input &input) {
   std::vector<CandidateEdge> bank_candidates;
   for (int bank = 0; bank < static_cast<int>(input.banks.size()); ++bank) {
-    for (int group = 0; group < static_cast<int>(input.groups.size()); ++group) {
+    for (int group = 0; group < static_cast<int>(input.groups.size());
+         ++group) {
       if (input.banks[bank].domain != input.groups[group].domain) {
         continue;
       }
@@ -928,10 +875,10 @@ void run(const std::string& input_path, std::ostream& output) {
     }
   }
   std::vector<int> bank_capacities;
-  for (const BankPair& bank : input.banks) {
+  for (const BankPair &bank : input.banks) {
     bank_capacities.push_back(static_cast<int>(bank.channels.size()));
   }
-  const AssignmentResult stage1 =
+  AssignmentResult stage1 =
       assign(static_cast<int>(input.banks.size()), bank_capacities,
              static_cast<int>(input.groups.size()), bank_candidates);
 
@@ -961,22 +908,18 @@ void run(const std::string& input_path, std::ostream& output) {
           return;
         }
         const int bank = active_banks[job];
-        Stage2Result first =
-            solve_bank(input, bank, groups_by_bank[bank], 0);
-        Stage2Result second =
-            solve_bank(input, bank, groups_by_bank[bank], 1);
+        Stage2Result first = solve_bank(input, bank, groups_by_bank[bank], 0);
+        Stage2Result second = solve_bank(input, bank, groups_by_bank[bank], 1);
         const int priority =
-            second.assignment.total_cost < first.assignment.total_cost ? 1
-                                                                        : 0;
+            second.assignment.total_cost < first.assignment.total_cost ? 1 : 0;
         selected_cost[bank] = priority == 0 ? first.assignment.total_cost
-                                             : second.assignment.total_cost;
+                                            : second.assignment.total_cost;
         chosen_priority[bank] = priority;
-        alternatives[bank] =
-            {std::move(first), std::move(second)};
+        alternatives[bank] = {std::move(first), std::move(second)};
       }
     }));
   }
-  for (std::future<void>& worker : workers) {
+  for (std::future<void> &worker : workers) {
     worker.get();
   }
   std::int64_t stage2_total = 0;
@@ -987,27 +930,94 @@ void run(const std::string& input_path, std::ostream& output) {
     stage2_total += cost;
   }
 
-  output << "EMUFLOW_CHIMEW_BANK_CHANNEL_OUTPUT_V1\n";
-  output << "METRIC " << input.groups.size() << " " << stage1.total_cost << " "
-         << stage2_total << "\n";
-  for (int group = 0; group < static_cast<int>(input.groups.size()); ++group) {
-    output << "BANK_ASSIGN " << group << " " << stage1.right_for_left[group]
-           << " " << stage1.cost_for_left[group] << "\n";
+  return {std::move(stage1), std::move(alternatives),
+          std::move(chosen_priority), stage2_total};
+}
+
+} // namespace
+
+emuflow::native::ChimewBankResult
+emuflow::native::AssignChimewBankRecords(const ChimewBankInput &input) {
+  const auto bound = std::size_t(std::numeric_limits<int>::max());
+  const auto finite = [](const ChimewPoint &point) {
+    return std::isfinite(point.x) && std::isfinite(point.y);
+  };
+  if (!std::isfinite(input.cost_scale) || input.cost_scale <= 0 ||
+      input.banks.size() > bound || input.groups.size() > bound ||
+      input.channels.size() > bound)
+    throw std::runtime_error("invalid Chimew bank model");
+  std::vector<bool> seen(input.channels.size());
+  for (std::size_t bank = 0; bank < input.banks.size(); ++bank) {
+    const auto &record = input.banks[bank];
+    if (record.index != int(bank) || record.domain < 0 ||
+        !finite(record.bank_a) || !finite(record.bank_b))
+      throw std::runtime_error("invalid Chimew bank record");
+    for (std::size_t order = 0; order < record.channels.size(); ++order) {
+      const int index = record.channels[order];
+      if (index < 0 || std::size_t(index) >= input.channels.size() ||
+          seen[index])
+        throw std::runtime_error("invalid Chimew bank channel ownership");
+      const auto &channel = input.channels[index];
+      if (channel.index != index || channel.bank != int(bank) ||
+          channel.order != int(order) || !finite(channel.pin_a) ||
+          !finite(channel.pin_b))
+        throw std::runtime_error("invalid Chimew channel record");
+      seen[index] = true;
+    }
   }
-  write_certificate(output, "STAGE1", stage1);
+  if (std::find(seen.begin(), seen.end(), false) != seen.end())
+    throw std::runtime_error("incomplete Chimew channel ownership");
+  for (std::size_t index = 0; index < input.groups.size(); ++index) {
+    const auto &group = input.groups[index];
+    if (group.index != int(index) || group.domain < 0 ||
+        (group.kind != 0 && group.kind != 1) || group.direction < 0 ||
+        group.direction > 2 || group.expected_members < 0 ||
+        std::size_t(group.expected_members) != group.members.size() ||
+        (group.kind == 1 && group.members.size() != 1))
+      throw std::runtime_error("invalid Chimew group record");
+    for (const auto &member : group.members) {
+      if (member.direction < 0 || member.direction > 1 ||
+          !std::isfinite(member.timing_weight) || member.timing_weight <= 0 ||
+          !finite(member.fanout) ||
+          (group.direction < 2 && member.direction != group.direction))
+        throw std::runtime_error("invalid Chimew member record");
+      for (const auto &pin : member.fanins)
+        if (!finite(pin))
+          throw std::runtime_error("invalid Chimew member point");
+    }
+  }
+  return calculate(input);
+}
+
+void emuflow::native::AssignChimewBankChannels(const std::string &input_path,
+                                               std::ostream &output) {
+  const auto input = read_typed_input(input_path);
+  const auto solution = AssignChimewBankRecords(input);
+  output << "EMUFLOW_CHIMEW_BANK_CHANNEL_OUTPUT_V1\n";
+  output << "METRIC " << input.groups.size() << " "
+         << solution.stage1.total_cost << " " << solution.channel_cost << "\n";
+  for (int group = 0; group < static_cast<int>(input.groups.size()); ++group) {
+    output << "BANK_ASSIGN " << group << " "
+           << solution.stage1.right_for_left[group] << " "
+           << solution.stage1.cost_for_left[group] << "\n";
+  }
+  write_certificate(output, "STAGE1", solution.stage1);
   for (int bank = 0; bank < static_cast<int>(input.banks.size()); ++bank) {
-    if (groups_by_bank[bank].empty()) {
+    if (solution.alternatives[bank].first.groups.empty()) {
       continue;
     }
-    output << "CHOSEN " << bank << " " << chosen_priority[bank] << "\n";
+    output << "CHOSEN " << bank << " " << solution.chosen_priority[bank]
+           << "\n";
     for (int priority = 0; priority < 2; ++priority) {
-      const Stage2Result& result = priority == 0 ? alternatives[bank].first
-                                                 : alternatives[bank].second;
+      const Stage2Result &result = priority == 0
+                                       ? solution.alternatives[bank].first
+                                       : solution.alternatives[bank].second;
       const std::string label =
           "BANK" + std::to_string(bank) + "P" + std::to_string(priority);
       output << "ALTERNATIVE " << bank << " " << priority << " "
              << result.assignment.total_cost << "\n";
-      for (int left = 0; left < static_cast<int>(result.groups.size()); ++left) {
+      for (int left = 0; left < static_cast<int>(result.groups.size());
+           ++left) {
         const int local_channel = result.assignment.right_for_left[left];
         output << "CHANNEL_ASSIGN " << bank << " " << priority << " "
                << result.groups[left] << " "
@@ -1017,11 +1027,4 @@ void run(const std::string& input_path, std::ostream& output) {
       write_certificate(output, label, result.assignment);
     }
   }
-}
-
-}  // namespace
-
-void emuflow::native::AssignChimewBankChannels(
-    const std::string& input_path, std::ostream& output) {
-  run(input_path, output);
 }

@@ -8,9 +8,9 @@ import copy
 
 import pytest
 
+from tests.chimew_fixed_wiring_reference import build_fixed_wiring_chimew_electrical_map
 from emuflow.transport.chimew.chimew_fixed_wiring import (
     FIXED_WIRING_BINDING_SCHEMA, FixedWiringChannels,
-    build_fixed_wiring_chimew_electrical_map,
 )
 from emuflow.transport.chimew.chimew_phase6 import (
     build_chimew_phase6_pin_plan, run_chimew_phase6_adapter,

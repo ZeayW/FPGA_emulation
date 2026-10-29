@@ -12,37 +12,19 @@
 #include <vector>
 
 #include "flow/native_stages.hpp"
+#include "transport/chimew/kernels.hpp"
 
 namespace {
 
-struct Point {
-  double x = 0.0;
-  double y = 0.0;
-};
-
-struct Net {
-  int index = -1;
-  std::vector<Point> pins;
-};
-
-struct Input {
-  double origin_x = 0.0;
-  double origin_y = 0.0;
-  double bin_width = 0.0;
-  double bin_height = 0.0;
-  int columns = 0;
-  int rows = 0;
-  double wire_pitch_per_layer = 0.0;
-  double max_utilization = 0.0;
-  std::vector<double> capacities;
-  std::vector<Net> nets;
-};
+using Point = emuflow::native::ChimewPoint;
+using Net = emuflow::native::ChimewRudyNet;
+using Input = emuflow::native::ChimewRudyInput;
 
 bool finite_positive(double value) {
   return std::isfinite(value) && value > 0.0;
 }
 
-Input read_input(std::istream& stream) {
+Input read_input(std::istream &stream) {
   std::string header;
   if (!(stream >> header) || header != "EMUFLOW_CHIMEW_RUDY_INPUT_V1") {
     throw std::runtime_error("invalid Chimew RUDY input header");
@@ -55,9 +37,8 @@ Input read_input(std::istream& stream) {
     throw std::runtime_error("malformed Chimew RUDY grid");
   }
   if (!std::isfinite(input.origin_x) || !std::isfinite(input.origin_y) ||
-      !finite_positive(input.bin_width) ||
-      !finite_positive(input.bin_height) || input.columns <= 0 ||
-      input.rows <= 0) {
+      !finite_positive(input.bin_width) || !finite_positive(input.bin_height) ||
+      input.columns <= 0 || input.rows <= 0) {
     throw std::runtime_error("invalid Chimew RUDY grid");
   }
   if (!(stream >> record) || record != "PARAM" ||
@@ -89,7 +70,7 @@ Input read_input(std::istream& stream) {
       throw std::runtime_error("invalid Chimew RUDY net identity");
     }
     net.pins.resize(pin_count);
-    for (Point& pin : net.pins) {
+    for (Point &pin : net.pins) {
       if (!(stream >> pin.x >> pin.y) || !std::isfinite(pin.x) ||
           !std::isfinite(pin.y)) {
         throw std::runtime_error("invalid Chimew RUDY pin");
@@ -103,28 +84,23 @@ Input read_input(std::istream& stream) {
   return input;
 }
 
-double overlap(double lower_a, double upper_a, double lower_b,
-               double upper_b) {
-  return std::max(0.0, std::min(upper_a, upper_b) -
-                           std::max(lower_a, lower_b));
+double overlap(double lower_a, double upper_a, double lower_b, double upper_b) {
+  return std::max(0.0, std::min(upper_a, upper_b) - std::max(lower_a, lower_b));
 }
 
-void run(std::istream& input_stream, std::ostream& output) {
-  const Input input = read_input(input_stream);
-  const double grid_upper_x =
-      input.origin_x + input.bin_width * input.columns;
-  const double grid_upper_y =
-      input.origin_y + input.bin_height * input.rows;
+emuflow::native::ChimewRudyResult calculate(const Input &input) {
+  const double grid_upper_x = input.origin_x + input.bin_width * input.columns;
+  const double grid_upper_y = input.origin_y + input.bin_height * input.rows;
   std::vector<double> loads(input.capacities.size(), 0.0);
   double total_wire_area = 0.0;
   int pin_count = 0;
 
-  for (const Net& net : input.nets) {
+  for (const Net &net : input.nets) {
     double lower_x = std::numeric_limits<double>::infinity();
     double lower_y = std::numeric_limits<double>::infinity();
     double upper_x = -std::numeric_limits<double>::infinity();
     double upper_y = -std::numeric_limits<double>::infinity();
-    for (const Point& pin : net.pins) {
+    for (const Point &pin : net.pins) {
       lower_x = std::min(lower_x, pin.x);
       lower_y = std::min(lower_y, pin.y);
       upper_x = std::max(upper_x, pin.x);
@@ -146,26 +122,25 @@ void run(std::istream& input_stream, std::ostream& output) {
     total_wire_area += wire_area;
     pin_count += static_cast<int>(net.pins.size());
 
-    const int first_column = std::max(
-        0, static_cast<int>(std::floor((lower_x - input.origin_x) /
-                                       input.bin_width)));
-    const int last_column = std::min(
-        input.columns - 1,
-        static_cast<int>(std::ceil((upper_x - input.origin_x) /
-                                   input.bin_width)) -
-            1);
-    const int first_row = std::max(
-        0, static_cast<int>(std::floor((lower_y - input.origin_y) /
-                                       input.bin_height)));
+    const int first_column =
+        std::max(0, static_cast<int>(std::floor((lower_x - input.origin_x) /
+                                                input.bin_width)));
+    const int last_column =
+        std::min(input.columns - 1,
+                 static_cast<int>(
+                     std::ceil((upper_x - input.origin_x) / input.bin_width)) -
+                     1);
+    const int first_row =
+        std::max(0, static_cast<int>(std::floor((lower_y - input.origin_y) /
+                                                input.bin_height)));
     const int last_row = std::min(
-        input.rows - 1,
-        static_cast<int>(std::ceil((upper_y - input.origin_y) /
-                                   input.bin_height)) -
-            1);
+        input.rows - 1, static_cast<int>(std::ceil((upper_y - input.origin_y) /
+                                                   input.bin_height)) -
+                            1);
     for (int row = first_row; row <= last_row; ++row) {
       const double bin_lower_y = input.origin_y + row * input.bin_height;
-      const double y_overlap =
-          overlap(lower_y, upper_y, bin_lower_y, bin_lower_y + input.bin_height);
+      const double y_overlap = overlap(lower_y, upper_y, bin_lower_y,
+                                       bin_lower_y + input.bin_height);
       for (int column = first_column; column <= last_column; ++column) {
         const double bin_lower_x = input.origin_x + column * input.bin_width;
         const double x_overlap = overlap(lower_x, upper_x, bin_lower_x,
@@ -193,25 +168,48 @@ void run(std::istream& input_stream, std::ostream& output) {
     throw std::runtime_error("Chimew RUDY load is not conserved");
   }
 
-  output << std::setprecision(17);
-  output << "EMUFLOW_CHIMEW_RUDY_OUTPUT_V1\n";
-  output << "METRIC " << input.nets.size() << " " << pin_count << " "
-         << total_wire_area << " " << total_bin_load << " " << peak_load
-         << " " << peak_utilization << " " << overloaded_bins << "\n";
-  for (int index = 0; index < static_cast<int>(loads.size()); ++index) {
-    output << "BIN " << index << " " << loads[index] << " "
-           << utilizations[index] << "\n";
-  }
+  return {std::move(loads), std::move(utilizations), pin_count,
+          overloaded_bins,  total_wire_area,         total_bin_load,
+          peak_load,        peak_utilization};
 }
 
-}  // namespace
+} // namespace
 
 namespace emuflow::native {
 
-void EvaluateChimewRudy(const std::string& input_path,
-                        std::ostream& output) {
+ChimewRudyResult EvaluateChimewRudyRecords(const ChimewRudyInput &input) {
+  if (!std::isfinite(input.origin_x) || !std::isfinite(input.origin_y) ||
+      !finite_positive(input.bin_width) || !finite_positive(input.bin_height) ||
+      input.columns <= 0 || input.rows <= 0 ||
+      !finite_positive(input.wire_pitch_per_layer) ||
+      !finite_positive(input.max_utilization) ||
+      std::uint64_t(input.columns) * std::uint64_t(input.rows) !=
+          input.capacities.size() ||
+      input.capacities.size() > std::size_t(std::numeric_limits<int>::max()) ||
+      input.nets.empty())
+    throw std::runtime_error("invalid Chimew RUDY model");
+  for (double capacity : input.capacities)
+    if (!finite_positive(capacity))
+      throw std::runtime_error("invalid Chimew RUDY capacity");
+  std::uint64_t pins = 0;
+  for (std::size_t index = 0; index < input.nets.size(); ++index) {
+    const auto &net = input.nets[index];
+    if (index > std::size_t(std::numeric_limits<int>::max()) ||
+        net.index != int(index) || net.pins.size() < 2)
+      throw std::runtime_error("invalid Chimew RUDY net");
+    pins += net.pins.size();
+    if (pins > std::uint64_t(std::numeric_limits<int>::max()))
+      throw std::runtime_error("Chimew RUDY pin count exceeds bounds");
+    for (const auto &pin : net.pins)
+      if (!std::isfinite(pin.x) || !std::isfinite(pin.y))
+        throw std::runtime_error("invalid Chimew RUDY point");
+  }
+  return calculate(input);
+}
+
+void EvaluateChimewRudy(const std::string &input_path, std::ostream &output) {
   std::ifstream input_file;
-  std::istream* input = &std::cin;
+  std::istream *input = &std::cin;
   if (input_path != "-") {
     input_file.open(input_path);
     if (!input_file) {
@@ -219,10 +217,19 @@ void EvaluateChimewRudy(const std::string& input_path,
     }
     input = &input_file;
   }
-  run(*input, output);
+  const auto data = read_input(*input);
+  const auto result = EvaluateChimewRudyRecords(data);
+  output << std::setprecision(17) << "EMUFLOW_CHIMEW_RUDY_OUTPUT_V1\n";
+  output << "METRIC " << data.nets.size() << " " << result.pins << " "
+         << result.wire_area << " " << result.total_bin_load << " "
+         << result.peak_load << " " << result.peak_utilization << " "
+         << result.overloaded_bins << "\n";
+  for (std::size_t index = 0; index < result.loads.size(); ++index)
+    output << "BIN " << index << " " << result.loads[index] << " "
+           << result.utilizations[index] << "\n";
   if (!output) {
     throw std::runtime_error("cannot write Chimew RUDY output");
   }
 }
 
-}  // namespace emuflow::native
+} // namespace emuflow::native

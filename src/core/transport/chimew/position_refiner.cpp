@@ -21,23 +21,15 @@
 
 #include "common/hash.hpp"
 #include "flow/native_stages.hpp"
+#include "transport/chimew/kernels.hpp"
 
 namespace {
 
-struct Signal {
-  int index = -1;
-  int domain = -1;
-  int ratio = 0;
-  unsigned long long encoding = 0;
-  int group = -1;
-  double source_y = 0.0;
-};
+using Signal = emuflow::native::ChimewRefinementSignal;
 
-
-
-void read_exact(std::istream& stream, void* destination, std::size_t size,
-                const char* label) {
-  if (!stream.read(static_cast<char*>(destination),
+void read_exact(std::istream &stream, void *destination, std::size_t size,
+                const char *label) {
+  if (!stream.read(static_cast<char *>(destination),
                    static_cast<std::streamsize>(size))) {
     throw std::runtime_error(std::string("truncated Chimew typed input ") +
                              label);
@@ -45,7 +37,7 @@ void read_exact(std::istream& stream, void* destination, std::size_t size,
 }
 
 template <typename Unsigned>
-Unsigned decode_little_endian(const unsigned char* bytes) {
+Unsigned decode_little_endian(const unsigned char *bytes) {
   static_assert(std::is_unsigned_v<Unsigned>);
   Unsigned result = 0;
   for (std::size_t index = 0; index < sizeof(Unsigned); ++index) {
@@ -55,8 +47,8 @@ Unsigned decode_little_endian(const unsigned char* bytes) {
 }
 
 template <typename Unsigned>
-Unsigned read_little_endian(std::istream& stream, std::uint32_t* checksum,
-                            const char* label) {
+Unsigned read_little_endian(std::istream &stream, std::uint32_t *checksum,
+                            const char *label) {
   std::array<unsigned char, sizeof(Unsigned)> bytes{};
   read_exact(stream, bytes.data(), bytes.size(), label);
   if (checksum != nullptr) {
@@ -65,14 +57,14 @@ Unsigned read_little_endian(std::istream& stream, std::uint32_t* checksum,
   return decode_little_endian<Unsigned>(bytes.data());
 }
 
-std::int32_t decode_i32(const unsigned char* bytes) {
+std::int32_t decode_i32(const unsigned char *bytes) {
   const std::uint32_t bits = decode_little_endian<std::uint32_t>(bytes);
   std::int32_t result = 0;
   std::memcpy(&result, &bits, sizeof(result));
   return result;
 }
 
-double decode_double(const unsigned char* bytes) {
+double decode_double(const unsigned char *bytes) {
   const std::uint64_t bits = decode_little_endian<std::uint64_t>(bytes);
   double result = 0.0;
   std::memcpy(&result, &bits, sizeof(result));
@@ -80,40 +72,42 @@ double decode_double(const unsigned char* bytes) {
 }
 
 int hex_nibble(char value) {
-  if (value >= '0' && value <= '9') return value - '0';
-  if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+  if (value >= '0' && value <= '9')
+    return value - '0';
+  if (value >= 'a' && value <= 'f')
+    return value - 'a' + 10;
   throw std::runtime_error("invalid Chimew expected logical digest");
 }
 
-std::array<unsigned char, 32> parse_digest(const std::string& value) {
+std::array<unsigned char, 32> parse_digest(const std::string &value) {
   if (value.size() != 64) {
     throw std::runtime_error("invalid Chimew expected logical digest");
   }
   std::array<unsigned char, 32> digest{};
   for (std::size_t index = 0; index < digest.size(); ++index) {
     digest[index] = static_cast<unsigned char>(
-        (hex_nibble(value[index * 2]) << 4) |
-        hex_nibble(value[index * 2 + 1]));
+        (hex_nibble(value[index * 2]) << 4) | hex_nibble(value[index * 2 + 1]));
   }
   return digest;
 }
 
-std::vector<Signal> read_typed_input(
-    const std::string& path,
-    const std::array<unsigned char, 32>& expected_digest) {
+std::vector<Signal>
+read_typed_input(const std::string &path,
+                 const std::array<unsigned char, 32> &expected_digest) {
   std::ifstream input_file;
-  std::istream* stream = &std::cin;
+  std::istream *stream = &std::cin;
   if (path != "-") {
     input_file.open(path, std::ios::binary);
-    if (!input_file) throw std::runtime_error("cannot open Chimew typed input");
+    if (!input_file)
+      throw std::runtime_error("cannot open Chimew typed input");
     stream = &input_file;
   }
   std::uint32_t checksum = 0;
   std::array<unsigned char, 8> magic{};
   read_exact(*stream, magic.data(), magic.size(), "header");
   emuflow::core::UpdateCrc32(checksum, magic.data(), magic.size());
-  const std::array<unsigned char, 8> expected_magic = {
-      'E', 'M', 'C', 'H', 'R', 'F', '2', 0};
+  const std::array<unsigned char, 8> expected_magic = {'E', 'M', 'C', 'H',
+                                                       'R', 'F', '2', 0};
   if (magic != expected_magic ||
       read_little_endian<std::uint32_t>(*stream, &checksum, "version") != 1 ||
       read_little_endian<std::uint32_t>(*stream, &checksum, "endianness") !=
@@ -130,8 +124,8 @@ std::vector<Signal> read_typed_input(
   std::array<unsigned char, 32> source_digest{};
   read_exact(*stream, source_digest.data(), source_digest.size(),
              "source digest");
-  emuflow::core::UpdateCrc32(
-      checksum, source_digest.data(), source_digest.size());
+  emuflow::core::UpdateCrc32(checksum, source_digest.data(),
+                             source_digest.size());
   if (source_digest != expected_digest) {
     throw std::runtime_error("Chimew typed input logical digest disagrees");
   }
@@ -160,8 +154,8 @@ std::vector<Signal> read_typed_input(
   const auto actual_digest = observed_digest.finish();
   std::array<unsigned char, 8> end_magic{};
   read_exact(*stream, end_magic.data(), end_magic.size(), "trailer");
-  const std::array<unsigned char, 8> expected_end = {
-      'E', 'M', 'C', 'H', 'R', 'F', 'E', 0};
+  const std::array<unsigned char, 8> expected_end = {'E', 'M', 'C', 'H',
+                                                     'R', 'F', 'E', 0};
   const std::uint64_t declared_checksum =
       read_little_endian<std::uint64_t>(*stream, nullptr, "checksum");
   std::array<unsigned char, 32> trailer_digest{};
@@ -175,8 +169,7 @@ std::vector<Signal> read_typed_input(
   return signals;
 }
 
-std::map<int, std::set<int>> group_members(
-    const std::vector<Signal>& signals) {
+std::map<int, std::set<int>> group_members(const std::vector<Signal> &signals) {
   std::map<int, std::set<int>> members;
   for (int index = 0; index < static_cast<int>(signals.size()); ++index) {
     members[signals[index].group].insert(index);
@@ -184,9 +177,9 @@ std::map<int, std::set<int>> group_members(
   return members;
 }
 
-double pairwise_objective(const std::vector<Signal>& signals,
-                          const std::map<int, std::set<int>>& members,
-                          const std::set<int>& groups) {
+double pairwise_objective(const std::vector<Signal> &signals,
+                          const std::map<int, std::set<int>> &members,
+                          const std::set<int> &groups) {
   double objective = 0.0;
   for (int group : groups) {
     const auto found = members.find(group);
@@ -220,11 +213,10 @@ double median(std::vector<double> values) {
   return (values[middle - 1] + values[middle]) / 2.0;
 }
 
-void refine_bucket(std::vector<Signal>& signals,
-                   std::map<int, std::set<int>>& members,
-                   const std::vector<int>& bucket,
-                   unsigned long long encoding, int& accepted_buckets,
-                   int& moved_signals) {
+void refine_bucket(std::vector<Signal> &signals,
+                   std::map<int, std::set<int>> &members,
+                   const std::vector<int> &bucket, unsigned long long encoding,
+                   int &accepted_buckets, int &moved_signals) {
   std::map<int, int> slots;
   std::set<int> affected_groups;
   for (int index : bucket) {
@@ -255,13 +247,11 @@ void refine_bucket(std::vector<Signal>& signals,
   std::sort(ordered_groups.begin(), ordered_groups.end());
 
   std::vector<int> ordered_signals = bucket;
-  std::sort(ordered_signals.begin(), ordered_signals.end(),
-            [&](int lhs, int rhs) {
-              return std::make_tuple(signals[lhs].source_y,
-                                     signals[lhs].index) <
-                     std::make_tuple(signals[rhs].source_y,
-                                     signals[rhs].index);
-            });
+  std::sort(
+      ordered_signals.begin(), ordered_signals.end(), [&](int lhs, int rhs) {
+        return std::make_tuple(signals[lhs].source_y, signals[lhs].index) <
+               std::make_tuple(signals[rhs].source_y, signals[rhs].index);
+      });
 
   const double before = pairwise_objective(signals, members, affected_groups);
   std::vector<int> old_groups;
@@ -270,7 +260,7 @@ void refine_bucket(std::vector<Signal>& signals,
     old_groups.push_back(signals[index].group);
   }
   int position = 0;
-  for (const auto& [anchor, group] : ordered_groups) {
+  for (const auto &[anchor, group] : ordered_groups) {
     (void)anchor;
     for (int slot = 0; slot < slots[group]; ++slot) {
       signals[ordered_signals[position++]].group = group;
@@ -305,7 +295,7 @@ void refine_bucket(std::vector<Signal>& signals,
   }
 }
 
-void run(std::vector<Signal> signals, std::ostream& output) {
+emuflow::native::ChimewRefinementResult calculate(std::vector<Signal> signals) {
   auto members = group_members(signals);
   std::set<int> all_groups;
   std::map<std::tuple<int, int, unsigned long long>, std::vector<int>> buckets;
@@ -318,7 +308,7 @@ void run(std::vector<Signal> signals, std::ostream& output) {
   const double before = pairwise_objective(signals, members, all_groups);
   int accepted_buckets = 0;
   int moved_signals = 0;
-  for (const auto& [key, bucket] : buckets) {
+  for (const auto &[key, bucket] : buckets) {
     refine_bucket(signals, members, bucket, std::get<2>(key), accepted_buckets,
                   moved_signals);
   }
@@ -327,23 +317,38 @@ void run(std::vector<Signal> signals, std::ostream& output) {
     throw std::runtime_error("position refinement increased its objective");
   }
 
-  output << "EMUFLOW_CHIMEW_REFINER_OUTPUT_V1\n";
-  output << std::setprecision(17);
-  output << "METRIC " << accepted_buckets << " " << moved_signals << " "
-          << before << " " << after << "\n";
   std::sort(signals.begin(), signals.end(),
-            [](const Signal& lhs, const Signal& rhs) {
+            [](const Signal &lhs, const Signal &rhs) {
               return lhs.index < rhs.index;
             });
-  for (const auto& signal : signals) {
-    output << "ASSIGN " << signal.index << " " << signal.group << "\n";
-  }
+  return {std::move(signals), accepted_buckets, moved_signals, before, after};
 }
 
-}  // namespace
+} // namespace
+
+emuflow::native::ChimewRefinementResult
+emuflow::native::RefineChimewSignalRecords(
+    std::vector<ChimewRefinementSignal> signals) {
+  if (signals.empty() ||
+      signals.size() > std::size_t(std::numeric_limits<int>::max()))
+    throw std::runtime_error("invalid Chimew refinement population");
+  for (std::size_t index = 0; index < signals.size(); ++index) {
+    const auto &signal = signals[index];
+    if (signal.index != int(index) || signal.domain < 0 || signal.ratio <= 0 ||
+        signal.group < 0 || !std::isfinite(signal.source_y))
+      throw std::runtime_error("invalid Chimew refinement record");
+  }
+  return calculate(std::move(signals));
+}
 
 void emuflow::native::RefineChimewPositions(
-    const std::string& input_path, std::ostream& output,
-    const std::string& expected_sha256) {
-  run(read_typed_input(input_path, parse_digest(expected_sha256)), output);
+    const std::string &input_path, std::ostream &output,
+    const std::string &expected_sha256) {
+  const auto result = RefineChimewSignalRecords(
+      read_typed_input(input_path, parse_digest(expected_sha256)));
+  output << "EMUFLOW_CHIMEW_REFINER_OUTPUT_V1\n" << std::setprecision(17);
+  output << "METRIC " << result.accepted_buckets << " " << result.moved_signals
+         << " " << result.before << " " << result.after << "\n";
+  for (const auto &signal : result.entries)
+    output << "ASSIGN " << signal.index << " " << signal.group << "\n";
 }

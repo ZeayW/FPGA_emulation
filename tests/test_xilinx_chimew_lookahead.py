@@ -13,7 +13,7 @@ import pytest
 
 from emuflow.timing.boundary_identity_storage import write_boundary_identity_storage
 from emuflow.transport.chimew.chimew_fixed_wiring import FixedWiringChannels, FIXED_WIRING_MAP_SCHEMA
-from emuflow.transport.chimew.chimew_lookahead import materialize_xilinx_chimew_inputs, _fixed_channels
+from emuflow.transport.chimew.chimew_lookahead import materialize_xilinx_chimew_inputs
 from emuflow.transport.chimew.chimew_pipeline import run_chimew_phase6_pipeline
 from emuflow.platform.default_platform import research_platform_path
 from emuflow.common.errors import ValidationError
@@ -98,7 +98,10 @@ def case(tmp_path, fixed_case, request):
     for section in ("routes", "demand_completions", "domain_schedules"):
         schedule.setdefault(section, [])
     write_tdm_schedule_storage(schedule_path, schedule)
-    routes = tmp_path/'routes.json'; write_json(routes, {'routes':[]})
+    routes = tmp_path/'routes.json'
+    from tests.native_route_seal_fixture import write_route_store_fixture
+    write_route_store_fixture(routes, {'schema':'emuflow.system-routes/v1',
+        'design':schedule['design'], 'platform':schedule['platform'], 'routes':[], 'demands':[]})
     return platform, source, architecture, {'fpgas':records}, schedule_path, routes
 
 
@@ -437,3 +440,245 @@ def test_native_geometry_does_not_replace_a_published_owner(case,tmp_path):
     with pytest.raises(ValidationError,match='already exists'):
         geometry_case(case,output_dir=output)
     assert file_sha256(output/'geometry.sqlite')==original
+
+
+@pytest.mark.parametrize('scope', ['exact-hop', 'whole-net'])
+@pytest.mark.parametrize('scale,slacks', [(9.0, [-4.0, -2.0]), (0.0, [1.0]), (2.5, [1.0, 3.0])])
+def test_native_signal_weights_match_independent_policy(case, tmp_path, scope, scale, slacks):
+    from tests.chimew_signal_reference import _timing_weights, _crossed_boundaries
+    from emuflow.transport.chimew.signals import ChimewSignals
+    from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
+    from tests.native_route_seal_fixture import write_route_store_fixture
+    platform, source, architecture, report, schedule_path, routes_path = case
+    selected_entries(case, [{'id': 'selected'}])
+    with closing(read_tdm_schedule(schedule_path)) as schedule:
+        row = dict(next(iter(schedule['entries'])))
+        timing = {'schema': 'emuflow.sta-paths/v1', 'design': schedule['design'], 'paths': [
+            {'id': f'p{i}', 'clock_period_ns': 4.0, 'slack_ns': slack,
+             'normalized_slack': slack / 8.0, 'cut_nets': ['n5'] if i else []}
+            for i, slack in enumerate(slacks)]}
+        logical = {'schema': 'emuflow.system-routes/v1', 'design': schedule['design'],
+                   'platform': schedule['platform'], 'demands': [{'id': 'd0'}],
+                   'routes': [{'id': 'd0', 'net': 'n5', 'source': row['from'],
+                       'sinks': [row['to']], 'width_bits': 1,
+                       'tree_edges': [{'link': row['link'], 'from': row['from'], 'to': row['to']}]}],
+                   'timing': {'paths': [{'path': f'p{i}', 'cut_transitions': [
+                       {'net': 'n5', 'from': row['from'], 'to': row['to']}]} for i in range(len(slacks))]}}
+        write_route_store_fixture(routes_path, logical)
+        timing_path = tmp_path / 'projected.json'; write_json(timing_path, timing)
+        expected, _, coverage = _timing_weights(timing_path, schedule, logical, scale=scale, path_scope=scope)
+    with geometry_case(case) as geometry, ChimewSignals(geometry, schedule_path, routes_path,
+            tmp_path / 'native-signals', timing=timing_path, weight_scale=scale,
+            path_scope=scope, region_count=31) as native:
+        assert dict(native.weights) == expected
+        assert native.coverage == coverage
+        for entry in native.crossing_entries():
+            for kind, fpga, side in [('tx', row['from'], 'source'), ('rx', row['to'], 'sink')]:
+                point = geometry.point(fpga, 'n5', row['id'], kind)
+                channel = geometry.fixed.channel(row['link'], row['lane'], row['from'], row['to'])
+                pin = channel['package_pin_a' if kind == 'tx' else 'package_pin_b']
+                box = geometry.bounds[fpga]
+                expected_slls = _crossed_boundaries(point[2],
+                    (geometry.pins[fpga, pin][1] - box[2]) / max(1, box[3] - box[2]), 30)
+                assert entry[side + '_slls'] == expected_slls
+        assert native.header['implementation_id'] == 'native-chimew-signal-preparation-v1'
+        assert native._db.execute('SELECT name FROM sqlite_temp_master').fetchall() == []
+    with pytest.raises(ValidationError, match='closed'):
+        native.weights['selected']
+
+
+@pytest.mark.parametrize('mutation', ['design', 'empty', 'boolean-period', 'zero-period',
+    'bad-slack', 'boolean-normalized', 'invalid-cut', 'duplicate-root', 'truncated'])
+def test_native_signal_rejects_bad_timing_atomically(case, tmp_path, mutation):
+    from emuflow.transport.chimew.signals import ChimewSignals
+    from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
+    with closing(read_tdm_schedule(case[4])) as schedule:
+        timing = {'schema': 'emuflow.sta-paths/v1', 'design': schedule['design'],
+                  'paths': [{'clock_period_ns': 4.0, 'slack_ns': -1.0, 'cut_nets': ['n5']}]}
+    path = tmp_path / 'bad-timing.json'
+    row = timing['paths'][0]
+    if mutation == 'design': timing['design'] = 'foreign'
+    elif mutation == 'empty': timing['paths'] = []
+    elif mutation == 'boolean-period': row['clock_period_ns'] = True
+    elif mutation == 'zero-period': row['clock_period_ns'] = 0
+    elif mutation == 'bad-slack': row['slack_ns'] = 'bad'
+    elif mutation == 'boolean-normalized': row['normalized_slack'] = False
+    elif mutation == 'invalid-cut': row['cut_nets'] = [False]
+    write_json(path, timing)
+    if mutation == 'duplicate-root': path.write_text('{"paths":[],"paths":[]}')
+    elif mutation == 'truncated': path.write_text(path.read_text()[:-4])
+    output = tmp_path / 'rejected'
+    with geometry_case(case) as geometry:
+        with pytest.raises(ValidationError):
+            ChimewSignals(geometry, case[4], case[5], output, timing=path)
+    assert not output.exists()
+    assert not list(tmp_path.glob('.chimew-signals-*'))
+
+
+@pytest.mark.parametrize('mutation', ['route-namespace', 'route-owner', 'route-seal',
+    'late-schedule-generation', 'incomplete-geometry', 'existing-output'])
+def test_native_signal_sources_and_publication_remain_bound(case, tmp_path, mutation):
+    from emuflow.transport.chimew.signals import ChimewSignals
+    from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
+    from tests.native_route_seal_fixture import write_route_store_fixture
+    output = tmp_path / 'guarded-signals'
+    with geometry_case(case) as geometry:
+        if mutation == 'route-namespace':
+            write_route_store_fixture(case[5], {'schema': 'emuflow.system-routes/v1',
+                'design': 'foreign', 'platform': case[0].name, 'demands': [], 'routes': []})
+        elif mutation in ('route-owner', 'route-seal'):
+            manifest = json.loads(case[5].read_text())
+            if mutation == 'route-owner': manifest['artifact'] = '../escape.sqlite'
+            else: manifest['store_sha256'] = '0' * 64
+            write_json(case[5], manifest)
+        elif mutation == 'late-schedule-generation':
+            case[4].write_text(case[4].read_text() + '\n')
+        elif mutation == 'incomplete-geometry':
+            # Re-seal a deliberately incomplete producer, so coverage must be
+            # rejected independently of its byte checksum.
+            with closing(sqlite3.connect(geometry.store_path)) as db, db:
+                db.execute("DELETE FROM points WHERE seq=(SELECT min(seq) FROM points)")
+            manifest = json.loads(geometry.header_path.read_text())
+            manifest.update(store_bytes=geometry.store_path.stat().st_size,
+                            store_sha256=file_sha256(geometry.store_path))
+            write_json(geometry.header_path, manifest)
+        else:
+            output.mkdir(); (output / 'keep').write_text('previous generation')
+        with pytest.raises(ValidationError):
+            ChimewSignals(geometry, case[4], case[5], output)
+        # These mutations deliberately invalidate this read lease; avoid its
+        # expected exit error after asserting the producer's own rejection.
+        geometry._generations.clear()
+    if mutation == 'existing-output':
+        assert (output / 'keep').read_text() == 'previous generation'
+        assert sorted(p.name for p in output.iterdir()) == ['keep']
+    else:
+        assert not output.exists()
+    assert not list(tmp_path.glob('.chimew-signals-*'))
+
+
+@pytest.mark.parametrize('policy', ['plain', 'critical', 'near-one', 'split-direction', 'flat-y'])
+def test_complete_native_lookahead_matches_retired_python_records(case, tmp_path, policy):
+    from emuflow.transport.chimew.signals import ChimewSignals
+    from emuflow.transport.chimew.chimew_lookahead import prepare_chimew_lookahead
+    from emuflow.transport.chimew.chimew_bank_channel_storage import read_chimew_bank_channel_input
+    from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
+    from tests.chimew_lookahead_reference import _materialize_xilinx_chimew_inputs
+    platform, source, architecture, report, schedule_path, routes_path = case
+    selected_entries(case, [{'id': 'zeta', 'demand': 'd-zeta', 'lane': 0, 'slot': 0, 'ready_slot': 0, 'arrival_slot': 1},
+                            {'id': 'alpha', 'demand': 'd-alpha', 'lane': 0, 'slot': 1, 'ready_slot': 1, 'arrival_slot': 2}])
+    if policy == 'split-direction':
+        with closing(read_tdm_schedule(schedule_path)) as schedule:
+            header = schedule.native_validation_header()
+            entries = list(schedule['entries'])
+        for allocation in header['bank_allocations']:
+            forward = allocation['from'] == platform.links[0].endpoints[0]
+            allocation.update(bank_count=9, lanes=180, lane_offset=0 if forward else 180)
+        write_tdm_schedule_storage(schedule_path, {**header, 'entries': entries,
+            'routes': [], 'domain_schedules': [], 'demand_completions': []})
+    if policy == 'flat-y':
+        from emuflow.common.native_tools import native_file_generation
+        for record in report['fpgas']:
+            stages = record['stages']
+            if 'vivado_implementation' in stages:
+                owner = stages['vivado_implementation']['cell_coverage']
+                path = Path(owner['output'])
+                with closing(sqlite3.connect(path)) as db, db:
+                    db.execute("UPDATE sites SET tile_row=4 WHERE stage='routed'")
+                owner['sha256'] = file_sha256(path)
+            else:
+                owner = stages['rapidwright_implementation']['placement']['site_database']
+                path = Path(owner['path'])
+                with closing(sqlite3.connect(path)) as db, db:
+                    db.execute('UPDATE sites SET physical_y=4')
+                owner.update(sha256=file_sha256(path), generation=list(native_file_generation(path)))
+    timing = None
+    scale = 5e-10 if policy == 'near-one' else 9.0
+    if policy in ('critical', 'near-one'):
+        timing = tmp_path / 'projected.json'
+        with closing(read_tdm_schedule(schedule_path)) as schedule:
+            write_json(timing, {'schema': 'emuflow.sta-paths/v1', 'design': schedule['design'],
+                'paths': [{'id': 'critical', 'clock_period_ns': 4.0, 'slack_ns': -2.0,
+                           'cut_nets': ['n5']}]})
+    with geometry_case(case) as geometry, ChimewSignals(geometry, schedule_path, routes_path,
+            tmp_path / 'signals', timing=timing, weight_scale=scale, region_count=31) as signals:
+        with closing(read_tdm_schedule(schedule_path)) as schedule:
+            expected = _materialize_xilinx_chimew_inputs(ir_path=source,
+                schedule_path=schedule_path, routes_path=routes_path,
+                platform_path=research_platform_path(2), physical_report=report,
+                geometry=geometry, signals=signals, source_schedule=schedule,
+                timing_paths_path=timing, timing_weight_scale=scale, region_count=31,
+                output_dir=tmp_path / 'reference')
+        # The production producer must call the shared C++ models directly.
+        with patch('emuflow.transport.chimew.chimew_grouping.build_chimew_initial_groups',
+                   side_effect=AssertionError('Python grouping producer was called')), patch(
+                   'emuflow.transport.chimew.chimew_refinement.refine_chimew_groups',
+                   side_effect=AssertionError('Python refinement producer was called')):
+            actual = prepare_chimew_lookahead(signals, tmp_path / 'native')
+    assert actual['implementation_id'] == 'native-chimew-lookahead-preparation-v1'
+    assert actual['metrics'] == expected['metrics']
+    assert actual['timing_guard'] == expected['timing_guard']
+    assert actual.get('timing_weighting') == expected.get('timing_weighting')
+    for label in ('crossings', 'positions', 'rudy_input', 'electrical_map'):
+        assert read_json(Path(actual['artifacts'][label]['path'])) == read_json(
+            Path(expected['artifacts'][label]['path']))
+    with read_chimew_bank_channel_input(Path(actual['artifacts']['bank_channel_input']['path'])) as lhs, \
+         read_chimew_bank_channel_input(Path(expected['artifacts']['bank_channel_input']['path'])) as rhs:
+        assert lhs.materialize() == rhs.materialize()
+        assert lhs.logical_sha256 == rhs.logical_sha256
+    assert file_sha256(Path(actual['sources']['placement'])) == file_sha256(
+        Path(expected['sources']['placement']))
+    # The downstream qualification still independently replays grouping and
+    # refinement; a producer's expected replay digest cannot bypass that gate.
+    artifacts = actual['artifacts']
+    pipeline = run_chimew_phase6_pipeline(*[Path(artifacts[key]['path']) if key != 'platform'
+        else research_platform_path(2) for key in ('schedule', 'platform', 'crossings',
+            'positions', 'rudy_input', 'bank_channel_input', 'electrical_map')],
+        tmp_path / 'qualified-pipeline', source_paths={k: Path(v) for k, v in actual['sources'].items()},
+        region_count=31)
+    assert pipeline['status'] == 'pass'
+
+
+@pytest.mark.parametrize('mutation', ['signal-owner', 'signal-seal', 'schedule-identity',
+    'crossing-mask', 'critical-flag', 'source-list', 'record-count', 'existing', 'symlink', 'dangling-symlink'])
+def test_complete_native_lookahead_rejects_forged_inputs_and_preserves_output(case, tmp_path, mutation):
+    from emuflow.transport.chimew.signals import ChimewSignals
+    from emuflow.transport.chimew.chimew_lookahead import prepare_chimew_lookahead
+    output = tmp_path / 'rejected-lookahead'
+    previous = tmp_path / 'previous-generation'
+    if mutation in ('existing', 'symlink'):
+        previous.mkdir(); (previous / 'keep').write_text('previous')
+        if mutation == 'existing': output = previous
+        else: output.symlink_to(previous, target_is_directory=True)
+    if mutation == 'dangling-symlink':
+        output.symlink_to(previous, target_is_directory=True)
+    pattern = 'symlink' if mutation in ('symlink', 'dangling-symlink') else 'native Chimew lookahead failed'
+    with pytest.raises(ValidationError, match=pattern):
+        with geometry_case(case) as geometry, ChimewSignals(geometry, case[4], case[5],
+                tmp_path / 'signal-input') as signals:
+            manifest = json.loads(signals.path.read_text())
+            if mutation == 'signal-owner': manifest['artifact'] = '../foreign.sqlite'
+            elif mutation == 'signal-seal': manifest['store_sha256'] = '0' * 64
+            elif mutation not in ('existing', 'symlink', 'dangling-symlink'):
+                with closing(sqlite3.connect(signals.store_path)) as db, db:
+                    if mutation == 'schedule-identity': db.execute("UPDATE signals SET entry_id=entry_id||'-foreign'")
+                    elif mutation == 'crossing-mask': db.execute('UPDATE signals SET encoding=encoding+1')
+                    elif mutation == 'critical-flag': db.execute('UPDATE signals SET protected=2')
+                    else:
+                        header = manifest['header']
+                        if mutation == 'source-list': header['input_artifacts'] = []
+                        else: header['signals'] += 1
+                        db.execute("UPDATE metadata SET value=? WHERE key='header'", (json.dumps(header),))
+                manifest.update(store_bytes=signals.store_path.stat().st_size,
+                                store_sha256=file_sha256(signals.store_path))
+            write_json(signals.path, manifest)
+            prepare_chimew_lookahead(signals, output)
+    if mutation in ('existing', 'symlink'):
+        assert (previous / 'keep').read_text() == 'previous'
+        assert sorted(p.name for p in previous.iterdir()) == ['keep']
+        if mutation == 'symlink': assert output.is_symlink()
+    elif mutation == 'dangling-symlink':
+        assert output.is_symlink() and not previous.exists()
+    else:
+        assert not output.exists()
+    assert not list(tmp_path.glob('.chimew-lookahead-*'))

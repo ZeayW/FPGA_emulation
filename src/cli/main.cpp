@@ -11,6 +11,8 @@
 #include "physical/openparf/inputs.hpp"
 #include "transport/transport.hpp"
 #include "transport/chimew/geometry.hpp"
+#include "transport/chimew/signals.hpp"
+#include "transport/chimew/lookahead.hpp"
 #include "board/wiring.hpp"
 #include "flow/preflight.hpp"
 #include "physical/placement_lowering.hpp"
@@ -100,6 +102,8 @@ constexpr const char* kUsage =
     "  phase6 split EMUIR ASSIGNMENT SCHEDULE OUTPUT\n"
     "  phase6 run EMUIR ASSIGNMENT SCHEDULE REQUEST OUTPUT_DIR\n"
     "  phase6 prepare-policy EMUIR CONFIGURATION OUTPUT\n"
+    "  phase6 prepare-chimew-lookahead REQUEST OUTPUT_DIR\n"
+    "  phase6 prepare-chimew-signals REQUEST OUTPUT_DIR\n"
     "  phase6 prepare-chimew-geometry REQUEST OUTPUT_DIR\n"
     "  phase6 prepare-chimew-package ARCHITECTURE PART OUTPUT\n"
     "  phase6 compile EMUIR ASSIGNMENT SCHEDULE_SELECTOR BOARD POLICY OUTPUT_DIR\n"
@@ -307,6 +311,12 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="prepare-configuration") {
     ToolSignals signals;return Finish(emuflow::core::PreparePhase6Configuration(emuflow::core::ArtifactRef::Bind(argv[3],"phase6-configuration-input-v1"),argv[4],&tool_cancelled),report);
+  }
+  if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="prepare-chimew-lookahead") {
+    ToolSignals signals;return Finish(emuflow::core::PrepareChimewLookahead(emuflow::core::ArtifactRef::Bind(argv[3],"chimew-lookahead-input-v1"),argv[4],&tool_cancelled),report);
+  }
+  if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="prepare-chimew-signals") {
+    ToolSignals signals;return Finish(emuflow::core::PrepareChimewSignals(emuflow::core::ArtifactRef::Bind(argv[3],"chimew-signal-input-v1"),argv[4],&tool_cancelled),report);
   }
   if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="prepare-chimew-geometry") {
     ToolSignals signals;return Finish(emuflow::core::PrepareChimewGeometry(emuflow::core::ArtifactRef::Bind(argv[3],"chimew-geometry-input-v1"),argv[4],&tool_cancelled),report);

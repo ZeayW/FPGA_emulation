@@ -20,28 +20,19 @@
 
 #include "common/hash.hpp"
 #include "flow/native_stages.hpp"
+#include "transport/chimew/kernels.hpp"
 
 namespace {
 
-struct Signal {
-  int domain = -1;
-  int guard_lane = -1;
-  int ratio = 0;
-  int slot = -1;
-  std::uint64_t encoding = 0;
-};
+using Signal = emuflow::native::ChimewGroupingSignal;
 
 using BucketKey = std::tuple<int, bool, int, int>;
 
-int popcount(std::uint64_t value) {
-  return __builtin_popcountll(value);
-}
+int popcount(std::uint64_t value) { return __builtin_popcountll(value); }
 
-
-
-void read_exact(std::istream& stream, void* destination, std::size_t size,
-                const char* label) {
-  if (!stream.read(static_cast<char*>(destination),
+void read_exact(std::istream &stream, void *destination, std::size_t size,
+                const char *label) {
+  if (!stream.read(static_cast<char *>(destination),
                    static_cast<std::streamsize>(size))) {
     throw std::runtime_error(std::string("truncated Chimew typed input ") +
                              label);
@@ -49,8 +40,8 @@ void read_exact(std::istream& stream, void* destination, std::size_t size,
 }
 
 template <typename Unsigned>
-Unsigned read_little_endian(std::istream& stream, std::uint32_t* checksum,
-                            const char* label) {
+Unsigned read_little_endian(std::istream &stream, std::uint32_t *checksum,
+                            const char *label) {
   static_assert(std::is_unsigned_v<Unsigned>);
   std::array<unsigned char, sizeof(Unsigned)> bytes{};
   read_exact(stream, bytes.data(), bytes.size(), label);
@@ -65,7 +56,7 @@ Unsigned read_little_endian(std::istream& stream, std::uint32_t* checksum,
 }
 
 template <typename Unsigned>
-Unsigned decode_little_endian(const unsigned char* bytes) {
+Unsigned decode_little_endian(const unsigned char *bytes) {
   static_assert(std::is_unsigned_v<Unsigned>);
   Unsigned result = 0;
   for (std::size_t index = 0; index < sizeof(Unsigned); ++index) {
@@ -74,7 +65,7 @@ Unsigned decode_little_endian(const unsigned char* bytes) {
   return result;
 }
 
-std::int32_t decode_i32(const unsigned char* bytes) {
+std::int32_t decode_i32(const unsigned char *bytes) {
   const std::uint32_t bits = decode_little_endian<std::uint32_t>(bytes);
   std::int32_t result = 0;
   std::memcpy(&result, &bits, sizeof(result));
@@ -91,20 +82,19 @@ int hex_nibble(char value) {
   throw std::runtime_error("invalid Chimew expected logical digest");
 }
 
-std::array<unsigned char, 32> parse_digest(const std::string& value) {
+std::array<unsigned char, 32> parse_digest(const std::string &value) {
   if (value.size() != 64) {
     throw std::runtime_error("invalid Chimew expected logical digest");
   }
   std::array<unsigned char, 32> digest{};
   for (std::size_t index = 0; index < digest.size(); ++index) {
     digest[index] = static_cast<unsigned char>(
-        (hex_nibble(value[index * 2]) << 4) |
-        hex_nibble(value[index * 2 + 1]));
+        (hex_nibble(value[index * 2]) << 4) | hex_nibble(value[index * 2 + 1]));
   }
   return digest;
 }
 
-int checked_count(std::uint64_t value, const char* label) {
+int checked_count(std::uint64_t value, const char *label) {
   if (value == 0 ||
       value > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
     throw std::runtime_error(std::string("invalid Chimew typed input ") +
@@ -113,11 +103,11 @@ int checked_count(std::uint64_t value, const char* label) {
   return static_cast<int>(value);
 }
 
-std::vector<Signal> read_typed_input(
-    const std::string& path,
-    const std::array<unsigned char, 32>& expected_digest) {
+std::vector<Signal>
+read_typed_input(const std::string &path,
+                 const std::array<unsigned char, 32> &expected_digest) {
   std::ifstream input_file;
-  std::istream* stream = &std::cin;
+  std::istream *stream = &std::cin;
   if (path != "-") {
     input_file.open(path, std::ios::binary);
     if (!input_file) {
@@ -130,8 +120,8 @@ std::vector<Signal> read_typed_input(
   std::array<unsigned char, 8> magic{};
   read_exact(*stream, magic.data(), magic.size(), "header");
   emuflow::core::UpdateCrc32(checksum, magic.data(), magic.size());
-  const std::array<unsigned char, 8> expected_magic = {
-      'E', 'M', 'C', 'H', 'G', 'R', '3', 0};
+  const std::array<unsigned char, 8> expected_magic = {'E', 'M', 'C', 'H',
+                                                       'G', 'R', '3', 0};
   if (magic != expected_magic ||
       read_little_endian<std::uint32_t>(*stream, &checksum, "version") != 1 ||
       read_little_endian<std::uint32_t>(*stream, &checksum, "endianness") !=
@@ -144,7 +134,8 @@ std::vector<Signal> read_typed_input(
   std::array<unsigned char, 32> source_digest{};
   read_exact(*stream, source_digest.data(), source_digest.size(),
              "source digest");
-  emuflow::core::UpdateCrc32(checksum, source_digest.data(), source_digest.size());
+  emuflow::core::UpdateCrc32(checksum, source_digest.data(),
+                             source_digest.size());
   if (source_digest != expected_digest) {
     throw std::runtime_error("Chimew typed input logical digest disagrees");
   }
@@ -172,13 +163,12 @@ std::vector<Signal> read_typed_input(
     }
     signals.push_back(signal);
   }
-  const std::array<unsigned char, 32> actual_digest =
-      observed_digest.finish();
+  const std::array<unsigned char, 32> actual_digest = observed_digest.finish();
 
   std::array<unsigned char, 8> end_magic{};
   read_exact(*stream, end_magic.data(), end_magic.size(), "trailer");
-  const std::array<unsigned char, 8> expected_end = {
-      'E', 'M', 'C', 'H', 'G', 'R', 'E', 0};
+  const std::array<unsigned char, 8> expected_end = {'E', 'M', 'C', 'H',
+                                                     'G', 'R', 'E', 0};
   const std::uint64_t declared_checksum =
       read_little_endian<std::uint64_t>(*stream, nullptr, "checksum");
   std::array<unsigned char, 32> trailer_digest{};
@@ -193,15 +183,14 @@ std::vector<Signal> read_typed_input(
   return signals;
 }
 
-BucketKey bucket_key(const Signal& signal) {
+BucketKey bucket_key(const Signal &signal) {
   return {signal.domain, signal.guard_lane >= 0, signal.guard_lane,
           signal.ratio};
 }
 
-void group_bucket(std::vector<Signal>& signals,
-                  const std::vector<int>& ordered, std::size_t begin,
-                  std::size_t end, int ratio, int& group_id,
-                  long long& crossing_bits, std::size_t& assigned_count) {
+void group_bucket(std::vector<Signal> &signals, const std::vector<int> &ordered,
+                  std::size_t begin, std::size_t end, int ratio, int &group_id,
+                  long long &crossing_bits, std::size_t &assigned_count) {
   std::map<std::uint64_t, std::deque<int>> remaining_by_encoding;
   for (std::size_t position = begin; position < end; ++position) {
     const int index = ordered[position];
@@ -214,7 +203,7 @@ void group_bucket(std::vector<Signal>& signals,
     bool have_seed = false;
     std::uint64_t target = 0;
     std::tuple<int, std::uint64_t, int> seed_key;
-    for (const auto& [encoding, indices] : remaining_by_encoding) {
+    for (const auto &[encoding, indices] : remaining_by_encoding) {
       if (indices.empty()) {
         continue;
       }
@@ -230,15 +219,15 @@ void group_bucket(std::vector<Signal>& signals,
     while (remaining_count > 0 && group_size < ratio) {
       bool have_best = false;
       std::uint64_t best_encoding = 0;
-      std::tuple<int, int, int, int, std::uint64_t, int> best_key{
-          4, 0, 0, 0, 0, 0};
+      std::tuple<int, int, int, int, std::uint64_t, int> best_key{4, 0, 0,
+                                                                  0, 0, 0};
       int best_signal = -1;
-      for (const auto& [encoding, indices] : remaining_by_encoding) {
+      for (const auto &[encoding, indices] : remaining_by_encoding) {
         if (indices.empty()) {
           continue;
         }
-        const auto compatible = std::find_if(
-            indices.begin(), indices.end(), [&](int signal) {
+        const auto compatible =
+            std::find_if(indices.begin(), indices.end(), [&](int signal) {
               return used_slots.count(signals[signal].slot) == 0;
             });
         if (compatible == indices.end()) {
@@ -264,9 +253,9 @@ void group_bucket(std::vector<Signal>& signals,
       if (!have_best) {
         break;
       }
-      auto& selected_indices = remaining_by_encoding[best_encoding];
-      const auto selected_position =
-          std::find(selected_indices.begin(), selected_indices.end(), best_signal);
+      auto &selected_indices = remaining_by_encoding[best_encoding];
+      const auto selected_position = std::find(
+          selected_indices.begin(), selected_indices.end(), best_signal);
       selected_indices.erase(selected_position);
       target |= best_encoding;
       // The complete bucket boundary was discovered before grouping starts,
@@ -287,7 +276,7 @@ void group_bucket(std::vector<Signal>& signals,
   }
 }
 
-void run(std::vector<Signal> signals, std::ostream& output) {
+emuflow::native::ChimewGroupingResult calculate(std::vector<Signal> signals) {
   // Algorithm 1 still requires fixed-width signal and ordering arrays.  The
   // former graph-sized vector<vector<int>> is gone, and completed group IDs
   // overwrite the no-longer-needed domain column so a separate assignment
@@ -309,26 +298,41 @@ void run(std::vector<Signal> signals, std::ostream& output) {
     while (end < ordered.size() && bucket_key(signals[ordered[end]]) == key) {
       ++end;
     }
-    group_bucket(signals, ordered, begin, end,
-                 signals[ordered[begin]].ratio, group_id, crossing_bits,
-                 assigned_count);
+    group_bucket(signals, ordered, begin, end, signals[ordered[begin]].ratio,
+                 group_id, crossing_bits, assigned_count);
     begin = end;
   }
   if (assigned_count != signals.size()) {
     throw std::runtime_error("incomplete Chimew grouping assignment");
   }
 
-  output << "EMUFLOW_CHIMEW_GROUPER_OUTPUT_V2\n";
-  output << "METRIC " << group_id << " " << crossing_bits << "\n";
   for (int index = 0; index < static_cast<int>(signals.size()); ++index) {
-    output << "ASSIGN " << index << " " << signals[index].domain << "\n";
+    ordered[index] = signals[index].domain;
   }
+  return {std::move(ordered), group_id, crossing_bits};
 }
 
-}  // namespace
+} // namespace
 
-void emuflow::native::GroupChimewSignals(
-    const std::string& input_path, std::ostream& output,
-    const std::string& expected_sha256) {
-  run(read_typed_input(input_path, parse_digest(expected_sha256)), output);
+emuflow::native::ChimewGroupingResult emuflow::native::GroupChimewSignalRecords(
+    std::vector<ChimewGroupingSignal> signals) {
+  if (signals.empty() ||
+      signals.size() > std::size_t(std::numeric_limits<int>::max()))
+    throw std::runtime_error("invalid Chimew grouping population");
+  for (const auto &signal : signals)
+    if (signal.domain < 0 || signal.guard_lane < -1 || signal.ratio <= 0 ||
+        signal.slot < 0)
+      throw std::runtime_error("invalid Chimew grouping record");
+  return calculate(std::move(signals));
+}
+
+void emuflow::native::GroupChimewSignals(const std::string &input_path,
+                                         std::ostream &output,
+                                         const std::string &expected_sha256) {
+  const auto result = GroupChimewSignalRecords(
+      read_typed_input(input_path, parse_digest(expected_sha256)));
+  output << "EMUFLOW_CHIMEW_GROUPER_OUTPUT_V2\n";
+  output << "METRIC " << result.groups << " " << result.crossing_bits << "\n";
+  for (std::size_t index = 0; index < result.assignment.size(); ++index)
+    output << "ASSIGN " << index << " " << result.assignment[index] << "\n";
 }

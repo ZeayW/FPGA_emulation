@@ -13,6 +13,8 @@ transport/chimew/rudy.cpp
 transport/chimew/signal_grouper.cpp
 transport/chimew/position_refiner.cpp
 transport/chimew/geometry.cpp
+transport/chimew/signals.cpp
+transport/chimew/lookahead.cpp
 common/artifact_io.cpp
 storage/sqlite.cpp
 common/stage_runtime.cpp

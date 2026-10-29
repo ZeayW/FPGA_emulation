@@ -3,7 +3,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from pathlib import Path
-from emuflow.transport.chimew.chimew_lookahead import _coalesce_timing_guard_lanes, _timing_weights
+from tests.chimew_lookahead_reference import _coalesce_timing_guard_lanes
+from tests.chimew_signal_reference import _timing_weights
 from emuflow.common.io import write_json
 from emuflow.common.errors import ValidationError
 from emuflow.flow.multi_fpga_flow import PHASE6_AB_COMPARISON_SCHEMA, validate_phase6_ab_comparison

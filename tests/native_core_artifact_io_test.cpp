@@ -247,7 +247,7 @@ int main() {
         "vivado-optimization-proofs-v1", "qor-report-store-v1", "openparf-site-store-v1",
         "openparf-name-map-store-v1",
         "chimew-bank-input-store-v1",
-        "chimew-geometry-store-v1",
+        "chimew-geometry-store-v1", "chimew-signal-store-v1",
         "position-hints-store-v1", "chimew-bank-report-store-v1",
         "transport-store-v1", "transport-store-v2", "chimew-binding-store-v1", "pin-plan-store-v1",
         "openparf-atomic-source-store-v1", "openparf-placement-certificate-v3",
