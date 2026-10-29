@@ -445,6 +445,9 @@ Missing RX tags are checked against closed unobservable source cones. Proven
 removals retain an explicit disposition without a numerical delay; unresolved
 roles keep coverage incomplete. The same source-bound proof is recomputed
 during replay, without preserving otherwise removable cells.
+The original-member ledger also counts every start/end source observation pair.
+An unretained source identity remains distinct from a proven removal; neither
+classification substitutes a numerical delay for the native timing graph.
 To continue after completed mapping, supply `--prepared-frontend` without
 `--prepared-timing`; Phase 2 runs again using the selected timing inputs while
 the checked Phase 1 database remains read-only. Supplying both boundaries also

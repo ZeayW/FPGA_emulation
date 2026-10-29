@@ -117,4 +117,7 @@ def test_native_phase7c_member_ledger_keeps_every_original_without_numerical_pla
     result=_original_members(evidence,output,[],**options)
     assert result['status']=='complete-source-lineage-observations'and result['members']==6
     assert result['observed_copies']==2 and result['changed_type_objects']==1
+    assert sum(row['members']for row in result['member_observation_counts'])==6
+    assert any('unretained'in row['start_observation']or'unretained'in row['end_observation']
+               for row in result['member_observation_counts'])
     assert not any('delay'in k or'slack'in k for k in result)

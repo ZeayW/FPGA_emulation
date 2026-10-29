@@ -139,10 +139,21 @@ def _original_members(evidence,output,parents,*,endpoint_index=None,source_ir=No
     index_original_lineage(endpoint_index,pairs,lineage)
     observed=_metadata(lineage)
     _require(observed.get('members')==source.get('members'),'native Phase7c original member population differs')
+    with closing(sqlite3.connect(lineage.as_uri()+'?mode=ro&immutable=1',uri=True))as db:
+        member_observations=[dict(start_observation=start,end_observation=end,members=count)
+            for start,end,count in db.execute('SELECT a.status,b.status,count(*) FROM members m '
+                'JOIN endpoint_dispositions a ON a.endpoint_seq=m.start_endpoint '
+                'JOIN endpoint_dispositions b ON b.endpoint_seq=m.end_endpoint '
+                'GROUP BY a.status,b.status ORDER BY a.status,b.status')]
+    _require(sum(row['members']for row in member_observations)==source['members'],
+             'native Phase7c original member observation accounting is incomplete')
     return {'status':'complete-source-lineage-observations','members':source['members'],
             'endpoint_index':{'path':str(endpoint_index),'sha256':file_sha256(endpoint_index)},
             'lineage_index':{'path':str(lineage),'sha256':file_sha256(lineage)},
             'observed_copies':observed['observed_copies'],'changed_type_objects':observed['changed_type_objects'],
+            'member_observation_counts':member_observations,
+            'observation_policy':'Source identity observations are separate from complete native graph timing; '
+                'an unretained identity is not an elimination proof or a numerical timing value',
             'numerical_timing_owner':'native-clock-and-interface-graph',
             'scope':'All original member IDs and native source observations retained; absence of a tag is not a zero-delay path or a removal certificate'}
 
