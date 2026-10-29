@@ -294,6 +294,10 @@ endmodule
             }
             self.assertNotIn("dla_reset_rstn", constrained_ports)
             self.assertNotIn("test_mode", constrained_ports)
+            core_inputs = next(group for group in spec.value["timing_io"]["input_groups"]
+                               if group["clock"] == "dla_core_clk")
+            self.assertTrue({"global_clk_ovr_on", "tmc2slcg_disable_clock_gating"} <= set(core_inputs["ports"]))
+            self.assertEqual(core_inputs["delay_ns"], 0.0)
             self.assertIn("nvdla_core2dbb_r_rdata", constrained_ports)
             self.assertIn("nvdla2csb_data", constrained_ports)
             sources = spec.resolve_sources(source)

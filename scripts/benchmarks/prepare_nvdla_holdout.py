@@ -73,6 +73,10 @@ NVDLA_CORE_INPUTS = [
     "nvdla_core2cvsram_r_rid",
     "nvdla_core2cvsram_r_rlast",
     "nvdla_core2cvsram_r_rdata",
+    # Gated-clock conversion makes these override inputs DUT data/enable
+    # sources; include them in the declared core-clock setup environment.
+    "global_clk_ovr_on",
+    "tmc2slcg_disable_clock_gating",
 ]
 NVDLA_CORE_OUTPUTS = [
     "nvdla_core2dbb_aw_awvalid",
