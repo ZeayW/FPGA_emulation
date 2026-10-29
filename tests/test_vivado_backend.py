@@ -246,7 +246,7 @@ class VivadoBackendTest(unittest.TestCase):
         self.assertEqual(imported["maximum_delay_ns"], 1.75)
 
 
-    def test_vivado_critical_warning_is_a_hard_failure(self):
+    def test_vivado_ignored_constraint_is_a_hard_failure(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             completed = type(
@@ -275,6 +275,32 @@ class VivadoBackendTest(unittest.TestCase):
                         root,
                         "vivado.log",
                     )
+
+    def test_completed_native_query_retains_collection_size_advisory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            script=root/'provider.tcl'
+            script.write_text('puts complete\n')
+            def run(*args,**kwargs):
+                kwargs['stdout'].write("CRITICAL WARNING: [Vivado 12-4439] The number of objects collected by 'all_fanin' is very large.\n")
+                return type('Completed',(),{'returncode':0})()
+            with patch('emuflow.vivado_physical.subprocess.run',side_effect=run):
+                result=execute_vivado('vivado',script,[],root,'vivado.log')
+            self.assertEqual(result['status'],'pass')
+            self.assertEqual(result['critical_warnings'],1)
+            self.assertEqual(result['query_scale_advisories'],1)
+            self.assertEqual(result['blocking_critical_warnings'],0)
+
+    def test_collection_size_advisory_does_not_hide_failed_queries_or_constraints(self):
+        for code,extra in [(1,''),(0,'CRITICAL WARNING: ignored clock constraint\n')]:
+            with self.subTest(code=code,extra=extra), tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary)
+                def run(*args,**kwargs):
+                    kwargs['stdout'].write('CRITICAL WARNING: [Vivado 12-4439] Large collection\n'+extra)
+                    return type('Completed',(),{'returncode':code})()
+                with patch('emuflow.vivado_physical.subprocess.run',side_effect=run):
+                    with self.assertRaises(EmuFlowError):
+                        execute_vivado('vivado',root/'provider.tcl',[],root,'vivado.log')
 
     def test_shared_xilinx_reference_conversion_retains_generic_cell_semantics(self):
         value = _ir().to_dict()

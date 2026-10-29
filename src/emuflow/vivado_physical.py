@@ -75,6 +75,25 @@ def _retained_lineage_artifact(output: Path, coverage):
     return {"path":str(path), "sha256":digest, "bytes":size}, binding
 
 
+def inspect_vivado_log(log_path: Path, returncode: int, script_name: str) -> dict[str, int]:
+    """Keep query-size advice visible without rejecting completed results."""
+    tail: deque[str] = deque(maxlen=40)
+    critical = 0
+    query_scale = 0
+    with log_path.open(encoding="utf-8", errors="replace") as log:
+        for line in log:
+            tail.append(line.rstrip())
+            critical += "CRITICAL WARNING:" in line
+            # This warning concerns the size of a native collection. The
+            # query can still complete with full coverage and valid results.
+            query_scale += bool(re.match(r"^\s*CRITICAL WARNING:\s*\[Vivado 12-4439\]", line))
+    blocking = critical-query_scale
+    if returncode or blocking:
+        raise EmuFlowError(f"Vivado {script_name} failed: exit={returncode}, critical_warnings={critical}\n" + "\n".join(tail))
+    return {"critical_warnings":critical, "blocking_critical_warnings":blocking,
+            "query_scale_advisories":query_scale}
+
+
 def execute_vivado(executable: str, script: Path, arguments: list[str], output: Path, name: str) -> dict[str, Any]:
     """Stream provider output to scratch instead of buffering the full log."""
     log_path = output / name
@@ -86,17 +105,10 @@ def execute_vivado(executable: str, script: Path, arguments: list[str], output: 
         completed = subprocess.run(command, cwd=output, stdin=subprocess.DEVNULL,
                                    stdout=log, stderr=subprocess.STDOUT,
                                    env={**os.environ, "TMPDIR": str(scratch), "XILINX_LOCAL_USER_DATA": "no"}, check=False)
-    tail: deque[str] = deque(maxlen=40)
-    critical = 0
-    with log_path.open(encoding="utf-8", errors="replace") as log:
-        for line in log:
-            tail.append(line.rstrip())
-            critical += "CRITICAL WARNING:" in line
-    if completed.returncode or critical:
-        raise EmuFlowError(f"Vivado {script.name} failed: exit={completed.returncode}, critical_warnings={critical}\n" + "\n".join(tail))
+    diagnostics = inspect_vivado_log(log_path, completed.returncode, script.name)
     return {"status": "pass", "command": command, "log": str(log_path),
             "log_sha256": file_sha256(log_path), "script_sha256": file_sha256(script), "runtime_seconds": time.monotonic() - started,
-            "critical_warnings": 0}
+            **diagnostics}
 
 
 def parse_timing_summary(path: Path) -> dict[str, Any]:
