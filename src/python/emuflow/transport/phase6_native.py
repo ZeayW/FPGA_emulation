@@ -3,7 +3,6 @@ import json
 import os
 from pathlib import Path
 import tempfile
-import sys
 
 from emuflow.common.errors import ValidationError
 from emuflow.common.native_tools import native_file_generation, require_native_schema, resolve_native_executable
@@ -15,40 +14,11 @@ from emuflow.transport.transport_native import transport_request
 def prepare_configuration_request(directory, platform_path, *, clock_periods,
                            transport_cost_path=None, equivalence_cycles=1,
                            equivalence_seed=20260727):
-    """Prepare only board/clock policy; no schedule, hop or endpoint records."""
-    from emuflow.platform.platform import Platform
-    from emuflow.transport.virtual_board import build_virtual_board
-    from emuflow.common.io import read_json
-    from emuflow.transport.transport_cost import validate_transport_cost_database
-    require_native_schema('phase6-configuration-v1')
-    board=bind_store_source(platform_path, 'boarddb-v1')
-    sources=[board]
-    platform=Platform.load(board.path)
-    cost=None;extra=[board]
-    if transport_cost_path is not None:
-        ref=bind_store_source(transport_cost_path,'transport-cost-input-v1')
-        sources.append(ref);extra.append(ref);cost=read_json(ref.path)
-        validate_transport_cost_database(cost,expected_platform=platform.name)
-    oracle=bind_store_source(Path(__file__).with_name('phase6_oracle.py'),'phase6-oracle-source-v1')
-    python=bind_store_source(Path(sys.executable).resolve(),'external-tool-executable-v1')
-    sources.extend((oracle,python))
-    def record(ref):
-        return {'path':str(ref.path),'schema':ref.schema,'generation':list(ref.generation)}
-    policy={'schema':'emuflow.phase6-configuration/v1',
-            'configuration_sources':[record(ref) for ref in extra],
-            'clock_periods':None if clock_periods is None else dict(clock_periods),
-            'virtual_board':build_virtual_board(platform) if platform.virtual_board_model is not None else None,
-            'transport_cost':cost,
-            'small_oracle':{'python':record(python),'source':record(oracle),
-                            'cycles':equivalence_cycles,'seed':equivalence_seed}}
-    encoded=json.dumps(policy,ensure_ascii=True,sort_keys=True,separators=(',',':'),allow_nan=False)
-    if len(encoded.encode())>8*1024*1024:
-        raise ValidationError('Phase 6 policy exceeds bound')
-    require_store_sources_unchanged(sources)
-    directory=Path(directory);directory.mkdir(parents=True,exist_ok=False)
-    path=directory/'request.json';path.write_text(encoded+'\n')
-    require_store_sources_unchanged(sources)
-    return path
+    """Submit only source references and finite options to the native owner."""
+    from emuflow.transport.board_configuration import prepare_phase6
+    return prepare_phase6(directory, platform_path, clock_periods=clock_periods,
+        transport_cost_path=transport_cost_path, equivalence_cycles=equivalence_cycles,
+        equivalence_seed=equivalence_seed)
 
 
 def prepare_compile_policy(directory, source, platform_path, **options):

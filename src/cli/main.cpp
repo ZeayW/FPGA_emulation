@@ -10,6 +10,7 @@
 #include "physical/vivado/vivado_inputs.hpp"
 #include "physical/openparf/inputs.hpp"
 #include "transport/transport.hpp"
+#include "board/wiring.hpp"
 #include "physical/placement_lowering.hpp"
 #include <iostream>
 #include <string>
@@ -61,6 +62,8 @@ constexpr const char* kUsage =
     "  publish-store REQUEST OUTPUT\n"
     "  compile REQUEST_JSON\n"
     "  board normalize INPUT OUTPUT\n"
+    "  board build-wiring BOARD INVENTORY CSV_OR_DASH OUTPUT\n"
+    "  phase6 prepare-configuration REQUEST DIRECTORY\n"
     "  phase7c run FLOW_ROOT OPENSTA [LAUNCHER_REFERENCE [SPLIT_ROOT PHYSICAL_ROOT RUNTIME_ROOT]]\n"
     "  phase1 prepare-configuration REQUEST DIRECTORY\n"
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
@@ -294,6 +297,9 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if(argc==6 && std::string(argv[1])=="phase6" && std::string(argv[2])=="prepare-policy") {
     ToolSignals signals;return Finish(emuflow::core::PreparePhase6Policy(emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),emuflow::core::ArtifactRef::Bind(argv[4],"phase6-configuration-v1"),argv[5],&tool_cancelled),report);
   }
+  if(argc==5 && std::string(argv[1])=="phase6" && std::string(argv[2])=="prepare-configuration") {
+    ToolSignals signals;return Finish(emuflow::core::PreparePhase6Configuration(emuflow::core::ArtifactRef::Bind(argv[3],"phase6-configuration-input-v1"),argv[4],&tool_cancelled),report);
+  }
   if(argc==9 && std::string(argv[1])=="phase6" && std::string(argv[2])=="compile") {
     ToolSignals signals;
     return Finish(emuflow::core::CompilePhase6({emuflow::core::ArtifactRef::Bind(argv[3],"emuir-compact-v2"),
@@ -391,6 +397,11 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if(argc==5 && std::string(argv[1])=="board" && std::string(argv[2])=="normalize") {
     return Finish(emuflow::core::NormalizeBoardArtifact(emuflow::core::ArtifactRef::Bind(argv[3],"boarddb-v1"),argv[4]),report);
+  }
+  if(argc==7 && std::string(argv[1])=="board" && std::string(argv[2])=="build-wiring") {
+    ToolSignals signals;std::optional<emuflow::core::ArtifactRef> wiring;
+    if(std::string(argv[5])!="-")wiring=emuflow::core::ArtifactRef::Bind(argv[5],"fixed-wiring-csv-v1");
+    return Finish(emuflow::core::BuildVirtualBoardArtifact(emuflow::core::ArtifactRef::Bind(argv[3],"boarddb-v1"),emuflow::core::ArtifactRef::Bind(argv[4],"hp-package-pin-inventory-v1"),wiring,argv[6],&tool_cancelled),report);
   }
   if(argc==5 && std::string(argv[1])=="phase1" && std::string(argv[2])=="prepare-configuration") {
     ToolSignals signals;return Finish(emuflow::core::PrepareFrontendConfiguration(emuflow::core::ArtifactRef::Bind(argv[3],"frontend-configuration-request-v1"),argv[4],&tool_cancelled),report);

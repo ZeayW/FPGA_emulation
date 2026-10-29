@@ -249,10 +249,12 @@ def test_pair_exhaustion_fails_without_single_ended_fallback(platform):
         build_virtual_board(Platform.from_dict(value))
 
 
-def test_real_bank_exhaustion_fails_without_reusing_neighbor_banks(monkeypatch):
+def test_real_bank_exhaustion_fails_without_reusing_neighbor_banks(monkeypatch, tmp_path):
     inventory = read_json(INVENTORY_PATH)
     inventory["banks"] = inventory["banks"][:35]
-    monkeypatch.setattr(virtual_board, "_inventory", lambda: inventory)
+    inventory_path = tmp_path / INVENTORY_PATH.name
+    inventory_path.write_text(json.dumps(inventory))
+    monkeypatch.setattr(virtual_board, "INVENTORY_PATH", inventory_path)
     with pytest.raises(ValidationError, match="insufficient.*HP banks"):
         build_virtual_board(Platform.load(research_platform_path(4)))
 
@@ -265,7 +267,7 @@ def test_inventory_part_mismatch_is_rejected(platform):
 
 
 @pytest.mark.parametrize("mutation", ["missing-n", "wrong-polarity", "wrong-pair", "unknown-functions"])
-def test_pair_identity_requires_complete_vendor_verified_p_and_n(platform, monkeypatch, mutation):
+def test_pair_identity_requires_complete_vendor_verified_p_and_n(platform, monkeypatch, mutation, tmp_path):
     inventory = read_json(INVENTORY_PATH)
     bank = inventory["banks"][0]
     pins = [pin for pin in bank["pins"] if pin.get("differential_pair_id") is not None]
@@ -281,7 +283,9 @@ def test_pair_identity_requires_complete_vendor_verified_p_and_n(platform, monke
     else:
         for pin in pins:
             pin["pin_function"] = None
-    monkeypatch.setattr(virtual_board, "_inventory", lambda: inventory)
+    inventory_path = tmp_path / INVENTORY_PATH.name
+    inventory_path.write_text(json.dumps(inventory))
+    monkeypatch.setattr(virtual_board, "INVENTORY_PATH", inventory_path)
     with pytest.raises(ValidationError):
         build_virtual_board(platform)
 

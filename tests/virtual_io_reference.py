@@ -15,8 +15,10 @@ from emuflow.transport.netlist import transport_endpoint_port
 from emuflow.scheduling.tdm_schedule_storage import canonical_tdm_schedule_sha256
 from emuflow.transport.virtual_board import (
     BINDING_SCHEMA, IO_CONTRACT_SCHEMA, IO_CONTRACT_STORAGE_SCHEMA,
-    _name, _digest, _file_sha256, validate_virtual_board,
+    _digest, validate_virtual_board,
 )
+
+from tests.board_wiring_reference import _name, _file_sha256
 
 class _TextWriter(Protocol):
     def write(self, value: str) -> int:
