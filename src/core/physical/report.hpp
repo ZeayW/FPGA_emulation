@@ -13,5 +13,12 @@ std::string ValidatePhysicalPartitionReport(const std::string &document,
                                             std::int64_t original,
                                             std::int64_t transport);
 // Bounded per-FPGA reports only. Circuit identities remain in typed owners.
-PhysicalReportFacts ValidatePhysicalFlowReport(const std::string &document);
+// Shared numerical physical/runtime validation used by implementation and
+// signoff.
+std::string ValidatePhysicalSummaryReport(const std::string &summary,
+                                          const std::string &board,
+                                          const std::string &runtime);
+PhysicalReportFacts
+ValidatePhysicalFlowReport(const std::string &document,
+                           const std::string &physical_summary = "");
 } // namespace emuflow::core

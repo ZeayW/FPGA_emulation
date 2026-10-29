@@ -1,441 +1,118 @@
-"""Checked Phase-6-to-physical backend for every FPGA partition."""
-
+"""Bounded file locators for the sole native multi-FPGA physical owner."""
 from __future__ import annotations
-
-from emuflow.common.paths import REPOSITORY_ROOT
-
-import hashlib
 import json
-import uuid
-import math
-import shutil
-import sqlite3
-from contextlib import contextmanager
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Sequence, Tuple
-
-from emuflow.timing.boundary_timing import boundary_timing_header, validate_boundary_identity_database, validate_boundary_timing_database
-from emuflow.timing.boundary_identity_storage import read_boundary_identity_storage
-from emuflow.timing.boundary_timing_storage import read_boundary_timing_storage
-from emuflow.transport.chimew.chimew_binding_storage import open_chimew_binding_schedule_entry_lookup, read_chimew_binding
-from emuflow.common.errors import EmuFlowError, ValidationError
-from emuflow.storage.store_publication import bind_view_sources
-from emuflow.common.io import read_json, write_json
-from emuflow.timing.logic_segment_timing import LOGIC_SEGMENT_TIMING_SCHEMA, prepare_logic_segment_query_inputs, validate_logic_segment_timing, write_vivado_logic_segment_query, write_xilinx_logic_segment_query
-from emuflow.timing.local_path_timing import local_path_timing_header, prepare_local_path_query_inputs, read_local_path_identity, validate_local_path_timing, write_xilinx_local_path_query
-from emuflow.timing.local_path_timing_storage import read_local_path_timing_storage
-from emuflow.ir.ir import EMUIR_SCHEMA, EmuIR
-from emuflow.physical.lowering import PLACEMENT_IR_REPORT_SCHEMA, run_placement_ir_lowering_from_split
-from emuflow.transport.split_netlist_storage import SplitNetlistView
-from emuflow.transport.netlist import SPLIT_MANIFEST_SCHEMA
-from emuflow.physical.openparf.openparf import validate_openparf_runtime
-from emuflow.physical.physical_backend import PHYSICAL_PARTITION_RESULT_SCHEMA, physical_backend_descriptor, physical_summary_item, validate_physical_backend_descriptor, validate_physical_partition_result
-from emuflow.physical.physical_summary_storage import publish_boundary_identity_store, publish_boundary_timing_store, publish_logic_segment_timing_store, publish_local_path_timing_store
-from emuflow.platform.platform import Platform
-from emuflow.partition.partition_limits import planning_resource_capacities
-from emuflow.transport.position_hints_storage import PositionHintsView, read_position_hints
-from emuflow.ir.resource_budget import validate_device_resource_usage
-from emuflow.ir.resources import RESOURCE_FIELDS
-from emuflow.physical.rapidwright.rapidwright_provider import validate_rapidwright_provider_manifest
-from emuflow.transport.runtime import PHYSICAL_SUMMARY_SCHEMA, build_virtual_runtime, validate_physical_summary
-from emuflow.physical.transport_synthesis import synthesize_transport
-from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
-from emuflow.transport.transport_storage import read_transport, read_virtual_binding
-from emuflow.transport.virtual_board import validate_virtual_board
-from emuflow.physical.fixed_io import prepare_fixed_io
-from emuflow.physical.vivado.vivado_physical import run_indexed_vivado_partition
-from emuflow.physical.vivado.vivado_netlist import emit_vivado_mapped_verilog
-from emuflow.physical.xilinx_physical_backend import run_rapidwright_openparf_native_candidate_backend
-
+import tempfile
+from typing import Any, Dict, Mapping, Optional, Sequence
+from emuflow.common.errors import ValidationError
+from emuflow.common.io import file_sha256
+from emuflow.common.native_tools import native_file_generation, require_native_schema, resolve_native_executable, native_install_roots
+from emuflow.common.paths import DATA_ROOT, REPOSITORY_ROOT
+from emuflow.common.tool_runtime import NativeToolProcess
+from emuflow.physical.handoff import _small
+from emuflow.physical.xilinx_primitives import DEFAULT_XILINX_PRIMITIVE_LIBRARY
 
 MULTI_FPGA_PHYSICAL_SCHEMA = "emuflow.multi-fpga-physical-flow/v1"
-_INACTIVE_PARTITION_PROVIDER = "inactive-empty-partition-v1"
+_FIELDS=('device','inode','bytes','mtime_seconds','mtime_nanoseconds','ctime_seconds','ctime_nanoseconds')
 
 
-@contextmanager
-def _open_position_hint_lookup(
-    position_hints: Mapping[str, Any],
-) -> Iterator[Callable[[str], bool]]:
-    """Return a bounded-memory membership lookup for physical I/O anchors."""
-
-    if isinstance(position_hints, PositionHintsView):
-        connection = sqlite3.connect(
-            f"file:{position_hints.store_path.resolve()}?mode=ro&immutable=1",
-            uri=True,
-        )
-        try:
-            def contains(entry_id: str) -> bool:
-                try:
-                    row = connection.execute(
-                        "SELECT json_extract(record_json,'$.schedule_entry') "
-                        "FROM entries WHERE schedule_entry=?",
-                        (entry_id,),
-                    ).fetchone()
-                except sqlite3.DatabaseError as error:
-                    raise ValidationError(
-                        "position-hint entry is corrupt"
-                    ) from error
-                if row is None:
-                    return False
-                if row[0] != entry_id:
-                    raise ValidationError(
-                        "position-hint indexed identity disagrees"
-                    )
-                return True
-
-            yield contains
-        finally:
-            connection.close()
-        return
-
-    entries = position_hints.get("entries", [])
-    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)):
-        raise ValidationError("position hint entries must be an array")
-    entry_ids = set()
-    for record in entries:
-        if not isinstance(record, Mapping):
-            raise ValidationError("position hint is malformed")
-        entry_id = record.get("schedule_entry")
-        if not isinstance(entry_id, str) or not entry_id:
-            raise ValidationError("position hint is malformed")
-        entry_ids.add(entry_id)
-    yield entry_ids.__contains__
+def _source(role,path,schema):
+    path=Path(path).resolve()
+    return {'role':role,'path':str(path),'schema':schema,'generation':list(native_file_generation(path))}
 
 
-def _implementation_stage(
-    item: Mapping[str, Any], backend: str, stage: str
-) -> Mapping[str, Any]:
-    """Return one physical stage from its backend-specific report owner."""
-    if backend not in {"rapidwright", "vivado"}:
-        raise ValidationError(f"unsupported physical backend {backend!r}")
-    if item.get("active") is False:
-        return item["stages"][stage]
-    owner = "vivado_implementation" if backend == "vivado" else "rapidwright_implementation"
-    return item["stages"][owner][stage]
+def _installed(relative):
+    return next((p for p in (REPOSITORY_ROOT/relative,*(r/'share/emuflow'/relative for r in native_install_roots())) if p.is_file()),None)
 
 
-def _validate_transport_resource_reservation(
-    fpga_id: str,
-    used: Mapping[str, int],
-    reservations: Mapping[str, Mapping[str, int]],
-) -> Dict[str, Any]:
-    reserved = reservations.get(fpga_id, {})
-    violations = [
-        {
-            "resource": field,
-            "used": int(used.get(field, 0)),
-            "reserved": int(reserved.get(field, 0)),
-        }
-        for field in RESOURCE_FIELDS
-        if int(used.get(field, 0)) > int(reserved.get(field, 0))
-    ]
-    if violations:
-        raise ValidationError(
-            f"transport resources exceed sealed Phase 3 reservation for "
-            f"{fpga_id}: {violations}; automatic capacity relaxation is forbidden"
-        )
-    fields = sorted(set(used) | set(reserved))
-    return {
-        "status": "pass",
-        "provider": "phase3-sealed-transport-resource-reservation-v1",
-        "used": {field: int(used.get(field, 0)) for field in fields},
-        "reserved": {field: int(reserved.get(field, 0)) for field in fields},
-        "headroom": {
-            field: int(reserved.get(field, 0)) - int(used.get(field, 0))
-            for field in fields
-        },
-        "violations": 0,
-        "automatic_relaxation": False,
-    }
+def _container(sources,role,engine,kind):
+    launcher=_installed(Path('scripts')/kind/'container_runtime.sh')
+    if launcher and file_sha256(engine)==file_sha256(launcher):
+        value=os.environ.get('EMUFLOW_'+kind.upper()+'_CONTAINER_BINARY')
+        if not value:raise ValidationError(kind+' container engine identity lacks an explicit binary')
+        sources.append(_source(role,value,'external-tool-executable-v1'))
 
 
-def _partition_has_physical_work(
-    split_counts: Mapping[str, int], transport: Mapping[str, Any]
-) -> bool:
-    """Keep selected DUTs and routing-only relays; skip only empty devices."""
-    for field in ("instances", "nets", "ports"):
-        count = split_counts.get(field)
-        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
-            raise ValidationError(f"physical partition {field} inventory must be a count")
-        if count:
-            return True
-    return any(transport.get(field, ()) for field in (
-        "endpoints", "source_signals", "shadow_signals",
-    ))
+def _invoke(request,output):
+    require_native_schema('physical-flow-request-v1')
+    output=Path(output).absolute();output.parent.mkdir(parents=True,exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.physical-flow-host-',dir=output.parent) as temporary:
+        root=Path(temporary);source=root/'request.json';proof=root/'operation.json'
+        text=json.dumps(request,sort_keys=True,separators=(',',':'),allow_nan=False)
+        if len(text.encode())>8*1024*1024:raise ValidationError('physical flow control exceeds bound')
+        source.write_text(text,encoding='utf-8')
+        native=resolve_native_executable('emuflow-native')
+        with NativeToolProcess(native,[native,'--report',str(proof),'physical','run-flow',str(source),str(output)],
+                environment=dict(os.environ),scratch_parent=root,termination_grace_ms=15000) as process:
+            completed=process.finish()
+        if completed.returncode:raise ValidationError('native multi-FPGA physical flow failed: '+completed.stdout)
+        operation=_small(proof,1048576);rows=operation.get('outputs',[])
+        partial=request['selected_fpgas'] is not None
+        names=[('physical-partition-batch.json','physical-partition-batch-v1')] if partial else [
+            ('multi-fpga-physical-flow-report.json','physical-flow-report-v1'),('physical-summary.json','physical-summary-v1')]
+        if operation.get('stage')!='physical.run-flow' or operation.get('status')!='pass' or len(rows)!=len(names):
+            raise ValidationError('native physical flow proof disagrees')
+        def unchanged():
+            for row,(name,schema) in zip(rows,names):
+                path=(output/name).resolve()
+                if (row.get('path')!=str(path) or row.get('schema')!=schema or
+                        tuple(row.get('generation',{}).get(k) for k in _FIELDS)!=native_file_generation(path)):
+                    raise ValidationError('native physical flow output generation changed')
+            for row in request['sources']:
+                if list(native_file_generation(row['path']))!=row['generation']:
+                    raise ValidationError('native physical flow source generation changed')
+        unchanged();report=_small(output/names[0][0]);unchanged()
+        schema='emuflow.physical-partition-batch/v1' if partial else MULTI_FPGA_PHYSICAL_SCHEMA
+        if (report.get('schema')!=schema or report.get('status')!='pass' or
+                report.get('implementation_id')!='native-multi-fpga-physical-v1'):
+            raise ValidationError('native physical flow report disagrees')
+        return report
 
 
-def _inactive_transport_ir(transport: Mapping[str, Any]) -> EmuIR:
-    """Create the exact empty transport IR for an unused installed FPGA."""
-
-    design = transport.get("design")
-    fpga = transport.get("fpga")
-    if not isinstance(design, str) or not design or not isinstance(fpga, str):
-        raise ValidationError("inactive partition transport identity is invalid")
-    return EmuIR(
-        {
-            "schema": EMUIR_SCHEMA,
-            "design": {
-                "name": f"{design}__{fpga}__inactive_transport",
-                "top": f"{design}__{fpga}__inactive_transport",
-                "source_format": _INACTIVE_PARTITION_PROVIDER,
-            },
-            "ports": [],
-            "instances": [],
-            "nets": [],
-            "clocks": [],
-            "warnings": [],
-        }
-    )
-
-
-def _write_inactive_logic_timing(identity_path: Path, output_path: Path) -> Dict[str, Any]:
-    from emuflow.physical.physical_measurements_native import publish_empty_partition_timing
-    return publish_empty_partition_timing(identity_path, output_path, kind=3,
-        provider=_INACTIVE_PARTITION_PROVIDER)
-
-
-def _write_inactive_local_timing(identity_path: Path, output_path: Path) -> Dict[str, Any]:
-    from emuflow.physical.physical_measurements_native import publish_empty_partition_timing
-    return publish_empty_partition_timing(identity_path, output_path, kind=4,
-        provider=_INACTIVE_PARTITION_PROVIDER)
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _record_chimew_fixed_io_target(
-    targets: Dict[str, float],
-    packed_groups: Dict[str, str],
-    group_packed_blocks: Dict[str, str],
-    *,
-    packed_name: str,
-    group: str,
-    target_y: float,
-) -> None:
-    """Record one endpoint while preserving group-level TDM sharing.
-
-    Chimew assigns a physical channel to a signal group, not to every signal
-    independently.  Multiple schedule entries in the same group therefore
-    intentionally lower to the same packed boundary I/O block.  Across groups
-    the mapping remains one-to-one.
-    """
-
-    previous_group = packed_groups.setdefault(packed_name, group)
-    if previous_group != group:
-        raise ValidationError(
-            "Chimew packed I/O cluster is shared by different signal groups"
-        )
-    previous_packed = group_packed_blocks.setdefault(group, packed_name)
-    if previous_packed != packed_name:
-        raise ValidationError(
-            "Chimew signal group is split across packed I/O clusters"
-        )
-    previous_target = targets.setdefault(packed_name, target_y)
-    if not math.isclose(previous_target, target_y, abs_tol=1.0e-12):
-        raise ValidationError("Chimew packed I/O cluster has conflicting anchors")
-
-
-def validate_multi_fpga_physical_report(
-    report: Mapping[str, Any],
-    physical_summary: Optional[Mapping[str, Any]] = None,
-) -> Dict[str, Any]:
-    if report.get("schema") != MULTI_FPGA_PHYSICAL_SCHEMA:
-        raise ValidationError("multi-FPGA physical-flow schema is invalid")
-    if report.get("status") != "pass":
-        raise ValidationError("multi-FPGA physical flow did not pass")
-    descriptor = report.get("backend")
-    if not isinstance(descriptor, dict):
-        raise ValidationError("multi-FPGA physical backend is missing")
-    backend_validation = validate_physical_backend_descriptor(descriptor)
-    backend_id = backend_validation["backend"]
-    expected = report.get("expected_fpgas")
-    records = report.get("fpgas")
-    if not isinstance(expected, list) or not expected:
-        raise ValidationError("multi-FPGA physical expected FPGA list is invalid")
-    if not isinstance(records, list):
-        raise ValidationError("multi-FPGA physical FPGA records are invalid")
-    by_id = {item.get("fpga"): item for item in records if isinstance(item, dict)}
-    if set(by_id) != set(expected) or len(by_id) != len(records):
-        raise ValidationError("multi-FPGA physical FPGA coverage is incomplete")
-    original_cells = 0
-    transport_cells = 0
-    worst_critical_path = 0.0
-    active_fpgas = 0
-    for fpga_id in expected:
-        item = by_id[fpga_id]
-        if item.get("status") != "pass":
-            raise ValidationError(f"physical flow for {fpga_id} did not pass")
-        stages = item.get("stages")
-        required = ("transport_synthesis", "placement_ir")
-        if not isinstance(stages, dict) or any(
-            name not in stages for name in required
-        ):
-            raise ValidationError(f"physical stages for {fpga_id} are incomplete")
-        if any(
-            not isinstance(stage, dict) or stage.get("status") != "pass"
-            for stage in stages.values()
-        ):
-            raise ValidationError(f"one or more physical stages for {fpga_id} failed")
-        lowering = stages["placement_ir"]
-        boundary = lowering.get("boundary_identity")
-        if (
-            not isinstance(boundary, dict)
-            or boundary.get("validation", {}).get("status") != "pass"
-        ):
-            raise ValidationError(
-                f"physical boundary identities for {fpga_id} are incomplete"
-            )
-        if lowering.get("instances") != (
-            item.get("original_cells") + item.get("transport_cells")
-        ):
-            raise ValidationError(f"merged cell accounting for {fpga_id} disagrees")
-        part = item.get("part")
-        if not isinstance(part, str) or not part:
-            raise ValidationError(f"physical part for {fpga_id} is invalid")
-        result = item.get("physical_result")
-        if not isinstance(result, dict):
-            raise ValidationError(f"physical result for {fpga_id} is missing")
-        validate_physical_partition_result(
-            result,
-            backend=backend_id,
-            fpga=fpga_id,
-            part=part,
-            original_cells=item["original_cells"],
-            transport_cells=item["transport_cells"],
-        )
-        active = item.get("active", True)
-        if not isinstance(active, bool):
-            raise ValidationError(
-                f"physical activity marker for {fpga_id} is invalid"
-            )
-        if not active:
-            if (
-                result.get("implementation_status") != "inactive"
-                or item["original_cells"] != 0
-                or item["transport_cells"] != 0
-                or "boundary_timing" not in stages
-                or any(
-                    name in stages
-                    for name in (
-                        "rapidwright_implementation",
-                        "vivado_implementation",
-                    )
-                )
-            ):
-                raise ValidationError(
-                    f"inactive physical partition {fpga_id} is inconsistent"
-                )
-        elif result.get("implementation_status") == "inactive":
-            raise ValidationError(
-                f"active physical partition {fpga_id} is marked inactive"
-            )
-        elif backend_id == "rapidwright":
-            implementation = stages.get("rapidwright_implementation")
-            rapidwright_required = {
-                "mapped_netlist",
-                "packing",
-                "placement",
-                "route",
-                "routed_timing",
-                "opensta",
-                "boundary_timing",
-            }
-            if (
-                not isinstance(implementation, dict)
-                or not rapidwright_required.issubset(implementation)
-            ):
-                raise ValidationError(
-                    f"RapidWright physical stages for {fpga_id} are incomplete"
-                )
-        elif backend_id == "vivado":
-            if not {"mapped_verilog", "vivado_implementation"}.issubset(
-                stages
-            ):
-                raise ValidationError(
-                    f"Vivado physical stages for {fpga_id} are incomplete"
-                )
-        else:  # The backend descriptor validator should make this unreachable.
-            raise ValidationError(
-                f"physical backend {backend_id!r} is unsupported"
-            )
-        active_fpgas += int(active)
-        original_cells += item["original_cells"]
-        transport_cells += item["transport_cells"]
-        critical_path = result["timing"].get("critical_path_ns", 0.0)
-        if not isinstance(critical_path, (int, float)) or critical_path < 0:
-            raise ValidationError(
-                f"physical critical path for {fpga_id} is invalid"
-            )
-        worst_critical_path = max(worst_critical_path, float(critical_path))
-    if active_fpgas <= 0:
-        raise ValidationError("multi-FPGA physical flow has no active FPGA")
-    embedded_summary = report.get("physical_summary")
-    summary_ref = report.get("physical_summary_ref")
-    if embedded_summary is not None and summary_ref is not None:
-        raise ValidationError(
-            "multi-FPGA physical report duplicates its physical summary"
-        )
-    summary = physical_summary if physical_summary is not None else embedded_summary
-    if summary is None:
-        if summary_ref != "physical-summary.json":
-            raise ValidationError("multi-FPGA physical summary reference is invalid")
+def _backend_sources(backend, *, architecture=None, yosys=None, openparf_install=None, openparf_python=None, vivado=None, vivado_place_directive="Default", vivado_route_directive="Default", rapidwright_jar=None, rapidwright_java=None, rapidwright_java_source=None, rapidwright_device_data=None, rapidwright_timing_data=None, rapidwright_opensta=None, rapidwright_native_constraints=None, rapidwright_provider_manifest=None):
+    engine=Path(resolve_native_executable("yosys",yosys))
+    sources=[_source("library",DEFAULT_XILINX_PRIMITIVE_LIBRARY,"physical-input-document-v1"),
+        _source("yosys",engine,"external-tool-executable-v1")]
+    _container(sources,"yosys-container",engine,"yosys")
+    if backend=='vivado':
+        from emuflow.physical.vivado.vivado_physical import _vivado_script
+        sources.append(_source('backend.tool',resolve_native_executable('vivado',vivado),'external-tool-executable-v1'))
+        for path in sorted(_vivado_script('implement_indexed_partition.tcl').parent.glob('*.tcl')):
+            sources.append(_source('backend.script.'+path.name,path,'exact-sha256-text-v1'))
+        settings={'place_directive':vivado_place_directive,'route_directive':vivado_route_directive,
+            'threads':int(os.environ.get('EMUFLOW_VIVADO_THREADS','2'))}
     else:
-        if not isinstance(summary, dict) or summary.get("status") != "pass":
-            raise ValidationError("multi-FPGA physical summary did not pass")
-        if (
-            sum(item["original_cells"] for item in summary["fpgas"])
-            != original_cells
-        ):
-            raise ValidationError(
-                "physical summary original cell coverage disagrees"
-            )
-    return {
-        "status": "pass",
-        "fpgas": len(expected),
-        "active_fpgas": active_fpgas,
-        "inactive_fpgas": len(expected) - active_fpgas,
-        "original_cells": original_cells,
-        "transport_cells": transport_cells,
-        "merged_cells": original_cells + transport_cells,
-        "backend": backend_id,
-        "worst_critical_path_ns": worst_critical_path,
-    }
-
-
-def _retire_consumed_physical_input(
-    path: Path, report: Dict[str, Any], *, last_consumer: str,
-    report_path: Optional[Path] = None,
-) -> None:
-    """Release a closed, invocation-owned input after its last consumer exits.
-
-    These are the producer's exact output paths, never a directory sweep or a
-    traversal of source references. Timing owners and Chimew geometry remain
-    live independently. Keep the existing producer evidence without rehashing
-    or replaying the consumed graph just to retire it.
-    """
-    if (
-        report.get("status") != "pass"
-        or Path(report.get("output", "")).absolute() != path.absolute()
-        or path.is_symlink()
-        or not path.is_file()
-        or any(Path(str(path) + suffix).exists() for suffix in ("-wal", "-journal"))
-    ):
-        raise ValidationError("consumed physical input is not a closed producer output")
-    size = path.stat().st_size
-    path.unlink()
-    report["intermediate_lifecycle"] = {
-        "state": "retired",
-        "last_consumer": last_consumer,
-        "bytes": size,
-    }
-    if report_path is not None:
-        write_json(report_path, report, compact=True)
+        from emuflow.physical.openparf.openparf import _runtime_location
+        from emuflow.physical.openparf import openparf_native_driver
+        from emuflow.physical.rapidwright.xilinx_rwroute import RAPIDWRIGHT_TIMING_CONTRACT
+        from emuflow.timing.opensta import DEFAULT_TIMING_MODEL, OPENSTA_EXPORT_SCRIPT, OPENSTA_RUNTIME_CHECK_SCRIPT
+        required=(architecture,rapidwright_jar,rapidwright_java,rapidwright_device_data,rapidwright_timing_data)
+        if any(p is None for p in required):raise ValidationError('RapidWright backend runtime is incomplete')
+        installation,python,environment=_runtime_location(openparf_install,openparf_python)
+        java=Path(rapidwright_java).absolute();device=Path(rapidwright_device_data).resolve();timing=Path(rapidwright_timing_data).resolve()
+        source=rapidwright_java_source or _installed(Path('scripts/rapidwright/EmuFlowRWRoute.java'))
+        if source is None:raise ValidationError('RapidWright Java adapter source is missing')
+        sta=Path(resolve_native_executable('sta',rapidwright_opensta))
+        for role,path,schema in [('architecture',architecture,'physical-input-document-v1'),
+                ('policy',DATA_ROOT/'openparf/input-policy.json','physical-input-document-v1'),
+                ('driver',openparf_native_driver.__file__,'physical-input-document-v1'),
+                ('sta',sta,'external-tool-executable-v1'),('base-model',DEFAULT_TIMING_MODEL,'phase2-source-v1'),
+                ('export-script',OPENSTA_EXPORT_SCRIPT,'phase2-source-v1'),('runtime-script',OPENSTA_RUNTIME_CHECK_SCRIPT,'phase2-source-v1'),
+                ('java',java,'external-tool-executable-v1'),('javac',java.with_name('javac'),'external-tool-executable-v1'),
+                ('jar',rapidwright_jar,'physical-input-document-v1'),('java_source',source,'physical-input-document-v1'),
+                ('contract',RAPIDWRIGHT_TIMING_CONTRACT,'physical-input-document-v1'),
+                ('parts',device/'data/parts.db','physical-input-document-v1'),
+                ('device',device/'data/devices/virtexuplus/xcvu19p_db.dat','physical-input-document-v1'),
+                ('intersite',timing/'intersite_delay_terms.txt','physical-input-document-v1'),
+                ('intrasite',timing/'intrasite_delay_terms.txt','physical-input-document-v1'),
+                ('native',rapidwright_native_constraints,'physical-input-document-v1'),
+                ('provider',rapidwright_provider_manifest,'physical-input-document-v1')]:
+            sources.append(_source('backend.'+role,path,schema))
+        _container(sources,'backend.container',sta,'opensta')
+        settings={'openparf_runtime':{'python':str(python),'installation':str(installation),'environment':environment},
+            'max_heap':os.environ.get('EMUFLOW_RAPIDWRIGHT_MAX_HEAP','32g'),'device_data_root':str(device)}
+    return sources,settings
 
 
 def run_multi_fpga_physical_flow(
@@ -470,1140 +147,94 @@ def run_multi_fpga_physical_flow(
     resume: bool = False,
     fpga_ids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
-    validate_physical_backend_descriptor(physical_backend_descriptor(backend))
-    if workers < 1:
-        raise ValidationError("physical workers must be at least one")
-    if (rapidwright_native_constraints is None) != (
-        rapidwright_provider_manifest is None
-    ):
-        raise ValidationError(
-            "RapidWright native placement requires both the native constraints "
-            "and provider manifest"
-        )
-    if backend == "rapidwright" and (
-        rapidwright_native_constraints is None
-        or rapidwright_provider_manifest is None
-    ):
-        raise ValidationError(
-            "openparf-native requires source-sealed RapidWright native "
-            "constraints and provider manifest"
-        )
+    if backend not in {'vivado','rapidwright'}:raise ValidationError('unsupported physical backend')
+    if type(workers) is not int or not 1<=workers<=256:raise ValidationError('physical workers must be between 1 and 256')
+    if type(seed) is not int or not 0<=seed<=0xffffffff:raise ValidationError('invalid physical seed')
+    if fpga_ids is not None and (isinstance(fpga_ids,(str,bytes)) or not fpga_ids or
+            any(type(f) is not str for f in fpga_ids) or len(set(fpga_ids))!=len(fpga_ids)):
+        raise ValidationError('physical FPGA selection is empty, duplicated, or invalid')
+    context=(original_ir_path,assignment_path,routes_path,path_database_path)
+    if any(p is not None for p in context) and not all(p is not None for p in context):
+        raise ValidationError('physical timing requires original IR, assignment, routes, and STA path database together')
     if logic_path_database_path is not None and path_database_path is None:
-        raise ValidationError(
-            "physical logic timing database requires the complete original "
-            "STA path database"
-        )
-    split_root = split_root.resolve()
-    manifest_path = split_root / "manifest.json"
-    manifest = read_json(manifest_path)
-    if manifest.get("schema") != SPLIT_MANIFEST_SCHEMA:
-        raise ValidationError("multi-FPGA physical input split manifest is invalid")
-    partitions = manifest.get("fpgas")
-    if not isinstance(partitions, list) or any(
-        not isinstance(item, Mapping)
-        or not isinstance(item.get("netlist_selector"), str)
-        or item["netlist_selector"] != item.get("fpga")
-        for item in partitions
-    ):
-        raise ValidationError(
-            "physical lowering requires the current indexed split manifest "
-            "with matching netlist_selector values; per-FPGA JSON netlists are retired"
-        )
-    platform = Platform.load(platform_path)
-    raw_reservations = manifest.get("resource_reservations_by_fpga", {})
-    if (
-        not isinstance(raw_reservations, Mapping)
-        or any(not isinstance(row, Mapping) for row in raw_reservations.values())
-    ):
-        raise ValidationError(
-            "split manifest resource reservations are malformed"
-        )
-    transport_resource_reservations = {
-        str(fpga_id): {str(field): amount for field, amount in row.items()}
-        for fpga_id, row in raw_reservations.items()
-    }
-    # Revalidate the sealed reservation against this exact BoardDB.  The
-    # returned planning capacities are consumed in Phase 3; Phase 7 retains
-    # the physical capacity and checks the synthesized transport separately.
-    planning_resource_capacities(
-        platform.fpgas, transport_resource_reservations
-    )
-    schedule = read_tdm_schedule(schedule_path)
-    position_hints = None
-    electrical_binding = None
-    virtual_board = None
-    virtual_binding = None
-    virtual_artifacts = manifest.get("virtual_board_binding")
-    expected_fpgas = [fpga.id for fpga in platform.fpgas]
-    if fpga_ids is not None:
-        if (
-            isinstance(fpga_ids, (str, bytes))
-            or not fpga_ids
-            or any(not isinstance(fpga, str) for fpga in fpga_ids)
-            or len(set(fpga_ids)) != len(fpga_ids)
-            or set(fpga_ids) - set(expected_fpgas)
-        ):
-            raise ValidationError("physical FPGA selection is empty, duplicated, or unknown")
-        selected_fpgas = [fpga for fpga in expected_fpgas if fpga in fpga_ids]
-    else:
-        selected_fpgas = expected_fpgas
-    if "position_hints" in manifest:
-        position_hints = read_position_hints(
-            split_root / manifest["position_hints"]
-        )
-    if "electrical_binding" in manifest:
-        electrical_binding = read_chimew_binding(
-            split_root / manifest["electrical_binding"]
-        )
-    if electrical_binding is not None and position_hints is None:
-        raise ValidationError(
-            "physical Chimew anchors require position hints with electrical binding"
-        )
-    if virtual_artifacts is not None:
-        if not isinstance(virtual_artifacts, Mapping):
-            raise ValidationError("physical virtual-board artifact manifest is invalid")
-        wiring_ref = virtual_artifacts.get("wiring")
-        binding_ref = virtual_artifacts.get("binding")
-        xdc_refs = virtual_artifacts.get("xdc")
-        adapter_refs = virtual_artifacts.get("differential_io")
-        if (
-            not isinstance(wiring_ref, str)
-            or not isinstance(binding_ref, str)
-            or not isinstance(xdc_refs, Mapping)
-            or not isinstance(adapter_refs, Mapping)
-            or set(xdc_refs) != set(expected_fpgas)
-            or set(adapter_refs) != set(expected_fpgas)
-        ):
-            raise ValidationError("physical virtual-board artifact coverage is invalid")
-        virtual_board = read_json(split_root / wiring_ref)
-        virtual_binding = read_virtual_binding(split_root / binding_ref)
-        validate_virtual_board(platform, virtual_board)
-        if backend not in {"rapidwright", "vivado"}:
-            raise ValidationError(
-                f"the {backend} physical backend does not yet consume the fixed "
-                "differential-I/O contract"
-            )
-    clock_periods = manifest.get("clock_periods")
-    if not isinstance(clock_periods, dict) or not clock_periods:
-        raise ValidationError(
-            "split manifest lacks the Phase 6 DUT clock-period contract"
-        )
-    runtime = build_virtual_runtime(schedule, platform, clock_periods)
-    backend_descriptor = physical_backend_descriptor(backend)
-    validate_physical_backend_descriptor(backend_descriptor)
-    output_dir = output_dir.resolve()
-    if output_dir.exists() and not output_dir.is_dir():
-        raise EmuFlowError(
-            f"multi-FPGA physical output must be an empty directory: {output_dir}"
-        )
-    if output_dir.exists() and any(output_dir.iterdir()) and not resume:
-        raise EmuFlowError(
-            f"multi-FPGA physical output must be an empty directory: {output_dir}"
-        )
-    from emuflow.common.native_tools import require_native_schema
-    require_native_schema("placement-lowering-request-v1")
-    require_native_schema("transport-synthesis-request-v1")
-    require_native_schema("physical-io-stage-request-v1")
-    if backend == "rapidwright":
-        # Validate the compiled OpenPARF/PyTorch runtime before reading the
-        # graph-sized EmuIR and timing databases.  A loader mismatch must fail
-        # in seconds, not after minutes of deterministic input preparation.
-        validate_openparf_runtime(
-            install_root=openparf_install,
-            python_executable=openparf_python,
-        )
-    else:
-        from emuflow.common.native_tools import require_native_schema
-        require_native_schema("vivado-export-request-v1")
-    expected_fpgas = [fpga.id for fpga in platform.fpgas]
-    logic_context = (
-        original_ir_path,
-        assignment_path,
-        routes_path,
-        path_database_path,
-    )
-    if any(path is not None for path in logic_context) and not all(
-        path is not None for path in logic_context
-    ):
-        raise ValidationError(
-            "physical logic timing requires original IR, assignment, routes, "
-            "and STA path database together"
-        )
-    effective_logic_path_database_path = (
-        logic_path_database_path
-        if logic_path_database_path is not None
-        else path_database_path
-    )
-    prepared_logic_inputs = None
-    prepared_local_inputs = None
-    if all(path is not None for path in logic_context):
-        assert original_ir_path is not None
-        assert assignment_path is not None
-        assert routes_path is not None
-        assert path_database_path is not None
-        assert effective_logic_path_database_path is not None
-        prepared_logic_inputs = prepare_logic_segment_query_inputs(
-            original_ir_path,
-            assignment_path,
-            effective_logic_path_database_path,
-            routes_path,
-            schedule_path,
-            platform,
-        )
-        assignment_reservations = prepared_logic_inputs.assignment.get(
-            "constraints", {}
-        ).get("resource_reservations_by_fpga", {})
-        if assignment_reservations != transport_resource_reservations:
-            raise ValidationError(
-                "split manifest resource reservations disagree with the "
-                "Phase 3 assignment"
-            )
-        if backend in {"rapidwright", "vivado"}:
-            prepared_local_inputs = prepare_local_path_query_inputs(
-                original_ir_path,
-                assignment_path,
-                path_database_path,
-                routes_path,
-            )
-    manifest_fpgas = [item.get("fpga") for item in manifest.get("fpgas", [])]
-    if set(manifest_fpgas) != set(expected_fpgas):
-        raise ValidationError("split manifest does not cover the BoardDB FPGAs")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    architecture_path = None
-    if backend == "rapidwright":
-        if architecture is None:
-            raise ValidationError(
-                "RapidWright backend requires --physical-architecture with "
-                "the imported Xilinx ArchitectureDB"
-            )
-        architecture_path = architecture.resolve()
-        if not architecture_path.is_file():
-            raise EmuFlowError(
-                f"RapidWright architecture does not exist: {architecture_path}"
-            )
-        required_runtime = {
-            "rapidwright_jar": rapidwright_jar,
-            "rapidwright_java": rapidwright_java,
-            "rapidwright_device_data": rapidwright_device_data,
-            "rapidwright_timing_data": rapidwright_timing_data,
-        }
-        missing_runtime = sorted(
-            name
-            for name, path in required_runtime.items()
-            if (
-                path is None
-                or (
-                    name in {
-                        "rapidwright_device_data",
-                        "rapidwright_timing_data",
-                    }
-                    and not path.is_dir()
-                )
-                or (
-                    name not in {
-                        "rapidwright_device_data",
-                        "rapidwright_timing_data",
-                    }
-                    and not path.is_file()
-                )
-            )
-        )
-        if missing_runtime:
-            raise ValidationError(
-                "RapidWright backend runtime is incomplete: "
-                + ", ".join(sorted(set(missing_runtime)))
-            )
-        if rapidwright_java_source is None:
-            from emuflow.common.native_tools import native_install_roots
-            candidates = (REPOSITORY_ROOT / "scripts/rapidwright/EmuFlowRWRoute.java",
-                *(root / "share/emuflow/scripts/rapidwright/EmuFlowRWRoute.java" for root in native_install_roots()))
-            rapidwright_java_source = next((path for path in candidates if path.is_file()), candidates[0])
-        if not rapidwright_java_source.is_file():
-            raise ValidationError("RapidWright Java adapter source is missing")
-        provider_identity = None
-        if rapidwright_provider_manifest is not None:
-            provider_identity = validate_rapidwright_provider_manifest(
-                read_json(rapidwright_provider_manifest.resolve())
-            )
-            if any(
-                fpga.part != provider_identity["part"]
-                for fpga in platform.fpgas
-            ):
-                raise ValidationError(
-                    "RapidWright provider part disagrees with the BoardDB"
-                )
-        architecture_source = {
-            "status": "pass",
-            "mode": "provided-xilinx-architecture-db",
-            "path": str(architecture_path),
-            "sha256": _sha256(architecture_path),
-            "provider": "rapidwright-xilinx-device-v1",
-            **(
-                {
-                    "provider_revision": provider_identity["revision"],
-                    "part": provider_identity["part"],
-                }
-                if provider_identity is not None
-                else {}
-            ),
-        }
-    else:
-        if architecture is not None:
-            raise ValidationError(
-                "--physical-architecture applies only to backend=rapidwright"
-            )
-        architecture_source = {
-            "status": "pass",
-            "mode": "platform-parts",
-            "parts": sorted({fpga.part for fpga in platform.fpgas}),
-            "provider": "vivado-device-database",
-        }
-
-    fixed_io_contracts = None
-    if virtual_binding is not None:
-        fixed_io_contracts = prepare_fixed_io(
-            split_root / virtual_artifacts["binding"], split_root / manifest["lane_map"],
-            split_root / virtual_artifacts["wiring"], schedule,
-            {fpga: split_root / path for fpga, path in virtual_artifacts["xdc"].items()},
-            {fpga: split_root / path for fpga, path in virtual_artifacts["differential_io"].items()},
-            output_dir / ("fixed-io-" + uuid.uuid4().hex),
-        )
-    runtime_controller = split_root / manifest["runtime_controller_rtl"]
-    def _run_partition(
-        item: Mapping[str, Any],
-    ) -> Dict[str, Any]:
-        fpga_id = item["fpga"]
-        source_root = split_root / fpga_id
-        fpga_root = output_dir / fpga_id
-        fpga_root.mkdir(parents=True, exist_ok=True)
-        virtual_io_contract = (
-            fixed_io_contracts[fpga_id] if fixed_io_contracts is not None else None
-        )
-        netlist_path = split_root / item["netlist"]
-        transport_path = split_root / item["transport"]
-        transport = read_transport(transport_path)
-        split_selector = item.get("netlist_selector")
-        with SplitNetlistView(netlist_path, split_selector) as split_view:
-            split_counts = split_view.counts()
-        original_cells = split_counts["instances"]
-        physical_work = _partition_has_physical_work(split_counts, transport)
-
-        def lower_placement_ir(
-            transport_ir_path: Path, merged_ir: Path
-        ) -> Dict[str, Any]:
-            return run_placement_ir_lowering_from_split(
-                netlist_path,
-                split_selector,
-                transport_path,
-                transport_ir_path,
-                merged_ir,
-                merged_ir.parent / "placement-ir-report.json",
-            )
-        fpga_part = next(
-            fpga.part for fpga in platform.fpgas if fpga.id == fpga_id
-        )
-        fabric_period = runtime["fabric_clock"]["period_ns"]
-        dut_period = runtime["virtual_dut_clock"]["nominal_period_ns"]
-        dut_periods = {
-            clock: float(record["nominal_period_ns"])
-            for clock, record in runtime["virtual_dut_clocks"].items()
-        }
-        cross_period = runtime["timing_model"]["fabric_to_dut_max_delay_ns"]
-        if not physical_work:
-            # Do not synthesize the shared controller or invoke a placer for an
-            # FPGA that is not part of this design's selected/relay subgraph.
-            # The old path created five controller-only cells and could leave
-            # OpenPARF's ISM loop running forever at zero HPWL.  Retain exact
-            # empty coverage evidence instead of inventing physical timing.
-            transport_ir_path = fpga_root / "transport.emuir.sqlite"
-            _inactive_transport_ir(transport).save(transport_ir_path)
-            transport_report = {
-                "status": "pass",
-                "provider": _INACTIVE_PARTITION_PROVIDER,
-                "execution": "not-run-empty-partition",
-                "instances": 0,
-                "nets": 0,
-                "output": str(transport_ir_path),
-                "sha256": _sha256(transport_ir_path),
-            }
-            merged_ir = fpga_root / "lowering/placement.emuir.sqlite"
-            lowering_report = lower_placement_ir(
-                transport_ir_path, merged_ir
-            )
-            if (
-                lowering_report.get("instances") != 0
-                or lowering_report.get("nets") != 0
-                or lowering_report.get("transport_instances") != 0
-            ):
-                raise ValidationError(
-                    f"inactive partition {fpga_id} produced physical cells"
-                )
-            _retire_consumed_physical_input(
-                transport_ir_path, transport_report,
-                last_consumer="placement-ir-lowering",
-            )
-            boundary_identity_path = Path(
-                lowering_report["boundary_identity"]["output"]
-            )
-            boundary_timing_path = fpga_root / "boundary-timing.json"
-            from emuflow.physical.physical_measurements_native import publish_empty_partition_timing
-            publish_empty_partition_timing(boundary_identity_path, boundary_timing_path,
-                kind=2, provider=_INACTIVE_PARTITION_PROVIDER)
-            with read_boundary_identity_storage(boundary_identity_path) as boundary_identity, \
-                    read_boundary_timing_storage(boundary_timing_path) as boundary_timing:
-                boundary_validation = validate_boundary_timing_database(
-                    boundary_timing, boundary_identity)
-            stages: Dict[str, Any] = {
-                "transport_synthesis": transport_report,
-                "placement_ir": lowering_report,
-                "boundary_timing": {
-                    "status": "pass",
-                    "execution": "not-applicable-empty-partition",
-                    "import": {
-                        **boundary_validation,
-                        "output": str(boundary_timing_path),
-                    },
-                },
-            }
-            if transport_resource_reservations:
-                stages["transport_resource_reservation"] = (
-                    _validate_transport_resource_reservation(
-                        fpga_id, {}, transport_resource_reservations
-                    )
-                )
-            artifact_paths = {
-                "placement_ir": merged_ir,
-                "boundary_identity": boundary_identity_path,
-                "boundary_timing": boundary_timing_path,
-            }
-            if all(path is not None for path in logic_context):
-                assert original_ir_path is not None
-                assert assignment_path is not None
-                assert routes_path is not None
-                assert path_database_path is not None
-                assert effective_logic_path_database_path is not None
-                logic_identity_path = fpga_root / "logic-segment-identity.json"
-                logic_query_path = fpga_root / "logic-segment-query.tsv"
-                logic_writer = (
-                    write_xilinx_logic_segment_query
-                    if backend == "rapidwright"
-                    else write_vivado_logic_segment_query
-                )
-                logic_query_report = logic_writer(
-                    original_ir_path,
-                    assignment_path,
-                    effective_logic_path_database_path,
-                    routes_path,
-                    schedule_path,
-                    platform,
-                    merged_ir,
-                    boundary_identity_path,
-                    fpga_id,
-                    logic_query_path,
-                    logic_identity_path,
-                    prepared_inputs=prepared_logic_inputs,
-                )
-                logic_identity_path = Path(logic_query_report["identity"])
-                logic_query_path = Path(logic_query_report["query"])
-                logic_timing_path = fpga_root / "logic-segment-timing.json"
-                logic_import_report = _write_inactive_logic_timing(
-                    logic_identity_path, logic_timing_path
-                )
-                stages["logic_segment_timing"] = {
-                    "status": "pass",
-                    "execution": "not-applicable-empty-partition",
-                    "query": logic_query_report,
-                    "import": logic_import_report,
-                }
-                artifact_paths.update(
-                    {
-                        "logic_identity": logic_identity_path,
-                        "logic_timing": logic_timing_path,
-                    }
-                )
-                if backend in {"rapidwright", "vivado"}:
-                    local_identity_path = fpga_root / "local-path-identity.json"
-                    local_query_path = fpga_root / "local-path-query.tsv"
-                    local_writer = (
-                        write_xilinx_local_path_query
-                    )
-                    local_query_report = local_writer(
-                        original_ir_path,
-                        assignment_path,
-                        path_database_path,
-                        routes_path,
-                        merged_ir,
-                        fpga_id,
-                        local_query_path,
-                        local_identity_path,
-                        prepared_inputs=prepared_local_inputs,
-                    )
-                    local_identity_path = Path(local_query_report["identity"])
-                    local_query_path = Path(local_query_report["query"])
-                    local_timing_path = fpga_root / "local-path-timing.json"
-                    local_import_report = _write_inactive_local_timing(
-                        local_identity_path, local_timing_path
-                    )
-                    stages["local_path_timing"] = {
-                        "status": "pass",
-                        "execution": "not-applicable-empty-partition",
-                        "query": local_query_report,
-                        "import": local_import_report,
-                    }
-                    artifact_paths.update(
-                        {
-                            "local_identity": local_identity_path,
-                            "local_timing": local_timing_path,
-                        }
-                    )
-            physical_result = {
-                "schema": PHYSICAL_PARTITION_RESULT_SCHEMA,
-                "status": "pass",
-                "implementation_status": "inactive",
-                "identity": {
-                    "backend": backend,
-                    "fpga": fpga_id,
-                    "part": fpga_part,
-                },
-                "cell_accounting": {
-                    "original_cells": 0,
-                    "transport_cells": 0,
-                    "routed_cells": 0,
-                    "physical_cells": 0,
-                    "infrastructure_cells": 0,
-                    "optimization_cells": 0,
-                },
-                "closure": {
-                    "unrouted_nets": 0,
-                    "drc_violations": 0,
-                    "drc_warnings": 0,
-                },
-                "clocks": {
-                    "fabric_period_ns": fabric_period,
-                    "dut_period_ns": dut_period,
-                },
-                "timing": {
-                    "applicable": False,
-                    "wns_ns": 0.0,
-                    "tns_ns": 0.0,
-                    "failing_endpoints": 0,
-                    "failing_endpoint_constraints": 0,
-                    "timing_met": True,
-                    "dut_wns_ns": 0.0,
-                    "fabric_wns_ns": 0.0,
-                    "fabric_to_dut_wns_ns": 0.0,
-                    "critical_path_ns": 0.0,
-                    "clock_domain_delays_ns": {
-                        "overall": 0.0,
-                        "fabric": 0.0,
-                        "dut": 0.0,
-                        "cross": 0.0,
-                    },
-                    "clock_domain_presence": {
-                        "fabric": False,
-                        "dut": False,
-                        "cross": False,
-                    },
-                },
-                "hard_resources": {},
-                "artifacts": {
-                    name: {"path": str(path), "sha256": _sha256(path)}
-                    for name, path in sorted(artifact_paths.items())
-                },
-            }
-            validate_physical_partition_result(
-                physical_result,
-                backend=backend,
-                fpga=fpga_id,
-                part=fpga_part,
-                original_cells=0,
-                transport_cells=0,
-            )
-            _retire_consumed_physical_input(
-                merged_ir, lowering_report,
-                last_consumer="empty-partition-query-and-timing-validation",
-                report_path=merged_ir.parent / "placement-ir-report.json",
-            )
-            physical_result["artifacts"]["placement_ir"]["retention"] = (
-                "retired-consumed-intermediate"
-            )
-            record = {
-                "fpga": fpga_id,
-                "part": fpga_part,
-                "status": "pass",
-                "active": False,
-                "original_cells": 0,
-                "transport_cells": 0,
-                "critical_path_ns": 0.0,
-                "stages": stages,
-                "physical_result": physical_result,
-            }
-            return record
-
-        transport_rtl = split_root / item["transport_rtl"]
-        transport_report = synthesize_transport(
-            runtime_controller, transport_rtl, fpga_root / "transport-synthesis",
-            executable=yosys,
-        )
-        transport_ir_path = Path(transport_report["output"])
-        transport_resources = transport_report["resources"]
-
-        merged_ir = fpga_root / "lowering/placement.emuir.sqlite"
-        lowering_report = lower_placement_ir(transport_ir_path, merged_ir)
-        _retire_consumed_physical_input(
-            transport_ir_path, transport_report,
-            last_consumer="placement-ir-lowering",
-        )
-        transport_cells = lowering_report["transport_instances"]
-        stages = {
-            "transport_synthesis": transport_report,
-            "placement_ir": lowering_report,
-        }
-        if transport_resource_reservations:
-            stages["transport_resource_reservation"] = (
-                _validate_transport_resource_reservation(
-                    fpga_id,
-                    transport_resources,
-                    transport_resource_reservations,
-                )
-            )
-        provider_fields: Dict[str, Any] = {}
-        if backend == "rapidwright":
-            if architecture_path is None:
-                raise ValidationError("RapidWright architecture is missing")
-            boundary_identity_path = Path(
-                lowering_report["boundary_identity"]["output"]
-            )
-            logic_identity_path = None
-            logic_query_report = None
-            local_identity_path = None
-            local_query_report = None
-            if all(path is not None for path in logic_context):
-                logic_identity_path = fpga_root / "logic-segment-identity.json"
-                logic_query_report = write_xilinx_logic_segment_query(
-                    original_ir_path,
-                    assignment_path,
-                    effective_logic_path_database_path,
-                    routes_path,
-                    schedule_path,
-                    platform,
-                    merged_ir,
-                    boundary_identity_path,
-                    fpga_id,
-                    fpga_root / "xilinx-logic-segment-query.tsv",
-                    logic_identity_path,
-                    prepared_inputs=prepared_logic_inputs,
-                )
-                logic_identity_path = Path(logic_query_report["identity"])
-                local_identity_path = fpga_root / "local-path-identity.json"
-                local_query_report = write_xilinx_local_path_query(
-                    original_ir_path,
-                    assignment_path,
-                    path_database_path,
-                    routes_path,
-                    merged_ir,
-                    fpga_id,
-                    fpga_root / "xilinx-local-path-query.tsv",
-                    local_identity_path,
-                    prepared_inputs=prepared_local_inputs,
-                )
-                local_identity_path = Path(local_query_report["identity"])
-            assert rapidwright_jar is not None
-            assert rapidwright_java is not None
-            assert rapidwright_java_source is not None
-            assert rapidwright_device_data is not None
-            assert rapidwright_timing_data is not None
-            rapidwright_report = run_rapidwright_openparf_native_candidate_backend(
-                fpga=fpga_id,
-                part=fpga_part,
-                merged_ir_path=merged_ir,
-                architecture_path=architecture_path,
-                runtime={**runtime, "resource_budget": next(
-                    fpga.to_dict() for fpga in platform.fpgas if fpga.id == fpga_id
-                )},
-                original_cells=original_cells,
-                transport_cells=transport_cells,
-                output_dir=fpga_root / "rapidwright",
-                boundary_identity_path=boundary_identity_path,
-                rapidwright_jar=rapidwright_jar,
-                java=rapidwright_java,
-                java_source=rapidwright_java_source,
-                device_data_root=rapidwright_device_data,
-                timing_data_dir=rapidwright_timing_data,
-                openparf_install=openparf_install,
-                openparf_python=openparf_python,
-                openparf_native_constraints=rapidwright_native_constraints,
-                openparf_provider_manifest=rapidwright_provider_manifest,
-                opensta=rapidwright_opensta,
-                logic_identity_path=logic_identity_path,
-                local_identity_path=local_identity_path,
-                virtual_io_contract=virtual_io_contract,
-                resume=resume,
-            )
-            if logic_query_report is not None:
-                rapidwright_report["logic_segment_timing"][
-                    "query"
-                ] = logic_query_report
-            if local_query_report is not None:
-                rapidwright_report["local_path_timing"][
-                    "query"
-                ] = local_query_report
-            physical_result = rapidwright_report["result"]
-            stages["rapidwright_implementation"] = rapidwright_report
-            if virtual_io_contract is not None:
-                stages["virtual_io_implementation"] = rapidwright_report[
-                    "virtual_io_implementation"
-                ]
-        else:
-            boundary_identity_path = Path(
-                lowering_report["boundary_identity"]["output"]
-            )
-            mapped_verilog = fpga_root / "partition.v"
-            mapped_report = emit_vivado_mapped_verilog(
-                merged_ir,
-                mapped_verilog,
-                fpga_root / "mapped-verilog-report.json",
-            )
-            logic_identity_path = None
-            logic_query_path = None
-            logic_query_report = None
-            local_identity_path = None
-            local_query_path = None
-            local_query_report = None
-            if all(path is not None for path in logic_context):
-                logic_identity_path = (
-                    fpga_root / "logic-segment-identity.json"
-                )
-                logic_query_path = fpga_root / "vivado-logic-segment-query.tsv"
-                logic_query_report = write_vivado_logic_segment_query(
-                    original_ir_path,
-                    assignment_path,
-                    effective_logic_path_database_path,
-                    routes_path,
-                    schedule_path,
-                    platform,
-                    merged_ir,
-                    boundary_identity_path,
-                    fpga_id,
-                    logic_query_path,
-                    logic_identity_path,
-                    prepared_inputs=prepared_logic_inputs,
-                )
-                logic_identity_path = Path(logic_query_report["identity"])
-                logic_query_path = Path(logic_query_report["query"])
-                from emuflow.physical.vivado.vivado_physical_timing import write_vivado_local_query
-
-                local_identity_path = fpga_root / "vivado-local-identity.json"
-                local_query_path = fpga_root / "vivado-local-query.tsv"
-                local_query_report = write_vivado_local_query(
-                    merged_ir, fpga_id, local_query_path, local_identity_path,
-                    prepared_local_inputs,
-                )
-                local_identity_path = Path(local_query_report["identity"])
-                local_query_path = Path(local_query_report["query"])
-            vivado_report = run_indexed_vivado_partition(
-                fpga=fpga_id,
-                part=fpga_part,
-                ir_path=merged_ir,
-                mapped_verilog_path=mapped_verilog,
-                runtime={**runtime, "resource_budget": next(
-                    fpga.to_dict() for fpga in platform.fpgas if fpga.id == fpga_id
-                )},
-                original_cells=original_cells,
-                transport_cells=transport_cells,
-                output_dir=fpga_root / "vivado",
-                boundary_identity_path=boundary_identity_path,
-                logic_identity_path=logic_identity_path,
-                logic_query_path=logic_query_path,
-                executable=vivado,
-                place_directive=vivado_place_directive,
-                route_directive=vivado_route_directive,
-                mapped_report=mapped_report,
-                virtual_io_contract=virtual_io_contract,
-                local_identity_path=local_identity_path,
-                local_query_path=local_query_path,
-            )
-            if logic_query_report is not None:
-                vivado_report["logic_segment_timing"][
-                    "query"
-                ] = logic_query_report
-            if local_query_report is not None:
-                vivado_report["local_path_timing"]["query"] = local_query_report
-            if virtual_io_contract is not None:
-                stages["virtual_io_implementation"] = vivado_report["virtual_io_implementation"]
-            physical_result = vivado_report["result"]
-            stages.update(
-                {
-                    "mapped_verilog": mapped_report,
-                    "vivado_implementation": vivado_report,
-                }
-            )
-        validate_physical_partition_result(
-            physical_result,
-            backend=backend,
-            fpga=fpga_id,
-            part=fpga_part,
-            original_cells=original_cells,
-            transport_cells=transport_cells,
-        )
-        _retire_consumed_physical_input(
-            merged_ir, lowering_report,
-            last_consumer=f"{backend}-physical-and-timing-validation",
-            report_path=merged_ir.parent / "placement-ir-report.json",
-        )
-        if backend == "vivado":
-            _retire_consumed_physical_input(
-                mapped_verilog, mapped_report,
-                last_consumer="vivado-physical-and-timing-validation",
-                report_path=fpga_root / "mapped-verilog-report.json",
-            )
-        record = {
-            "fpga": fpga_id,
-            "part": fpga_part,
-            "status": "pass",
-            "active": True,
-            "original_cells": original_cells,
-            "transport_cells": transport_cells,
-            "critical_path_ns": physical_result["timing"][
-                "critical_path_ns"
-            ],
-            **provider_fields,
-            "stages": stages,
-            "physical_result": physical_result,
-        }
-        return record
-
-    items_by_fpga = {item["fpga"]: item for item in manifest["fpgas"]}
-    ordered_items = [items_by_fpga[fpga_id] for fpga_id in selected_fpgas]
-
-    def run_and_record(item: Mapping[str, Any]) -> Dict[str, Any]:
-        record = _run_partition(item)
-        write_json(
-            output_dir / record["fpga"] / "partition-record.json",
-            record,
-            compact=True,
-        )
-        return record
-
-    effective_workers = min(workers, len(ordered_items))
-    try:
-        if effective_workers == 1:
-            partition_results = [run_and_record(item) for item in ordered_items]
-        else:
-            results_by_fpga: Dict[str, Dict[str, Any]] = {}
-            failures = []
-            with ThreadPoolExecutor(max_workers=effective_workers) as executor:
-                future_to_fpga = {
-                    executor.submit(run_and_record, item): item["fpga"]
-                    for item in ordered_items
-                }
-                for future in as_completed(future_to_fpga):
-                    fpga_id = future_to_fpga[future]
-                    try:
-                        results_by_fpga[fpga_id] = future.result()
-                    except Exception as error:  # Preserve all partition failures.
-                        failures.append((fpga_id, error))
-            if failures:
-                details = "; ".join(
-                    f"{fpga_id}: {error}"
-                    for fpga_id, error in sorted(failures, key=lambda item: item[0])
-                )
-                raise EmuFlowError(
-                    f"parallel multi-FPGA physical flow failed: {details}"
-                ) from failures[0][1]
-            partition_results = [
-                results_by_fpga[fpga_id] for fpga_id in selected_fpgas
-            ]
-    finally:
-        # Query preparation is shared scratch. Every physical worker has
-        # finished (including exceptional executor shutdown) before it closes.
-        # Published timing identities reference original owners, not this index.
-        for prepared in (prepared_local_inputs, prepared_logic_inputs):
-            if prepared is not None:
-                prepared.close()
-    execution = {
-        "seed": seed,
-        "requested_workers": workers,
-        "effective_workers": effective_workers,
-        "ordering": "boarddb-fpga-order",
-        "pack_place_resume": resume,
-        "route_resume": resume,
-        **(
-            {"rapidwright_placer": "openparf-native"}
-            if backend == "rapidwright"
-            else {}
-        ),
-    }
-    if fpga_ids is not None:
-        # Explicit workers may complete independently on different HPC nodes.
-        # Their records are scratch in the active experiment. Only the common
-        # assembler may publish the complete BoardDB physical summary.
-        report = {
-            "schema": "emuflow.physical-partition-batch/v1",
-            "status": "pass",
-            "scope": "selected-physical-partitions; whole-design Phase7C pending",
-            "backend": backend_descriptor,
-            "architecture": architecture_source,
-            "execution": execution,
-            "expected_fpgas": expected_fpgas,
-            "selected_fpgas": selected_fpgas,
-            "source": {
-                name: {"path": str(path.resolve()), "sha256": _sha256(path)}
-                for name, path in (
-                    ("split_manifest", manifest_path),
-                    ("platform", platform_path),
-                    ("schedule", schedule_path),
-                )
-            },
-            "records": [
-                {"fpga": record["fpga"], "path": str(path), "sha256": _sha256(path)}
-                for record in partition_results
-                for path in [output_dir / record["fpga"] / "partition-record.json"]
-            ],
-            "summary": {"status": "pass", "completed_partitions": len(partition_results)},
-        }
-        write_json(output_dir / "physical-partition-batch.json", report, compact=True)
-        return report
-    return _assemble_multi_fpga_physical_results(
-        records=partition_results,
-        manifest=manifest,
-        manifest_path=manifest_path,
-        platform=platform,
-        runtime=runtime,
-        split_root=split_root,
-        output_dir=output_dir,
-        backend_descriptor=backend_descriptor,
-        architecture_source=architecture_source,
-        include_logic_timing=all(path is not None for path in logic_context),
-        execution=execution,
-    )
+        raise ValidationError('physical logic timing database requires the complete original STA path database')
+    if backend=='rapidwright' and (rapidwright_native_constraints is None or rapidwright_provider_manifest is None):
+        raise ValidationError('openparf-native requires source-sealed RapidWright native constraints and provider manifest')
+    if (rapidwright_native_constraints is None)!=(rapidwright_provider_manifest is None):
+        raise ValidationError('RapidWright native placement requires both native constraints and provider manifest')
+    sources,settings=_backend_sources(backend,
+        architecture=architecture,
+        yosys=yosys,
+        openparf_install=openparf_install,
+        openparf_python=openparf_python,
+        vivado=vivado,
+        vivado_place_directive=vivado_place_directive,
+        vivado_route_directive=vivado_route_directive,
+        rapidwright_jar=rapidwright_jar,
+        rapidwright_java=rapidwright_java,
+        rapidwright_java_source=rapidwright_java_source,
+        rapidwright_device_data=rapidwright_device_data,
+        rapidwright_timing_data=rapidwright_timing_data,
+        rapidwright_opensta=rapidwright_opensta,
+        rapidwright_native_constraints=rapidwright_native_constraints,
+        rapidwright_provider_manifest=rapidwright_provider_manifest,
+)
+    sources += [_source("split-manifest",Path(split_root)/"manifest.json","physical-input-document-v1"),
+        _source("board",platform_path,"boarddb-v1"),_source("schedule-selector",schedule_path,"tdm-schedule-selector-v4")]
+    if all(p is not None for p in context):
+        for role,path,schema in [('original',original_ir_path,'emuir-compact-v2'),
+                ('assignment-selector',assignment_path,'physical-input-document-v1'),
+                ('route-selector',routes_path,'system-route-selector-v1'),('path-selector',path_database_path,'sta-path-selector-v1'),
+                ('schedule-board',Path(schedule_path).with_name('schedule-board.bin'),'exact-schedule-board-request-v1'),
+                ('phase5-report',Path(schedule_path).with_name('phase5_report.json'),'phase5-report-v1')]:
+            sources.append(_source(role,path,schema))
+    if logic_path_database_path is not None:
+        sources.append(_source('logic-path-selector',logic_path_database_path,'sta-path-selector-v1'))
+    return _invoke({'schema':'emuflow.physical-flow-request/v1','sources':sources,'backend':backend,
+        'backend_options':settings,'workers':workers,'seed':seed,'resume':bool(resume),
+        'selected_fpgas':list(fpga_ids) if fpga_ids is not None else None},output_dir)
 
 
-def _assemble_multi_fpga_physical_results(
-    *,
-    records: Sequence[Mapping[str, Any]],
-    manifest: Mapping[str, Any],
-    manifest_path: Path,
-    platform: Platform,
-    runtime: Mapping[str, Any],
-    split_root: Path,
-    output_dir: Path,
-    backend_descriptor: Mapping[str, Any],
-    architecture_source: Mapping[str, Any],
-    execution: Mapping[str, Any],
-    include_logic_timing: bool,
-) -> Dict[str, Any]:
-    """Validate and aggregate completed partitions without rerunning tools.
+def validate_multi_fpga_physical_report(report,physical_summary=None):
+    """Validate bounded reports through the independent native report validator."""
+    with tempfile.TemporaryDirectory(prefix='emuflow-physical-report-') as temporary:
+        root=Path(temporary);source=root/'report.json';output=root/'facts.json'
+        text=json.dumps(report,allow_nan=False,separators=(',',':'))
+        if len(text.encode())>8*1024*1024:raise ValidationError('physical report exceeds bound')
+        source.write_text(text)
+        native=resolve_native_executable('emuflow-native')
+        argv=[native,'physical','validate-flow-report',str(source),str(output)]
+        if physical_summary is not None:
+            summary=root/'summary.json';text=json.dumps(physical_summary,allow_nan=False,separators=(',',':'))
+            if len(text.encode())>8*1024*1024:raise ValidationError('physical summary exceeds bound')
+            summary.write_text(text);argv.append(str(summary))
+        with NativeToolProcess(native,argv,environment=dict(os.environ),scratch_parent=root) as process:
+            result=process.finish()
+        if result.returncode:raise ValidationError('native physical report validation failed: '+result.stdout)
+        return _small(output)['summary']
 
-    Fresh and explicitly continued runs use the same physical and timing
-    validators. Fixed differential I/O remains required by the split manifest.
-    Whole-original-design Phase 7C remains a separate completion gate.
-    """
 
-    backend = backend_descriptor["id"]
-    expected_fpgas = [fpga.id for fpga in platform.fpgas]
-    by_fpga = {}
-    for record in records:
-        fpga = record.get("fpga")
-        if not isinstance(fpga, str) or fpga in by_fpga:
-            raise ValidationError("physical result FPGA identity is invalid or duplicated")
-        if record.get("status") != "pass":
-            raise ValidationError(f"physical flow for {fpga} did not pass")
-        by_fpga[fpga] = record
-    if set(by_fpga) != set(expected_fpgas):
-        raise ValidationError("physical result FPGA coverage is incomplete")
-    records = [by_fpga[fpga] for fpga in expected_fpgas]
-    requires_virtual_io = manifest.get("virtual_board_binding") is not None
-    if requires_virtual_io:
-        if backend not in {"rapidwright", "vivado"}:
-            raise ValidationError("completed fixed differential I/O requires a supported Xilinx backend")
-        for record in records:
-            if record.get("active") is False:
-                continue
-            evidence = record.get("stages", {}).get("virtual_io_implementation")
-            if not isinstance(evidence, Mapping) or evidence.get("status") != "pass":
-                raise ValidationError(
-                    f"completed fixed differential I/O evidence for {record['fpga']} is missing"
-                )
-    if backend in {"rapidwright", "vivado"}:
-        fpga_by_id = {fpga.id: fpga for fpga in platform.fpgas}
-        for record in records:
-            if record.get("active") is False:
-                continue
-            usage = record["physical_result"].get("resource_usage", {}).get("physical")
-            if not isinstance(usage, Mapping) or not isinstance(usage.get("counts"), Mapping):
-                raise ValidationError(f"physical resource budget evidence for {record['fpga']} is missing")
-            expected = validate_device_resource_usage(
-                usage["counts"], fpga_by_id[record["fpga"]].to_dict(),
-                stage="post-physical-materialization",
-            )
-            if dict(usage) != expected:
-                raise ValidationError(f"physical resource budget evidence for {record['fpga']} disagrees with platform")
-    physical_fpgas = [
-        physical_summary_item(record["physical_result"]) for record in records
-    ]
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    physical_summary = {
-        "schema": PHYSICAL_SUMMARY_SCHEMA,
-        "status": "pass",
-        "design": manifest["design"],
-        "platform": platform.name,
-        "provider": f"{backend}-physical-summary-v1",
-        "qualification": backend_descriptor["qualification"],
-        "backend": backend_descriptor,
-        "fpgas": physical_fpgas,
-        "boundary_identities": {},
-    }
-    if requires_virtual_io:
-        physical_summary["virtual_io_implementation"] = {
-            "status": "pass",
-            "provider": ("rapidwright-fixed-lvds-iob-routed-boundary-v1" if backend == "rapidwright" else "vivado-fixed-lvds-routed-boundary-v1"),
-            "fpgas": {
-                item["fpga"]: item["stages"]["virtual_io_implementation"]
-                for item in records
-                if item.get("active") is not False
-            },
-            "differential_pairs": sum(
-                item["stages"]["virtual_io_implementation"][
-                    "differential_pairs"
-                ]
-                for item in records
-                if item.get("active") is not False
-            ),
-        }
-    transports_by_fpga = {
-        item["fpga"]: read_transport(split_root / item["transport"])
-        for item in manifest["fpgas"]
-    }
-    physical_summary["boundary_timing"] = {}
-    for item in records:
-        fpga_id = item["fpga"]
-        identity_path = Path(
-            item["stages"]["placement_ir"]["boundary_identity"]["output"]
-        )
-        _identity_selector, identity_reference = publish_boundary_identity_store(
-            identity_path,
-            output_dir,
-            Path(fpga_id) / identity_path.name,
-        )
-        physical_summary["boundary_identities"][fpga_id] = identity_reference
-        with read_boundary_identity_storage(
-            output_dir / identity_reference["path"]
-        ) as identity_database:
-            validate_boundary_identity_database(
-                identity_database, transports_by_fpga[fpga_id]
-            )
-            timing_path = Path(
-                _implementation_stage(item, backend, "boundary_timing")[
-                    "import"
-                ]["output"]
-            )
-            _timing_selector, timing_reference = publish_boundary_timing_store(
-                timing_path,
-                output_dir,
-                Path(fpga_id) / timing_path.name,
-            )
-            with read_boundary_timing_storage(
-                output_dir / timing_reference["path"]
-            ) as timing_database:
-                validate_boundary_timing_database(
-                    timing_database,
-                    identity_database,
-                )
-        physical_summary["boundary_timing"][fpga_id] = timing_reference
-    if include_logic_timing:
-        physical_summary["logic_segment_timing"] = {}
-        logic_semantic_seals = set()
-        logic_route_seals = set()
-        logic_schedule_seals = set()
-        for item in records:
-            path = Path(
-                _implementation_stage(item, backend, "logic_segment_timing")[
-                    "import"
-                ]["output"]
-            )
-            selector, reference = publish_logic_segment_timing_store(
-                path,
-                output_dir,
-                Path(item["fpga"]) / "logic-segment-timing.json",
-            )
-            source = selector["source"]
-            if (
-                source["design"] != physical_summary["design"]
-                or source["platform"] != physical_summary["platform"]
-                or source["fpga"] != item["fpga"]
-            ):
-                raise ValidationError(
-                    "logic segment timing source disagrees with physical summary"
-                )
-            logic_semantic_seals.add(source["semantic_contract_sha256"])
-            logic_route_seals.add(source["system_routes_sha256"])
-            logic_schedule_seals.add(source["tdm_schedule_sha256"])
-            physical_summary["logic_segment_timing"][item["fpga"]] = reference
-        if len(logic_semantic_seals) != 1:
-            raise ValidationError(
-                "logic segment timing semantic seals disagree"
-            )
-        if len(logic_route_seals) != 1 or len(logic_schedule_seals) != 1:
-            raise ValidationError(
-                "logic segment timing route/schedule seals disagree"
-            )
-        physical_summary["logic_segment_system_routes_sha256"] = next(
-            iter(logic_route_seals)
-        )
-        physical_summary["logic_segment_tdm_schedule_sha256"] = next(
-            iter(logic_schedule_seals)
-        )
-        logic_semantic_seal = next(iter(logic_semantic_seals))
-        if logic_semantic_seal is not None:
-            physical_summary[
-                "logic_segment_semantic_contract_sha256"
-            ] = logic_semantic_seal
-        if backend in {"rapidwright", "vivado"}:
-            physical_summary["local_path_timing"] = {}
-            for item in records:
-                path = Path(
-                    _implementation_stage(item, backend, "local_path_timing")[
-                        "import"
-                    ]["output"]
-                )
-                _selector, reference = publish_local_path_timing_store(
-                    path,
-                    output_dir,
-                    Path(item["fpga"]) / path.name,
-                )
-                with read_local_path_timing_storage(
-                    output_dir / reference["path"],
-                    expected_design=physical_summary["design"],
-                    expected_fpga=item["fpga"],
-                ) as database:
-                    validate_local_path_timing(database)
-                physical_summary["local_path_timing"][item["fpga"]] = reference
-    physical_summary["validation"] = validate_physical_summary(
-        physical_summary, runtime, platform
-    )
-    report = {
-        "schema": MULTI_FPGA_PHYSICAL_SCHEMA,
-        "status": "pass",
-        "provider": "phase6-emuir+physical-backend-v1",
-        "backend": backend_descriptor,
-        "design": manifest["design"],
-        "platform": platform.name,
-        "split_manifest": {
-            "path": str(manifest_path),
-            "sha256": _sha256(manifest_path),
-        },
-        "architecture": architecture_source,
-        "execution": dict(execution),
-        "expected_fpgas": expected_fpgas,
-        "fpgas": records,
-    }
-    report["physical_summary_ref"] = "physical-summary.json"
-    report["summary"] = validate_multi_fpga_physical_report(
-        report, physical_summary
-    )
-    write_json(output_dir / "physical-summary.json", physical_summary)
-    write_json(output_dir / "multi-fpga-physical-flow-report.json", report)
-    return report
+def prepare_compile_policy(ctx):
+    """Freeze only backend tool/package configuration before graph stages run."""
+    sources,settings=_backend_sources(ctx.physical_backend,
+        architecture=ctx.physical_architecture,yosys=ctx.yosys,
+        openparf_install=ctx.physical_openparf_install,openparf_python=ctx.physical_openparf_python,
+        vivado=ctx.physical_vivado,vivado_place_directive=ctx.physical_vivado_place_directive,
+        vivado_route_directive=ctx.physical_vivado_route_directive,
+        rapidwright_jar=ctx.physical_rapidwright_jar,rapidwright_java=ctx.physical_rapidwright_java,
+        rapidwright_java_source=ctx.physical_rapidwright_java_source,
+        rapidwright_device_data=ctx.physical_rapidwright_device_data,
+        rapidwright_timing_data=ctx.physical_rapidwright_timing_data,
+        rapidwright_opensta=ctx.physical_rapidwright_opensta,
+        rapidwright_native_constraints=ctx.physical_rapidwright_native_constraints,
+        rapidwright_provider_manifest=ctx.physical_rapidwright_provider_manifest)
+    value={'schema':'emuflow.physical-flow-policy/v1','sources':sources,'backend':ctx.physical_backend,
+        'backend_options':settings,'workers':ctx.physical_workers,'seed':ctx.physical_seed}
+    root=ctx.output_dir/'.native-physical-request';root.mkdir(exist_ok=False)
+    target=root/'physical-policy.json';text=json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False)
+    if len(text.encode())>8*1024*1024:raise ValidationError('physical compile policy exceeds bound')
+    target.write_text(text+'\n',encoding='utf-8')
+    for source in sources:
+        if source['generation']!=list(native_file_generation(source['path'])):raise ValidationError('physical policy source changed')
+    ctx.native_physical_policy=target
+    ctx.native_physical_generation=tuple(str(v) for v in native_file_generation(target))

@@ -392,7 +392,10 @@ std::string Execute(const Sources &owners, const std::vector<std::string> &args,
 } // namespace
 StageResult RunVivadoPartition(const ArtifactRef &request,
                                const std::string &output,
-                               const volatile std::sig_atomic_t *cancelled) {
+                               const volatile std::sig_atomic_t *cancelled,
+                               std::vector<ArtifactRef> *accepted_artifacts) {
+  if (accepted_artifacts)
+    accepted_artifacts->clear();
   return RunStage(
       "physical.run-vivado-partition",
       [&] { return std::vector<ArtifactRef>{request}; },
@@ -780,6 +783,14 @@ StageResult RunVivadoPartition(const ArtifactRef &request,
         Write(output_owner.root / "vivado-partition-report.json",
               Doc::Encode(report), sources);
         fs::remove_all(root / ".tmp");
+        if (accepted_artifacts)
+          for (const auto &ref : sources) {
+            const auto relative = fs::path(ref.path()).lexically_relative(root);
+            if (!relative.empty() && *relative.begin() != ".." &&
+                ref.path().find(work.root.string() + "/") != 0 &&
+                ref.path().find((root / ".tmp").string() + "/") != 0)
+              accepted_artifacts->push_back(ref);
+          }
       },
       [&] {
         return std::vector<ArtifactRef>{ArtifactRef::Bind(

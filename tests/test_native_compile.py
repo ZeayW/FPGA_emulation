@@ -340,13 +340,14 @@ def test_python_signoff_adapter_entry_is_retired(tmp_path, physical, provider):
         execute('signoff',request,prior,tmp_path/'unused','run')
 
 
-def test_python_nonphysical_baseline_physical_adapter_entry_is_retired(tmp_path):
+@pytest.mark.parametrize("physical",[False,True])
+def test_python_baseline_physical_adapter_entry_is_retired(tmp_path,physical):
     from emuflow.common.native_tools import native_file_generation
     request=tmp_path/'request.json';request.write_text('{}')
     prior=tmp_path/'prior.json'
     prior.write_text(json.dumps({'schema':'emuflow.native-compile-state/v1','run_id':'run',
         'stage':'split','status':'pass','request_generation':[str(value) for value in native_file_generation(request)],
-        'state':_pack({'phase6_provider':'baseline','physical':False})}))
+        'state':_pack({'phase6_provider':'baseline','physical':physical})}))
     with pytest.raises(EmuFlowError,match=r'owned by the C\+\+ controller'):
         execute('physical',request,prior,tmp_path/'unused','run')
 

@@ -539,47 +539,6 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 run_preflight(output_dir=Path("unused"), cut_mode="sequential-only")
 
 
-    def test_physical_baseline_still_materializes_timing_contract(self):
-        from emuflow.flow.native_compile_adapter import _initial_context, _control_snapshot
-        from emuflow.flow import multi_fpga_flow as flow
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "flow"
-            options = dict(platform_path=PLATFORM, output_dir=root,
-                yosys_json=ROOT / "examples/yosys/counter.json", top="counter", clocks=["clk"],
-                partition_provider="tritonpart", timing_driven=False, clock_periods={"clk": 10.0},
-                opensta=str(FAKE_OPENSTA), router=str(tlr_router()), frame_slots=32,
-                physical_backend="vivado")
-            report = run_multi_fpga_flow_fixture(**options)
-            ctx = _initial_context({"options": {"output_dir": str(root)}})
-            for name, value in options.items():
-                setattr(ctx, name, value)
-            ctx.physical = True
-            ctx.phase6_root = root / "split"
-            ctx.phase3_root = root / "partition"
-            ctx.phase4_root = root / "system-route"
-            ctx.ir_path = root / "frontend/phase1/design.emuir.sqlite"
-            ctx.assignment_path = root / "partition/assignment.json"
-            ctx.routes_path = root / "system-route/routes.json"
-            ctx.schedule_path = root / "tdm/schedule.json"
-            ctx.path_database_path = root / "timing/path-database.json"
-            ctx.effective_physical_architecture = None
-            ctx.phase6_comparison = ctx.baseline_physical_report = None
-            physical = {"schema": "emuflow.multi-fpga-physical-flow/v1", "status": "pass",
-                "design": "counter", "platform": Platform.load(PLATFORM).name,
-                "fpgas": [{"fpga": "fpga0"}], "summary": {"status": "pass"},
-                "physical_summary_ref": "physical-summary.json"}
-            with patch("emuflow.flow.multi_fpga_flow.run_multi_fpga_physical_flow", return_value=physical) as backend:
-                flow._compile_physical(ctx)
-            kwargs = backend.call_args.kwargs
-            for key in ("original_ir_path", "assignment_path", "routes_path", "path_database_path"):
-                self.assertIsNotNone(kwargs[key])
-            self.assertFalse(report["timing"]["optimization_enabled"])
-            self.assertTrue(ctx.path_database_path.is_file())
-            self.assertTrue((root / "timing/cut-timing-paths.json").is_file())
-            self.assertFalse((root / "timing/partition-net-weights.json").exists())
-            snapshot = _control_snapshot(ctx, "physical", flow)
-            self.assertNotIn("fpgas", snapshot["physical_report"])
-            self.assertEqual(snapshot["physical_report"]["physical_summary_ref"], "physical-summary.json")
 
     def test_rapidwright_runtime_preflight_precedes_frontend(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

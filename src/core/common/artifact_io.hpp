@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <filesystem>
+#include <utility>
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -95,6 +97,15 @@ void PublishTemporaryFile(const std::string& temporary, const std::string& targe
 // Sources remain bound through directory synchronization and rollback.
 void PublishNewDirectory(const std::string& temporary,const std::string& target,
                          const std::vector<ArtifactRef>& inputs);
+
+// Publish an invocation-owned group of closed files, with the report last.
+// Retain prior destinations in the caller's private backup directory and
+// restore them if a later member, source lease or acceptance check fails.
+void PublishArtifactGroup(
+    const std::vector<std::pair<std::filesystem::path, std::filesystem::path>>
+        &files,
+    const std::filesystem::path &backup, const std::vector<ArtifactRef> &inputs,
+    const std::function<void()> &accepted = {});
 
 // Same-directory exclusive staging with invocation-owned sidecars. Destruction
 // happens after reader/writer scopes unwind; it never removes published inputs.

@@ -14,6 +14,11 @@ std::string PublishPhysicalProjection(const std::string &payload,
                                       const std::string &output, unsigned kind,
                                       const std::string &summary,
                                       std::vector<ArtifactRef> &sources);
+// Empty partitions retain exact typed coverage without starting a vendor tool.
+std::string PublishInactivePhysicalTiming(const ArtifactRef &selector,
+                                          unsigned kind,
+                                          const std::string &output,
+                                          std::vector<ArtifactRef> &sources);
 ArtifactRef BindPhysicalIdentity(const ArtifactRef &selector, unsigned kind,
                                  std::vector<ArtifactRef> &sources);
 } // namespace emuflow::core

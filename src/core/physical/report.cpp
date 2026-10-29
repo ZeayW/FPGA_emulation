@@ -197,7 +197,9 @@ std::string ValidatePhysicalPartitionReport(const std::string &document,
   return Doc::Encode(summary);
 }
 
-PhysicalReportFacts ValidatePhysicalFlowReport(const std::string &document) {
+PhysicalReportFacts
+ValidatePhysicalFlowReport(const std::string &document,
+                           const std::string &physical_summary) {
   Doc report(document);
   Check(report.Text("schema") == "emuflow.multi-fpga-physical-flow/v1",
         "schema disagrees");
@@ -322,6 +324,26 @@ PhysicalReportFacts ValidatePhysicalFlowReport(const std::string &document) {
   if (report.Has("summary"))
     Same(report.Token("summary"), Doc::Encode(summary),
          "published flow summary disagrees");
+  if (!physical_summary.empty()) {
+    Doc physical(physical_summary);
+    Check(physical.Text("schema") == "emuflow.phase7b-physical-summary/v1" &&
+              physical.Text("status") == "pass" &&
+              physical.Text("design") == report.Text("design") &&
+              physical.Text("platform") == report.Text("platform"),
+          "physical summary namespace/status disagrees");
+    std::int64_t cells = 0;
+    std::set<std::string> seen;
+    for (const auto &token : Doc::Array(physical.Token("fpgas"), 256)) {
+      Doc row(token);
+      Check(seen.insert(row.Text("fpga")).second,
+            "duplicate physical summary FPGA");
+      const auto count = Count(row, "original_cells");
+      Check(count <= INT64_MAX - cells, "physical summary census overflows");
+      cells += count;
+    }
+    Check(cells == original && seen == names,
+          "physical summary cell/FPGA coverage disagrees");
+  }
   return {Doc::Encode(summary), Doc::Encode(metrics)};
 }
 } // namespace emuflow::core

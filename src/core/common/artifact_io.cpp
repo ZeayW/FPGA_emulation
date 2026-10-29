@@ -13,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -303,5 +304,58 @@ void PublishTemporaryFile(const std::string& temporary_path_, const std::string&
   }
   SyncDirectory(std::filesystem::path(target_path_).parent_path());
 }
+
+void PublishArtifactGroup(
+    const std::vector<std::pair<std::filesystem::path, std::filesystem::path>>
+        &files,
+    const std::filesystem::path &backup, const std::vector<ArtifactRef> &refs,
+    const std::function<void()> &accepted) {
+  struct Original {
+    std::filesystem::path target, backup;
+    std::optional<ArtifactRef> prior;
+  };
+  std::vector<Original> originals;
+  for (unsigned i = 0; i < files.size(); ++i) {
+    const auto &target = files[i].second;
+    Original item{target, backup / ("prior-" + std::to_string(i)), {}};
+    if (std::filesystem::exists(target)) {
+      item.prior =
+          ArtifactRef::Bind(target.string(), "physical-input-document-v1");
+      std::filesystem::copy_file(target, item.backup);
+      item.prior->RequireUnchanged();
+    }
+    originals.push_back(std::move(item));
+  }
+  std::size_t published = 0;
+  try {
+    for (unsigned i = 0; i < files.size(); ++i) {
+      if (originals[i].prior)
+        originals[i].prior->RequireUnchanged();
+      PublishTemporaryFile(files[i].first.string(), files[i].second.string(),
+                           refs);
+      ++published;
+    }
+    for (const auto &r : refs)
+      r.RequireUnchanged();
+    if (accepted)
+      accepted();
+  } catch (...) {
+    for (std::size_t n = published; n; --n) {
+      auto &item = originals[n - 1];
+      if (item.prior) {
+        StagedArtifact restore(item.target.string());
+        std::filesystem::copy_file(
+            item.backup, restore.path(),
+            std::filesystem::copy_options::overwrite_existing);
+        PublishTemporaryFile(restore.path(), item.target.string());
+      } else {
+        std::error_code e;
+        std::filesystem::remove(item.target, e);
+      }
+    }
+    throw;
+  }
+}
+
 
 }  // namespace emuflow::core

@@ -362,53 +362,6 @@ struct PayloadOwner {
     }
   }
 };
-struct Original {
-  fs::path target, backup;
-  std::optional<ArtifactRef> prior;
-};
-void PublishGroup(const std::vector<std::pair<fs::path, fs::path>> &files,
-                  const fs::path &backup, const std::vector<ArtifactRef> &refs,
-                  const std::function<void()> &accepted) {
-  std::vector<Original> originals;
-  for (unsigned i = 0; i < files.size(); ++i) {
-    const auto &target = files[i].second;
-    Original item{target, backup / ("prior-" + std::to_string(i)), {}};
-    if (fs::exists(target)) {
-      item.prior =
-          ArtifactRef::Bind(target.string(), "physical-input-document-v1");
-      fs::copy_file(target, item.backup);
-      item.prior->RequireUnchanged();
-    }
-    originals.push_back(std::move(item));
-  }
-  std::size_t published = 0;
-  try {
-    for (unsigned i = 0; i < files.size(); ++i) {
-      if (originals[i].prior)
-        originals[i].prior->RequireUnchanged();
-      PublishTemporaryFile(files[i].first.string(), files[i].second.string(),
-                           refs);
-      ++published;
-    }
-    for (const auto &r : refs)
-      r.RequireUnchanged();
-    accepted();
-  } catch (...) {
-    for (std::size_t n = published; n; --n) {
-      auto &item = originals[n - 1];
-      if (item.prior) {
-        StagedArtifact restore(item.target.string());
-        fs::copy_file(item.backup, restore.path(),
-                      fs::copy_options::overwrite_existing);
-        PublishTemporaryFile(restore.path(), item.target.string());
-      } else {
-        std::error_code e;
-        fs::remove(item.target, e);
-      }
-    }
-    throw;
-  }
-}
 std::string Metadata(SqliteDatabase &db, const std::string &key) {
   auto row = db.Prepare("SELECT value FROM metadata WHERE key=?");
   row.BindText(1, key);
@@ -867,7 +820,7 @@ StageResult RunRoutedOpensta(const ArtifactRef &request,
         StagedArtifact staged_report(report_path.string());
         Write(staged_report.path(), result, refs);
         Stop(flag);
-        PublishGroup(
+        PublishArtifactGroup(
             {{staged_paths.path(), output},
              {staged_summary.path(), summary},
              {staged_log.path(), log},

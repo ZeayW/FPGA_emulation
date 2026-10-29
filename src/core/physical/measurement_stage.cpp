@@ -122,11 +122,11 @@ ArtifactRef BindPhysicalIdentity(const ArtifactRef &selector, unsigned kind,
   sources.push_back(store);
   return store;
 }
-std::string ImportVivadoMeasurement(const ArtifactRef &identity_selector,
-                                    const ArtifactRef &measurements,
-                                    unsigned kind, const std::string &output,
-                                    bool board_interface,
-                                    std::vector<ArtifactRef> &sources) {
+static std::string ImportMeasurementProjection(
+    const ArtifactRef &identity_selector, const ArtifactRef &measurements,
+    unsigned kind, const std::string &output, bool board_interface,
+    std::vector<ArtifactRef> &sources, const std::string &provider,
+    const std::string &qualification) {
   const fs::path target(output);
   Check(target.is_absolute() && !fs::exists(target) && !fs::is_symlink(target),
         "output must be fresh");
@@ -170,6 +170,10 @@ std::string ImportVivadoMeasurement(const ArtifactRef &identity_selector,
     header["qualification"] =
         JsonQuote("routed-vendor-device-local-endpoint-longest-path");
   }
+  if (!provider.empty())
+    header["provider"] = JsonQuote(provider);
+  if (!qualification.empty())
+    header["qualification"] = JsonQuote(qualification);
   Workspace work(target.parent_path());
   const auto request = work.root / "request.bin",
              payload = work.root / "timing.sqlite",
@@ -195,6 +199,50 @@ std::string ImportVivadoMeasurement(const ArtifactRef &identity_selector,
         "import summary disagrees");
   return PublishPhysicalProjection(payload.string(), output, kind,
                                    result.text(), sources);
+}
+std::string ImportVivadoMeasurement(const ArtifactRef &identity_selector,
+                                    const ArtifactRef &measurements,
+                                    unsigned kind, const std::string &output,
+                                    bool board_interface,
+                                    std::vector<ArtifactRef> &sources) {
+  return ImportMeasurementProjection(identity_selector, measurements, kind,
+                                     output, board_interface, sources, {}, {});
+}
+std::string PublishInactivePhysicalTiming(const ArtifactRef &selector,
+                                          unsigned kind,
+                                          const std::string &output,
+                                          std::vector<ArtifactRef> &sources) {
+  auto identity = BindPhysicalIdentity(selector, kind, sources);
+  SqliteStore store(identity);
+  Doc counts(Meta(store.database(), "counts"));
+  const auto field = kind == 2   ? "endpoints"
+                     : kind == 3 ? "segments"
+                                 : "local_paths";
+  Check(counts.Integer(field) == 0,
+        "inactive physical partition has nonempty identities");
+  const fs::path target(output);
+  fs::create_directories(target.parent_path());
+  Workspace workspace(target.parent_path());
+  const auto path = workspace.root / "empty.tsv";
+  const std::string header =
+      "endpoint_hex\tkind\tdelay_ns\tstart_object_hex\tend_object_hex";
+  PublishTextArtifact(path.string(), sources, [&](std::ostream &out) {
+    out << header;
+    if (kind != 2)
+      out << "\tmeasurement\tactual_start_object_hex\tactual_end_object_hex";
+    out << '\n';
+  });
+  auto measurements =
+      ArtifactRef::Bind(path.string(), "physical-timing-measurements-v1");
+  // The empty TSV is invocation scratch, rather than a retained authority.
+  auto refs = sources;
+  auto result = ImportMeasurementProjection(
+      selector, measurements, kind, output, false, refs,
+      "inactive-empty-partition-v1", "not-applicable-empty-partition");
+  for (const auto &ref : refs)
+    if (ref.path() != measurements.path())
+      sources.push_back(ref);
+  return result;
 }
 std::string PublishPhysicalProjection(const std::string &payload,
                                       const std::string &output, unsigned kind,

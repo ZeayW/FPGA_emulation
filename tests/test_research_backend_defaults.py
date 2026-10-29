@@ -81,7 +81,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
             "emuflow.flow.multi_fpga_flow.resolve_native_executable",
             side_effect=AssertionError("tool resolution before backend rejection"),
         ), patch(
-            "emuflow.flow.multi_fpga_physical_flow.read_json",
+            "emuflow.flow.multi_fpga_physical_flow._small",
             side_effect=AssertionError("artifact read before backend rejection"),
         ):
             root = Path(temporary)
@@ -159,7 +159,7 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
 
     def test_default_physical_requires_rapidwright_inputs_without_fallback(self):
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.flow.multi_fpga_physical_flow.run_indexed_vivado_partition"
+            "emuflow.flow.multi_fpga_physical_flow._invoke"
         ) as vpr:
             root = Path(temporary)
             with self.assertRaisesRegex(ValidationError, "openparf-native requires source-sealed"):

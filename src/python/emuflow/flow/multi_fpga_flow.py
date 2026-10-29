@@ -1326,6 +1326,9 @@ def _compile_preflight(ctx: _CompileContext):
     require_native_schema("phase6-compile-policy-v1")
     require_native_schema("boarddb-v1")
     ctx.output_dir.mkdir(parents=True, exist_ok=True)
+    if ctx.physical and ctx.phase6_provider == "baseline":
+        from emuflow.flow.multi_fpga_physical_flow import prepare_compile_policy
+        prepare_compile_policy(ctx)
     if ctx.prepared_frontend is None and ctx.yosys_json is None and ctx.sources:
         from emuflow.frontend.frontend_native import prepare_frontend
         prepare_frontend(ctx)
@@ -1793,6 +1796,8 @@ def _compile_split(ctx: _CompileContext):
         }
 
 def _compile_physical(ctx: _CompileContext):
+    if ctx.phase6_provider == "baseline":
+        raise EmuFlowError("native compiler physical stage is owned by the C++ controller")
     ctx.physical_report = None
     ctx.physical_summary_path = None
     if ctx.physical:

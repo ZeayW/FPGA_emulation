@@ -7,6 +7,7 @@
 #include "physical/board_timing.hpp"
 #include "physical/evidence_catalog.hpp"
 #include "physical/physical_coverage.hpp"
+#include "physical/report.hpp"
 #include "scheduling/phase5.hpp"
 #include "storage/store.hpp"
 #include "timing/global_events.hpp"
@@ -551,6 +552,19 @@ std::string PhysicalMetrics(BoundedJson &physical, BoundedJson &board,
   return PObject(result);
 }
 } // namespace
+
+std::string ValidatePhysicalSummaryReport(const std::string &summary,
+                                          const std::string &board,
+                                          const std::string &runtime) {
+  BoundedJson physical(summary), platform(board), contract(runtime);
+  PCheck(physical.Text("schema") == "emuflow.phase7b-physical-summary/v1" &&
+             physical.Text("status") == "pass" &&
+             physical.Text("design") == contract.Text("design") &&
+             physical.Text("platform") ==
+                 BoundedJson(platform.Token("platform")).Text("name"),
+         "physical summary namespace/status disagrees");
+  return PhysicalMetrics(physical, platform, PFields(runtime));
+}
 
 void SignoffPhysical(const fs::path &output, const std::string &opensta,
                      const volatile std::sig_atomic_t *cancelled,

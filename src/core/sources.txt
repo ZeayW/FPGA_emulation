@@ -102,3 +102,8 @@ timing/routed_stage.cpp
 physical/rapidwright/partition.cpp
 physical/transport/fanout.cpp
 physical/transport/synthesis.cpp
+physical/flow/context.cpp
+physical/flow/partition.cpp
+physical/flow/assembly.cpp
+physical/flow/controller.cpp
+physical/flow/compile_request.cpp

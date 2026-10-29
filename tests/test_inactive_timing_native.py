@@ -43,10 +43,8 @@ def test_inactive_stage_publishes_empty_current_evidence_without_generic_writer(
     assert not hasattr(logic,'write_logic_segment_timing_storage')
     assert not hasattr(local,'write_local_path_timing_storage')
     path=_identity(tmp_path,kind,unsupported=kind==3)
-    from emuflow.flow.multi_fpga_physical_flow import _write_inactive_logic_timing,_write_inactive_local_timing
-    result = publish_empty_partition_timing(path,tmp_path/'timing.json',kind=2,
-        provider='inactive-empty-partition-v1') if kind==2 else (
-        _write_inactive_logic_timing if kind==3 else _write_inactive_local_timing)(path,tmp_path/'timing.json')
+    result = publish_empty_partition_timing(path,tmp_path/'timing.json',kind=kind,
+        provider='inactive-empty-partition-v1')
     assert result['maximum_delay_ns']==0.0
     reader={2:boundary.read_boundary_timing_storage,3:logic.read_logic_segment_timing_storage,4:local.read_local_path_timing_storage}[kind]
     with reader(tmp_path/'timing.json') as view:

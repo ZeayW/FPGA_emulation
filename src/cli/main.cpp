@@ -1,4 +1,5 @@
 #include "physical/transport/synthesis.hpp"
+#include "physical/flow/controller.hpp"
 #include "physical/rapidwright/partition.hpp"
 #include "timing/routed_stage.hpp"
 #include "physical/openparf/qualification.hpp"
@@ -72,6 +73,7 @@ constexpr const char* kUsage =
     "  physical openparf-runtime REQUEST REPORT\n"
     "  physical run-rwroute REQUEST SUMMARY\n"
     "  physical run-rapidwright-partition REQUEST OUTPUT_DIR\n"
+    "  physical run-flow REQUEST OUTPUT_DIR\n"
     "  physical prepare-fixed-io REQUEST OUTPUT_DIR\n"
     "  physical synthesize-transport REQUEST OUTPUT_DIR\n"
     "  physical run-vivado-partition REQUEST OUTPUT\n"
@@ -249,9 +251,9 @@ int Dispatch(int argc, char** argv, const std::string& report) {
       [&](const auto& refs){emuflow::core::FinalizePhase6Comparison(refs[0],std::filesystem::absolute(argv[4]));},
       [&]{return std::vector<emuflow::core::ArtifactRef>{emuflow::core::ArtifactRef::Bind((std::filesystem::absolute(argv[4])/"phase6-comparison/comparison-report.json").string(),"exact-sha256-text-v1")};}),report);
   }
-  if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="validate-flow-report") {
-    return Finish(emuflow::core::RunStage("physical.validate-flow-report",[&]{return std::vector<emuflow::core::ArtifactRef>{emuflow::core::ArtifactRef::Bind(argv[3],"exact-sha256-text-v1")};},
-      [&](const auto& refs){const auto facts=emuflow::core::ValidatePhysicalFlowReport(emuflow::core::BoundedJson::Read(refs[0]));emuflow::core::PublishTextArtifact(argv[4],refs,[&](std::ostream& out){out<<emuflow::core::BoundedJson::Encode({{"summary",facts.summary},{"metrics",facts.metrics}})<<'\n';});},
+  if((argc==5 || argc==6) && std::string(argv[1])=="physical" && std::string(argv[2])=="validate-flow-report") {
+    return Finish(emuflow::core::RunStage("physical.validate-flow-report",[&]{std::vector<emuflow::core::ArtifactRef> refs{emuflow::core::ArtifactRef::Bind(argv[3],"exact-sha256-text-v1")};if(argc==6)refs.push_back(emuflow::core::ArtifactRef::Bind(argv[5],"physical-summary-v1"));return refs;},
+      [&](const auto& refs){const auto facts=emuflow::core::ValidatePhysicalFlowReport(emuflow::core::BoundedJson::Read(refs[0]),refs.size()==2?emuflow::core::BoundedJson::Read(refs[1]):"");emuflow::core::PublishTextArtifact(argv[4],refs,[&](std::ostream& out){out<<emuflow::core::BoundedJson::Encode({{"summary",facts.summary},{"metrics",facts.metrics}})<<'\n';});},
       [&]{return std::vector<emuflow::core::ArtifactRef>{emuflow::core::ArtifactRef::Bind(argv[4],"exact-sha256-text-v1")};}),report);
   }
 
@@ -293,6 +295,10 @@ int Dispatch(int argc, char** argv, const std::string& report) {
       emuflow::core::ArtifactRef::Bind(argv[4],"transport-store-v2"),
       emuflow::core::ArtifactRef::Bind(argv[5],"emuir-compact-v2"),
       emuflow::core::ArtifactRef::Bind(argv[6],"placement-lowering-request-v1")},argv[7],&tool_cancelled),report);
+  }
+  if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="run-flow") {
+    ToolSignals signals;
+    return Finish(emuflow::core::RunPhysicalFlow(emuflow::core::ArtifactRef::Bind(argv[3],"physical-flow-request-v1"),argv[4],&tool_cancelled),report);
   }
   if(argc==5 && std::string(argv[1])=="physical" && std::string(argv[2])=="prepare-fixed-io") {
     ToolSignals signals;
