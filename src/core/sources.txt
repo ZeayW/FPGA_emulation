@@ -57,6 +57,7 @@ timing/sta_paths.cpp
 timing/sta_projection.cpp
 timing/sta_weights.cpp
 frontend/yosys_hierarchy.cpp
+frontend/configuration.cpp
 frontend/frontend.cpp
 frontend/report.cpp
 frontend/inputs.cpp

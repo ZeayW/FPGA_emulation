@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import closing
 import hashlib
 import json
 from pathlib import Path
@@ -165,7 +166,7 @@ class CutSegmentQualificationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             paths, _ir, assignment, _database, _structural = self._fixture(root)
-            with sqlite3.connect(root / "assignment.sqlite") as connection:
+            with closing(sqlite3.connect(root / "assignment.sqlite")) as connection:
                 self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 4)
             artifact = build_cut_segment_qualification(*paths, input_already_validated=True)
             self.assertEqual(artifact["schema"], CUT_SEGMENT_INDEXED_QUALIFICATION_SCHEMA)

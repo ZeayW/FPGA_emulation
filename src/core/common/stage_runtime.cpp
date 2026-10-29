@@ -208,6 +208,7 @@ constexpr RegisteredSchema schemas[] = {
     {"native-compile-request-v1", ArtifactEncoding::kText, 0, 1},
     {"native-compile-adapter-v1", ArtifactEncoding::kText, 0, 1},
     {"native-compile-state-v1", ArtifactEncoding::kText, 0, 1},
+    {"frontend-configuration-request-v1", ArtifactEncoding::kText, 0, 1},
     {"frontend-request-v1", ArtifactEncoding::kBinary, 0x31544e52464d5545ULL, 1},
     {"frontend-input-request-v1", ArtifactEncoding::kText, 0, 1},
     {"frontend-input-report-v1", ArtifactEncoding::kText, 0, 1},

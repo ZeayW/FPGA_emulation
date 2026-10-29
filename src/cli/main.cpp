@@ -27,6 +27,7 @@
 #include "common/bounded_json.hpp"
 #include "frontend/yosys_hierarchy.hpp"
 #include "frontend/frontend.hpp"
+#include "frontend/configuration.hpp"
 #include "frontend/inputs.hpp"
 #include "timing/phase2.hpp"
 #include "timing/cut_qualification.hpp"
@@ -59,6 +60,7 @@ constexpr const char* kUsage =
     "  publish-store REQUEST OUTPUT\n"
     "  compile REQUEST_JSON\n"
     "  phase7c run FLOW_ROOT OPENSTA [LAUNCHER_REFERENCE [SPLIT_ROOT PHYSICAL_ROOT RUNTIME_ROOT]]\n"
+    "  phase1 prepare-configuration REQUEST DIRECTORY\n"
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
     "  flow prepare-routing PREVIOUS FLOW_ROOT STATE\n"
     "  phase4 prepare-policy REQUEST OUTPUT\n"
@@ -384,6 +386,9 @@ int Dispatch(int argc, char** argv, const std::string& report) {
     if(argc>=9)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[8],argc==9?"patron-initial-columns-v1":"patron-output-v1"));
     if(argc==10)inputs.push_back(emuflow::core::ArtifactRef::Bind(argv[9],"patron-cluster-order-v1"));
     return Finish(emuflow::core::FinalizePartitionSemantics(inputs,argv[7]),report);
+  }
+  if(argc==5 && std::string(argv[1])=="phase1" && std::string(argv[2])=="prepare-configuration") {
+    ToolSignals signals;return Finish(emuflow::core::PrepareFrontendConfiguration(emuflow::core::ArtifactRef::Bind(argv[3],"frontend-configuration-request-v1"),argv[4],&tool_cancelled),report);
   }
   if(argc==5 && std::string(argv[1])=="phase1" && std::string(argv[2])=="import-inputs") {
     ToolSignals signals;return Finish(emuflow::core::RunFrontendInputs(emuflow::core::ArtifactRef::Bind(argv[3],"frontend-input-request-v1"),argv[4],&tool_cancelled),report);
