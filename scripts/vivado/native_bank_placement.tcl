@@ -57,6 +57,86 @@ proc emuflow_bank_add_member {groups_name assigned_name ambiguous_name slr cell}
   return 1
 }
 
+proc emuflow_bank_control_nets {sources prefix} {
+  set cells [list]
+  dict for {name pins} [dict get $sources infrastructure_clock_pins] {
+    if {![string match ${prefix}/__emuflow_transport__/* $name]} {continue}
+    set cell [get_cells -quiet -of_objects [lindex $pins 0]]
+    if {![emuflow_bank_movable $cell]} {continue}
+    if {![dict exists $sources rx [get_property -quiet EMUFLOW_SOURCE $cell]]} {
+      foreach object $cell {lappend cells $object}
+    }
+  }
+  if {![llength $cells]} {return [list]}
+  set outputs [get_pins -quiet -of_objects $cells -filter {DIRECTION == OUT}]
+  if {![llength $outputs]} {return [list]}
+  return [get_nets -quiet -of_objects $outputs]
+}
+
+proc emuflow_bank_tx_data_pins {cells} {
+  set pins [list]
+  foreach cell $cells {
+    if {[get_property REF_NAME $cell] ne "TX_BITSLICE"} {continue}
+    foreach pin [get_pins -quiet -of_objects $cell -filter {DIRECTION == IN}] {
+      if {[regexp {^D\[[0-7]\]$} [get_property REF_PIN_NAME $pin]]} {lappend pins $pin}
+    }
+  }
+  return $pins
+}
+
+proc emuflow_native_bank_replication_nets {placement sources prefix} {
+  # Placer hints can be consumed or rewritten by placement. Select current
+  # drivers again from native source roles and connectivity, independently
+  # of hint inheritance, old object names, or primitive preservation.
+  set controls [emuflow_bank_control_nets $sources $prefix]
+  set assigned [dict create]
+  set shared [dict create]
+  set input [open [file join $placement banks.tsv] r]
+  gets $input header
+  while {[gets $input row]>=0} {
+    lassign [split $row \t] bank direction instance
+    if {$direction ne "tx"} {continue}
+    set slr [get_property NAME [get_slrs -quiet -of_objects [get_iobanks -quiet [list $bank]]]]
+    set serializers [get_cells -quiet -hier -filter "NAME =~ ${instance}/* && REF_NAME == TX_BITSLICE"]
+    set cone [emuflow_bank_transport_cone [emuflow_bank_tx_data_pins $serializers] $prefix $instance]
+    foreach cell $cone {
+      if {![emuflow_bank_movable $cell]} {continue}
+      set name [get_property NAME $cell]
+      if {[dict exists $assigned $name] && [dict get $assigned $name] ne $slr} {
+        dict set shared $name $cell
+      }
+      dict set assigned $name $slr
+    }
+  }
+  close $input
+  set shared_nets [list]
+  if {[dict size $shared]} {
+    set outputs [get_pins -quiet -of_objects [dict values $shared] -filter {DIRECTION == OUT}]
+    # Only driver-local segments are force targets. Hierarchical aliases of
+    # the same driver do not require separate replication operations.
+    if {[llength $outputs]} {set shared_nets [get_nets -quiet -of_objects $outputs]}
+  }
+  return [dict create control_nets $controls shared_tx_nets $shared_nets \
+      nets [lsort -unique [concat $controls $shared_nets]]]
+}
+
+proc emuflow_native_bank_replicate {placement sources output prefix} {
+  set plan [emuflow_native_bank_replication_nets $placement $sources $prefix]
+  set nets [dict get $plan nets]
+  set stream [open [file join $output bank-replication-nets.tsv] w]
+  puts $stream "net_hex"
+  foreach net $nets {puts $stream [binary encode hex [get_property NAME $net]]}
+  close $stream
+  set stream [open [file join $output bank-replication-metrics.tsv] w]
+  puts $stream "metric\tvalue"
+  puts $stream "control_driver_nets\t[llength [dict get $plan control_nets]]"
+  puts $stream "shared_tx_driver_nets\t[llength [dict get $plan shared_tx_nets]]"
+  puts $stream "force_replication_targets\t[llength $nets]"
+  close $stream
+  if {[llength $nets]} {phys_opt_design -force_replication_on_nets $nets}
+  return $plan
+}
+
 proc emuflow_native_bank_placement {placement sources output prefix} {
   set source_map $sources
   set bank_slrs [dict create]
@@ -93,13 +173,7 @@ proc emuflow_native_bank_placement {placement sources output prefix} {
     }
     puts $stream "$bank\t$direction\t$slr\t$count"
     if {$direction eq "tx"} {
-      set data_pins [list]
-      foreach cell $cells {
-        if {[get_property REF_NAME $cell] ne "TX_BITSLICE"} {continue}
-        foreach pin [get_pins -quiet -of_objects $cell -filter {DIRECTION == IN}] {
-          if {[regexp {^D\[[0-7]\]$} [get_property REF_PIN_NAME $pin]]} {lappend data_pins $pin}
-        }
-      }
+      set data_pins [emuflow_bank_tx_data_pins $cells]
       set cone [emuflow_bank_transport_cone $data_pins $prefix $instance]
       foreach cell $cone {
         if {![emuflow_bank_movable $cell]} {continue}
@@ -136,22 +210,10 @@ proc emuflow_native_bank_placement {placement sources output prefix} {
   # Prefer local replication of generated control nets. DUT logic receives
   # no placement region, identity preservation, or added pipeline.
   set transport_cells [get_cells -quiet -hier -filter "NAME =~ ${prefix}/__emuflow_transport__/* && IS_PRIMITIVE == 1"]
-  set control_cells [list]
-  dict for {name pins} [dict get $source_map infrastructure_clock_pins] {
-    if {![string match ${prefix}/__emuflow_transport__/* $name]} {continue}
-    set cell [get_cells -quiet -of_objects [lindex $pins 0]]
-    if {![emuflow_bank_movable $cell]} {continue}
-    set origin [get_property -quiet EMUFLOW_SOURCE $cell]
-    if {![dict exists $source_map rx $origin]} {foreach object $cell {lappend control_cells $object}}
-  }
   foreach cell $transport_cells {
     if {[emuflow_bank_movable $cell]} {dict set targets [get_property NAME $cell] $cell}
   }
-  set control_nets [list]
-  if {[llength $control_cells]} {
-    set outputs [get_pins -quiet -of_objects $control_cells -filter {DIRECTION == OUT}]
-    if {[llength $outputs]} {set control_nets [get_nets -quiet -of_objects $outputs]}
-  }
+  set control_nets [emuflow_bank_control_nets $source_map $prefix]
   if {[llength $control_nets]} {set_property MAX_FANOUT_MODE CLOCK_REGION $control_nets}
   set shared_tx [list]
   dict for {name cell} $tx_candidates {

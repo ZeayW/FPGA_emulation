@@ -100,6 +100,10 @@ if {[catch {
   emuflow_session_preplacement $emuflow_script_directory $out \
       $emuflow_retain_routed_checkpoint $emuflow_route_after_proof_failure
   place_design -directive $place_directive
+  if {$emuflow_bank_placement_directory ne ""} {
+    set placement_sources [emuflow_native_word_source_roles $emuflow_word_data_source_origins]
+    emuflow_native_bank_replicate $emuflow_bank_placement_directory $placement_sources $out $prefix
+  }
   phys_opt_design
   route_design -directive $route_directive
   # Retain the completed router output before reports and source inventories.

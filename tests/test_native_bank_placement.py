@@ -228,9 +228,29 @@ if {[dict get $result tx_combinational_candidates]!=3 ||
     [dict get $result shared_tx_combinational_cells]!=1 ||
     [dict get $result ambiguous_native_cells]!=1} {error "shared decode was assigned to incompatible SLRs"}
 if {![dict exists $::preferences np] || ![dict exists $::preferences nd]} {error "shared control/decode replication preference absent"}
+set regions_before $::regions
+set preferences_before $::preferences
+'''
+    script+='set plan [emuflow_native_bank_replication_nets '+_tcl_word(placement)+' $sources mapped_partition]\n'
+    script+=r'''
+# get_property deliberately has no MAX_FANOUT_MODE implementation: native
+# placement may consume those hints. Current connectivity remains authoritative.
+if {[dict get $plan nets] ne {nd np} || [dict get $plan control_nets] ne {np} ||
+    [dict get $plan shared_tx_nets] ne {nd}} {error "post-placement targets depend on consumed placement hints"}
+if {$::regions ne $regions_before || $::preferences ne $preferences_before} {error "replication target planning changed placement"}
+proc phys_opt_design {args} {
+  if {$args ne {-force_replication_on_nets {nd np}}} {error "force replication did not use current native drivers"}
+  set ::replicated 1
+}
+'''
+    script+='emuflow_native_bank_replicate '+_tcl_word(placement)+' $sources '+_tcl_word(output)+' mapped_partition\n'
+    script+=r'''
+if {![info exists ::replicated]} {error "native control replication was skipped"}
 puts complete
 '''
     completed=subprocess.run([TCL86],input=script,text=True,capture_output=True)
     assert completed.returncode==0 and not completed.stderr,completed.stderr
     assert completed.stdout.strip()=='complete'
     assert (output/'bank-tx-cones.tsv').read_text().splitlines()[1:]==['19\tSLR0\t2','29\tSLR1\t2']
+    assert (output/'bank-replication-nets.tsv').read_text().splitlines()==['net_hex',b'nd'.hex(),b'np'.hex()]
+    assert (output/'bank-replication-metrics.tsv').read_text().splitlines()[-1]=='force_replication_targets\t2'

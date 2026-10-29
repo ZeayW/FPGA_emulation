@@ -75,6 +75,8 @@ def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(sou
             assert manifest['native_bank_placement']['directory']==str(out/'native-bank-placement')
             (out/'bank-affinity.tsv').write_text('bank\tdirection\tslr\tnative_movable_cells\n')
             (out/'bank-tx-cones.tsv').write_text('bank\tslr\ttransport_combinational_cells\n20\tSLR1\t3\n')
+            (out/'bank-replication-nets.tsv').write_text('net_hex\n7068617365\n')
+            (out/'bank-replication-metrics.tsv').write_text('metric\tvalue\nforce_replication_targets\t1\n')
             (out/'bank-placement-metrics.tsv').write_text('metric\tvalue\ntarget_cells\t0\nmissing_rx_roles\t1\n')
             metrics=dict(part=part,vivado_version='2024.2',dut_clock_count=1,mapped_cells=5,
                 routed_cells=6,physical_cells=8,infrastructure_cells=2,optimization_cells=0,
@@ -127,6 +129,7 @@ def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(sou
     assert report['native_bank_placement']['directory']==str(output/'native-bank-placement')
     assert 'bank-placement-metrics.tsv'in report['result']['artifacts']
     assert 'bank-tx-cones.tsv'in report['result']['artifacts']
+    assert 'bank-replication-metrics.tsv'in report['result']['artifacts']
     assert not{'boundary_timing','local_path_timing','logic_segment_timing'}&set(report)
     assert not(output/'routed-query-preparation.json').exists()
     from emuflow.multi_fpga_physical_flow import _require_native_word_evidence
@@ -166,6 +169,7 @@ def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(sou
     assert retained['native_word_observation']['source_context']==report['native_word_observation']['source_context']
     assert retained['native_bank_placement']==report['native_bank_placement']
     assert retained['result']['artifacts']['bank-tx-cones.tsv']==report['result']['artifacts']['bank-tx-cones.tsv']
+    assert retained['result']['artifacts']['bank-replication-nets.tsv']==report['result']['artifacts']['bank-replication-nets.tsv']
     assert retained['result']['timing']==report['result']['timing']
     assert not(adopted/'routed.dcp').exists()
     record['stages']={'vivado_implementation':retained,'word_phy_implementation':retained['word_phy_implementation']}

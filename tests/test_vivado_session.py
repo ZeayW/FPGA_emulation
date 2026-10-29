@@ -534,6 +534,10 @@ proc source {path} {
       if {$sources ne "structural_roles" || [lindex $::trace end] ne "opt"} {error "placement policy ran before optimization"}
       lappend ::trace bank_placement
     }
+    proc emuflow_native_bank_replicate {directory sources output prefix} {
+      if {$sources ne "structural_roles" || [lindex $::trace end] ne "place"} {error "control replication did not follow placement"}
+      lappend ::trace bank_replication
+    }
   } else {uplevel 1 [list original_source $path]}
 }
 rename exit process_exit
@@ -600,9 +604,11 @@ set env(PYTHONPATH) /invalid-vendor-package
         assert read_json(out/'native-session.json')['queries']=={}
         assert read_json(out/'native-session.json')['word_data_budget']['source_origins']==1
         assert 'EMUFLOW_INDEXED_VIVADO status=pass'in completed.stdout
-        assert trace[-4:]==['place','phys_opt','route','routed.dcp']
         if placement is not None:
+            assert trace[-5:]==['place','bank_replication','phys_opt','route','routed.dcp']
             assert trace.index('opt')<trace.index('bank_placement')<trace.index('place')
+        else:
+            assert trace[-4:]==['place','phys_opt','route','routed.dcp']
         return
     if proof_mode == "inventory-fail-diagnostic":
         assert completed.returncode != 0
