@@ -282,7 +282,9 @@ placement, physical optimization, and routing in out-of-context (OOC) mode.
 Every native-word partition uses the same bounded implementation policy.
 Optional placement and post-route trials retain the previous checkpoint; a
 failed locality route restores the original placement and attempts its route
-once. Native errors and critical warnings reject a trial even when its timing
+once. Pre-route DRC also checks optional placement for native physical-equation
+diagnostics; expected unrouted-net DRC records alone do not reject placement.
+Native errors and critical warnings reject a trial even when its timing
 estimate improves. Diagnostics from a discarded trial remain in the log and
 are classified as recovered only after the retained checkpoint is reopened
 and its clock contract validated. Errors during restoration or final analysis

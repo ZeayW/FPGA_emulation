@@ -11,7 +11,7 @@ pytestmark=pytest.mark.skipif(TCL86 is None,reason='Tcl 8.6 required')
 
 
 def state(wns=-.2,tns=-10.,whs=.01,**extra):
-    return {'wns':wns,'tns':tns,'whs':whs,'pending':0,'blocking':0,'warning':0,'raises':0,'repair_error':0,'native_critical':0,**extra}
+    return {'wns':wns,'tns':tns,'whs':whs,'pending':0,'blocking':0,'warning':0,'raises':0,'repair_error':0,'native_critical':0,'drc_native_critical':0,**extra}
 
 
 def record(value):
@@ -47,7 +47,11 @@ proc get_drc_violations {args} {
   if {[dict get $::current blocking]} {return blocking}
   return [expr {[dict get $::current warning] ? "warning" : ""}]
 }
-proc report_drc {args} {set f [open [lindex $args end] w];puts $f native_drc;close $f}
+proc report_drc {args} {
+  set path [lindex $args end]
+  set f [open $path w];puts $f native_drc;close $f
+  if {[file tail $path] eq "locality-drc.rpt"} {incr ::native_critical [dict get $::current drc_native_critical]}
+}
 proc report_timing_summary {args} {
   set f [open [lindex $args end] w]
   puts $f "WNS(ns) TNS(ns) Failing Total WHS(ns) THS(ns) Failing Total"
@@ -140,7 +144,7 @@ def test_equal_wns_compares_full_native_tns_and_restores_worse_trial(tmp_path):
     assert summary['timing_met']=='0'
 
 
-@pytest.mark.parametrize('mode',['better','worse','error','unchanged','critical'])
+@pytest.mark.parametrize('mode',['better','worse','error','unchanged','critical','drc-critical'])
 def test_bank_locality_uses_same_measured_selection_rule(tmp_path,mode):
     output=tmp_path/'native';output.mkdir()
     script='set current '+record(state())+'\nset plans {}\n'+HARNESS
@@ -157,6 +161,7 @@ proc place_design {args} {
   if {$args ne {-directive Explore -no_bufg_opt}} {error "unexpected placement strategy"}
   dict set ::current wns [expr {$::locality_mode eq "better" ? .1 : -.5}]
   if {$::locality_mode eq "critical"} {dict set ::current wns .2;incr ::native_critical}
+  if {$::locality_mode eq "drc-critical"} {dict set ::current wns .2;dict set ::current drc_native_critical 2}
 }
 '''
     script+='source '+_tcl_word(ROOT/'scripts/vivado/native_implementation_policy.tcl')+'\n'
@@ -166,8 +171,8 @@ proc place_design {args} {
     assert result.returncode==0,result.stdout+result.stderr
     values=next(l.split()[1:]for l in result.stdout.splitlines()if l.startswith('RESULT '))
     assert float(values[0])==pytest.approx(.1 if mode=='better'else-.2)
-    assert int(values[1])==(mode in ('better','worse','critical'))
-    assert int(values[2])==(mode in ('worse','error','critical'))
+    assert int(values[1])==(mode in ('better','worse','critical','drc-critical'))
+    assert int(values[2])==(mode in ('worse','error','critical','drc-critical'))
 
 
 @pytest.mark.parametrize('failure',['none','throw','critical','drc','partial','baseline-fails'])

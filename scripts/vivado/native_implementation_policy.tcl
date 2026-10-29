@@ -113,6 +113,11 @@ proc emuflow_policy_localize {placement origins prefix output contract directive
     if {$moved} {place_design -directive $directive -no_bufg_opt}
     emuflow_validate_clock_contract $contract true
     set candidate [emuflow_policy_setup]
+    # Native physical-equation diagnostics can appear only during DRC, even
+    # when a timing query reports an improved estimate. Unrouted-net DRCs
+    # are expected here; counted native errors/critical warnings reject the
+    # optional placement before spending a full route on it.
+    report_drc -file [file join $directory locality-drc.rpt]
     emuflow_policy_check_messages $messages
   } message]
   if {$code || $candidate<$baseline} {
