@@ -73,6 +73,7 @@ transport/runtime_calendar.cpp
 physical/placement_lowering.cpp
 routing/phase4.cpp
 timing/phase2.cpp
+timing/phase2_policy.cpp
 physical/physical_coverage.cpp
 physical/evidence_catalog.cpp
 physical/board_timing.cpp

@@ -1688,3 +1688,34 @@ writers are retired from the installed package; independent small record
 oracles remain under tests. The multi-FPGA controller, Chimew orchestration,
 configuration/prepared-input adapters and current-source NVDLA terminal
 qualification remain required before W7 is complete.
+
+
+### Native timing preparation and source-bound routing projection
+
+`phase2 prepare-policy REQUEST POLICY` generates the complete pre-placement
+configuration in the shared core. It binds the mapped IR, base model,
+architecture characterization contract, Tcl scripts and OpenSTA executable;
+resolves first-occurrence primitive pin sets directly from the compact store;
+preserves negative-clock FF specialization, memory clock/control/data roles and
+scalar bus names; and renders deterministic Liberty with the renderer shared by
+routed timing. Clock and explicit top-level I/O constraints, engine version,
+Tcl runtime and executable content identities are checked before publication.
+Python submits bounded options and source references and verifies the returned
+policy generation. The former Python policy/model preparation body is deleted.
+The compile timing-policy adapter still invokes this bounded host; removing that
+controller boundary remains a separate unfinished W7 requirement.
+
+`timing project-paths` projects every original typed path through the current
+assignment and performs lossless representative compression in the core.
+Original members and representative dominance are independently audited. The
+routing path records and summary publish as one transaction; the Python path,
+cut and compression execution chain is deleted. Independent small differential
+oracles reside only under tests.
+
+Prepared Phase 1/2 admission also rejoins every path endpoint and net to the
+selected mapped IR before publishing either boundary. Clock/count/content seals
+alone cannot certify that a timing store belongs to a netlist. A source mismatch
+rejects admission before partition search, leaves the original inputs unchanged
+and publishes no partial frontend or timing directory. Chimew ownership, the
+remaining configuration adapters, old independent entrypoint retirement and
+current-source NVDLA physical/global timing qualification remain required for W7.

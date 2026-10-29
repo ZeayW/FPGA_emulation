@@ -349,6 +349,7 @@ constexpr RegisteredSchema schemas[] = {
     {"phase5-stage-request-v1", ArtifactEncoding::kBinary, 0x31535035464d5545ULL, 1},
     {"phase5-report-v1", ArtifactEncoding::kText, 0, 1},
     {"phase2-policy-v1", ArtifactEncoding::kText, 0, 1},
+    {"phase2-configuration-request-v1", ArtifactEncoding::kText, 0, 1},
     {"phase2-report-v1", ArtifactEncoding::kText, 0, 1},
     {"phase2-source-v1", ArtifactEncoding::kText, 0, 1},
     {"phase4-report-v1", ArtifactEncoding::kText, 0, 1},

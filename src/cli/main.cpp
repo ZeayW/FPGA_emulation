@@ -57,6 +57,7 @@ constexpr const char* kUsage =
     "  compile REQUEST_JSON\n"
     "  phase7c run FLOW_ROOT OPENSTA [LAUNCHER_REFERENCE [SPLIT_ROOT PHYSICAL_ROOT RUNTIME_ROOT]]\n"
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
+    "  phase2 prepare-policy REQUEST POLICY\n"
     "  phase2 run EMUIR POLICY OUTPUT_DIR\n"
     "  physical build-handoff REQUEST OUTPUT_DIR\n"
     "  physical build-openparf-source REQUEST OUTPUT\n"
@@ -367,6 +368,10 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   if((argc==4 || argc==5) && std::string(argv[1])=="phase1" && std::string(argv[2])=="run") {
     ToolSignals signals;
     return Finish(emuflow::core::RunFrontend(emuflow::core::ArtifactRef::Bind(argv[3],"frontend-request-v1"),&tool_cancelled,argc==5?argv[4]:""),report);
+  }
+  if(argc==5 && std::string(argv[1])=="phase2" && std::string(argv[2])=="prepare-policy") {
+    ToolSignals signals;return Finish(emuflow::core::PreparePhase2Policy(
+      emuflow::core::ArtifactRef::Bind(argv[3],"phase2-configuration-request-v1"),argv[4],&tool_cancelled),report);
   }
   if(argc==6 && std::string(argv[1])=="phase2" && std::string(argv[2])=="run") {
     ToolSignals signals;

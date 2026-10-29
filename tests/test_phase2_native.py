@@ -85,36 +85,17 @@ def test_phase2_policy_bound_includes_the_final_newline():
 
 
 @pytest.mark.parametrize('architecture,expected_mode', [(False, 0), (True, 1)])
-def test_bounded_policy_preserves_default_and_architecture_modes(tmp_path, monkeypatch,
+def test_bounded_policy_preserves_default_and_architecture_modes(tmp_path, phase2_runtime,
                                                                 architecture, expected_mode):
-    import emuflow.timing.phase2_native as native
-    from emuflow.common.io import file_sha256
-    from emuflow.storage.store_publication import bind_store_source
-    source = tmp_path / 'source.sqlite'
-    source.write_bytes(b'source generation')
-    executable = tmp_path / 'sta'
-    executable.write_bytes(b'engine generation')
-    database = tmp_path / 'architecture.json'
-    database.write_text('{}')
-    monkeypatch.setattr(native, 'require_native_schema', lambda _schema: None)
-    monkeypatch.setattr(native, 'require_opensta_engine', lambda _path: {
-        'name': 'OpenSTA', 'version': '3.1.0', 'executable_sha256': file_sha256(executable)})
-    def view_for_policy(path, *, include_ports):
-        assert not include_ports
-        view = timing_view()
-        view.source = bind_store_source(path, 'emuir-compact-v2')
-        view.value['clocks'] = [{'id': 'clk', 'period_ns': 10.0}]
-        return view
-    monkeypatch.setattr(native, 'IndexedTimingView', view_for_policy)
-    def architecture_model(view, _path):
-        from copy import deepcopy
-        model = native.load_timing_model(native.DEFAULT_TIMING_MODEL)
-        model['cells']['FDRE__NEG'] = deepcopy(model['cells']['FDRE'])
-        model['cells']['FDRE__NEG']['kind'] = 'falling_edge_ff'
-        return model, _TimingTypes(view)
-    monkeypatch.setattr(native, 'build_architecture_opensta_timing_model', architecture_model)
-    policy = prepare_policy(tmp_path / 'policy', source, executable=str(executable),
-        architecture_timing_db_path=database if architecture else None)
+    from unittest.mock import patch
+    source, records = _counter_stage_input(tmp_path)
+    executable, _trace = _fixed_opensta(tmp_path, records)
+    database = _architecture_stage_contract(tmp_path) if architecture else None
+    with patch('emuflow.timing.indexed_timing.IndexedTimingView', side_effect=AssertionError('Python timing graph')), \
+         patch('emuflow.timing.opensta.render_opensta_liberty', side_effect=AssertionError('Python Liberty producer')), \
+         patch('emuflow.timing.opensta.require_opensta_engine', side_effect=AssertionError('Python engine qualification')):
+        policy = prepare_policy(tmp_path / 'policy', source, clocks={'clk': 10.0},
+            executable=str(executable), architecture_timing_db_path=database)
     value = json.loads(policy.read_text())
     assert value['schema'] == 'emuflow.phase2-policy/v1'
     assert value['configuration']['export_mode'] == expected_mode
@@ -123,8 +104,9 @@ def test_bounded_policy_preserves_default_and_architecture_modes(tmp_path, monke
     assert value['configuration']['timing_io_sha256'] is None
     assert all(len(row['generation']) == 7 for row in value['sources'])
     assert len(value['configuration']['model']['cell_types']) <= 4096
-    assert value['configuration']['used_cell_type_summary']['count'] == (3 if architecture else 2)
+    assert ('FDRE__NEG' in value['configuration']['model']['cell_types']) is architecture
     assert not (tmp_path / 'policy' / 'mapped.v').exists()
+    assert not list((tmp_path / 'policy').glob('.phase2-policy-host-*'))
 
 
 # These fixtures exercise the retained native stage boundary. They do not
@@ -460,3 +442,88 @@ def test_real_opensta_stage_matches_retained_provider_when_installed(tmp_path, p
     evidence = json.loads((output / 'opensta-execution.json').read_text())
     assert evidence['started'] is True and evidence['returncode'] == 0
     assert evidence['operation']['status'] == 'pass'
+
+
+def test_native_policy_matches_all_specialized_pin_roles_and_clock_polarities(tmp_path, phase2_runtime):
+    from copy import deepcopy
+    from unittest.mock import patch
+    from tests.test_xilinx_preplacement_timing import _mapped_fixture
+    from emuflow.frontend.yosys import import_yosys_json
+    from emuflow.timing.opensta import (build_architecture_opensta_timing_model,
+        render_opensta_liberty, validate_timing_model_coverage, _sealed_string_set_summary)
+    mapped = tmp_path / 'mapped.json'
+    _mapped_fixture(mapped)
+    graph = json.loads(mapped.read_text())
+    cells = graph['modules']['top']['cells']
+    # First-occurrence pin sets, constant pins, bus scalarization, and the
+    # distinct memory clock/control/data roles must all survive migration.
+    cells['ram']['connections']['ADDR'] = [7, '0', '1']
+    cells['ram']['connections']['DOUT'] = [8, 11]
+    cells['ram']['port_directions']['RSTREGARSTREG'] = 'input'
+    cells['ram']['connections']['RSTREGARSTREG'] = ['0']
+    for n, kind in enumerate(('RAMB36E2', 'URAM288')):
+        cells[kind] = deepcopy(cells['ram'])
+        cells[kind]['type'] = kind
+        cells[kind]['connections']['DOUT'] = [12 + 2*n, 13 + 2*n]
+    cells['zzz_later_ram'] = deepcopy(cells['ram'])
+    cells['zzz_later_ram']['connections']['ADDR'] = [7]
+    cells['zzz_later_ram']['connections']['DOUT'] = [30]
+    for seq, (value, _) in enumerate(PARAMETERS):
+        cell = cells[f'polarity_{seq:03d}'] = deepcopy(cells['ff'])
+        cell['parameters']['IS_C_INVERTED'] = value
+        cell['connections']['Q'] = [31 + seq]
+    mapped.write_text(json.dumps(graph))
+    ir = import_yosys_json(mapped, top='top', clocks=['clk'])
+    source = tmp_path / 'mixed.emuir.sqlite'
+    ir.save(source)
+    database = _architecture_stage_contract(tmp_path)
+    from contextlib import closing
+    with closing(IndexedTimingView(source)) as view:
+        model, types = build_architecture_opensta_timing_model(view, database)
+        coverage = validate_timing_model_coverage(view, model, types)
+    expected_liberty = render_opensta_liberty(model)
+    engine, _trace = _fixed_opensta(tmp_path, [])
+    with patch('emuflow.timing.indexed_timing.IndexedTimingView', side_effect=AssertionError('Python model preparation')):
+        policy = prepare_policy(tmp_path / 'native-policy', source, clocks={'clk': 10},
+            architecture_timing_db_path=database, executable=str(engine))
+    actual = json.loads(policy.read_text())['configuration']
+    assert actual['liberty'] == expected_liberty
+    assert actual['model']['cell_types'] == sorted(model['cells'])
+    assert actual['model']['source'] == model['source']
+    assert actual['used_cell_type_summary'] == _sealed_string_set_summary(coverage['used_cell_types'])
+
+
+@pytest.mark.parametrize('damage', ['clock', 'max-paths-bool', 'io-direction', 'architecture-seal', 'architecture-delay', 'model-output'])
+def test_native_policy_rejects_invalid_sources_without_publishing(tmp_path, phase2_runtime, damage):
+    from pathlib import Path
+    from emuflow.timing.opensta import DEFAULT_TIMING_MODEL
+    from emuflow.common.native_tools import native_file_generation
+    source, records = _counter_stage_input(tmp_path)
+    engine, _trace = _fixed_opensta(tmp_path, records)
+    architecture = _architecture_stage_contract(tmp_path)
+    options = {'clocks': {'clk': 10}, 'executable': str(engine)}
+    if damage == 'clock':
+        options['clocks'] = {'unknown': 10}
+    elif damage == 'max-paths-bool':
+        options['max_paths'] = True
+    elif damage == 'io-direction':
+        options['timing_io'] = {'input_groups': [{'clock': 'clk', 'delay_ns': 0, 'ports': ['q']}], 'output_groups': []}
+    elif damage.startswith('architecture'):
+        value = json.loads(architecture.read_text())
+        if damage == 'architecture-seal':
+            value['source']['files_sha256']['intrasite_delay_terms.txt'] = '0' * 64
+        else:
+            value['delays_ps']['lut6'] = False
+        architecture.write_text(json.dumps(value))
+        options['architecture_timing_db_path'] = architecture
+    else:
+        value = json.loads(DEFAULT_TIMING_MODEL.read_text())
+        value['cells']['broken'] = {'kind': 'constant', 'outputs': []}
+        model = tmp_path / 'invalid-model.json'
+        model.write_text(json.dumps(value))
+        options['timing_model_path'] = model
+    generation = native_file_generation(source)
+    with pytest.raises(ValidationError):
+        prepare_policy(tmp_path / 'rejected', source, **options)
+    assert not (tmp_path / 'rejected').exists()
+    assert native_file_generation(source) == generation

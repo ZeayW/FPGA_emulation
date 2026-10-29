@@ -121,6 +121,7 @@ std::string Liberty(Doc &model) {
     const auto outputs = cell.Has("outputs")
                              ? Strings(cell.Token("outputs"))
                              : Strings(Array({cell.Text("output")}));
+    Check(!outputs.empty(), "primitive lacks outputs");
     if (kind == "combinational") {
       const auto inputs = Strings(cell.Token("inputs"));
       Check(!inputs.empty(), "combinational cell lacks inputs");
@@ -193,6 +194,10 @@ std::string Liberty(Doc &model) {
   return out.str();
 }
 } // namespace
+std::string RenderOpenstaLiberty(const std::string &model) {
+  Doc document(model);
+  return Liberty(document);
+}
 RoutedOpenstaModel BuildRoutedOpenstaModel(const ArtifactRef &base_model,
                                            const std::string &coefficients,
                                            const std::string &pin_sets) {

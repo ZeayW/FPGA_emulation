@@ -49,7 +49,7 @@ Configuration Read(const ArtifactRef& emuir,const ArtifactRef& policy){
   const std::set<std::string> required={"emuir","timing-model","opensta-executable","export-script","runtime-check-script"};
   for(const auto& token:Doc::Array(document.Token("sources"),16)){
     Doc row(token);row.Keys({"role","path","schema","generation"});const auto role=row.Text("role");
-    Check(required.count(role) || role=="architecture-timing-db" || role=="container-binary","unknown source role");
+    Check(required.count(role) || role=="architecture-timing-db" || role=="architecture-contract" || role=="runtime-launcher" || role=="container-binary","unknown source role");
     const auto schema=role=="emuir"?"emuir-compact-v2":role=="opensta-executable" || role=="container-binary"?"external-tool-executable-v1":"phase2-source-v1";
     Check(row.Text("schema")==schema,"source schema disagrees");const auto path=SafeText(row.Text("path"));Check(fs::path(path).is_absolute(),"source path is relative");
     auto source=ArtifactRef::Bind(path,schema);Generation(row,source.generation());
