@@ -14,7 +14,7 @@ from emuflow.frontend.frontend_native import prepare_frontend, read_frontend_sum
 from emuflow.common.native_protocol import CheckedRequestWriter
 from emuflow.common.native_tools import native_file_generation
 from emuflow.platform.platform import Platform
-from emuflow.frontend.phase1 import indexed_phase1_facts, analyze_indexed_clock_topology
+from tests.frontend_report_reference import indexed_phase1_facts, analyze_indexed_clock_topology
 from emuflow.physical.xilinx_primitives import DEFAULT_XILINX_PRIMITIVE_LIBRARY
 from tests.native_build import emuflow_native
 from tests.test_yosys_emuir_native import old_source_to_emuir

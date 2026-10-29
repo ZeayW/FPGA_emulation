@@ -1724,3 +1724,23 @@ rejects admission before partition search, leaves the original inputs unchanged
 and publishes no partial frontend or timing directory. Chimew ownership, the
 remaining configuration adapters, old independent entrypoint retirement and
 current-source NVDLA physical/global timing qualification remain required for W7.
+
+
+### Retired standalone Python frontend
+
+The old Python `phase1` CLI and `frontend.phase1` implementation are removed.
+The native frontend owns import, normalization, source audits, clock/resource
+checks and publication for both raw RTL and supplied Yosys JSON. Optional Python
+APIs submit only bounded configuration and source references and verify the
+original producer/output generations; they do not move published directories
+or rebuild reports. Both modes use `frontend/phase1/`.
+
+The standalone benchmark tool now invokes the complete native RTL frontend.
+Its v2 report retains the bounded summary and artifact references; it no longer
+stages mapped JSON/Verilog or invokes a second Python Phase 1 pipeline. The
+obsolete NVDLA partition-a report assembler is retired with its dependencies.
+Independent small-fixture report/source inventory checks live only under tests.
+The bounded IR identity reader used by Phase 3 belongs to the IR storage API.
+This retirement does not establish current NVDLA terminal physical/timing
+qualification or close the remaining preflight, partition/route-policy and
+Chimew owners.

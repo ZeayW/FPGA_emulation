@@ -12,7 +12,7 @@ from emuflow.partition.partition_limits import planning_resource_capacities, str
 from emuflow.platform.platform import Platform
 from emuflow.ir.resources import RESOURCE_FIELDS
 from emuflow.ir.resource_budget import validate_device_resource_usage
-from emuflow.frontend.phase1 import indexed_phase1_identity
+from emuflow.ir.emuir_storage import read_indexed_emuir_identity
 from emuflow.partition.phase3_assignment_index import validate_phase3_assignment_index_against_emuir
 from emuflow.partition.phase3_runtime import measure_phase3_runtime, phase3_runtime_call, phase3_runtime_observe
 from emuflow.partition.combinational_cut import STATIC_EXACT_DEFAULT_CANDIDATE_POLICY, STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
@@ -108,7 +108,7 @@ def validate_phase3_indexed(
     """
 
     platform = Platform.load(platform_path)
-    design, _, _ = indexed_phase1_identity(ir_path)
+    design, _, _ = read_indexed_emuir_identity(ir_path)
     proof = validate_phase3_assignment_index_against_emuir(
         assignment_index_path,
         ir_path,

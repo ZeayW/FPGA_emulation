@@ -28,3 +28,7 @@ emuflow-tools contest fetch-public \
 
 A missing matrix-selected script is an error; the fetch command does not select
 another script or source revision.
+
+The benchmark runner uses the maintained `xcup`/`native` RTL frontend and writes
+its artifacts under `frontend/phase1/`. `benchmark_report.json` uses report v2:
+a compact Phase 1 summary and references to the detailed native evidence and IR.

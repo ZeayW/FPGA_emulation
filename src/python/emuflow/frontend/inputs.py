@@ -1,12 +1,17 @@
 """Bounded file references for native frontend input adoption and validation."""
 from pathlib import Path
 import json
+import os
+import tempfile
+from types import SimpleNamespace
 
 from emuflow.common.errors import ValidationError
 from emuflow.common.io import write_json
 from emuflow.common.native_tools import native_file_generation, require_native_schema, resolve_native_executable
 from emuflow.physical.xilinx_primitives import DEFAULT_XILINX_PRIMITIVE_LIBRARY
 from emuflow.platform.platform import Platform
+from emuflow.common.tool_runtime import NativeToolProcess
+from emuflow.frontend.frontend_native import read_frontend_result
 
 PROFILE = "xilinx-ultrascaleplus-open-v1"
 
@@ -53,7 +58,7 @@ def _prepared_sources(frontend, timing):
     return sources
 
 
-def prepare_inputs(ctx):
+def prepare_inputs(ctx, *, request_directory=None):
     """Bind input files and small configuration; C++ imports and publishes."""
     require_native_schema("frontend-input-request-v1")
     prepared = ctx.prepared_frontend is not None or ctx.prepared_timing is not None
@@ -67,7 +72,8 @@ def prepare_inputs(ctx):
         sources = [_source("json", ctx.yosys_json, "yosys-source-document-v1"),
                    _source("library", DEFAULT_XILINX_PRIMITIVE_LIBRARY, "xilinx-primitive-library-v1")]
     sources.append(_source("board", ctx.platform_path, "boarddb-v1"))
-    request = ctx.output_dir / ".native-frontend-input-request/inputs.json"
+    request = (Path(request_directory) / "inputs.json" if request_directory is not None
+               else ctx.output_dir / ".native-frontend-input-request/inputs.json")
     request.parent.mkdir(parents=True, exist_ok=True)
     write_json(request, {"schema": "emuflow.frontend-input-request/v1",
         "mode": "prepared" if prepared else "yosys-json", "sources": sources,
@@ -77,6 +83,39 @@ def prepare_inputs(ctx):
     ctx.native_frontend_input_request = request
     ctx.native_frontend_input_generation = tuple(str(v) for v in native_file_generation(request))
     return request
+
+
+def run_supplied_frontend(yosys_json, platform_path, output_root, *, top=None, clocks=()):
+    """Import a supplied source through the maintained native frontend owner.
+
+    The result is a bounded summary. Detailed evidence and the compact IR use
+    the same frontend/phase1 layout as native compile, with no host relocation.
+    """
+    output_root = Path(output_root).absolute()
+    output_root.parent.mkdir(parents=True, exist_ok=True)
+    ctx = SimpleNamespace(prepared_frontend=None, prepared_timing=None, sources=(),
+        include_dirs=(), defines=(), yosys_json=Path(yosys_json),
+        platform_path=Path(platform_path), output_dir=output_root, top=top,
+        clocks=tuple(clocks), clock_periods={}, mapping_profile=PROFILE)
+    with tempfile.TemporaryDirectory(prefix='.frontend-input-host-', dir=output_root.parent) as temporary:
+        root = Path(temporary)
+        request = prepare_inputs(ctx, request_directory=root)
+        generation = native_file_generation(request)
+        sources = _small(request)['sources']
+        native = resolve_native_executable('emuflow-native')
+        operation = root / 'operation.json'
+        command = [native, '--report', str(operation), 'phase1', 'import-inputs', str(request), str(output_root)]
+        with NativeToolProcess(native, command, environment=dict(os.environ), scratch_parent=root) as process:
+            result = process.finish()
+        if result.returncode:
+            raise ValidationError('native supplied frontend failed: ' + result.stdout)
+        if native_file_generation(request) != generation:
+            raise ValidationError('frontend request generation changed')
+        summary = read_frontend_result(operation, output_root/'frontend/phase1', 'phase1.import-inputs')
+        for source in sources:
+            if native_file_generation(Path(source['path'])) != tuple(source['generation']):
+                raise ValidationError('native frontend original source generation changed')
+        return summary
 
 
 def read_timing_summary(path, generation):

@@ -57,7 +57,6 @@ from emuflow.physical.lowering import run_placement_ir_lowering_from_split
 from emuflow.flow.multi_fpga_flow import finalize_multi_fpga_physical_checkpoint, run_multi_fpga_flow, validate_multi_fpga_flow_bundle
 from emuflow.flow.multi_fpga_physical_flow import run_multi_fpga_physical_flow
 from emuflow.timing.opensta import DEFAULT_TIMING_MODEL, parse_clock_definitions, run_opensta_path_database
-from emuflow.frontend.phase1 import run_phase1
 from emuflow.partition.phase3 import run_phase3, validate_phase3_indexed
 from emuflow.routing.phase4 import run_phase4, validate_phase4
 from emuflow.scheduling.phase5 import run_phase5, validate_phase5
@@ -715,20 +714,6 @@ def _build_parser() -> argparse.ArgumentParser:
             "checkpoints before continuing OpenPARF and detailed routing"
         ),
     )
-    phase1 = subparsers.add_parser(
-        "phase1", help="run the board-independent Phase 1 pipeline"
-    )
-    phase1.add_argument("--yosys-json", type=Path, required=True)
-    phase1.add_argument("--platform", type=Path, required=True)
-    phase1.add_argument("--out", type=Path, required=True)
-    phase1.add_argument("--top")
-    phase1.add_argument("--clock", action="append", default=[])
-    phase1.add_argument(
-        "--require-no-fabric-clock",
-        action="store_true",
-        help="fail when a LUT output drives an FD*.C clock pin",
-    )
-
     arch_parser = subparsers.add_parser(
         "arch", help="provider-neutral ArchitectureDB operations"
     )
@@ -1587,18 +1572,6 @@ def _dispatch(args: argparse.Namespace) -> int:
         )
         return 0
 
-
-    if args.command == "phase1":
-        report = run_phase1(
-            yosys_json=args.yosys_json,
-            platform_path=args.platform,
-            output_dir=args.out,
-            top=args.top,
-            clocks=args.clock,
-            require_no_fabric_clock=args.require_no_fabric_clock,
-        )
-        _print_json(report)
-        return 0 if report["status"] == "pass" else 2
 
     if args.command == "arch":
         if args.arch_command == "import-vivado-tsv":

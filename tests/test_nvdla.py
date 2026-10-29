@@ -5,7 +5,7 @@ from pathlib import Path
 
 from emuflow_tools.benchmark import BenchmarkRun
 from emuflow_tools.ppro_blackbox_application import benchmark_rtl_identity
-from scripts.benchmarks.nvdla_release_inventory import (
+from tests.nvdla_source_reference import (
     collect_nvdla_source_files,
 )
 from emuflow.flow.designs.nvdla_memory import (
