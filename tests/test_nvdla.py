@@ -292,8 +292,7 @@ endmodule
                 for group in spec.value["timing_io"][direction]
                 for port in group["ports"]
             }
-            self.assertNotIn("dla_reset_rstn", constrained_ports)
-            self.assertNotIn("test_mode", constrained_ports)
+            self.assertTrue({"dla_reset_rstn", "direct_reset_", "test_mode"} <= constrained_ports)
             core_inputs = next(group for group in spec.value["timing_io"]["input_groups"]
                                if group["clock"] == "dla_core_clk")
             self.assertTrue({"global_clk_ovr_on", "tmc2slcg_disable_clock_gating"} <= set(core_inputs["ports"]))

@@ -439,6 +439,11 @@ To continue after completed mapping, supply `--prepared-frontend` without
 the checked Phase 1 database remains read-only. Supplying both boundaries also
 reuses Phase 2. Fresh Phase 2 extraction requires the device FF control supplement
 in its pre-placement TimingDB; missing control data is rejected before synthesis.
+The NVDLA benchmark declares core-referenced arrivals for `dla_reset_rstn`,
+`direct_reset_`, and `test_mode`, as well as its data and clock-enable inputs.
+This keeps reset synchronizer data and recovery checks in the source search;
+it does not tie off these inputs or establish asynchronous reset-release or
+test-mode signoff. Source and physical execution use the same declared I/O model.
 
 The old `phase2` placement spike, generic `placement` commands and single-FPGA
 `vpr fpga-open`/`full-open` flow are retired together with their whole-graph

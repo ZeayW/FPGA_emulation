@@ -161,3 +161,18 @@ exit 0
                 output_groups=[dict(clock='clk', delay_ns=0., ports=['q'])]),
             executable=engine, _stream_output=True, clock_budget_policy='engine-edge-v1')
     assert not (tmp_path/'invalid-paths.json').exists()
+
+    # An explicit arrival restores the actual recovery checks; the exporter
+    # must not need a false path or constant reset to accept this source.
+    output = tmp_path/'constrained-paths.json'
+    run_opensta_path_database(source, output, clocks={'clk': 10.},
+        timing_io=dict(input_groups=[dict(clock='clk', delay_ns=1.25, ports=['a'])],
+            output_groups=[dict(clock='clk', delay_ns=0., ports=['q'])]),
+        executable=engine, _stream_output=True, clock_budget_policy='engine-edge-v1')
+    paths = list(iter_sta_path_database_paths(output, json.loads(output.read_text())))
+    recovery = [row for row in paths if row['endpoint']['instance'] == 'capture'
+                and row['endpoint']['port'] == pin]
+    assert len(recovery) == 1
+    assert recovery[0]['startpoint']['port'] == 'a'
+    margin = load_timing_model(DEFAULT_TIMING_MODEL)['cells'][cell_type]['control_checks'][pin]['margin_ns']
+    assert recovery[0]['slack_ns'] == pytest.approx((5. if negative else 10.)-1.25-margin, abs=2e-6)

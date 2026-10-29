@@ -77,6 +77,13 @@ NVDLA_CORE_INPUTS = [
     # sources; include them in the declared core-clock setup environment.
     "global_clk_ovr_on",
     "tmc2slcg_disable_clock_gating",
+    # Keep reset/test cones in the source timing search, including recovery
+    # checks and the reset synchronizer's data input. These are explicit
+    # core-referenced input-arrival assumptions, not asynchronous reset-release
+    # or test-mode signoff, and do not tie off or false-path the RTL inputs.
+    "dla_reset_rstn",
+    "direct_reset_",
+    "test_mode",
 ]
 NVDLA_CORE_OUTPUTS = [
     "nvdla_core2dbb_aw_awvalid",
