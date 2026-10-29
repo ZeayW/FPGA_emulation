@@ -84,6 +84,12 @@ struct Work {
   }
 };
 } // namespace
+void ValidateTransportCostDatabase(const ArtifactRef &source,
+                                   const std::string &platform) {
+  D cost(D::Read(source));
+  Cost(cost, platform);
+  source.RequireUnchanged();
+}
 StageResult
 PreparePhase6Configuration(const ArtifactRef &request,
                            const std::string &directory,

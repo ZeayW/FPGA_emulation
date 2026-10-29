@@ -11,6 +11,7 @@
 #include "physical/openparf/inputs.hpp"
 #include "transport/transport.hpp"
 #include "board/wiring.hpp"
+#include "flow/preflight.hpp"
 #include "physical/placement_lowering.hpp"
 #include <iostream>
 #include <string>
@@ -64,6 +65,7 @@ constexpr const char* kUsage =
     "  board normalize INPUT OUTPUT\n"
     "  board build-wiring BOARD INVENTORY CSV_OR_DASH OUTPUT\n"
     "  phase6 prepare-configuration REQUEST DIRECTORY\n"
+    "  compile prepare REQUEST STATE RUN_ID\n"
     "  phase7c run FLOW_ROOT OPENSTA [LAUNCHER_REFERENCE [SPLIT_ROOT PHYSICAL_ROOT RUNTIME_ROOT]]\n"
     "  phase1 prepare-configuration REQUEST DIRECTORY\n"
     "  phase1 stage-yosys-hierarchy REQUEST STORE SUMMARY [PRIMITIVE_LIBRARY] < YOSYS_STREAM\n"
@@ -285,6 +287,9 @@ int Dispatch(int argc, char** argv, const std::string& report) {
   }
   if (argc == 2 && std::string(argv[1]) == "--help") {
     std::cout << kUsage; return 0;
+  }
+  if(argc==6 && std::string(argv[1])=="compile" && std::string(argv[2])=="prepare") {
+    ToolSignals signals;return Finish(emuflow::core::PrepareCompile(emuflow::core::ArtifactRef::Bind(argv[3],"native-compile-request-v1"),emuflow::core::ArtifactRef::Bind(emuflow::core::CurrentExecutablePath(),"external-tool-executable-v1"),argv[5],argv[4],&tool_cancelled),report);
   }
   if ((argc == 2 || argc == 3) && std::string(argv[1]) == "check-runtime") {
     if (argc == 3) (void)emuflow::core::FindSchema(argv[2]);

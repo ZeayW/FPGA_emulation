@@ -68,40 +68,18 @@ def test_device_control_rejects_changed_source_and_invalid_device_facts(case, mu
         XilinxPackageGeometry.from_control_snapshot(state)
 
 
-def test_native_preflight_reaches_the_same_chimew_checks_for_both_backends(
-    case, tmp_path
-):
-    import emuflow.flow.multi_fpga_flow as flow
-    from emuflow.flow.native_compile_adapter import _initial_context
-
-    platform, _source, architecture, *_ = case
-    from emuflow.platform.default_platform import research_platform_path
-
-    class Reached(Exception):
-        pass
-
-    for backend in ("rapidwright", "vivado"):
-        ctx = _initial_context(
-            {
-                "options": {
-                    "output_dir": str(tmp_path / backend),
-                    "platform_path": str(research_platform_path(2)),
-                    "phase6_provider": "chimew",
-                    "physical": True,
-                    "physical_backend": backend,
-                    "physical_architecture": str(architecture),
-                }
-            }
-        )
-        with patch.object(
-            flow, "_validate_mapping_timing_contract", side_effect=Reached
-        ):
-            with pytest.raises(Reached):
-                flow._compile_preflight(ctx)
-        snapshot = _control_snapshot(ctx, "preflight", flow)
-        restored = _restore_control_state(_roundtrip(snapshot))
-        assert restored["chimew_package_geometry"].part == platform.fpgas[0].part
-        assert not ctx.output_dir.exists()
+def test_native_preflight_reaches_the_same_chimew_checks_for_both_backends(case,tmp_path,request):
+    from tests.chimew_admission_fixture import admitted
+    from emuflow.flow import multi_fpga_flow as flow
+    backend=request.node.callspec.params['case']
+    _source,state=admitted(case,tmp_path/'admission',backend)
+    value=json.loads(state.read_text())
+    restored=_restore_control_state(_unpack(value['state']))
+    assert restored['chimew_package_geometry'].part==case[0].fpgas[0].part
+    assert restored['physical_backend']==backend
+    assert restored['phase6_provider']=='chimew'
+    assert restored['native_phase3_configuration'].is_file()
+    assert not (tmp_path/'admission/native/frontend/phase1').exists()
 
 
 def test_baseline_reports_have_one_control_owner_and_restore_aliases(tmp_path):
@@ -299,97 +277,15 @@ def test_real_chimew_kernels_survive_split_and_physical_control_boundaries(
 
 
 
-@pytest.mark.parametrize("tamper", [None, "split", "physical"])
-def test_native_cpp_controller_carries_real_device_state_to_native_signoff(
-    case, tmp_path, tamper
-):
-    """Native Phase 3/4/5 and real codec; timing is an explicit prepared-boundary double."""
-    import subprocess
-    from tests.native_build import emuflow_native
-    from tests.test_native_compile import fixture_request
-    from emuflow.flow.native_compile_adapter import STAGES
-
-    platform, _source, architecture, *_ = case
-    root = tmp_path / "process"
-    root.mkdir()
-    request = fixture_request(root)
-    source = root / "source/emuflow"
-    real_source = Path(__file__).parents[1] / "src/python/emuflow"
-    (source / "__init__.py").write_text(
-        "__path__.append(" + repr(str(real_source)) + ")\n"
-    )
-    (source / "flow/__init__.py").write_text("__path__.append(" + repr(str(real_source / "flow")) + ")\n")
-    adapter = source / "flow/native_compile_adapter.py"
-    text = adapter.read_text()
-    marker = "pathlib.Path(a.output).write_text(json.dumps(value))"
-    assert marker in text
-    codec = (
-        """
-import importlib.util
-spec=importlib.util.spec_from_file_location('emuflow.real_compile_codec',REAL_CODEC)
-codec=importlib.util.module_from_spec(spec);spec.loader.exec_module(codec)
-from emuflow.flow.multi_fpga_flow import _CompileContext
-from emuflow.flow import multi_fpga_flow as flow
-from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
-from types import SimpleNamespace
-if a.stage=='preflight':
- state=codec._unpack(value['state'])
- state.update(output_dir=out,phase6_provider='chimew',chimew_package_geometry=XilinxPackageGeometry.open(pathlib.Path(ARCHITECTURE),PART))
-else:
- state=codec._restore_control_state(codec._unpack(value['state']))
-assert state['phase6_provider']=='chimew'
-assert state['chimew_package_geometry'].pins
-if a.stage=='split':
- physical={'status':'pass','device-facts-only':True};runtime={'status':'pass'}
- state.update(baseline_physical_report=physical,baseline_runtime_report=runtime,
-              phase6_comparison={'baseline':{'physical':physical,'runtime':runtime}})
- partition=json.loads((out/'partition/phase3_report.json').read_text())
- split=out/'split';split.mkdir(exist_ok=True)
- (split/'phase6_report.json').write_text(json.dumps({'schema':'emuflow.phase6-report/v1','phase':6,'status':'pass','design':partition['design'],'platform':partition['platform'],'provider':'chimew','validation':{'status':'pass','scheduled_hops':0},'equivalence':{'status':'pass','mismatches':0}}))
- (split/'manifest.json').write_text('{}')
-if a.stage in ('physical','signoff'):
- assert state['baseline_physical_report'] is state['phase6_comparison']['baseline']['physical']
- assert state['baseline_runtime_report'] is state['phase6_comparison']['baseline']['runtime']
-if a.stage==TAMPER:
- target=pathlib.Path(ARCHITECTURE);target.write_text(target.read_text()+'\\n')
-value['state']=codec._pack(codec._control_snapshot(_CompileContext(state),a.stage,flow))
-""".replace(
-            "REAL_CODEC", repr(str(real_source / "flow/native_compile_adapter.py"))
-        )
-        .replace("ARCHITECTURE", repr(str(architecture)))
-        .replace("PART", repr(platform.fpgas[0].part))
-        .replace("TAMPER", repr(tamper))
-    )
-    adapter.write_text(text.replace(marker, codec + "\n" + marker))
-    options = json.loads(request.read_text())
-    options["options"]["phase6_provider"] = "chimew"
-    write_json(request, options)
-    result = subprocess.run(
-        [str(emuflow_native()), "compile", str(request)], capture_output=True, text=True
-    )
-    calls = (root / "out/calls").read_text().splitlines()
-    route_report = json.loads((root / "out/system-route/phase4_report.json").read_text())
-    assert route_report["stage_implementation_id"] == "native-phase4-v1"
-    assert route_report["validation"]["status"] == "pass"
-    route_store = root / "out/system-route" / route_report["artifacts"]["route_store"]
-    assert route_store.read_bytes().startswith(b"SQLite format 3")
-    if tamper:
-        assert result.returncode != 0
-        assert calls == [stage for stage in STAGES[: STAGES.index(tamper) + 1] if stage not in {"frontend", "timing-policy", "partition-policy", "route-policy", "timing", "tdm", "partition", "route", "finalize"}]
-        assert "geometry generation changed" in result.stderr
-        assert not (root / "out/multi-fpga-flow-report.json").exists()
-    else:
-        # The codec fixture deliberately supplies no physical implementation.
-        # It must reach the native signoff owner and be rejected, rather than
-        # regain the old Python terminal adapter's fabricated success.
-        assert result.returncode != 0
-        assert "Chimew signoff requires physical results" in result.stderr
-        assert calls == [stage for stage in STAGES[:STAGES.index("signoff")] if stage not in {"frontend", "timing-policy", "partition-policy", "route-policy", "timing", "tdm", "partition", "route", "finalize"}]
-        report = json.loads((root / "out/native-compile-result.json").read_text())
-        assert report["native_data_plane_complete"] is False
-        assert not (root / "out/multi-fpga-flow-report.json").exists()
-        route = next(step for step in report["stages"] if step["stage"] == "route")
-        assert route["implementation_id"] == "native-phase4-v1"
-        partition = next(step for step in report["stages"] if step["stage"] == "partition")
-        assert partition["implementation_id"] == "native-phase3-v1"
-        assert (root / "out/partition/phase3_report.json").is_file()
+@pytest.mark.parametrize('boundary',['split','physical'])
+def test_native_admission_device_owner_is_checked_at_each_remaining_adapter_boundary(case,tmp_path,request,boundary):
+    from tests.chimew_admission_fixture import admitted
+    backend=request.node.callspec.params['case']
+    source,state=admitted(case,tmp_path/'admission',backend)
+    value=json.loads(state.read_text())
+    value['stage']='tdm' if boundary=='split' else 'split'
+    state.write_text(json.dumps(value))
+    architecture=case[2];architecture.write_text(architecture.read_text()+'\n')
+    with pytest.raises(ValidationError,match='geometry generation changed'):
+        execute(boundary,source,state,tmp_path/'must-not-publish','test')
+    assert not (tmp_path/'must-not-publish').exists()

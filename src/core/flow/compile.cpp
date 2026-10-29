@@ -1,4 +1,5 @@
 #include "flow/compile.hpp"
+#include "flow/preflight.hpp"
 #include "flow/route_policy.hpp"
 #include "flow/finalize.hpp"
 #include "flow/signoff.hpp"
@@ -389,8 +390,8 @@ class ControlJson {
   }
   void Envelope() {
     auto fields = db_.Prepare("SELECT count(*),sum(key IN ('schema','python_executable',"
-        "'python_source','working_directory','options')) FROM json_each(?1)"); fields.BindText(1,data_);
-    Require(fields.Step() && fields.Integer(0) == 5 && fields.Integer(1) == 5,
+        "'python_source','working_directory','options','pattern_range_policy')) FROM json_each(?1)"); fields.BindText(1,data_);
+    Require(fields.Step() && (fields.Integer(0) == 5 || fields.Integer(0)==6) && fields.Integer(1)==fields.Integer(0),
             "unknown native compiler request fields");
     Require(String("$.schema") == "emuflow.native-compile/v1","unsupported native compiler request schema");
   }
@@ -552,6 +553,28 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
       if (result.owns_output) RequireOwner(result);
       for (const auto& input : inputs) input.RequireUnchanged();
       Require(fs::canonical(python) == inputs[2].path(),"native compiler executable alias changed");
+      if(std::string(stage)=="preflight") {
+        const auto next=scratch.root/"preflight.json";
+        const auto made=PrepareCompile(configuration,inputs[3],run_id,next.string(),cancelled);
+        result.steps.push_back({stage,made.ok(),"native-preflight-v1",made.metrics.wall_seconds,made.metrics.user_cpu_seconds,made.metrics.system_cpu_seconds,made.metrics.process_peak_rss_kib});
+        if(!made.ok())throw StageError(made.error,"native compile admission: "+made.message);
+        ControlJson prepared(next.string());
+        if(prepared.String("$.state[1].phase6_provider")=="chimew") {
+          const auto admitted=scratch.root/"chimew-admission.json";
+          const auto probe_root=scratch.root/"tmp/chimew-admission";fs::create_directory(probe_root);
+          ToolRequest probe;probe.argv={python,"-m","emuflow.flow.native_compile_adapter","--stage","chimew-admission","--request",configuration.path(),"--previous",next.string(),"--output",admitted.string(),"--run-id",run_id};
+          probe.working_directory=working_directory;probe.environment={{"PYTHONPATH",python_source},{"TMPDIR",probe_root.string()},{"TMP",probe_root.string()},{"TEMP",probe_root.string()},{"SQLITE_TMPDIR",probe_root.string()},{"XDG_CACHE_HOME",(probe_root/"cache").string()}};probe.tail_bytes=32768;probe.termination_grace_ms=10000;
+          auto refs=inputs;refs.push_back(ArtifactRef::Bind(next.string(),"native-compile-state-v1"));const auto checked=RunExternalTool(probe,cancelled,refs);
+          result.steps.back().implementation_id="native-preflight-with-chimew-admission-v1";
+          result.steps.back().wall_seconds+=checked.wall_seconds;result.steps.back().user_cpu_seconds+=checked.user_cpu_seconds;result.steps.back().system_cpu_seconds+=checked.system_cpu_seconds;
+          if(!checked.operation.ok()){result.steps.back().passed=false;throw StageError(checked.operation.error,"Chimew package admission failed: "+checked.diagnostic_tail);}
+          ControlJson admitted_state(admitted.string());admitted_state.RequirePublishedPaths(probe_root);
+          fs::rename(admitted,next);std::error_code cleanup;fs::remove_all(probe_root,cleanup);Require(!cleanup,"cannot retire Chimew admission scratch");
+        }
+        ControlJson state(next.string());Require(state.String("$.schema")=="emuflow.native-compile-state/v1"&&state.String("$.stage")==stage&&state.String("$.run_id")==run_id&&state.String("$.status")=="pass"&&state.StateShape()&&state.Generation(configuration.generation()),"invalid native admission state");
+        state.RequirePublishedPaths(scratch.root);result.effective_configuration=state.Object("$.effective_options");ClaimOutput(output,result);previous=next;
+        std::cout<<"COMPILE_STAGE_COMPLETE preflight "<<made.metrics.wall_seconds<<"s\n"<<std::flush;continue;
+      }
       if(std::string(stage)=="timing-policy") {
         const auto root=output/".native-frontend-input-request";
         Require(!fs::is_symlink(root),"native frontend input directory was replaced");

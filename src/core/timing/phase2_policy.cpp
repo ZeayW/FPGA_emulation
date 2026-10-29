@@ -2,9 +2,9 @@
 #include "common/hash.hpp"
 #include "common/tool_runtime.hpp"
 #include "storage/store.hpp"
+#include "timing/cell_model.hpp"
 #include "timing/opensta_export.hpp"
 #include "timing/phase2.hpp"
-#include "timing/cell_model.hpp"
 #include "timing/routed_model.hpp"
 #include <algorithm>
 #include <array>
@@ -257,6 +257,27 @@ std::string Engine(Inputs &input, const volatile std::sig_atomic_t *cancelled) {
   return D::Encode(identity);
 }
 } // namespace
+std::string
+QualifyOpenstaEngine(const ArtifactRef &executable, const ArtifactRef &launcher,
+                     const ArtifactRef &runtime_check,
+                     const std::optional<ArtifactRef> &container_binary,
+                     const volatile std::sig_atomic_t *cancelled) {
+  Inputs input(executable, nullptr);
+  input.roles = {{"opensta-executable", executable},
+                 {"runtime-launcher", launcher},
+                 {"runtime-check-script", runtime_check}};
+  input.sources = {executable, launcher, runtime_check};
+  if (container_binary) {
+    input.roles.emplace("container-binary", *container_binary);
+    input.sources.push_back(*container_binary);
+  }
+  for (const auto &ref : input.sources)
+    ref.RequireUnchanged();
+  const auto result = Engine(input, cancelled);
+  for (const auto &ref : input.sources)
+    ref.RequireUnchanged();
+  return result;
+}
 StageResult PreparePhase2Policy(const ArtifactRef &request,
                                 const std::string &output,
                                 const volatile std::sig_atomic_t *cancelled,
@@ -277,10 +298,16 @@ StageResult PreparePhase2Policy(const ArtifactRef &request,
                 "policy output aliases a source");
         SqliteStore ir(input.roles.at("emuir"));
         auto &db = ir.database();
-        const auto shared = BuildTimingCellModel(db,input.roles.at("timing-model"),
-            input.roles.count("architecture-timing-db")?&input.roles.at("architecture-timing-db"):nullptr,
-            input.roles.count("architecture-contract")?&input.roles.at("architecture-contract"):nullptr);
-        const auto& used=shared.used_types;const auto& model=shared.json;
+        const auto shared =
+            BuildTimingCellModel(db, input.roles.at("timing-model"),
+                                 input.roles.count("architecture-timing-db")
+                                     ? &input.roles.at("architecture-timing-db")
+                                     : nullptr,
+                                 input.roles.count("architecture-contract")
+                                     ? &input.roles.at("architecture-contract")
+                                     : nullptr);
+        const auto &used = shared.used_types;
+        const auto &model = shared.json;
         D library(model), origin(library.Token("source"));
         const auto clocks = ClockMap(db, input.options.at("clocks"));
         ValidateIo(db, input.options.at("timing_io"), clocks);

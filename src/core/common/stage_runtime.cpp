@@ -198,6 +198,7 @@ constexpr RegisteredSchema schemas[] = {
     {"cut-qualification-report-v2", ArtifactEncoding::kText, 0, 2},
     {"phase6-configuration-v1", ArtifactEncoding::kText, 0, 1},
     {"phase6-configuration-input-v1", ArtifactEncoding::kText, 0, 1},
+    {"compile-options-v1", ArtifactEncoding::kText, 0, 1},
     {"hp-package-pin-inventory-v1", ArtifactEncoding::kText, 0, 1},
     {"fixed-wiring-csv-v1", ArtifactEncoding::kText, 0, 1},
     {"virtual-board-wiring-v1", ArtifactEncoding::kText, 0, 1},

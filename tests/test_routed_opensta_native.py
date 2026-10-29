@@ -1,4 +1,3 @@
-from tests.compile_adapter_fixture import preflight as run_preflight
 """Direct graph/model staging contracts; unit fixtures are not NVDLA qualification."""
 import json
 from contextlib import closing
@@ -229,19 +228,6 @@ def test_current_opensta_cli_uses_the_typed_source(tmp_path):
         main(["arch", "run-xilinx-opensta", "--mapped-json", "retired.json", "--routed-timing", "t.json", "--output", "p.json", "--summary", "s.json", "--clock-period", "clk=10"])
 
 
-def test_missing_staging_capability_fails_before_synthesis(tmp_path):
-    from emuflow.common.errors import EmuFlowError
-    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
-    def require(schema):
-        if schema == "routed-opensta-request-v1":
-            raise EmuFlowError("missing native routed staging")
-    with patch("emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract"), \
-         patch("emuflow.common.native_tools.require_native_schema", side_effect=require), \
-         patch("emuflow.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("synthesis started")), \
-         pytest.raises(EmuFlowError, match="missing native routed staging"):
-        run_preflight(sources=[tmp_path / "absent.v"], top="dut", clocks=["clk"], clock_periods={"clk": 10.0},
-                           physical=True, physical_backend="rapidwright", output_dir=tmp_path / "flow")
-    assert not (tmp_path / "flow").exists()
 
 
 def test_direct_twenty_thousand_unique_delays_keep_python_bounded(tmp_path):

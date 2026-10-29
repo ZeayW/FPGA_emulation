@@ -87,6 +87,8 @@
           "implementation_id": {
             "enum": [
               "isolated-python-adapter-v1",
+              "native-preflight-v1",
+              "native-preflight-with-chimew-admission-v1",
               "native-exact-phase5-v1",
               "native-rtl-frontend-v1",
               "native-frontend-input-v1",

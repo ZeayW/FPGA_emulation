@@ -72,6 +72,8 @@ def _request(args, kwargs):
         "working_directory": str(Path.cwd()),
         "options": _plain(dict(bound.arguments)),
     }
+    from emuflow.partition.structural_policy import _pattern_range_policy
+    value["pattern_range_policy"] = _pattern_range_policy()
     encoded = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     if len(encoded.encode("utf-8")) > 1024 * 1024:
         raise EmuFlowError("native compiler configuration exceeds bound")

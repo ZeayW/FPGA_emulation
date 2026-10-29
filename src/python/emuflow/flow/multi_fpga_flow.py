@@ -9,22 +9,17 @@ from __future__ import annotations
 
 import hashlib
 import math
-import os
 import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional
 
-from emuflow.platform.board_link_timing import validate_board_link_timing
 from emuflow.transport.chimew.chimew_lookahead import materialize_xilinx_chimew_inputs
 from emuflow.transport.chimew.chimew_pipeline import read_chimew_phase6_pipeline, run_chimew_phase6_pipeline
-from emuflow.platform.default_platform import DEFAULT_PLATFORM_PATH
 from emuflow.common.errors import EmuFlowError, ValidationError
 from emuflow.scheduling.frame_search import validate_frame_search_report
 from emuflow.common.io import read_json, write_json
 from emuflow.flow.multi_fpga_physical_flow import run_multi_fpga_physical_flow, validate_multi_fpga_physical_report
-from emuflow.timing.opensta import DEFAULT_TIMING_MODEL, check_opensta_engine_version
-from emuflow.physical.openparf.openparf import validate_openparf_runtime
 from emuflow.partition.phase3 import validate_phase3_indexed
 from emuflow.routing.phase4 import validate_phase4
 from emuflow.scheduling.phase5 import validate_phase5
@@ -33,30 +28,17 @@ from emuflow.timing.phase7c import run_phase7c
 from emuflow.timing.native_signoff import run_native_physical_signoff
 from emuflow.transport.pin_plan_storage import read_pin_plan
 from emuflow.physical.physical_summary_storage import read_physical_summary
-from emuflow.partition.partition import CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT, DEFAULT_PARTITION_CUT_MODE, DEFAULT_PATRON_ALGORITHM_VERSION
-from emuflow.partition.combinational_cut import STATIC_EXACT_DEFAULT_CANDIDATE_POLICY, STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
-from emuflow.common.native_tools import resolve_native_executable
+from emuflow.partition.partition import CUT_MODE_STATIC_EXACT
 from emuflow.platform.platform import Platform
-from emuflow.transport.transport_cost import validate_transport_cost_database
 from emuflow.transport.runtime import validate_virtual_runtime
-from emuflow.routing.routing import SYSTEM_ROUTE_CONSTRAINTS_SCHEMA
 from emuflow.scheduling.tdm import TDM_EXACT_DEPENDENCY_PROVIDER
 from emuflow.scheduling.tdm_schedule_storage import read_tdm_schedule
-from emuflow.routing.system_route_storage import read_system_routes
 from emuflow.scheduling.timing_routing import GLOBAL_CANDIDATE_PROVIDER
-from emuflow.timing.sta import partition_net_weights_payload_path, sta_path_database_payload_path
-from emuflow.frontend.synthesis import VALID_XILINX_MAPPING_STRATEGIES
-from emuflow.timing.xilinx_preplacement_timing import XILINX_PREPLACEMENT_TIMING_SCHEMA
-from emuflow.physical.xilinx_primitives import XILINX_ULTRASCALEPLUS_OPEN_PROFILE
 
 MULTI_FPGA_FLOW_SCHEMA = "emuflow.multi-fpga-flow/v2"
 MULTI_FPGA_FLOW_PROVIDER = (
     "profiled-yosys+partition+system-route+tdm+split-transport+runtime"
 )
-MULTI_FPGA_MAPPING_PROFILES = (
-    XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
-)
-MULTI_FPGA_PHASE6_PROVIDERS = ("chimew", "baseline")
 PHASE6_AB_COMPARISON_SCHEMA = "emuflow.phase6-ab-comparison/v3"
 _REQUIRED_STAGES = ("frontend", "partition", "system_route", "tdm", "split")
 
@@ -70,39 +52,7 @@ def _schedule_has_entries(schedule_path: Path) -> bool:
     except TypeError as error:
         raise ValidationError("TDM schedule entries are not sized") from error
 
-def _validate_mapping_timing_contract(
-    mapping_profile: str,
-    timing_db_path: Optional[Path],
-) -> None:
-    """Require the maintained Xilinx pre-placement contract before synthesis."""
-    if mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE:
-        raise EmuFlowError(f"unsupported multi-FPGA mapping profile {mapping_profile!r}")
-    if timing_db_path is None:
-        raise EmuFlowError(
-            "xilinx-ultrascaleplus-open-v1 requires a source-sealed "
-            "Xilinx pre-placement --architecture-timing-db"
-        )
-    expected_schema = XILINX_PREPLACEMENT_TIMING_SCHEMA
 
-    observed_schema = read_json(timing_db_path).get("schema")
-    if observed_schema != expected_schema:
-        raise EmuFlowError(
-            f"mapping profile {mapping_profile!r} requires Architecture "
-            f"TimingDB schema {expected_schema!r}, got {observed_schema!r}"
-        )
-
-def _resolve_partition_openroad(
-    partition_provider: str,
-    executable: Optional[str],
-    solution_input: Optional[Path] = None,
-) -> Optional[str]:
-    """Resolve a required partition engine before producing flow artifacts."""
-
-    if solution_input is not None:
-        return executable
-    if partition_provider in {"tritonpart", "patron"}:
-        return resolve_native_executable("openroad", executable)
-    return executable
 
 _STAGE_SUMMARY_FIELDS = {
     "frontend": ("schema", "phase", "status", "design", "platform", "synthesis"),
@@ -1110,279 +1060,24 @@ class _CompileContext:
         from emuflow.common.stage_metrics import measure_stage
         return measure_stage(self.output_dir, stage, function, *args, **kwargs)
 
-def _compile_preflight(ctx: _CompileContext):
-    if (
-        isinstance(ctx.patron_algorithm_version, bool)
-        or not isinstance(ctx.patron_algorithm_version, int)
-        or ctx.patron_algorithm_version != 14
-    ):
-        raise EmuFlowError("only PATRON v14 is supported")
-    if ctx.partition_provider not in {"patron", "tritonpart"}:
-        raise EmuFlowError(f"unsupported Phase 3 provider {ctx.partition_provider!r}")
-    if getattr(ctx, "source_checksums", None) is not None and (ctx.yosys_json is not None or ctx.prepared_frontend is not None or ctx.prepared_timing is not None):
-        raise EmuFlowError("source checksums apply only to original RTL compilation")
-    if ctx.optimize_frame_slots:
-        raise EmuFlowError("native compile does not yet support frame search")
-    if ctx.output_dir is None:
-        raise EmuFlowError("multi-FPGA compilation requires an output directory")
-
-    if ctx.global_timing_engine != "opensta":
-        raise EmuFlowError("only the OpenSTA global timing engine is supported")
-    if ctx.global_sta_executable is not None and not ctx.physical:
-        raise EmuFlowError("global OpenSTA qualification requires --physical")
-    if ctx.physical_backend not in {"rapidwright", "vivado"}:
-        raise EmuFlowError(f"unsupported physical backend {ctx.physical_backend!r}")
-    if ctx.mapping_profile not in MULTI_FPGA_MAPPING_PROFILES:
-        raise EmuFlowError(
-            "unsupported multi-FPGA mapping profile "
-            f"{ctx.mapping_profile!r}; expected one of "
-            f"{', '.join(MULTI_FPGA_MAPPING_PROFILES)}"
-        )
-    if ctx.xilinx_mapping_strategy is not None:
-        if ctx.xilinx_mapping_strategy not in VALID_XILINX_MAPPING_STRATEGIES:
-            raise EmuFlowError("unsupported Xilinx mapping strategy")
-        if ctx.mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE or ctx.yosys_json is not None:
-            raise EmuFlowError(
-                "Xilinx mapping strategy requires native Xilinx RTL synthesis"
-            )
-    if (
-        ctx.physical
-        and ctx.physical_backend == "rapidwright"
-        and ctx.mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE
-    ):
-        raise EmuFlowError(
-            "physical-backend=rapidwright requires "
-            "mapping-profile=xilinx-ultrascaleplus-open-v1"
-        )
-    if ctx.tdm_provider not in {None, TDM_EXACT_DEPENDENCY_PROVIDER}:
-        raise EmuFlowError(f"unsupported Phase 5 provider {ctx.tdm_provider!r}")
-    if ctx.cut_mode != CUT_MODE_STATIC_EXACT:
-        raise EmuFlowError("multi-FPGA compilation requires static-exact-combinational")
-    if ctx.route_provider not in {None, GLOBAL_CANDIDATE_PROVIDER}:
-        raise EmuFlowError("unsupported Phase 4 routing provider; use " + GLOBAL_CANDIDATE_PROVIDER)
-    if ctx.phase6_provider not in MULTI_FPGA_PHASE6_PROVIDERS:
-        raise EmuFlowError(
-            "unsupported Phase 6 provider "
-            f"{ctx.phase6_provider!r}; expected one of "
-            f"{', '.join(MULTI_FPGA_PHASE6_PROVIDERS)}"
-        )
-    if ctx.cut_mode not in {CUT_MODE_SEQUENTIAL_ONLY, CUT_MODE_STATIC_EXACT}:
-        raise EmuFlowError("unsupported combinational cut mode")
-    ctx.exact_cut_mode = ctx.cut_mode == CUT_MODE_STATIC_EXACT
-    ctx.clocks = tuple(ctx.clocks)
-    if (
-        ctx.partition_provider == "patron"
-        and ctx.patron_algorithm_version == 14
-        and not ctx.exact_cut_mode
-    ):
-        raise EmuFlowError(
-            "PATRON v14 requires generalized Static Exact mode"
-        )
-    if not 2 <= ctx.phase6_chimew_region_count <= 31:
-        raise EmuFlowError("--phase6-chimew-region-count must be in [2, 31]")
-    if ctx.phase6_provider == "chimew":
-        if (not ctx.physical or ctx.physical_backend not in {"rapidwright", "vivado"}
-                or ctx.mapping_profile != XILINX_ULTRASCALEPLUS_OPEN_PROFILE):
-            raise EmuFlowError("Chimew requires --physical and the Xilinx mapping with RapidWright or Vivado")
-        if ctx.physical_architecture is None:
-            raise EmuFlowError("Chimew requires the source-qualified Xilinx ArchitectureDB package geometry")
-        from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
-        from emuflow.transport.chimew.chimew_fixed_wiring import FixedWiringChannels
-        board = FixedWiringChannels(Platform.load(ctx.platform_path))
-        parts = {fpga.part for fpga in Platform.load(ctx.platform_path).fpgas}
-        if len(parts) != 1:
-            raise EmuFlowError("Chimew requires a single Xilinx device model")
-        ctx.chimew_package_geometry = XilinxPackageGeometry.open(ctx.physical_architecture, next(iter(parts)))
-        pins = ctx.chimew_package_geometry.pins
-        for wire in board.board["wires"]:
-            for end in wire["endpoints"]:
-                for polarity in ("p", "n"):
-                    pin = end[polarity]
-                    if pins.get(pin["package_pin"], (None,))[0] != pin["site"]:
-                        raise ValidationError("Chimew native package geometry does not cover the fixed P/N wiring")
-    _validate_mapping_timing_contract(
-        ctx.mapping_profile, ctx.architecture_timing_db
-    )
-    ctx.internal_timing_database = ctx.timing_paths is None
-    if ctx.partition_provider == "patron" and not ctx.internal_timing_database:
-        raise EmuFlowError(
-            "--partition-provider patron requires the internally generated "
-            "complete TimingPathDB"
-        )
-    if ctx.timing_paths is not None and (
-        ctx.timing_driven or ctx.architecture_timing_db is not None
-    ):
-        raise EmuFlowError(
-            "--timing-driven/--architecture-timing-db cannot be combined "
-            "with externally projected --timing-paths"
-        )
-    if ctx.physical and ctx.timing_paths is not None:
-        raise EmuFlowError(
-            "physical Phase 7C requires an internally generated complete "
-            "TimingPathDB; externally projected --timing-paths are only "
-            "supported by non-physical algorithm tests"
-        )
-    if ctx.optimize_frame_slots and not ctx.timing_driven:
-        raise EmuFlowError(
-            "--optimize-frame-slots requires --timing-driven"
-        )
-    if ctx.internal_timing_database and not ctx.clock_periods:
-        raise EmuFlowError(
-            "multi-FPGA timing analysis requires at least one "
-            "--clock-period CLOCK=PERIOD_NS; TimingPathDB remains mandatory "
-            "for physical Phase 7C even with --no-timing-driven"
-        )
-
-    # These small board contracts can be checked without a synthesized graph.
-    # Reject a renamed stress platform paired with the original timing/cost
-    # databases before spending hours on synthesis and timing extraction.
-    ctx.checked_link_timing = None
-    ctx.checked_link_timing_validation = None
-    if ctx.board_link_timing_db is not None or ctx.transport_cost_db is not None:
-        board_contract_platform = Platform.load(ctx.platform_path)
-        if ctx.board_link_timing_db is not None:
-            ctx.checked_link_timing = read_json(ctx.board_link_timing_db.resolve())
-            ctx.checked_link_timing_validation = validate_board_link_timing(
-                ctx.checked_link_timing, board_contract_platform
-            )
-        if ctx.transport_cost_db is not None:
-            validate_transport_cost_database(
-                read_json(ctx.transport_cost_db.resolve()),
-                expected_platform=board_contract_platform.name,
-            )
-
-    # Phase 7 runs after every board-independent stage, so validating its
-    # interpreter inside the physical-flow helper is much too late for a
-    # one-shot Phase 1--7 invocation.  Reject an unusable OpenPARF/PyTorch
-    # binding before creating any frontend artifact or doing synthesis.
-    physical_uses_openparf = ctx.physical and ctx.physical_backend == "rapidwright"
-    if physical_uses_openparf:
-        from emuflow.common.native_tools import require_native_schema
-        require_native_schema("rwroute-export-request-v2")
-        require_native_schema("routed-segment-request-v1")
-        require_native_schema("routed-endpoint-request-v1")
-        require_native_schema("routed-opensta-request-v1")
-        validate_openparf_runtime(
-            install_root=ctx.physical_openparf_install,
-            python_executable=ctx.physical_openparf_python,
-        )
-    if ctx.physical and ctx.physical_backend == "vivado":
-        from emuflow.common.native_tools import require_native_schema
-        require_native_schema("vivado-lineage-store-v2")
-        require_native_schema("vivado-export-request-v1")
-    if ctx.internal_timing_database:
-        from emuflow.common.native_tools import require_native_schema
-        require_native_schema("opensta-input-export-request-v1")
-        require_native_schema("sta-path-request-v1")
-        require_native_schema("sta-weight-request-v1")
-        ctx.opensta = resolve_native_executable("sta", ctx.opensta)
-        check_opensta_engine_version(ctx.opensta)
-    if ctx.physical:
-        from emuflow.common.native_tools import require_native_schema
-        require_native_schema("placement-lowering-request-v1")
-        require_native_schema("transport-synthesis-request-v1")
-        ctx.global_sta_executable = resolve_native_executable("sta", ctx.global_sta_executable)
-        from emuflow.timing.opensta import _runtime_data_path
-        ctx.global_sta_launcher_reference = _runtime_data_path(Path("scripts/opensta/container_runtime.sh")).resolve()
-        if not Path(ctx.global_sta_executable).is_file() or not os.access(ctx.global_sta_executable, os.X_OK):
-            raise EmuFlowError("global OpenSTA executable is unavailable or not executable")
-        if ctx.global_sta_executable != ctx.opensta:
-            check_opensta_engine_version(ctx.global_sta_executable)
-
-    ctx.output_dir = ctx.output_dir.resolve()
-    if ctx.output_dir.exists():
-        if not ctx.output_dir.is_dir() or any(ctx.output_dir.iterdir()):
-            raise EmuFlowError(
-                "multi-FPGA output path must be an empty directory: "
-                f"{ctx.output_dir}"
-            )
-    ctx.openroad = _resolve_partition_openroad(
-        ctx.partition_provider, ctx.openroad, ctx.tritonpart_solution
-    )
-    from emuflow.common.native_tools import require_native_schema
-
-    if ctx.prepared_frontend is None and ctx.yosys_json is None:
-        require_native_schema("yosys-emuir-import-request-v1")
-        require_native_schema("external-tool-request-v2")
-    require_native_schema("partition-initialization-request-v1")
-    require_native_schema("partition-decision-request-v1")
-    require_native_schema("partition-configuration-request-v1")
-    require_native_schema("partition-hop-request-v1")
-    require_native_schema("phase3-stage-request-v1")
-    require_native_schema("partition-load-request-v2")
-    require_native_schema("partition-finalization-request-v1")
-    require_native_schema("assignment-publication-request-v3")
-    require_native_schema("assignment-descriptor-request-v1")
-    require_native_schema("exact-binary-publication-request-v1")
-    require_native_schema("exact-binary-validation-request-v1")
-    require_native_schema("partition-publication-request-v1")
-    require_native_schema("phase5-stage-request-v1")
-    require_native_schema("split-netlists-v3")
-    require_native_schema("transport-stage-request-v1")
-    require_native_schema("phase6-stage-request-v1")
-    require_native_schema("phase6-compile-policy-v1")
-    require_native_schema("boarddb-v1")
-    ctx.output_dir.mkdir(parents=True, exist_ok=True)
-    if ctx.physical and ctx.phase6_provider == "baseline":
-        from emuflow.flow.multi_fpga_physical_flow import prepare_compile_policy
-        prepare_compile_policy(ctx)
-    if ctx.prepared_frontend is None and ctx.yosys_json is None and ctx.sources:
-        from emuflow.frontend.frontend_native import prepare_frontend
-        prepare_frontend(ctx)
-    elif ctx.prepared_frontend is not None or ctx.prepared_timing is not None or ctx.yosys_json is not None:
-        from emuflow.frontend.inputs import prepare_inputs
-        prepare_inputs(ctx)
-    if ctx.internal_timing_database and ctx.prepared_timing is None:
-        from emuflow.timing.phase2_native import prepare_configuration_request
-        from emuflow.common.native_tools import native_file_generation
-        ctx.native_phase2_configuration = prepare_configuration_request(
-            ctx.output_dir / ".native-phase2-configuration",
-            clocks=ctx.clock_periods, timing_io=ctx.timing_io,
-            timing_model_path=ctx.timing_model,
-            architecture_timing_db_path=ctx.architecture_timing_db,
-            executable=ctx.opensta, max_paths=ctx.sta_max_paths,
-            optimization_enabled=ctx.timing_driven,
-            criticality_scale=ctx.timing_criticality_scale,
-            criticality_exponent=ctx.timing_criticality_exponent)
-        ctx.native_phase2_configuration_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase2_configuration))
-
-    from emuflow.partition.phase3_native import prepare_configuration_request as prepare_partition_configuration
-    from emuflow.common.native_tools import native_file_generation
-    ctx.native_phase3_configuration = prepare_partition_configuration(
-        ctx.output_dir / ".native-phase3-configuration", ctx.platform_path,
-        constraints_path=ctx.partition_constraints, seed=ctx.seed,
-        min_used_fpgas=ctx.min_used_fpgas, balance_tolerance=ctx.balance_tolerance,
-        provider=ctx.partition_provider, openroad=ctx.openroad,
-        tritonpart_solution=ctx.tritonpart_solution,
-        tritonpart_timeout_seconds=ctx.partition_timeout_seconds,
-        tritonpart_seed_attempts=ctx.partition_seed_attempts,
-        tritonpart_num_initial_solutions=ctx.partition_num_initial_solutions,
-        tritonpart_num_best_initial_solutions=ctx.partition_num_best_initial_solutions,
-        tritonpart_repair_min_used_fpgas=ctx.partition_repair_min_used_fpgas,
-        route_constraints_path=ctx.route_constraints,
-        max_cross_fpga_dependency_depth=ctx.max_cross_fpga_dependency_depth,
-        static_exact_candidate_policy=ctx.static_exact_candidate_policy,
-        patron_max_moves=ctx.patron_max_moves, board_link_timing_db=ctx.board_link_timing_db,
-        timing_driven=ctx.timing_driven)
-    ctx.native_phase3_configuration_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase3_configuration))
-
-
-    from emuflow.routing.phase4_native import prepare_configuration_request as prepare_routing
-    route_settings = ctx.output_dir / '.native-phase4-configuration'
-    route_settings.mkdir()
-    ctx.native_phase4_configuration = prepare_routing(route_settings/'request.json', ctx.platform_path,
-        constraints_path=ctx.route_constraints, frame_slots=ctx.frame_slots,
-        max_iterations=ctx.route_max_iterations, candidate_workers=ctx.route_candidate_workers,
-        timing_driven=ctx.timing_driven, external_timing=ctx.timing_paths,
-        timing_model_path=ctx.timing_model if ctx.internal_timing_database else None,
-        architecture_timing_db_path=ctx.architecture_timing_db)
-    ctx.native_phase4_configuration_generation = tuple(str(v) for v in native_file_generation(ctx.native_phase4_configuration))
-    if ctx.phase6_provider == 'baseline':
-        from emuflow.transport.phase6_native import prepare_configuration_request as prepare_transport
-        ctx.native_phase6_configuration = prepare_transport(ctx.output_dir/'.native-phase6-configuration',ctx.platform_path,
-            clock_periods=ctx.clock_periods,transport_cost_path=ctx.transport_cost_db,
-            equivalence_cycles=ctx.equivalence_cycles,equivalence_seed=ctx.equivalence_seed)
-        ctx.native_phase6_configuration_generation = tuple(str(v) for v in native_file_generation(ctx.native_phase6_configuration))
+def _compile_chimew_admission(ctx: _CompileContext):
+    """Admit the remaining Chimew device catalog after native common preflight."""
+    if ctx.phase6_provider != "chimew":
+        raise EmuFlowError("Chimew package admission requires the Chimew provider")
+    from emuflow.transport.chimew.xilinx_chimew_geometry import XilinxPackageGeometry
+    from emuflow.transport.chimew.chimew_fixed_wiring import FixedWiringChannels
+    board = FixedWiringChannels(Platform.load(ctx.platform_path))
+    parts = {fpga.part for fpga in Platform.load(ctx.platform_path).fpgas}
+    if len(parts) != 1:
+        raise EmuFlowError("Chimew requires a single Xilinx device model")
+    ctx.chimew_package_geometry = XilinxPackageGeometry.open(ctx.physical_architecture, next(iter(parts)))
+    pins = ctx.chimew_package_geometry.pins
+    for wire in board.board["wires"]:
+        for end in wire["endpoints"]:
+            for polarity in ("p", "n"):
+                pin = end[polarity]
+                if pins.get(pin["package_pin"], (None,))[0] != pin["site"]:
+                    raise ValidationError("Chimew native package geometry does not cover the fixed P/N wiring")
 
 
 def _run_selected_physical(ctx, split_root, schedule_path, output_dir):
@@ -1594,92 +1289,95 @@ def _compile_physical(ctx: _CompileContext):
                 str(value) for value in native_file_generation(ctx.native_phase6_comparison_input)
             )
 
-def run_multi_fpga_flow(
-    platform_path: Path = DEFAULT_PLATFORM_PATH,
-    output_dir: Optional[Path] = None,
-    *,
-    sources: Iterable[Path] = (),
-    include_dirs: Iterable[Path] = (),
-    defines: Iterable[str] = (),
-    source_checksums: Optional[Dict[str, str]] = None,
-    top: Optional[str] = None,
-    clocks: Iterable[str] = (),
-    yosys_json: Optional[Path] = None,
-    prepared_frontend: Optional[Path] = None,
-    prepared_timing: Optional[Path] = None,
-    yosys: Optional[str] = None,
-    mapping_profile: str = XILINX_ULTRASCALEPLUS_OPEN_PROFILE,
-    xilinx_mapping_strategy: Optional[str] = None,
-    partition_constraints: Optional[Path] = None,
-    partition_provider: str = "patron",
-    seed: int = 0,
-    min_used_fpgas: Optional[int] = None,
-    balance_tolerance: Optional[float] = None,
-    openroad: Optional[str] = None,
-    tritonpart_solution: Optional[Path] = None,
-    patron_refiner: Optional[str] = None,
-    patron_max_moves: Optional[int] = None,
-    patron_algorithm_version: int = DEFAULT_PATRON_ALGORITHM_VERSION,
-    partition_timeout_seconds: int = 3600,
-    partition_seed_attempts: int = 1,
-    partition_num_initial_solutions: int = 50,
-    partition_num_best_initial_solutions: int = 10,
-    partition_repair_min_used_fpgas: bool = True,
-    cut_mode: str = DEFAULT_PARTITION_CUT_MODE,
-    max_cross_fpga_dependency_depth: int = (
-        STATIC_EXACT_DEFAULT_MAX_DEPENDENCY_DEPTH
-    ),
-    static_exact_candidate_policy: str = STATIC_EXACT_DEFAULT_CANDIDATE_POLICY,
-    timing_driven: bool = True,
-    clock_periods: Optional[Dict[str, float]] = None,
-    timing_io: Optional[Mapping[str, Any]] = None,
-    timing_model: Path = DEFAULT_TIMING_MODEL,
-    architecture_timing_db: Optional[Path] = None,
-    opensta: Optional[str] = None,
-    sta_max_paths: int = 200000,
-    timing_criticality_scale: float = 9.0,
-    timing_criticality_exponent: float = 2.0,
-    route_constraints: Optional[Path] = None,
-    board_link_timing_db: Optional[Path] = None,
-    transport_cost_db: Optional[Path] = None,
-    timing_paths: Optional[Path] = None,
-    router: Optional[str] = None,
-    route_provider: Optional[str] = None,
-    route_candidate_workers: int = 1,
-    frame_slots: Optional[int] = None,
-    optimize_frame_slots: bool = False,
-    route_max_iterations: Optional[int] = None,
-    tdm_provider: Optional[str] = None,
+from emuflow.flow.compile_options import COMPILE_DEFAULTS
 
-    simulation_frames: int = 16,
-    equivalence_cycles: int = 1,
-    equivalence_seed: int = 20260727,
-    phase6_provider: str = "baseline",
-    phase6_chimew_region_count: int = 4,
-    phase6_chimew_grouper: Optional[str] = None,
-    phase6_chimew_refiner: Optional[str] = None,
-    phase6_chimew_rudy: Optional[str] = None,
-    phase6_chimew_assigner: Optional[str] = None,
-    physical: bool = False,
-    physical_backend: str = "rapidwright",
-    physical_architecture: Optional[Path] = None,
-    physical_openparf_install: Optional[Path] = None,
-    physical_openparf_python: Optional[Path] = None,
-    physical_seed: int = 1,
-    physical_vivado: Optional[str] = None,
-    physical_vivado_place_directive: str = "Default",
-    physical_vivado_route_directive: str = "Default",
-    physical_rapidwright_jar: Optional[Path] = None,
-    physical_rapidwright_java: Optional[Path] = None,
-    physical_rapidwright_java_source: Optional[Path] = None,
-    physical_rapidwright_device_data: Optional[Path] = None,
-    physical_rapidwright_timing_data: Optional[Path] = None,
-    physical_rapidwright_opensta: Optional[str] = None,
-    physical_rapidwright_native_constraints: Optional[Path] = None,
-    physical_rapidwright_provider_manifest: Optional[Path] = None,
-    physical_workers: int = 1,
-    global_sta_executable: Optional[str] = None,
-    global_timing_engine: str = "opensta",
+
+def run_multi_fpga_flow(
+    platform_path: Path = COMPILE_DEFAULTS['platform_path'],
+    output_dir: Optional[Path] = COMPILE_DEFAULTS['output_dir'],
+    *,
+    sources: Iterable[Path] = COMPILE_DEFAULTS['sources'],
+    include_dirs: Iterable[Path] = COMPILE_DEFAULTS['include_dirs'],
+    defines: Iterable[str] = COMPILE_DEFAULTS['defines'],
+    source_checksums: Optional[Dict[str, str]] = COMPILE_DEFAULTS['source_checksums'],
+    top: Optional[str] = COMPILE_DEFAULTS['top'],
+    clocks: Iterable[str] = COMPILE_DEFAULTS['clocks'],
+    yosys_json: Optional[Path] = COMPILE_DEFAULTS['yosys_json'],
+    prepared_frontend: Optional[Path] = COMPILE_DEFAULTS['prepared_frontend'],
+    prepared_timing: Optional[Path] = COMPILE_DEFAULTS['prepared_timing'],
+    yosys: Optional[str] = COMPILE_DEFAULTS['yosys'],
+    mapping_profile: str = COMPILE_DEFAULTS['mapping_profile'],
+    xilinx_mapping_strategy: Optional[str] = COMPILE_DEFAULTS['xilinx_mapping_strategy'],
+    partition_constraints: Optional[Path] = COMPILE_DEFAULTS['partition_constraints'],
+    partition_provider: str = COMPILE_DEFAULTS['partition_provider'],
+    seed: int = COMPILE_DEFAULTS['seed'],
+    min_used_fpgas: Optional[int] = COMPILE_DEFAULTS['min_used_fpgas'],
+    balance_tolerance: Optional[float] = COMPILE_DEFAULTS['balance_tolerance'],
+    openroad: Optional[str] = COMPILE_DEFAULTS['openroad'],
+    tritonpart_solution: Optional[Path] = COMPILE_DEFAULTS['tritonpart_solution'],
+    patron_refiner: Optional[str] = COMPILE_DEFAULTS['patron_refiner'],
+    patron_max_moves: Optional[int] = COMPILE_DEFAULTS['patron_max_moves'],
+    patron_algorithm_version: int = COMPILE_DEFAULTS['patron_algorithm_version'],
+    partition_timeout_seconds: int = COMPILE_DEFAULTS['partition_timeout_seconds'],
+    partition_seed_attempts: int = COMPILE_DEFAULTS['partition_seed_attempts'],
+    partition_num_initial_solutions: int = COMPILE_DEFAULTS['partition_num_initial_solutions'],
+    partition_num_best_initial_solutions: int = COMPILE_DEFAULTS['partition_num_best_initial_solutions'],
+    partition_repair_min_used_fpgas: bool = COMPILE_DEFAULTS['partition_repair_min_used_fpgas'],
+    cut_mode: str = COMPILE_DEFAULTS['cut_mode'],
+    max_cross_fpga_dependency_depth: int = (
+        COMPILE_DEFAULTS['max_cross_fpga_dependency_depth']
+    ),
+    static_exact_candidate_policy: str = COMPILE_DEFAULTS['static_exact_candidate_policy'],
+    timing_driven: bool = COMPILE_DEFAULTS['timing_driven'],
+    clock_periods: Optional[Dict[str, float]] = COMPILE_DEFAULTS['clock_periods'],
+    timing_io: Optional[Mapping[str, Any]] = COMPILE_DEFAULTS['timing_io'],
+    timing_model: Path = COMPILE_DEFAULTS['timing_model'],
+    architecture_timing_db: Optional[Path] = COMPILE_DEFAULTS['architecture_timing_db'],
+    opensta: Optional[str] = COMPILE_DEFAULTS['opensta'],
+    sta_max_paths: int = COMPILE_DEFAULTS['sta_max_paths'],
+    timing_criticality_scale: float = COMPILE_DEFAULTS['timing_criticality_scale'],
+    timing_criticality_exponent: float = COMPILE_DEFAULTS['timing_criticality_exponent'],
+    route_constraints: Optional[Path] = COMPILE_DEFAULTS['route_constraints'],
+    board_link_timing_db: Optional[Path] = COMPILE_DEFAULTS['board_link_timing_db'],
+    transport_cost_db: Optional[Path] = COMPILE_DEFAULTS['transport_cost_db'],
+    timing_paths: Optional[Path] = COMPILE_DEFAULTS['timing_paths'],
+    router: Optional[str] = COMPILE_DEFAULTS['router'],
+    route_provider: Optional[str] = COMPILE_DEFAULTS['route_provider'],
+    route_candidate_workers: int = COMPILE_DEFAULTS['route_candidate_workers'],
+    frame_slots: Optional[int] = COMPILE_DEFAULTS['frame_slots'],
+    optimize_frame_slots: bool = COMPILE_DEFAULTS['optimize_frame_slots'],
+    route_max_iterations: Optional[int] = COMPILE_DEFAULTS['route_max_iterations'],
+    tdm_provider: Optional[str] = COMPILE_DEFAULTS['tdm_provider'],
+
+    simulation_frames: int = COMPILE_DEFAULTS['simulation_frames'],
+    equivalence_cycles: int = COMPILE_DEFAULTS['equivalence_cycles'],
+    equivalence_seed: int = COMPILE_DEFAULTS['equivalence_seed'],
+    phase6_provider: str = COMPILE_DEFAULTS['phase6_provider'],
+    phase6_chimew_region_count: int = COMPILE_DEFAULTS['phase6_chimew_region_count'],
+    phase6_chimew_grouper: Optional[str] = COMPILE_DEFAULTS['phase6_chimew_grouper'],
+    phase6_chimew_refiner: Optional[str] = COMPILE_DEFAULTS['phase6_chimew_refiner'],
+    phase6_chimew_rudy: Optional[str] = COMPILE_DEFAULTS['phase6_chimew_rudy'],
+    phase6_chimew_assigner: Optional[str] = COMPILE_DEFAULTS['phase6_chimew_assigner'],
+    physical: bool = COMPILE_DEFAULTS['physical'],
+    physical_backend: str = COMPILE_DEFAULTS['physical_backend'],
+    physical_architecture: Optional[Path] = COMPILE_DEFAULTS['physical_architecture'],
+    physical_openparf_install: Optional[Path] = COMPILE_DEFAULTS['physical_openparf_install'],
+    physical_openparf_python: Optional[Path] = COMPILE_DEFAULTS['physical_openparf_python'],
+    physical_seed: int = COMPILE_DEFAULTS['physical_seed'],
+    physical_vivado: Optional[str] = COMPILE_DEFAULTS['physical_vivado'],
+    physical_vivado_place_directive: str = COMPILE_DEFAULTS['physical_vivado_place_directive'],
+    physical_vivado_route_directive: str = COMPILE_DEFAULTS['physical_vivado_route_directive'],
+    physical_rapidwright_jar: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_jar'],
+    physical_rapidwright_java: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_java'],
+    physical_rapidwright_java_source: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_java_source'],
+    physical_rapidwright_device_data: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_device_data'],
+    physical_rapidwright_timing_data: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_timing_data'],
+    physical_rapidwright_opensta: Optional[str] = COMPILE_DEFAULTS['physical_rapidwright_opensta'],
+    physical_rapidwright_native_constraints: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_native_constraints'],
+    physical_rapidwright_provider_manifest: Optional[Path] = COMPILE_DEFAULTS['physical_rapidwright_provider_manifest'],
+    physical_workers: int = COMPILE_DEFAULTS['physical_workers'],
+    global_sta_executable: Optional[str] = COMPILE_DEFAULTS['global_sta_executable'],
+    global_timing_engine: str = COMPILE_DEFAULTS['global_timing_engine'],
 ) -> Dict[str, Any]:
     """Submit a bounded request to the sole native production controller.
 

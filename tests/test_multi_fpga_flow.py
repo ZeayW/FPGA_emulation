@@ -16,9 +16,7 @@ from emuflow.flow.cli import _build_parser, _dispatch
 from emuflow.common.errors import EmuFlowError, ValidationError
 from emuflow.common.io import read_json, write_json
 from emuflow.flow.multi_fpga_flow import (
-    _resolve_partition_openroad,
     _schedule_has_entries,
-    _validate_mapping_timing_contract,
     finalize_multi_fpga_physical_checkpoint,
     run_multi_fpga_flow,
     validate_multi_fpga_flow_bundle,
@@ -76,86 +74,35 @@ class MultiFpgaFlowTest(unittest.TestCase):
         ):
             self.assertTrue(_schedule_has_entries(Path("schedule.json")))
 
-    def test_native_frontend_contract_is_checked_before_yosys_launch(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            timing = root / "timing.json"
-            write_json(timing, {"schema": "emuflow.xilinx-preplacement-timing-db/v1"})
-            def require(schema):
-                if schema == "yosys-emuir-import-request-v1":
-                    raise EmuFlowError("missing native frontend contract")
-            with (
-                patch("emuflow.flow.multi_fpga_flow.resolve_native_executable", return_value=str(FAKE_OPENSTA)),
-                patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"),
-                patch("emuflow.common.native_tools.require_native_schema", side_effect=require),
-                patch("emuflow.frontend.frontend_native.prepare_frontend") as mapper,
-            ):
-                with self.assertRaisesRegex(EmuFlowError, "missing native frontend contract"):
-                    run_preflight(
-                        platform_path=PLATFORM, output_dir=root / "flow",
-                        sources=[ROOT / "examples/rtl/counter.v"], top="counter",
-                        clocks=["clk"], clock_periods={"clk": 10},
-                        architecture_timing_db=timing,
-                        mapping_profile="xilinx-ultrascaleplus-open-v1",
-                        cut_mode="static-exact-combinational", partition_provider="tritonpart",
-                    )
-                mapper.assert_not_called()
+    def test_native_frontend_contract_is_checked_without_python_schema_adapters(self):
+        from tests.test_compile_preflight_native import request_options
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);options=request_options(root)
+            with patch('emuflow.common.native_tools.require_native_schema',side_effect=AssertionError('Python schema adapter started')):
+                ctx=run_preflight(**options)
+            self.assertTrue(ctx.native_frontend_request.is_file())
+            self.assertFalse((root/'native/frontend/phase1').exists())
 
-    def test_multiple_static_exact_clocks_reach_streaming_frontend(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            timing = root / "timing.json"
-            write_json(
-                timing,
-                {"schema": "emuflow.xilinx-preplacement-timing-db/v1"},
-            )
-            with (
-                patch(
-                    "emuflow.flow.multi_fpga_flow.resolve_native_executable",
-                    return_value=str(FAKE_OPENSTA),
-                ),
-                patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"),
-                patch(
-                    "emuflow.frontend.frontend_native.prepare_frontend",
-                    side_effect=RuntimeError("reached multi-clock mapper"),
-                ) as mapper,
-            ):
-                with self.assertRaisesRegex(RuntimeError, "reached multi-clock mapper"):
-                    run_preflight(
-                        platform_path=PLATFORM, output_dir=root / "flow",
-                        sources=[ROOT / "examples/rtl/counter.v"], top="counter",
-                        clocks=["dla_core_clk", "dla_csb_clk"],
-                        clock_periods={"dla_core_clk": 10, "dla_csb_clk": 20},
-                        architecture_timing_db=timing,
-                        mapping_profile="xilinx-ultrascaleplus-open-v1",
-                        cut_mode="static-exact-combinational", partition_provider="tritonpart",
-                    )
-                mapper.assert_called_once()
+    def test_multiple_static_exact_clocks_reach_native_frontend_configuration(self):
+        from tests.test_compile_preflight_native import request_options
+        from tests.test_frontend_configuration import read_rtl_request
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);options=request_options(root)
+            options.update(clocks=['dla_core_clk','dla_csb_clk'],clock_periods={'dla_core_clk':10.0,'dla_csb_clk':20.0})
+            ctx=run_preflight(**options)
+            value=read_rtl_request(ctx.native_frontend_request)
+            self.assertEqual(value.clocks,['dla_core_clk','dla_csb_clk'])
+            self.assertFalse((root/'native/frontend/phase1').exists())
 
-    def test_native_xilinx_mapper_selection_reaches_streaming_frontend(self):
-        for strategy in (None, "hierarchical-classic-v1", "hierarchical-abc9-v1"):
-            with self.subTest(strategy=strategy), tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                timing = root / "timing.json"
-                write_json(timing, {"schema": "emuflow.xilinx-preplacement-timing-db/v1"})
-                with (
-                    patch("emuflow.flow.multi_fpga_flow.resolve_native_executable", return_value=str(FAKE_OPENSTA)),
-                    patch("emuflow.flow.multi_fpga_flow.check_opensta_engine_version"),
-                    patch("emuflow.frontend.frontend_native.prepare_frontend",
-                          side_effect=RuntimeError("reached mapper")) as frontend,
-                ):
-                    with self.assertRaisesRegex(RuntimeError, "reached mapper"):
-                        run_preflight(
-                            cut_mode="static-exact-combinational",
-                            platform_path=PLATFORM, output_dir=root / "flow",
-                            sources=[ROOT / "examples/rtl/counter.v"], top="counter",
-                            mapping_profile="xilinx-ultrascaleplus-open-v1",
-                            xilinx_mapping_strategy=strategy,
-                            architecture_timing_db=timing, clock_periods={"clk": 10},
-                            partition_provider="tritonpart",
-                        )
-                    self.assertEqual(frontend.call_args.args[0].xilinx_mapping_strategy or "hierarchical-abc9-v1",
-                                     strategy or "hierarchical-abc9-v1")
+    def test_native_xilinx_mapper_selection_reaches_native_configuration(self):
+        from tests.test_compile_preflight_native import request_options
+        from tests.test_frontend_configuration import read_rtl_request
+        for strategy in (None,'hierarchical-classic-v1','hierarchical-abc9-v1'):
+            with self.subTest(strategy=strategy),tempfile.TemporaryDirectory() as d:
+                root=Path(d);options=request_options(root);options['xilinx_mapping_strategy']=strategy
+                ctx=run_preflight(**options);value=read_rtl_request(ctx.native_frontend_request)
+                self.assertEqual(value.synthesis['tool_report']['mapping_strategy'],strategy or 'hierarchical-abc9-v1')
+                self.assertFalse((root/'native/frontend/phase1').exists())
 
     def test_mapper_override_rejects_invalid_context_before_frontend(self):
         for profile, supplied, strategy, message in (
@@ -191,59 +138,39 @@ class MultiFpgaFlowTest(unittest.TestCase):
                     self.assertEqual(run.call_args.kwargs["top"], "picorv32")
                     self.assertEqual(run.call_args.kwargs["clock_periods"], {"clk": 10.0})
 
-    def test_partition_engine_is_resolved_before_flow_execution(self) -> None:
-        with patch(
-            "emuflow.flow.multi_fpga_flow.resolve_native_executable",
-            return_value="/sealed/install/bin/openroad",
-        ) as resolver:
-            self.assertEqual(
-                _resolve_partition_openroad("patron", None),
-                "/sealed/install/bin/openroad",
-            )
-            self.assertEqual(
-                _resolve_partition_openroad("tritonpart", "/explicit/openroad"),
-                "/sealed/install/bin/openroad",
-            )
-            self.assertIsNone(_resolve_partition_openroad("tritonpart", None, Path("initial.part")))
-        self.assertEqual(
-            resolver.call_args_list,
-            [
-                call("openroad", None),
-                call("openroad", "/explicit/openroad"),
-            ],
-        )
+    def test_partition_engine_is_resolved_by_native_admission(self):
+        from tests.test_compile_preflight_native import request_options
+        import sys
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);options=request_options(root)
+            ctx=run_preflight(**options)
+            self.assertEqual(ctx.openroad,str(Path(sys.executable).resolve()))
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);options=request_options(root);options['openroad']=str(root/'missing-openroad')
+            with self.assertRaisesRegex(EmuFlowError,'openroad executable is unavailable'):run_preflight(**options)
+            self.assertFalse((root/'native').exists())
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);options=request_options(root);solution=root/'solution.part';solution.write_text('0\n')
+            options.update(tritonpart_solution=solution,openroad=None)
+            ctx=run_preflight(**options)
+            self.assertIsNone(ctx.openroad)
+            policy=json.loads(ctx.native_phase3_configuration.read_text())
+            self.assertEqual(policy['options']['openroad'],'')
 
-    def test_mapping_profile_rejects_mismatched_timing_provider_early(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            vtr_timing = root / "vtr-timing.json"
-            xilinx_timing = root / "xilinx-timing.json"
-            write_json(
-                vtr_timing,
-                {"schema": "emuflow.architecture-timing-db/v1"},
-            )
-            write_json(
-                xilinx_timing,
-                {"schema": "emuflow.xilinx-preplacement-timing-db/v1"},
-            )
-
-            with self.assertRaisesRegex(EmuFlowError, "unsupported multi-FPGA mapping profile"):
-                _validate_mapping_timing_contract("vtr-hard-blocks", vtr_timing)
-            _validate_mapping_timing_contract(
-                "xilinx-ultrascaleplus-open-v1", xilinx_timing
-            )
-            with self.assertRaisesRegex(
-                EmuFlowError, "requires Architecture TimingDB schema"
-            ):
-                _validate_mapping_timing_contract(
-                    "xilinx-ultrascaleplus-open-v1", vtr_timing
-                )
-            with self.assertRaisesRegex(
-                EmuFlowError, "requires a source-sealed Xilinx"
-            ):
-                _validate_mapping_timing_contract(
-                    "xilinx-ultrascaleplus-open-v1", None
-                )
+    def test_mapping_profile_rejects_mismatched_timing_provider_early(self):
+        from tests.test_compile_preflight_native import request_options,run
+        from emuflow.flow.native_compile import _request
+        for damage in ('mapping','schema','missing'):
+            with self.subTest(damage=damage),tempfile.TemporaryDirectory() as d:
+                root=Path(d);options=request_options(root)
+                if damage=='mapping':options['mapping_profile']='vtr-hard-blocks'
+                if damage=='schema':Path(options['architecture_timing_db']).write_text(json.dumps({'schema':'emuflow.architecture-timing-db/v1'}))
+                if damage=='missing':options['architecture_timing_db']=None
+                value,_=_request((),options);result,_state,operation=run(root,value)
+                self.assertNotEqual(result.returncode,0)
+                self.assertEqual(operation['status'],'fail')
+                self.assertIn({'mapping':'unsupported multi-FPGA mapping profile','schema':'architecture timing schema','missing':'source-sealed'}[damage],operation['error']['message'])
+                self.assertFalse((root/'native').exists())
 
     def test_rapidwright_backend_rejects_vtr_mapping_before_frontend(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -540,74 +467,21 @@ class MultiFpgaFlowTest(unittest.TestCase):
 
 
 
-    def test_rapidwright_runtime_preflight_precedes_frontend(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory) / "multi"
-            with patch(
-                "emuflow.flow.multi_fpga_flow.validate_openparf_runtime",
-                side_effect=EmuFlowError("missing PyTorch runtime"),
-            ):
-                with self.assertRaisesRegex(
-                    EmuFlowError, "missing PyTorch runtime"
-                ):
-                    run_preflight(
-                        platform_path=PLATFORM,
-                        output_dir=root,
-                        yosys_json=ROOT / "examples/yosys/counter.json",
-                        top="counter",
-                        clocks=["clk"],
-                        partition_provider="tritonpart",
-                        cut_mode="static-exact-combinational",
-                        timing_driven=False,
-                        clock_periods={"clk": 10.0},
-                        opensta=str(FAKE_OPENSTA),
-                        router=str(tlr_router()),
-                        frame_slots=32,
-                        physical=True,
-                        mapping_profile="xilinx-ultrascaleplus-open-v1",
-                        physical_backend="rapidwright",
-                    )
-            self.assertFalse(root.exists())
+    def test_rapidwright_runtime_preflight_precedes_frontend(self):
+        from tests.test_compile_preflight_native import request_options
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);options=request_options(root,'rapidwright')
+            (root/'solver/control.json').write_text(json.dumps({'preflight_fail':True}))
+            with self.assertRaisesRegex(EmuFlowError,'preflight'):run_preflight(**options)
+            self.assertFalse((root/'native').exists())
 
-    def test_rapidwright_native_runtime_preflight_precedes_frontend(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            temporary = Path(temporary_directory)
-            root = temporary / "multi"
-            timing = temporary / "xilinx-timing.json"
-            write_json(
-                timing,
-                {"schema": "emuflow.xilinx-preplacement-timing-db/v1"},
-            )
-            with patch(
-                "emuflow.flow.multi_fpga_flow.validate_openparf_runtime",
-                side_effect=EmuFlowError("missing PyTorch runtime"),
-            ) as preflight:
-                with self.assertRaisesRegex(
-                    EmuFlowError, "missing PyTorch runtime"
-                ):
-                    run_preflight(
-                        platform_path=PLATFORM,
-                        output_dir=root,
-                        yosys_json=ROOT / "examples/yosys/counter.json",
-                        top="counter",
-                        clocks=["clk"],
-                        partition_provider="tritonpart",
-                        cut_mode="static-exact-combinational",
-                        timing_driven=False,
-                        clock_periods={"clk": 10.0},
-                        architecture_timing_db=timing,
-                        opensta=str(FAKE_OPENSTA),
-                        router=str(tlr_router()),
-                        frame_slots=32,
-                        physical=True,
-                        mapping_profile="xilinx-ultrascaleplus-open-v1",
-                        physical_backend="rapidwright",
-                    )
-            preflight.assert_called_once_with(
-                install_root=None,
-                python_executable=None,
-            )
-            self.assertFalse(root.exists())
+    def test_rapidwright_missing_package_is_rejected_before_frontend(self):
+        from tests.test_compile_preflight_native import request_options
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);options=request_options(root,'rapidwright')
+            (root/'solver/installation/openparf.py').unlink()
+            with self.assertRaisesRegex(EmuFlowError,'OpenPARF installation'):run_preflight(**options)
+            self.assertFalse((root/'native').exists())
 
     def test_board_link_preflight_rejects_mismatches_before_frontend(self) -> None:
         platform = Platform.load(PLATFORM)
@@ -624,10 +498,8 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 path = root / "board-link-timing.json"
                 write_json(path, database)
                 output = root / "flow"
-                with patch("emuflow.frontend.frontend_native.prepare_frontend") as synthesis, patch(
-                    "emuflow.flow.multi_fpga_flow.check_opensta_engine_version"
-                ) as engine_check:
-                    with self.assertRaisesRegex(ValidationError, "board link timing"):
+                with patch("emuflow.frontend.frontend_native.prepare_frontend") as synthesis:
+                    with self.assertRaisesRegex(ValidationError, "link timing"):
                         run_preflight(
                             platform_path=PLATFORM,
                             output_dir=output,
@@ -641,7 +513,6 @@ class MultiFpgaFlowTest(unittest.TestCase):
                             board_link_timing_db=path,
                         )
                 synthesis.assert_not_called()
-                engine_check.assert_not_called()
                 self.assertFalse(output.exists())
 
     def test_transport_cost_preflight_rejects_wrong_platform_before_frontend(self) -> None:
@@ -661,9 +532,7 @@ class MultiFpgaFlowTest(unittest.TestCase):
                 "provenance": {"class": OPEN_TRANSPORT_PROVENANCE, "fit_sha256": "1" * 64},
             })
             output = root / "flow"
-            with patch("emuflow.frontend.frontend_native.prepare_frontend") as synthesis, patch(
-                "emuflow.flow.multi_fpga_flow.check_opensta_engine_version"
-            ) as engine_check:
+            with patch("emuflow.frontend.frontend_native.prepare_frontend") as synthesis:
                 with self.assertRaisesRegex(ValidationError, "transport cost platform disagrees"):
                     run_preflight(
                         platform_path=PLATFORM,
@@ -678,33 +547,15 @@ class MultiFpgaFlowTest(unittest.TestCase):
                         transport_cost_db=path,
                     )
             synthesis.assert_not_called()
-            engine_check.assert_not_called()
             self.assertFalse(output.exists())
 
-    def test_opensta_version_preflight_precedes_frontend(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory) / "multi"
-            legacy_sta = Path(temporary_directory) / "sta"
-            legacy_sta.write_text("#!/bin/sh\necho 2.6.0\n", encoding="utf-8")
-            legacy_sta.chmod(legacy_sta.stat().st_mode | stat.S_IXUSR)
-            with self.assertRaisesRegex(
-                ValidationError, "requires 3.1.0 or newer"
-            ):
-                run_preflight(
-                    platform_path=PLATFORM, mapping_profile="xilinx-ultrascaleplus-open-v1",
-                    output_dir=root,
-                    yosys_json=ROOT / "examples/yosys/counter.json",
-                    top="counter",
-                    clocks=["clk"],
-                    partition_provider="tritonpart",
-                    cut_mode="static-exact-combinational",
-                    timing_driven=False,
-                    clock_periods={"clk": 10.0},
-                    opensta=str(legacy_sta),
-                    router=str(tlr_router()),
-                    frame_slots=32,
-                )
-            self.assertFalse(root.exists())
+    def test_opensta_version_preflight_precedes_frontend(self):
+        from tests.test_compile_preflight_native import request_options
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);options=request_options(root)
+            engine=Path(options['opensta']);engine.write_text('#!/bin/sh\necho 2.6.0\n')
+            with self.assertRaisesRegex(ValidationError,'requires 3.1.0 or newer'):run_preflight(**options)
+            self.assertFalse((root/'native').exists())
 
     def test_finalizes_checked_independent_physical_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

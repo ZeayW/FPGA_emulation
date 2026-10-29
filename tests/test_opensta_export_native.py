@@ -1,4 +1,3 @@
-from tests.compile_adapter_fixture import preflight as run_preflight
 """Shared-core timing export; fixture gates do not qualify NVDLA."""
 from contextlib import closing
 import json
@@ -141,19 +140,6 @@ def test_direct_writers_use_one_requested_output_and_reject_foreign_policy(tmp_p
     assert (tmp_path/"standalone.tsv").read_bytes() == (tmp_path/"single.tsv").read_bytes()
 
 
-def test_missing_native_export_is_rejected_before_frontend_work(tmp_path):
-    from emuflow.common.errors import EmuFlowError
-    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
-    def require(schema):
-        if schema == "opensta-input-export-request-v1":
-            raise EmuFlowError("missing native timing export")
-    with patch("emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract"), \
-         patch("emuflow.common.native_tools.require_native_schema", side_effect=require), \
-         patch("emuflow.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("synthesis started")), \
-         pytest.raises(EmuFlowError, match="missing native timing export"):
-        run_preflight(sources=[tmp_path/"absent.v"], top="dut", clocks=["clk"],
-                           clock_periods={"clk": 10.0}, output_dir=tmp_path/"flow")
-    assert not (tmp_path/"flow").exists()
 
 
 def test_large_unique_cell_population_keeps_host_memory_bounded(tmp_path):

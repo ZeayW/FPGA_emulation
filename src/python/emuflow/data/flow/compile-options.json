@@ -1,0 +1,416 @@
+{
+  "schema": "emuflow.compile-options/v1",
+  "options": {
+    "platform_path": {
+      "kind": "path",
+      "nullable": false,
+      "resource": {
+        "scope": "package",
+        "path": "data/platforms/rapidwright_xcvu19p_4fpga_mesh.json"
+      }
+    },
+    "output_dir": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "sources": {
+      "kind": "path-list",
+      "nullable": false,
+      "default": []
+    },
+    "include_dirs": {
+      "kind": "path-list",
+      "nullable": false,
+      "default": []
+    },
+    "defines": {
+      "kind": "string-list",
+      "nullable": false,
+      "default": []
+    },
+    "source_checksums": {
+      "kind": "object",
+      "nullable": true,
+      "default": null
+    },
+    "top": {
+      "kind": "string",
+      "nullable": true,
+      "default": null
+    },
+    "clocks": {
+      "kind": "string-list",
+      "nullable": false,
+      "default": []
+    },
+    "yosys_json": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "prepared_frontend": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "prepared_timing": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "yosys": {
+      "kind": "string",
+      "nullable": true,
+      "default": null
+    },
+    "mapping_profile": {
+      "kind": "string",
+      "nullable": false,
+      "default": "xilinx-ultrascaleplus-open-v1"
+    },
+    "xilinx_mapping_strategy": {
+      "kind": "string",
+      "nullable": true,
+      "default": null
+    },
+    "partition_constraints": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "partition_provider": {
+      "kind": "string",
+      "nullable": false,
+      "default": "patron"
+    },
+    "seed": {
+      "kind": "integer",
+      "nullable": false,
+      "default": 0
+    },
+    "min_used_fpgas": {
+      "kind": "integer",
+      "nullable": true,
+      "default": null
+    },
+    "balance_tolerance": {
+      "kind": "number",
+      "nullable": true,
+      "default": null
+    },
+    "openroad": {
+      "kind": "string",
+      "nullable": true,
+      "default": null
+    },
+    "tritonpart_solution": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "patron_refiner": {
+      "kind": "string",
+      "nullable": true,
+      "default": null
+    },
+    "patron_max_moves": {
+      "kind": "integer",
+      "nullable": true,
+      "default": null
+    },
+    "patron_algorithm_version": {
+      "kind": "integer",
+      "nullable": false,
+      "default": 14
+    },
+    "partition_timeout_seconds": {
+      "kind": "integer",
+      "nullable": false,
+      "default": 3600
+    },
+    "partition_seed_attempts": {
+      "kind": "integer",
+      "nullable": false,
+      "default": 1
+    },
+    "partition_num_initial_solutions": {
+      "kind": "integer",
+      "nullable": false,
+      "default": 50
+    },
+    "partition_num_best_initial_solutions": {
+      "kind": "integer",
+      "nullable": false,
+      "default": 10
+    },
+    "partition_repair_min_used_fpgas": {
+      "kind": "boolean",
+      "nullable": false,
+      "default": true
+    },
+    "cut_mode": {
+      "kind": "string",
+      "nullable": false,
+      "default": "static-exact-combinational"
+    },
+    "max_cross_fpga_dependency_depth": {
+      "kind": "integer",
+      "nullable": false,
+      "default": 0
+    },
+    "static_exact_candidate_policy": {
+      "kind": "string",
+      "nullable": false,
+      "default": "assignment-derived-acyclic-v2"
+    },
+    "timing_driven": {
+      "kind": "boolean",
+      "nullable": false,
+      "default": true
+    },
+    "clock_periods": {
+      "kind": "object",
+      "nullable": true,
+      "default": null
+    },
+    "timing_io": {
+      "kind": "object",
+      "nullable": true,
+      "default": null
+    },
+    "timing_model": {
+      "kind": "path",
+      "nullable": false,
+      "resource": {
+        "scope": "repository",
+        "path": "resources/timing/ultrascaleplus-softlogic-v1.json"
+      }
+    },
+    "architecture_timing_db": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "opensta": {
+      "kind": "string",
+      "nullable": true,
+      "default": null
+    },
+    "sta_max_paths": {
+      "kind": "integer",
+      "nullable": false,
+      "default": 200000
+    },
+    "timing_criticality_scale": {
+      "kind": "number",
+      "nullable": false,
+      "default": 9.0
+    },
+    "timing_criticality_exponent": {
+      "kind": "number",
+      "nullable": false,
+      "default": 2.0
+    },
+    "route_constraints": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "board_link_timing_db": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "transport_cost_db": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "timing_paths": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "router": {
+      "kind": "string",
+      "nullable": true,
+      "default": null
+    },
+    "route_provider": {
+      "kind": "string",
+      "nullable": true,
+      "default": null
+    },
+    "route_candidate_workers": {
+      "kind": "integer",
+      "nullable": false,
+      "default": 1
+    },
+    "frame_slots": {
+      "kind": "integer",
+      "nullable": true,
+      "default": null
+    },
+    "optimize_frame_slots": {
+      "kind": "boolean",
+      "nullable": false,
+      "default": false
+    },
+    "route_max_iterations": {
+      "kind": "integer",
+      "nullable": true,
+      "default": null
+    },
+    "tdm_provider": {
+      "kind": "string",
+      "nullable": true,
+      "default": null
+    },
+    "simulation_frames": {
+      "kind": "integer",
+      "nullable": false,
+      "default": 16
+    },
+    "equivalence_cycles": {
+      "kind": "integer",
+      "nullable": false,
+      "default": 1
+    },
+    "equivalence_seed": {
+      "kind": "integer",
+      "nullable": false,
+      "default": 20260727
+    },
+    "phase6_provider": {
+      "kind": "string",
+      "nullable": false,
+      "default": "baseline"
+    },
+    "phase6_chimew_region_count": {
+      "kind": "integer",
+      "nullable": false,
+      "default": 4
+    },
+    "phase6_chimew_grouper": {
+      "kind": "string",
+      "nullable": true,
+      "default": null
+    },
+    "phase6_chimew_refiner": {
+      "kind": "string",
+      "nullable": true,
+      "default": null
+    },
+    "phase6_chimew_rudy": {
+      "kind": "string",
+      "nullable": true,
+      "default": null
+    },
+    "phase6_chimew_assigner": {
+      "kind": "string",
+      "nullable": true,
+      "default": null
+    },
+    "physical": {
+      "kind": "boolean",
+      "nullable": false,
+      "default": false
+    },
+    "physical_backend": {
+      "kind": "string",
+      "nullable": false,
+      "default": "rapidwright"
+    },
+    "physical_architecture": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "physical_openparf_install": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "physical_openparf_python": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "physical_seed": {
+      "kind": "integer",
+      "nullable": false,
+      "default": 1
+    },
+    "physical_vivado": {
+      "kind": "string",
+      "nullable": true,
+      "default": null
+    },
+    "physical_vivado_place_directive": {
+      "kind": "string",
+      "nullable": false,
+      "default": "Default"
+    },
+    "physical_vivado_route_directive": {
+      "kind": "string",
+      "nullable": false,
+      "default": "Default"
+    },
+    "physical_rapidwright_jar": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "physical_rapidwright_java": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "physical_rapidwright_java_source": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "physical_rapidwright_device_data": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "physical_rapidwright_timing_data": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "physical_rapidwright_opensta": {
+      "kind": "string",
+      "nullable": true,
+      "default": null
+    },
+    "physical_rapidwright_native_constraints": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "physical_rapidwright_provider_manifest": {
+      "kind": "path",
+      "nullable": true,
+      "default": null
+    },
+    "physical_workers": {
+      "kind": "integer",
+      "nullable": false,
+      "default": 1
+    },
+    "global_sta_executable": {
+      "kind": "string",
+      "nullable": true,
+      "default": null
+    },
+    "global_timing_engine": {
+      "kind": "string",
+      "nullable": false,
+      "default": "opensta"
+    }
+  }
+}

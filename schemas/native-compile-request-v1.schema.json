@@ -9,8 +9,9 @@
     "python_executable": {"type": "string", "pattern": "^/"},
     "python_source": {"type": "string", "pattern": "^/"},
     "working_directory": {"type": "string", "pattern": "^/"},
+    "pattern_range_policy": {"enum": ["strict-ranges-v1", "empty-ranges-v1"], "description": "Optional explicit glob range dialect for API clients preserving their host pattern convention; the native entry defaults to strict-ranges-v1."},
     "options": {
-      "description": "Current run_multi_fpga_flow keyword configuration; signature binding rejects unknown options. Missing options use current defaults; the result retains the resolved configuration.",
+      "description": "Finite compile configuration, validated against the installed compile-options/v1 contract. Missing options use its defaults; the result retains the resolved configuration.",
       "type": "object",
       "required": ["output_dir"],
       "properties": {"output_dir": {"type": "string", "pattern": "^/"}}

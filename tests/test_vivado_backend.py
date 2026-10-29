@@ -124,7 +124,7 @@ class VivadoBackendTest(unittest.TestCase):
         from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
         from emuflow.flow.multi_fpga_physical_flow import run_multi_fpga_physical_flow
         from emuflow.flow.native_compile import _request
-        from emuflow.flow.native_compile_adapter import _initial_context
+        from tests.preflight_reference import _initial_context
 
         parser = _build_parser()
         compile_args = ["multi-fpga", "compile", "design.v", "--out", "out"]

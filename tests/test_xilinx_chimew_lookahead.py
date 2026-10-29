@@ -221,18 +221,15 @@ def test_prepass_and_final_share_the_selected_backend_options(tmp_path):
         assert before.kwargs['seed']==1 and before.kwargs['workers']==4
 
 
-def test_chimew_preflight_accepts_both_xilinx_backends_before_frontend(case, tmp_path):
-    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
-    platform,source,architecture,report,*_=case
-    class PreflightReached(Exception): pass
-    for backend in ('rapidwright','vivado'):
-        out=tmp_path/f'preflight-{backend}'
-        with patch('emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract',side_effect=PreflightReached):
-            with pytest.raises(PreflightReached):
-                run_preflight(platform_path=research_platform_path(2),output_dir=out,
-                    phase6_provider='chimew',physical=True,physical_backend=backend,
-                    physical_architecture=architecture)
-        assert not out.exists()
+def test_chimew_preflight_accepts_both_xilinx_backends_before_frontend(case,tmp_path,request):
+    from tests.chimew_admission_fixture import admitted
+    from emuflow.flow.native_compile_adapter import _unpack
+    backend=request.node.callspec.params['case']
+    _request,state=admitted(case,tmp_path/'preflight',backend)
+    value=_unpack(json.loads(state.read_text())['state'])
+    assert value['chimew_package_geometry']['part']==case[0].fpgas[0].part
+    assert value['physical_backend']==backend
+    assert not (tmp_path/'preflight/native/frontend/phase1').exists()
 
 
 def test_multicast_query_cache_is_bounded_and_uses_indexes(case):

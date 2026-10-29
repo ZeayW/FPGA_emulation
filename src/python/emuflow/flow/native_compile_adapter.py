@@ -7,7 +7,6 @@ configuration/report state. Circuit populations remain in phase-owned stores.
 from __future__ import annotations
 
 import argparse
-import inspect
 import json
 import math
 from pathlib import Path
@@ -196,28 +195,6 @@ def _plain(value):
     return value
 
 
-def _initial_context(request):
-    from emuflow.flow.multi_fpga_flow import _CompileContext, run_multi_fpga_flow
-
-    options = request["options"]
-    if type(options) is not dict:
-        raise EmuFlowError("native compile options must be an object")
-    signature = inspect.signature(run_multi_fpga_flow)
-    # Signature binding is the single current-default contract during this
-    # transition; no duplicated or silently inferred native defaults.
-    bound = signature.bind(**options)
-    bound.apply_defaults()
-    for name, value in list(bound.arguments.items()):
-        annotation = str(signature.parameters[name].annotation)
-        if value is not None and "Path" in annotation:
-            def path(item):
-                if not isinstance(item, (str, Path)) or not Path(item).is_absolute():
-                    raise EmuFlowError(f"native compile {name} requires absolute paths")
-                return Path(item)
-            bound.arguments[name] = tuple(path(item) for item in value) if "Iterable" in annotation else path(value)
-    return _CompileContext(dict(bound.arguments))
-
-
 def _control_snapshot(ctx, stage, flow):
     state = {key: item for key, item in vars(ctx).items() if not key.startswith("_")}
     catalog = state.get("chimew_package_geometry")
@@ -281,7 +258,7 @@ def _restore_control_state(state):
 
 
 def execute(stage, request_path, previous_path, output_path, run_id):
-    if stage in {"frontend", "timing-policy", "timing", "partition-policy", "route-policy"}:
+    if stage in {"preflight", "frontend", "timing-policy", "timing", "partition-policy", "route-policy"}:
         raise EmuFlowError("native compiler frontend, timing, partition and routing preparation/execution are owned by C++ stages")
     if stage == "signoff":
         raise EmuFlowError("native compiler signoff is owned by the C++ Phase 7C stage")
@@ -295,23 +272,18 @@ def execute(stage, request_path, previous_path, output_path, run_id):
         raise EmuFlowError("native compiler partition is owned by the C++ Phase 3 stage")
     from emuflow.flow import multi_fpga_flow as flow
 
-    index = STAGES.index(stage)
+    index = STAGES.index(stage) if stage != "chimew-admission" else 1
     request = _read(request_path)
     generation = [str(value) for value in native_file_generation(request_path)]
-    if index == 0:
-        if previous_path is not None:
-            raise EmuFlowError("native preflight cannot consume prior state")
-        ctx = _initial_context(request)
-    else:
-        previous = _read(previous_path)
-        if (previous.get("schema") != "emuflow.native-compile-state/v1" or
-                previous.get("run_id") != run_id or previous.get("status") != "pass" or
-                previous.get("stage") != STAGES[index - 1] or
-                previous.get("request_generation") != generation):
-            raise EmuFlowError("mixed or out-of-order native compiler state")
-        ctx = flow._CompileContext(
-            _restore_control_state(_unpack(previous["state"]))
-        )
+    previous = _read(previous_path)
+    if (previous.get("schema") != "emuflow.native-compile-state/v1" or
+            previous.get("run_id") != run_id or previous.get("status") != "pass" or
+            previous.get("stage") != STAGES[index - 1] or
+            previous.get("request_generation") != generation):
+        raise EmuFlowError("mixed or out-of-order native compiler state")
+    ctx = flow._CompileContext(
+        _restore_control_state(_unpack(previous["state"]))
+    )
     function = getattr(flow, "_compile_" + {"tdm": "schedule"}.get(stage, stage.replace("-", "_")))
     if stage=="split" and ctx.phase6_provider=="baseline":
         raise EmuFlowError('native compiler baseline Phase 6 is owned by the C++ stage')
@@ -319,11 +291,10 @@ def execute(stage, request_path, previous_path, output_path, run_id):
         raise EmuFlowError('native compiler physical boundary is owned by the C++ controller')
     function(ctx)
     value = {"schema": "emuflow.native-compile-state/v1", "run_id": run_id,
-             "stage": stage, "status": "pass", "request_generation": generation,
+             "stage": "preflight" if stage == "chimew-admission" else stage, "status": "pass", "request_generation": generation,
              "state": _pack(_control_snapshot(ctx, stage, flow))}
-    if index == 0:
-        names = inspect.signature(flow.run_multi_fpga_flow).parameters
-        value["effective_options"] = _plain({name: getattr(ctx, name) for name in names})
+    if stage == "chimew-admission":
+        value["effective_options"] = previous["effective_options"]
     if len(json.dumps(value, separators=(",", ":"), allow_nan=False).encode()) > _LIMIT:
         raise EmuFlowError("native compiler control state exceeds bound")
     write_json(output_path, value, compact=True)
@@ -331,7 +302,7 @@ def execute(stage, request_path, previous_path, output_path, run_id):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stage", choices=[stage for stage in STAGES if stage not in {"frontend", "timing-policy", "timing", "tdm", "partition", "route", "signoff", "finalize"}], required=True)
+    parser.add_argument("--stage", choices=["chimew-admission", "split", "physical"], required=True)
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--previous", type=Path)
     parser.add_argument("--output", type=Path, required=True)

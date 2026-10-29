@@ -3,6 +3,7 @@
 #include <csignal>
 #include <map>
 namespace emuflow::core {
+std::string QualifyBoardLinkTiming(const ArtifactRef& board,const ArtifactRef& timing);
 StageResult PreparePhase3Policy(const ArtifactRef& request,const std::string& directory,
     const volatile std::sig_atomic_t* cancelled=nullptr,
     const std::map<std::string,ArtifactRef>& compiled_sources={});

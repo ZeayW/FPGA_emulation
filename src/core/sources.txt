@@ -1,6 +1,7 @@
 # Shared core implementation; paths are relative to src/core.
 board/model.cpp
 board/wiring.cpp
+flow/preflight.cpp
 transport/phase6_configuration.cpp
 flow/native_pipeline.cpp
 partition/patron_refiner.cpp

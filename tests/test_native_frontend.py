@@ -143,32 +143,39 @@ def test_preflight_request_is_only_configuration_and_original_source_generations
     assert ctx.native_frontend_generation==tuple(str(x) for x in native_file_generation(ctx.native_frontend_request))
 
 
+def raw_compile_request(tmp_path):
+    """Genuine native preparation with controlled external Yosys/OpenSTA engines."""
+    from tests.test_compile_preflight_native import request_options
+    from emuflow.flow.native_compile import _request
+    options=request_options(tmp_path)
+    yosys=tmp_path/'yosys'
+    yosys.write_text('#!'+sys.executable+'\nprint('+repr(json.dumps(source()))+')\n')
+    yosys.chmod(0o700)
+    options['yosys']=str(yosys)
+    # Any phase adapter on the baseline path is a regression. The controlled
+    # STA engine proves its runtime, but deliberately emits no extracted paths.
+    shadow=tmp_path/'source/emuflow/flow';shadow.mkdir(parents=True)
+    (shadow/'native_compile_adapter.py').write_text("raise AssertionError('baseline compile launched a Python phase adapter')\n")
+    value,_=_request((),options);value['python_source']=str(shadow.parents[1])
+    request_path=tmp_path/'request.json';request_path.write_text(json.dumps(value))
+    return request_path
+
+
 def test_native_compile_executes_whole_frontend_without_starting_its_python_adapter(native,tmp_path):
-    from tests.test_native_compile import fixture_request
-    compile_request=fixture_request(tmp_path)
-    config,root,_,_=request(tmp_path,output=tmp_path/'out/frontend/phase1')
-    # Native compile owns an empty output. Preparation in the genuine
-    # preflight happens after that check; the fixture writes only outside it.
-    root.parent.rmdir();root.parent.parent.rmdir()
-    fields=tmp_path/'frontend-fields.json'
-    fields.write_text(json.dumps({'native_frontend_request':['path',str(config)],
-        'native_frontend_generation':['tuple',[str(v) for v in native_file_generation(config)]]}))
-    adapter=tmp_path/'source/emuflow/flow/native_compile_adapter.py'
-    text=adapter.read_text()
-    # This fixture qualifies the complete frontend boundary. Its later graph
-    # test doubles use a different tiny input. Stop at native partition-policy
-    # admission with no configuration, before joining those inputs.
-    marker='# FIXTURE_CONTROL_STATE_READY';assert marker in text
-    text=text.replace(marker, "if a.stage=='preflight':\n state.pop('native_frontend_input_request',None);state.pop('native_frontend_input_generation',None)\n state.update(internal_timing_database=False,prepared_timing=None)\n state.update(json.loads(pathlib.Path("+repr(str(fields))+").read_text()))\n state.pop('native_phase3_configuration',None)\nif a.stage=='frontend':raise AssertionError('Python migrated frontend started')\n"+marker)
-    adapter.write_text(text)
-    result=subprocess.run([native,'compile',str(compile_request)],capture_output=True,text=True,timeout=20)
-    assert result.returncode!=0 and 'native partition configuration policy is missing' in result.stderr,result.stderr
-    report=json.loads((tmp_path/'out/native-compile-result.json').read_text())
-    assert next(row for row in report['stages'] if row['stage']=='frontend')['implementation_id']=='native-rtl-frontend-v1'
-    assert [row['stage'] for row in report['stages']]==['preflight','frontend','timing-policy','timing','partition-policy']
-    assert (tmp_path/'out/calls').read_text().splitlines()==['preflight']
-    assert not config.exists()
-    assert (root/'phase1_report.json').is_file()
+    compile_request=raw_compile_request(tmp_path)
+    result=subprocess.run([native,'compile',str(compile_request)],capture_output=True,text=True,timeout=30)
+    assert result.returncode!=0,result.stderr
+    root=tmp_path/'native'
+    report=json.loads((root/'native-compile-result.json').read_text())
+    stages=report['stages']
+    assert [row['stage'] for row in stages]==['preflight','frontend','timing-policy','timing'],result.stderr
+    assert stages[0]['implementation_id']=='native-preflight-v1'
+    assert stages[1]['implementation_id']=='native-rtl-frontend-v1'
+    assert stages[1]['status']=='pass'
+    assert (root/'frontend/phase1/phase1_report.json').is_file()
+    assert not (root/'calls').exists()
+    assert 'Python phase adapter' not in result.stderr
+    assert not list(root.glob('.native-frontend*request'))
 
 
 def test_detached_stdout_writer_is_rejected_without_hanging_the_owner(native,tmp_path):
@@ -187,17 +194,15 @@ def test_detached_stdout_writer_is_rejected_without_hanging_the_owner(native,tmp
 
 
 def test_raw_rtl_control_rejects_a_missing_native_request_instead_of_starting_python(native,tmp_path):
-    from tests.test_native_compile import fixture_request
-    compile_request=fixture_request(tmp_path)
-    fields=tmp_path/'raw-fields.json'
-    fields.write_text(json.dumps({'sources':['tuple',[['path',str(tmp_path/'rtl.v')]]], 'yosys_json':None, 'prepared_frontend':None}))
-    adapter=tmp_path/'source/emuflow/flow/native_compile_adapter.py'
-    text=adapter.read_text();marker='# FIXTURE_CONTROL_STATE_READY';assert marker in text
-    text=text.replace(marker, "if a.stage=='preflight':\n state.pop('native_frontend_input_request',None);state.pop('native_frontend_input_generation',None)\n state.update(internal_timing_database=False,prepared_timing=None)\n state.update(json.loads(pathlib.Path("+repr(str(fields))+").read_text()))\nif a.stage=='frontend':raise AssertionError('Python fallback started')\n"+marker)
-    adapter.write_text(text)
-    result=subprocess.run([native,'compile',str(compile_request)],capture_output=True,text=True,timeout=10)
-    assert result.returncode!=0 and 'Python fallback is forbidden' in result.stderr
-    assert (tmp_path/'out/calls').read_text().splitlines()==['preflight']
+    from tests.chimew_admission_fixture import install
+    compile_request=raw_compile_request(tmp_path)
+    install(compile_request,"del ctx.native_frontend_request\ndel ctx.native_frontend_generation")
+    result=subprocess.run([native,'compile',str(compile_request)],capture_output=True,text=True,timeout=30)
+    assert result.returncode!=0 and 'native frontend request is missing; Python fallback is forbidden' in result.stderr,result.stderr
+    report=json.loads((tmp_path/'native/native-compile-result.json').read_text())
+    assert [row['stage'] for row in report['stages']]==['preflight']
+    assert not (tmp_path/'native/frontend/phase1').exists()
+    assert not list(tmp_path.glob('.emuflow-compile-*'))
 
 
 @pytest.mark.parametrize('damage', ['none','rtl','include'])

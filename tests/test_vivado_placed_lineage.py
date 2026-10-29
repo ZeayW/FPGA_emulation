@@ -1,4 +1,3 @@
-from tests.compile_adapter_fixture import preflight as run_preflight
 """Native lineage/placement contract tests; not a routed design qualification."""
 import csv
 import hashlib
@@ -124,20 +123,6 @@ def test_native_registry_preflight_accepts_current_and_rejects_unknown_schema():
         require_native_schema("vivado-lineage-store-unknown")
 
 
-def test_compile_rejects_incomplete_native_installation_before_frontend(tmp_path):
-    from unittest.mock import patch
-    from emuflow.common.errors import EmuFlowError
-    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
-    # Other preflight tests qualify the upstream timing contract independently.
-    with patch("emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract"), patch(
-        "emuflow.common.native_tools.require_native_schema", side_effect=EmuFlowError("missing lineage capability")
-    ), patch(
-        "emuflow.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend started")
-    ), pytest.raises(EmuFlowError, match="missing lineage capability"):
-        run_preflight(sources=[tmp_path / "missing.v"], top="dut", clocks=["clk"],
-            clock_periods={"clk": 10.0}, physical=True, physical_backend="vivado",
-            output_dir=tmp_path / "flow")
-    assert not (tmp_path / "flow").exists()
 
 
 def test_packed_cells_share_one_integer_site_owner(inputs, tmp_path):

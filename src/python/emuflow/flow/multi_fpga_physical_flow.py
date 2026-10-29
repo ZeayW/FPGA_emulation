@@ -212,29 +212,3 @@ def validate_multi_fpga_physical_report(report,physical_summary=None):
             result=process.finish()
         if result.returncode:raise ValidationError('native physical report validation failed: '+result.stdout)
         return _small(output)['summary']
-
-
-def prepare_compile_policy(ctx):
-    """Freeze only backend tool/package configuration before graph stages run."""
-    sources,settings=_backend_sources(ctx.physical_backend,
-        architecture=ctx.physical_architecture,yosys=ctx.yosys,
-        openparf_install=ctx.physical_openparf_install,openparf_python=ctx.physical_openparf_python,
-        vivado=ctx.physical_vivado,vivado_place_directive=ctx.physical_vivado_place_directive,
-        vivado_route_directive=ctx.physical_vivado_route_directive,
-        rapidwright_jar=ctx.physical_rapidwright_jar,rapidwright_java=ctx.physical_rapidwright_java,
-        rapidwright_java_source=ctx.physical_rapidwright_java_source,
-        rapidwright_device_data=ctx.physical_rapidwright_device_data,
-        rapidwright_timing_data=ctx.physical_rapidwright_timing_data,
-        rapidwright_opensta=ctx.physical_rapidwright_opensta,
-        rapidwright_native_constraints=ctx.physical_rapidwright_native_constraints,
-        rapidwright_provider_manifest=ctx.physical_rapidwright_provider_manifest)
-    value={'schema':'emuflow.physical-flow-policy/v1','sources':sources,'backend':ctx.physical_backend,
-        'backend_options':settings,'workers':ctx.physical_workers,'seed':ctx.physical_seed}
-    root=ctx.output_dir/'.native-physical-request';root.mkdir(exist_ok=False)
-    target=root/'physical-policy.json';text=json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False)
-    if len(text.encode())>8*1024*1024:raise ValidationError('physical compile policy exceeds bound')
-    target.write_text(text+'\n',encoding='utf-8')
-    for source in sources:
-        if source['generation']!=list(native_file_generation(source['path'])):raise ValidationError('physical policy source changed')
-    ctx.native_physical_policy=target
-    ctx.native_physical_generation=tuple(str(v) for v in native_file_generation(target))

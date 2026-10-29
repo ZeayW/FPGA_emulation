@@ -1,4 +1,3 @@
-from tests.compile_adapter_fixture import preflight as run_preflight
 """Record/byte migration gates, not physical or NVDLA qualification."""
 import json
 import os
@@ -188,22 +187,3 @@ def test_host_output_aliases_are_rejected_before_mapping(tmp_path):
     with pytest.raises(ValidationError, match="alias"):
         emit_indexed_vivado_verilog(ir, tmp_path / "out.v", tmp_path / "out.v")
     assert not (tmp_path / "out.v").exists()
-
-
-def test_compile_requires_export_capability_before_frontend(tmp_path):
-    from emuflow.common.errors import EmuFlowError
-    from emuflow.flow.multi_fpga_flow import run_multi_fpga_flow
-
-    def capabilities(schema):
-        if schema == "vivado-export-request-v1":
-            raise EmuFlowError("missing native primitive exporter")
-
-    with patch("emuflow.flow.multi_fpga_flow._validate_mapping_timing_contract"), patch(
-        "emuflow.common.native_tools.require_native_schema", side_effect=capabilities
-    ), patch(
-        "emuflow.frontend.frontend_native.prepare_frontend", side_effect=AssertionError("frontend started")
-    ), pytest.raises(EmuFlowError, match="missing native primitive exporter"):
-        run_preflight(sources=[tmp_path / "missing.v"], top="dut", clocks=["clk"],
-            clock_periods={"clk": 10.0}, physical=True, physical_backend="vivado",
-            output_dir=tmp_path / "flow")
-    assert not (tmp_path / "flow").exists()

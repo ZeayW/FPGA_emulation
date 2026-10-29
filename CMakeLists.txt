@@ -383,6 +383,7 @@ file(
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/io/*.json"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/rapidwright/*.json"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/partition/*.json"
+  "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/flow/*.json"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/openparf/*.json"
   "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/designs/*"
   "${CMAKE_SOURCE_DIR}/scripts/rapidwright/EmuFlowRWRoute.java"
@@ -436,6 +437,10 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/partition"
     "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/partition"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory
+    "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/flow"
+    "${EMUFLOW_INSTALL_ROOT}/lib/emuflow/data/flow"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory
     "${CMAKE_SOURCE_DIR}/src/python/emuflow/data/rapidwright"

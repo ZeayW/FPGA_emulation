@@ -52,14 +52,11 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
         ):
             with self.subTest(command=command), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 _build_parser().parse_args(command)
-        with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.frontend.frontend_native.prepare_frontend"
-        ) as frontend, patch("emuflow.flow.multi_fpga_flow.resolve_native_executable") as tool:
+        with tempfile.TemporaryDirectory() as temporary:
             out = Path(temporary) / "flow"
             with self.assertRaisesRegex(EmuFlowError, "unsupported multi-FPGA mapping profile"):
-                run_preflight(output_dir=out, mapping_profile="vtr-hard-blocks")
-            frontend.assert_not_called()
-            tool.assert_not_called()
+                run_preflight(output_dir=out, mapping_profile="vtr-hard-blocks",
+                    yosys="/missing/yosys",openroad="/missing/openroad",opensta="/missing/opensta")
             self.assertFalse(out.exists())
 
     def test_retired_physical_routes_fail_before_any_artifact_or_tool(self):
@@ -78,15 +75,13 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
             with self.subTest(command=command), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 _build_parser().parse_args(command)
         with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.flow.multi_fpga_flow.resolve_native_executable",
-            side_effect=AssertionError("tool resolution before backend rejection"),
-        ), patch(
             "emuflow.flow.multi_fpga_physical_flow._small",
             side_effect=AssertionError("artifact read before backend rejection"),
         ):
             root = Path(temporary)
             with self.assertRaisesRegex(EmuFlowError, "unsupported physical backend"):
-                run_preflight(output_dir=root / "compile", physical_backend="open")
+                run_preflight(output_dir=root / "compile", physical_backend="open",
+                    yosys="/missing/yosys",openroad="/missing/openroad",opensta="/missing/opensta")
             with self.assertRaisesRegex(ValidationError, "physical backend"):
                 run_multi_fpga_physical_flow(root / "split", root / "board", root / "schedule",
                     root / "physical", backend="open")
@@ -139,16 +134,11 @@ class ResearchBackendDefaultsTest(unittest.TestCase):
                 "multi-fpga", "compile", "design.v", "--out", "unused",
                 "--mapping-profile", "generic-soft",
             ])
-        with tempfile.TemporaryDirectory() as temporary, patch(
-            "emuflow.frontend.frontend_native.prepare_frontend"
-        ) as frontend, patch(
-            "emuflow.flow.multi_fpga_flow.resolve_native_executable"
-        ) as tool:
+        with tempfile.TemporaryDirectory() as temporary:
             out = Path(temporary) / "flow"
             with self.assertRaisesRegex(EmuFlowError, "unsupported multi-FPGA mapping profile"):
-                run_preflight(output_dir=out, mapping_profile="generic-soft")
-            frontend.assert_not_called()
-            tool.assert_not_called()
+                run_preflight(output_dir=out, mapping_profile="generic-soft",
+                    yosys="/missing/yosys",openroad="/missing/openroad",opensta="/missing/opensta")
             self.assertFalse(out.exists())
             value = json.loads((ROOT / "benchmarks/runs/picorv32_l2.json").read_text())
             value["physical_mapping_profile"] = "generic-soft"

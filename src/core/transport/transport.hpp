@@ -4,6 +4,7 @@
 #include <csignal>
 
 namespace emuflow::core {
+void ValidateTransportCostDatabase(const ArtifactRef& source,const std::string& platform);
 // Consume current assignment/schedule owners plus bounded board configuration.
 // Pin-plan entries, when selected, remain in their typed source store.
 StageResult BuildTransportArtifacts(const std::vector<ArtifactRef>& inputs,

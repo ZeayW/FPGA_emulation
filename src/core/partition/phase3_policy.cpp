@@ -402,6 +402,14 @@ LinkTiming ProjectTiming(Inputs &in) {
   return out;
 }
 } // namespace
+std::string QualifyBoardLinkTiming(const ArtifactRef& board,const ArtifactRef& timing) {
+  board.RequireUnchanged();timing.RequireUnchanged();
+  Inputs input(board);input.board=NormalizeBoard(D::Read(board));
+  input.roles.emplace("board_link_timing",timing);input.options["timing_driven"]="true";
+  const auto result=ProjectTiming(input);
+  board.RequireUnchanged();timing.RequireUnchanged();
+  return D(result.report).Token("validation");
+}
 StageResult PreparePhase3Policy(
     const ArtifactRef &request, const std::string &directory,
     const volatile std::sig_atomic_t *cancelled,
