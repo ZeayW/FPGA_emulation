@@ -162,10 +162,13 @@ def test_complete_stage_keeps_search_deadline_and_reaps_native_child(inputs, tmp
     child.write_text('#!'+sys.executable+'\nimport os,time,pathlib\npathlib.Path('+repr(str(pid_file))+').write_text(str(os.getpid()))\ntime.sleep(60)\n')
     child.chmod(0o755)
     request = write_request(tmp_path/'deadline-configuration', ir.path, board, **config)
-    value = json.loads(request.read_text());value['timeout_seconds'] = 3
+    # This deadline includes source/configuration setup before child launch.
+    # Leave enough startup budget for loaded regression hosts, then prove the
+    # deliberately stalled child is still killed by the stage deadline.
+    value = json.loads(request.read_text());value['timeout_seconds'] = 10
     value['inputs']['native'] = {'path':str(child), 'schema':'external-tool-executable-v1', 'generation':list(native_file_generation(child))}
     request.write_text(json.dumps(value));output = tmp_path/'timed-out'
-    result = subprocess.run([resolve_native_executable('emuflow-native'), 'phase3', 'run', str(request), str(output)], capture_output=True, text=True, timeout=20)
+    result = subprocess.run([resolve_native_executable('emuflow-native'), 'phase3', 'run', str(request), str(output)], capture_output=True, text=True, timeout=30)
     assert result.returncode != 0
     assert any(word in result.stdout+result.stderr for word in ('timed out', 'time limit', 'timeout'))
     assert pid_file.is_file()

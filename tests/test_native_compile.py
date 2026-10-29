@@ -69,7 +69,7 @@ def test_adapter_rejects_mixed_state_before_calling_phase(tmp_path):
     previous = tmp_path / "previous.json"
     previous.write_text(json.dumps({"schema": "emuflow.native-compile-state/v1", "run_id": "other"}))
     with pytest.raises(EmuFlowError, match="mixed or out-of-order"):
-        execute("timing-policy", request, previous, tmp_path / "next", "this-run")
+        execute("partition-policy", request, previous, tmp_path / "next", "this-run")
 
 
 def test_shared_preflight_publishes_effective_configuration_and_restores_next_context(tmp_path):
@@ -87,14 +87,8 @@ def test_shared_preflight_publishes_effective_configuration_and_restores_next_co
     value = json.loads(previous.read_text())
     assert set(value["effective_options"]) == set(inspect.signature(run_multi_fpga_flow).parameters)
     assert value["effective_options"]["clock_periods"] == {"clk": 10.0}
-    observed = []
-    def timing_policy(ctx):
-        observed.append((ctx.output_dir, ctx.clocks, ctx.seed, ctx.opensta))
-    value["stage"] = "frontend"
-    previous.write_text(json.dumps(value))
-    with patch("emuflow.flow.multi_fpga_flow._compile_timing_policy", side_effect=timing_policy):
+    with pytest.raises(EmuFlowError, match='owned by C'):
         execute("timing-policy", request, previous, tmp_path / "timing-policy.json", "run")
-    assert observed == [(tmp_path / "out", (), 0, str(Path(sys.executable).resolve()))]
 
 
 def test_bridge_preserves_invocation_directory_defaults_and_path_bindings(tmp_path, monkeypatch):
@@ -241,11 +235,11 @@ assert pathlib.Path(os.environ['XDG_CACHE_HOME']).parent==temporary
 with (out/'temporary-paths').open('a') as f:f.write(str(temporary)+'\\n')
 with (out/'calls').open('a') as f:f.write(a.stage+'\\n')
 if a.stage==FAIL:raise SystemExit(7)
-if WAITING and a.stage=='timing-policy':
+if WAITING and a.stage=='partition-policy':
  (out/'pid').write_text(str(os.getpid()))
  time.sleep(60)
 st=request.stat();generation=[str(x) for x in (st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000))]
-if a.stage in ('tdm','partition','route','signoff') or (a.stage=='split' and v['options'].get('phase6_provider','baseline')=='baseline'):raise AssertionError('Python native-owned phase adapter started')
+if a.stage in ('timing-policy','tdm','partition','route','signoff') or (a.stage=='split' and v['options'].get('phase6_provider','baseline')=='baseline'):raise AssertionError('Python native-owned phase adapter started')
 state=STATE_FIELDS if not a.previous else json.loads(pathlib.Path(a.previous).read_text())['state'][1]
 if a.stage=='preflight':
  root=out/'.native-frontend-input-request';root.mkdir()
@@ -275,7 +269,7 @@ if a.stage=='route-policy':
 
 # FIXTURE_CONTROL_STATE_READY
 value={'schema':'emuflow.native-compile-state/v1','run_id':a.run_id,'stage':a.stage,'status':'pass','request_generation':generation,'state':['map',state],'effective_options':v['options']}
-if TEMPORARY_REFERENCE and a.stage=='timing-policy':
+if TEMPORARY_REFERENCE and a.stage=='partition-policy':
  path=temporary/'unreleased-engine-cache'/'payload'
  if TEMPORARY_REFERENCE=='alias':
   alias=out/'unpublished-input';alias.symlink_to(path);path=alias
@@ -296,7 +290,7 @@ def test_native_controller_executes_fixed_order_and_publishes_metrics(tmp_path):
     request = fixture_request(tmp_path)
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert (tmp_path / "out/calls").read_text().splitlines() == [stage for stage in STAGES if stage not in {"frontend", "timing", "tdm", "partition", "route", "split", "physical", "signoff", "finalize"}]
+    assert (tmp_path / "out/calls").read_text().splitlines() == [stage for stage in STAGES if stage not in {"frontend", "timing-policy", "timing", "tdm", "partition", "route", "split", "physical", "signoff", "finalize"}]
     report = json.loads((tmp_path / "out/native-compile-result.json").read_text())
     assert report["operation"]["status"] == "pass"
     assert report["native_data_plane_complete"] is False
@@ -392,7 +386,7 @@ temporary=pathlib.Path(os.environ['TMPDIR'])""")
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     roots = (tmp_path / "out/temporary-paths").read_text().splitlines()
-    assert len(set(roots)) == len(STAGES)-9
+    assert len(set(roots)) == len(STAGES)-10
     assert all(not Path(root).exists() for root in roots)
 
 
@@ -402,7 +396,7 @@ def test_native_controller_rejects_phase_temporary_input_even_through_output_ali
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode != 0
     assert "phase temporary path" in result.stderr
-    assert (tmp_path / "out/calls").read_text().splitlines() == ["preflight", "timing-policy"]
+    assert (tmp_path / "out/calls").read_text().splitlines() == ["preflight", "partition-policy"]
     assert json.loads((tmp_path / "out/native-compile-result.json").read_text())["operation"]["status"] == "fail"
     assert not list(tmp_path.glob(".emuflow-compile-*"))
 
@@ -484,6 +478,8 @@ def test_actual_shared_phase_adapters_complete_existing_nonphysical_contract_fix
     control = json.loads((output / "native-compile-result.json").read_text())
     assert [step["stage"] for step in control["stages"]] == list(STAGES)
     assert next(step for step in control["stages"] if step["stage"] == "timing")["implementation_id"] == "native-phase2-v1"
+    assert next(step for step in control["stages"] if step["stage"] == "timing-policy")["implementation_id"] == "native-phase2-configuration-v1"
+    assert not (output / ".native-phase2-configuration").exists()
     timing = json.loads((output / "timing/phase2_report.json").read_text())
     assert timing["stage_implementation_id"] == "native-phase2-v1"
     assert timing["status"] == "pass"
@@ -492,12 +488,12 @@ def test_actual_shared_phase_adapters_complete_existing_nonphysical_contract_fix
 
 @pytest.mark.parametrize("failure", ["failed-phase", "run_id", "stage", "request_generation", "state"])
 def test_native_controller_does_not_advance_retry_or_publish_success_after_failure(tmp_path, failure):
-    request = fixture_request(tmp_path, fail="timing-policy" if failure == "failed-phase" else None,
+    request = fixture_request(tmp_path, fail="partition-policy" if failure == "failed-phase" else None,
                               corrupt=None if failure == "failed-phase" else failure)
     result = subprocess.run([str(emuflow_native()), "compile", str(request)], capture_output=True, text=True)
     assert result.returncode != 0
     calls = (tmp_path / "out/calls").read_text().splitlines()
-    assert calls == (["preflight", "timing-policy"] if failure == "failed-phase" else ["preflight"])
+    assert calls == (["preflight", "partition-policy"] if failure == "failed-phase" else ["preflight"])
     assert not (tmp_path / "out/multi-fpga-flow-report.json").exists()
     assert not list(tmp_path.glob(".emuflow-compile-*"))
 
@@ -509,7 +505,7 @@ def test_raw_frontend_cannot_fall_back_to_python_when_native_timing_policy_is_mi
     assert result.returncode != 0
     assert "policy" in result.stderr.lower()
     calls = (tmp_path / "out/calls").read_text().splitlines()
-    assert calls == ["preflight", "timing-policy"]
+    assert calls == ["preflight"]
     assert "timing" not in calls
     assert not (tmp_path / "out/multi-fpga-flow-report.json").exists()
     assert json.loads((tmp_path / "out/native-compile-result.json").read_text())["operation"]["status"] == "fail"
@@ -606,7 +602,8 @@ def _compile_preflight(ctx):
  path=root/'inputs.json';path.write_text(Path({str(tmp_path / "native-inputs/request-staging/.native-frontend-input-request/inputs.json")!r}).read_text())
  from emuflow.common.native_tools import native_file_generation
  ctx.native_frontend_input_request=path;ctx.native_frontend_input_generation=tuple(str(v) for v in native_file_generation(path))
-def _compile_timing_policy(ctx):
+ ctx.internal_timing_database=True
+def _compile_partition_policy(ctx):
  (ctx.output_dir/'adapter.pid').write_text(str(os.getpid()))
  engine="import os,signal,time,pathlib;signal.signal(signal.SIGTERM,signal.SIG_IGN);pathlib.Path('engine.pid').write_text(str(os.getpid()));time.sleep(60)"
  with NativeToolProcess({str(emuflow_native())!r},[sys.executable,'-c',engine],cwd=ctx.output_dir,scratch_parent=ctx.output_dir) as p:
@@ -652,3 +649,114 @@ def test_native_partition_report_reference_rejects_changes_and_python_partition_
         execute('partition', tmp_path/'missing', None, tmp_path/'unused', 'run')
     control = json.loads((tmp_path/'out/native-compile-result.json').read_text())
     assert next(row for row in control['stages'] if row['stage'] == 'partition')['implementation_id'] == 'native-phase3-v1'
+
+
+@pytest.mark.parametrize('damage', ['configuration-generation', 'source-generation', 'bound-input', 'escaped-owner'])
+def test_native_timing_configuration_rejects_mixed_or_unowned_inputs(tmp_path, damage):
+    from emuflow.common.native_tools import native_file_generation
+    from emuflow.timing.phase2_native import prepare_configuration_request
+    repository = Path(__file__).resolve().parents[1]
+    request = fixture_request(tmp_path, prepared_timing=False)
+    source_ir = tmp_path / 'native-inputs/source.emuir.sqlite'
+    # The fixture helper creates its native inputs under this stable root.
+    assert source_ir.is_file()
+    before = native_file_generation(source_ir)
+    settings = prepare_configuration_request(tmp_path/'settings', clocks={'clk': 1},
+        executable=str(repository/'tests/fixtures/fake_opensta_paths.py'))
+    value = json.loads(settings.read_text())
+    row = next(r for r in value['sources'] if r['role'] == 'timing-model')
+    model = tmp_path/'owned-model.json';model.write_bytes(Path(row['path']).read_bytes())
+    row.update(path=str(model), generation=list(native_file_generation(model)))
+    if damage == 'bound-input':
+        value['sources'].append({'role':'emuir','schema':'emuir-compact-v2',
+            'path':str(source_ir),'generation':list(before)})
+    settings.write_text(json.dumps(value))
+    adapter = tmp_path/'source/emuflow/flow/native_compile_adapter.py'
+    text = adapter.read_text();marker='# FIXTURE_CONTROL_STATE_READY';assert marker in text
+    setup = f'''if a.stage=='preflight':
+ root=out/'.native-phase2-configuration';root.mkdir()
+ config=root/'request.json';config.write_text(pathlib.Path({str(settings)!r}).read_text())
+ if {damage!r}=='escaped-owner':config=pathlib.Path({str(settings)!r})
+ st=config.stat();g=[str(x) for x in (st.st_dev,st.st_ino,st.st_size,*divmod(st.st_mtime_ns,1000000000),*divmod(st.st_ctime_ns,1000000000))]
+ state.update(native_phase2_configuration=['path',str(config)],native_phase2_configuration_generation=['tuple',g])
+ if {damage!r}=='configuration-generation':config.write_text(config.read_text()+' ')
+ if {damage!r}=='source-generation':
+  model=pathlib.Path({str(model)!r});model.write_text(model.read_text()+' ')
+'''
+    adapter.write_text(text.replace(marker,setup+marker))
+    completed = subprocess.run([str(emuflow_native()),'compile',str(request)],capture_output=True,text=True)
+    assert completed.returncode != 0
+    expected = {'configuration-generation':'configuration generation changed',
+        'source-generation':'source generation changed','bound-input':'must bind the published frontend IR',
+        'escaped-owner':'configuration escapes compiler ownership'}[damage]
+    assert expected in completed.stderr, completed.stderr
+    assert native_file_generation(source_ir) == before
+    assert not (tmp_path/'out/timing/phase2_report.json').exists()
+    assert (tmp_path/'out/calls').read_text().splitlines() == ['preflight']
+    report = json.loads((tmp_path/'out/native-compile-result.json').read_text())
+    assert report['operation']['status'] == 'fail'
+    assert report['stages'][-1]['stage'] == 'timing-policy'
+    assert not list(tmp_path.glob('.emuflow-compile-*'))
+
+
+def test_native_timing_configuration_cancellation_reaps_its_engine_group(tmp_path):
+    repository = Path(__file__).resolve().parents[1]
+    engine = tmp_path/'opensta.py'
+    engine.write_text(f'''#!{sys.executable}
+import json,os,signal,subprocess,sys,time
+from pathlib import Path
+root=Path({str(tmp_path)!r})
+if sys.argv[1:]==['-version']:
+ trace=root/'version-count';count=int(trace.read_text())+1 if trace.exists() else 1
+ trace.write_text(str(count))
+ if count>=2:
+  signal.signal(signal.SIGTERM,signal.SIG_IGN)
+  child=subprocess.Popen([sys.executable,'-c',"import os,signal,time;from pathlib import Path;signal.signal(signal.SIGTERM,signal.SIG_IGN);Path("+repr(str(root/'child.pid'))+").write_text(str(os.getpid()));time.sleep(60)"])
+  (root/'engine.pid').write_text(str(os.getpid()))
+  time.sleep(60)
+ print('3.1.0');raise SystemExit(0)
+if '-no_init' in sys.argv:
+ print('EMUFLOW_OPENSTA_RUNTIME status=pass tcl=8.6.16');raise SystemExit(0)
+raise AssertionError('timing extraction must not begin after cancellation')
+''')
+    engine.chmod(0o755)
+    from tests.xilinx_timing_fixture import write_mock_xilinx_timing_contract
+    solution = tmp_path/'initial.part';solution.write_text('0\n')
+    _value, encoded = _request((), {'output_dir':tmp_path/'out',
+        'yosys_json':repository/'examples/yosys/static_exact_chain.json',
+        'top':'static_exact_chain','clocks':['clk'],'clock_periods':{'clk':10.0},
+        'platform_path':repository/'platforms/virtual/static_exact_acceptance_2fpga.json',
+        'partition_provider':'tritonpart','tritonpart_solution':solution,
+        'mapping_profile':'xilinx-ultrascaleplus-open-v1',
+        'architecture_timing_db':write_mock_xilinx_timing_contract(tmp_path/'architecture.json'),
+        'opensta':str(engine)})
+    request=tmp_path/'compile.json';request.write_text(encoded)
+    process=subprocess.Popen([str(emuflow_native()),'compile',str(request)],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    try:
+        deadline=time.monotonic()+20
+        while not all((tmp_path/name).exists() for name in ('engine.pid','child.pid')):
+            assert process.poll() is None
+            assert time.monotonic()<deadline
+            time.sleep(.01)
+        pids=[int((tmp_path/name).read_text()) for name in ('engine.pid','child.pid')]
+        process.send_signal(signal.SIGTERM)
+        _stdout,stderr=process.communicate(timeout=25)
+        assert process.returncode==1,stderr.decode()
+        for pid in pids:
+            deadline=time.monotonic()+2
+            while True:
+                try:os.kill(pid,0)
+                except ProcessLookupError:break
+                assert time.monotonic()<deadline,('unreaped timing engine',pid)
+                time.sleep(.01)
+        output=tmp_path/'out'
+        report=json.loads((output/'native-compile-result.json').read_text())
+        assert report['operation']['status']=='fail'
+        assert report['stages'][-1]['stage']=='timing-policy'
+        assert report['stages'][-1]['implementation_id']=='native-phase2-configuration-v1'
+        assert not (output/'.native-phase2-request/phase2-policy.json').exists()
+        assert not (output/'timing').exists()
+        assert not list(tmp_path.glob('.emuflow-compile-*'))
+    finally:
+        if process.poll() is None:
+            process.send_signal(signal.SIGTERM);process.communicate(timeout=25)

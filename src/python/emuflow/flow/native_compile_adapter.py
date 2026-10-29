@@ -281,8 +281,8 @@ def _restore_control_state(state):
 
 
 def execute(stage, request_path, previous_path, output_path, run_id):
-    if stage in {"frontend", "timing"}:
-        raise EmuFlowError("native compiler frontend and timing are owned by C++ stages")
+    if stage in {"frontend", "timing-policy", "timing"}:
+        raise EmuFlowError("native compiler frontend and timing preparation/execution are owned by C++ stages")
     if stage == "signoff":
         raise EmuFlowError("native compiler signoff is owned by the C++ Phase 7C stage")
     if stage == "finalize":
@@ -331,7 +331,7 @@ def execute(stage, request_path, previous_path, output_path, run_id):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stage", choices=[stage for stage in STAGES if stage not in {"frontend", "timing", "tdm", "partition", "route", "signoff", "finalize"}], required=True)
+    parser.add_argument("--stage", choices=[stage for stage in STAGES if stage not in {"frontend", "timing-policy", "timing", "tdm", "partition", "route", "signoff", "finalize"}], required=True)
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--previous", type=Path)
     parser.add_argument("--output", type=Path, required=True)

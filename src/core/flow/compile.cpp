@@ -7,6 +7,7 @@
 #include "common/json_record.hpp"
 #include "storage/sqlite.hpp"
 #include "scheduling/phase5.hpp"
+#include "timing/phase2.hpp"
 #include "physical/flow/controller.hpp"
 
 #include <chrono>
@@ -70,6 +71,29 @@ class ControlJson {
     const auto& g=result.generation();const std::string fields[]={std::to_string(g.device),std::to_string(g.inode),std::to_string(g.bytes),std::to_string(g.modified_seconds),std::to_string(g.modified_nanoseconds),std::to_string(g.changed_seconds),std::to_string(g.changed_nanoseconds)};
     Require(String("$.state[1].native_phase2_generation[0]")=="tuple","native timing policy binding is invalid");
     for(unsigned i=0;i<7;++i)Require(String("$.state[1].native_phase2_generation[1]["+std::to_string(i)+"]")==fields[i],"native timing policy generation changed");return result;
+  }
+  ArtifactRef Phase2Configuration() {
+    auto result=ArtifactRef::Bind(StatePath("native_phase2_configuration"),"phase2-configuration-request-v1");
+    const auto& g=result.generation();const std::string fields[]={std::to_string(g.device),std::to_string(g.inode),std::to_string(g.bytes),std::to_string(g.modified_seconds),std::to_string(g.modified_nanoseconds),std::to_string(g.changed_seconds),std::to_string(g.changed_nanoseconds)};
+    Require(String("$.state[1].native_phase2_configuration_generation[0]")=="tuple","native timing configuration binding is invalid");
+    for(unsigned i=0;i<7;++i)Require(String("$.state[1].native_phase2_configuration_generation[1]["+std::to_string(i)+"]")==fields[i],"native timing configuration generation changed");return result;
+  }
+  std::string TimingPolicyState(const fs::path& root,const std::optional<ArtifactRef>& policy) {
+    const auto path=[](const fs::path& p){return JsonRecord(std::vector<JsonRecord>{"path",p.string()}).Encode();};
+    auto row=db_.Prepare("SELECT json_remove(json_set(?1,'$.stage','timing-policy',"
+        "'$.state[1].timing_root',json(?2),'$.state[1].path_database_path',json(?3),"
+        "'$.state[1].net_weights_path',json(?4),'$.state[1].cut_segment_qualification_path',NULL,"
+        "'$.state[1].timing_report',CASE WHEN json_type(?1,'$.state[1].prepared_timing')!='null' "
+        "THEN json_extract(?1,'$.state[1].timing_report') ELSE NULL END),"
+        "'$.state[1].native_phase2_configuration','$.state[1].native_phase2_configuration_generation')");
+    row.BindText(1,data_);row.BindText(2,path(root/"timing"));row.BindText(3,path(root/"timing/path-database.json"));row.BindText(4,path(root/"timing/partition-net-weights.json"));
+    Require(row.Step(),"cannot construct native timing configuration state");const auto state=row.TypedText(0);
+    if(!policy)return state;
+    const auto& g=policy->generation();std::vector<JsonRecord> generation;
+    for(const auto& value:{std::to_string(g.device),std::to_string(g.inode),std::to_string(g.bytes),std::to_string(g.modified_seconds),std::to_string(g.modified_nanoseconds),std::to_string(g.changed_seconds),std::to_string(g.changed_nanoseconds)})generation.emplace_back(value);
+    auto bind=db_.Prepare("SELECT json_set(?1,'$.state[1].native_phase2_policy',json(?2),'$.state[1].native_phase2_generation',json(?3))");
+    bind.BindText(1,state);bind.BindText(2,path(policy->path()));bind.BindText(3,JsonRecord(std::vector<JsonRecord>{"tuple",generation}).Encode());
+    Require(bind.Step(),"cannot bind native timing policy state");return bind.TypedText(0);
   }
   std::string TimingState(const std::string& reference) {
     auto row=db_.Prepare("SELECT json_remove(json_set(?1,'$.stage','timing','$.state[1].timing_report',json(?2)),'$.state[1].native_phase2_policy','$.state[1].native_phase2_generation')");
@@ -333,6 +357,47 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
         const auto policy_root=output/".native-phase6-request";
         Require(!fs::is_symlink(policy_root),"native Phase 6 policy directory was replaced");
         std::error_code error;fs::remove_all(policy_root,error);Require(!error,"cannot retire native Phase 6 policy");
+      }
+      if(std::string(stage)=="timing-policy") {
+        ControlJson prior(previous.string());
+        Require(prior.String("$.stage")=="frontend","invalid native timing configuration predecessor");
+        auto predecessor=ArtifactRef::Bind(previous.string(),"native-compile-state-v1");
+        const bool prepare=prior.Boolean("$.state[1].internal_timing_database") && !prior.Has("$.state[1].prepared_timing");
+        std::optional<ArtifactRef> settings,emuir,policy;
+        const auto next=scratch.root/"timing-policy.json",policy_root=output/".native-phase2-request";
+        const auto step=RunStage("timing-policy",[&]{
+            auto refs=std::vector<ArtifactRef>{predecessor};
+            if(prepare){
+              Require(prior.Has("$.state[1].native_phase2_configuration"),"native timing configuration policy is missing; Python fallback is forbidden");
+              settings=prior.Phase2Configuration();
+              Require(fs::path(settings->path())==fs::weakly_canonical(output/".native-phase2-configuration/request.json"),"native timing configuration escapes compiler ownership");
+              emuir=ArtifactRef::Bind(prior.StatePath("ir_path"),"emuir-compact-v2");
+              Require(fs::path(prior.StatePath("ir_path"))==output/"frontend/phase1/design.emuir.sqlite","native timing IR escapes frontend ownership");
+              refs.push_back(*settings);refs.push_back(*emuir);
+            }else Require(!prior.Has("$.state[1].native_phase2_configuration"),"unexpected timing configuration for adopted/external timing");
+            return refs;
+          },[&](const auto& sources){
+            if(prepare){
+              Require(!fs::exists(policy_root) && !fs::is_symlink(policy_root),"native timing policy output is not fresh");fs::create_directory(policy_root);
+              const auto made=PreparePhase2Policy(*settings,(policy_root/"phase2-policy.json").string(),cancelled,&*emuir);
+              if(!made.ok()){std::error_code cleanup;fs::remove_all(policy_root,cleanup);throw StageError(made.error,made.message);}
+              Require(made.stage=="phase2.prepare-policy" && made.outputs.size()==1,"native timing configuration producer identity disagrees");
+              policy=ArtifactRef::Bind((policy_root/"phase2-policy.json").string(),"phase2-policy-v1");
+              Require(made.outputs[0].path()==policy->path() && made.outputs[0].generation()==policy->generation(),"native timing configuration output generation changed");
+            }
+            auto bindings=sources;if(policy)bindings.push_back(*policy);
+            const auto state=prior.TimingPolicyState(output,policy);
+            PublishTextArtifact(next.string(),bindings,[&](std::ostream& stream){stream<<state<<'\n';});
+          },[&]{return std::vector<ArtifactRef>{ArtifactRef::Bind(next.string(),"native-compile-state-v1")};});
+        result.steps.push_back({stage,step.ok(),prepare?"native-phase2-configuration-v1":"native-timing-policy-boundary-v1",step.metrics.wall_seconds,step.metrics.user_cpu_seconds,step.metrics.system_cpu_seconds,step.metrics.process_peak_rss_kib});
+        if(!step.ok())throw StageError(step.error,"native compile timing configuration: "+step.message);
+        ControlJson state(next.string());
+        Require(state.String("$.stage")=="timing-policy" && state.String("$.run_id")==run_id && state.String("$.status")=="pass" && state.StateShape() && state.Generation(configuration.generation()),"invalid native timing configuration state");
+        const auto config_root=output/".native-phase2-configuration";Require(!fs::is_symlink(config_root),"native timing configuration directory was replaced");
+        std::error_code error;fs::remove_all(config_root,error);Require(!error,"cannot retire native timing configuration");
+        fs::remove(previous);previous=next;
+        std::cout<<"COMPILE_STAGE_COMPLETE timing-policy "<<step.metrics.wall_seconds<<"s\n"<<std::flush;
+        continue;
       }
       if(std::string(stage)=="finalize") {
         auto prior=ArtifactRef::Bind(previous.string(),"native-compile-state-v1");
@@ -692,7 +757,7 @@ CompileResult Compile(const ArtifactRef& configuration,const ArtifactRef& native
 std::string CompileResultJson(const CompileResult& result) {
   std::ostringstream out; out << std::setprecision(17);
   out << "{\"schema\":\"emuflow.native-compile-result/v2\",\"implementation_id\":\"native-orchestration-v1\","
-      << "\"phase_implementation\":\"native-frontend-phase2-phase3-phase4-phase5-baseline-phase6-physical-signoff-and-isolated-python-adapters-v8\",\"native_data_plane_complete\":false,"
+      << "\"phase_implementation\":\"native-frontend-timing-configuration-phase2-phase3-phase4-phase5-baseline-phase6-physical-signoff-and-isolated-python-adapters-v9\",\"native_data_plane_complete\":false,"
       << "\"operation\":" << StageResultJson(result.operation) << ",\"output_directory\":" << JsonQuote(result.output_directory)
       << ",\"request_configuration\":" << (result.request_configuration.empty() ? "null" : result.request_configuration)
       << ",\"effective_configuration\":" << (result.effective_configuration.empty() ? "null" : result.effective_configuration)

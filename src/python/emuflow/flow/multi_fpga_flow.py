@@ -1334,23 +1334,11 @@ def _compile_preflight(ctx: _CompileContext):
     elif ctx.prepared_frontend is not None or ctx.prepared_timing is not None or ctx.yosys_json is not None:
         from emuflow.frontend.inputs import prepare_inputs
         prepare_inputs(ctx)
-
-def _timing_paths(ctx: _CompileContext):
-    ctx.timing_root = ctx.output_dir / "timing"
-    ctx.path_database_path = ctx.timing_root / "path-database.json"
-    ctx.cut_segment_qualification_path = None
-    ctx.net_weights_path = ctx.timing_root / "partition-net-weights.json"
-    if ctx.prepared_timing is None:
-        ctx.timing_report = None
-
-
-def _compile_timing_policy(ctx: _CompileContext):
-    _timing_paths(ctx)
     if ctx.internal_timing_database and ctx.prepared_timing is None:
-        from emuflow.timing.phase2_native import prepare_policy
+        from emuflow.timing.phase2_native import prepare_configuration_request
         from emuflow.common.native_tools import native_file_generation
-        ctx.native_phase2_policy = prepare_policy(
-            ctx.output_dir / ".native-phase2-request", ctx.ir_path,
+        ctx.native_phase2_configuration = prepare_configuration_request(
+            ctx.output_dir / ".native-phase2-configuration",
             clocks=ctx.clock_periods, timing_io=ctx.timing_io,
             timing_model_path=ctx.timing_model,
             architecture_timing_db_path=ctx.architecture_timing_db,
@@ -1358,7 +1346,7 @@ def _compile_timing_policy(ctx: _CompileContext):
             optimization_enabled=ctx.timing_driven,
             criticality_scale=ctx.timing_criticality_scale,
             criticality_exponent=ctx.timing_criticality_exponent)
-        ctx.native_phase2_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase2_policy))
+        ctx.native_phase2_configuration_generation = tuple(str(value) for value in native_file_generation(ctx.native_phase2_configuration))
 
 
 def _compile_partition_policy(ctx: _CompileContext):

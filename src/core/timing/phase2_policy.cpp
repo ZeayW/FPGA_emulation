@@ -80,7 +80,9 @@ struct Inputs {
   std::vector<ArtifactRef> sources;
   std::map<std::string, ArtifactRef> roles;
   O options;
-  explicit Inputs(const ArtifactRef &r) : request(r) {}
+  const ArtifactRef *compiled_emuir;
+  explicit Inputs(const ArtifactRef &r, const ArtifactRef *ir)
+      : request(r), compiled_emuir(ir) {}
   void Read() {
     Check(request.schema() == "phase2-configuration-request-v1",
           "request schema disagrees");
@@ -122,6 +124,13 @@ struct Inputs {
                             "Phase 2 configuration source generation changed");
       Check(roles.emplace(role, ref).second, "duplicate source role");
       sources.push_back(ref);
+    }
+    if (compiled_emuir) {
+      Check(compiled_emuir->schema() == "emuir-compact-v2" &&
+                !roles.count("emuir"),
+            "compile timing configuration must bind the published frontend IR");
+      roles.emplace("emuir", *compiled_emuir);
+      sources.push_back(*compiled_emuir);
     }
     for (const auto *role :
          {"emuir", "timing-model", "opensta-executable", "export-script",
@@ -481,8 +490,9 @@ std::string Engine(Inputs &input, const volatile std::sig_atomic_t *cancelled) {
 } // namespace
 StageResult PreparePhase2Policy(const ArtifactRef &request,
                                 const std::string &output,
-                                const volatile std::sig_atomic_t *cancelled) {
-  Inputs input(request);
+                                const volatile std::sig_atomic_t *cancelled,
+                                const ArtifactRef *compiled_emuir) {
+  Inputs input(request, compiled_emuir);
   return RunStage(
       "phase2.prepare-policy",
       [&] {

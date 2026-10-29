@@ -1702,8 +1702,13 @@ routed timing. Clock and explicit top-level I/O constraints, engine version,
 Tcl runtime and executable content identities are checked before publication.
 Python submits bounded options and source references and verifies the returned
 policy generation. The former Python policy/model preparation body is deleted.
-The compile timing-policy adapter still invokes this bounded host; removing that
-controller boundary remains a separate unfinished W7 requirement.
+Native compile owns this preparation step directly. Preflight seals only finite
+settings and external source references; after frontend publication the C++
+controller binds its own mapped IR, prepares the policy, verifies its generation
+and advances the timing state. The Python timing-policy adapter and stage
+function are removed. Adopted timing uses the same native state boundary without
+regenerating a model. Source mutation, mixed frontend ownership and cancellation
+fail the stage without starting timing extraction or a Python fallback.
 
 `timing project-paths` projects every original typed path through the current
 assignment and performs lossless representative compression in the core.

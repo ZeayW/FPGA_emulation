@@ -28,7 +28,7 @@ def _encode_policy(value):
     return encoded
 
 
-def prepare_policy(directory, ir_path, *, clocks=None, timing_io=None,
+def _configuration_value(ir_path, *, clocks=None, timing_io=None,
                    timing_model_path=DEFAULT_TIMING_MODEL,
                    architecture_timing_db_path=None, executable=None,
                    max_paths=200000, optimization_enabled=True,
@@ -40,12 +40,13 @@ def prepare_policy(directory, ir_path, *, clocks=None, timing_io=None,
         'criticality_exponent': criticality_exponent}
     _encode_policy(options)
     engine = resolve_native_executable('sta', executable)
-    roles = [('emuir', Path(ir_path), 'emuir-compact-v2'),
-        ('timing-model', DEFAULT_TIMING_MODEL if architecture_timing_db_path is not None else Path(timing_model_path), 'phase2-source-v1'),
+    roles = [('timing-model', DEFAULT_TIMING_MODEL if architecture_timing_db_path is not None else Path(timing_model_path), 'phase2-source-v1'),
         ('opensta-executable', Path(engine), 'external-tool-executable-v1'),
         ('export-script', OPENSTA_EXPORT_SCRIPT, 'phase2-source-v1'),
         ('runtime-check-script', OPENSTA_RUNTIME_CHECK_SCRIPT, 'phase2-source-v1'),
         ('runtime-launcher', _runtime_data_path(Path('scripts/opensta/container_runtime.sh')), 'phase2-source-v1')]
+    if ir_path is not None:
+        roles.insert(0, ('emuir', Path(ir_path), 'emuir-compact-v2'))
     if architecture_timing_db_path is not None:
         roles.extend([('architecture-timing-db', Path(architecture_timing_db_path), 'phase2-source-v1'),
             ('architecture-contract', DATA_ROOT / 'rapidwright/xcvu19p-timing-contract.json', 'phase2-source-v1')])
@@ -57,6 +58,27 @@ def prepare_policy(directory, ir_path, *, clocks=None, timing_io=None,
             'generation': list(source.generation)} for role, source in sources]}
     encoded = _encode_policy(request_value)
     require_store_sources_unchanged(source for role, source in sources)
+    return encoded, sources
+
+
+def prepare_configuration_request(directory, ir_path=None, **options):
+    """Bind finite settings before synthesis; compile binds its published IR."""
+    encoded, sources = _configuration_value(ir_path, **options)
+    directory = Path(directory).absolute()
+    directory.mkdir(parents=True, exist_ok=False)
+    try:
+        request = directory / 'request.json'
+        request.write_text(encoded, encoding='utf-8')
+        require_store_sources_unchanged(source for role, source in sources)
+        return request
+    except BaseException:
+        shutil.rmtree(directory)
+        raise
+
+
+def prepare_policy(directory, ir_path, **options):
+    """Submit the complete native policy owner from the optional Python API."""
+    encoded, sources = _configuration_value(ir_path, **options)
     directory = Path(directory).absolute()
     directory.mkdir(parents=True, exist_ok=False)
     try:
