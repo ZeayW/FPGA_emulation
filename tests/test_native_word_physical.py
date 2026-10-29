@@ -78,6 +78,10 @@ def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(sou
             (out/'bank-replication-nets.tsv').write_text('net_hex\n7068617365\n')
             (out/'bank-replication-metrics.tsv').write_text('metric\tvalue\nforce_replication_targets\t1\n')
             (out/'bank-placement-metrics.tsv').write_text('metric\tvalue\ntarget_cells\t0\nmissing_rx_roles\t1\n')
+            policy=out/'implementation-policy';policy.mkdir()
+            (policy/'summary.tsv').write_text('metric\tvalue\npolicy\tbounded-native-word-physical-v1\nselected_step\tcritical-cell\ntiming_met\t0\n')
+            (policy/'candidates.tsv').write_text('step\tstatus\twns_ns\ttns_ns\twhs_ns\tincomplete_nets\tblocking_drc\terror_hex\n'+
+                'baseline\tinitial\t-.5\t-2\t.01\t0\t0\t\ncritical-cell\tselected\t-.3\t-1\t.01\t0\t0\t\n')
             metrics=dict(part=part,vivado_version='2024.2',dut_clock_count=1,mapped_cells=5,
                 routed_cells=6,physical_cells=8,infrastructure_cells=2,optimization_cells=0,
                 lut=0,ff=8,carry8=0,dsp48=0,uram288=0,ramb18_cells=0,ramb36_cells=0,
@@ -126,6 +130,11 @@ def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(sou
     assert set(report['native_word_observation']['source_context'])=={'runtime_constraints','capture_census','source_properties'}
     assert report['result']['cell_accounting']['unretained_source_cells']==1
     assert report['implementation_options']['retain_routed_checkpoint']is True
+    assert report['implementation_options']['execution_policy']=='bounded-native-word-physical-v1'
+    assert report['native_session']['scripts_sha256']['native_implementation_policy.tcl']==file_sha256(
+        Path(__file__).resolve().parents[1]/'scripts/vivado/native_implementation_policy.tcl')
+    for name in ('summary.tsv','candidates.tsv'):
+        assert report['result']['artifacts']['implementation-policy/'+name]['sha256']==file_sha256(output/'implementation-policy'/name)
     assert report['native_bank_placement']['directory']==str(output/'native-bank-placement')
     assert 'bank-placement-metrics.tsv'in report['result']['artifacts']
     assert 'bank-tx-cones.tsv'in report['result']['artifacts']
@@ -170,6 +179,7 @@ def test_word_provider_uses_native_snapshot_and_retains_real_control_failure(sou
     assert retained['native_bank_placement']==report['native_bank_placement']
     assert retained['result']['artifacts']['bank-tx-cones.tsv']==report['result']['artifacts']['bank-tx-cones.tsv']
     assert retained['result']['artifacts']['bank-replication-nets.tsv']==report['result']['artifacts']['bank-replication-nets.tsv']
+    assert retained['result']['artifacts']['implementation-policy/candidates.tsv']==report['result']['artifacts']['implementation-policy/candidates.tsv']
     assert retained['result']['timing']==report['result']['timing']
     assert not(adopted/'routed.dcp').exists()
     record['stages']={'vivado_implementation':retained,'word_phy_implementation':retained['word_phy_implementation']}

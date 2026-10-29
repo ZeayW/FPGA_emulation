@@ -535,8 +535,14 @@ proc source {path} {
       lappend ::trace bank_placement
     }
     proc emuflow_native_bank_replicate {directory sources output prefix} {
-      if {$sources ne "structural_roles" || [lindex $::trace end] ne "place"} {error "control replication did not follow placement"}
+      if {$sources ne "structural_roles" || [lrange $::trace end-1 end] ne {place unroute}} {error "control replication did not follow unrouted placement"}
       lappend ::trace bank_replication
+    }
+  } elseif {[string match native-word* $::proof_mode] && [file tail $path] eq "native_implementation_policy.tcl"} {
+    proc emuflow_policy_localize {args} {lappend ::trace policy_locality}
+    proc emuflow_policy_postroute {args} {
+      lappend ::trace policy_postroute
+      set ::clock_handles_stale true
     }
   } else {uplevel 1 [list original_source $path]}
 }
@@ -554,6 +560,7 @@ proc get_pblocks {args} {return {}}
 proc get_cells {args} {return {}}
 proc get_ports {args} {return [lindex $args end]}
 proc get_clocks {args} {
+ set ::clock_handles_stale false
  if {[lsearch -exact $args -of_objects]>=0} {
   return [expr {[lindex $args end] eq "fabric_clk" ? "emuflow_tdm_clk" : "emuflow_dut_clk_0"}]
  }
@@ -579,13 +586,18 @@ proc place_design {args} {
   lappend ::trace place
 }
 proc phys_opt_design {} {lappend ::trace phys_opt}
-proc route_design {args} {lappend ::trace route}
+proc route_design {args} {lappend ::trace [expr {$args eq "-unroute" ? "unroute" : "route"}]}
 foreach cmd {report_route_status report_drc report_timing_summary report_utilization report_design_analysis} {
  proc $cmd {args} {set i [lsearch -exact $args -file];set f [open [lindex $args [expr {$i+1}]] w];puts $f report;close $f}
 }
 proc get_drc_violations {args} {return {}}
 proc get_nets {args} {return {}}
-proc get_timing_paths {args} {return path}
+proc get_timing_paths {args} {
+ if {[info exists ::clock_handles_stale] && $::clock_handles_stale && [lsearch -exact $args -from]>=0} {
+  error "clock collections were retained across policy checkpoint rollback"
+ }
+ return path
+}
 proc version {args} {return 2024.2}
 # The child must use its original Python runtime rather than these vendor vars.
 set env(PYTHONHOME) /invalid-vendor-python
@@ -605,10 +617,10 @@ set env(PYTHONPATH) /invalid-vendor-package
         assert read_json(out/'native-session.json')['word_data_budget']['source_origins']==1
         assert 'EMUFLOW_INDEXED_VIVADO status=pass'in completed.stdout
         if placement is not None:
-            assert trace[-5:]==['place','bank_replication','phys_opt','route','routed.dcp']
+            assert trace[-9:]==['place','unroute','bank_replication','phys_opt','policy_locality','route','routed.dcp','policy_postroute','routed.dcp']
             assert trace.index('opt')<trace.index('bank_placement')<trace.index('place')
         else:
-            assert trace[-4:]==['place','phys_opt','route','routed.dcp']
+            assert trace[-6:]==['place','phys_opt','route','routed.dcp','policy_postroute','routed.dcp']
         return
     if proof_mode == "inventory-fail-diagnostic":
         assert completed.returncode != 0

@@ -586,6 +586,12 @@ def run_indexed_vivado_partition(
         path=routed_checkpoint
         if not path.is_file():raise ValidationError('requested routed debug checkpoint is missing')
         artifacts[path.name]={'path':str(path),'sha256':file_sha256(path),'bytes':path.stat().st_size}
+    policy_root=(retained if routed_snapshot is not None else output_dir)/'implementation-policy'
+    if native_word_mode and policy_root.is_dir():
+        for path in sorted(policy_root.iterdir()):
+            if path.is_file()and path.suffix in ('.tsv','.rpt','.txt'):
+                retained_parents.append(bind_store_source(path,'physical-input-document-v1'))
+                artifacts['implementation-policy/'+path.name]={'path':str(path),'sha256':file_sha256(path),'bytes':path.stat().st_size}
     if route_after_proof_failure:
         path=optimized_checkpoint
         if not path.is_file():raise ValidationError('requested optimized debug snapshot is missing')
@@ -621,6 +627,7 @@ def run_indexed_vivado_partition(
         "export_boundary_timing.tcl","export_logic_segment_timing.tcl")
     if word_mode:native_scripts+=("word_native_physical.tcl","word_data_budgets.tcl","selectio_ip.tcl")
     if placement is not None:native_scripts+=("native_bank_placement.tcl","native_word_timing.tcl","word_phase_context.tcl")
+    if native_word_mode:native_scripts+=("native_implementation_policy.tcl",)
     report = {"schema": "emuflow.vivado-partition-report/v1", "status": "pass", "provider": ("indexed-phase6-vivado-word-physical-v5"if native_word_mode else "indexed-phase6-vivado-word-physical-v4")if word_mode else "indexed-phase6-vivado-physical-v2",
         "tool": {"executable": executable, "version": metrics["vivado_version"], "threads": threads,
             "invoked_for_implementation":routed_snapshot is None},
@@ -629,6 +636,8 @@ def run_indexed_vivado_partition(
         "implementation_options": {"place_directive": place_directive, "route_directive": route_directive,
                                    "dut_frequency_mhz": dut_frequency_mhz,"retain_routed_checkpoint":retain_routed_checkpoint,
                                    "route_after_proof_failure":route_after_proof_failure,
+                                   **({'execution_policy':'bounded-native-word-physical-v1'}
+                                      if native_word_mode and (policy_root/'summary.tsv').is_file()else{}),
                                    **({'dut_timing_io_sha256':timing_io_sha256(dut_timing_io)}if dut_timing_io is not None else {})},
         "native_session": {"mode":"routed-snapshot-native-observations-v1"if native_word_mode else"current-design-stage-exports-v2","timing_query_mode":query_mode,
             "scripts_sha256": {name:file_sha256(_vivado_script(name)) for name in native_scripts},

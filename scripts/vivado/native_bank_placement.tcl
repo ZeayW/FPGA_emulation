@@ -245,3 +245,95 @@ proc emuflow_native_bank_placement {placement sources output prefix} {
   close $stream
   return [dict create target_cells [dict size $targets] shadow_projections $shadow_count missing_rx_roles $missing ambiguous_native_cells [dict size $ambiguous] control_nets [llength $control_nets] tx_combinational_candidates [dict size $tx_candidates] shared_tx_combinational_cells [llength $shared_tx] shared_tx_combinational_nets [llength $shared_tx_nets]]
 }
+
+proc emuflow_bank_cell_slr {cell} {
+  set sites [get_sites -quiet -of_objects $cell]
+  if {![llength $sites]} {return unplaced}
+  return [join [lsort -unique [get_property NAME [get_slrs -quiet -of_objects $sites]]] ,]
+}
+
+proc emuflow_rebind_bank_local_replicas {placement sources prefix output} {
+  set assigned [dict create]
+  set ambiguous [dict create]
+  set groups [dict create]
+  set cells_by_name [dict create]
+  set roles [dict create]
+  set input [open [file join $placement banks.tsv] r]
+  gets $input header
+  while {[gets $input row]>=0} {
+    lassign [split $row \t] bank direction instance
+    set objects [get_iobanks -quiet [list $bank]]
+    set slr [get_property NAME [get_slrs -quiet -of_objects $objects]]
+    set cells [get_cells -quiet -hier -filter "NAME =~ ${instance}/* && IS_PRIMITIVE == 1"]
+    foreach cell $cells {
+      if {![emuflow_bank_movable $cell]} {continue}
+      set name [get_property NAME $cell]
+      dict set cells_by_name $name $cell
+      dict set roles $name native-bank
+      emuflow_bank_add_member groups assigned ambiguous $slr $cell
+    }
+    if {$direction eq "tx"} {
+      set cone [emuflow_bank_transport_cone [emuflow_bank_tx_data_pins $cells] $prefix $instance]
+      foreach cell $cone {
+        if {![emuflow_bank_movable $cell]} {continue}
+        set name [get_property NAME $cell]
+        dict set cells_by_name $name $cell
+        dict set roles $name unique-tx-combinational
+        emuflow_bank_add_member groups assigned ambiguous $slr $cell
+      }
+    }
+  }
+  close $input
+  # A replicated control state may serve just one now-local decoder. Assign
+  # it only when every actual output load has one unambiguous bank SLR.
+  # Original state with feedback/global loads remains free for optimization.
+  dict for {name pins} [dict get $sources infrastructure_clock_pins] {
+    if {![string match ${prefix}/__emuflow_transport__/* $name]} {continue}
+    set cell [get_cells -quiet -of_objects [lindex $pins 0]]
+    if {![emuflow_bank_movable $cell] || [dict exists $sources rx [get_property -quiet EMUFLOW_SOURCE $cell]]} {continue}
+    set outputs [get_pins -quiet -of_objects $cell -filter {DIRECTION == OUT}]
+    set nets [get_nets -quiet -segments -of_objects $outputs]
+    if {![llength $nets]} {continue}
+    set loads [get_pins -quiet -leaf -of_objects $nets -filter {DIRECTION == IN}]
+    if {![llength $loads]} {continue}
+    set demands [dict create]
+    set complete true
+    foreach load [get_cells -quiet -of_objects $loads] {
+      set target [get_property NAME $load]
+      if {![dict exists $assigned $target] || [dict exists $ambiguous $target]} {set complete false;break}
+      dict set demands [dict get $assigned $target] 1
+    }
+    if {!$complete || [dict size $demands]!=1} {continue}
+    dict set assigned $name [lindex [dict keys $demands] 0]
+    dict set cells_by_name $name $cell
+    dict set roles $name unique-control-register
+  }
+  set movers [list]
+  set stream [open [file join $output postreplica-locality-selection.tsv] w]
+  puts $stream "cell_hex\tref\told_slr\ttarget_slr\trole"
+  dict for {name target} $assigned {
+    if {[dict exists $ambiguous $name]} {continue}
+    set cell [dict get $cells_by_name $name]
+    set actual [emuflow_bank_cell_slr $cell]
+    if {$actual eq $target} {continue}
+    set prior [get_pblocks -quiet -of_objects $cell]
+    set supported true
+    foreach block $prior {
+      if {![string match emuflow_bank_affinity_* [get_property NAME $block]]} {set supported false;break}
+    }
+    if {!$supported} {continue}
+    if {[llength $prior]} {foreach block $prior {remove_cells_from_pblock $block [list $cell]}}
+    unplace_cell [list $cell]
+    set block [get_pblocks -quiet [list emuflow_bank_affinity_$target]]
+    if {![llength $block]} {
+      set block [create_pblock emuflow_bank_affinity_$target]
+      set_property IS_SOFT false $block
+      resize_pblock $block -add $target -locs trim
+    }
+    add_cells_to_pblock $block [list $cell]
+    lappend movers $cell
+    puts $stream "[binary encode hex $name]\t[get_property REF_NAME $cell]\t$actual\t$target\t[dict get $roles $name]"
+  }
+  close $stream
+  return [llength $movers]
+}

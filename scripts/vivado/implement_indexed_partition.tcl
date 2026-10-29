@@ -24,6 +24,9 @@ if {[catch {
   if {![info exists emuflow_native_word_observation]} {set emuflow_native_word_observation false}
   if {![info exists emuflow_bank_placement_directory]} {set emuflow_bank_placement_directory ""}
   if {![info exists emuflow_word_data_target_period]} {set emuflow_word_data_target_period ""}
+  if {$emuflow_native_word_observation} {
+    source [file join $emuflow_script_directory native_implementation_policy.tcl]
+  }
   file mkdir $out
   set_param general.maxThreads $threads
   if {[llength [get_parts -quiet $part]] != 1} {error "target part is not installed: $part"}
@@ -101,11 +104,32 @@ if {[catch {
       $emuflow_retain_routed_checkpoint $emuflow_route_after_proof_failure
   place_design -directive $place_directive
   if {$emuflow_bank_placement_directory ne ""} {
+    # Normalize the pre-route state before forced replication. That native
+    # operation is not supported on a routed/partially routed continuation.
+    route_design -unroute
     set placement_sources [emuflow_native_word_source_roles $emuflow_word_data_source_origins]
     emuflow_native_bank_replicate $emuflow_bank_placement_directory $placement_sources $out $prefix
   }
   phys_opt_design
+  if {$emuflow_native_word_observation && $emuflow_bank_placement_directory ne ""} {
+    emuflow_policy_localize $emuflow_bank_placement_directory $emuflow_word_data_source_origins \
+        $prefix $out $emuflow_clock_contract $place_directive
+  }
   route_design -directive $route_directive
+  if {$emuflow_native_word_observation} {
+    # Preserve the first completed router output before optional optimization
+    # or reporting can fail. The policy keeps its own best-candidate copy.
+    set initial_checkpoint ""
+    if {$emuflow_retain_routed_checkpoint} {
+      write_checkpoint -force "$out/routed.dcp"
+      set initial_checkpoint "$out/routed.dcp"
+    }
+    emuflow_policy_postroute $out $emuflow_clock_contract $initial_checkpoint
+    # Candidate rollback opens a checkpoint in a fresh in-memory project.
+    # Do not carry clock-object collections across project replacement.
+    set dut_clocks [get_clocks -quiet emuflow_dut_clk*]
+    set fabric [get_clocks -quiet emuflow_tdm_clk]
+  }
   # Retain the completed router output before reports and source inventories.
   # The snapshot preserves the original constraints; DRC, route completeness
   # and timing qualification below still decide whether it is acceptable.
